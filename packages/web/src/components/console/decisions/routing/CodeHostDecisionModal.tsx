@@ -18,7 +18,6 @@ import {
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import { codeHostRoutingSubject, useCodeHostRoutingActions } from '@/lib/decisions/code-host-routing'
 import type { CodeHostRoutingDto } from '@/lib/api'
-import { DecisionChainHost, useDecisionChainHost } from '../DecisionChainControls'
 import { RoutingChainFields } from './RoutingChainFields'
 import { Note, routingSaveError, saveErrorText } from './RoutingFields'
 
@@ -75,14 +74,12 @@ export function CodeHostDecisionModal({
       : []
   const canSave = canWrite && !saving && !!decision && localIssues.length === 0
 
-  const chain = useDecisionChainHost()
-  const { leave } = chain
   useEffect(() => {
     if (saving) return
-    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && !leave(false) && onClose()
+    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && onClose()
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onClose, saving, leave])
+  }, [onClose, saving])
   const edit = useCallback((patch: (current: RoutingDraft) => RoutingDraft) => {
     setSaveError(null)
     setDraft(patch)
@@ -151,21 +148,19 @@ export function CodeHostDecisionModal({
               </span>
             </div>
           )}
-          <DecisionChainHost value={chain.host}>
-            <RoutingChainFields
-              draft={draft}
-              edit={edit}
-              decisions={decisions}
-              loading={loading}
-              agents={agents}
-              issues={issues}
-              disabled={!canWrite || saving}
-              canWrite={canWrite}
-              otherwiseLabels={{ default: tc('everyAgent') }}
-              onRefresh={() => {}}
-              create={() => ({ href: orgPath('/decisions/new'), newTab: true })}
-            />
-          </DecisionChainHost>
+          <RoutingChainFields
+            draft={draft}
+            edit={edit}
+            decisions={decisions}
+            loading={loading}
+            agents={agents}
+            issues={issues}
+            disabled={!canWrite || saving}
+            canWrite={canWrite}
+            otherwiseLabels={{ default: tc('everyAgent') }}
+            onRefresh={() => {}}
+            create={() => ({ href: orgPath('/decisions/new'), newTab: true })}
+          />
 
           {decision && (
             <button
@@ -204,19 +199,13 @@ export function CodeHostDecisionModal({
                 variant="primary"
                 size="sm"
                 className="max-desktop:flex-1"
-                disabled={chain.depth ? saving : !canSave}
-                onClick={() => leave(true) || void save()}
+                disabled={!canSave}
+                onClick={() => void save()}
               >
                 {saving ? t('footer.saving') : t('footer.save')}
               </Button>
             )}
-            <Button
-              variant="secondary"
-              size="sm"
-              className="max-desktop:flex-1"
-              disabled={saving}
-              onClick={() => leave(false) || onClose()}
-            >
+            <Button variant="secondary" size="sm" className="max-desktop:flex-1" disabled={saving} onClick={onClose}>
               {canWrite ? t('footer.cancel') : tDecisions('binding.close')}
             </Button>
             {saved && onOpenEvaluations && (

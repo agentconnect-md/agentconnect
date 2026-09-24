@@ -24,7 +24,6 @@ import {
   type RoutingIssue
 } from '@/lib/decisions/routing-draft'
 import { useRoutingRoster } from '@/lib/decisions/routing-roster'
-import { DecisionChainHost, useDecisionChainHost } from '../DecisionChainControls'
 import { RoutingChainFields } from './RoutingChainFields'
 import { DecisionRoutingTry } from './DecisionRoutingTry'
 import { DecisionRoutingEvaluationsDrawer } from './DecisionRoutingEvaluationsDrawer'
@@ -129,14 +128,12 @@ export function DecisionRoutingModal({
     if (state.saved && state.phase !== 'saving') dispatch({ type: 'RESET', detail: state.saved })
     onClose()
   }, [state.saved, state.phase, dispatch, onClose])
-  const chain = useDecisionChainHost()
-  const { leave } = chain
   useEffect(() => {
     if (busy || historyOpen) return
-    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && !leave(false) && close()
+    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && close()
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [busy, historyOpen, close, leave])
+  }, [busy, historyOpen, close])
 
   const rootDecision = decisions.find((entry) => entry.id === draft?.decisionId) ?? null
   const decision = rootDecision
@@ -259,23 +256,21 @@ export function DecisionRoutingModal({
         {!savedChannelIds.includes(channelId) && <Note icon="info">{tm('unsaved')}</Note>}
         {others.length > 0 && <Note icon="users">{tm('alsoApplies', { names: others.map(nameOf).join(', ') })}</Note>}
 
-        <DecisionChainHost value={chain.host}>
-          <RoutingChainFields
-            draft={draft}
-            edit={(patch) => dispatch({ type: 'EDIT', patch })}
-            decisions={decisions}
-            loading={loading}
-            agents={roster.agents}
-            issues={issues}
-            disabled={disabled}
-            canWrite={canWrite}
-            onRefresh={roster.refresh}
-            create={(stepId) => ({
-              href: `${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`,
-              onClick: () => beginInlineCreate({ kind: 'routing', botId, ...(stepId ? { stepId } : {}) })
-            })}
-          />
-        </DecisionChainHost>
+        <RoutingChainFields
+          draft={draft}
+          edit={(patch) => dispatch({ type: 'EDIT', patch })}
+          decisions={decisions}
+          loading={loading}
+          agents={roster.agents}
+          issues={issues}
+          disabled={disabled}
+          canWrite={canWrite}
+          onRefresh={roster.refresh}
+          create={(stepId) => ({
+            href: `${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`,
+            onClick: () => beginInlineCreate({ kind: 'routing', botId, ...(stepId ? { stepId } : {}) })
+          })}
+        />
 
         {decision && (
           <div className="flex flex-wrap items-center gap-[14px]">
@@ -339,19 +334,13 @@ export function DecisionRoutingModal({
                 variant="primary"
                 size="sm"
                 className="max-desktop:flex-1"
-                disabled={chain.depth ? busy : !canSave}
-                onClick={() => leave(true) || void submit(toSave(draft, savedChannelIds))}
+                disabled={!canSave}
+                onClick={() => void submit(toSave(draft, savedChannelIds))}
               >
                 {busy ? t('footer.saving') : t('footer.save')}
               </Button>
             ))}
-          <Button
-            variant="secondary"
-            size="sm"
-            className="max-desktop:flex-1"
-            disabled={busy}
-            onClick={() => leave(false) || close()}
-          >
+          <Button variant="secondary" size="sm" className="max-desktop:flex-1" disabled={busy} onClick={close}>
             {canWrite ? t('footer.cancel') : tDecisions('binding.close')}
           </Button>
           {saved?.config && (

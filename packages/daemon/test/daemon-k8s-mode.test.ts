@@ -2125,6 +2125,104 @@ describe('the idle sweep keeps the agent pod only for its own work (#1896)', () 
     }
   })
 
+  it('judges a hostless session pod by its own activity while a sibling dispatch runs', async () => {
+    const store = await LocalStore.open(':memory:')
+    const pool = await poolMember(store)
+    const { inner } = pool
+    const ttl = inner.cfg.limits.agentIdleTimeoutMs
+    const now = Date.now() + 2 * ttl
+    const row = (key: string, workspaceIsolation: 'shared' | 'session', updatedAt: number) =>
+      store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: key,
+        acpSessionId: null,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt,
+        workspaceIsolation
+      })
+    const release = inner.beginActiveDispatch('bot-a', SHARED)
+    try {
+      await row(ISOLATED, 'session', now - 2 * ttl)
+      await row(SHARED, 'shared', now)
+      await inner.sweepIdleSandboxes(now, ttl)
+      await vi.waitFor(() => expect(pool.suspended).toEqual([SESSION_POD]))
+
+      pool.suspended.length = 0
+      await row(ISOLATED, 'session', now)
+      await inner.sweepIdleSandboxes(now, ttl)
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(pool.suspended).toEqual([])
+    } finally {
+      release()
+      await pool.instance.stop()
+    }
+  })
+
+  it('reclaims an idle session host while a sibling dispatch runs', async () => {
+    const pool = await poolMember()
+    const { inner } = pool
+    const key = sessionHostKey('bot-a', ISOLATED)
+    const host = { stop: vi.fn(async () => {}) }
+    const release = inner.beginActiveDispatch('bot-a', SHARED)
+    try {
+      // No row to TTL-close: this exercises host reclaim independently of session closure.
+      inner.hosts.set(key, host)
+      inner.hostStartedAt.set(key, Date.now() - 2 * inner.cfg.limits.agentIdleTimeoutMs)
+      await inner.sweepIdle()
+      await vi.waitFor(() => expect(host.stop).toHaveBeenCalledOnce())
+    } finally {
+      release()
+      await pool.instance.stop()
+    }
+  })
+
+  it('keeps a session host whose dispatch starts during the idle activity read', async () => {
+    const pool = await poolMember()
+    const { inner } = pool
+    const key = sessionHostKey('bot-a', ISOLATED)
+    const host = { stop: vi.fn(async () => {}) }
+    let release = () => {}
+    try {
+      inner.hosts.set(key, host)
+      inner.hostStartedAt.set(key, Date.now() - 2 * inner.cfg.limits.agentIdleTimeoutMs)
+      vi.spyOn(inner.store, 'sessionLastActivityTs').mockImplementationOnce(async () => {
+        release = inner.beginActiveDispatch('bot-a', ISOLATED)
+        return 0
+      })
+      await inner.sweepIdle()
+      expect(host.stop).not.toHaveBeenCalled()
+      expect(inner.hosts.get(key)).toBe(host)
+    } finally {
+      release()
+      await pool.instance.stop()
+    }
+  })
+
+  it('keeps a hostless session pod admitted while the watcher query is in flight', async () => {
+    const pool = await poolMember()
+    const { inner } = pool
+    let release = () => {}
+    try {
+      inner.k8sPlane.armedIn = async (subject: string) => {
+        if (subject === SESSION_POD) release = inner.beginActiveDispatch('bot-a', ISOLATED)
+        return false
+      }
+      await inner.sweepIdleSandboxes(
+        Date.now() + 2 * inner.cfg.limits.agentIdleTimeoutMs,
+        inner.cfg.limits.agentIdleTimeoutMs
+      )
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(pool.suspended).toEqual([AGENT_POD])
+    } finally {
+      release()
+      await pool.instance.stop()
+    }
+  })
+
   it('lets the agent’s shared host, and with it the agent pod, go under an isolated session’s traffic, and keeps both for a shared one’s', async () => {
     const store = await LocalStore.open(':memory:')
     const pool = await poolMember(store)

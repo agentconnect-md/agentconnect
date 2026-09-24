@@ -147,6 +147,13 @@ const ImageRuntimesRecordSchema = z.object({
   identity: z.string().min(1),
   table: K8sRuntimeTableSchema
 })
+// The models each runtime's selector advertised in an environment of an image, the VM's entry in the per-strategy catalog (session-executors.md §5).
+const ImageModelsRecordSchema = z.object({
+  version: z.literal(1),
+  image: z.string().min(1),
+  identity: z.string().min(1),
+  models: z.record(z.string(), z.array(z.string()))
+})
 const FlatRefSchema = z.object({ manifest_digest: z.string(), artifact_digest: z.string() })
 
 /** Owns VM lifecycle while exposing the existing ACP process-stream contract. */
@@ -161,6 +168,7 @@ export class MicrosandboxManager {
   private closed = false
   private startGate: Promise<void> = Promise.resolve()
   private readonly imageIdentities = new Map<string, Promise<string | undefined>>()
+  private modelWrites: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: MicrosandboxManagerOptions) {}
 
@@ -202,6 +210,46 @@ export class MicrosandboxManager {
 
   private imageRuntimesPath(): string {
     return join(this.options.root, 'microsandbox', 'image-runtimes.json')
+  }
+
+  /** The models earlier environments of the configured image advertised, per runtime; empty once the cache holds another image. It boots nothing. */
+  async cachedModels(): Promise<Record<string, string[]>> {
+    const identity = await this.imageIdentity(this.options.config.image)
+    return (identity && (await this.readModels(identity))?.models) || {}
+  }
+
+  /** Record what a runtime's selector advertised in an environment of the configured image; best effort, as the table's record is. */
+  recordModels(runtime: string, models: string[]): Promise<void> {
+    const write = this.modelWrites.then(async () => {
+      const identity = await this.imageIdentity(this.options.config.image)
+      if (!identity) return
+      const recorded = (await this.readModels(identity))?.models
+      await writeFileAtomic(
+        this.imageModelsPath(),
+        JSON.stringify({
+          version: 1,
+          image: this.options.config.image,
+          identity,
+          models: { ...recorded, [runtime]: models }
+        })
+      )
+    })
+    this.modelWrites = write.catch((error: unknown) =>
+      this.options.log?.warn(`microsandbox: could not record the image's models for ${runtime} — ${formatErr(error)}`)
+    )
+    return this.modelWrites
+  }
+
+  private async readModels(identity: string): Promise<z.infer<typeof ImageModelsRecordSchema> | undefined> {
+    const record = ImageModelsRecordSchema.safeParse(
+      parseJson(await readFile(this.imageModelsPath(), 'utf8').catch(() => ''))
+    )
+    if (!record.success || record.data.image !== this.options.config.image) return undefined
+    return record.data.identity === identity ? record.data : undefined
+  }
+
+  private imageModelsPath(): string {
+    return join(this.options.root, 'microsandbox', 'image-models.json')
   }
 
   async prepareImage(): Promise<void> {

@@ -7,7 +7,7 @@ import { GateChainFields } from './GateChainFields'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
-it('edits a child gate and removes the whole continuation from the root', async () => {
+it('opens a child gate in a sheet and removes the whole continuation from the root', async () => {
   const definitions = ['First', 'Second'].map((name, index) => ({
     id: String(index),
     name,
@@ -47,12 +47,14 @@ it('edits a child gate and removes the whole continuation from the root', async 
     )
     expect(saved.steps).toHaveLength(1)
     expect(saved.nextStepId).toBe(saved.steps![0]!.id)
-    expect(container.querySelector('[aria-current="step"]')?.textContent).toBe('Second')
+    expect(document.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('Second')
+    expect(document.querySelector('[role="dialog"] nav')?.textContent).toContain('When matched')
     await act(async () =>
-      [...container.querySelectorAll<HTMLButtonElement>('nav button')]
+      [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] nav button')]
         .find((button) => button.textContent === 'First')!
         .click()
     )
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Remove next Decision"]')!.click())
     expect(saved).toEqual({ type: 'gate', decisionId: '0', when: { type: 'boolean', values: [true] } })
   } finally {

@@ -5,8 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DECISION_MODEL_SELECTION_V1_FEATURE,
   type DecisionEvaluation,
+  type ExecutorCandidate,
   type ExecutorPrepareReq,
-  type ExecutorPrepareResult
+  type ExecutorPrepareResult,
+  type RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
@@ -547,4 +549,145 @@ describe('session-pinned Decision model', () => {
       expect(second.internal.cpClient.emitEventSession).toHaveBeenLastCalledWith(expect.objectContaining(expected))
     }
   )
+})
+
+describe('a target judged where the session could land (session-executors.md §5)', () => {
+  const executorId = '44444444-4444-4444-8444-444444444444'
+  const key = 'birth-session'
+  const catalog = ['model-standard', 'model-capable', 'model-manual']
+  const live = (models = catalog) => ({ available: true, models, modelsSource: 'probed' as const })
+  const missing = { available: false, unavailableReason: 'this runtime is not installed on this host' }
+
+  /** A session-isolated birth on a group: `alternative` as this holder reports it, and one candidate's runtimes. */
+  async function birth(opts: {
+    holder: RuntimeStrategyEntries
+    candidate?: ExecutorCandidate['runtimes']
+    execution?: string
+    holderHosted?: number
+    manual?: { runtime: string; model: string }
+  }) {
+    const { internal, evaluate } = await start(scaffold())
+    const agent = internal.agents.get(agentId)
+    agent.modelSelection.rules[0].runtime = 'alternative'
+    if (opts.execution) agent.execution = opts.execution
+    vi.spyOn(internal.runtimeFacts, 'profileFor').mockImplementation((runtime: unknown) => ({
+      runtime,
+      models: catalog,
+      strategies: runtime === 'alternative' ? opts.holder : { host: live(), microsandbox: live() }
+    }))
+    const executorCandidates = vi.fn(async () => ({
+      candidates: opts.candidate
+        ? [
+            {
+              daemonId: executorId,
+              endpoint: { host: '192.0.2.10', port: 7100 },
+              strategies: { host: { available: true }, microsandbox: { available: true } },
+              capacity: 32,
+              hostedSessions: 0,
+              runtimes: opts.candidate
+            }
+          ]
+        : []
+    }))
+    Object.assign(internal.cpClient, {
+      connected: () => true,
+      memberSet: () => ({ setId: 'example-set', name: 'Example group' }),
+      executorCandidates
+    })
+    vi.spyOn(internal.githubReviews, 'pullRequestContext').mockResolvedValue({
+      description: 'Fix login',
+      commitMessages: [],
+      diff: '',
+      reasons: []
+    })
+    vi.spyOn(internal, 'hostedSessionCount').mockResolvedValue(opts.holderHosted ?? 0)
+    const prepareAt = vi
+      .spyOn(internal.executorPlane as ExecutorPlane, 'prepareAt')
+      .mockResolvedValue({ refused: 'full' })
+    internal.sessionIsolation.set(key, 'session')
+    const run = {
+      key,
+      plan: {},
+      entry: {
+        agentId,
+        hookContext: { hookId: 'example-hook' },
+        initAbort: new AbortController(),
+        msg: { text: 'Review this' },
+        ...(opts.manual ? { webchat: { runtime: opts.manual } } : {})
+      }
+    }
+    // The two calls `openSession` makes, sharing one answer as it does.
+    const candidates = internal.birthCandidates(agentId, key)
+    await internal.selectSessionModel(run, undefined, candidates)
+    const selected = internal.sessionRuntimes.get(key)
+    await internal.placeSessionOnExecutor(internal.sessionAgent(agentId, key), key, candidates)
+    return { internal, evaluate, selected, executorCandidates, prepareAt }
+  }
+
+  it.each([
+    ['a live list that names the model', live()],
+    [
+      'a cached list, which stays permissive',
+      { available: true, models: ['model-other'], modelsSource: 'cached' as const }
+    ],
+    ['no list yet, which stays permissive', { available: true }]
+  ])('accepts a runtime only a candidate runs, from %s, and places the session there on one ask', async (_, entry) => {
+    const { selected, executorCandidates, prepareAt, evaluate } = await birth({
+      holder: { host: missing },
+      candidate: [{ runtime: 'alternative', authRequired: false, strategies: { host: entry } }]
+    })
+    expect(evaluate).toHaveBeenCalledOnce()
+    expect(selected).toMatchObject({ runtime: 'alternative', model: 'model-capable' })
+    expect(prepareAt).toHaveBeenCalledWith(agentId, key, [{ daemonId: executorId, strategy: 'host' }])
+    expect(executorCandidates).toHaveBeenCalledOnce()
+  })
+
+  it('accepts a manual pair only a candidate runs', async () => {
+    const { selected, executorCandidates } = await birth({
+      holder: { host: missing },
+      candidate: [{ runtime: 'alternative', authRequired: false, strategies: { host: live() } }],
+      manual: { runtime: 'alternative', model: 'model-manual' }
+    })
+    expect(selected).toEqual({ runtime: 'alternative', model: 'model-manual' })
+    expect(executorCandidates).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the session off a lighter candidate whose catalog lacks the model the holder has', async () => {
+    const { internal, selected, prepareAt } = await birth({
+      holder: { host: live() },
+      candidate: [{ runtime: 'alternative', authRequired: false, strategies: { host: live(['model-standard']) } }],
+      holderHosted: 9
+    })
+    expect(selected).toMatchObject({ runtime: 'alternative', model: 'model-capable' })
+    expect(prepareAt).not.toHaveBeenCalled()
+    expect(internal.sessionExecutorVerdicts.get(key)).toBe('no_candidate')
+  })
+
+  it.each([
+    [
+      'falls back from',
+      { available: false, unavailableReason: 'the microsandbox image does not provide this runtime' },
+      'test'
+    ],
+    ['keeps', live(), 'alternative']
+  ])('%s a runtime by what the microsandbox image offers, not the host install', async (_, image, runtime) => {
+    const { selected } = await birth({ holder: { host: live(), microsandbox: image }, execution: 'microsandbox' })
+    expect(selected).toMatchObject({ runtime })
+  })
+
+  it('never lets a Decision choose the strategy: a target only another strategy runs falls back, and the session keeps the agent’s', async () => {
+    const { selected, prepareAt, executorCandidates } = await birth({
+      // Both the holder and the candidate run the target in a VM, and neither on the host.
+      holder: { host: missing, microsandbox: live() },
+      candidate: [
+        { runtime: 'alternative', authRequired: false, strategies: { host: missing, microsandbox: live() } },
+        { runtime: 'test', authRequired: false, strategies: { host: live() } }
+      ],
+      execution: 'host',
+      holderHosted: 9
+    })
+    expect(selected).toMatchObject({ runtime: 'test', model: 'model-standard' })
+    expect(prepareAt).toHaveBeenCalledWith(agentId, key, [{ daemonId: executorId, strategy: 'host' }])
+    expect(executorCandidates).toHaveBeenCalledOnce()
+  })
 })

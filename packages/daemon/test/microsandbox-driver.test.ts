@@ -982,6 +982,24 @@ describe('microsandbox process and VM ownership', () => {
     expect(await new MicrosandboxManager(other).cachedTable()).toBeUndefined()
   })
 
+  it('records what each runtime advertised in an environment against the image, and reads it back without a VM', async () => {
+    const { options, imageDigests, created } = await fixture()
+    await new MicrosandboxManager(options).prepare()
+    const booted = created.length
+    const manager = new MicrosandboxManager(options)
+    expect(await manager.cachedModels()).toEqual({})
+    await manager.recordModels('test', ['model-a', 'model-b'])
+    await manager.recordModels('other', ['model-c'])
+    await manager.recordModels('test', ['model-b'])
+    expect(await new MicrosandboxManager(options).cachedModels()).toEqual({ test: ['model-b'], other: ['model-c'] })
+    expect(created).toHaveLength(booted)
+    // Another build behind the same tag has advertised nothing yet, and neither has another image.
+    imageDigests.set('test-image', 'sha256:moved')
+    expect(await new MicrosandboxManager(options).cachedModels()).toEqual({})
+    const other = { ...options, config: { ...options.config, image: 'next-image' } }
+    expect(await new MicrosandboxManager(other).cachedModels()).toEqual({})
+  })
+
   it('tries a failed preparation again at the next use', async () => {
     const { options } = await fixture()
     let fail = true

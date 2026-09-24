@@ -51,7 +51,6 @@ import { GithubMark, LoadingState } from '@/components/marks'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
-import { DecisionChainHost, useDecisionChainHost } from '@/components/console/decisions/DecisionChainControls'
 import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 import { randomGlyphIcon, type AgentIcon } from '@/lib/agent-icon'
 import { DEFAULT_AGENT_OUTPUT_MODE, type OutputMode } from '@/lib/output-mode'
@@ -150,7 +149,6 @@ export default function AddAgentModal({
   // Read once: a draft is the form's starting point, and re-seeding on a later render would undo
   // whatever the reader had already typed over it.
   const [seed] = useState(() => addAgentDraftSeed(draft))
-  const chain = useDecisionChainHost()
   const { me } = useProfile()
   const { activeOrg, orgPath } = useOrgs()
   const defaultAgentVisibility = activeOrg?.defaultAgentVisibility ?? 'all'
@@ -1018,39 +1016,37 @@ export default function AddAgentModal({
           </section>
 
           <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
-            <DecisionChainHost value={chain.host}>
-              <ModelSelectionField
-                value={modelSelection}
-                onChange={setModelSelection}
-                onValidityChange={setModelSelectionValid}
-                fallback={{
-                  runtime: effectiveRuntime,
-                  model: selectedModel,
-                  effort: selectedEffort,
-                  permissionMode: selectedPermissionMode,
-                  fastMode
-                }}
-                source={daemon}
-                runtimes={runtimeIds}
-                runInSandbox={effectiveRunInSandbox}
-                onFallbackChange={(target) => {
-                  if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
-                  setRuntime(target.runtime)
-                  setModel(target.model)
-                  setEffort(
-                    (current) =>
-                      target.effort ??
-                      resolveEffortForModel(
-                        target.runtime,
-                        modelCapability(daemon, target.runtime, target.model),
-                        current
-                      )
-                  )
-                  if (target.permissionMode !== undefined) setPermissionMode(target.permissionMode)
-                  if (target.fastMode !== undefined) setFastMode(target.fastMode)
-                }}
-              />
-            </DecisionChainHost>
+            <ModelSelectionField
+              value={modelSelection}
+              onChange={setModelSelection}
+              onValidityChange={setModelSelectionValid}
+              fallback={{
+                runtime: effectiveRuntime,
+                model: selectedModel,
+                effort: selectedEffort,
+                permissionMode: selectedPermissionMode,
+                fastMode
+              }}
+              source={daemon}
+              runtimes={runtimeIds}
+              runInSandbox={effectiveRunInSandbox}
+              onFallbackChange={(target) => {
+                if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
+                setRuntime(target.runtime)
+                setModel(target.model)
+                setEffort(
+                  (current) =>
+                    target.effort ??
+                    resolveEffortForModel(
+                      target.runtime,
+                      modelCapability(daemon, target.runtime, target.model),
+                      current
+                    )
+                )
+                if (target.permissionMode !== undefined) setPermissionMode(target.permissionMode)
+                if (target.fastMode !== undefined) setFastMode(target.fastMode)
+              }}
+            />
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
               <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
               <SandboxField
@@ -1541,19 +1537,17 @@ export default function AddAgentModal({
           </button>
         ) : null}
         <div className="flex-1" />
-        <Button variant="ghost" onClick={() => chain.leave(false) || onClose()}>
+        <Button variant="ghost" onClick={onClose}>
           {t('cancel')}
         </Button>
         <Button
           disabled={
-            chain.depth
-              ? busy
-              : busy ||
-                !effectiveRuntime ||
-                !modelSelectionValid ||
-                (memoryProvider === 'external' && !externalMemory.connectionId)
+            busy ||
+            !effectiveRuntime ||
+            !modelSelectionValid ||
+            (memoryProvider === 'external' && !externalMemory.connectionId)
           }
-          onClick={() => chain.leave(true) || submit()}
+          onClick={submit}
         >
           <Icon name="bot" size={15} />
           {busy ? t('creating') : t('create')}

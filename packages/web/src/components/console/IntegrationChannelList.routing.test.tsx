@@ -213,7 +213,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
     await click(document.body.querySelector('button[aria-label="Continue with a Decision"]'))
     await click(all('[role="menuitem"]').find((node) => node.textContent?.includes('Support category')))
-    await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Support category')))
+    await click(all('[role="dialog"]').at(-1)?.querySelector('button[aria-haspopup="menu"]'))
     await click(all('a').find((node) => node.textContent?.includes('Add decision')))
     await act(async () => setShown(false))
     await act(async () => decisionStore.completeInlineCreate(seed.decisions.find((d) => d.id === 'needs-response')!))

@@ -164,6 +164,7 @@ import {
   agentHostKey,
   hostKeyAgentId,
   hostKeyDirName,
+  sessionKeyDirName,
   hostKeyLabel,
   hostKeySessionKey,
   sessionHostKey,
@@ -451,6 +452,8 @@ import type { ExecutionPlane, PlaneLaunch, PlaneScope } from './execution/plane.
 import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execution/executor-facet.js'
 import { ExecutorPlane, executorMcpBridge, type PlacedSession } from './execution/executor-plane.js'
 import {
+  candidateEligible,
+  catalogOffers,
   placeSession,
   strategySpreads,
   type PlacementAsk,
@@ -1477,6 +1480,10 @@ export class Daemon {
     Promise<{ groupId: string; term: string; daemonId: string }>
   >()
   private microsandboxCatalog?: ResolvedRuntimeCatalog
+  // What each runtime advertised in an environment of the current image; a recorded list is `cached` until this run's own session confirms it (§5).
+  private microsandboxModels = new Map<string, { models: string[]; source: 'cached' | 'probed' }>()
+  // The runtime each host running in this machine's own VM starts, so its first session can serve as the image's model probe.
+  private readonly imageRuntimeHosts = new WeakMap<AcpHost, string>()
   // What discovery resolved, kept so the image's table can be projected onto it when the first VM use reads it (§5).
   private resolvedRuntimeCatalog?: ResolvedRuntimeCatalog
   private localRuntimeCatalog?: ResolvedRuntimeCatalog
@@ -2377,6 +2384,7 @@ export class Daemon {
         await this.microsandbox.recover()
         await this.microsandbox.collectImages()
         this.microsandboxTable = await this.microsandbox.cachedTable()
+        await this.loadMicrosandboxModels()
       }
       this.wirePlaneResolver(this.microsandboxPlane)
     } catch (error) {
@@ -2407,7 +2415,10 @@ export class Daemon {
       const readiness = (async () => {
         this.microsandbox ??= await installMicrosandbox(this.microsandboxInstallOptions(this.cfg, this.root))
         await this.microsandbox.recover()
-        this.adoptMicrosandboxTable(await this.microsandbox.prepare())
+        const table = await this.microsandbox.prepare()
+        // The preparation may have pulled another image, whose models nothing has read yet.
+        await this.loadMicrosandboxModels()
+        this.adoptMicrosandboxTable(table)
         return this.microsandbox
       })()
       this.microsandboxReadiness = readiness
@@ -2886,6 +2897,32 @@ export class Daemon {
     const skipped = Object.keys(resolvedCatalog.runtimes).filter((id) => !reportedEntries[id])
     if (skipped.length) {
       this.log.info(`runtimes without an installation or stored credentials (skipped): ${skipped.join(', ')}`)
+    }
+  }
+
+  /** The models recorded against the configured image's identity, read without booting anything (§5). */
+  private async loadMicrosandboxModels(): Promise<void> {
+    const recorded = (await this.microsandbox?.cachedModels()) ?? {}
+    this.microsandboxModels = new Map(
+      Object.entries(recorded).map(([runtime, models]) => [runtime, { models, source: 'cached' as const }])
+    )
+  }
+
+  /** The image's model probe (§5): the selector of a session this machine's VM opens for a runtime, recorded against the image when it changes. */
+  private noteImageModels(runtime: string, models: string[]): void {
+    const manager = this.microsandbox
+    // A runtime with no selector leaves the entry permissive rather than refusing every model.
+    if (!manager || models.length === 0) return
+    const known = this.microsandboxModels.get(runtime)
+    const same =
+      known !== undefined && known.models.length === models.length && known.models.every((m, i) => m === models[i])
+    if (same && known.source === 'probed') return
+    this.microsandboxModels.set(runtime, { models: [...models], source: 'probed' })
+    if (!same) void manager.recordModels(runtime, [...models])
+    try {
+      this.runtimeFacts.emitFacts()
+    } catch (err) {
+      this.log.debug(`microsandbox: emitting the image's models for ${runtime} failed: ${formatErr(err)}`)
     }
   }
 
@@ -4047,6 +4084,7 @@ export class Daemon {
       isolation: this.sessionIsolation.get(sessionKey),
       strategy: this.agentStrategy(agent),
       runtime: agent.runtime,
+      ...(agent.runtimeOverrides?.model ? { model: agent.runtimeOverrides.model } : {}),
       // The only memory condition left: a binding the Control Plane's boot-time flip has not reached yet (§7).
       memoryDaemonHomed: memoryKindOf(agent) === 'managed' && memoryHomeOf(agent) === 'daemon'
     }
@@ -4057,6 +4095,47 @@ export class Daemon {
     return this.runtimeFacts.profileFor(runtime).authRequired !== true
   }
 
+  /** Whether this machine starts the runtime and model in the strategy, read from the entry its own `facts/daemon-runtimes` reports for it (§5). */
+  private holderOffers(ask: Pick<PlacementAsk, 'strategy' | 'runtime' | 'model'>): boolean {
+    if (!this.runtimes[ask.runtime]) return false
+    const profile = this.runtimeFacts.profileFor(ask.runtime)
+    // A pool member reports no entries: its pod is the boundary, so the runtime's own list is the catalog.
+    const entry = profile.strategies
+      ? profile.strategies[ask.strategy]
+      : {
+          available: true,
+          models: profile.models,
+          ...(profile.modelsSource ? { modelsSource: profile.modelsSource } : {})
+        }
+    return catalogOffers(entry, ask.model)
+  }
+
+  /** The birth's `executor/candidates`, asked at most once and only when the session could be placed elsewhere (§5, §7). */
+  private birthCandidates(agentId: string, sessionKey: string): () => Promise<ExecutorCandidatesResult | undefined> {
+    let asked: Promise<ExecutorCandidatesResult | undefined> | undefined
+    return () =>
+      (asked ??= (async () => {
+        const agent = this.sessionAgent(agentId, sessionKey)
+        if (!agent || !(await this.birthMaySpread(agent, sessionKey))) return undefined
+        return await this.executorCandidates(agentId, sessionKey)
+      })().catch((err: unknown) => {
+        // Never rejects: model selection may not wait for it, and placement then decides without it.
+        this.log.warn(`executor: asking the control plane for candidates failed: ${formatErr(err)}`)
+        return undefined
+      }))
+  }
+
+  /** The conditions under which {@link placeSessionOnExecutor} asks for candidates: an unplaced, session-isolated birth on a group, in a strategy that spreads. */
+  private async birthMaySpread(agent: LoadedAgent, sessionKey: string): Promise<boolean> {
+    const plane = this.executorPlane
+    if (!plane || !this.cpClient) return false
+    const ask = this.placementAsk(agent, sessionKey)
+    // A daemon-homed memory binding stays home whatever the answer, so it is not asked for.
+    if (ask.isolation !== 'session' || ask.memoryDaemonHomed || !strategySpreads(ask.strategy)) return false
+    if (!this.cpClient.memberSet() || plane.placementOf(sessionKey)) return false
+    return !(await this.store.getSessionExecutor(sessionKey).catch(() => undefined))
+  }
+
   /**
    * Where this session executes, decided once at its birth and kept for its whole life (§6, §7).
    *
@@ -4064,7 +4143,11 @@ export class Daemon {
    * or on a connection that belongs to no member set — the two consents are the group's and each
    * machine's, and a daemon in no group has neither to read.
    */
-  private async placeSessionOnExecutor(agent: LoadedAgent, sessionKey: string): Promise<void> {
+  private async placeSessionOnExecutor(
+    agent: LoadedAgent,
+    sessionKey: string,
+    candidates?: () => Promise<ExecutorCandidatesResult | undefined>
+  ): Promise<void> {
     const plane = this.executorPlane
     if (!plane) return
     // A verdict this daemon reached for a turn that never recorded it: the row exists by now.
@@ -4088,12 +4171,15 @@ export class Daemon {
     if (ask.isolation !== 'session') return await this.recordSessionExecutor(sessionKey, 'shared_session')
     if (!this.cpClient.memberSet()) return await this.recordSessionExecutor(sessionKey, 'not_on_group')
     // A strategy that does not spread yet stays home without asking.
-    const answer = strategySpreads(ask.strategy) ? await this.executorCandidates(agent.id, sessionKey) : undefined
+    const answer = strategySpreads(ask.strategy)
+      ? await (candidates ?? (() => this.executorCandidates(agent.id, sessionKey)))()
+      : undefined
     const placement = placeSession({
       ask,
       holderHostedSessions: await this.hostedSessionCount(sessionKey),
       holderCapacity: this.cfg.limits.maxConcurrentSessions,
       holderAuthenticates: this.holderAuthenticates(ask.runtime),
+      holderOffers: this.holderOffers(ask),
       ...(answer ? { answer } : {})
     })
     if ('stayedHome' in placement) return await this.recordSessionExecutor(sessionKey, placement.stayedHome)
@@ -4164,6 +4250,7 @@ export class Daemon {
       holderHostedSessions: await this.hostedSessionCount(placed.sessionKey),
       holderCapacity: this.cfg.limits.maxConcurrentSessions,
       holderAuthenticates: this.holderAuthenticates(ask.runtime),
+      holderOffers: this.holderOffers(ask),
       replacing: placed.executorDaemonId,
       ...(answer ? { answer } : {})
     })
@@ -5179,6 +5266,29 @@ export class Daemon {
     return [...this.pending.values()].some(
       (p) => p.plan.agentId === agentId && this.runsInAgentPod(agentId, p.plan.sessionKey)
     )
+  }
+
+  // Read local admission synchronously, including sessions whose host and durable row do not exist yet.
+  private sandboxInUseReason(subject: string): string | undefined {
+    const agentId = sandboxSubjectAgentId(subject)
+    const leaf = sandboxSubjectSessionLeaf(subject)
+    if (leaf === undefined) return this.agentPodInUse(agentId) ? 'agent pod in use' : undefined
+    const matches = (key: string): boolean => sessionKeyDirName(key) === leaf
+    for (const key of this.hostKeysForAgent(agentId)) {
+      if (hostKeyDirName(key) === leaf && (this.hosts.has(key) || this.hostStarts.has(key)))
+        return 'session host running or starting'
+    }
+    if (this.modelSessions.hasStartedHostForAgent(agentId, matches)) return 'session model host running'
+    const active = this.activeDispatchesByAgent.get(agentId)
+    for (const [key, done] of this.activeDispatchDoneByKey) {
+      if (active?.has(done) && matches(key)) return 'session dispatch in flight'
+    }
+    for (const key of this.inflight.keys()) {
+      if (matches(key)) return 'session admitted'
+    }
+    if ([...this.pending.values()].some((p) => p.plan.agentId === agentId && matches(p.plan.sessionKey)))
+      return 'session turn pending'
+    return undefined
   }
 
   /** The agent's key for `host` — scoped to the agent, since a test factory may hand one object to several agents. */
@@ -6266,6 +6376,7 @@ export class Daemon {
       log: this.log
     })
     constructed.host = host
+    if (micro) this.imageRuntimeHosts.set(host, runtimeEntry?.aliasOf ?? agent.runtime)
     return { host, configFileState }
   }
 
@@ -13549,9 +13660,11 @@ export class Daemon {
     // …and WHERE it runs, which the host key below reads: decided once at birth, recorded, and kept for the session's life (session-executors.md §7).
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
-      await this.selectSessionModel(run, persisted)
+      // One `executor/candidates` per birth: model selection judges its targets by it, and placement reuses it (session-executors.md §5).
+      const candidates = this.birthCandidates(agentId, key)
+      await this.selectSessionModel(run, persisted, candidates)
       agent = run.agent = this.sessionAgent(agentId, key) ?? agent
-      await this.placeSessionOnExecutor(agent, key)
+      await this.placeSessionOnExecutor(agent, key, candidates)
       const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
       let launchWorkspaceCwd: string | undefined
       if (this.modelSessions.enabled) {
@@ -13698,7 +13811,11 @@ export class Daemon {
     return this.sessionRuntimes.get(run.key)?.model
   }
 
-  private async selectSessionModel(run: TurnRun, persisted: SessionRecord | undefined): Promise<void> {
+  private async selectSessionModel(
+    run: TurnRun,
+    persisted: SessionRecord | undefined,
+    candidates: () => Promise<ExecutorCandidatesResult | undefined> = async () => undefined
+  ): Promise<void> {
     const { entry, key, plan } = run
     const agent = this.agents.get(entry.agentId)
     if (!agent) return
@@ -13726,7 +13843,7 @@ export class Daemon {
     const manual = agent.allowRuntimeChangesInChat ? entry.webchat?.runtime : undefined
     if (manual?.runtime) {
       const target = { runtime: manual.runtime, model: manual.model ?? '' }
-      if (!this.sessionRuntimeSupported(agent, target))
+      if (!this.sessionRuntimeSupported(agent, key, target, await candidates()))
         throw new Error('The selected runtime and model are unavailable.')
       this.sessionRuntimes.set(key, target)
       return
@@ -13744,10 +13861,12 @@ export class Daemon {
       client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE) &&
       (!selection.steps?.length || client.supportsServerFeature(DECISION_CHAIN_V1_FEATURE))
     ) {
+      // Asked before evaluating, so the round trip overlaps the evaluator's.
+      const machines = candidates()
       target = await evaluateSessionModel({
         agentId: agent.id,
         selection,
-        supported: (candidate) => this.sessionRuntimeSupported(agent, candidate),
+        supported: async (candidate) => this.sessionRuntimeSupported(agent, key, candidate, await machines),
         signal: entry.initAbort.signal,
         evaluationId: randomUUID(),
         current: () =>
@@ -13810,12 +13929,18 @@ export class Daemon {
     })
   }
 
-  private sessionRuntimeSupported(agent: LoadedAgent, target: DecisionRuntimeTarget): boolean {
-    return (
-      !!this.runtimes[target.runtime] &&
-      this.runtimeFacts.profileFor(target.runtime).models.includes(target.model) &&
-      !this.activationCapabilityError(agentWithRuntime(agent, target))
-    )
+  /** A target is usable where the session could land: this machine, or a candidate the birth's answer lists, in the strategy's own catalog (§5). */
+  private sessionRuntimeSupported(
+    agent: LoadedAgent,
+    sessionKey: string,
+    target: DecisionRuntimeTarget,
+    answer: ExecutorCandidatesResult | undefined
+  ): boolean {
+    // The model is the strategy catalog's to judge, not this host's own list.
+    if (this.activationCapabilityError(agentWithRuntime(agent, target), { model: false })) return false
+    // A Decision picks the runtime, never the strategy: the ask keeps the agent's.
+    const ask = { ...this.placementAsk(agent, sessionKey), runtime: target.runtime, model: target.model }
+    return this.holderOffers(ask) || (answer?.candidates ?? []).some((candidate) => candidateEligible(ask, candidate))
   }
 
   /** Persist the staged first-turn runtime choices a webchat composer sent with this message.
@@ -14336,6 +14461,8 @@ export class Daemon {
     modelOverride: string | undefined
   ): Promise<string | undefined> {
     const modelOptions = host.modelOptions?.(sessionId) ?? null
+    const imageRuntime = this.imageRuntimeHosts.get(host)
+    if (imageRuntime !== undefined && modelOptions) this.noteImageModels(imageRuntime, modelOptions.models)
     const advertisedModel = modelOptions?.current
     // A runtime-owned "default" is not a public billable model id. Only fall
     // back to config when no selector exists at all; otherwise a failed override
@@ -20686,17 +20813,10 @@ export class Daemon {
       )
     }
     // §7.2 ready→provisioned: reclaim a host with no recent activity of its own and no work in flight (a long turn stamps no activity, so the in-flight guards are load-bearing).
-    for (const [key] of [...this.hosts]) {
+    for (const [key, host] of [...this.hosts]) {
       const agentId = hostKeyAgentId(key)
       const sessionKey = hostKeySessionKey(key)
       const label = hostKeyLabel(key)
-      if (this.drainingAgents.has(agentId)) continue
-      // Any dispatch of the agent holds all its hosts: it prepares before `pending` exists, and a review's preparation is fenced on the shared host staying ready.
-      if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-      // A session-bound host is held by its own session's turn in flight; the shared host, as above, by any of the agent's.
-      const inFlight = (p: Pending): boolean =>
-        p.plan.agentId === agentId && (sessionKey === undefined || p.plan.sessionKey === sessionKey)
-      if ([...this.pending.values()].some(inFlight)) continue
       // The shared host's clock counts only the sessions routed to it and its own passes, never a session with a host of its own; a host gets a full window from its start, or it would go mid-startup.
       const activity =
         sessionKey === undefined
@@ -20704,6 +20824,15 @@ export class Daemon {
           : await this.store.sessionLastActivityTs(sessionKey)
       const last = Math.max(activity ?? 0, this.hostStartedAt.get(key) ?? 0, this.hostPasses.settledAt(key) ?? 0)
       if (now - last <= ttl) continue
+      // Read admission after the store round trip; only this session's work holds its host.
+      if (this.hosts.get(key) !== host || this.hostStopping.has(key) || this.drainingAgents.has(agentId)) continue
+      if (
+        sessionKey === undefined
+          ? (this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0 ||
+            [...this.pending.values()].some((p) => p.plan.agentId === agentId)
+          : this.sessionAdmitted(sessionKey, key)
+      )
+        continue
       // A pass of the daemon's own holds its host until it settles, read after the store round trip in the tick that stops it; one past the lifetime ceiling is taken as wedged.
       if (this.hostPasses.holds(key, now, maxLifetime)) {
         this.log.info(`idle: host "${label}" has an internal pass in flight — deferring reclaim`)
@@ -20740,46 +20869,54 @@ export class Daemon {
     if (this.executorPlane) await this.sweepIdleRemoteSessions(now, ttl, this.executorPlane)
     const plane = this.k8sPlane
     if (!plane) return
-    for (const { subject, agentId, since } of plane.launched()) {
-      // Suspend is the holder's decision (k8s-daemon-pool §4); an ex-holder must not touch its successor's pod.
-      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
-      // Work in a pod owns the decision above, or a runtime merely between turns loses its pod: the agent pod answers only to the work that runs IN it, a session pod to its own host (§11).
+    const launched = plane.launched()
+    this.log.debug(`idle: examining ${launched.length} held sandbox launch(es)`)
+    const sessionActivity = new Map<string, Map<string, number>>()
+    for (const { subject, agentId, since } of launched) {
+      const skip = (reason: string): void => this.log.debug(`idle: skipping sandbox "${subject}" — ${reason}`)
       const leaf = sandboxSubjectSessionLeaf(subject)
       let activity: number | null
       if (leaf === undefined) {
-        if (this.agentPodInUse(agentId)) continue
         // Its own sessions' activity, never an isolated session's, whose traffic this pod does not serve.
         activity = await this.store.agentSharedLastActivityTs(agentId)
       } else {
-        const hostKey = this.hostKeysForAgent(agentId).find((key) => hostKeyDirName(key) === leaf)
-        if (hostKey !== undefined && (this.hosts.has(hostKey) || this.hostStarts.has(hostKey))) continue
-        if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-        // A session pod taken over without its host is judged by the agent's activity — the wider window.
-        const sessionKey = hostKey === undefined ? undefined : hostKeySessionKey(hostKey)
-        if (
-          [...this.pending.values()].some(
-            (p) => p.plan.agentId === agentId && (sessionKey === undefined || p.plan.sessionKey === sessionKey)
+        let sessions = sessionActivity.get(agentId)
+        if (!sessions) {
+          sessions = new Map(
+            (await this.store.agentSessionActivity(agentId)).map(({ key, updatedAt }) => [
+              sessionKeyDirName(key),
+              updatedAt
+            ])
           )
-        )
-          continue
-        activity =
-          sessionKey === undefined
-            ? await this.store.agentLastActivityTs(agentId)
-            : await this.store.sessionLastActivityTs(sessionKey)
+          sessionActivity.set(agentId, sessions)
+        }
+        activity = sessions.get(leaf) ?? null
+      }
+      // Recheck duty and admission after reading the store, before asking the pod to suspend.
+      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) {
+        skip('duty held elsewhere')
+        continue
+      }
+      const inUse = this.sandboxInUseReason(subject)
+      if (inUse) {
+        skip(inUse)
+        continue
       }
       // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
       const last = Math.max(activity ?? 0, since)
       const quiet = now - last > ttl
       // A lease on THIS pod defers the suspend: an open page's dirty volume or armed watcher, or this daemon's own on a watcher it saw armed; each lapses within one TTL (§11).
       if (this.sandboxHolds.holds(subject)) {
-        if (quiet)
-          this.log.debug?.(`idle: holding the sandbox "${subject}" — ${this.sandboxHolds.reasons(subject).join(', ')}`)
+        skip(`held by ${this.sandboxHolds.reasons(subject).join(', ')}`)
         continue
       }
       // Inside the window only a pod that never came up goes, judged by the plane against the launch it reads: the agent's traffic says nothing about that pod, and it holds its node's resources while it waits.
       void (!quiet ? plane.suspendStalled(subject) : this.suspendUnlessWatching(plane, subject))
         .then((outcome) => {
-          if (outcome !== 'suspended') return
+          if (outcome !== 'suspended') {
+            skip(`${outcome}; idle ${Math.round((now - last) / 1000)}s, timeout ${Math.round(ttl / 1000)}s`)
+            return
+          }
           this.log.info(
             `idle: suspended the sandbox "${subject}" (${quiet ? `idle ${Math.round((now - last) / 1000)}s` : 'its pod never came up'}) — ` +
               `its workspace volume is kept and the next message resumes onto it`
@@ -20827,6 +20964,8 @@ export class Daemon {
     if (armed) this.sandboxHolds.renew(subject, AUTO_MERGE_HOLDER, ['auto-merge-armed'])
     // Re-read AFTER the round trip and in the tick that opens the lease's gate: an arm answered meanwhile renewed this hold, and one still in flight retains the pod.
     if (this.sandboxHolds.holds(subject)) return 'busy'
+    if (this.sandboxInUseReason(subject)) return 'busy'
+    if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(sandboxSubjectAgentId(subject))) return 'busy'
     return await plane.suspendIdle(subject)
   }
 
@@ -21349,8 +21488,8 @@ export class Daemon {
     return run
   }
 
-  private activationCapabilityError(agent: LoadedAgent): string | undefined {
-    const model = agent.runtimeOverrides?.model
+  private activationCapabilityError(agent: LoadedAgent, check: { model?: boolean } = {}): string | undefined {
+    const model = check.model === false ? undefined : agent.runtimeOverrides?.model
     const offeredModels = this.runtimeFacts.offeredModels(agent.runtime) ?? []
     // A cache-hydrated list is not live knowledge: enforcing it would reject
     // models added while this daemon was down (fail-open like the empty list;
@@ -22487,11 +22626,12 @@ export class Daemon {
       if (!machine.available) {
         entries[strategy] = { available: false, unavailableReason: machine.reason }
       } else if (strategy === 'microsandbox') {
-        // An image not read yet stays permissive; one that was read answers for itself.
+        // An image not read yet stays permissive; one that was read answers for itself, with the models its sessions advertised.
+        const models = this.microsandboxModels.get(runtimeId)
         entries[strategy] =
           this.microsandboxCatalog && !this.microsandboxCatalog.entries[runtimeId]
             ? { available: false, unavailableReason: 'the microsandbox image does not provide this runtime' }
-            : { available: true }
+            : { available: true, ...(models ? { models: models.models, modelsSource: models.source } : {}) }
       } else if (!this.localRuntimeCatalog?.entries[runtimeId]) {
         entries[strategy] = { available: false, unavailableReason: 'this runtime is not installed on this host' }
       } else {
