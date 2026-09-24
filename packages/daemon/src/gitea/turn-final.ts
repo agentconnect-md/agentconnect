@@ -19,7 +19,7 @@ import { GITEA_ISSUE_CLOSED_EVENT, GITEA_PULL_MERGED_EVENT } from './events.js'
 import { GITEA_HOST_MISMATCH_REASON } from './host-fence.js'
 import { GiteaFinalPoster } from './poster.js'
 import { correlateGiteaReview, giteaReviewEventState } from './review-correlation.js'
-import { readPullDescription } from '../codehost/pull-description.js'
+import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext } from '../codehost/pull-context.js'
 import { giteaRepoPath } from './api.js'
 
 /** What Gitea's members read back on the daemon: the §10.1 effect lease, and the instance its spec names. */
@@ -143,15 +143,21 @@ export const giteaTurnFinal: CodeHostTurnFinal<'gitea'> = {
   effectLease,
   finalPoster,
   promptSupplement,
-  pullRequestDescription: async (source, agentId, host, signal) => {
+  pullRequestContext: async (source, agentId, host, signal) => {
     if (source.gitea?.target.kind !== 'pull') return undefined
     const target = replyTarget(source)!
-    return readPullDescription(
+    const path = `${giteaRepoPath(target.repoPath!)}/pulls/${target.number}`
+    return readPullRequestContext(
       effectLease(agentId, target, host),
-      `${giteaRepoPath(target.repoPath!)}/pulls/${target.number}`,
-      'body',
-      signal,
-      'token'
+      {
+        description: path,
+        descriptionField: 'body',
+        commits: `${path}/commits?limit=${PULL_CONTEXT_COMMIT_LIMIT}&page=1&verification=false&files=false`,
+        commitMessagePath: ['commit', 'message'],
+        diff: `${path}.diff`,
+        authorization: 'token'
+      },
+      signal
     )
   },
   reportsAbsentOutput: true

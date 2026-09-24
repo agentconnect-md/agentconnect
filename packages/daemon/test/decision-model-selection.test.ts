@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DecisionToolDefinition, AgentModelSelection } from '@agentconnect.md/protocol'
-import { evaluateSessionModel, modelSelectionState } from '../src/decisions/model-selection.js'
-import { codeHostPullRequestDescription, type CodeHostTurnFinalHost } from '../src/codehost/turn-final.js'
-import { readPullDescription } from '../src/codehost/pull-description.js'
+import { decisionRequestBody } from '../src/decisions/evaluator.js'
+import {
+  evaluateSessionModel,
+  modelSelectionState,
+  pullRequestModelSelectionState
+} from '../src/decisions/model-selection.js'
+import { codeHostPullRequestContext, type CodeHostTurnFinalHost } from '../src/codehost/turn-final.js'
+import { PULL_CONTEXT_TIMEOUT_MS, readPullRequestContext } from '../src/codehost/pull-context.js'
 
 const decision: DecisionToolDefinition = {
   id: '33333333-3333-4333-8333-333333333333',
@@ -19,7 +24,23 @@ const selection: AgentModelSelection = {
   decisionId: decision.id,
   rules: [{ when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'model-capable' }]
 }
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
+const lease = {
+  token: async () => 'fixture-token',
+  invalidateToken: () => {},
+  apiBaseUrl: () => 'https://code.example.test'
+}
+const paths = {
+  description: '/pulls/42',
+  descriptionField: 'body' as const,
+  commits: '/pulls/42/commits',
+  commitMessagePath: ['commit', 'message'],
+  diff: '/pulls/42.diff'
+}
+const patch = 'diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-old\n+new\n'
 
 describe('session model evaluation', () => {
   it('bounds input and ignores stale, invalid, failed and unadvertised results', async () => {
@@ -74,10 +95,12 @@ describe('session model evaluation', () => {
     ).rejects.toThrow()
   })
 
-  it('reads the root PR description for a comment event using the repository grant', async () => {
-    const fetcher = vi.fn(
-      async () => new Response(JSON.stringify({ body: 'The PR description', title: 'Not the input' }))
-    )
+  it('reads description, commit messages and diff concurrently under one GitHub repository grant', async () => {
+    const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+      if (String(url).includes('/commits?')) return Response.json([{ commit: { message: 'Fix login' } }])
+      if (new Headers(init?.headers).get('accept') === 'application/vnd.github.diff') return new Response(patch)
+      return Response.json({ body: 'The PR description', title: 'Not the input' })
+    })
     vi.stubGlobal('fetch', fetcher)
     const getPostToken = vi.fn(async () => ({ token: 'fixture-token' }))
     const host = { getPostToken, invalidatePost: vi.fn() } as unknown as CodeHostTurnFinalHost
@@ -93,8 +116,16 @@ describe('session model evaluation', () => {
         issueCommentId: '17'
       }
     }
-    expect(await codeHostPullRequestDescription(source, 'example-agent', host, new AbortController().signal)).toBe(
-      'The PR description'
+    expect(await codeHostPullRequestContext(source, 'example-agent', host, new AbortController().signal)).toEqual({
+      description: 'The PR description',
+      commitMessages: ['Fix login'],
+      diff: patch,
+      reasons: []
+    })
+    expect(getPostToken).toHaveBeenCalledOnce()
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toContain(
+      'https://api.github.com/repos/example-org/example-repo/pulls/42/commits?per_page=10&page=1'
     )
     expect(getPostToken).toHaveBeenCalledWith('example-agent', 'example-org/example-repo', 'hook-1')
     expect(fetcher).toHaveBeenCalledWith(
@@ -106,35 +137,190 @@ describe('session model evaluation', () => {
     )
     fetcher.mockClear()
     expect(
-      await codeHostPullRequestDescription({ hookId: 'hook-1' }, 'example-agent', host, new AbortController().signal)
+      await codeHostPullRequestContext({ hookId: 'hook-1' }, 'example-agent', host, new AbortController().signal)
     ).toBeUndefined()
     expect(fetcher).not.toHaveBeenCalled()
   })
 
-  it('refuses oversized descriptions and cancels the remaining response', async () => {
-    const cancel = vi.fn()
-    const response = new Response(
-      new ReadableStream({
-        start(controller) {
-          controller.enqueue(new Uint8Array(1024 * 1024 + 1))
-        },
-        cancel
+  it.each(['gitlab', 'gitea'] as const)(
+    'reads %s context through its existing instance-bound lease',
+    async (provider) => {
+      const token = vi.fn(async () => ({ token: 'fixture-token' }))
+      const host = {
+        getGitlabPostToken: token,
+        gitlabHostFor: () => 'https://code.example.test',
+        getGiteaPostToken: token,
+        giteaHostFor: () => 'https://code.example.test'
+      } as unknown as CodeHostTurnFinalHost
+      const source =
+        provider === 'gitlab'
+          ? {
+              hookId: 'hook-1',
+              gitlab: {
+                host: 'https://code.example.test',
+                projectId: '100',
+                projectPath: 'example-org/example-repo',
+                target: { kind: 'merge_request' as const, iid: 42 }
+              }
+            }
+          : {
+              hookId: 'hook-1',
+              gitea: {
+                host: 'https://code.example.test',
+                repoId: '100',
+                repoPath: 'example-org/example-repo',
+                target: { kind: 'pull' as const, index: 42 }
+              }
+            }
+      const fetcher = vi.fn<typeof fetch>(async (url) => {
+        if (String(url).includes('/commits?'))
+          return Response.json([
+            provider === 'gitlab' ? { message: 'Fix login' } : { commit: { message: 'Fix login' } }
+          ])
+        if (String(url).endsWith('/raw_diffs') || String(url).endsWith('.diff')) return new Response(patch)
+        return Response.json({ body: 'Description', description: 'Description' })
       })
-    )
-    expect(
-      await readPullDescription(
-        {
-          token: async () => 'fixture-token',
-          invalidateToken: () => {},
-          apiBaseUrl: () => 'https://code.example.test'
-        },
-        '/pulls/42',
-        'body',
-        new AbortController().signal,
-        'Bearer',
-        vi.fn(async () => response)
+      vi.stubGlobal('fetch', fetcher)
+      expect(await codeHostPullRequestContext(source, 'example-agent', host, new AbortController().signal)).toEqual({
+        description: 'Description',
+        commitMessages: ['Fix login'],
+        diff: patch,
+        reasons: []
+      })
+      expect(token).toHaveBeenCalledExactlyOnceWith('example-agent', '100', 'hook-1')
+      const urls = fetcher.mock.calls.map(([url]) => String(url))
+      expect(urls).toEqual(
+        provider === 'gitlab'
+          ? [
+              'https://code.example.test/api/v4/projects/100/merge_requests/42',
+              'https://code.example.test/api/v4/projects/100/merge_requests/42/commits?per_page=10&page=1',
+              'https://code.example.test/api/v4/projects/100/merge_requests/42/raw_diffs'
+            ]
+          : [
+              'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42',
+              'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42/commits?limit=10&page=1&verification=false&files=false',
+              'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42.diff'
+            ]
       )
-    ).toBeUndefined()
+      for (const [, init] of fetcher.mock.calls)
+        expect(init).toMatchObject({
+          redirect: 'error',
+          headers: { authorization: `${provider === 'gitlab' ? 'Bearer' : 'token'} fixture-token` }
+        })
+    }
+  )
+
+  it.each(['commits', 'diff'] as const)(
+    'abandons slow %s at the shared short deadline and keeps successful context',
+    async (slow) => {
+      vi.useFakeTimers()
+      const cancelled = vi.fn()
+      const fetcher = vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith(paths[slow])) return new Response(new ReadableStream({ cancel: cancelled }))
+        if (String(url).endsWith(paths.commits)) return Response.json([{ commit: { message: 'Fix login' } }])
+        if (String(url).endsWith(paths.diff)) return new Response(patch)
+        return Response.json({ body: 'Description' })
+      })
+      const result = readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
+      const settled = vi.fn()
+      void result.then(settled)
+      await vi.advanceTimersByTimeAsync(PULL_CONTEXT_TIMEOUT_MS - 1)
+      expect(fetcher).toHaveBeenCalledTimes(3)
+      expect(settled).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await result).toEqual({
+        description: 'Description',
+        commitMessages: slow === 'commits' ? [] : ['Fix login'],
+        diff: slow === 'diff' ? '' : patch,
+        reasons: [`${slow}_unavailable`]
+      })
+      expect(cancelled).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
+  it('bounds response reads, cancels large streams, and marks partial context', async () => {
+    const cancel = vi.fn()
+    const fetcher = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith(paths.commits))
+        return Response.json(Array.from({ length: 10 }, () => ({ commit: { message: 'Fix' } })))
+      if (String(url).endsWith(paths.diff))
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(Buffer.from(patch + '界'.repeat(5000)))
+            },
+            cancel
+          })
+        )
+      return Response.json({ body: 'Description' })
+    })
+    const result = await readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
+    expect(result).toMatchObject({ reasons: ['commit_limit', 'diff_truncated'] })
+    expect(Buffer.byteLength(result!.diff)).toBeLessThanOrEqual(12 * 1024)
+    expect(result!.diff).not.toContain('�')
     expect(cancel).toHaveBeenCalledOnce()
+    const oversized = vi.fn()
+    fetcher.mockImplementation(async (url) =>
+      String(url).endsWith(paths.description)
+        ? new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(1024 * 1024 + 1))
+              },
+              cancel: oversized
+            })
+          )
+        : new Response('[]')
+    )
+    expect(await readPullRequestContext(lease, paths, new AbortController().signal, fetcher)).toBeUndefined()
+    expect(oversized).toHaveBeenCalledOnce()
+  })
+
+  it('does not wait for a stalled token mint or issue requests after cancellation', async () => {
+    const abort = new AbortController()
+    let release!: (token: string) => void
+    const fetcher = vi.fn<typeof fetch>()
+    const result = readPullRequestContext(
+      {
+        ...lease,
+        token: () =>
+          new Promise((resolve) => {
+            release = resolve
+          })
+      },
+      paths,
+      abort.signal,
+      fetcher
+    )
+    const rejected = expect(result).rejects.toThrow('Cancelled')
+    abort.abort(new Error('Cancelled'))
+    await rejected
+    release('fixture-token')
+    await Promise.resolve()
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('budgets the whole PR request including escaping and rubric, trimming diff before commit messages', () => {
+    const rubric = { ...decision, question: { ...decision.question, instructions: 'x'.repeat(14_000) } }
+    const state = pullRequestModelSelectionState(
+      {
+        description: 'Description',
+        commitMessages: ['界'.repeat(2000)],
+        diff: '\t'.repeat(12 * 1024),
+        reasons: ['diff_truncated']
+      },
+      rubric
+    )
+    expect(Buffer.byteLength(decisionRequestBody({ decision: rubric, state }))).toBeLessThanOrEqual(32_000)
+    expect(state).toMatchObject({
+      currentMessage: { text: 'Description' },
+      context: { partial: true, reasons: ['diff_truncated', 'commits_truncated', 'budget_trimmed'] }
+    })
+    const pr = state.pullRequest as { commitMessages: string; diff: string }
+    expect(Buffer.byteLength(pr.commitMessages)).toBe(4095)
+    expect(pr.commitMessages).not.toContain('�')
+    expect(pr.diff.length).toBeGreaterThan(0)
+    expect(pr.diff.length).toBeLessThan(12 * 1024)
   })
 })

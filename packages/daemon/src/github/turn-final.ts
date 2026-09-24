@@ -11,7 +11,7 @@ import type {
 } from '../codehost/turn-final.js'
 import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import { GithubFinalPoster } from './poster.js'
-import { readPullDescription } from '../codehost/pull-description.js'
+import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext } from '../codehost/pull-context.js'
 
 /** The deployment's App speaks to github.com alone, so this root is not a per-turn fact. */
 const GITHUB_API_BASE_URL = 'https://api.github.com'
@@ -93,7 +93,7 @@ export const githubTurnFinal: CodeHostTurnFinal<'github'> = {
   worktreeCleanup,
   effectLease,
   finalPoster,
-  pullRequestDescription: async (source, agentId, host, signal) => {
+  pullRequestContext: async (source, agentId, host, signal) => {
     const pr = source.github
     if (pr?.subjectKind !== 'pull_request' || pr.pullNumber === undefined) return undefined
     const target: CodeHostReplyTarget = {
@@ -103,10 +103,17 @@ export const githubTurnFinal: CodeHostTurnFinal<'github'> = {
       number: pr.pullNumber
     }
     const repo = pr.repoFullName.split('/').map(encodeURIComponent).join('/')
-    return readPullDescription(
+    const path = `/repos/${repo}/pulls/${pr.pullNumber}`
+    return readPullRequestContext(
       effectLease(agentId, target, host),
-      `/repos/${repo}/pulls/${pr.pullNumber}`,
-      'body',
+      {
+        description: path,
+        descriptionField: 'body',
+        commits: `${path}/commits?per_page=${PULL_CONTEXT_COMMIT_LIMIT}&page=1`,
+        commitMessagePath: ['commit', 'message'],
+        diff: path,
+        diffAccept: 'application/vnd.github.diff'
+      },
       signal
     )
   },

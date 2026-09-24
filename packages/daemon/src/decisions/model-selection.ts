@@ -6,7 +6,9 @@ import {
   type DecisionGetReply,
   type DecisionToolDefinition
 } from '@agentconnect.md/protocol'
-import type { DecisionEvaluationInput } from './evaluator.js'
+import { DECISION_REQUEST_MAX_BYTES, decisionRequestBody, type DecisionEvaluationInput } from './evaluator.js'
+import type { PullRequestContext } from '../codehost/pull-context.js'
+import { DECISION_TOKEN_BUDGET } from './state.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { z } from 'zod'
@@ -62,12 +64,45 @@ export function agentWithRuntime(agent: LoadedAgent, target: DecisionRuntimeTarg
   return selected
 }
 
-export function modelSelectionState(source: 'chat' | 'pull_request', text: string): Record<string, unknown> {
-  let end = Math.min(Buffer.byteLength(text), 8 * 1024)
+function textPrefix(text: string, maxBytes: number): string {
+  let end = Math.min(Buffer.byteLength(text), maxBytes)
   const bytes = Buffer.from(text)
   while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--
-  const content = bytes.subarray(0, end).toString('utf8')
-  return { source, currentMessage: { text: content }, history: [], truncated: end < bytes.length }
+  return bytes.subarray(0, end).toString('utf8')
+}
+
+export function modelSelectionState(source: 'chat' | 'pull_request', text: string): Record<string, unknown> {
+  const content = textPrefix(text, 8 * 1024)
+  return { source, currentMessage: { text: content }, history: [], truncated: content !== text }
+}
+
+// Preserve description-based instructions while adding bounded, explicitly partial code-host context.
+export function pullRequestModelSelectionState(
+  input: PullRequestContext,
+  decision: DecisionToolDefinition
+): Record<string, unknown> {
+  const opening = modelSelectionState('pull_request', input.description)
+  const messages = input.commitMessages.join('\n\n')
+  const pullRequest = { commitMessages: textPrefix(messages, 4 * 1024), diff: input.diff }
+  const reasons = [...input.reasons]
+  if (opening.truncated) reasons.push('description_truncated')
+  if (pullRequest.commitMessages !== messages) reasons.push('commits_truncated')
+  const context = { partial: reasons.length > 0, reasons }
+  const state = { ...opening, pullRequest, context }
+  const maxBytes = Math.min(DECISION_REQUEST_MAX_BYTES, DECISION_TOKEN_BUDGET * 4)
+  while (Buffer.byteLength(decisionRequestBody({ decision, state })) > maxBytes) {
+    if (!context.reasons.includes('budget_trimmed')) context.reasons.push('budget_trimmed')
+    context.partial = true
+    if (pullRequest.diff) {
+      pullRequest.diff = textPrefix(pullRequest.diff, Math.floor(Buffer.byteLength(pullRequest.diff) / 2))
+    } else if (pullRequest.commitMessages) {
+      pullRequest.commitMessages = textPrefix(
+        pullRequest.commitMessages,
+        Math.floor(Buffer.byteLength(pullRequest.commitMessages) / 2)
+      )
+    } else return opening
+  }
+  return state
 }
 
 export interface SessionModelSelectionInput {

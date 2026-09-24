@@ -14,7 +14,7 @@ import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import { gitlabApiBaseUrl } from './api-base.js'
 import { GITLAB_HOST_MISMATCH_REASON } from './host-fence.js'
 import { GitlabFinalPoster } from './poster.js'
-import { readPullDescription } from '../codehost/pull-description.js'
+import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext } from '../codehost/pull-context.js'
 
 /** What GitLab's members read back on the daemon: the §14.1 effect lease, and the instance its spec names. */
 export interface GitlabTurnFinalHost {
@@ -102,13 +102,19 @@ export const gitlabTurnFinal: CodeHostTurnFinal<'gitlab'> = {
   worktreeCleanup,
   effectLease,
   finalPoster,
-  pullRequestDescription: async (source, agentId, host, signal) => {
+  pullRequestContext: async (source, agentId, host, signal) => {
     if (source.gitlab?.target.kind !== 'merge_request') return undefined
     const target = replyTarget(source)!
-    return readPullDescription(
+    const path = `/projects/${encodeURIComponent(target.repo)}/merge_requests/${target.number}`
+    return readPullRequestContext(
       effectLease(agentId, target, host),
-      `/projects/${encodeURIComponent(target.repo)}/merge_requests/${target.number}`,
-      'description',
+      {
+        description: path,
+        descriptionField: 'description',
+        commits: `${path}/commits?per_page=${PULL_CONTEXT_COMMIT_LIMIT}&page=1`,
+        commitMessagePath: ['message'],
+        diff: `${path}/raw_diffs`
+      },
       signal
     )
   },

@@ -186,6 +186,39 @@ async function start(root: string) {
 }
 
 describe('session-pinned Decision model', () => {
+  it('passes PR description, commit messages and diff to model selection before opening a runtime', async () => {
+    const { internal, evaluate, started } = await start(scaffold())
+    const read = vi.spyOn(internal.githubReviews, 'pullRequestContext').mockResolvedValue({
+      description: 'Fix login',
+      commitMessages: ['Handle expired sessions'],
+      diff: '-return cached\n+return refresh()',
+      reasons: []
+    })
+    const run = {
+      key: 'pr-session',
+      plan: {},
+      entry: {
+        agentId,
+        hookContext: { hookId: 'example-hook' },
+        initAbort: new AbortController(),
+        msg: { text: 'Review comment is not the description' }
+      }
+    }
+    await internal.selectSessionModel(run, undefined)
+    expect(read).toHaveBeenCalledOnce()
+    expect(evaluate.mock.calls[0]![0].state).toMatchObject({
+      source: 'pull_request',
+      currentMessage: { text: 'Fix login' },
+      pullRequest: { commitMessages: 'Handle expired sessions', diff: '-return cached\n+return refresh()' }
+    })
+    expect(started).toEqual([])
+    const selected = internal.sessionRuntimes.get(run.key)
+    expect(selected.model).toBe('model-capable')
+    await internal.selectSessionModel(run, { decisionModel: JSON.stringify(selected) })
+    expect(read).toHaveBeenCalledOnce()
+    expect(evaluate).toHaveBeenCalledOnce()
+  })
+
   it('selects from observed chat history before the opening message, scoped to its bot and conversation', async () => {
     const { daemon, internal, evaluate, prompted } = await start(scaffold(true))
     const message = (n: number, text: string, over: Partial<NormalizedMessage> = {}): NormalizedMessage => ({
