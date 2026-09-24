@@ -64,6 +64,19 @@ describe('launch registry release fence', () => {
 
     expect(subject.stillServed('agent-a', releasedAt)).toBe(true)
   })
+
+  it('refuses to publish a session after its agent leaves during generation allocation', async () => {
+    let finish!: (value: number) => void
+    const subject = new LaunchRegistry({
+      clock: new FakeClock(),
+      generations: { nextSandboxGeneration: () => new Promise<number>((resolve) => (finish = resolve)) }
+    })
+    const recording = subject.recordLaunch('agent-a/session-a', 'uid-1', {})
+    subject.bumpRelease('agent-a')
+    finish(1)
+    await expect(recording).rejects.toThrow('left this member')
+    expect(subject.launched()).toEqual([])
+  })
 })
 
 describe('launch registry takeover', () => {

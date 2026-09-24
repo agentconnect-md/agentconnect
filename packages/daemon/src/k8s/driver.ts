@@ -282,12 +282,9 @@ export class K8sDriver implements SpawnDriver {
       const current = this.registry.currentLaunch(subject)
       if (current) return current
       if (!this.registry.stillServed(subject, releasedAt)) return undefined
-      // Stamped BEFORE the launch is published, not at the next tick: a takeover writes nothing to the
-      // claim otherwise, and the launch it publishes is then served from the registry — so a sweep that
-      // listed this claim while the session's row was absent would still match its version when the row
-      // came back, and delete a pod this member is serving. A fence that does not land adopts nothing;
-      // the next duty tick or the next turn tries again.
-      if (!(await this.fenceLaunch(subject))) return undefined
+      // A failed admission stamp must remain retryable without publishing an unprotected launch.
+      if (!(await this.fenceLaunch(subject))) throw new Error(`could not fence claim ${this.claimName(subject)}`)
+      this.registry.assertStillServed(subject, releasedAt)
       this.deps.log.info(`cluster: sandbox ${subject} taken over with sandbox ${sandboxName} running`)
       return this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid: claimUid ?? sandboxUid })
     })
@@ -315,10 +312,19 @@ export class K8sDriver implements SpawnDriver {
 
   /** Takeover of every session pod the agent has in the cluster — listed by label, since their sessions are not known here. */
   async adoptSessions(agentId: string): Promise<SandboxSubject[]> {
+    const releasedAt = this.registry.releaseFence(agentSandboxSubject(agentId))
     const adopted: SandboxSubject[] = []
+    const failures: unknown[] = []
     for (const subject of await this.sessionClaimSubjects(agentId)) {
-      if (await this.adopt(subject).catch(() => undefined)) adopted.push(subject)
+      if (!this.registry.stillServed(agentSandboxSubject(agentId), releasedAt)) break
+      try {
+        if (await this.adopt(subject)) adopted.push(subject)
+      } catch (err) {
+        failures.push(err)
+        this.deps.log.warn(`cluster: could not adopt sandbox ${subject} — ${(err as Error).message}`)
+      }
     }
+    if (failures.length) throw new AggregateError(failures, `could not adopt ${failures.length} session sandbox(es)`)
     return adopted
   }
 
@@ -378,6 +384,7 @@ export class K8sDriver implements SpawnDriver {
     if (!(await this.fenceLaunch(subject))) {
       throw new Error(`sandbox ${subject} claim ${name} could not be marked in use — not resuming onto it`)
     }
+    this.registry.assertStillServed(subject, releasedAt)
     return await this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid })
   }
 

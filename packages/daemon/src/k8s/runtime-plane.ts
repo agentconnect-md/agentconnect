@@ -518,12 +518,14 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     suspendIdle: (subject) => driver.suspendIfIdle(subject),
     suspendStalled: (subject) => driver.suspendIfStalled(subject),
     adoptAgent: async (agentId) => {
-      await driver.adopt(agentSandboxSubject(agentId))
-      // Its session pods too, so a Running one left by a departed member has a holder to suspend it.
-      const adopted = await driver.adoptSessions(agentId).catch((err: unknown) => {
-        options.log?.warn(`k8s: could not list the session sandboxes of agent ${agentId}: ${(err as Error).message}`)
-        return []
-      })
+      // Start both under the current release fence and propagate partial failure for retry.
+      const [shared, sessions] = await Promise.allSettled([
+        driver.adopt(agentSandboxSubject(agentId)),
+        driver.adoptSessions(agentId)
+      ])
+      if (shared.status === 'rejected') throw shared.reason
+      if (sessions.status === 'rejected') throw sessions.reason
+      const adopted = sessions.value
       if (adopted.length > 0)
         options.log?.info(`cluster: agent ${agentId} taken over with ${adopted.length} session pod(s)`)
       // Adoption records Running pods only, so mark the rest as served here too: a claim whose pod

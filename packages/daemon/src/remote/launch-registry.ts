@@ -48,9 +48,10 @@ export class LaunchRegistry<L extends Launch = Launch> {
   // The allocation is a durable round trip, so a concurrent launch can resolve out of order — an
   // older generation never overwrites a newer one, keeping the recorded launch the highest.
   async recordLaunch(subject: SandboxSubject, sandboxUid: string, extension: Omit<L, keyof Launch>): Promise<L> {
-    // Allocated from durable install-wide state, not from this process: the pod this launch is
-    // about to dial may have been bound by a member that has since been rolled away.
+    const releasedAt = this.releaseFence(subject)
+    // Durable allocation can outlive this member's ownership, so recheck before publishing.
     const generation = await this.deps.generations.nextSandboxGeneration(subject)
+    this.assertStillServed(subject, releasedAt)
     const current = this.launches.get(subject)
     if (current && current.generation > generation) return current
     const launch = {
@@ -88,12 +89,14 @@ export class LaunchRegistry<L extends Launch = Launch> {
 
   /** Snapshot the fence BEFORE an await; compare it AFTER. Read-compare-act, in that order. */
   releaseFence(subject: string): number {
-    return this.releases.get(subject) ?? 0
+    const agentId = sandboxSubjectAgentId(subject)
+    // Releasing an agent also fences session acquisitions that have not published a launch yet.
+    return (this.releases.get(subject) ?? 0) + (agentId === subject ? 0 : (this.releases.get(agentId) ?? 0))
   }
 
   /** The subject left this member: every launch acquisition that crossed the bump records nothing. */
   bumpRelease(subject: string): void {
-    this.releases.set(subject, this.releaseFence(subject) + 1)
+    this.releases.set(subject, (this.releases.get(subject) ?? 0) + 1)
   }
 
   stillServed(subject: string, releasedAt: number): boolean {

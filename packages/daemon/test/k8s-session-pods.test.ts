@@ -307,6 +307,58 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(api.listClaims).toHaveBeenCalledWith(`${AC_LABEL_AGENT}=${AGENT},${AC_LABEL_SESSION}`)
   })
 
+  it('reports partial takeover failure and adopts the remaining session on retry', async () => {
+    const { api } = cluster()
+    const first = member(api, podSide().connect)
+    await first.driver.ensureSandbox(sandboxSubjectFor(T1))
+    await first.driver.ensureSandbox(sandboxSubjectFor(T2))
+    const stamp = api.stampClaim
+    api.stampClaim = vi.fn(stamp).mockRejectedValueOnce(new Error('claim stamp unavailable'))
+    const second = member(api, podSide().connect)
+
+    await expect(second.driver.adoptSessions(AGENT)).rejects.toThrow('could not adopt 1 session sandbox')
+    expect(second.driver.sessionSubjectsOf(AGENT)).toEqual([sandboxSubjectFor(T2)])
+    expect((await second.driver.adoptSessions(AGENT)).sort()).toEqual(
+      [sandboxSubjectFor(T1), sandboxSubjectFor(T2)].sort()
+    )
+  })
+
+  it.each(['listing', 'stamping'] as const)('does not publish a session takeover released during %s', async (stage) => {
+    const { api } = cluster()
+    const session = sandboxSubjectFor(T1)
+    const first = member(api, podSide().connect)
+    await first.driver.ensureSandbox(session)
+    const second = member(api, podSide().connect)
+    let finish!: () => void
+    let entered!: () => void
+    const blocked = new Promise<void>((resolve) => (finish = resolve))
+    const waiting = new Promise<void>((resolve) => (entered = resolve))
+    const pause = async () => {
+      entered()
+      await blocked
+    }
+    if (stage === 'listing') {
+      const list = api.listClaims
+      api.listClaims = vi.fn(async (selector?: string) => {
+        await pause()
+        return await list(selector)
+      })
+    } else {
+      const stamp = api.stampClaim
+      api.stampClaim = async (name, annotations) => {
+        await pause()
+        return await stamp(name, annotations)
+      }
+    }
+    const adopting = second.driver.adoptSessions(AGENT).catch(() => [])
+    await waiting
+    // No session launch exists yet for releaseAgent to enumerate, so the agent fence must cover it.
+    second.driver.release(AGENT)
+    finish()
+    await adopting
+    expect(second.driver.launched()).toEqual([])
+  })
+
   it('deletes every pod of a removed agent, the session pods first', async () => {
     const { api, deleted, claims } = cluster()
     const { driver } = member(api, podSide().connect)

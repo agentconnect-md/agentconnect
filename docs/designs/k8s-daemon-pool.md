@@ -250,6 +250,11 @@ took the launch when the shared store records no activity. So a Running pod
 has exactly one member that owns its idleness, an ex-holder can never suspend
 a successor's pod, and a rollout leaves no pod without a candidate to suspend it.
 
+Failed takeover reads or admission stamps remain queued for retry on the idle
+sweep. Partial success keeps the launches already adopted. Losing the agent
+clears its retry and fences acquisitions still listing claims, stamping them, or
+allocating a launch generation, including sessions not yet recorded locally.
+
 A cached launch is checked against Kubernetes before an unheld acquisition reuses
 it. If its Sandbox is gone, the driver drops that exact launch and its channel,
 then reads the claim again before taking a lease. A workspace operation already
