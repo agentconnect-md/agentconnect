@@ -284,6 +284,34 @@ describe('IntegrationChannelList shared-bot routing', () => {
     )
   })
 
+  it.each(['the header ×', 'the scrim'])(
+    'drops an abandoned rules edit closed by %s before the next row opens',
+    async (how) => {
+      routing.getRouting.mockImplementation(async () => structuredClone(routed))
+      await render([
+        row({
+          trigger: 'decision',
+          decisionBinding: { type: 'shared_bot_routing' },
+          decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
+        }),
+        row({ channelId: 'C2', name: 'ops' })
+      ])
+      await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+      await click(all('button').find((node) => node.getAttribute('title') === 'Edit By decision rules'))
+      await click(document.body.querySelector('button[aria-label="Target for billing"]'))
+      await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('review-bot')))
+      if (how === 'the scrim') await click(document.body.querySelector('.scrim'))
+      else await click(dialog()?.querySelector('.modalhead button[aria-label="Cancel"]'))
+      expect(dialog()).toBeNull()
+      await click(all('button').filter((node) => node.title.startsWith('Default dispatch'))[0])
+      await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+      expect(dialog()?.getAttribute('aria-label')).toBe('ops · By decision rules')
+      expect(document.body.querySelector('button[aria-label="Target for billing"]')?.textContent).toContain(
+        'deploy-bot'
+      )
+    }
+  )
+
   it('opens each row on the saved routing, not an edit left from another row', async () => {
     routing.getRouting.mockResolvedValue(detail())
     await render([row(), row({ channelId: 'C2', name: 'ops' })])
