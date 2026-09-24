@@ -47,11 +47,10 @@ app.kubernetes.io/component: {{ .component }}
 {{- default .Chart.AppVersion .Values.image.tag -}}
 {{- end -}}
 
-{{/* The runtime-sandbox image agent sandboxes are minted from — the daemon pool's
-     SandboxTemplate reads this one helper. Set `daemonPool.runtime.tag` to the release's
-     EFFECTIVE runtime-sandbox tag; `daemonPool.runtime.image` pins a full reference outright. */}}
+{{/* One image reference for the SandboxTemplate and the daemon-pool probe annotation. */}}
 {{- define "agentconnect.runtimeSandboxImage" -}}
-{{- .Values.daemonPool.runtime.image | default (printf "%s/runtime-sandbox:%s" .Values.image.registry (.Values.daemonPool.runtime.tag | default (include "agentconnect.imageTag" .))) -}}
+{{- $repository := .Values.daemonPool.runtime.repository | default (printf "%s/runtime-sandbox" .Values.image.registry) -}}
+{{- .Values.daemonPool.runtime.image | default (printf "%s:%s" $repository (.Values.daemonPool.runtime.tag | default (include "agentconnect.imageTag" .))) -}}
 {{- end -}}
 
 {{/* The daemon pool's agent-sandbox prerequisites, release-prefixed like every other chart-owned
