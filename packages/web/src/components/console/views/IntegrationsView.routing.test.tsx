@@ -171,8 +171,21 @@ describe('a shared bot’s dispatch menu', () => {
     await expand('shared-1')
     await click(buttons().find((b) => b.title === 'Dispatch by decision — Request type'))
     await click(buttons().find((b) => b.getAttribute('aria-label') === 'Stop using By decision in this channel'))
-    expect(mocks.stopRouting).toHaveBeenCalledWith(expect.anything(), 'shared-1', 'C1')
+    expect(mocks.stopRouting).toHaveBeenCalledWith(expect.anything(), 'shared-1', 'C1', undefined)
     expect(mocks.refresh).toHaveBeenCalled()
+  })
+
+  it('checks no agent while routed, and picking one leaves the decision for that agent', async () => {
+    mocks.bots = [bot({ id: 'shared-1', agentIds: ['a1', 'a2'] })]
+    mocks.integrations = installs(true)
+    await expand('shared-1')
+    await click(buttons().find((b) => b.title === 'Dispatch by decision — Request type'))
+    expect(document.body.textContent).toContain('Send every message to')
+    const checks = [...document.body.querySelectorAll('[role="menuitem"] .lucide-check')]
+    expect(checks.length).toBe(2)
+    expect(checks.every((node) => node.getAttribute('stroke') === 'transparent')).toBe(true)
+    await click(buttons().find((b) => b.getAttribute('role') === 'menuitem' && b.textContent?.includes('a2')))
+    expect(mocks.stopRouting).toHaveBeenCalledWith(expect.anything(), 'shared-1', 'C1', 'a2')
   })
 
   it('gives a single-owner bot’s room the agent tab’s + Decision gate instead of routing', async () => {

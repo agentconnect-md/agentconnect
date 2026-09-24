@@ -33,11 +33,12 @@ import { DecisionRoutingEvaluationsDrawer } from './DecisionRoutingEvaluationsDr
 import { FieldIssue, Note, routingSaveError, saveErrorText } from './RoutingFields'
 import { RoutingRulesTable, fitsQuestion } from './RoutingRulesTable'
 
-/** Take one conversation out of a shared bot's routing, handing it back to @-mentions with its default agent kept. */
+/** Take one conversation out of a shared bot's routing, handing it back to @-mentions with its default agent, or `agentId`. */
 export async function stopRouting(
   store: Pick<ReturnType<typeof useDecisionsPrototype>, 'api' | 'dispatchRouting'>,
   botId: string,
-  channelId: string
+  channelId: string,
+  agentId?: string
 ): Promise<void> {
   const detail = await store.api.getRouting(botId)
   if (!detail.channelIds.includes(channelId)) return
@@ -46,7 +47,7 @@ export async function stopRouting(
     {
       ...draft,
       channelIds: draft.channelIds.filter((id) => id !== channelId),
-      removals: { [channelId]: { trigger: 'mention' } }
+      removals: { [channelId]: { trigger: 'mention', ...(agentId ? { agentId } : {}) } }
     },
     detail.channelIds
   )

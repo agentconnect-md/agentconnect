@@ -569,7 +569,10 @@ function DispatchPicker({
   }
   const claim = (id: string) => {
     close()
-    if (id === current.id || disabled || saving) return
+    if (disabled || saving) return
+    // Under routing, picking an agent leaves the decision for plain dispatch to that agent.
+    if (routing?.active) return routing.onStop(id)
+    if (id === current.id) return
     setSaving(true)
     Promise.resolve(onClaim(id)).finally(() => setSaving(false))
   }
@@ -625,16 +628,15 @@ function DispatchPicker({
               className="fixed z-[1100] w-max min-w-[200px] max-w-[260px] rounded-lg border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)"
               style={box.style}
             >
-              {/* Under routing, a pick only moves the agent unmatched messages fall back to. */}
               <div className={heading}>
-                {routing && !routed ? translate('dispatch.sendTo') : translate('defaultDispatch.label')}
+                {routing ? translate('dispatch.sendTo') : translate('defaultDispatch.label')}
               </div>
               {members.map((member) => (
                 <button
                   key={member.id}
                   onClick={() => claim(member.id)}
                   disabled={disabled || saving}
-                  aria-pressed={member.id === current.id}
+                  aria-pressed={member.id === current.id && !routed}
                   className={`flex w-full items-center gap-2 rounded-md border-0 bg-transparent px-[9px] py-[6px] text-left hover:bg-(--surface-hover) ${
                     disabled || saving ? 'cursor-default opacity-60' : 'cursor-pointer'
                   }`}
@@ -653,7 +655,7 @@ function DispatchPicker({
                   <Icon
                     name="check"
                     size={13}
-                    className={`flex-none ${member.id === current.id ? 'text-(--brand)' : 'text-transparent'}`}
+                    className={`flex-none ${member.id === current.id && !routed ? 'text-(--brand)' : 'text-transparent'}`}
                   />
                 </button>
               ))}
@@ -889,9 +891,9 @@ export function IntegrationChannelList({
                         active: managedByRouting(c),
                         canStop: !!integrationId,
                         onOpen: () => setRoutingRow({ botId, channelId: c.channelId, name: rowLabel(c) }),
-                        onStop: () =>
+                        onStop: (agentId?: string) =>
                           void act(async () => {
-                            await stopRouting(decisions!, botId, c.channelId)
+                            await stopRouting(decisions!, botId, c.channelId, agentId)
                             refresh()
                           })
                       }

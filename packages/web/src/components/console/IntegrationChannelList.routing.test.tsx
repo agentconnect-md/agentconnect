@@ -352,6 +352,29 @@ describe('IntegrationChannelList shared-bot routing', () => {
     expect(window.location.search).toBe('')
   })
 
+  it('checks no agent while routed, and picking one saves the row out of routing to that agent', async () => {
+    routing.getRouting.mockResolvedValue(routed)
+    await render([
+      row({
+        trigger: 'decision',
+        decisionBinding: { type: 'shared_bot_routing' },
+        decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
+      })
+    ])
+    await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+    expect(dialog()).toBeNull()
+    expect(document.body.textContent).toContain('Send every message to')
+    expect(all('button[aria-pressed="true"]')).toHaveLength(0)
+    await click(all('button[aria-pressed]').find((node) => node.textContent?.includes('review-bot')))
+    expect(routing.saveRouting).toHaveBeenCalledWith(
+      'bot-shared',
+      expect.objectContaining({
+        channelIds: ['C9'],
+        removals: [{ channelId: 'C1', settings: { trigger: 'mention' }, agentId: 'agent-2' }]
+      })
+    )
+  })
+
   it('stops a routed row by saving the bot’s routing without it, handed back to @-mentions', async () => {
     routing.getRouting.mockResolvedValue(routed)
     await render([
