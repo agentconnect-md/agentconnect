@@ -1237,7 +1237,12 @@ differs locally goes, in four steps that each land alone:
    shim modes become one: a local VM starts its shim exposed, as a hosted one does
    (`startGuestShim`), and the bound mode (`startMicrosandboxShim` binding in place)
    retires with the rest of the local wiring — the manager-driven launch and the local
-   Git runner selection. Lifecycle stays with the environment's owner: a local
+   Git runner selection. Every caller of the manager's `withShim` moves with it, not
+   only Git: the workspace-file requester, the skill reads and the skill reconcile in
+   `daemon.ts` need a bound channel when no runtime is running, and take it from the
+   plane's `withEnvironment` (`ensureChannel` binds the shim without starting a
+   runtime and holds the environment against the idle sweep), as a placed session's
+   workspace already does. Lifecycle stays with the environment's owner: a local
    environment keeps the manager's session idle policy and the workspace model's
    retirement, and a hosted one keeps the facet's linger, `release` and backstop, which
    never look at `agent/` ids.
@@ -1312,7 +1317,7 @@ have not started. Each lands alone; S1–S3 are one feature, and M1–M4 precede
 | M1  | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | M2  | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | M3  | The launcher takes an environment descriptor instead of a session leaf: hosted and local descriptors, identities unchanged, nothing migrated (§11 step 3).                                                                                                                                                                                                                                                                                                                                                                                               |
-| M4  | The in-process executor entry: local microsandbox launches through it, a local VM's shim starts exposed and `RemoteShimDriver` binds it, and the bound shim mode retires (§11 step 4).                                                                                                                                                                                                                                                                                                                                                                   |
+| M4  | The in-process executor entry: local microsandbox launches through it, a local VM's shim starts exposed and `RemoteShimDriver` binds it, every `withShim` caller (Git, workspace files, skills) moves to the plane's `withEnvironment`, and the bound shim mode retires (§11 step 4).                                                                                                                                                                                                                                                                    |
 | R1  | The `srt` strategy (§5): the launcher, the three changes the probe found, the executor's policy; local `srt` launches through it and the direct SRT launch retires.                                                                                                                                                                                                                                                                                                                                                                                      |
 
 ## 13. Open questions
