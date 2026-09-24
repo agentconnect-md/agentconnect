@@ -4607,7 +4607,10 @@ export default function SessionDetailView() {
   const runtimeProfile = owningDaemon?.runtimeModels.find((profile) => profile.runtime === agentRuntime)
   const runtimeCatalog = runtimeProfile?.modelCatalog ?? undefined
   const pgModel =
-    runtimeSelection?.model ?? (session.model || owner?.model || preferredModelFor(owningDaemon, agentRuntime))
+    runtimeSelection?.model ??
+    (beforeFirstTurn
+      ? session.model || owner?.model || preferredModelFor(owningDaemon, agentRuntime)
+      : (session.model ?? ''))
   const pgModels = session.availableModels ?? runtimeProfile?.models ?? []
   const pgModelOptions =
     pgModels.length > 0 && pgModel && !pgModels.includes(pgModel) ? [pgModel, ...pgModels] : pgModels
@@ -5835,7 +5838,7 @@ export default function SessionDetailView() {
                                 }}
                               />
                             )}
-                            {!multiLive && (pgModel || byDecision || runtimePending) && (
+                            {!multiLive && (agentRuntime || pgModel || byDecision || runtimePending) && (
                               <RuntimeModelSelect
                                 compact
                                 pending={runtimePending}

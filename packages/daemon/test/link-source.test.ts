@@ -41,7 +41,7 @@ describe('code-host footer session link', () => {
       agentLink: () => 'https://console.example.test/agents/bot-review',
       runtimeNames: () => ({ claude: 'Claude Code' }),
       outwardSessionId: async () => 'out-1',
-      hostForStoredSession: async () => undefined,
+      storedSessionExecution: async () => ({}),
       sessionLink: (sessionId: string, source?: string) =>
         `https://console.example.test/sessions/${sessionId}${source ? `?source=${source}` : ''}`
     } as never)

@@ -43,6 +43,8 @@ const wire = vi.hoisted(() => ({
   /** A synthetic playground session the daemon has not created yet — its route id names no canonical session the lease could be keyed by. */
   playground: false,
   runtimeSession: {} as Partial<Session>,
+  agentRuntime: 'claude',
+  agentModel: 'sonnet',
   runtimeChanges: false,
   byDecision: false,
   /** Overrides the session's steps: a playground session renders these instead of fetching a transcript. */
@@ -201,6 +203,8 @@ vi.mock('@/lib/data-context', () => ({
     agents: [
       {
         ...agent,
+        runtime: wire.agentRuntime,
+        model: wire.agentModel,
         allowRuntimeChangesInChat: wire.runtimeChanges,
         modelSelection: wire.byDecision ? { decisionId: 'decision-1', rules: [] } : undefined,
         workspace:
@@ -352,6 +356,8 @@ beforeEach(() => {
   wire.agentless = false
   wire.playground = false
   wire.runtimeSession = {}
+  wire.agentRuntime = 'claude'
+  wire.agentModel = 'sonnet'
   wire.runtimeChanges = false
   wire.byDecision = false
   wire.steps = undefined
@@ -393,6 +399,18 @@ describe('the session page in conversation mode', () => {
     expect(viewer()).toBeNull()
     expect(pane()?.className).toBe('contents')
   })
+})
+
+it('does not show the agent fallback model for a session on another runtime', async () => {
+  wire.playground = true
+  wire.agentRuntime = 'codex'
+  wire.agentModel = 'gpt-6-sol'
+  wire.runtimeSession = { runtime: 'claude', model: '' }
+  await render()
+
+  const model = container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')
+  expect(model?.textContent).toContain('Claude Code')
+  expect(model?.textContent).not.toContain('gpt-6-sol')
 })
 
 it.each([false, true])('keeps Decision runtime details pending until resolved (editable=%s)', async (editable) => {

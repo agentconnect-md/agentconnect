@@ -17,6 +17,7 @@ import {
   normalizeGithubRepoUrl,
   pickCodeHostHookMembers,
   type CodeHostProvider,
+  type DecisionRuntimeTarget,
   type GithubHookMetadata,
   type HookReviewResult,
   type RdAck,
@@ -164,7 +165,10 @@ export interface GithubReviewHost {
   sessionLink(sessionId: string, source?: string): string
   outwardSessionId(agentId: string, acpSessionId: string): Promise<string | undefined>
   runtimeNames(): Record<string, string>
-  hostForStoredSession(agentId: string, acpSessionId: string): Promise<AcpHost | undefined>
+  storedSessionExecution(
+    agentId: string,
+    acpSessionId: string
+  ): Promise<{ host?: AcpHost; target?: DecisionRuntimeTarget }>
 }
 
 export class GithubReviewOrchestrator {
@@ -1092,7 +1096,8 @@ export class GithubReviewOrchestrator {
     provider: CodeHostProvider
   ): Promise<GithubCommentAttribution> {
     const agent = this.agents.get(agentId)
-    const runtime = agent?.runtime
+    const execution = await this.host.storedSessionExecution(agentId, sessionId)
+    const runtime = execution.target?.runtime ?? agent?.runtime
     // The footer links the console, which knows this session by its outward id (§1.1).
     const outward = await this.host.outwardSessionId(agentId, sessionId)
     return {
@@ -1100,9 +1105,8 @@ export class GithubReviewOrchestrator {
       agentUrl: this.host.agentLink(agentId),
       runtime: runtime ? (this.host.runtimeNames()[runtime] ?? runtime) : 'unknown',
       model:
-        (await this.host.hostForStoredSession(agentId, sessionId))?.modelOptions?.(sessionId)?.current ??
-        agent?.runtimeOverrides?.model ??
-        'default',
+        execution.host?.modelOptions?.(sessionId)?.current ??
+        (execution.target ? execution.target.model || 'default' : (agent?.runtimeOverrides?.model ?? 'default')),
       sessionUrl: this.host.sessionLink(outward ?? sessionId, codeHostLinkSource(provider)),
       // Same CP-resolved public avatar Slack uses for icon_url; GitHub renders it
       // inline ahead of the footer sentence.
