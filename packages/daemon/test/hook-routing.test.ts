@@ -127,11 +127,14 @@ const NO_MATCH = answered(0.1, 0.1)
 async function harness() {
   const store = await openTestStore()
   const evaluate = vi.fn<(input: DecisionEvaluationInput) => Promise<DecisionEvaluation>>(async () => MATCH_BOTH)
+  // What the host applies now; null means the routing is gone, undefined keeps the event's own projection.
+  const live: { current?: HookRoutingProjection | null; base?: HookRoutingProjection } = {}
   const router = new HookRouter({
     store: () => store,
     evaluate: (input) => evaluate(input),
     now: () => Date.now(),
     ownerFence: () => 'local:test',
+    currentProjection: () => (live.current === null ? undefined : (live.current ?? live.base)),
     log: { warn: () => {} }
   })
   let n = 0
@@ -149,11 +152,12 @@ async function harness() {
     })
     const record = (await store.channelRecordRef(CHANNEL, ts, AGENT))!
     const msg = { ...fire(), routing: { routingId: ROUTING, decisionId: DECISION, candidates } }
+    live.base = p
     return { record, choose: () => router.choose(msg, record, p) }
   }
   const agentsOf = (outcome: Awaited<ReturnType<HookRouter['choose']>>) =>
     outcome.accepted ? outcome.targets.map((t) => t.hookId) : outcome.reason
-  return { store, evaluate, post, agentsOf }
+  return { store, evaluate, post, agentsOf, live }
 }
 
 describe('hook router (host choice)', () => {
@@ -405,5 +409,33 @@ describe('hook routing evaluation lane', () => {
       reader.list(ORG, { agentId: AGENT, integrationId: ROUTING, channel: ROUTING, limit: 10 })
     ).rejects.toBeInstanceOf(DecisionEvaluationScopeError)
     await s.close()
+  })
+
+  it('matches an answer against rules edited while the provider call was pending', async () => {
+    const h = await harness()
+    const event = await h.post('Please fix this')
+    h.evaluate.mockImplementationOnce(async () => {
+      h.live.current = projection({ rules: [], otherwise: { type: 'skip' } })
+      return MATCH_BOTH
+    })
+    expect(h.agentsOf(await event.choose())).toEqual([])
+  })
+
+  it('cancels and fires nothing when the Decision changed or the routing stopped mid-call', async () => {
+    const h = await harness()
+    const first = await h.post('Please fix this')
+    h.evaluate.mockImplementationOnce(async () => {
+      h.live.current = null
+      return MATCH_BOTH
+    })
+    expect(h.agentsOf(await first.choose())).toBe('config_changed')
+    expect((await h.store.getDecisionVerdict(first.record.seq, 'hook-router:' + ROUTING))?.state).toBe('canceled')
+    const second = await h.post('Another one', ALL, '43')
+    h.evaluate.mockImplementationOnce(async () => {
+      const next = projection()
+      h.live.current = { ...next, definition: { ...next.definition, model: 'jev-latest' } }
+      return MATCH_BOTH
+    })
+    expect(h.agentsOf(await second.choose())).toBe('config_changed')
   })
 })

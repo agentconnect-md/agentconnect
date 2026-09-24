@@ -62,6 +62,8 @@ export interface HookRouterHost {
   evaluate(input: DecisionEvaluationInput, signal?: AbortSignal): Promise<DecisionEvaluation>
   now(): number
   ownerFence(): string
+  /** The routing this host applies now, re-read after the provider call so a mid-call edit is never missed. */
+  currentProjection(agentId: string, routingId: string): HookRoutingProjection | undefined
   log: { warn(message: string): void }
 }
 
@@ -201,12 +203,13 @@ export class HookRouter {
 
   private async evaluate(
     row: DecisionVerdictRow,
-    config: FrozenHookRoutingConfig,
+    frozen: FrozenHookRoutingConfig,
     msg: RdMsgHook,
     thread: string | null
   ): Promise<HookRouteOutcome> {
     const store = this.host.store()
     const fence = this.host.ownerFence()
+    let config = frozen
     const unavailable = (reason: string, raw?: { raw?: string; request?: string }) =>
       this.finish(row, config, config.candidates, 'unavailable', { evaluated: true, unavailableReason: reason, ...raw })
     let built: DecisionStateResult | undefined
@@ -250,6 +253,17 @@ export class HookRouter {
       return await unavailable('provider', { raw, request })
     }
     if (evaluation.status === 'unavailable') return await unavailable(evaluation.reason, { raw, request })
+    const current = this.host.currentProjection(row.agentId, config.routingId)
+    const decisionChanged =
+      !current ||
+      !current.config.enabled ||
+      current.definition.id !== config.decisionId ||
+      current.definition.model !== config.model ||
+      canonicalJson(current.definition.question) !== canonicalJson(config.question)
+    if (decisionChanged) return await this.cancel(row, 'config_changed')
+    // Rules or Otherwise edited during the call: the answer still fits the same question, so the current rules decide.
+    if (hookRoutingFingerprint(current) !== config.fingerprint)
+      config = { ...config, routing: current.config, fingerprint: hookRoutingFingerprint(current) }
     let match: ReturnType<typeof matchDecisionRouting>
     try {
       match = matchDecisionRouting(config.question, config.routing, evaluation.answer)
@@ -335,6 +349,14 @@ export class HookRouter {
     // A lost CAS means another owner finished it first; its choice is the one returned.
     if (!after || !TERMINAL.has(after.state)) return { accepted: false, reason: 'durability' }
     return replayHookRoute(after)
+  }
+
+  /** A routing whose Decision changed or stopped mid-call: the verdict is canceled and nothing fires. */
+  private async cancel(row: DecisionVerdictRow, reason: string): Promise<HookRouteOutcome> {
+    await this.host
+      .store()
+      .finishDecisionVerdict(row.seq, row.subject, this.host.ownerFence(), 'canceled', reason, this.host.now())
+    return { accepted: false, reason }
   }
 
   /** A verdict that already exists: its stored choice once final, or a takeover once a foreign owner overran its deadline. */

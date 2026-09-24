@@ -1748,6 +1748,8 @@ export class Daemon {
       evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal),
       now: () => this.clock.now(),
       ownerFence: () => `${this.cfg.daemonId ?? 'local'}:${this.decisionBootNonce}`,
+      currentProjection: (agentId, routingId) =>
+        this.agents.get(agentId)?.hookRoutings?.find((r) => r.routingId === routingId),
       log: { warn: (message) => this.log.warn(message) }
     })
     this.decisionEvaluations = new DecisionEvaluationReader({
