@@ -276,7 +276,7 @@ composition point. Do not add speculative backend branches throughout ACP.
 ### VM availability and configuration changes
 
 The current microsandbox integration supports Linux with usable KVM. Startup
-installs the pinned `microsandbox@0.6.17` package through the daemon's RuntimeStore,
+installs the pinned `microsandbox@0.7.2` package through the daemon's RuntimeStore,
 preserving its native platform package, and gives it a daemon-owned state home.
 It collects the cached images it no longer needs, prepares the image, boots a
 temporary VM, validates the runtime table, and checks stop/start before admitting
@@ -767,7 +767,7 @@ mounts cannot replace `/run` or `/var/lib/docker`. Shim staging creates
 `/run/agentconnect` on that tmpfs for the image's ordinary user, so a VM and a
 pool pod serve the helper sockets at the same paths.
 
-In pinned version `0.6.17`, starting a retained flat-disk VM still validates the
+As observed in `0.6.17`, starting a retained flat-disk VM still validates the
 OCI image's VMDK cache. The manager runs the official
 `msb pull <image> --materialize layered --quiet` before its VM probe, preparing
 the shared layers and VMDK without generating an unused flat base disk. Retained
@@ -946,7 +946,7 @@ require allowing guest access to the host's general network services.
 The existing policy is the implementation baseline; complete-session tests must
 still establish public egress and denied host/private/peer connectivity, including
 applicable IPv4/IPv6 host addresses and aliases. The upstream
-[host category](https://github.com/superradcompany/microsandbox/blob/v0.6.17/crates/network/lib/policy/destination.rs#L40)
+[host category](https://github.com/superradcompany/microsandbox/blob/v0.7.2/crates/network/lib/engine/policy/destination.rs#L40)
 covers the VM gateway; a routable public address belonging to the host can still classify
 as public. Blocking that route remains an implementation/validation gap. Selecting
 a deployment profile alone is not evidence that these checks passed.
