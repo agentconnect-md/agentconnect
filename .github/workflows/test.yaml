@@ -40,7 +40,7 @@ jobs:
       windows: ${{ steps.filter.outputs.windows }}
       microsandbox: ${{ steps.filter.outputs.microsandbox }}
     steps:
-      # The files API instead of a checkout; non-PR events and any list this cannot read run all but the VM leg.
+      # The files API instead of a checkout; non-PR events run all but the VM leg.
       - name: Which suites can this diff reach?
         id: filter
         env:
@@ -49,8 +49,8 @@ jobs:
         run: |
           everything() { printf 'code=true\nwindows=true\nmicrosandbox=false\n' >> "$GITHUB_OUTPUT"; exit 0; }
           [ "${{ github.event_name }}" = 'pull_request' ] || everything
-          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') || everything
-          [ -n "$files" ] || everything
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') || exit 1
+          [ -n "$files" ] || { echo 'PR file list is empty' >&2; exit 1; }
           any() { grep -qE "$1" <<<"$files" && echo true || echo false; }
           other() { grep -qvE "$1" <<<"$files" && echo true || echo false; }
           {
@@ -576,10 +576,11 @@ jobs:
             echo '__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
 
-  # The ruleset's one check; `always()` since a job skipped behind a failed need would count as passing.
+  # The ruleset's only CI check must need every job; `always()` keeps failed needs from skipping it.
   ci-ok:
     name: CI OK
-    needs: [scope, build, unit, unit-windows, evals, sandbox-linux, daemon-store-postgres, integration]
+    needs:
+      [scope, build, unit, unit-windows, evals, sandbox-linux, sandbox-microsandbox, daemon-store-postgres, integration]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
