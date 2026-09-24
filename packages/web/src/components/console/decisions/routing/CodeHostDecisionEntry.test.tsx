@@ -155,37 +155,39 @@ async function pickRules() {
 }
 
 describe('CodeHostDecisionEntry', () => {
-  it('saves a child Decision branch and reopens its rules from the repository', async () => {
-    mocks.mockMode = false
-    mocks.fetchCodeHostRouting.mockResolvedValue(dto(prScope))
-    mocks.saveCodeHostRouting.mockImplementation(async (_repoId, _family, config) =>
-      dto(prScope, { config, status: 'enabled' })
-    )
-    await render()
-    await pickRules()
-    await click(document.body.querySelector('button[aria-label="Continue with a Decision"]'))
-    await click(all('[role="menuitem"]').find((node) => node.textContent?.includes('Needs a response')))
-    expect(document.body.querySelector('nav[aria-label="Decision path"]')).toBeTruthy()
-    await click(document.body.querySelector('button[aria-label="Target for Yes"]'))
-    await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('review-bot')))
-    await click(document.body.querySelector('nav button'))
-    await click(button('Save'))
-    const config = mocks.saveCodeHostRouting.mock.calls[0]![2]
-    expect(config.rules[0].action).toMatchObject({ type: 'decision', nextStepId: config.steps[0].id })
-    expect(config.steps[0]).toMatchObject({
-      decisionId: 'needs-response',
-      rules: [expect.objectContaining({ action: { type: 'agent', agentId: 'a1' } })]
-    })
-    await click(button('Needs a response'))
-    const next = all('button').find(
-      (node) =>
-        node.classList.contains('inp') &&
-        node.textContent?.includes('Needs a response') &&
-        !node.hasAttribute('aria-haspopup')
-    )
-    await click(next)
-    expect(document.body.querySelector('button[aria-label="Target for Yes"]')?.textContent).toContain('review-bot')
-  })
+  it.each([prScope, gitlabMrScope, giteaPrScope])(
+    'saves and reopens a child Decision branch for $provider',
+    async (scope) => {
+      mocks.mockMode = false
+      mocks.fetchCodeHostRouting.mockResolvedValue(dto(scope))
+      mocks.saveCodeHostRouting.mockImplementation(async (_scope, config) => dto(scope, { config, status: 'enabled' }))
+      await render(scope)
+      await pickRules()
+      await click(document.body.querySelector('button[aria-label="Continue with a Decision"]'))
+      await click(all('[role="menuitem"]').find((node) => node.textContent?.includes('Needs a response')))
+      expect(document.body.querySelector('nav[aria-label="Decision path"]')).toBeTruthy()
+      await click(document.body.querySelector('button[aria-label="Target for Yes"]'))
+      await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('review-bot')))
+      await click(document.body.querySelector('nav button'))
+      await click(button('Save'))
+      expect(mocks.saveCodeHostRouting.mock.calls[0]![0]).toMatchObject(scope)
+      const config = mocks.saveCodeHostRouting.mock.calls[0]![1]
+      expect(config.rules[0].action).toMatchObject({ type: 'decision', nextStepId: config.steps[0].id })
+      expect(config.steps[0]).toMatchObject({
+        decisionId: 'needs-response',
+        rules: [expect.objectContaining({ action: { type: 'agent', agentId: 'a1' } })]
+      })
+      await click(button('Needs a response'))
+      const next = all('button').find(
+        (node) =>
+          node.classList.contains('inp') &&
+          node.textContent?.includes('Needs a response') &&
+          !node.hasAttribute('aria-haspopup')
+      )
+      await click(next)
+      expect(document.body.querySelector('button[aria-label="Target for Yes"]')?.textContent).toContain('review-bot')
+    }
+  )
 
   it('picks reviewers per answer among the members and keeps them as the row’s pill until ×', async () => {
     await render()

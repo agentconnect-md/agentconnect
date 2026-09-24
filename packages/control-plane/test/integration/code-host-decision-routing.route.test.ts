@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import {
+  DECISION_CHAIN_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
@@ -266,58 +267,79 @@ async function routedWorld() {
 }
 
 describe('repository Decision routing — configuration', () => {
-  it('validates, projects and protects child Decisions, and holds the scope after an incompatible child edit', async () => {
-    const w = await routedWorld()
-    const childId = await createDecision(w.app, choiceDraft)
-    const config = {
-      ...w.config,
-      rules: [{ ...w.config.rules[0]!, action: { type: 'decision', nextStepId: 'triage' } }],
-      steps: [
-        {
-          id: 'triage',
-          decisionId: childId,
-          rules: [
-            {
-              id: 'child-rule',
-              when: { type: 'choice', thresholds: { bug: 0.5 } },
-              action: { type: 'agent', agentId: w.late }
-            }
-          ]
-        }
-      ]
-    }
-    const save = (value: unknown) => w.app.app.inject({ method: 'PUT', url: SCOPE, payload: { config: value } })
-    expect((await save({ ...config, steps: [{ ...config.steps[0], decisionId: randomUUID() }] })).statusCode).toBe(404)
-    expect(
-      (
-        await save({
-          ...config,
-          steps: [
-            {
-              ...config.steps[0],
-              rules: [{ ...config.steps[0]!.rules[0], action: { type: 'agent', agentId: randomUUID() } }]
-            }
-          ]
-        })
-      ).statusCode
-    ).toBe(400)
-    const saved = await save(config)
-    expect(saved.statusCode).toBe(200)
-    expect(saved.json()).toMatchObject({ status: 'enabled', config })
-    expect((await w.app.app.inject({ method: 'GET', url: SCOPE })).json()).toMatchObject({ config })
-    await vi.waitFor(() =>
-      expect(w.spy.lastSpec(w.early)?.hookRoutings?.[0]?.definitions).toEqual(
-        expect.arrayContaining([expect.objectContaining({ id: childId })])
+  it.each(['github', 'gitlab', 'gitea'] as const)(
+    'validates, projects and protects a child Decision in %s routing',
+    async (provider) => {
+      const w = {
+        ...(provider === 'github' ? await seedWorld() : await seedManagedWorld()),
+        ...appWith({ features: [...V2, DECISION_CHAIN_V1_FEATURE] })
+      }
+      w.app.relayReg.add(new FakeRelay('relay-chain', V2))
+      if (provider === 'github') {
+        await createHook(w.app, w.early)
+        await createHook(w.app, w.late)
+      }
+      const scope = provider === 'github' ? SCOPE : provider === 'gitlab' ? GITLAB_SCOPE : GITEA_SCOPE
+      const decisionId = await createDecision(w.app)
+      const childId = await createDecision(w.app, choiceDraft)
+      const config = {
+        enabled: true,
+        decisionId,
+        otherwise: { type: 'skip' },
+        rules: [
+          { id: 'root', when: { type: 'boolean', values: [true] }, action: { type: 'decision', nextStepId: 'triage' } }
+        ],
+        steps: [
+          {
+            id: 'triage',
+            decisionId: childId,
+            rules: [
+              {
+                id: 'child-rule',
+                when: { type: 'choice', thresholds: { bug: 0.5 } },
+                action: { type: 'agent', agentId: w.early }
+              }
+            ]
+          }
+        ]
+      }
+      const save = (value: unknown) => w.app.app.inject({ method: 'PUT', url: scope, payload: { config: value } })
+      expect((await save({ ...config, steps: [{ ...config.steps[0], decisionId: randomUUID() }] })).statusCode).toBe(
+        404
       )
-    )
-    const refused = await w.app.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${childId}` })
-    expect(refused.statusCode).toBe(409)
-    expect(refused.json()).toMatchObject({ usages: [expect.objectContaining({ kind: 'code_host_routing' })] })
-    const edited = await w.app.app.inject({ method: 'PATCH', url: `${ORG}/decisions/${childId}`, payload: boolDraft })
-    expect(edited.statusCode).toBe(200)
-    expect((await w.app.app.inject({ method: 'GET', url: SCOPE })).json()).toMatchObject({ status: 'needs_review' })
-    await vi.waitFor(() => expect(w.spy.lastSpec(w.early)?.hookRoutings?.[0]?.config.enabled).toBe(false))
-  })
+      expect(
+        (
+          await save({
+            ...config,
+            steps: [
+              {
+                ...config.steps[0],
+                rules: [{ ...config.steps[0]!.rules[0], action: { type: 'agent', agentId: randomUUID() } }]
+              }
+            ]
+          })
+        ).statusCode
+      ).toBe(400)
+      const saved = await save(config)
+      expect(saved.statusCode).toBe(200)
+      expect(saved.json()).toMatchObject({ status: 'enabled', config })
+      expect((await w.app.app.inject({ method: 'GET', url: scope })).json()).toMatchObject({ config })
+      await vi.waitFor(() =>
+        expect(w.spy.lastSpec(w.early)?.hookRoutings?.[0]?.definitions).toEqual(
+          expect.arrayContaining([expect.objectContaining({ id: childId })])
+        )
+      )
+      const refused = await w.app.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${childId}` })
+      expect(refused.statusCode).toBe(409)
+      expect(refused.json()).toMatchObject({
+        usages: [expect.objectContaining({ kind: 'code_host_routing', provider })]
+      })
+      const edited = await w.app.app.inject({ method: 'PATCH', url: `${ORG}/decisions/${childId}`, payload: boolDraft })
+      expect(edited.statusCode).toBe(200)
+      expect((await w.app.app.inject({ method: 'GET', url: scope })).json()).toMatchObject({ status: 'needs_review' })
+      await vi.waitFor(() => expect(w.spy.lastSpec(w.early)?.hookRoutings?.[0]?.config.enabled).toBe(false))
+    }
+  )
 
   it('lists the members before any routing exists, and 404s a repository nobody watches', async () => {
     const world = await seedWorld()

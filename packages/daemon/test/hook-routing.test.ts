@@ -511,49 +511,60 @@ describe('code-host decision state across providers', () => {
 })
 
 describe('hook router for GitLab and Gitea routings', () => {
-  it.each([
-    {
-      provider: 'gitlab' as const,
-      family: 'merge_request' as const,
-      msg: () => gitlabFire({ kind: 'merge_request', iid: 7 })
-    },
-    { provider: 'gitea' as const, family: 'issues' as const, msg: () => giteaFire({ kind: 'issue', index: 7 }) }
-  ])('chooses for a $provider routing and records the host verdict', async ({ provider, family, msg }) => {
-    const store = await openTestStore()
-    const evaluate = vi.fn<(input: DecisionEvaluationInput) => Promise<DecisionEvaluation>>(async () => MATCH_BOTH)
-    const p = { ...projection(), provider, family }
-    const router = new HookRouter({
-      store: () => store,
-      evaluate: (input) => evaluate(input),
-      now: () => Date.now(),
-      ownerFence: () => 'local:test',
-      currentProjection: () => p,
-      log: { warn: () => {} }
-    })
-    const channel = HOOK
-    const thread = `${provider}:x:7`
-    await store.appendTranscript({
-      channel,
-      thread,
-      ts: '1|a',
-      sender: 'reporter',
-      kind: 'text',
-      text: 'Fix',
-      orgAgentId: AGENT
-    })
-    const record = (await store.channelRecordRef(channel, '1|a', AGENT))!
-    const outcome = await router.choose(
-      { ...msg(), routing: { routingId: ROUTING, decisionId: DECISION, candidates: ALL } },
-      record,
-      p
-    )
-    expect(outcome.accepted && outcome.targets.map((t) => t.hookId)).toEqual([HOOK_B, HOOK_C])
-    expect(evaluate.mock.calls[0]![0].state).toMatchObject({ source: provider, currentMessage: { text: 'Fix' } })
-    const verdict = await store.getDecisionVerdict(record.seq, hookRouterSubject(ROUTING))
-    expect(verdict).toMatchObject({ state: 'admitted', integrationId: ROUTING, channel })
-    expect(JSON.parse(verdict!.configJson)).toMatchObject({ family })
-    await store.close()
-  })
+  it.each(
+    [
+      {
+        provider: 'gitlab' as const,
+        family: 'merge_request' as const,
+        msg: () => gitlabFire({ kind: 'merge_request', iid: 7 })
+      },
+      { provider: 'gitea' as const, family: 'issues' as const, msg: () => giteaFire({ kind: 'issue', index: 7 }) }
+    ].flatMap((entry) => [false, true].map((chained) => ({ ...entry, chained })))
+  )(
+    'chooses for a $provider routing (chained: $chained) and records the host verdict',
+    async ({ provider, family, msg, chained }) => {
+      const store = await openTestStore()
+      const evaluate = vi.fn<(input: DecisionEvaluationInput) => Promise<DecisionEvaluation>>(async () => MATCH_BOTH)
+      const p = { ...projection(), provider, family }
+      if (chained) {
+        const terminal = p.config.rules[0]!
+        p.config.rules[0] = { ...terminal, id: 'continue', action: { type: 'decision', nextStepId: 'next' } }
+        p.config.steps = [{ id: 'next', decisionId: DECISION, rules: [terminal] }]
+      }
+      const router = new HookRouter({
+        store: () => store,
+        evaluate: (input) => evaluate(input),
+        now: () => Date.now(),
+        ownerFence: () => 'local:test',
+        currentProjection: () => p,
+        log: { warn: () => {} }
+      })
+      const channel = HOOK
+      const thread = `${provider}:x:7`
+      await store.appendTranscript({
+        channel,
+        thread,
+        ts: '1|a',
+        sender: 'reporter',
+        kind: 'text',
+        text: 'Fix',
+        orgAgentId: AGENT
+      })
+      const record = (await store.channelRecordRef(channel, '1|a', AGENT))!
+      const outcome = await router.choose(
+        { ...msg(), routing: { routingId: ROUTING, decisionId: DECISION, candidates: ALL } },
+        record,
+        p
+      )
+      expect(outcome.accepted && outcome.targets.map((t) => t.hookId)).toEqual([HOOK_B, HOOK_C])
+      expect(evaluate.mock.calls[0]![0].state).toMatchObject({ source: provider, currentMessage: { text: 'Fix' } })
+      expect(evaluate).toHaveBeenCalledTimes(chained ? 2 : 1)
+      const verdict = await store.getDecisionVerdict(record.seq, hookRouterSubject(ROUTING))
+      expect(verdict).toMatchObject({ state: 'admitted', integrationId: ROUTING, channel })
+      expect(JSON.parse(verdict!.configJson)).toMatchObject({ family })
+      await store.close()
+    }
+  )
 })
 
 describe('hook routing evaluation lane', () => {
