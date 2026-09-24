@@ -64,9 +64,9 @@ export function useChannelGates() {
     const triggers = channelListSemantics(platform).triggers
     return (['mention', 'any', 'off'] as const).find((trigger) => !triggers || triggers.includes(trigger))
   }
-  /** A new gate starts only in a room (never a 1:1 DM) the agent answers in, whose platform offers By decision. */
+  /** A new gate starts in any room (never a 1:1 DM) whose platform offers By decision, an Off one included. */
   const offers = (platform: string | undefined, c: IntegrationChannelRow) =>
-    offered && c.kind !== 'im' && c.trigger !== 'off' && decisionTriggers(platform)
+    offered && c.kind !== 'im' && decisionTriggers(platform)
 
   /** The row's in-line control: the saved gate's pill, or `+ Decision`. */
   const entry = ({

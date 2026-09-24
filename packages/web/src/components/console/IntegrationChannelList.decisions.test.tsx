@@ -203,6 +203,11 @@ describe('IntegrationChannelList By decision', () => {
     expect(byText('Trigger when')).toBeUndefined()
   })
 
+  it('offers + Decision on an Off row too, since the gate save sets its trigger', async () => {
+    await render([group({ trigger: 'off' })])
+    expect(all('button').some((node) => node.textContent?.trim() === 'Decision')).toBe(true)
+  })
+
   it('offers + Decision on a plain row, opening the rules modal named for the channel and its agent', async () => {
     await render([group()])
     await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))

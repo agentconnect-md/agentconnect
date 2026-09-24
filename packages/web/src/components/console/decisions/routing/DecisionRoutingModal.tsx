@@ -98,7 +98,7 @@ export function DecisionRoutingModal({
   const { api, orgId, decisions, loading, reload, routingDrafts, routingKeyFor, dispatchRouting, beginInlineCreate } =
     useDecisionsPrototype()
   const roster = useRoutingRoster(botId)
-  const { integrations, getAgent } = useConsoleData()
+  const { integrations, getAgent, setChannelTrigger } = useConsoleData()
   const state = routingDrafts[routingKeyFor(botId)] ?? INITIAL_ROUTING_STATE
   const dispatch = useCallback((event: RoutingEvent) => dispatchRouting(botId, event), [botId, dispatchRouting])
   const [helpOpen, setHelpOpen] = useState(false)
@@ -152,20 +152,24 @@ export function DecisionRoutingModal({
     : serverError?.kind === 'invalid'
       ? serverError.issues.map((issue) => ({ path: issue.path, message: issue.message }))
       : []
-  // The CP refuses to route a conversation any install has Off, so a new one is checked here instead of failing on Save.
+  // A routing save never enables Off (a private agent's gate), so Save first turns each Off install on through its own PATCH.
   const additions = (draft?.channelIds ?? []).filter((id) => !savedChannelIds.includes(id))
   const agentName = (id: string) =>
     roster.agents.find((agent) => agent.id === id)?.name ?? (getAgent(id) ? agentLabel(getAgent(id)!) : id)
   const offRooms = additions.flatMap((id) => {
     if (api.mode === 'mock')
-      return roster.channels.find((c) => c.channelId === id)?.trigger === 'off' ? [{ id, agents: [] as string[] }] : []
-    const agents = integrations
-      .filter((i) => i.botId === botId && i.channels.some((c) => c.channelId === id && c.trigger === 'off'))
-      .map((i) => (i.agentId ? agentName(i.agentId) : ''))
-      .filter(Boolean)
-    return agents.length ? [{ id, agents }] : []
+      return roster.channels.find((c) => c.channelId === id)?.trigger === 'off'
+        ? [{ id, agents: [] as string[], installs: [] as string[] }]
+        : []
+    const off = integrations.filter(
+      (i) => i.botId === botId && !!i.id && i.channels.some((c) => c.channelId === id && c.trigger === 'off')
+    )
+    const agents = off.map((i) => (i.agentId ? agentName(i.agentId) : '')).filter(Boolean)
+    return off.length ? [{ id, agents, installs: off.map((i) => i.id!) }] : []
   })
-  const canSave = routingCanSave(state, localIssues, canWrite) && offRooms.length === 0
+  // Mock data has no per-install trigger write, so an Off room there still blocks Save.
+  const offBlocks = offRooms.some((room) => room.installs.length === 0)
+  const canSave = routingCanSave(state, localIssues, canWrite) && !offBlocks
   const disabled = !canWrite || busy
   // Inline Create decision returns here with the row named, so its modal reopens on the same draft.
   const returnParams = new URLSearchParams(search.toString())
@@ -182,6 +186,8 @@ export function DecisionRoutingModal({
     saving.current = true
     dispatch(retry ? { type: 'RETRY' } : { type: 'SAVE_START', body })
     try {
+      for (const room of offRooms)
+        for (const integrationId of room.installs) await setChannelTrigger(integrationId, room.id, 'mention')
       const detail = await api.saveRouting(botId, body)
       dispatch({ type: 'SAVE_OK', detail })
       void mutate(detail, { revalidate: false })
@@ -271,13 +277,13 @@ export function DecisionRoutingModal({
         {offRooms.map((room) => (
           <div
             key={room.id}
-            role="alert"
+            role="status"
             className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
           >
-            <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+            <Icon name="power" size={14} className="mt-[2px] flex-none" />
             <span>
-              {room.agents.length
-                ? tm('offIn', { channel: nameOf(room.id), agents: room.agents.join(', ') })
+              {room.installs.length
+                ? tm('offWillEnable', { channel: nameOf(room.id), agents: room.agents.join(', ') })
                 : tm('offBare', { channel: nameOf(room.id) })}
             </span>
           </div>

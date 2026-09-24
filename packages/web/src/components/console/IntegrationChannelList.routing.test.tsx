@@ -16,6 +16,7 @@ const routing = vi.hoisted(() => ({
   getRouting: vi.fn(),
   saveRouting: vi.fn(),
   refresh: vi.fn(),
+  setChannelTrigger: vi.fn(async () => undefined),
   integrations: [] as unknown[]
 }))
 
@@ -35,7 +36,7 @@ vi.mock('@/lib/data-context', () => {
   ]
   return {
     useConsoleData: () => ({
-      setChannelTrigger: vi.fn(),
+      setChannelTrigger: routing.setChannelTrigger,
       setChannelDecision: vi.fn(),
       setChannelSessionMode: vi.fn(),
       setChannelAgent: vi.fn(),
@@ -134,6 +135,7 @@ beforeEach(() => {
     .mockImplementation(async (_bot, body) => detail({ config: body.config, channelIds: body.channelIds }))
   routing.refresh.mockReset()
   routing.integrations = []
+  routing.setChannelTrigger.mockClear()
 })
 
 afterEach(async () => {
@@ -267,7 +269,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
     expect(document.body.querySelector('button[aria-label="Target for Yes"]')?.textContent).toContain('Use Otherwise')
   })
 
-  it('blocks Save when the row is Off on another agent’s install, naming that agent', async () => {
+  it('routes a row Off on another agent’s install by turning that install on first', async () => {
     routing.getRouting.mockResolvedValue(detail())
     routing.integrations = [
       { id: 'int-1', agentId: 'agent-1', botId: 'bot-shared', channels: [row()] },
@@ -276,12 +278,19 @@ describe('IntegrationChannelList shared-bot routing', () => {
     await render([row()])
     await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
     await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
-    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
-      'deploys is Off for review-bot. Turn it on there before routing it by decision.'
+    expect(dialog()?.textContent).toContain(
+      'deploys is Off for review-bot. Saving turns it on there first, then routes it by decision.'
     )
-    expect((all('button').find((node) => node.textContent?.trim() === 'Save') as HTMLButtonElement)?.disabled).toBe(
-      true
+    await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
+    await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
+    await click(document.body.querySelector('button[aria-label="Target for billing"]'))
+    await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('review-bot')))
+    await click(all('button').find((node) => node.textContent?.trim() === 'Save'))
+    expect(routing.setChannelTrigger).toHaveBeenCalledWith('int-2', 'C1', 'mention')
+    expect(routing.setChannelTrigger.mock.invocationCallOrder[0]).toBeLessThan(
+      routing.saveRouting.mock.invocationCallOrder[0]!
     )
+    expect(routing.saveRouting).toHaveBeenCalledTimes(1)
   })
 
   it.each(['the header ×', 'the scrim'])(

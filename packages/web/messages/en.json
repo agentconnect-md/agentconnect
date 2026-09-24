@@ -4538,12 +4538,12 @@
         "hiddenAgent": "An agent you cannot see",
         "otherwiseHint": "No rule matches, or evaluation unavailable",
         "openBot": "Open bot configuration",
-        "offIn": "{channel} is Off for {agents}. Turn it on there before routing it by decision.",
         "offBare": "{channel} is Off. Turn it on before routing it by decision.",
         "enabled": "Routing enabled",
         "pausedLabel": "Routing paused",
         "pauseHint": "Pausing stops new deliveries in every channel this bot routes, including mentions and thread replies. Running turns continue.",
-        "pausedHint": "Paused: new messages in these channels are not delivered. Turn it on and save to resume."
+        "pausedHint": "Paused: new messages in these channels are not delivered. Turn it on and save to resume.",
+        "offWillEnable": "{channel} is Off for {agents}. Saving turns it on there first, then routes it by decision."
       },
       "title": "Routing",
       "recentEvaluations": "Recent evaluations",

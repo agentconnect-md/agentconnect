@@ -4538,12 +4538,12 @@
         "hiddenAgent": "你无法查看的 Agent",
         "otherwiseHint": "没有规则匹配，或评估不可用",
         "openBot": "打开 Bot 配置",
-        "offIn": "{channel} 在 {agents} 上是关闭状态。请先在那里开启，再按决策路由。",
         "offBare": "{channel} 是关闭状态。请先开启，再按决策路由。",
         "enabled": "路由已启用",
         "pausedLabel": "路由已暂停",
         "pauseHint": "暂停后，此 Bot 路由的所有频道都不再投递新消息，包括@提及和话题回复。进行中的回合会继续。",
-        "pausedHint": "已暂停：这些频道中的新消息不会被投递。开启并保存即可恢复。"
+        "pausedHint": "已暂停：这些频道中的新消息不会被投递。开启并保存即可恢复。",
+        "offWillEnable": "{channel} 在 {agents} 上是关闭状态。保存时会先在那里开启，再按决策路由。"
       },
       "title": "路由",
       "recentEvaluations": "最近评估",
