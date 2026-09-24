@@ -1093,6 +1093,27 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  it('cancels a queued takeover when the agent leaves before the call starts', async () => {
+    const adoptAgent = vi.fn(async () => {})
+    const instance = daemon({ root: root(), k8s: true, plane: { adoptAgent, releaseAgent: vi.fn() } })
+    try {
+      await instance.start()
+      const inner = instance as any
+      inner.adoptClusterSandbox('bot-a')
+      // Let prior teardown settle and register the attempt, then release before its queued call.
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(inner.k8sAdoptions.has('bot-a')).toBe(true)
+      expect(adoptAgent).not.toHaveBeenCalled()
+      inner.releaseClusterSandbox('bot-a')
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(adoptAgent).not.toHaveBeenCalled()
+      expect(inner.k8sAdoptions.has('bot-a')).toBe(false)
+    } finally {
+      await instance.stop()
+    }
+  })
+
   it('does not let a departed takeover overwrite a new takeover waiting on teardown', async () => {
     let failOld!: (error: Error) => void
     const adoptAgent = vi

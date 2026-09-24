@@ -20916,7 +20916,9 @@ export class Daemon {
         // Register after the prior release, which clears the previous ownership's takeover state.
         if (this.k8sAdoptions.get(agentId)) return
         const run = Promise.resolve()
-          .then(() => plane.adoptAgent(agentId))
+          .then(() => {
+            if (this.k8sAdoptions.get(agentId) === run) return plane.adoptAgent(agentId)
+          })
           .then(() => {
             if (this.k8sAdoptions.get(agentId) === run) this.k8sAdoptions.delete(agentId)
           })
