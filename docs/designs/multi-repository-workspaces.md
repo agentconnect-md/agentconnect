@@ -3,9 +3,9 @@
 > **Status:** Implemented, on self-hosted daemons (phases 1–6) and on cluster
 > (pod) daemons (phase 7), `gh` in the pod included. Per-authorization
 > materialization below is implemented for `always` and `on-demand` rows
-> (decisions 13 and 20); installation grants (decision 14) have their
-> control-plane half, and the repository selector (decisions 15–19) is
-> **proposed, not implemented**.
+> (decisions 13 and 20); installation grants (decision 14) are implemented for
+> `on-demand`, and the repository selector (decisions 15–19) is **proposed, not
+> implemented**.
 >
 > Before this design an agent's workspace was exactly one repository.
 > Additional repositories existed only as an authorization allowlist
@@ -262,8 +262,8 @@ no root for a secondary repository on a cluster agent.
 > step 1 has landed: the `materialize` column, its REST surface and its
 > projection (`always` and `on-demand` only), the daemon checking out only
 > `always` rows with decision 20's clone directory, and **Always** or **On
-> demand** on each row in the console. Decision 14 has its control-plane and
-> daemon halves (change-map step 2); decisions 15–19 have not landed.
+> demand** on each row in the console. Decision 14 has its control-plane,
+> daemon and console halves (change-map step 2); decisions 15–19 have not landed.
 
 Decision 1 scales with the number of rows. An organization with a few hundred
 repositories that authorizes them all — or that holds an installation grant
@@ -362,7 +362,11 @@ turn's path, in the same class as `gitcred/request` and the model-selection
    into it), the mint and hook gates, and the refusal that names the grant;
    the daemon half — any grant gives a session its clone directory on every
    tier, and the standing context names each grant's account with a clone
-   example built from the host's own URL. _Pending:_ the console.
+   example built from the host's own URL; and the console half — grant rows,
+   **Authorize an installation** (owner only, **On demand** with no checkout
+   choice) and revoke in Edit workspace, read-only chips on the Workspace card,
+   and covered repositories counting as authorized in the GitHub hook editor
+   and on the agent page.
 3. **`decision`** — the evaluator pair on the agent, the roster request and
    reply frames, chunked question generation, the selection rule, the snapshot,
    evidence recording, the readiness gate, and **By decision** on rows and

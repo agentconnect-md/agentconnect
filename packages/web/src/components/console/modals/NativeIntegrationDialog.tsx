@@ -17,6 +17,7 @@ import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import {
   fetchAgentHooks,
+  fetchAgentInstallations,
   fetchAgentRepos,
   fetchGithubInstallations,
   updateGithubHook,
@@ -24,6 +25,7 @@ import {
   updateGiteaHook,
   updateIntegrationChannel,
   type HookDto,
+  type AgentInstallationAuthDto,
   type AgentRepoAuthDto,
   type GithubInstallationDto
 } from '@/lib/api'
@@ -233,6 +235,7 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
   const [reviewPolicy, setReviewPolicy] = useState<HookReviewPolicy>('off')
   const [reportingMode, setReportingMode] = useState<HookReportingMode>('off')
   const [repos, setRepos] = useState<AgentRepoAuthDto[]>([])
+  const [installationGrants, setInstallationGrants] = useState<AgentInstallationAuthDto[]>([])
   const [installations, setInstallations] = useState<GithubInstallationDto[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -241,7 +244,8 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
     repoId: hook?.repoId,
     repoFullName: hook?.repoFullName,
     workspace: agents.find((agent) => agent.id === intent.agentId)?.workspace ?? { mode: 'scratch' },
-    authorizations: repos
+    authorizations: repos,
+    installationGrants
   })
   const installation = installationForRepo(hook?.repoFullName, installations)
   const reviewChanged = !!hook && (reviewPolicy !== hook.reviewPolicy || reportingMode !== hook.reportingMode)
@@ -269,10 +273,15 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
         setReviewPolicy(found.reviewPolicy)
         setReportingMode(found.reportingMode)
         if (found.kind === 'github') {
-          void Promise.all([fetchAgentRepos(intent.agentId, ui.orgId), fetchGithubInstallations(ui.orgId)])
-            .then(([authorizations, installed]) => {
+          void Promise.all([
+            fetchAgentRepos(intent.agentId, ui.orgId),
+            fetchAgentInstallations(intent.agentId, ui.orgId),
+            fetchGithubInstallations(ui.orgId)
+          ])
+            .then(([authorizations, grants, installed]) => {
               if (alive) {
                 setRepos(authorizations)
+                setInstallationGrants(grants)
                 setInstallations(installed.installations)
               }
             })

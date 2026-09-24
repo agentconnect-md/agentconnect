@@ -45,6 +45,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchAgentHooks: vi.fn(async () => []),
   fetchAgentRepos: vi.fn(async () => []),
+  fetchAgentInstallations: vi.fn(async () => []),
   fetchGithubInstallations: vi.fn(async () => ({ enabled: false, installations: [] })),
   fetchGitlabConnections: vi.fn(async () => ({ enabled: false, connections: [] }))
 }))

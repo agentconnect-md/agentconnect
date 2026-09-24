@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   searchGitlabProjects: vi.fn(),
   createGitlabProject: vi.fn(),
   fetchAgentRepos: vi.fn(),
+  fetchAgentInstallations: vi.fn(async () => []),
   fetchAgentHooks: vi.fn(async () => [] as unknown[]),
   startGitlabOauth: vi.fn(),
   daemons: [] as unknown[]
@@ -69,6 +70,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchAgentHooks: mocks.fetchAgentHooks,
   fetchAgentRepos: mocks.fetchAgentRepos,
+  fetchAgentInstallations: mocks.fetchAgentInstallations,
   fetchGithubInstallations: vi.fn(async () => ({ enabled: false, installations: [] })),
   fetchGithubInstallUrl: vi.fn(async () => null),
   fetchGithubRepoRoster: vi.fn(async () => ({ repos: [], privateReposHidden: false, failed: false })),

@@ -9,6 +9,7 @@ import {
   hasPullRequestsReadPermission,
   hasPullRequestsWritePermission,
   installationForRepo,
+  installationGrantAccess,
   isWorkspaceRepo,
   repoAccessSatisfies,
   requiredRepoAccess
@@ -184,6 +185,35 @@ describe('R1/R2a GitHub review settings', () => {
         authorizations
       })
     ).toBe('write')
+  })
+
+  it('falls back to an installation grant on the owner only when no explicit row matches', () => {
+    const installationGrants = [{ accountLogin: 'Acme', access: 'read' as const }]
+    const workspace = { mode: 'scratch' as const }
+    expect(
+      effectiveRepoAccess({
+        repoId: '55',
+        repoFullName: 'acme/tools',
+        workspace,
+        authorizations: [],
+        installationGrants
+      })
+    ).toBe('read')
+    // An explicit row keeps its own tier, stronger or not.
+    expect(
+      effectiveRepoAccess({
+        repoId: '55',
+        repoFullName: 'acme/tools',
+        workspace,
+        authorizations: [{ repoId: '55', repoFullName: 'acme/tools', access: 'write' }],
+        installationGrants
+      })
+    ).toBe('write')
+    expect(
+      effectiveRepoAccess({ repoFullName: 'example-org/tools', workspace, authorizations: [], installationGrants })
+    ).toBe('none')
+    expect(installationGrantAccess('ACME/tools', installationGrants)).toBe('read')
+    expect(installationGrantAccess(null, installationGrants)).toBe('none')
   })
 
   it('finds the installation by repo owner', () => {

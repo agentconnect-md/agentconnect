@@ -33,7 +33,13 @@ import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Icon } from '@/components/ui'
 import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { isPoolPlacementKind, workspaceSourceOf, type Agent, type WorkspaceStatusInfo } from '@/lib/data'
-import { creatorLabel, fetchAgentRepos, repoAuthMaterialize, repoAuthProvider } from '@/lib/api'
+import {
+  creatorLabel,
+  fetchAgentInstallations,
+  fetchAgentRepos,
+  repoAuthMaterialize,
+  repoAuthProvider
+} from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -118,7 +124,14 @@ export function WorkspaceCard({
     mutate
   } = useSWR(reposKey, ([, orgId, , agentId]) => fetchAgentRepos(agentId, orgId))
   const repos = reposData ?? []
-  const loadError = reposData === undefined && reposError
+  const grantsKey = consoleKeys.agentInstallations(activeOrg?.id, agent.id)
+  const {
+    data: grantsData,
+    error: grantsError,
+    mutate: mutateGrants
+  } = useSWR(grantsKey, ([, orgId, , agentId]) => fetchAgentInstallations(agentId, orgId))
+  const grants = grantsData ?? []
+  const loadError = (reposData === undefined && reposError) || (grantsData === undefined && grantsError)
   const canEdit = agent.canEdit
   const manualWorkspaceAuthorized =
     ws.mode === 'git' &&
@@ -269,7 +282,30 @@ export function WorkspaceCard({
                 <RepositoryMaterializeBadge value={repoAuthMaterialize(r)} />
               </span>
             ))}
-            {repos.length === 0 && !isGithubApp && (
+            {grants.map((grant) => (
+              <span
+                key={grant.id}
+                className="inline-flex h-6 flex-none items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-card) py-0 pr-1 pl-2"
+                title={t('installationGrantTitle', {
+                  account: grant.accountLogin,
+                  access: grant.access,
+                  creator: creatorLabel(grant.createdBy, me)
+                })}
+              >
+                <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
+                  <GithubMark />
+                </span>
+                <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-primary)">
+                  {t.rich('allRepositoriesIn', {
+                    account: grant.accountLogin,
+                    mono: (chunks) => <span className="mono">{chunks}</span>
+                  })}
+                </span>
+                <span className={REPOSITORY_ACCESS_BADGE[grant.access]}>{grant.access}</span>
+                <RepositoryMaterializeBadge value={grant.materialize} />
+              </span>
+            ))}
+            {repos.length === 0 && grants.length === 0 && !isGithubApp && (
               <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                 {t('noneAuthorized')}
               </span>
@@ -297,14 +333,19 @@ export function WorkspaceCard({
         <EditWorkspaceModal
           agent={agent}
           authorized={repos}
+          installationGrants={grants}
           initialMode={editState.mode}
           {...(editState.authorizeRepository ? { initialRepositoryAuthorization: {} } : {})}
           onAuthorizedChange={(rows) => {
             void mutate(rows, { revalidate: false })
           }}
+          onInstallationGrantsChange={(rows) => {
+            void mutateGrants(rows, { revalidate: false })
+          }}
           onClose={() => setEditState(null)}
           onChanged={() => {
             void mutate()
+            void mutateGrants()
             setEditState(null)
             refresh()
           }}

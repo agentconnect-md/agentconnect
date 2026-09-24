@@ -2,12 +2,19 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
 const repos = vi.hoisted(() => ({ rows: [] as Array<Record<string, unknown>> }))
+const grants = vi.hoisted(() => ({ rows: [] as Array<Record<string, unknown>> }))
 
 vi.mock('swr', () => ({
-  default: () => ({ data: repos.rows, error: undefined, isLoading: false, mutate: vi.fn() })
+  default: (key: readonly string[]) => ({
+    data: key[0] === 'installations' ? grants.rows : repos.rows,
+    error: undefined,
+    isLoading: false,
+    mutate: vi.fn()
+  })
 }))
 vi.mock('@/lib/api', () => ({
   creatorLabel: () => 'Dana Reyes',
+  fetchAgentInstallations: vi.fn(),
   fetchAgentRepos: vi.fn(),
   repoAuthProvider: (row: { provider?: string }) => row.provider ?? 'github',
   repoAuthMaterialize: (row: { materialize?: string }) => row.materialize ?? 'always'
@@ -20,7 +27,9 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-1' } }) }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ refresh: vi.fn() }) }))
-vi.mock('@/lib/swr-keys', () => ({ consoleKeys: { agentRepos: () => ['repos'] } }))
+vi.mock('@/lib/swr-keys', () => ({
+  consoleKeys: { agentRepos: () => ['repos'], agentInstallations: () => ['installations'] }
+}))
 vi.mock('@/components/console/modals/EditWorkspaceModal', () => ({ default: () => null }))
 
 import { WorkspaceCard } from './WorkspaceCard'
@@ -124,6 +133,19 @@ describe('workspace repository authority', () => {
     expect(html).not.toContain('aria-pressed')
     expect(html).not.toContain('Edit workspace')
     expect(html).not.toContain('Authorize repository')
+  })
+
+  it('summarizes an installation grant as every repository of its account, read-only', () => {
+    repos.rows = []
+    grants.rows = [{ id: 'i1', installationId: 12345, accountLogin: 'acme', access: 'write', materialize: 'on-demand' }]
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ mode: 'scratch' })} />)
+    grants.rows = []
+    expect(html).toContain('All repositories in <span class="mono">acme</span>')
+    expect(html).toContain('All repositories in acme — write access; added by Dana Reyes')
+    expect(html).toContain('>write<')
+    expect(html).toContain('>On demand<')
+    expect(html).not.toContain('None explicitly authorized')
+    expect(html).not.toContain('aria-pressed')
   })
 
   it('leaves a scratch workspace with no implicit repository', () => {

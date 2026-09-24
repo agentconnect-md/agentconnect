@@ -22,6 +22,7 @@ import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   ApiError,
+  deleteAgentInstallation,
   deleteAgentRepo,
   setAgentWorkspace,
   fetchGithubBranches,
@@ -34,6 +35,7 @@ import {
   repoAuthProvider,
   syncGithubInstallations,
   updateAgentRepo,
+  type AgentInstallationAuthDto,
   type AgentRepoAuthDto,
   type GithubInstallationDto,
   type GithubRepoAccess,
@@ -59,6 +61,7 @@ import {
   GitUrlTileFields,
   PublicGitlabProjectOption,
   RepositoryAccessField,
+  RepositoryMaterializeBadge,
   RepositoryMaterializeSwitch,
   REPOSITORY_ACCESS_BADGE,
   WorktreeField,
@@ -68,9 +71,11 @@ import {
   type WorkspaceMode
 } from '@/components/console/WorkspaceFormFields'
 import AddAgentRepoModal from '@/components/console/modals/AddAgentRepoModal'
+import AuthorizeInstallationModal from '@/components/console/modals/AuthorizeInstallationModal'
 
 /** Stable empty roster: a fresh literal would re-run the picker's lookups. */
 const NO_INSTALLATIONS: GithubInstallationDto[] = []
+const NO_INSTALLATION_GRANTS: AgentInstallationAuthDto[] = []
 
 export interface InitialRepositoryAuthorization {
   repo?: string
@@ -80,9 +85,11 @@ export interface InitialRepositoryAuthorization {
 export default function EditWorkspaceModal({
   agent,
   authorized,
+  installationGrants = NO_INSTALLATION_GRANTS,
   initialMode,
   initialRepositoryAuthorization,
   onAuthorizedChange,
+  onInstallationGrantsChange,
   onRepositoryCreated,
   onClose,
   onChanged
@@ -90,6 +97,8 @@ export default function EditWorkspaceModal({
   agent: Agent
   /** Existing grants — managed here and badged in the workspace picker. */
   authorized: AgentRepoAuthDto[]
+  /** Installation grants — listed beside the repository rows, written by an organization owner only. */
+  installationGrants?: AgentInstallationAuthDto[]
   /** Preselected mode — the workspace card's Source segment opens the editor
    *  already switched to the mode the user picked. Defaults to the current one. */
   initialMode?: WorkspaceMode
@@ -97,13 +106,17 @@ export default function EditWorkspaceModal({
   initialRepositoryAuthorization?: InitialRepositoryAuthorization
   /** Keep the caller's shared repository cache synchronized after add/revoke. */
   onAuthorizedChange?: (rows: AgentRepoAuthDto[]) => void
+  /** Keep the caller's shared installation-grant cache synchronized after authorize/revoke. */
+  onInstallationGrantsChange?: (rows: AgentInstallationAuthDto[]) => void
   /** Resume a contextual flow, such as GitHub integration setup, after adding. */
   onRepositoryCreated?: (row: AgentRepoAuthDto) => void
   onClose: () => void
   onChanged: () => void
 }) {
   const t = useTranslations('Agents.workspaceEdit')
-  const { orgPath } = useOrgs()
+  const { orgPath, myRole } = useOrgs()
+  // Installation grants are organization-owner writes (decision 10); other editors see them read-only.
+  const isOwner = myRole === 'owner'
   const { orgSetIds } = useConsoleData()
   // Pool placements do not materialize secondary roots yet, so they keep the authorization-only wording.
   const poolPlaced = isPoolPlacementKind(agent.placementKind, agent.setId, orgSetIds)
@@ -184,6 +197,8 @@ export default function EditWorkspaceModal({
       ? { ...initialRepositoryAuthorization, returnToWorkspace: false }
       : null
   )
+  const [grants, setGrants] = useState(installationGrants)
+  const [installationEditor, setInstallationEditor] = useState(false)
   const [removingAuthorization, setRemovingAuthorization] = useState<string | null>(null)
   const [updatingAuthorization, setUpdatingAuthorization] = useState<string | null>(null)
   const [repositoryError, setRepositoryError] = useState<string | null>(null)
@@ -196,17 +211,21 @@ export default function EditWorkspaceModal({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || saving || repositoryEditor !== null) return
+      if (event.key !== 'Escape' || saving || repositoryEditor !== null || installationEditor) return
       event.stopPropagation()
       onClose()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [onClose, repositoryEditor, saving])
+  }, [installationEditor, onClose, repositoryEditor, saving])
 
   useEffect(() => {
     setAuthorizations(authorized)
   }, [authorized])
+
+  useEffect(() => {
+    setGrants(installationGrants)
+  }, [installationGrants])
 
   // Probe installations on open; re-probe on focus ("Install GitHub app"
   // finishes in another tab, coming back should light the picker up).
@@ -610,6 +629,22 @@ export default function EditWorkspaceModal({
     }
   }
 
+  const removeInstallationGrant = async (grant: AgentInstallationAuthDto) => {
+    if (removingAuthorization || updatingAuthorization) return
+    setRemovingAuthorization(grant.id)
+    setRepositoryError(null)
+    try {
+      await deleteAgentInstallation(agent.id, grant.id)
+      const next = grants.filter((row) => row.id !== grant.id)
+      setGrants(next)
+      onInstallationGrantsChange?.(next)
+    } catch (error) {
+      setRepositoryError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRemovingAuthorization(null)
+    }
+  }
+
   const changeMaterialize = async (row: AgentRepoAuthDto, materialize: RepoMaterialize) => {
     if (updatingAuthorization || removingAuthorization) return
     setUpdatingAuthorization(row.id)
@@ -651,6 +686,27 @@ export default function EditWorkspaceModal({
       />
     )
   }
+
+  if (installationEditor) {
+    return (
+      <AuthorizeInstallationModal
+        agent={agent}
+        installations={gh?.installations ?? NO_INSTALLATIONS}
+        granted={grants}
+        onClose={() => setInstallationEditor(false)}
+        onExit={onClose}
+        onCreated={(row) => {
+          const next = [...grants, row]
+          setGrants(next)
+          onInstallationGrantsChange?.(next)
+          setInstallationEditor(false)
+        }}
+      />
+    )
+  }
+
+  // Offered wherever the organization has an installation to grant from; enabled for an owner only.
+  const installationEntry = gh?.enabled === true && gh.installations.length > 0
 
   return (
     <div className="scrim">
@@ -1110,6 +1166,23 @@ export default function EditWorkspaceModal({
                   {t('authorizeRepository')}
                 </Button>
               )}
+              {installationEntry && (
+                <span title={isOwner ? undefined : t('installationOwnerOnly')}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!isOwner}
+                    className={isOwner ? undefined : 'pointer-events-none opacity-50'}
+                    onClick={() => {
+                      setRepositoryError(null)
+                      setInstallationEditor(true)
+                    }}
+                  >
+                    <Icon name="plus" size={13} />
+                    {t('authorizeInstallation')}
+                  </Button>
+                </span>
+              )}
             </div>
 
             {mode === 'scratch' && gh?.enabled && gh.installations.length > 0 && (
@@ -1119,7 +1192,39 @@ export default function EditWorkspaceModal({
             )}
 
             <div className="mt-3 flex flex-col gap-2">
-              {authorizations.length === 0 ? (
+              {grants.map((grant) => (
+                <div
+                  key={grant.id}
+                  data-installation-grant={grant.installationId}
+                  className="flex min-w-0 items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px]"
+                >
+                  <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
+                    <GithubMark />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                    {t.rich('allRepositoriesIn', {
+                      account: grant.accountLogin,
+                      mono: (chunks) => <span className="mono">{chunks}</span>
+                    })}
+                  </span>
+                  <span className={REPOSITORY_ACCESS_BADGE[grant.access]}>{grant.access}</span>
+                  <RepositoryMaterializeBadge value={grant.materialize} />
+                  <span title={isOwner ? t('revokeInstallationAccess') : t('installationOwnerOnly')}>
+                    <button
+                      type="button"
+                      aria-label={t('revokeInstallationAccess')}
+                      className={`iconbtn h-6 w-6 flex-none ${
+                        !isOwner || removingAuthorization === grant.id ? 'pointer-events-none opacity-50' : ''
+                      }`}
+                      disabled={!isOwner || removingAuthorization !== null || updatingAuthorization !== null}
+                      onClick={() => void removeInstallationGrant(grant)}
+                    >
+                      <Icon name={removingAuthorization === grant.id ? 'loader' : 'trash'} size={13} />
+                    </button>
+                  </span>
+                </div>
+              ))}
+              {authorizations.length === 0 && grants.length === 0 ? (
                 <div className="flex items-center gap-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[10px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                   <Icon name="info" size={14} className="flex-none" />
                   {t('noAdditionalRepositories')}

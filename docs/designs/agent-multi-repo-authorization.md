@@ -8,7 +8,10 @@
 > **Installation grants** (decision 10): the control-plane half is implemented —
 > the table, the owner-only routes, the projected `additionalInstallations`, the
 > mint and hook gates, and the refusal that names the grant. The daemon offers a
-> grant's repositories on demand; the console is pending.
+> grant's repositories on demand, and the console lists grant rows with
+> **Authorize an installation** in Edit workspace, shows chips on the Workspace
+> card, and counts covered repositories as authorized in the GitHub hook editor
+> and on the agent page.
 >
 > Scratch workspaces use the same explicit repository allowlist and have no
 > implicit repository. Converting a scratch workspace to GitHub makes the target
@@ -558,21 +561,32 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
    - The card is visible under `canView`; add, delete, and a checkout change
      require `canEdit` and a non-viewer role.
    - The same section lists installation grants as "All repositories in
-     `<account>`" with the tier badge and revoke action, and "Authorize an
-     installation" offers the organization's live installations with the same
-     access options and write warning. Both are visible under `canView` and
-     enabled only for an organization `owner`; other editors see the rows and a
-     disabled action naming the role. Every row carries its materialization:
+     `<account>`" with the GitHub mark, the tier badge, the checkout badge and a
+     revoke action, and "Authorize an installation" offers the organization's
+     live, unsuspended installations the agent does not hold yet, with the same
+     **Read only** / **Read & write** choice (default read) whose write option
+     names every repository as its reach. The Workspace card shows each grant
+     as a read-only chip beside the repository chips. Both are visible under
+     `canView` and enabled only for an organization `owner`; other editors see
+     the rows and a disabled action whose tooltip names the role. As on a
+     repository row there is no inline tier change: lowering or raising a
+     grant's tier is revoke and authorize again (the route still accepts an
+     upward `PATCH`). Every row carries its materialization:
      **Always**, **By decision** or **On demand** on a repository row, **By
      decision** or **On demand** on a grant; **By decision** is offered only
      while a provider is ready, and the Workspace card shows the agent's
      evaluator picker as soon as any entry uses it
      ([multi-repository-workspaces.md](multi-repository-workspaces.md),
-     decisions 13–15 and 18).
+     decisions 13–15 and 18). Until the selector ships a grant is always **On
+     demand** and the authorize step offers no checkout choice.
 2. **GitHub hook editor:** candidates are workspace plus additional
    repositories. An unauthorized target shows inline guidance and, for an
    editor, an "Authorize for this agent" shortcut that POSTs the grant and
-   resumes hook creation.
+   resumes hook creation. A repository whose owner matches one of the agent's
+   installation grants counts as authorized at the grant's tier (an explicit row
+   keeps its own), both there and for the badge in item 3; Checks on such a
+   repository still need the repository authorized on its own, and the
+   editor surfaces the control plane's 409 like any other.
 3. **Grandfathered out-of-bound hook badge:** if the watched repository is
    outside authorization, show a yellow "write-back unauthorized" badge with a
    tooltip pointing to Edit workspace.

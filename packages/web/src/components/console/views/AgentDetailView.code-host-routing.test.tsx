@@ -58,6 +58,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
     createDecisionApi: () => ({ ...createDecisionMockApi(), mode: 'live' as const }),
     fetchAgentHooks: vi.fn(async () => mocks.hooks),
     fetchAgentRepos: vi.fn(async () => []),
+    fetchAgentInstallations: vi.fn(async () => []),
     fetchGithubInstallations: vi.fn(async () => ({ enabled: false, installations: [] })),
     fetchGitlabConnections: vi.fn(async () => ({ enabled: false, connections: [] })),
     fetchGiteaConnections: vi.fn(async () => ({ enabled: false, connections: [] })),
