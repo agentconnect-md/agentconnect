@@ -403,7 +403,12 @@ export const McpAppRpcResult = z.union([
 export type McpAppRpcResult = z.infer<typeof McpAppRpcResult>
 
 export const WebchatEvent = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('message'), text: z.string() }), // from agent_message_chunk
+  z.object({
+    kind: z.literal('message'),
+    text: z.string(),
+    segmentId: z.string().uuid().optional(),
+    postId: z.string().uuid().optional()
+  }), // from agent_message_chunk
   z.object({ kind: z.literal('thinking'), text: z.string() }), // from agent_thought_chunk
   z.object({ kind: z.literal('tool_call'), toolCallId: z.string(), title: z.string(), status: z.string() }),
   // `title` is set only when this update refines the initial `tool_call` title (e.g.

@@ -38,7 +38,7 @@ function promptKey(text: string, image?: SessionImage): string {
   return JSON.stringify([text, image?.name ?? null, image?.mimeType ?? null, image?.data ?? null])
 }
 
-/** Drop exact post duplicates from all rows and fuzzy prompt duplicates from prompt rows. */
+/** Retire a live turn only after its reply posts have landed in the transcript. */
 export function reconcilePersistedLiveSteps(
   live: SessionStep[],
   persisted: SessionMessageDto[],
@@ -48,19 +48,15 @@ export function reconcilePersistedLiveSteps(
   if (live.length === 0 || persisted.length === 0) return live
 
   const persistedPostIds = new Set(persisted.flatMap((m) => (m.postId ? [m.postId] : [])))
-  const withoutConfirmedPosts =
-    persistedPostIds.size === 0 ? live : live.filter((step) => !(step.postId && persistedPostIds.has(step.postId)))
-  if (withoutConfirmedPosts.length === 0) return withoutConfirmedPosts
-
   const turns: Array<{ start: number; end: number; key: string; observedAtMs: number }> = []
-  for (let start = 0; start < withoutConfirmedPosts.length;) {
-    if (withoutConfirmedPosts[start]!.kind !== 'msg') {
+  for (let start = 0; start < live.length;) {
+    if (live[start]!.kind !== 'msg') {
       start += 1
       continue
     }
     let end = start + 1
-    while (end < withoutConfirmedPosts.length && withoutConfirmedPosts[end]!.kind !== 'msg') end += 1
-    const prompt = withoutConfirmedPosts[start]!
+    while (end < live.length && live[end]!.kind !== 'msg') end += 1
+    const prompt = live[start]!
     if (prompt.observedAtMs != null && Number.isFinite(prompt.observedAtMs)) {
       turns.push({
         start,
@@ -71,9 +67,7 @@ export function reconcilePersistedLiveSteps(
     }
     start = end
   }
-  if (turns.length === 0) return withoutConfirmedPosts
-
-  const confirmed = new Set<number>()
+  const matched = new Set(turns.flatMap((turn, index) => (live[turn.start]!.hidden ? [index] : [])))
   for (const message of promptRows) {
     if (message.kind.toLowerCase() !== 'text' || message.sender === agentId) continue
     const persistedAtMs = transcriptRowTimeMs(message)
@@ -82,21 +76,44 @@ export function reconcilePersistedLiveSteps(
     let bestTurn = -1
     let bestDelta = Number.POSITIVE_INFINITY
     for (let index = 0; index < turns.length; index++) {
-      if (confirmed.has(index) || turns[index]!.key !== key) continue
+      if (matched.has(index) || turns[index]!.key !== key) continue
       const delta = Math.abs(turns[index]!.observedAtMs - persistedAtMs)
       if (delta <= LIVE_TURN_CONFIRM_WINDOW_MS && delta < bestDelta) {
         bestTurn = index
         bestDelta = delta
       }
     }
-    if (bestTurn >= 0) confirmed.add(bestTurn)
+    if (bestTurn >= 0) matched.add(bestTurn)
   }
-  if (confirmed.size === 0) return withoutConfirmedPosts
-
   const removed = new Set<number>()
-  for (const index of confirmed) {
+  const hidden = new Set<number>()
+  const anchored = new Set<number>()
+  for (const index of matched) {
     const turn = turns[index]!
-    for (let step = turn.start; step < turn.end; step++) removed.add(step)
+    const replies = live.slice(turn.start + 1, turn.end).filter((step) => step.kind === 'done' && !step.demoted)
+    const persistedReply = (sender: string): boolean =>
+      persisted.some(
+        (row) =>
+          row.kind.toLowerCase() === 'text' &&
+          row.sender === sender &&
+          (transcriptRowTimeMs(row) ?? -1) >= turn.observedAtMs
+      )
+    const replyPersisted = (step: SessionStep): boolean =>
+      !!step.hidden || (step.postId ? persistedPostIds.has(step.postId) : persistedReply(step.agentId ?? agentId))
+    const confirmed = replies.length > 0 && replies.every(replyPersisted)
+    if (confirmed) {
+      for (let step = turn.start; step < turn.end; step++) removed.add(step)
+    } else {
+      hidden.add(turn.start)
+      for (let step = turn.start + 1; step < turn.end; step++) {
+        if (live[step]!.kind === 'done' && replyPersisted(live[step]!)) hidden.add(step)
+      }
+    }
+    for (let step = turn.start; step < turn.end; step++) anchored.add(step)
   }
-  return withoutConfirmedPosts.filter((_, index) => !removed.has(index))
+  const result = live.flatMap((step, index) => {
+    if (removed.has(index) || (!anchored.has(index) && step.postId && persistedPostIds.has(step.postId))) return []
+    return hidden.has(index) && !step.hidden ? [{ ...step, hidden: true }] : [step]
+  })
+  return result.every((step, index) => step === live[index]) && result.length === live.length ? live : result
 }

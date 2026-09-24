@@ -1,4 +1,5 @@
 // Webchat output mapping and canonical transcript helpers used by the turn engine.
+import { randomUUID } from 'node:crypto'
 import type { SessionImageAttachment, WebchatEvent } from '@agentconnect.md/protocol'
 import type { LocalStore, TranscriptAdmission } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
@@ -30,13 +31,24 @@ export function emitWebchatUpdate(
   const messageId = update?.sessionUpdate === 'agent_message_chunk' ? agentMessageId(update) : ''
   const boundary =
     (messageId && wc.messageId && messageId !== wc.messageId) ||
-    ['agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan'].includes(update?.sessionUpdate)
-  if (boundary && !isNoResponsePrefix(wc.replyText.trim())) flushHeldWebchatText(wc, resolveFileLink)
+    ['agent_thought_chunk', 'tool_call', 'plan'].includes(update?.sessionUpdate)
+  if ((boundary || update?.sessionUpdate === 'tool_call_update') && !isNoResponsePrefix(wc.replyText.trim())) {
+    flushHeldWebchatText(wc, resolveFileLink)
+    if (boundary) wc.segmentIndex = undefined
+  }
   if (messageId) wc.messageId = messageId
   switch (update?.sessionUpdate) {
     case 'agent_message_chunk': {
       const text = update.content?.type === 'text' ? (update.content.text ?? '') : ''
       if (text) {
+        if (wc.segmentIndex === undefined) {
+          if (wc.replySegments.length)
+            wc.replyText += wc.replyText.endsWith('\n\n') ? '' : wc.replyText.endsWith('\n') ? '\n' : '\n\n'
+          wc.segmentIndex = wc.replySegments.length
+          wc.replySegments.push({ postId: randomUUID(), text: '' })
+        }
+        const segment = wc.replySegments[wc.segmentIndex]!
+        segment.text += text
         wc.replyText += text
         wc.heldText += text
         // Keep the sentinel and any Markdown that later chunks could turn into a file link off the stream.
@@ -47,7 +59,13 @@ export function emitWebchatUpdate(
         wc.heldTextOffset = end
         if (ready) {
           wc.messageEmitted = true
-          for (const t of chunkText(ready)) emit({ kind: 'message', text: t })
+          for (const t of chunkText(ready))
+            emit({
+              kind: 'message',
+              text: t,
+              segmentId: segment.postId,
+              ...(!wc.continuation ? { postId: segment.postId } : {})
+            })
         }
       }
       return
@@ -153,6 +171,8 @@ export function flushHeldWebchatText(wc: WebchatTurnOutput, resolveFileLink?: Wo
   const rendered = flattenUnsafeLinks(wc.heldText, { resolveFileLink })
   const held = rendered.slice(wc.heldTextOffset ?? 0)
   wc.replyText = wc.replyText.slice(0, -wc.heldText.length) + rendered
+  const segment = wc.segmentIndex === undefined ? undefined : wc.replySegments[wc.segmentIndex]
+  if (segment) segment.text = segment.text.slice(0, -wc.heldText.length) + rendered
   wc.heldText = ''
   wc.heldTextOffset = 0
   if (!held) return
@@ -162,7 +182,11 @@ export function flushHeldWebchatText(wc: WebchatTurnOutput, resolveFileLink?: Wo
       conversationId: wc.conversationId,
       turnId: wc.turnId,
       index: wc.index++,
-      event: { kind: 'message', text }
+      event: {
+        kind: 'message',
+        text,
+        ...(segment ? { segmentId: segment.postId, ...(!wc.continuation ? { postId: segment.postId } : {}) } : {})
+      }
     })
   }
 }

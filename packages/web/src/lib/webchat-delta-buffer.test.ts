@@ -51,6 +51,16 @@ describe('webchat delta buffer', () => {
     expect(h.pendingTimers()).toBe(0)
   })
 
+  it('flushes a message before another segment starts in the same lane', () => {
+    const h = harness()
+    h.buffer.enqueue('s:a', 's', 't1', { kind: 'message', text: 'First ', segmentId: 'one' })
+    h.buffer.enqueue('s:a', 's', 't1', { kind: 'message', text: 'part', segmentId: 'one' })
+    h.buffer.enqueue('s:a', 's', 't1', { kind: 'message', text: 'Second', segmentId: 'two' })
+    expect(h.flushed.map((batch) => batch.event)).toEqual([{ kind: 'message', text: 'First part', segmentId: 'one' }])
+    h.runFrame()
+    expect(h.flushed.map((batch) => batch.event.text)).toEqual(['First part', 'Second'])
+  })
+
   it('buffers participant lanes independently', () => {
     const h = harness()
     h.buffer.enqueue('s:a', 's', 't1', { kind: 'message', text: 'A' })

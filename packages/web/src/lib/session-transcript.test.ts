@@ -56,7 +56,7 @@ describe('reconcilePersistedLiveSteps', () => {
     expect(reconcilePersistedLiveSteps(live, [], agentId)).toBe(live)
   })
 
-  it('removes only the duplicate prompt closest to the persisted retry', () => {
+  it('hides only the duplicate prompt closest to the persisted retry while its answer is pending', () => {
     const failedAt = 1_785_000_000_000
     const retriedAt = failedAt + 30_000
     const live = [
@@ -66,9 +66,11 @@ describe('reconcilePersistedLiveSteps', () => {
       { kind: 'done', turnId: 'ok-1', text: 'deployed', observedAtMs: retriedAt + 1_000 }
     ] satisfies SessionStep[]
 
-    expect(reconcilePersistedLiveSteps(live, [persistedPrompt(1, 'ship it', retriedAt + 50)], agentId)).toEqual(
-      live.slice(0, 2)
-    )
+    expect(reconcilePersistedLiveSteps(live, [persistedPrompt(1, 'ship it', retriedAt + 50)], agentId)).toEqual([
+      ...live.slice(0, 2),
+      { ...live[2], hidden: true },
+      live[3]
+    ])
   })
 
   it('does not confirm a failed prompt from a matching peer-agent row', () => {
@@ -87,6 +89,34 @@ describe('reconcilePersistedLiveSteps', () => {
   function persistedReply(seq: number, sender: string, text: string, ts: number, postId: string): SessionMessageDto {
     return { seq, ts: String(ts), text, sender, kind: 'text', postId }
   }
+
+  it('keeps streamed reply blocks until every canonical post is available', () => {
+    const at = 1_785_000_000_000
+    const live = [
+      prompt('build', at),
+      { kind: 'done', turnId: 'reply', text: 'First', postId: 'post-1', observedAtMs: at + 100 },
+      { kind: 'plan', turnId: 'reply', text: 'working', observedAtMs: at + 200 },
+      { kind: 'done', turnId: 'reply', text: 'Second', postId: 'post-2', observedAtMs: at + 300 }
+    ] satisfies SessionStep[]
+    const promptRow = persistedPrompt(1, 'build', at + 10)
+    const partial = [promptRow, persistedReply(2, 'agent', 'First', at + 400, 'post-1')]
+
+    const waiting = reconcilePersistedLiveSteps(live, [promptRow], agentId)
+    expect(waiting).toEqual([{ ...live[0], hidden: true }, ...live.slice(1)])
+    const afterFirst = reconcilePersistedLiveSteps(live, partial, agentId)
+    expect(afterFirst).toEqual([{ ...live[0], hidden: true }, { ...live[1], hidden: true }, ...live.slice(2)])
+    expect(reconcilePersistedLiveSteps(waiting, partial.slice(1), agentId)).toEqual(afterFirst)
+    expect(
+      reconcilePersistedLiveSteps(
+        afterFirst,
+        [...partial, persistedReply(3, 'agent', 'Second', at + 500, 'post-2')],
+        agentId
+      )
+    ).toEqual([])
+    expect(
+      reconcilePersistedLiveSteps(afterFirst, [persistedReply(3, 'agent', 'Second', at + 500, 'post-2')], agentId)
+    ).toEqual([])
+  })
 
   // #753: an agent-initiated post has no optimistic `msg` prompt to anchor a turn —
   // it renders as a standalone step, identified only by its canonical postId.
@@ -149,6 +179,6 @@ describe('reconcilePersistedLiveSteps', () => {
       persistedReply(1, 'bot-a', 'stale post', at, 'post-3'),
       persistedPrompt(2, 'ship it', at + 1_050)
     ]
-    expect(reconcilePersistedLiveSteps(live, persisted, agentId)).toEqual([])
+    expect(reconcilePersistedLiveSteps(live, persisted, agentId)).toEqual([{ ...live[1], hidden: true }, live[2]])
   })
 })
