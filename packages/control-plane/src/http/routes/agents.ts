@@ -433,6 +433,7 @@ function toDto(
     introduceOnJoin: a.introduceOnJoin,
     runInSandbox: a.runInSandbox,
     execution: a.execution,
+    strategies: placementView.strategies.kind === 'table' ? placementView.strategies.table : null,
     sandboxSupported: placementView.sandbox.supported,
     sandboxRequired: placementView.sandbox.required,
     sandboxUnavailable: placementView.sandbox.unavailable,

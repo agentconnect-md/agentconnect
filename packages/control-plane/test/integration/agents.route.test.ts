@@ -159,9 +159,11 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: { name: 'unsandboxed', runtime: 'claude', daemonId: unsupportedId }
     })
     expect(unsupported.statusCode).toBe(201)
+    // A daemon that reports no table offers the console no strategies; the sandbox fields speak for it.
     expect(unsupported.json()).toMatchObject({
       runInSandbox: false,
       execution: 'host',
+      strategies: null,
       sandboxSupported: false,
       sandboxRequired: false
     })
@@ -257,6 +259,12 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const legacy = await create({ name: 'legacy-agent', runInSandbox: true })
     expect(legacy.statusCode).toBe(201)
     expect(legacy.json()).toMatchObject({ runInSandbox: true, execution: 'srt' })
+    // The console's picker reads the same table the choice was checked against.
+    expect((legacy.json() as { strategies: unknown }).strategies).toEqual({
+      host: { available: true },
+      srt: { available: true },
+      microsandbox: { available: false, reason: 'microsandbox is not the configured sandbox backend' }
+    })
 
     const id = (legacy.json() as { id: string }).id
     const patch = (payload: Record<string, unknown>) =>

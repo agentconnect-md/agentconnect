@@ -83,7 +83,7 @@ settings.
 | `sandbox.backend`              | Retired: read once at startup with a warning as the default table. Reported only while present, so the Control Plane can migrate `runInSandbox`. `none` stays rejected.                                                                                                                                                                     |
 | `security.requireSandbox`      | Retired: read once at startup with a warning; `true` is `sandbox.host: false`, as is `--require-sandbox`.                                                                                                                                                                                                                                   |
 | `sandbox.env`                  | Environment defaults for sandboxed session runtimes, default `{}`; shared by SRT and microsandbox. Runtime and agent variables override them; daemon-enforced private paths and security settings remain authoritative.                                                                                                                     |
-| Agent `execution`              | Implemented: the strategy an agent's sessions run in. An agent the Control Plane has not migrated yet is read from `runInSandbox`: `false` is `host`, `true` the retired backend or `srt`. The console's **Run in sandbox** stays until the strategy picker lands.                                                                          |
+| Agent `execution`              | Implemented: the strategy an agent's sessions run in. An agent the Control Plane has not migrated yet is read from `runInSandbox`: `false` is `host`, `true` the retired backend or `srt`. The console's **Execution strategy** picker offers the placement's strategies.                                                                   |
 | `sandbox.microsandbox.image`   | Implemented: optional, non-empty OCI override. Release builds default to their bundled shared-image reference; development builds require an explicit image. No Kubernetes image lookup is used.                                                                                                                                            |
 | `cpus`, `memoryMiB`, `diskGiB` | Per-VM CPU allocation, memory limit, and capacity of each writable disk; defaults are `2`, `2048`, and `10`. New VMs have a root upper disk and a Docker data disk, plus one disk when overlay mounts are configured, each capped by `diskGiB`. All are sparse; host capacity planning remains the operator's responsibility.               |
 | `sandbox.mounts`               | Operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `mode` (`readonly` by default, or `writable` / `overlay`). SRT requires equal normalized host paths; microsandbox accepts absolute guest targets and `~/` relative to the session HOME. Workspace, HOME, and runtime state remain automatically provisioned. |
@@ -131,9 +131,11 @@ for a group those at least one ready member offers, and refuses one it cannot ru
 with 409 and the reason. The migration runs once: an unsandboxed agent became
 `host`, a sandboxed agent with no placement became `srt`, and a placed, sandboxed
 agent takes its daemon's reported backend at that daemon's next registration.
-Still designed: the birth strategy in the session's verdict and the executor's
-mismatch refusal (S2b), model selection against the strategy's catalog and the
-image's model probe (S2c), and the console's strategy picker (S3).
+The console's strategy picker (S3) offers the same tables: the daemon read model
+carries each machine's own table, and an agent carries its placement's. Still
+designed: the birth strategy in the session's verdict and the executor's mismatch
+refusal (S2b), and model selection against the strategy's catalog and the image's
+model probe (S2c).
 
 ### Shared mounts and manual conversion
 

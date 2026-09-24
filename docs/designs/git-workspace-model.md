@@ -251,17 +251,17 @@ Each step ships independently; nothing observable changes before step 3.
 directory is made depends on whether an OS boundary encloses the runtime — the
 promise is one, the implementation is not:
 
-| Condition                                     | Per-session directory                     | ACP host                      | Console label       |
-| --------------------------------------------- | ----------------------------------------- | ----------------------------- | ------------------- |
-| no boundary (self-hosted daemon, sandbox off) | `git worktree` of the primary (unchanged) | one per agent                 | "worktree"          |
-| self-hosted daemon, sandbox effective         | **per-session clone**                     | **one per session**           | "session isolation" |
-| managed pool                                  | **per-session clone**                     | **one per session (its pod)** | "session isolation" |
+| Condition                                 | Per-session directory                     | ACP host                      | Console label       |
+| ----------------------------------------- | ----------------------------------------- | ----------------------------- | ------------------- |
+| no boundary (self-hosted daemon, `host`)  | `git worktree` of the primary (unchanged) | one per agent                 | "worktree"          |
+| self-hosted daemon, a sandboxing strategy | **per-session clone**                     | **one per session**           | "session isolation" |
+| managed pool                              | **per-session clone**                     | **one per session (its pod)** | "session isolation" |
 
-"Boundary present" is `effectiveRunInSandbox(...)` on a self-hosted daemon and
-always true on a pool member: a pool runtime is isolated by its own pod, the
-daemon keeps the in-process sandbox off there and advertises no `sandbox`
-capability, so `runInSandbox` is not a pool-side knob at all. The console label
-derives from that effective value, never from the stored flag.
+"Boundary present" is an execution strategy other than `host` on a self-hosted
+daemon and always true on a pool member: a pool runtime is isolated by its own pod,
+the daemon keeps the in-process sandbox off there, and the console shows no strategy
+picker for the pool. The console label derives from that strategy, never from the
+stored flag alone.
 
 ### Why the worktree cannot serve the confined case
 

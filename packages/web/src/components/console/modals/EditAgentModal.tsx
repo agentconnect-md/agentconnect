@@ -50,7 +50,17 @@ import {
 } from '@/components/console/EnvSecretsFields'
 import { OutputModeField } from '@/components/console/OutputModeField'
 import { RuntimeChatField } from '@/components/console/RuntimeChatField'
-import { SandboxField } from '@/components/console/SandboxField'
+import { ExecutionStrategyField } from '@/components/console/ExecutionStrategyField'
+import {
+  agentStrategies,
+  agentStrategyValue,
+  daemonStrategies,
+  executionAsk,
+  groupStrategies,
+  isSandboxStrategy,
+  strategyOptions,
+  type PlacementStrategies
+} from '@/lib/execution-strategy'
 import { isOutputMode, type OutputMode } from '@/lib/output-mode'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 
@@ -166,8 +176,8 @@ export default function EditAgentModal({
   const initialAllowRuntimeChangesInChat = useRef(agent.allowRuntimeChangesInChat)
   const [introduceOnJoin, setIntroduceOnJoin] = useState(agent.introduceOnJoin)
   const initialIntroduceOnJoin = useRef(agent.introduceOnJoin)
-  const [runInSandbox, setRunInSandbox] = useState(agent.runInSandbox)
-  const initialRunInSandbox = useRef(agent.runInSandbox)
+  const [execution, setExecution] = useState(() => agentStrategyValue(agent))
+  const initialExecution = useRef(agentStrategyValue(agent))
   // Agent-call visibility (both directions) — prefilled from the list `Agent`
   // (which already carries the policy), edited here, and saved on the modal's
   // Save alongside the spec/sharing diffs rather than immediately per change.
@@ -185,10 +195,8 @@ export default function EditAgentModal({
   const initialEnvRecord = useRef(envRecordFromRows(envRowsFromEnv(agent.env)))
   const [secretRows, setSecretRows] = useState<SecretDraft[]>(() => secretRowsFromKeys(agent.secretKeys))
   const initialSecretKeys = useRef(agent.secretKeys)
-  // #642: the placed daemon reports whether sandboxing is available or mandatory.
-  const [sandboxSupported, setSandboxSupported] = useState(agent.sandboxSupported)
-  const [sandboxRequired, setSandboxRequired] = useState(agent.sandboxRequired)
-  const [sandboxUnavailable, setSandboxUnavailable] = useState(agent.sandboxUnavailable ?? null)
+  // What the saved placement offers, as the Control Plane projected it with the agent.
+  const [savedStrategies, setSavedStrategies] = useState<PlacementStrategies>(() => agentStrategies(agent, false))
   const [repairPlacement, setRepairPlacement] = useState(false)
   const [saving, setSaving] = useState(false)
   const chain = useDecisionChainHost()
@@ -254,11 +262,23 @@ export default function EditAgentModal({
         initialAllowRuntimeChangesInChat.current = dto.allowRuntimeChangesInChat ?? false
         setIntroduceOnJoin(dto.introduceOnJoin ?? false)
         initialIntroduceOnJoin.current = dto.introduceOnJoin ?? false
-        setRunInSandbox(dto.runInSandbox ?? false)
-        initialRunInSandbox.current = dto.runInSandbox ?? false
-        setSandboxSupported(dto.sandboxSupported ?? false)
-        setSandboxRequired(dto.sandboxRequired ?? false)
-        setSandboxUnavailable(dto.sandboxUnavailable ?? null)
+        const storedExecution = agentStrategyValue({
+          execution: dto.execution ?? null,
+          runInSandbox: dto.runInSandbox ?? false
+        })
+        setExecution(storedExecution)
+        initialExecution.current = storedExecution
+        setSavedStrategies(
+          agentStrategies(
+            {
+              strategies: dto.strategies ?? null,
+              sandboxSupported: dto.sandboxSupported ?? false,
+              sandboxRequired: dto.sandboxRequired ?? false,
+              sandboxUnavailable: dto.sandboxUnavailable ?? null
+            },
+            false
+          )
+        )
         const fresh: SharingValue = { visibility: dto.visibility, sharedWith: dto.sharedWith }
         setSharing(fresh)
         initialSharing.current = fresh
@@ -379,14 +399,21 @@ export default function EditAgentModal({
   // is therefore saved first so the selected runtime/model and call policy ride
   // the target activation bundle. Sharing is saved last because a valid edit may
   // remove the current editor's own access.
-  const selectedSandboxRequired = daemonChanged
-    ? (daemon?.caps.features.includes('sandbox-required') ?? false)
-    : sandboxRequired
-  const selectedSandboxSupported = daemonChanged
-    ? selectedSandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
-    : sandboxSupported
-  const selectedSandboxUnavailable = daemonChanged ? (daemon?.caps.sandboxUnavailable ?? null) : sandboxUnavailable
-  const effectiveRunInSandbox = selectedSandboxRequired || (selectedSandboxSupported && runInSandbox)
+  // A pending move shows the target's offer; the picker stays locked until the move is saved.
+  const placementStrategies: PlacementStrategies =
+    daemonId === POOL_PLACEMENT
+      ? { kind: 'pool' }
+      : !daemonChanged
+        ? savedStrategies
+        : selectedGroup
+          ? groupStrategies(
+              daemons
+                .filter((d) => d.status === 'online' && selectedGroup.memberDaemonIds.includes(d.daemonId))
+                .map((d) => d.caps)
+            )
+          : daemonStrategies(daemon?.caps)
+  const executionOptions = strategyOptions(placementStrategies, execution)
+  const effectiveRunInSandbox = placementStrategies.kind !== 'pool' && isSandboxStrategy(execution)
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
     // With the flag off the picker offers Cloud only to an agent already ON it — same rule
@@ -559,7 +586,8 @@ export default function EditAgentModal({
     ...(permissionMode !== initialPermissionMode.current ? { permissionMode } : {}),
     ...(allowRuntimeChangesInChat !== initialAllowRuntimeChangesInChat.current ? { allowRuntimeChangesInChat } : {}),
     ...(introduceOnJoin !== initialIntroduceOnJoin.current ? { introduceOnJoin } : {}),
-    ...(runInSandbox !== initialRunInSandbox.current ? { runInSandbox } : {}),
+    // Saved before any move, so it is asked of the saved placement.
+    ...(execution !== initialExecution.current ? executionAsk(savedStrategies, execution) : {}),
     ...(envChanged ? { env: envRecord } : {}),
     ...(secretsChanged ? { secrets: secretsPatch } : {})
   }
@@ -840,16 +868,14 @@ export default function EditAgentModal({
               </DecisionChainHost>
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
                 <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
-                <SandboxField
-                  checked={effectiveRunInSandbox}
-                  supported={selectedSandboxSupported}
-                  required={selectedSandboxRequired}
-                  unavailable={selectedSandboxUnavailable}
-                  disabled={placementRequested}
-                  disabledDetail={t('edit.saveComputerFirst')}
-                  clusterPlacement={daemonId === POOL_PLACEMENT}
-                  onChange={setRunInSandbox}
-                />
+                {placementStrategies.kind !== 'pool' && (
+                  <ExecutionStrategyField
+                    options={executionOptions}
+                    value={execution}
+                    onChange={setExecution}
+                    disabledReason={placementRequested ? t('edit.saveComputerFirst') : undefined}
+                  />
+                )}
                 <OutputModeField
                   className="desktop:col-span-2"
                   value={outputMode}

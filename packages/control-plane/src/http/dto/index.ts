@@ -94,17 +94,16 @@ export type SetAgentCallPolicyBodyT = z.infer<typeof SetAgentCallPolicyBody>
 
 // ── daemons (read model) ──────────────────────────────────────────────────
 
-/** What a daemon offers the sessions of its group (session-executors.md §5, §10). Each strategy is
- *  named after `sandbox.backend` and carries the reason it cannot run here when it cannot. The
- *  listener's address is NOT here: it is topology, and nothing configures or shows one. */
+/** An effective strategy table (session-executors.md §5): each strategy with the reason it cannot run, when it cannot. */
+export const StrategyTableDto = z.record(
+  z.string(),
+  z.union([z.object({ available: z.literal(true) }), z.object({ available: z.literal(false), reason: z.string() })])
+)
+
+/** What a daemon offers the sessions of its group (session-executors.md §10); the listener's address is topology and is not here. */
 export const DaemonExecutorDto = z.object({
   enabled: z.boolean(),
-  strategies: z
-    .record(
-      z.string(),
-      z.union([z.object({ available: z.literal(true) }), z.object({ available: z.literal(false), reason: z.string() })])
-    )
-    .optional(),
+  strategies: StrategyTableDto.optional(),
   /** The daemon's own session ceiling (`limits.maxConcurrentSessions`). */
   capacity: z.number().int().min(0).optional()
 })
@@ -117,7 +116,9 @@ export const DaemonCapabilitiesDto = z.object({
   /** Why a sandbox this daemon HAS is unusable right now; `features` still lists `sandbox`, because it refuses launches rather than running them unconfined. */
   sandboxUnavailable: z.string().optional(),
   /** What this daemon offers the group's sessions (session-executors.md §10); absent while its executor facet is off. */
-  executor: DaemonExecutorDto.optional()
+  executor: DaemonExecutorDto.optional(),
+  /** Where this daemon's own sessions can run (§5), which the agent's `execution` is checked against; absent for a daemon that predates it. */
+  strategies: StrategyTableDto.optional()
 })
 export const DaemonLoadDto = z.object({ cpu: z.number(), mem: z.number(), agents: z.number() })
 
@@ -905,8 +906,9 @@ export const AgentDto = z.object({
   runInSandbox: z.boolean(), // #642: persisted per-agent sandbox preference (default false)
   // The strategy sessions run in; null ⇒ sandboxed on a daemon that has not yet reported which sandbox it runs.
   execution: ExecutorStrategyName.nullable(),
-  // #642: whether the placed daemon can enforce the preference. false ⇒ the
-  // console renders Run in sandbox unavailable and the effective value is false.
+  // What the placement offers `execution`: its daemon's table, or for a group what one ready member offers; null ⇒ none reported, the sandbox fields below apply.
+  strategies: StrategyTableDto.nullable(),
+  // #642: whether the placed daemon can provide a sandbox; the console reads it only where `strategies` is null.
   sandboxSupported: z.boolean(),
   // #642: daemon policy forces the effective value true and makes it immutable.
   sandboxRequired: z.boolean(),

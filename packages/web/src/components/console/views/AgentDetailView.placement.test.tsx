@@ -212,6 +212,30 @@ describe('AgentDetailView, model row by placement', () => {
   })
 })
 
+describe('AgentDetailView, execution strategy row by placement', () => {
+  it('names a machine agent’s strategy with its boundary', async () => {
+    mocks.agent = agentOn({ daemon: 'd1', placementKind: 'daemon', setId: null, execution: 'microsandbox' })
+    mocks.daemons = [daemon({})]
+    const text = await render()
+    expect(text).toContain('Execution strategymicrosandbox · VM')
+  })
+
+  it('names a group agent’s strategy, and the legacy sandbox while its backend is unreported', async () => {
+    mocks.agent = agentOn({ daemon: 'set:g1', placementKind: 'set', setId: 'g1', execution: null, runInSandbox: true })
+    mocks.memberSets = [{ setId: 'g1', name: 'lab', memberDaemonIds: ['lab-1'], agentCount: 1 }]
+    mocks.daemons = [daemon({ daemonId: 'lab-1', memberSetId: 'g1' })]
+    const text = await render()
+    expect(text).toContain('Execution strategySandbox')
+  })
+
+  it('shows no strategy for a pool agent, whose boundary is its pod', async () => {
+    mocks.agent = agentOn({ daemon: 'pool', placementKind: 'set', setId: null, execution: 'host' })
+    mocks.daemons = [daemon({ daemonId: 'pod-1', pool: true })]
+    const text = await render()
+    expect(text).not.toContain('Execution strategy')
+  })
+})
+
 describe('AgentDetailView, platform grid by placement', () => {
   it("greys out a bot platform the POOL's members do not advertise", async () => {
     mocks.tab = ''

@@ -31,6 +31,8 @@ import {
   workspaceSourceOf
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
+import { agentStrategyValue } from '@/lib/execution-strategy'
+import { useStrategyLabel } from '@/components/console/ExecutionStrategyField'
 import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import {
   createGithubHook,
@@ -272,6 +274,8 @@ export default function AgentDetailView() {
   const decisionsPrototype = useOptionalDecisionsPrototype()
   const decisions = useMemo(() => decisionsPrototype?.decisions ?? [], [decisionsPrototype])
   const permissionT = useTranslations('Common.permissionModes')
+  const strategyT = useTranslations('Common.executionStrategy')
+  const strategyLabel = useStrategyLabel()
   const { orgPath, activeOrg, myRole } = useOrgs()
   const { me } = useProfile()
   const { id } = useParams<{ id: string }>()
@@ -1393,9 +1397,7 @@ export default function AgentDetailView() {
                 </div>
               </div>
             </div>
-            {/* Runtime behavior card — how the agent runs (permission / effort /
-                fast mode / output / footer / introduce / pause). Edit opens the
-                Edit-agent modal at its Runtime behavior anchor. */}
+            {/* Runtime behavior card — how the agent runs; Edit opens the Edit-agent modal at its Runtime behavior anchor. */}
             <div className="card order-2 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
                 <span className="font-sans text-[14px] font-semibold leading-normal">{t('runtime.title')}</span>
@@ -1474,6 +1476,17 @@ export default function AgentDetailView() {
                     {da.allowRuntimeChangesInChat ? t('runtime.allowed') : t('off')}
                   </span>
                 </div>
+                {/* A pool agent has no strategy to show: its boundary is the pod. */}
+                {!isPoolPlacementKind(da.placementKind, da.setId, orgSetIds) && (
+                  <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                    <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
+                      {strategyT('label')}
+                    </span>
+                    <span className="badge bg-(--surface-active) text-(--text-secondary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
+                      {strategyLabel(agentStrategyValue(da))}
+                    </span>
+                  </div>
+                )}
                 {/* Pause is a transient runtime action, not a config default — only
                     surface it when the agent is actually paused (hide the "Off" noise). */}
                 {da.pause && (

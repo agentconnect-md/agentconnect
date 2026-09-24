@@ -17,17 +17,22 @@
       "enabled": "Chat users can change runtime settings and answer approval requests.",
       "disabled": "Only agent editors can manage runtime settings. Chat users cannot change them or answer approval requests."
     },
-    "sandbox": {
-      "label": "Run in sandbox",
-      "unavailable": "Unavailable",
-      "required": "Required",
-      "on": "On",
-      "off": "Off",
-      "downDetail": "The selected computer cannot provide its sandbox right now, so sessions that need one are refused rather than run unconfined. {reason}",
-      "requiredDetail": "Sandboxing is required on the selected computer. The runtime uses a private HOME and is confined to its workspace.",
-      "unavailableDetail": "Sandboxing is not available for the current selection, so the runtime uses its normal environment.",
-      "enabledDetail": "The runtime runs in an OS sandbox with a private HOME and is confined to its workspace.",
-      "disabledDetail": "The runtime uses the selected computer environment without OS sandbox isolation."
+    "executionStrategy": {
+      "label": "Execution strategy",
+      "option": "{strategy} · {boundary}",
+      "boundary": {
+        "none": "no boundary",
+        "process": "process",
+        "vm": "VM",
+        "container": "container"
+      },
+      "sandbox": "Sandbox",
+      "unavailable": "unavailable",
+      "noneAvailable": "No strategy available",
+      "refusal": {
+        "sandboxRequired": "This daemon requires a sandbox.",
+        "notOffered": "Not offered where this agent is placed."
+      }
     },
     "sandboxWake": {
       "starting": "Starting the agent’s sandbox…",
@@ -2241,7 +2246,7 @@
         "cancelRepair": "Cancel repair",
         "repairPlacement": "Repair placement",
         "safeMoveUnavailable": "Safe move unavailable",
-        "saveComputerFirst": "Save the computer change before adjusting sandboxing.",
+        "saveComputerFirst": "Save the computer change before changing the execution strategy.",
         "introduceOnJoin": "Introduce on channel join",
         "introduceOnJoinOn": "On — greets peers on join",
         "introduceOnJoinHint": "Introduces itself to agents already in a channel it joins.",

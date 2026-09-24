@@ -17,17 +17,22 @@
       "enabled": "聊天用户可以更改 Runtime 设置并回答审批请求。",
       "disabled": "只有 Agent 编辑者可以管理 Runtime 设置；聊天用户不能更改设置或回答审批请求。"
     },
-    "sandbox": {
-      "label": "在沙箱中运行",
+    "executionStrategy": {
+      "label": "执行策略",
+      "option": "{strategy} · {boundary}",
+      "boundary": {
+        "none": "无隔离",
+        "process": "进程",
+        "vm": "虚拟机",
+        "container": "容器"
+      },
+      "sandbox": "沙箱",
       "unavailable": "不可用",
-      "required": "必需",
-      "on": "开启",
-      "off": "关闭",
-      "downDetail": "所选计算机暂时无法提供沙箱，因此需要沙箱的会话会被拒绝，而不会在无隔离环境中运行。{reason}",
-      "requiredDetail": "所选计算机要求使用沙箱。Runtime 使用私有 HOME，并被限制在其工作区内。",
-      "unavailableDetail": "当前选择不支持沙箱，因此 Runtime 使用普通环境。",
-      "enabledDetail": "Runtime 在操作系统沙箱中运行，使用私有 HOME，并被限制在其工作区内。",
-      "disabledDetail": "Runtime 使用所选计算机环境，但没有操作系统沙箱隔离。"
+      "noneAvailable": "没有可用的执行策略",
+      "refusal": {
+        "sandboxRequired": "此 Daemon 要求使用沙箱。",
+        "notOffered": "当前位置不提供此策略。"
+      }
     },
     "sandboxWake": {
       "starting": "正在启动 Agent 沙箱…",
@@ -2241,7 +2246,7 @@
         "cancelRepair": "取消修复",
         "repairPlacement": "修复运行位置",
         "safeMoveUnavailable": "无法安全迁移",
-        "saveComputerFirst": "请先保存计算机变更，再调整沙箱设置。",
+        "saveComputerFirst": "请先保存计算机变更，再调整执行策略。",
         "introduceOnJoin": "加入频道时介绍自己",
         "introduceOnJoinOn": "开启：加入时向其他 Agent 问候",
         "introduceOnJoinHint": "加入频道后，会向该频道中已有的 Agent 介绍自己。",
