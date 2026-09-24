@@ -607,6 +607,29 @@ export class GithubReviewOrchestrator {
   }> {
     if (!this.githubFormalReviewEnabled(entry)) return {}
 
+    const hook = entry.hookContext
+    const client = this.host.cpClient()
+    if (client && hook?.snapshot) {
+      const payload = {
+        hookId: hook.hookId,
+        agentId: hook.agentId,
+        deliveryKey: hook.deliveryKey,
+        ...hook.snapshot
+      }
+      // Relay accepted can arrive after daemon dispatch; retry without holding up workspace preparation.
+      void (async () => {
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          try {
+            await client.prepareHook(payload)
+            return
+          } catch {
+            if (attempt === 4) return
+            await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)))
+          }
+        }
+      })()
+    }
+
     const github = await this.ensureGithubPullRevision(entry, true)
     if (!github?.headSha || !github.baseSha || github.pullNumber === undefined) {
       throw new Error('github review blocked: authoritative PR base and head are unavailable')

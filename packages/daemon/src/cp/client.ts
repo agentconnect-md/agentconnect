@@ -37,6 +37,8 @@ import type {
   IntegrationRevokedOk,
   CronReport,
   HookReport,
+  HookPreparing,
+  HookPreparingOk,
   HookStart,
   HookStartOk,
   GithubReviewAuthorize,
@@ -883,6 +885,15 @@ export class CpClient {
     if (rep.type !== 'ack' || rep.payload.ok !== true) {
       throw new WireError('INTERNAL', `expected hook/report ack, got ${rep.type}`, false)
     }
+  }
+
+  async prepareHook(payload: HookPreparing): Promise<HookPreparingOk> {
+    this.requireReady('hook/preparing')
+    const rep = await this.request('hook/preparing', payload)
+    if (rep.type !== 'hook/preparing/ok') {
+      throw new WireError('INTERNAL', `expected hook/preparing/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as HookPreparingOk
   }
 
   /** Durable start barrier for an accepted hook turn. Formal review is not exposed until this

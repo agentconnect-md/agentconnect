@@ -50,6 +50,7 @@ const AMBIGUOUS_WRITE_GRACE_MS = 10 * 60_000
 
 const CHECK_OUTPUT_TITLE: Record<ProjectionDesiredState, string> = {
   queued: 'Waiting for review',
+  preparing: 'Preparing review',
   in_progress: 'Analyzing this revision',
   success: 'No blocking findings',
   action_required: 'Review findings need attention',
@@ -179,18 +180,25 @@ export class GithubRunCoordinator {
     return runs.length
   }
 
-  /** Relay accepted a delivery. Only a trusted revision event opens `queued`. */
+  /** Relay accepted a delivery. Only a trusted revision event opens a Check. */
   async afterAccepted(hookId: HookId, deliveryKey: string): Promise<void> {
-    const run = await this.deps.hooks.getRun(hookId, deliveryKey)
-    if (!run || run.status !== 'running' || run.projectionIntent !== 'revision_event') return
-    await this.converge(run, 'queued', true)
+    await this.afterLifecycleEdge(hookId, deliveryKey)
+  }
+
+  async afterPreparing(hookId: HookId, deliveryKey: string): Promise<void> {
+    await this.afterLifecycleEdge(hookId, deliveryKey)
   }
 
   /** Daemon crossed the acknowledged start barrier. */
   async afterStart(hookId: HookId, deliveryKey: string): Promise<void> {
+    await this.afterLifecycleEdge(hookId, deliveryKey)
+  }
+
+  private async afterLifecycleEdge(hookId: HookId, deliveryKey: string): Promise<void> {
     const run = await this.deps.hooks.getRun(hookId, deliveryKey)
     if (!run || run.status !== 'running' || run.projectionIntent !== 'revision_event') return
-    await this.converge(run, 'in_progress', true)
+    const desired = authoritativeHookProjectionState(run)
+    if (desired) await this.converge(run, desired, true)
   }
 
   /** A formal review effect was durably correlated to this exact HookRun. */
@@ -290,9 +298,7 @@ export class GithubRunCoordinator {
         isOpen: true
       })
     }
-    // Duplicate accepted/start notifications must not regress a sealed review
-    // verdict. Normal WS order is accepted -> start -> result -> report; this
-    // check also makes delayed duplicate edges harmless.
+    // Delayed lifecycle notifications cannot reopen a sealed review verdict.
     const mayConverge = !(isTerminalDesiredState(projection.desiredState) && !isTerminalDesiredState(desiredState))
     if (mayConverge && (forceConverge || projection.desiredState !== desiredState)) {
       await this.deps.hooks.setProjectionDesired(projection.id, projection.generation, desiredState, now, run.id)
@@ -1154,7 +1160,9 @@ function checkPayload(
         ]
       : []
   const link = presentation.detailsUrl ? { details_url: presentation.detailsUrl } : {}
-  if (state === 'queued' || state === 'in_progress') return { status: state, output, actions, ...link }
+  if (state === 'queued' || state === 'preparing' || state === 'in_progress') {
+    return { status: state === 'queued' ? 'queued' : 'in_progress', output, actions, ...link }
+  }
   return {
     status: 'completed',
     conclusion: state,
@@ -1223,13 +1231,16 @@ function recoveredWriteState(run: CheckRunResponse, marker: string): ProjectionD
   if (!summary || !summary.includes(`<!-- agentconnect-write:${marker} -->`)) return null
   const encoded = summary.match(/^Phase: ([^\n]+)$/m)?.[1]
   if (!encoded || !isDesiredState(encoded)) return null
-  if (encoded === 'queued' || encoded === 'in_progress') return run.status === encoded ? encoded : null
+  if (encoded === 'queued' || encoded === 'preparing' || encoded === 'in_progress') {
+    return run.status === (encoded === 'queued' ? 'queued' : 'in_progress') ? encoded : null
+  }
   return run.status === 'completed' && run.conclusion === encoded ? encoded : null
 }
 
 function isDesiredState(state: string): state is ProjectionDesiredState {
   return (
     state === 'queued' ||
+    state === 'preparing' ||
     state === 'in_progress' ||
     state === 'success' ||
     state === 'action_required' ||
@@ -1241,7 +1252,7 @@ function isDesiredState(state: string): state is ProjectionDesiredState {
 }
 
 function isTerminalDesiredState(state: string): boolean {
-  return state !== 'queued' && state !== 'in_progress'
+  return state !== 'queued' && state !== 'preparing' && state !== 'in_progress'
 }
 
 function parsePendingIntent(value: unknown): PendingProjectionIntent | null {

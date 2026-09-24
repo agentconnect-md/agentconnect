@@ -1049,6 +1049,12 @@ usage in the history presentation.
 
 ## GitHub informational review checks
 
+An accepted review starts as `queued` until the daemon reports active preparation. When the daemon
+begins preparing the review workspace, its Check becomes `in_progress` with the title
+`Preparing review`; this can happen before the session exists, so no new session
+link is added yet. After the session crosses the start barrier, the title becomes
+`Analyzing this revision`. Preparation updates are best-effort and never delay the turn.
+
 An Agent failure is not a code-review finding. When a GitHub review turn ends without a
 formal review verdict, keep the internal run failed for observability but complete its
 informational Check as non-blocking `skipped`; a runtime failure may still say

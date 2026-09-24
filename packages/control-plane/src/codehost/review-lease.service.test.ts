@@ -56,6 +56,7 @@ function run(overrides: Partial<HookRunRecord> = {}): HookRunRecord {
     isDraft: null,
     baseChanged: null,
     startedAt: new Date(0),
+    preparingAt: null,
     turnStartedAt: null,
     completedAt: null,
     orphanedAt: null,

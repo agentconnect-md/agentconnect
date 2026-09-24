@@ -8,7 +8,15 @@ import {
 import type { HookRunRecord } from '../persistence/ports.js'
 
 export type ProjectionDesiredState =
-  'queued' | 'in_progress' | 'success' | 'action_required' | 'neutral' | 'skipped' | 'failure' | 'timed_out'
+  | 'queued'
+  | 'preparing'
+  | 'in_progress'
+  | 'success'
+  | 'action_required'
+  | 'neutral'
+  | 'skipped'
+  | 'failure'
+  | 'timed_out'
 
 export type HookRuntimeProjectionState = 'neutral' | 'skipped'
 
@@ -47,7 +55,7 @@ export function authoritativeHookProjectionState(run: HookRunRecord): Projection
   if (run.orphanedAt) return 'timed_out'
   const runtimeState = hookRuntimeProjectionState(run)
   if (runtimeState) return runtimeState
-  return run.turnStartedAt ? 'in_progress' : 'queued'
+  return run.turnStartedAt ? 'in_progress' : run.preparingAt ? 'preparing' : 'queued'
 }
 
 /** Product-facing label for a skipped Check; internal topology stays in HookRun.reason.

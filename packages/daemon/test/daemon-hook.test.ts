@@ -1258,6 +1258,8 @@ describe('Daemon rd/msg hook fires', () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
     await daemon.start()
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+    const prepareHook = vi.fn(() => new Promise<never>(() => {}))
+    vi.spyOn((daemon as any).githubReviews.host, 'cpClient').mockReturnValue({ prepareHook })
     const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace').mockResolvedValue('/agent/worktrees/review')
     const headSha = 'a'.repeat(40)
     const baseSha = 'b'.repeat(40)
@@ -1302,6 +1304,10 @@ describe('Daemon rd/msg hook fires', () => {
       forceWorkspaceIsolation: true,
       preparedWorkspaceCwd: '/agent/worktrees/review'
     })
+    expect(prepareHook).toHaveBeenCalledWith(
+      expect.objectContaining({ hookId: HOOK_ID, deliveryKey: 'exact-review', dispatchDaemonId })
+    )
+    expect(prepareHook.mock.invocationCallOrder[0]).toBeLessThan(prepare.mock.invocationCallOrder[0]!)
     expect(prepare).toHaveBeenCalledWith(
       expect.objectContaining({ id: AGENT_ID }),
       undefined,

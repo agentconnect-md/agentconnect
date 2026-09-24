@@ -113,6 +113,7 @@ function setup(overrides: Partial<GithubReviewBrokerDeps> = {}) {
   const hookRepo = {
     getUnscoped: vi.fn(async () => hook()),
     getRun: vi.fn(async () => currentRun),
+    recordPreparing: vi.fn<HookRepo['recordPreparing']>(async () => true),
     recordStart: vi.fn<HookRepo['recordStart']>(async () => true),
     reserveReviewAttempt: vi.fn<HookRepo['reserveReviewAttempt']>(async (_hookId, _daemonId, input) => {
       currentRun = run({
@@ -159,6 +160,23 @@ function setup(overrides: Partial<GithubReviewBrokerDeps> = {}) {
 }
 
 describe('GithubReviewBrokerService', () => {
+  it('records preparation for the accepted current review', async () => {
+    const state = setup()
+    state.setRun(run({ turnStartedAt: null }))
+    await state.service.prepare({ hookId: HOOK, agentId: AGENT, deliveryKey: 'delivery-1', ...snapshot }, DAEMON)
+    expect(state.hookRepo.recordPreparing).toHaveBeenCalledWith(
+      HOOK,
+      DAEMON,
+      expect.objectContaining({ deliveryKey: 'delivery-1', agentId: AGENT, at: new Date(3_000) })
+    )
+
+    state.hookRepo.recordPreparing.mockClear()
+    await expect(
+      state.service.prepare({ hookId: HOOK, agentId: AGENT, deliveryKey: 'delivery-1', ...snapshot }, OLD_DAEMON)
+    ).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+    expect(state.hookRepo.recordPreparing).not.toHaveBeenCalled()
+  })
+
   it('records hook/start only across the exact accepted and current dispatch fence', async () => {
     const { service, hookRepo } = setup()
     await service.start(

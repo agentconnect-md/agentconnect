@@ -441,6 +441,17 @@ export const HookReport = z
   })
 export type HookReport = z.infer<typeof HookReport>
 
+/** The daemon has begun preparing an accepted GitHub review, before a session exists. */
+export const HookPreparing = z.object({
+  hookId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  deliveryKey: z.string().min(1),
+  ...HookConfigSnapshot.shape
+})
+export type HookPreparing = z.infer<typeof HookPreparing>
+export const HookPreparingOk = z.object({ accepted: z.literal(true) })
+export type HookPreparingOk = z.infer<typeof HookPreparingOk>
+
 /**
  * `hook/start` (D→C REQ) — metadata barrier immediately before an accepted
  * GitHub hook enters the model prompt. A successful reply means the CP durably

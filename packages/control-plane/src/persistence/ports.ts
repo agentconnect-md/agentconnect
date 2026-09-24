@@ -2406,6 +2406,7 @@ export interface HookRunRecord {
   isDraft: boolean | null
   baseChanged: boolean | null
   startedAt: Date
+  preparingAt: Date | null
   turnStartedAt: Date | null
   completedAt: Date | null
   orphanedAt: Date | null
@@ -2472,7 +2473,17 @@ export interface GithubRepoFullNameRefreshResult {
   agentIds: AgentId[]
 }
 
-/** Metadata barrier emitted when the daemon actually dequeues an accepted turn. */
+/** The active daemon began preparing an accepted GitHub review. */
+export interface HookPreparingInput {
+  deliveryKey: string
+  agentId: AgentId
+  configRevision: bigint
+  dispatchRevision: bigint
+  dispatchDaemonId: DaemonId
+  at: Date
+}
+
+/** Metadata barrier emitted immediately before the accepted turn is prompted. */
 export interface HookStartInput {
   deliveryKey: string
   agentId: AgentId
@@ -2725,6 +2736,7 @@ export interface HookRepo {
   /** Latest current revisions whose durable Check projection is absent or
    * stale. Used by the periodic R2a crash-repair loop. */
   listRunsNeedingReviewProjection(limit?: number): Promise<HookRunRecord[]>
+  recordPreparing(hookId: HookId, reportingDaemonId: DaemonId, input: HookPreparingInput): Promise<boolean>
   /** Action/start authority uses the persisted accepted tuple, not current placement. */
   recordStart(hookId: HookId, reportingDaemonId: DaemonId, input: HookStartInput): Promise<boolean>
   reserveReviewAttempt(

@@ -33,6 +33,7 @@ export function githubHookRun(input: HookRunFixtureInput): HookRunRecord {
     isDraft: false,
     baseChanged: false,
     startedAt: new Date(0),
+    preparingAt: null,
     turnStartedAt: null,
     completedAt: null,
     orphanedAt: null,
