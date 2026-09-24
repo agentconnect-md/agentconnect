@@ -1603,7 +1603,6 @@
       "configuration": "Integration configuration",
       "addIntegration": "Add integration",
       "connectDescription": "Connect a chat platform, webhook or repository to one of your agents",
-      "forAgentWorkspace": "for {agent} — this agent answers on the workspace",
       "agent": "Agent",
       "agentHandles": "{agent} handles messages from this integration.",
       "platform": "Platform",

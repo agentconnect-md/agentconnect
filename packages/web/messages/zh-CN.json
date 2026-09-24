@@ -1603,7 +1603,6 @@
       "configuration": "集成配置",
       "addIntegration": "添加集成",
       "connectDescription": "将聊天平台、Webhook 或仓库连接到你的 Agent",
-      "forAgentWorkspace": "为 {agent} 配置——此 Agent 在工作区中响应",
       "agent": "Agent",
       "agentHandles": "{agent} 处理来自此集成的消息。",
       "platform": "平台",

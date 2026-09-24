@@ -1422,13 +1422,8 @@ export default function AddIntegrationModal({
         <div className="min-w-0 flex-1">
           <div className="font-sans text-[16px] font-semibold leading-normal">{t('addIntegration')}</div>
           <div className="mt-[1px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            {agentChoices ? (
-              // The Agent field below names the target — repeating it here would
-              // read as fixed, which is the one thing this arm is not.
-              t('connectDescription')
-            ) : (
-              <>{t('forAgentWorkspace', { agent: agentLabel(agent) })}</>
-            )}
+            {/* With a picker the Agent field names the target; repeating it here would read as fixed. */}
+            {agentChoices ? t('connectDescription') : agentLabel(agent)}
           </div>
         </div>
         <button className="iconbtn" onClick={onClose}>
@@ -1453,7 +1448,7 @@ export default function AddIntegrationModal({
               return (
                 <div
                   key={candidate.key}
-                  className={`${on ? 'ptile on' : 'ptile'} w-[66px] flex-none flex-col justify-center gap-[5px] px-1.5 py-[9px] text-center ${
+                  className={`${on ? 'ptile on' : 'ptile'} w-[66px] flex-none flex-col desktop:w-[calc((100%_-_(var(--tile-cols)_-_1)_*_--spacing(2))_/_var(--tile-cols))] justify-center gap-[5px] px-1.5 py-[9px] text-center ${
                     available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
                   }`}
                   aria-disabled={!available}
