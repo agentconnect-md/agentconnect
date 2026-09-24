@@ -24,7 +24,8 @@ import { DecisionPicker } from './DecisionPicker'
 import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { reachableSteps } from '@/lib/decisions/chain'
-import { NextDecision, NextDecisionChip, useDecisionChainPath } from './DecisionChainControls'
+import { DecisionChainSheet, NextDecision, NextDecisionChip, useDecisionChainPath } from './DecisionChainControls'
+import { conditionText } from './rule-summary'
 
 type Rule = AgentModelSelection['rules'][number]
 
@@ -104,27 +105,16 @@ export function ModelSelectionField({
   const { orgPath } = useOrgs()
   const { api, orgId, decisions = [], loading, error } = useOptionalDecisionsPrototype() ?? {}
   const [decisionMode, setDecisionMode] = useState(!!configuration)
-  const { path: stepPath, enter, to } = useDecisionChainPath(configuration, onConfigurationChange)
-  const stepIndex = configuration?.steps?.findIndex((step) => step.id === stepPath.at(-1)) ?? -1
-  const value: DecisionModelStep | null = stepIndex >= 0 ? configuration!.steps![stepIndex]! : configuration
-  const onChange = (next: DecisionModelStep | null, steps = configuration?.steps) => {
-    if (!next) {
-      to(0)
-      onConfigurationChange(null)
-      return
-    }
-    const updated: AgentModelSelection =
-      stepIndex < 0
-        ? { ...next, steps }
-        : { ...configuration!, steps: steps?.map((step, index) => (index === stepIndex ? { ...step, ...next } : step)) }
-    onConfigurationChange(pruneSteps(updated))
-  }
+  const { path: stepPath, enter, to, back } = useDecisionChainPath(configuration, onConfigurationChange)
   const [dragging, setDragging] = useState<number | null>(null)
   const [dropAt, setDropAt] = useState<number | null>(null)
-  const active = !!value || decisionMode
-  const decision = decisions.find((decision) => decision.id === value?.decisionId)
+  const active = !!configuration || decisionMode
+  const referenced = configuration
+    ? [configuration.decisionId, ...(configuration.steps ?? []).map((step) => step.decisionId)]
+    : []
+  const hidden = referenced.some((id) => !decisions.some((entry) => entry.id === id))
   const { data: retained } = useSWR(
-    agentId && orgId && value && !decision && api?.mode === 'live' ? ['agent-model-decision', orgId, agentId] : null,
+    agentId && orgId && hidden && api?.mode === 'live' ? ['agent-model-decision', orgId, agentId] : null,
     ([, org, id]) => fetchAgentDecisions(id, org, 'model_selection')
   )
   const rootDecision = decisions.find((entry) => entry.id === configuration?.decisionId)
@@ -146,36 +136,8 @@ export function ModelSelectionField({
   const fallbackAvailable = source?.runtimeModels
     .find((profile) => profile.runtime === fallback.runtime)
     ?.models.includes(fallback.model)
-  const valid = !active || (!!value && !!fallbackAvailable && !missingModel && issues.length === 0)
+  const valid = !active || (!!configuration && !!fallbackAvailable && !missingModel && issues.length === 0)
   useEffect(() => onValidityChange(valid), [valid, onValidityChange])
-  const selectDecision = (id: string) => {
-    const next = decisions.find((item) => item.id === id)
-    if (next && next.id !== value?.decisionId)
-      onChange({ decisionId: next.id, rules: [{ when: nextCondition(next.question, []), ...fallback }] })
-  }
-  const replaceRule = (index: number, rule: Rule, steps = configuration?.steps) => {
-    if (value) onChange({ ...value, rules: value.rules.map((entry, i) => (i === index ? rule : entry)) }, steps)
-  }
-  const removeRule = (index: number) => {
-    if (value) onChange({ ...value, rules: value.rules.filter((_, i) => i !== index) })
-  }
-  const moveRule = (from: number, to: number) => {
-    if (!value || from === to || to < 0 || to >= value.rules.length) return
-    const rules = [...value.rules]
-    const [rule] = rules.splice(from, 1)
-    rules.splice(to, 0, rule!)
-    onChange({ ...value, rules })
-  }
-  const invalidRow = (index: number) =>
-    issues.some((issue) => {
-      const path =
-        stepIndex >= 0 && issue.path[0] === 'steps' && issue.path[1] === stepIndex
-          ? issue.path.slice(2)
-          : stepIndex < 0
-            ? issue.path
-            : []
-      return path[0] === 'rules' && String(path[1]) === String(index)
-    })
   // Fixed and By decision share one control: the fallback's run settings are the agent's own.
   const fallbackPicker = (dense: boolean) => (
     <RuntimeModelSelect
@@ -189,64 +151,6 @@ export function ModelSelectionField({
       runInSandbox={runInSandbox}
     />
   )
-  const rulePicker = (
-    rule: Rule,
-    ariaLabel: string,
-    onPick: (target: DecisionModelTarget, steps?: AgentModelSelection['steps']) => void
-  ) => {
-    const next = 'nextStepId' in rule ? configuration?.steps?.find((step) => step.id === rule.nextStepId) : undefined
-    const nextName =
-      decisions.find((entry) => entry.id === next?.decisionId)?.name ??
-      retained?.find((entry) => entry.id === next?.decisionId)?.name ??
-      t('nextDecision')
-    return (
-      <div className="flex min-w-0 items-center gap-1">
-        {'runtime' in rule ? (
-          <div className="min-w-0 flex-1">
-            <RuntimeModelSelect
-              dense
-              runSettings
-              value={{
-                effort: fallback.effort,
-                permissionMode: fallback.permissionMode,
-                fastMode: fallback.fastMode,
-                ...rule
-              }}
-              ariaLabel={ariaLabel}
-              source={source}
-              runtimes={runtimes}
-              runInSandbox={runInSandbox}
-              onChange={(target) => onPick(target)}
-            />
-          </div>
-        ) : (
-          <NextDecisionChip
-            decision={decisions.find((entry) => entry.id === next?.decisionId)}
-            name={nextName}
-            label={t('editNext', { name: nextName })}
-            removeLabel={t('useModel')}
-            onOpen={() => enter(rule.nextStepId)}
-            onRemove={() => onPick(fallback)}
-          />
-        )}
-        {'runtime' in rule && (
-          <NextDecision
-            decisions={decisions}
-            ariaLabel={`${ariaLabel}: ${t('nextDecision')}`}
-            disabled={(configuration?.steps?.length ?? 0) >= DECISION_CHAIN_MAX_STEPS - 1}
-            onSelect={(entry) => {
-              const id = crypto.randomUUID()
-              onPick({ nextStepId: id }, [
-                ...(configuration?.steps ?? []),
-                { id, decisionId: entry.id, rules: [{ when: nextCondition(entry.question, []), ...fallback }] }
-              ])
-              enter(id)
-            }}
-          />
-        )}
-      </div>
-    )
-  }
   const fallbackPanel = (
     <div className="grid grid-cols-1 items-center gap-3 rounded-b-lg bg-(--surface-sunken) px-3 py-[10px] desktop:grid-cols-[minmax(0,1fr)_minmax(0,250px)]">
       <span className="flex min-w-0 flex-col gap-[2px]">
@@ -258,13 +162,138 @@ export function ModelSelectionField({
       {fallbackPicker(true)}
     </div>
   )
-  const addButton = decision && value && (
-    <span className="flex justify-end">
-      <Button
-        variant="secondary"
-        size="xs"
-        className="h-[22px] gap-1 px-[7px] font-sans text-[11.5px] normal-case tracking-normal"
-        ariaLabel={t('addRule')}
+  // One level of the chain: the first Decision in place, or a later one inside its sheet.
+  const levelOf = (stepId?: string) => {
+    const stepIndex = configuration?.steps?.findIndex((step) => step.id === stepId) ?? -1
+    const value: DecisionModelStep | null = stepIndex >= 0 ? configuration!.steps![stepIndex]! : configuration
+    const onChange = (next: DecisionModelStep | null, steps = configuration?.steps) => {
+      if (!next) {
+        to(0)
+        onConfigurationChange(null)
+        return
+      }
+      const updated: AgentModelSelection =
+        stepIndex < 0
+          ? { ...next, steps }
+          : {
+              ...configuration!,
+              steps: steps?.map((step, index) => (index === stepIndex ? { ...step, ...next } : step))
+            }
+      onConfigurationChange(pruneSteps(updated))
+    }
+    const decision = decisions.find((decision) => decision.id === value?.decisionId)
+    const selectDecision = (id: string) => {
+      const next = decisions.find((item) => item.id === id)
+      if (next && next.id !== value?.decisionId)
+        onChange({ decisionId: next.id, rules: [{ when: nextCondition(next.question, []), ...fallback }] })
+    }
+    const replaceRule = (index: number, rule: Rule, steps = configuration?.steps) => {
+      if (value) onChange({ ...value, rules: value.rules.map((entry, i) => (i === index ? rule : entry)) }, steps)
+    }
+    const removeRule = (index: number) => {
+      if (value) onChange({ ...value, rules: value.rules.filter((_, i) => i !== index) })
+    }
+    const moveRule = (from: number, to: number) => {
+      if (!value || from === to || to < 0 || to >= value.rules.length) return
+      const rules = [...value.rules]
+      const [rule] = rules.splice(from, 1)
+      rules.splice(to, 0, rule!)
+      onChange({ ...value, rules })
+    }
+    const invalidRow = (index: number) =>
+      issues.some((issue) => {
+        const path =
+          stepIndex >= 0 && issue.path[0] === 'steps' && issue.path[1] === stepIndex
+            ? issue.path.slice(2)
+            : stepIndex < 0
+              ? issue.path
+              : []
+        return path[0] === 'rules' && String(path[1]) === String(index)
+      })
+    const rulePicker = (
+      rule: Rule,
+      ariaLabel: string,
+      onPick: (target: DecisionModelTarget, steps?: AgentModelSelection['steps']) => void
+    ) => {
+      const next = 'nextStepId' in rule ? configuration?.steps?.find((step) => step.id === rule.nextStepId) : undefined
+      const nextName =
+        decisions.find((entry) => entry.id === next?.decisionId)?.name ??
+        retained?.find((entry) => entry.id === next?.decisionId)?.name ??
+        t('nextDecision')
+      return (
+        <div className="flex min-w-0 items-center gap-1">
+          {'runtime' in rule ? (
+            <div className="min-w-0 flex-1">
+              <RuntimeModelSelect
+                dense
+                runSettings
+                value={{
+                  effort: fallback.effort,
+                  permissionMode: fallback.permissionMode,
+                  fastMode: fallback.fastMode,
+                  ...rule
+                }}
+                ariaLabel={ariaLabel}
+                source={source}
+                runtimes={runtimes}
+                runInSandbox={runInSandbox}
+                onChange={(target) => onPick(target)}
+              />
+            </div>
+          ) : (
+            <NextDecisionChip
+              decision={decisions.find((entry) => entry.id === next?.decisionId)}
+              name={nextName}
+              label={t('editNext', { name: nextName })}
+              removeLabel={t('useModel')}
+              onOpen={() => enter(rule.nextStepId)}
+              onRemove={() => onPick(fallback)}
+            />
+          )}
+          {'runtime' in rule && (
+            <NextDecision
+              decisions={decisions}
+              ariaLabel={`${ariaLabel}: ${t('nextDecision')}`}
+              disabled={(configuration?.steps?.length ?? 0) >= DECISION_CHAIN_MAX_STEPS - 1}
+              onSelect={(entry) => {
+                const id = crypto.randomUUID()
+                onPick({ nextStepId: id }, [
+                  ...(configuration?.steps ?? []),
+                  { id, decisionId: entry.id, rules: [{ when: nextCondition(entry.question, []), ...fallback }] }
+                ])
+                enter(id)
+              }}
+            />
+          )}
+        </div>
+      )
+    }
+    const addButton = decision && value && (
+      <span className="flex justify-end">
+        <Button
+          variant="secondary"
+          size="xs"
+          className="h-[22px] gap-1 px-[7px] font-sans text-[11.5px] normal-case tracking-normal"
+          ariaLabel={t('addRule')}
+          disabled={value.rules.length >= 32}
+          onClick={() =>
+            onChange({
+              ...value,
+              rules: [...value.rules, { when: nextCondition(decision.question, value.rules), ...fallback }]
+            })
+          }
+        >
+          <Icon name="plus" size={12} />
+          {t('add')}
+        </Button>
+      </span>
+    )
+    // The header, and its Add, is desktop-only; narrow screens add from below the rules.
+    const mobileAdd = decision && value && (
+      <button
+        type="button"
+        className="lnk m-3 gap-[6px] text-[12.5px] font-medium desktop:hidden"
+        aria-label={t('addRule')}
         disabled={value.rules.length >= 32}
         onClick={() =>
           onChange({
@@ -273,253 +302,282 @@ export function ModelSelectionField({
           })
         }
       >
-        <Icon name="plus" size={12} />
-        {t('add')}
-      </Button>
-    </span>
-  )
-  // The header, and its Add, is desktop-only; narrow screens add from below the rules.
-  const mobileAdd = decision && value && (
-    <button
-      type="button"
-      className="lnk m-3 gap-[6px] text-[12.5px] font-medium desktop:hidden"
-      aria-label={t('addRule')}
-      disabled={value.rules.length >= 32}
-      onClick={() =>
-        onChange({
-          ...value,
-          rules: [...value.rules, { when: nextCondition(decision.question, value.rules), ...fallback }]
-        })
-      }
-    >
-      <Icon name="plus" size={14} />
-      {t('addRule')}
-    </button>
-  )
-  const removeButton = (index: number) => (
-    <span className="flex justify-end">
-      <button
-        type="button"
-        className={ROW_ACTION}
-        aria-label={t('removeRule', { index: index + 1 })}
-        onClick={() => removeRule(index)}
-      >
-        <Icon name="x" size={13} />
+        <Icon name="plus" size={14} />
+        {t('addRule')}
       </button>
-    </span>
-  )
-  const hint = (text: string) => (
-    <span title={text} aria-label={text} className="inline-flex cursor-help">
-      <Icon name="info" size={11} />
-    </span>
-  )
-  const arrow = <Icon name="arrow-right" size={13} className="hidden flex-none text-(--text-tertiary) desktop:block" />
+    )
+    const removeButton = (index: number) => (
+      <span className="flex justify-end">
+        <button
+          type="button"
+          className={ROW_ACTION}
+          aria-label={t('removeRule', { index: index + 1 })}
+          onClick={() => removeRule(index)}
+        >
+          <Icon name="x" size={13} />
+        </button>
+      </span>
+    )
+    const hint = (text: string) => (
+      <span title={text} aria-label={text} className="inline-flex cursor-help">
+        <Icon name="info" size={11} />
+      </span>
+    )
+    const arrow = (
+      <Icon name="arrow-right" size={13} className="hidden flex-none text-(--text-tertiary) desktop:block" />
+    )
 
-  const choiceTable = (question: Extract<DecisionQuestion, { type: 'choice' }>, selection: DecisionModelStep) => (
-    <>
-      <div className={`${HEAD} ${CHOICE_COLS}`}>
-        <span>#</span>
-        <span>{t('answerColumn')}</span>
-        <span className="flex items-center gap-1">
-          {t('probabilityColumn')}
-          {hint(t('choiceHelp'))}
-        </span>
-        <span />
-        <span>{t('providerModel')}</span>
-        {addButton}
-      </div>
-      {selection.rules.map((rule, index) => {
-        const [answer, probability] =
-          rule.when.type === 'choice' ? (Object.entries(rule.when.thresholds)[0] ?? ['', 0.5]) : ['', 0.5]
-        const setWhen = (key: string, threshold: number) =>
-          replaceRule(index, { ...rule, when: { type: 'choice', thresholds: { [key]: threshold } } })
-        return (
-          <div
-            key={index}
-            data-testid="model-rule"
-            className={`${ROW} ${CHOICE_COLS} ${invalidRow(index) ? 'bg-(--status-error-soft)' : ''} ${dragging === index ? 'opacity-50' : ''} ${dropAt === index && dragging !== index ? 'shadow-[inset_0_2px_0_var(--brand)]' : ''}`}
-            onDragOver={(event: DragEvent) => {
-              if (dragging === null) return
-              event.preventDefault()
-              setDropAt(index)
-            }}
-            onDrop={(event: DragEvent) => {
-              event.preventDefault()
-              if (dragging !== null) moveRule(dragging, index)
-              setDragging(null)
-              setDropAt(null)
-            }}
-          >
-            <button
-              type="button"
-              draggable
-              aria-label={t('reorder', { index: index + 1 })}
-              title={t('reorder', { index: index + 1 })}
-              className="-ml-1 inline-flex h-[26px] w-fit cursor-grab items-center gap-px rounded-[5px] px-[2px] text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-              onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = 'move'
-                setDragging(index)
+    const choiceTable = (question: Extract<DecisionQuestion, { type: 'choice' }>, selection: DecisionModelStep) => (
+      <>
+        <div className={`${HEAD} ${CHOICE_COLS}`}>
+          <span>#</span>
+          <span>{t('answerColumn')}</span>
+          <span className="flex items-center gap-1">
+            {t('probabilityColumn')}
+            {hint(t('choiceHelp'))}
+          </span>
+          <span />
+          <span>{t('providerModel')}</span>
+          {addButton}
+        </div>
+        {selection.rules.map((rule, index) => {
+          const [answer, probability] =
+            rule.when.type === 'choice' ? (Object.entries(rule.when.thresholds)[0] ?? ['', 0.5]) : ['', 0.5]
+          const setWhen = (key: string, threshold: number) =>
+            replaceRule(index, { ...rule, when: { type: 'choice', thresholds: { [key]: threshold } } })
+          return (
+            <div
+              key={index}
+              data-testid="model-rule"
+              className={`${ROW} ${CHOICE_COLS} ${invalidRow(index) ? 'bg-(--status-error-soft)' : ''} ${dragging === index ? 'opacity-50' : ''} ${dropAt === index && dragging !== index ? 'shadow-[inset_0_2px_0_var(--brand)]' : ''}`}
+              onDragOver={(event: DragEvent) => {
+                if (dragging === null) return
+                event.preventDefault()
+                setDropAt(index)
               }}
-              onDragEnd={() => {
+              onDrop={(event: DragEvent) => {
+                event.preventDefault()
+                if (dragging !== null) moveRule(dragging, index)
                 setDragging(null)
                 setDropAt(null)
               }}
-              onKeyDown={(event) => {
-                if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-                event.preventDefault()
-                moveRule(index, index + (event.key === 'ArrowUp' ? -1 : 1))
-              }}
             >
-              <Icon name="grip-vertical" size={13} />
-              <span className="font-mono text-[11px] font-semibold leading-normal">{index + 1}</span>
-            </button>
-            <AnswerSelect
-              ariaLabel={t('answer', { index: index + 1 })}
-              value={answer}
-              answers={question.criteria}
-              onChange={(next) => setWhen(next, probability)}
-            />
-            <span className="flex items-center gap-1">
-              <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">≥</span>
-              <input
-                className={`${NUMBER_INPUT} w-[54px]!`}
-                type="number"
-                min={0}
-                max={100}
-                step={1}
-                aria-label={t('probability', { index: index + 1 })}
-                value={Math.round(probability * 100)}
-                onChange={(event) => setWhen(answer, Number(event.target.value) / 100)}
+              <button
+                type="button"
+                draggable
+                aria-label={t('reorder', { index: index + 1 })}
+                title={t('reorder', { index: index + 1 })}
+                className="-ml-1 inline-flex h-[26px] w-fit cursor-grab items-center gap-px rounded-[5px] px-[2px] text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = 'move'
+                  setDragging(index)
+                }}
+                onDragEnd={() => {
+                  setDragging(null)
+                  setDropAt(null)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+                  event.preventDefault()
+                  moveRule(index, index + (event.key === 'ArrowUp' ? -1 : 1))
+                }}
+              >
+                <Icon name="grip-vertical" size={13} />
+                <span className="font-mono text-[11px] font-semibold leading-normal">{index + 1}</span>
+              </button>
+              <AnswerSelect
+                ariaLabel={t('answer', { index: index + 1 })}
+                value={answer}
+                answers={question.criteria}
+                onChange={(next) => setWhen(next, probability)}
               />
-              <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">%</span>
-            </span>
-            {arrow}
-            {rulePicker(rule, t('ruleModel', { index: index + 1 }), (target, steps) =>
-              replaceRule(index, { when: rule.when, ...target }, steps)
-            )}
-            {removeButton(index)}
-          </div>
-        )
-      })}
-      {mobileAdd}
-    </>
-  )
-
-  const scoreTable = (selection: DecisionModelStep) => (
-    <>
-      <div className={`${HEAD} ${SCORE_COLS}`}>
-        <span className="flex items-center gap-1">
-          {t('fromColumn')}
-          {hint(t('intervalHelp'))}
-        </span>
-        <span>{t('toColumn')}</span>
-        <span />
-        <span>{t('providerModel')}</span>
-        {addButton}
-      </div>
-      {selection.rules.map((rule, index) => {
-        const when = rule.when.type === 'score' ? rule.when : { type: 'score' as const, min: 0, max: 0 }
-        const bound = (raw: string, current: number) => {
-          const parsed = Number(raw)
-          return raw === '' || !Number.isFinite(parsed) ? current : parsed
-        }
-        return (
-          <div
-            key={index}
-            data-testid="model-rule"
-            className={`${ROW} ${SCORE_COLS} ${invalidRow(index) ? 'bg-(--status-error-soft)' : ''}`}
-          >
-            <input
-              className={NUMBER_INPUT}
-              type="number"
-              step={0.5}
-              aria-label={t('intervalStart', { index: index + 1 })}
-              value={when.min}
-              onChange={(event) =>
-                replaceRule(index, { ...rule, when: { ...when, min: bound(event.target.value, when.min) } })
-              }
-            />
-            <input
-              className={NUMBER_INPUT}
-              type="number"
-              step={0.5}
-              aria-label={t('intervalEnd', { index: index + 1 })}
-              value={when.max}
-              onChange={(event) =>
-                replaceRule(index, { ...rule, when: { ...when, max: bound(event.target.value, when.max) } })
-              }
-            />
-            {arrow}
-            {rulePicker(rule, t('ruleModel', { index: index + 1 }), (target, steps) =>
-              replaceRule(index, { when: rule.when, ...target }, steps)
-            )}
-            {removeButton(index)}
-          </div>
-        )
-      })}
-      {mobileAdd}
-    </>
-  )
-
-  // Yes and No are always listed; an answer without its own rule shows the fallback until one is picked.
-  const booleanTable = (selection: DecisionModelStep) => (
-    <>
-      <div className={`${HEAD} ${BOOLEAN_COLS}`}>
-        <span>{t('answerColumn')}</span>
-        <span />
-        <span>{t('providerModel')}</span>
-        <span />
-      </div>
-      {([true, false] as const).map((answer) => {
-        const index = selection.rules.findIndex(
-          (rule) => rule.when.type === 'boolean' && rule.when.values.includes(answer)
-        )
-        const rule: Rule = selection.rules[index] ?? { ...fallback, when: { type: 'boolean', values: [answer] } }
-        const label = answer ? t('yes') : t('no')
-        return (
-          <div
-            key={String(answer)}
-            data-testid="model-rule"
-            className={`${ROW} ${BOOLEAN_COLS} ${index >= 0 && invalidRow(index) ? 'bg-(--status-error-soft)' : ''}`}
-          >
-            <span className="font-mono text-[12.5px] font-medium leading-normal text-(--text-primary)">{label}</span>
-            {arrow}
-            <div className="min-w-0 desktop:max-w-[300px]">
-              {rulePicker(rule, t('answerModel', { answer: label }), (target, steps) =>
-                onChange({ ...selection, rules: setBooleanTarget(selection.rules, answer, target) }, steps)
+              <span className="flex items-center gap-1">
+                <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">≥</span>
+                <input
+                  className={`${NUMBER_INPUT} w-[54px]!`}
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  aria-label={t('probability', { index: index + 1 })}
+                  value={Math.round(probability * 100)}
+                  onChange={(event) => setWhen(answer, Number(event.target.value) / 100)}
+                />
+                <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">%</span>
+              </span>
+              {arrow}
+              {rulePicker(rule, t('ruleModel', { index: index + 1 }), (target, steps) =>
+                replaceRule(index, { when: rule.when, ...target }, steps)
               )}
+              {removeButton(index)}
             </div>
-            <span className="flex justify-end">
-              {index >= 0 && (
-                <button
-                  type="button"
-                  className={ROW_ACTION}
-                  // The last rule stays: a binding needs one, and Fixed is how to drop it.
-                  disabled={clearBooleanTarget(selection.rules, answer).length === 0}
-                  aria-label={t('useFallback', { answer: label })}
-                  title={t('useFallback', { answer: label })}
-                  onClick={() => onChange({ ...selection, rules: clearBooleanTarget(selection.rules, answer) })}
-                >
-                  <Icon name="x" size={13} />
-                </button>
-              )}
-            </span>
-          </div>
-        )
-      })}
-    </>
-  )
+          )
+        })}
+        {mobileAdd}
+      </>
+    )
 
-  const evaluator = decision && (
-    <span className="inline-flex h-6 min-w-0 items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-sunken) px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
-      <Icon name="lock" size={11} className="flex-none text-(--text-tertiary)" />
-      {t('evaluator')}
-      <span className="truncate font-mono text-(--text-primary)">
-        {DECISION_PROVIDER_PROFILES.find((profile) => profile.id === decision.providerId)?.name ?? decision.providerId}{' '}
-        · {decision.model}
+    const scoreTable = (selection: DecisionModelStep) => (
+      <>
+        <div className={`${HEAD} ${SCORE_COLS}`}>
+          <span className="flex items-center gap-1">
+            {t('fromColumn')}
+            {hint(t('intervalHelp'))}
+          </span>
+          <span>{t('toColumn')}</span>
+          <span />
+          <span>{t('providerModel')}</span>
+          {addButton}
+        </div>
+        {selection.rules.map((rule, index) => {
+          const when = rule.when.type === 'score' ? rule.when : { type: 'score' as const, min: 0, max: 0 }
+          const bound = (raw: string, current: number) => {
+            const parsed = Number(raw)
+            return raw === '' || !Number.isFinite(parsed) ? current : parsed
+          }
+          return (
+            <div
+              key={index}
+              data-testid="model-rule"
+              className={`${ROW} ${SCORE_COLS} ${invalidRow(index) ? 'bg-(--status-error-soft)' : ''}`}
+            >
+              <input
+                className={NUMBER_INPUT}
+                type="number"
+                step={0.5}
+                aria-label={t('intervalStart', { index: index + 1 })}
+                value={when.min}
+                onChange={(event) =>
+                  replaceRule(index, { ...rule, when: { ...when, min: bound(event.target.value, when.min) } })
+                }
+              />
+              <input
+                className={NUMBER_INPUT}
+                type="number"
+                step={0.5}
+                aria-label={t('intervalEnd', { index: index + 1 })}
+                value={when.max}
+                onChange={(event) =>
+                  replaceRule(index, { ...rule, when: { ...when, max: bound(event.target.value, when.max) } })
+                }
+              />
+              {arrow}
+              {rulePicker(rule, t('ruleModel', { index: index + 1 }), (target, steps) =>
+                replaceRule(index, { when: rule.when, ...target }, steps)
+              )}
+              {removeButton(index)}
+            </div>
+          )
+        })}
+        {mobileAdd}
+      </>
+    )
+
+    // Yes and No are always listed; an answer without its own rule shows the fallback until one is picked.
+    const booleanTable = (selection: DecisionModelStep) => (
+      <>
+        <div className={`${HEAD} ${BOOLEAN_COLS}`}>
+          <span>{t('answerColumn')}</span>
+          <span />
+          <span>{t('providerModel')}</span>
+          <span />
+        </div>
+        {([true, false] as const).map((answer) => {
+          const index = selection.rules.findIndex(
+            (rule) => rule.when.type === 'boolean' && rule.when.values.includes(answer)
+          )
+          const rule: Rule = selection.rules[index] ?? { ...fallback, when: { type: 'boolean', values: [answer] } }
+          const label = answer ? t('yes') : t('no')
+          return (
+            <div
+              key={String(answer)}
+              data-testid="model-rule"
+              className={`${ROW} ${BOOLEAN_COLS} ${index >= 0 && invalidRow(index) ? 'bg-(--status-error-soft)' : ''}`}
+            >
+              <span className="font-mono text-[12.5px] font-medium leading-normal text-(--text-primary)">{label}</span>
+              {arrow}
+              <div className="min-w-0 desktop:max-w-[300px]">
+                {rulePicker(rule, t('answerModel', { answer: label }), (target, steps) =>
+                  onChange({ ...selection, rules: setBooleanTarget(selection.rules, answer, target) }, steps)
+                )}
+              </div>
+              <span className="flex justify-end">
+                {index >= 0 && (
+                  <button
+                    type="button"
+                    className={ROW_ACTION}
+                    // The last rule stays: a binding needs one, and Fixed is how to drop it.
+                    disabled={clearBooleanTarget(selection.rules, answer).length === 0}
+                    aria-label={t('useFallback', { answer: label })}
+                    title={t('useFallback', { answer: label })}
+                    onClick={() => onChange({ ...selection, rules: clearBooleanTarget(selection.rules, answer) })}
+                  >
+                    <Icon name="x" size={13} />
+                  </button>
+                )}
+              </span>
+            </div>
+          )
+        })}
+      </>
+    )
+
+    const evaluator = decision && (
+      <span className="inline-flex h-6 min-w-0 items-center gap-[6px] rounded-[5px] border border-(--border-subtle) bg-(--surface-sunken) px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
+        <Icon name="lock" size={11} className="flex-none text-(--text-tertiary)" />
+        {t('evaluator')}
+        <span className="truncate font-mono text-(--text-primary)">
+          {DECISION_PROVIDER_PROFILES.find((profile) => profile.id === decision.providerId)?.name ??
+            decision.providerId}{' '}
+          · {decision.model}
+        </span>
       </span>
-    </span>
-  )
+    )
+    const view = (
+      <>
+        <div className="flex flex-wrap items-center gap-[10px]">
+          <DecisionPicker
+            decisions={decisions}
+            value={value?.decisionId}
+            placeholder={retained?.find((item) => item.id === value?.decisionId)?.name ?? t('chooseDecision')}
+            loading={loading}
+            triggerClassName="block w-[260px] min-w-0 max-w-full"
+            onSelect={(entry) => selectDecision(entry.id)}
+            create={{ href: orgPath('/decisions/new'), newTab: true }}
+          />
+          {evaluator}
+          {decision && (
+            <a
+              className={ROW_ACTION}
+              href={orgPath(`/decisions/${decision.id}`)}
+              target="_blank"
+              rel="noreferrer"
+              title={t('openDecision', { name: decision.name })}
+              aria-label={t('openDecision', { name: decision.name })}
+            >
+              <Icon name="arrow-up-right" size={13} />
+            </a>
+          )}
+        </div>
+        {value && !decision && (
+          <p className="m-0 text-[12px] text-(--text-secondary)">{loading ? t('loading') : t('retained')}</p>
+        )}
+        <div className="rounded-lg border border-(--border-default) bg-(--surface-card)">
+          {value && decision?.question.type === 'choice' && choiceTable(decision.question, value)}
+          {value && decision?.question.type === 'score' && scoreTable(value)}
+          {value && decision?.question.type === 'boolean' && booleanTable(value)}
+          {fallbackPanel}
+        </div>
+      </>
+    )
+    return { value, onChange, selectDecision, view }
+  }
+  const root = levelOf()
+  const nodes = configuration ? [configuration, ...(configuration.steps ?? [])] : []
+  const nameOf = (decisionId?: string) =>
+    decisions.find((entry) => entry.id === decisionId)?.name ??
+    retained?.find((entry) => entry.id === decisionId)?.name ??
+    t('nextDecision')
 
   return (
     <div className="flex flex-col gap-[14px]">
@@ -533,7 +591,7 @@ export function ModelSelectionField({
               aria-pressed={!active}
               onClick={() => {
                 setDecisionMode(false)
-                onChange(null)
+                root.onChange(null)
               }}
             >
               {t('fixed')}
@@ -544,7 +602,7 @@ export function ModelSelectionField({
               aria-pressed={active}
               onClick={() => {
                 setDecisionMode(true)
-                if (!value && decisions[0]) selectDecision(decisions[0].id)
+                if (!root.value && decisions[0]) root.selectDecision(decisions[0].id)
               }}
             >
               {t('byDecision')}
@@ -559,63 +617,30 @@ export function ModelSelectionField({
         </div>
       ) : (
         <>
-          {stepIndex >= 0 && (
-            <nav aria-label={t('decisionPath')} className="flex flex-wrap items-center gap-1 text-[12px]">
-              <button type="button" className="lnk" onClick={() => to(0)}>
-                {rootDecision?.name ?? t('firstDecision')}
-              </button>
-              {stepPath.map((id, index) => {
-                const step = configuration?.steps?.find((entry) => entry.id === id)
-                const name = decisions.find((entry) => entry.id === step?.decisionId)?.name ?? t('nextDecision')
-                return (
-                  <span key={`${id}:${index}`} className="inline-flex items-center gap-1">
-                    <Icon name="chevron-right" size={12} />
-                    <button
-                      type="button"
-                      className="lnk"
-                      aria-current={index === stepPath.length - 1 ? 'page' : undefined}
-                      onClick={() => to(index + 1)}
-                    >
-                      {name}
-                    </button>
-                  </span>
-                )
-              })}
-            </nav>
-          )}
-          <div className="flex flex-wrap items-center gap-[10px]">
-            <DecisionPicker
-              decisions={decisions}
-              value={value?.decisionId}
-              placeholder={retained?.find((item) => item.id === value?.decisionId)?.name ?? t('chooseDecision')}
-              loading={loading}
-              triggerClassName="block w-[260px] min-w-0 max-w-full"
-              onSelect={(entry) => selectDecision(entry.id)}
-              create={{ href: orgPath('/decisions/new'), newTab: true }}
-            />
-            {evaluator}
-            {decision && (
-              <a
-                className={ROW_ACTION}
-                href={orgPath(`/decisions/${decision.id}`)}
-                target="_blank"
-                rel="noreferrer"
-                title={t('openDecision', { name: decision.name })}
-                aria-label={t('openDecision', { name: decision.name })}
+          {root.view}
+          {stepPath.map((id, index) => {
+            const parent = nodes.find((node) =>
+              node.rules.some((rule) => 'nextStepId' in rule && rule.nextStepId === id)
+            )
+            const rule = parent?.rules.find((r) => 'nextStepId' in r && r.nextStepId === id)
+            const parentQuestion = decisions.find((entry) => entry.id === parent?.decisionId)?.question
+            return (
+              <DecisionChainSheet
+                key={id}
+                depth={index + 1}
+                top={index === stepPath.length - 1}
+                parent={nameOf(parent?.decisionId)}
+                condition={rule ? conditionText(rule.when, parentQuestion) : undefined}
+                title={nameOf(configuration?.steps?.find((step) => step.id === id)?.decisionId)}
+                canWrite
+                onParent={() => to(index)}
+                onSave={() => back(true)}
+                onCancel={() => back(false)}
               >
-                <Icon name="arrow-up-right" size={13} />
-              </a>
-            )}
-          </div>
-          {value && !decision && (
-            <p className="m-0 text-[12px] text-(--text-secondary)">{loading ? t('loading') : t('retained')}</p>
-          )}
-          <div className="rounded-lg border border-(--border-default) bg-(--surface-card)">
-            {value && decision?.question.type === 'choice' && choiceTable(decision.question, value)}
-            {value && decision?.question.type === 'score' && scoreTable(value)}
-            {value && decision?.question.type === 'boolean' && booleanTable(value)}
-            {fallbackPanel}
-          </div>
+                {levelOf(id).view}
+              </DecisionChainSheet>
+            )
+          })}
           {configuration && rootDecision && (
             <RuntimeSelectionSample
               question={rootDecision.question}

@@ -49,7 +49,7 @@ afterEach(() => {
   container?.remove()
 })
 
-it('adds a child Decision, edits its rules, and returns to the root without losing the chain', async () => {
+it('adds a child Decision in a sheet and returns to the root without losing the chain', async () => {
   const fallback = { runtime: 'claude', model: 'model-standard' }
   let saved: AgentModelSelection | null = {
     decisionId: '33333333-3333-4333-8333-333333333333',
@@ -84,12 +84,13 @@ it('adds a child Decision, edits its rules, and returns to the root without losi
   )
   expect(saved!.steps).toHaveLength(1)
   expect(saved!.rules[0]).toMatchObject({ nextStepId: saved!.steps![0]!.id })
-  expect(container.querySelector('[aria-current="page"]')?.textContent).toBe('Urgent')
+  expect(document.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('Urgent')
   await act(async () =>
-    [...container.querySelectorAll<HTMLButtonElement>('nav button')]
+    [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] nav button')]
       .find((button) => button.textContent === 'Complexity')!
       .click()
   )
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
   expect(container.textContent).toContain('Urgent')
   expect(saved!.steps![0]!.rules[0]!.when.type).toBe('boolean')
 })
