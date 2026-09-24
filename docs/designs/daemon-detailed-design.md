@@ -387,7 +387,9 @@ state is never shared between agents. The host must provide working `bwrap`,
 `socat`, and `rg` executables and permit unprivileged user namespaces. Startup
 performs a live probe rather than treating installed binaries as sufficient, and
 logs its verdict: `sandbox: bwrap ready`, or a warning carrying the provider's
-own failure text and the daemon's `PATH`. A failed probe is not confined to
+own failure text and the daemon's `PATH`. Where AppArmor restricts unprivileged
+user namespaces (Ubuntu 23.10+), that text is prefixed with the restriction and
+its host fix. A failed probe is not confined to
 agent launches — managed skill installation runs the pinned skills CLI inside
 the same kernel sandbox and has no fail-open path, so it fails on every
 reconcile until the missing dependencies are installed.
