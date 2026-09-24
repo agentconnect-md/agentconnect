@@ -35,7 +35,7 @@ export function RoutingChainFields({
   issues: RoutingIssue[]
   disabled: boolean
   canWrite: boolean
-  create: ComponentProps<typeof DecisionPicker>['create']
+  create: (stepId?: string) => ComponentProps<typeof DecisionPicker>['create']
   otherwiseLabels?: ComponentProps<typeof RoutingRulesTable>['otherwiseLabels']
   onRefresh: () => void
 }) {
@@ -88,7 +88,7 @@ export function RoutingChainFields({
                   rules: s.rules.filter((rule) => fitsQuestion(rule.when, entry.question))
                 }))
             }}
-            create={create}
+            create={create(active?.id)}
           />
           {decision && (
             <>

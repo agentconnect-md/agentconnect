@@ -47,7 +47,7 @@ type DraftUpdate =
   DecisionBindingDraft | null | ((current: DecisionBindingDraft | undefined) => DecisionBindingDraft | null)
 
 /** Where an inline Create decision returns: a conversation's binding draft, or a bot's routing draft. */
-export type InlineCreateTarget = { kind: 'binding'; key: string } | { kind: 'routing'; botId: string }
+export type InlineCreateTarget = { kind: 'binding'; key: string } | { kind: 'routing'; botId: string; stepId?: string }
 
 /** The stored form: the store stamps the organization, so a caller cannot misfile it. */
 type StoredGate = DecisionGateBinding & { orgId: string }
@@ -185,7 +185,11 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
     (decision: DecisionDefinition) => {
       if (!pendingCreate) return
       if (pendingCreate.kind === 'routing')
-        dispatchRouting(pendingCreate.botId, { type: 'SELECT_DECISION', decisionId: decision.id })
+        dispatchRouting(pendingCreate.botId, {
+          type: 'SELECT_DECISION',
+          decisionId: decision.id,
+          ...(pendingCreate.stepId ? { stepId: pendingCreate.stepId } : {})
+        })
       else {
         const key = pendingCreate.key
         setBindingDrafts((current) => ({

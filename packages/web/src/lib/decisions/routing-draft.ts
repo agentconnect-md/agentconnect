@@ -267,7 +267,7 @@ export type RoutingEvent =
   | { type: 'TOGGLE_CHANNEL'; channelId: string }
   | { type: 'ADD_CHANNEL'; channelId: string }
   | { type: 'SET_REMOVAL'; channelId: string; removal: RoutingRemoval }
-  | { type: 'SELECT_DECISION'; decisionId: string }
+  | { type: 'SELECT_DECISION'; decisionId: string; stepId?: string }
   | { type: 'CANCEL' }
   | { type: 'SAVE_START'; body: DecisionRoutingSave }
   | { type: 'SAVE_OK'; detail: DecisionRoutingDetail }
@@ -349,7 +349,19 @@ export function routingReducer(state: RoutingEditorState, event: RoutingEvent): 
         : state
     case 'SELECT_DECISION':
       // The rules stay as they are and are revalidated against the new question; nothing is reselected.
-      return draft ? edited(state, { ...draft, decisionId: event.decisionId }) : state
+      return draft
+        ? edited(
+            state,
+            event.stepId
+              ? {
+                  ...draft,
+                  steps: draft.steps?.map((step) =>
+                    step.id === event.stepId ? { ...step, decisionId: event.decisionId } : step
+                  )
+                }
+              : { ...draft, decisionId: event.decisionId }
+          )
+        : state
     case 'CANCEL':
       if (!state.saved || state.phase === 'saving') return state
       return { ...state, phase: 'editing', draft: draftFromDetail(state.saved), error: null }

@@ -266,10 +266,10 @@ export function DecisionRoutingModal({
           disabled={disabled}
           canWrite={canWrite}
           onRefresh={roster.refresh}
-          create={{
+          create={(stepId) => ({
             href: `${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`,
-            onClick: () => beginInlineCreate({ kind: 'routing', botId })
-          }}
+            onClick: () => beginInlineCreate({ kind: 'routing', botId, ...(stepId ? { stepId } : {}) })
+          })}
         />
 
         {decision && (

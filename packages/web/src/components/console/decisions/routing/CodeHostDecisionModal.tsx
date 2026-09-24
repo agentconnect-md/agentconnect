@@ -159,7 +159,7 @@ export function CodeHostDecisionModal({
             canWrite={canWrite}
             otherwiseLabels={{ default: tc('everyAgent') }}
             onRefresh={() => {}}
-            create={{ href: orgPath('/decisions/new'), newTab: true }}
+            create={() => ({ href: orgPath('/decisions/new'), newTab: true })}
           />
 
           {decision && (
