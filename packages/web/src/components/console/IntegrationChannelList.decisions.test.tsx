@@ -201,9 +201,9 @@ describe('IntegrationChannelList By decision', () => {
     expect(await openSettings(name)).not.toContain('By decision')
   })
 
-  it("offers By decision on a shared bot whose platform gates each conversation's owner", async () => {
+  it("offers the + Decision gate on a shared bot whose platform gates each conversation's owner", async () => {
     await render([group()], { platform: 'linear', shareable: true, botId: 'bot-shared' })
-    expect(await openSettings()).toContain('By decision')
+    expect(all('button').some((node) => node.textContent?.trim() === 'Decision')).toBe(true)
   })
 
   it('renders a saved DTO gate as a row pill naming its decision and condition, with no banner when ready', async () => {
