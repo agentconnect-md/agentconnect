@@ -1068,6 +1068,58 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  it('retries a failed takeover on the idle sweep and stops after success', async () => {
+    const adoptAgent = vi.fn().mockRejectedValueOnce(new Error('claim list unavailable')).mockResolvedValue(undefined)
+    const instance = daemon({ root: root(), k8s: true, plane: { adoptAgent } })
+    try {
+      await instance.start()
+      const inner = instance as any
+      inner.adoptClusterSandbox('bot-a')
+      await vi.waitFor(() => {
+        expect(inner.k8sAdoptions.has('bot-a')).toBe(true)
+        expect(inner.k8sAdoptions.get('bot-a')).toBeUndefined()
+      })
+      await inner.sweepIdleSandboxes(Date.now(), inner.cfg.limits.agentIdleTimeoutMs)
+      await vi.waitFor(() => expect(inner.k8sAdoptions.has('bot-a')).toBe(false))
+      await inner.sweepIdleSandboxes(Date.now(), inner.cfg.limits.agentIdleTimeoutMs)
+      expect(adoptAgent).toHaveBeenCalledTimes(2)
+    } finally {
+      await instance.stop()
+    }
+  })
+
+  it('does not let a departed takeover overwrite a new takeover waiting on teardown', async () => {
+    let failOld!: (error: Error) => void
+    const adoptAgent = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => (failOld = reject)))
+      .mockResolvedValue(undefined)
+    const releaseAgent = vi.fn()
+    const instance = daemon({ root: root(), k8s: true, plane: { adoptAgent, releaseAgent } })
+    try {
+      await instance.start()
+      const inner = instance as any
+      inner.adoptClusterSandbox('bot-a')
+      await vi.waitFor(() => expect(adoptAgent).toHaveBeenCalledOnce())
+      await inner.sweepIdleSandboxes(Date.now(), inner.cfg.limits.agentIdleTimeoutMs)
+      expect(adoptAgent).toHaveBeenCalledOnce()
+      let finishTeardown!: () => void
+      const teardown = new Promise<void>((resolve) => (finishTeardown = resolve))
+      vi.spyOn(inner.dutyCoordinator, 'dutyHostStop').mockReturnValue(teardown)
+      inner.adoptClusterSandbox('bot-a')
+      inner.releaseClusterSandbox('bot-a')
+      finishTeardown()
+      await vi.waitFor(() => expect(adoptAgent).toHaveBeenCalledTimes(2))
+      failOld(new Error('old takeover failed late'))
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(inner.k8sAdoptions.has('bot-a')).toBe(false)
+      await inner.sweepIdleSandboxes(Date.now(), inner.cfg.limits.agentIdleTimeoutMs)
+      expect(adoptAgent).toHaveBeenCalledTimes(2)
+    } finally {
+      await instance.stop()
+    }
+  })
+
   it('clears a readiness marker left on a mounted path before it waits on the control plane (#1043)', async () => {
     const rootDir = root()
     const marker = join(rootDir, 'ready')

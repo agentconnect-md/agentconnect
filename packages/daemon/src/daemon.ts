@@ -1460,6 +1460,8 @@ export class Daemon {
   private readonly clusterIdentityToken?: () => string | undefined
   // The k8s execution plane: shim dialer + driver + workspace seam. Undefined outside --k8s.
   private k8sPlane?: K8sRuntimePlane
+  // An undefined entry awaits retry; a promise is the one takeover already in flight.
+  private readonly k8sAdoptions = new Map<string, Promise<void> | undefined>()
   private microsandbox?: MicrosandboxManager
   private microsandboxTable?: K8sRuntimeTable
   // Why the microsandbox probe failed; absent ⇒ available, its msb and image prepared by the first use (session-executors.md §5).
@@ -20769,6 +20771,9 @@ export class Daemon {
     if (this.executorPlane) await this.sweepIdleRemoteSessions(now, ttl, this.executorPlane)
     const plane = this.k8sPlane
     if (!plane) return
+    for (const [agentId, running] of this.k8sAdoptions) {
+      if (!running) this.adoptClusterSandbox(agentId)
+    }
     const launched = plane.launched()
     this.log.debug(`idle: examining ${launched.length} held sandbox launch(es)`)
     const sessionActivity = new Map<string, Map<string, number>>()
@@ -20896,26 +20901,39 @@ export class Daemon {
     }
   }
 
-  /** Cluster only: take over the sandbox of an agent this member just started serving, from the cluster. */
-  // So a Running pod nobody here launched (a rollout, a moved duty) has a holder that can suspend it.
-  // Behind any teardown still settling for the agent, so a lose-then-regain cannot forget the adoption.
+  // Take over once behind prior teardown, retaining failures for the next idle sweep.
   private adoptClusterSandbox(agentId: string): void {
     const plane = this.k8sPlane
     if (!plane) return
     const prior = this.dutyCoordinator.dutyHostStop(agentId) ?? Promise.resolve()
     void prior
       .catch(() => undefined)
-      .then(async () => {
-        if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) return
-        await plane.adoptAgent(agentId)
+      .then(() => {
+        if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) {
+          this.k8sAdoptions.delete(agentId)
+          return
+        }
+        // Register after the prior release, which clears the previous ownership's takeover state.
+        if (this.k8sAdoptions.get(agentId)) return
+        const run = plane
+          .adoptAgent(agentId)
+          .then(() => {
+            if (this.k8sAdoptions.get(agentId) === run) this.k8sAdoptions.delete(agentId)
+          })
+          .catch((err) => {
+            if (this.k8sAdoptions.get(agentId) !== run) return
+            this.k8sAdoptions.set(agentId, undefined)
+            this.log.warn(
+              `cluster: taking over the sandbox for agent "${agentId}" failed; will retry: ${formatErr(err)}`
+            )
+          })
+        this.k8sAdoptions.set(agentId, run)
       })
-      .catch((err) =>
-        this.log.warn(`cluster: taking over the sandbox for agent "${agentId}" failed: ${formatErr(err)}`)
-      )
   }
 
   /** Cluster only: the sandbox half of "no longer served here"; the claim and volume stay. */
   private releaseClusterSandbox(agentId: string): void {
+    this.k8sAdoptions.delete(agentId)
     this.k8sPlane?.releaseAgent(agentId)
     // The same for a spread session: this holder drops its launches, and the successor attaches to the environments they left (§7).
     this.executorPlane?.releaseAgent(agentId)
