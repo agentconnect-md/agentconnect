@@ -3,7 +3,14 @@ import { Prisma } from '../generated/prisma/client.js'
 import type { OrgId } from '../domain/ids.js'
 import type { ResourceVisibility } from './ports.js'
 import { lockResourceWriteMemberships } from './resource-membership-lock.js'
-import { DecisionQuestion, decisionModelSelectionIssues, type AgentModelSelection } from '@agentconnect.md/protocol'
+import {
+  DecisionQuestion,
+  decisionChainIds,
+  type DecisionChainStep,
+  decisionModelSelectionIssues,
+  modelSelectionDecisionIds,
+  type AgentModelSelection
+} from '@agentconnect.md/protocol'
 
 export class ModelSelectionInvalid extends Error {}
 
@@ -15,9 +22,11 @@ export async function validateModelSelection(
 ): Promise<void> {
   if (!selection) return
   if (!fallbackModel) throw new ModelSelectionInvalid('Choose a default model before enabling model selection.')
-  const row = await tx.decision.findFirst({ where: { orgId, id: selection.decisionId } })
-  if (!row) throw new DecisionBindingDenied()
-  const issues = decisionModelSelectionIssues(DecisionQuestion.parse(row.question), selection)
+  const ids = modelSelectionDecisionIds(selection)
+  const rows = await tx.decision.findMany({ where: { orgId, id: { in: ids } } })
+  if (rows.length !== ids.length) throw new DecisionBindingDenied()
+  const questions = new Map(rows.map((row) => [row.id, DecisionQuestion.parse(row.question)]))
+  const issues = decisionModelSelectionIssues(questions.get(selection.decisionId)!, selection, questions)
   if (issues.length) throw new ModelSelectionInvalid(issues[0]!.message)
 }
 
@@ -52,4 +61,17 @@ export async function enterDecisionBindingFence(
   return (held, requested = submitted) => {
     if (requested.some((id) => !held.includes(id) && !visible.has(id))) throw new DecisionBindingDenied()
   }
+}
+
+// Nested references have no foreign key; share the deletion fence with root references.
+export async function lockDecisionChain(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  chain: DecisionChainStep & { steps?: readonly DecisionChainStep[] }
+): Promise<void> {
+  const ids = decisionChainIds(chain)
+  const rows = await tx.$queryRaw<Array<{ id: string }>>(
+    Prisma.sql`SELECT "id" FROM "decision" WHERE "orgId" = ${orgId} AND "id" IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY "id" FOR KEY SHARE`
+  )
+  if (rows.length !== ids.length) throw new DecisionBindingDenied()
 }

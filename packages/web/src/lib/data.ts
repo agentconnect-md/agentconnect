@@ -1072,13 +1072,12 @@ export function resolvedPermissionMode(
 // tables when the owning daemon reports no catalog (offline / unplaced / a
 // pre-catalog daemon), so nothing regresses where the catalog is absent.
 
-/** The model id the pickers treat as selected: the stored id when the owning
- *  daemon advertises it — a runtime-surfaced literal `default` counts as an
- *  advertised option, NOT the blank sentinel — else the daemon's advertised
- *  default (`preferredModelFor`). Byte-for-byte the editor's `selectedModel`
- *  resolution (minus the move-only `daemonChanged` escape), so the read-only
- *  label and its effort capability track the same model the editor shows. */
-function selectedModelId(daemon: Pick<DaemonRow, 'runtimeModels'> | undefined, runtime: string, model: string): string {
+/** The editor's selected model id: the stored id when the daemon advertises it, else its advertised default. */
+export function selectedModelId(
+  daemon: Pick<DaemonRow, 'runtimeModels'> | undefined,
+  runtime: string,
+  model: string
+): string {
   const reportedModels = daemon?.runtimeModels.find((r) => r.runtime === runtime)?.models ?? []
   return model && reportedModels.includes(model) ? model : preferredModelFor(daemon, runtime)
 }

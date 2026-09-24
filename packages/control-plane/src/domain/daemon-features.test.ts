@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   GITLAB_COM_V1_FEATURE,
+  DECISION_CHAIN_V1_FEATURE,
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_INSTANCE_V1_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
@@ -20,6 +21,12 @@ const SELF_MANAGED = 'https://gitlab.example.test'
 const workspace = (mode: string) => ({ workspace: { mode } as AgentRecord['workspace'] })
 
 describe('§17.3 snapshot projection gate predicate', () => {
+  it('requires chain support only for model selections with additional steps', () => {
+    expect(daemonSupportsAgent({ modelSelection: {} }, [])).toBe(true)
+    const agent = { modelSelection: { steps: [{ id: 'next' }] } }
+    expect(daemonSupportsAgent(agent, [])).toBe(false)
+    expect(daemonSupportsAgent(agent, [DECISION_CHAIN_V1_FEATURE])).toBe(true)
+  })
   it('requires nothing for every storable workspace shape today', () => {
     expect(requiredDaemonFeatures(workspace('scratch'))).toEqual([])
     expect(requiredDaemonFeatures(workspace('github'))).toEqual([])
@@ -169,7 +176,7 @@ describe('hook routings per peer (code-host-decisions.md §3.3)', () => {
 
   it('strips a GitLab or Gitea projection from a daemon without hook-decision-routing-v2', () => {
     const projection = (provider: 'github' | 'gitlab' | 'gitea', family: 'issues' | 'merge_request') =>
-      ({ routingId: `${provider}-routing`, provider, family }) as unknown as NonNullable<
+      ({ routingId: `${provider}-routing`, provider, family, config: {} }) as unknown as NonNullable<
         AgentSpec['hookRoutings']
       >[number]
     const mixed = {
@@ -187,5 +194,27 @@ describe('hook routings per peer (code-host-decisions.md §3.3)', () => {
       encodeAgentSpecForPeer(mixed, ['hook-decision-routing-v1', 'hook-decision-routing-v2']).hookRoutings
     ).toHaveLength(3)
     expect(encodeAgentSpecForPeer(mixed, ['hook-decision-routing-v2'])).not.toHaveProperty('hookRoutings')
+    const chained = {
+      ...mixed,
+      hookRoutings: mixed.hookRoutings.map((routing) => ({
+        ...routing,
+        config: { ...routing.config, steps: [{ id: 'next', decisionId: 'child', rules: [] }] }
+      }))
+    }
+    expect(
+      encodeAgentSpecForPeer(chained, ['hook-decision-routing-v1', 'hook-decision-routing-v2']).hookRoutings
+    ).toEqual([])
+    expect(
+      encodeAgentSpecForPeer(chained, ['hook-decision-routing-v1', DECISION_CHAIN_V1_FEATURE]).hookRoutings?.map(
+        (routing) => routing.provider
+      )
+    ).toEqual(['github'])
+    expect(
+      encodeAgentSpecForPeer(chained, [
+        'hook-decision-routing-v1',
+        'hook-decision-routing-v2',
+        DECISION_CHAIN_V1_FEATURE
+      ]).hookRoutings
+    ).toHaveLength(3)
   })
 })

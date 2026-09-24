@@ -2,6 +2,7 @@
 
 // Routing Try (decisions.md §9.3): a channel and situation, the answer, every rule's match, the matched actions, and the effective targets.
 
+import { DecisionChainResults } from '../DecisionChainResults'
 import { useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
@@ -61,7 +62,7 @@ export function DecisionRoutingTry({
 }) {
   const t = useTranslations('Decisions.routing')
   const tDecisions = useTranslations('Decisions')
-  const { api } = useDecisionsPrototype()
+  const { api, decisions } = useDecisionsPrototype()
   const words = {
     yes: tDecisions('condition.yes'),
     no: tDecisions('condition.no'),
@@ -95,6 +96,7 @@ export function DecisionRoutingTry({
     config,
     channelIds: draft.channelIds,
     updatedAt: decision.updatedAt,
+    steps: config?.steps?.map((step) => decisions.find((entry) => entry.id === step.decisionId)),
     question: decision.question,
     channelId,
     targets,
@@ -258,6 +260,7 @@ export function DecisionRoutingTry({
         </>
       )}
 
+      {result && <DecisionChainResults chain={result.preview.chain} names={decisions} />}
       {failure && (
         <div
           role="alert"

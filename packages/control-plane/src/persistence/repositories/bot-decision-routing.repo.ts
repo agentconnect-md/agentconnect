@@ -2,6 +2,7 @@ import {
   ChannelDecisionBinding,
   DecisionBundleDefinition,
   SharedBotDecisionRouting,
+  decisionChainIds,
   decisionRoutingAgentIds
 } from '@agentconnect.md/protocol'
 import { AgentId, BotId, OrgId } from '../../domain/ids.js'
@@ -15,6 +16,7 @@ import type {
   ViewCtx
 } from '../ports.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { enterDecisionBindingFence } from '../decision-binding-fence.js'
 
 const ROUTER_BINDING = { type: 'shared_bot_routing' } as const
 
@@ -37,7 +39,8 @@ function toRecord(row: BotDecisionRouting & { decision?: Decision | null }): Bot
     enabled: row.enabled,
     decisionId: row.decisionId,
     rules: row.rules,
-    otherwise: row.otherwise
+    otherwise: row.otherwise,
+    ...(Array.isArray(row.steps) && row.steps.length ? { steps: row.steps } : {})
   })
   if (!config.success) return null
   return {
@@ -47,6 +50,24 @@ function toRecord(row: BotDecisionRouting & { decision?: Decision | null }): Bot
     needsReview: row.needsReview,
     updatedAt: row.updatedAt,
     definition: definitionOf(row.decision)
+  }
+}
+
+async function routingRecord(
+  db: PrismaLike,
+  row: Parameters<typeof toRecord>[0]
+): Promise<BotDecisionRoutingRecord | null> {
+  const record = toRecord(row)
+  if (!record?.config.steps?.length) return record
+  const definitions = await db.decision.findMany({
+    where: { orgId: row.orgId, id: { in: decisionChainIds(record.config) } }
+  })
+  return {
+    ...record,
+    definitions: definitions.flatMap((row) => {
+      const d = definitionOf(row)
+      return d ? [d] : []
+    })
   }
 }
 
@@ -60,12 +81,12 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
 
   async get(orgId: OrgId, botId: BotId): Promise<BotDecisionRoutingRecord | null> {
     const row = await this.db.botDecisionRouting.findFirst({ where: { botId, orgId }, include: { decision: true } })
-    return row ? toRecord(row) : null
+    return row ? routingRecord(this.db, row) : null
   }
 
   async getUnscoped(botId: BotId): Promise<BotDecisionRoutingRecord | null> {
     const row = await this.db.botDecisionRouting.findUnique({ where: { botId }, include: { decision: true } })
-    return row ? toRecord(row) : null
+    return row ? routingRecord(this.db, row) : null
   }
 
   async save(
@@ -79,6 +100,8 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
     actor: ViewCtx
   ): Promise<BotDecisionRoutingRecord> {
     return withAmbientTx(this.db, async (tx) => {
+      const authorize = await enterDecisionBindingFence(tx, orgId, decisionChainIds(input.config), actor.userId)
+      authorize([])
       const locked = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "bot" WHERE "id" = ${botId}::uuid AND "orgId" = ${orgId} FOR UPDATE`
       if (locked.length === 0) throw new BotMissing(botId)
@@ -103,13 +126,13 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
         const conversation = rows.filter((row) => row.channelId === channelId)
         if (conversation.length === 0) throw new RoutingChannelInvalid(channelId, 'missing')
         if (conversation.some((row) => row.kind === 'im')) throw new RoutingChannelInvalid(channelId, 'direct')
-        if (conversation.some((row) => row.trigger === 'off')) throw new RoutingChannelInvalid(channelId, 'off')
       }
       const config = {
         enabled: input.config.enabled,
         decisionId: input.config.decisionId,
         rules: input.config.rules as unknown as Prisma.InputJsonValue,
         otherwise: input.config.otherwise as Prisma.InputJsonValue,
+        steps: (input.config.steps ?? []) as unknown as Prisma.InputJsonValue,
         needsReview: false
       }
       await tx.botDecisionRouting.upsert({
@@ -144,7 +167,7 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
         if (removal.ownerIntegrationId) await this.moveOwner(tx, botId, orgId, removal)
       }
       const saved = await tx.botDecisionRouting.findUnique({ where: { botId }, include: { decision: true } })
-      const record = saved ? toRecord(saved) : null
+      const record = saved ? await routingRecord(tx, saved) : null
       if (!record) throw new Error(`bot ${botId} routing did not persist`)
       return record
     })
@@ -198,24 +221,29 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
   async listUsages(orgId: OrgId, decisionIds?: readonly string[]): Promise<BotDecisionRoutingUsage[]> {
     if (decisionIds?.length === 0) return []
     const rows = await this.db.botDecisionRouting.findMany({
-      where: { orgId, ...(decisionIds ? { decisionId: { in: [...decisionIds] } } : {}) },
+      where: { orgId },
       select: {
         decisionId: true,
         botId: true,
         rules: true,
+        steps: true,
         bot: { select: { name: true, integrations: { where: { status: 'active' }, select: { agentId: true } } } }
       },
       orderBy: { botId: 'asc' }
     })
-    return rows.map((row) => {
+    return rows.flatMap((row) => {
       const rules = SharedBotDecisionRouting.shape.rules.safeParse(row.rules)
-      const targets = rules.success ? decisionRoutingAgentIds({ rules: rules.data }) : []
-      return {
-        decisionId: row.decisionId,
-        botId: BotId(row.botId),
-        botName: row.bot.name,
-        agentIds: [...new Set([...row.bot.integrations.map((i) => i.agentId), ...targets])].map(AgentId)
-      }
+      const steps = SharedBotDecisionRouting.shape.steps.safeParse(row.steps)
+      const chain = { decisionId: row.decisionId, ...(steps.success && steps.data ? { steps: steps.data } : {}) }
+      const targets = rules.success ? decisionRoutingAgentIds({ rules: rules.data, steps: chain.steps }) : []
+      return decisionChainIds(chain)
+        .filter((id) => !decisionIds || decisionIds.includes(id))
+        .map((id) => ({
+          decisionId: id,
+          botId: BotId(row.botId),
+          botName: row.bot.name,
+          agentIds: [...new Set([...row.bot.integrations.map((i) => i.agentId), ...targets])].map(AgentId)
+        }))
     })
   }
 }

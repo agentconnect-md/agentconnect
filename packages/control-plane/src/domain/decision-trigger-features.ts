@@ -1,4 +1,6 @@
 import {
+  DECISION_CHAIN_V1_FEATURE,
+  decisionChainIds,
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
@@ -40,7 +42,7 @@ function stripRoutingForPeer(spec: IntegrationSpec): IntegrationSpec {
   )
   if (routed.size === 0 && !decisions.sharedBotRouting) return spec
   const bindings = decisions.bindings.filter((b) => b.consumer.type !== 'shared_bot_routing')
-  const gateIds = new Set(bindings.flatMap((b) => (b.consumer.type === 'gate' ? [b.consumer.decisionId] : [])))
+  const gateIds = new Set(bindings.flatMap((b) => (b.consumer.type === 'gate' ? decisionChainIds(b.consumer) : [])))
   return {
     ...spec,
     core: {
@@ -54,11 +56,42 @@ function stripRoutingForPeer(spec: IntegrationSpec): IntegrationSpec {
   }
 }
 
+function stripChainsForPeer(spec: IntegrationSpec): IntegrationSpec {
+  const bundle = spec.core.decisions
+  if (!bundle) return spec
+  const held = new Set(
+    bundle.bindings.filter((b) => b.consumer.type === 'gate' && b.consumer.steps?.length).map((b) => b.channel)
+  )
+  if (bundle.sharedBotRouting?.config.steps?.length)
+    for (const channel of bundle.sharedBotRouting.channels) held.add(channel.channel)
+  if (!held.size) return spec
+  const bindings = bundle.bindings.filter((b) => !held.has(b.channel))
+  const sharedBotRouting = bundle.sharedBotRouting?.config.steps?.length ? undefined : bundle.sharedBotRouting
+  const ids = new Set([
+    ...bindings.flatMap((b) => (b.consumer.type === 'gate' ? decisionChainIds(b.consumer) : [])),
+    ...decisionChainIds(sharedBotRouting?.config)
+  ])
+  return {
+    ...spec,
+    core: {
+      ...spec.core,
+      mutedChannels: [...new Set([...spec.core.mutedChannels, ...held])],
+      bindRules: spec.core.bindRules.filter((r) => !(r.match.kind === 'decision' && r.channel && held.has(r.channel))),
+      decisions: {
+        bindings,
+        definitions: bundle.definitions.filter((d) => ids.has(d.id)),
+        ...(sharedBotRouting ? { sharedBotRouting } : {})
+      }
+    }
+  }
+}
+
 /** The spec a daemon may receive: routing stripped without routing-v1, every decision rule without trigger-v1, held Off. */
 export function encodeIntegrationSpecForPeer(
   spec: IntegrationSpec,
   features: readonly string[] | undefined
 ): IntegrationSpec {
+  if (!features?.includes(DECISION_CHAIN_V1_FEATURE)) spec = stripChainsForPeer(spec)
   if (!decisionRoutingSupported(features)) spec = stripRoutingForPeer(spec)
   if (decisionTriggerSupported(features)) return spec
   const decisions = spec.core.decisions ?? EMPTY_DECISION_BUNDLE

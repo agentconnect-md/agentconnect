@@ -161,6 +161,80 @@ async function harness() {
 }
 
 describe('hook router (host choice)', () => {
+  it('runs a reached child on the same snapshot and deadline, then records and replays the final targets', async () => {
+    const h = await harness()
+    const p = projection()
+    const child = {
+      ...p.definition,
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      question: { type: 'boolean' as const, instructions: 'Needs an expert?', criteria: { true: 'Yes', false: 'No' } }
+    }
+    p.config.rules[0]!.action = { type: 'decision', nextStepId: 'expert' }
+    p.config.steps = [
+      {
+        id: 'expert',
+        decisionId: child.id,
+        rules: [
+          { id: 'expert-yes', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: AGENT_B } }
+        ]
+      }
+    ]
+    p.definitions = [child]
+    h.evaluate.mockResolvedValueOnce(MATCH_BOTH).mockResolvedValueOnce({
+      status: 'answered',
+      answer: { type: 'boolean', value: true, probability: 0.9 },
+      model: child.model,
+      usage: { inputTokens: 10, outputTokens: 1 }
+    })
+    const event = await h.post('Route this issue', ALL, '42', p)
+    expect(h.agentsOf(await event.choose())).toEqual([HOOK_B, HOOK_C])
+    const [root, next] = h.evaluate.mock.calls.map(([input]) => input)
+    expect(next!.state).toBe(root!.state)
+    expect(next!.deadlineAt).toBe(root!.deadlineAt)
+    expect(next!.decision.question).toEqual(child.question)
+    const verdict = await h.store.getDecisionVerdict(event.record.seq, hookRouterSubject(ROUTING))
+    expect(verdict).toMatchObject({ inputTokens: 30, outputTokens: 2 })
+    expect(JSON.parse(verdict!.answerJson!).chain).toMatchObject([
+      { stepId: '', decisionId: DECISION },
+      { stepId: 'expert', decisionId: child.id }
+    ])
+    expect(h.agentsOf(await event.choose())).toEqual([HOOK_B, HOOK_C])
+    expect(h.evaluate).toHaveBeenCalledTimes(2)
+    await h.store.close()
+  })
+
+  it.each(['skip', 'unavailable', 'edit'] as const)(
+    'settles a child %s without losing the other matched branch or using stale rules',
+    async (mode) => {
+      const h = await harness()
+      const p = projection({ otherwise: { type: 'skip' } })
+      p.config.rules[0]!.action = { type: 'decision', nextStepId: 'child' }
+      p.config.steps = [
+        {
+          id: 'child',
+          decisionId: DECISION,
+          rules: [
+            {
+              id: 'child-rule',
+              when: { type: 'choice', thresholds: { other: 0.9 } },
+              action: { type: 'agent', agentId: AGENT_B }
+            }
+          ]
+        }
+      ]
+      h.evaluate.mockResolvedValueOnce(MATCH_BOTH).mockImplementationOnce(async () => {
+        if (mode === 'edit')
+          h.live.current = { ...p, config: { ...p.config, steps: [{ ...p.config.steps![0]!, rules: [] }] } }
+        return mode === 'unavailable' ? { status: 'unavailable', reason: 'provider' } : MATCH_BOTH
+      })
+      const event = await h.post('Route this update', ALL, '42', p)
+      expect(h.agentsOf(await event.choose())).toEqual(
+        mode === 'edit' ? 'config_changed' : mode === 'unavailable' ? [HOOK, HOOK_B, HOOK_C] : [HOOK_C]
+      )
+      await h.store.close()
+    }
+  )
+
   it('fires every agent a matching rule names, dropping a candidate no rule names', async () => {
     const h = await harness()
     const event = await h.post('Please fix this')
@@ -437,49 +511,60 @@ describe('code-host decision state across providers', () => {
 })
 
 describe('hook router for GitLab and Gitea routings', () => {
-  it.each([
-    {
-      provider: 'gitlab' as const,
-      family: 'merge_request' as const,
-      msg: () => gitlabFire({ kind: 'merge_request', iid: 7 })
-    },
-    { provider: 'gitea' as const, family: 'issues' as const, msg: () => giteaFire({ kind: 'issue', index: 7 }) }
-  ])('chooses for a $provider routing and records the host verdict', async ({ provider, family, msg }) => {
-    const store = await openTestStore()
-    const evaluate = vi.fn<(input: DecisionEvaluationInput) => Promise<DecisionEvaluation>>(async () => MATCH_BOTH)
-    const p = { ...projection(), provider, family }
-    const router = new HookRouter({
-      store: () => store,
-      evaluate: (input) => evaluate(input),
-      now: () => Date.now(),
-      ownerFence: () => 'local:test',
-      currentProjection: () => p,
-      log: { warn: () => {} }
-    })
-    const channel = HOOK
-    const thread = `${provider}:x:7`
-    await store.appendTranscript({
-      channel,
-      thread,
-      ts: '1|a',
-      sender: 'reporter',
-      kind: 'text',
-      text: 'Fix',
-      orgAgentId: AGENT
-    })
-    const record = (await store.channelRecordRef(channel, '1|a', AGENT))!
-    const outcome = await router.choose(
-      { ...msg(), routing: { routingId: ROUTING, decisionId: DECISION, candidates: ALL } },
-      record,
-      p
-    )
-    expect(outcome.accepted && outcome.targets.map((t) => t.hookId)).toEqual([HOOK_B, HOOK_C])
-    expect(evaluate.mock.calls[0]![0].state).toMatchObject({ source: provider, currentMessage: { text: 'Fix' } })
-    const verdict = await store.getDecisionVerdict(record.seq, hookRouterSubject(ROUTING))
-    expect(verdict).toMatchObject({ state: 'admitted', integrationId: ROUTING, channel })
-    expect(JSON.parse(verdict!.configJson)).toMatchObject({ family })
-    await store.close()
-  })
+  it.each(
+    [
+      {
+        provider: 'gitlab' as const,
+        family: 'merge_request' as const,
+        msg: () => gitlabFire({ kind: 'merge_request', iid: 7 })
+      },
+      { provider: 'gitea' as const, family: 'issues' as const, msg: () => giteaFire({ kind: 'issue', index: 7 }) }
+    ].flatMap((entry) => [false, true].map((chained) => ({ ...entry, chained })))
+  )(
+    'chooses for a $provider routing (chained: $chained) and records the host verdict',
+    async ({ provider, family, msg, chained }) => {
+      const store = await openTestStore()
+      const evaluate = vi.fn<(input: DecisionEvaluationInput) => Promise<DecisionEvaluation>>(async () => MATCH_BOTH)
+      const p = { ...projection(), provider, family }
+      if (chained) {
+        const terminal = p.config.rules[0]!
+        p.config.rules[0] = { ...terminal, id: 'continue', action: { type: 'decision', nextStepId: 'next' } }
+        p.config.steps = [{ id: 'next', decisionId: DECISION, rules: [terminal] }]
+      }
+      const router = new HookRouter({
+        store: () => store,
+        evaluate: (input) => evaluate(input),
+        now: () => Date.now(),
+        ownerFence: () => 'local:test',
+        currentProjection: () => p,
+        log: { warn: () => {} }
+      })
+      const channel = HOOK
+      const thread = `${provider}:x:7`
+      await store.appendTranscript({
+        channel,
+        thread,
+        ts: '1|a',
+        sender: 'reporter',
+        kind: 'text',
+        text: 'Fix',
+        orgAgentId: AGENT
+      })
+      const record = (await store.channelRecordRef(channel, '1|a', AGENT))!
+      const outcome = await router.choose(
+        { ...msg(), routing: { routingId: ROUTING, decisionId: DECISION, candidates: ALL } },
+        record,
+        p
+      )
+      expect(outcome.accepted && outcome.targets.map((t) => t.hookId)).toEqual([HOOK_B, HOOK_C])
+      expect(evaluate.mock.calls[0]![0].state).toMatchObject({ source: provider, currentMessage: { text: 'Fix' } })
+      expect(evaluate).toHaveBeenCalledTimes(chained ? 2 : 1)
+      const verdict = await store.getDecisionVerdict(record.seq, hookRouterSubject(ROUTING))
+      expect(verdict).toMatchObject({ state: 'admitted', integrationId: ROUTING, channel })
+      expect(JSON.parse(verdict!.configJson)).toMatchObject({ family })
+      await store.close()
+    }
+  )
 })
 
 describe('hook routing evaluation lane', () => {

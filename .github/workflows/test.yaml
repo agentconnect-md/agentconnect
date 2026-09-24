@@ -4,9 +4,6 @@ on:
   pull_request:
     branches:
       - main
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
   # Release calls this workflow as its quality gate for main/release pushes.
   # Keeping the jobs here avoids duplicating CI logic between PRs and releases.
   workflow_call:
@@ -34,6 +31,29 @@ concurrency:
 # Keep the static gate, the Docker-free unit tests, and the Docker-bound
 # integration suite separate so all three workloads can be scheduled independently.
 jobs:
+  # Docs-only diffs skip the suites here, not in the trigger, so every required check still reports.
+  scope:
+    name: Scope
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      # The files API instead of a checkout; non-PR events and any list this cannot read fail open.
+      - name: Does this diff touch anything besides docs?
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          code() { echo 'code=true' >> "$GITHUB_OUTPUT"; exit 0; }
+          [ "${{ github.event_name }}" = 'pull_request' ] || code
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') || code
+          [ -n "$files" ] || code
+          if grep -qvE '^docs/|\.md$' <<<"$files"; then
+            code
+          fi
+          echo 'code=false' >> "$GITHUB_OUTPUT"
+
   # The static gate: lint, format, typecheck and the workspace build, in one job because they wanted
   # the same runner state. Separately they each paid a checkout, a pnpm and Node setup, an install
   # and a `prisma:generate` — about 55 s twice — to reach the same tree, and the build ran 42-85 s of
@@ -49,6 +69,8 @@ jobs:
   # cheaper to be than ~10 s at the end of a job that already has the checkout it needs.
   build:
     name: Build · Check
+    needs: scope
+    if: ${{ needs.scope.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -102,6 +124,8 @@ jobs:
   # so their short per-test timeouts measure code rather than runner contention.
   unit:
     name: Unit Test
+    needs: scope
+    if: ${{ needs.scope.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       summary: ${{ steps.export-summary.outputs.markdown }}
@@ -222,10 +246,8 @@ jobs:
           [ "${{ github.event_name }}" = 'pull_request' ] || reaches
           [ -n "$BASE" ] && [ -n "$HEAD" ] || reaches
           files=$(git diff --name-only "$BASE...$HEAD") || reaches
-          # Listed by what CANNOT reach the job: the packages nothing in the daemon/CLI closure
-          # depends on, plus docs and the chart. Everything else runs it — a new root config, a new
-          # script, a new shared package are all in scope without anyone remembering to list them.
-          if grep -qvE '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability)/|charts/|docs/)' <<<"$files"; then
+          # Lists what CANNOT reach the closure, so a new root config, script or package stays in scope.
+          if grep -qvE '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability)/|charts/|docs/)|\.md$' <<<"$files"; then
             reaches
           fi
           echo 'changed=false' >> "$GITHUB_OUTPUT"
@@ -317,6 +339,8 @@ jobs:
   # packages, none of which import the generated client.
   evals:
     name: Evaluation
+    needs: scope
+    if: ${{ needs.scope.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -358,6 +382,8 @@ jobs:
   # Releases run it too: publication is gated on the same legs review was.
   sandbox-linux:
     name: Sandbox (Linux)
+    needs: scope
+    if: ${{ needs.scope.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -490,6 +516,8 @@ jobs:
   # Needs Docker, so it gets its own runner off the critical path.
   daemon-store-postgres:
     name: Daemon Store (PostgreSQL)
+    needs: scope
+    if: ${{ needs.scope.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -529,6 +557,8 @@ jobs:
   # the suite's sequencer already packs shards by cost and does nothing until `--shard` is passed.
   integration:
     name: Integration tests
+    needs: scope
+    if: ${{ needs.scope.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       summary: ${{ steps.export-summary.outputs.markdown }}
@@ -582,3 +612,17 @@ jobs:
             cat "$CAPTURED_JOB_SUMMARY"
             echo '__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
+
+  # The ruleset's one check; `always()` since a job skipped behind a failed need would count as passing.
+  ci-ok:
+    name: CI OK
+    needs: [scope, build, unit, unit-windows, evals, sandbox-linux, daemon-store-postgres, integration]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every required job passed or was out of scope
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          if grep -qE 'failure|cancelled' <<<"$RESULTS"; then exit 1; fi

@@ -17,12 +17,17 @@ import {
   type DecisionBindingDraft
 } from '@/lib/decisions/provider'
 import { bindingSaveError, type BindingSaveError, type GateStatus, type SavedGate } from '@/lib/decisions/binding'
-import type { ChannelDecisionGate, DecisionCondition } from '@agentconnect.md/protocol/decision'
+import {
+  decisionGateIssues,
+  type ChannelDecisionGate,
+  type DecisionCondition
+} from '@agentconnect.md/protocol/decision'
 import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
 import { DecisionConditionFields, conditionSummary } from './DecisionConditionFields'
 import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
 import { DecisionGateTry } from './DecisionGateTry'
 import { DecisionChip } from './DecisionChip'
+import { GateChainFields } from './GateChainFields'
 import { DecisionPicker } from './DecisionPicker'
 
 type DecisionEntry = ReturnType<typeof useDecisionsPrototype>['decisions'][number]
@@ -39,8 +44,14 @@ function selectsNothing(when: DecisionCondition | null): boolean {
 function editDraftFor(saved: SavedGate, decision: DecisionEntry | null): DecisionBindingDraft {
   if (!decision) return { decisionId: null, when: null, phase: 'editing', explicitPick: true }
   if (decision.question.type !== saved.when.type)
-    return { decisionId: decision.id, when: emptyConditionFor(decision), phase: 'editing', awaitingCondition: true }
-  return { decisionId: decision.id, when: saved.when, phase: 'editing' }
+    return {
+      ...saved,
+      decisionId: decision.id,
+      when: emptyConditionFor(decision),
+      phase: 'editing',
+      awaitingCondition: true
+    }
+  return { ...saved, decisionId: decision.id, when: saved.when, phase: 'editing' }
 }
 
 /** Closing the modal unmounts the focused control, so focus returns to the row's entry (`data-gate-entry`). */
@@ -301,7 +312,21 @@ export function DecisionBindingStrip({
     : null
   const awaiting = decision !== null && activeDraft.awaitingCondition === true && selectsNothing(activeDraft.when)
   const when = decision ? (activeDraft.when ?? (awaiting ? null : defaultConditionFor(decision))) : null
-  const localIssues = gateIssues(decision, when)
+  const gate: ChannelDecisionGate | null =
+    decision && when
+      ? {
+          type: 'gate',
+          decisionId: decision.id,
+          when,
+          ...(draft.steps?.length ? { steps: draft.steps } : {}),
+          ...(draft.nextStepId ? { nextStepId: draft.nextStepId } : {}),
+          ...(draft.elseStepId ? { elseStepId: draft.elseStepId } : {})
+        }
+      : null
+  const localIssues =
+    gate && decision
+      ? decisionGateIssues(decision.question, gate, new Map(decisions.map((d) => [d.id, d.question])))
+      : gateIssues(decision, when)
   const serverIssues = activeDraft.error?.kind === 'invalid' ? activeDraft.error.issues : []
   const issues = localIssues.length ? localIssues : serverIssues
   const invalidText = decision
@@ -315,6 +340,9 @@ export function DecisionBindingStrip({
   const change = (decisionId: string, next: DecisionCondition) => {
     const awaitingCondition = activeDraft.awaitingCondition === true && decisionId === activeDraft.decisionId
     setBindingDraft(bindingKey, {
+      ...(decisionId === activeDraft.decisionId
+        ? { steps: activeDraft.steps, nextStepId: activeDraft.nextStepId, elseStepId: activeDraft.elseStepId }
+        : {}),
       decisionId,
       when: next,
       phase: 'editing',
@@ -323,16 +351,15 @@ export function DecisionBindingStrip({
   }
 
   const save = async () => {
-    if (saving.current || busy || !decision || !when || invalidText) return
+    if (saving.current || busy || !decision || !when || !gate || invalidText) return
     saving.current = true
-    const gate: ChannelDecisionGate = { type: 'gate', decisionId: decision.id, when }
-    setBindingDraft(bindingKey, { decisionId: decision.id, when, phase: 'saving' })
+    setBindingDraft(bindingKey, { ...activeDraft, decisionId: decision.id, when, phase: 'saving' })
     try {
       await onSave(gate)
       collapse()
     } catch (cause) {
       const error = bindingSaveError(cause)
-      setBindingDraft(bindingKey, { decisionId: decision.id, when, phase: 'error', error })
+      setBindingDraft(bindingKey, { ...activeDraft, decisionId: decision.id, when, phase: 'error', error })
       if (error.kind === 'decision_unavailable') void reload()
     } finally {
       saving.current = false
@@ -444,6 +471,23 @@ export function DecisionBindingStrip({
                   {loading ? t('loading') : decisions.length ? t('binding.pickDecision') : t('binding.noDecisions')}
                 </span>
               )}
+              {gate && (
+                <GateChainFields
+                  value={gate}
+                  decisions={decisions}
+                  disabled={!canWrite || busy}
+                  onChange={(next) =>
+                    setBindingDraft(bindingKey, {
+                      decisionId: next.decisionId,
+                      when: next.when,
+                      steps: next.steps,
+                      nextStepId: next.nextStepId,
+                      elseStepId: next.elseStepId,
+                      phase: 'editing'
+                    })
+                  }
+                />
+              )}
             </fieldset>
 
             {awaiting && <Note icon="info">{invalidText}</Note>}
@@ -503,6 +547,7 @@ export function DecisionBindingStrip({
                 conversation={conversation}
                 decision={decision}
                 when={when}
+                binding={gate ?? undefined}
                 agentName={agentName}
                 open={tryOpen}
               />

@@ -1,5 +1,6 @@
 import {
   HOOK_DECISION_ROUTING_V1_FEATURE,
+  decisionChainIds,
   decisionRoutingIssues,
   isCodeHostRoutingScope,
   supportsDecision,
@@ -19,6 +20,17 @@ export type HookRoutingStatus = 'enabled' | 'needs_review' | 'access_revoked'
 /** Whether (provider, family) names a routable scope, narrowing both. */
 export function isRoutingScope(provider: string, family: string | null | undefined): family is CodeHostRoutingFamily {
   return isCodeHostRoutingScope(provider, family)
+}
+
+type RoutingConfig = Pick<
+  CodeHostDecisionRoutingRecord,
+  'orgId' | 'decisionId' | 'config' | 'needsReview' | 'definition' | 'definitions'
+>
+
+function routingDefinitions(record: RoutingConfig) {
+  return new Map(
+    [...(record.definitions ?? []), ...(record.definition ? [record.definition] : [])].map((d) => [d.id, d])
+  )
 }
 
 /** The routing scope a hook row belongs to; null for a generic webhook or a family its provider does not route. */
@@ -55,31 +67,38 @@ export function routingMembers<H extends MemberHook>(
 
 /** Why a stored routing cannot execute as saved; empty when it can (pause aside). */
 export function hookRoutingIssues(
-  record: Pick<CodeHostDecisionRoutingRecord, 'orgId' | 'decisionId' | 'config' | 'needsReview' | 'definition'>,
+  record: RoutingConfig,
   memberAgentIds: ReadonlySet<string>
 ): DecisionValidationIssue[] {
   const definition = record.definition
   if (!definition || definition.id !== record.decisionId || definition.orgId !== record.orgId)
     return [{ path: ['decisionId'], message: 'The Decision is unavailable.' }]
   if (!record.config) return [{ path: [], message: 'Save the routing configuration again.' }]
-  const issues: DecisionValidationIssue[] = [...decisionRoutingIssues(definition.question, record.config)]
+  const definitions = routingDefinitions(record)
+  const issues = decisionRoutingIssues(
+    definition.question,
+    record.config,
+    new Map([...definitions].map(([id, d]) => [id, d.question]))
+  )
   if (record.needsReview) issues.push({ path: [], message: 'The Decision changed; review the routing rules.' })
-  if (!supportsDecision(definition))
-    issues.push({ path: ['decisionId'], message: 'The Decision model does not support this question type.' })
-  record.config.rules.forEach((rule, index) => {
-    if (rule.action.type === 'agent' && !memberAgentIds.has(rule.action.agentId))
-      issues.push({ path: ['rules', index, 'action'], message: 'Choose an agent that watches this repository.' })
-  })
+  for (const [index, step] of [record.config, ...(record.config.steps ?? [])].entries()) {
+    const path = index ? ['steps', index - 1] : []
+    const d = definitions.get(step.decisionId)
+    if (!d || d.orgId !== record.orgId || !supportsDecision(d))
+      issues.push({ path: [...path, 'decisionId'], message: 'The Decision is unavailable or unsupported.' })
+    step.rules.forEach((rule, i) => {
+      if (rule.action.type === 'agent' && !memberAgentIds.has(rule.action.agentId))
+        issues.push({ path: [...path, 'rules', i, 'action'], message: 'Choose an agent that watches this repository.' })
+    })
+  }
   return issues
 }
 
 /** The routing's executable state; pause is the config's own `enabled` and is not a status. */
-export function hookRoutingStatus(
-  record: Pick<CodeHostDecisionRoutingRecord, 'orgId' | 'decisionId' | 'config' | 'needsReview' | 'definition'>,
-  memberAgentIds: ReadonlySet<string>
-): HookRoutingStatus {
-  const definition = record.definition
-  if (!definition || definition.id !== record.decisionId || definition.orgId !== record.orgId) return 'access_revoked'
+export function hookRoutingStatus(record: RoutingConfig, memberAgentIds: ReadonlySet<string>): HookRoutingStatus {
+  const definitions = routingDefinitions(record)
+  if (decisionChainIds(record.config ?? record).some((id) => definitions.get(id)?.orgId !== record.orgId))
+    return 'access_revoked'
   return hookRoutingIssues(record, memberAgentIds).length > 0 ? 'needs_review' : 'enabled'
 }
 
@@ -99,6 +118,7 @@ export function hookRoutingProjection(
     family: record.family,
     config: status === 'enabled' ? record.config : { ...record.config, enabled: false },
     definition: record.definition,
+    ...(record.definitions ? { definitions: record.definitions } : {}),
     members: members.slice(0, HOOK_ROUTING_MAX_MEMBERS).map((m) => ({ agentId: m.agentId, hookId: m.id }))
   }
 }

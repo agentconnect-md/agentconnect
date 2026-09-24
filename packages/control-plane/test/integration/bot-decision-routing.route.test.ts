@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import {
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
+  DECISION_CHAIN_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   type DecisionDraft,
   type IntegrationRemove,
@@ -338,18 +339,34 @@ describe('PUT /bots/:id/decision-routing', () => {
     expect(detail.evaluationHost).toMatchObject({ daemonId: DAEMON, status: 'unsupported' })
   })
 
-  it('refuses Off, direct, unknown and duplicate channels, a non-shared bot, and an owner-as-default platform', async () => {
+  it('adds an Off channel as is, turning every sibling row to By decision', async () => {
+    const { botId, a, b } = await seedBot()
+    const { app, relay } = appWith()
+    const decisionId = await createDecision(app)
+    const res = await put(app, botId, {
+      config: routingConfig(decisionId, a.agentId, b.agentId),
+      channelIds: ['C3'],
+      removals: []
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json().channelIds).toEqual(['C3'])
+    const rows = await rowsOf('C3')
+    expect(rows).toHaveLength(2)
+    for (const row of rows)
+      expect(row).toMatchObject({ trigger: 'decision', decisionBinding: { type: 'shared_bot_routing' } })
+    const routes = lastRoutes(relay!)
+    expect(routes.routedConversations).toEqual([{ channel: 'C3', decisionId, evaluationDaemonId: DAEMON }])
+    expect(routes.mutedChannels ?? []).not.toContain('C3')
+  })
+
+  it('refuses direct, unknown and duplicate channels, a non-shared bot, and an owner-as-default platform', async () => {
     const { botId, a, b } = await seedBot()
     const { app } = appWith()
     const decisionId = await createDecision(app)
     const config = routingConfig(decisionId, a.agentId, b.agentId)
-    const off = await put(app, botId, { config, channelIds: ['C3'], removals: [] })
-    expect(off.statusCode, off.body).toBe(400)
-    expect(off.json().message).toBe('Enable the channel before adding it to routing.')
     expect((await put(app, botId, { config, channelIds: ['D1'], removals: [] })).statusCode).toBe(400)
     expect((await put(app, botId, { config, channelIds: ['C9'], removals: [] })).statusCode).toBe(404)
     expect((await put(app, botId, { config, channelIds: ['C1', 'C1'], removals: [] })).statusCode).toBe(400)
-    for (const row of await rowsOf('C3')) expect(row.trigger).toBe('off')
 
     const classic = await seedBot({ shareable: false })
     const notShared = await put(app, classic.botId, {
@@ -746,5 +763,39 @@ describe('the channel PATCH on a routed conversation', () => {
     expect(mention.statusCode, mention.body).toBe(200)
     for (const row of await rowsOf('C1')) expect(row).toMatchObject({ trigger: 'mention', decisionBinding: null })
     expect((await get(app, botId)).json().channelIds).toEqual([])
+  })
+})
+
+describe('chained shared-bot routing', () => {
+  it('persists child rules, projects all definitions, and keeps child references in use', async () => {
+    const { botId, a, b } = await seedBot()
+    const { app, spy } = appWith({ daemon: [...ROUTING, DECISION_CHAIN_V1_FEATURE] })
+    const root = await createDecision(app)
+    const child = await createDecision(app)
+    const config: SharedBotDecisionRouting = {
+      enabled: true,
+      decisionId: root,
+      rules: [
+        { id: 'root', when: { type: 'boolean', values: [true] }, action: { type: 'decision', nextStepId: 'assign' } }
+      ],
+      steps: [
+        {
+          id: 'assign',
+          decisionId: child,
+          rules: [
+            { id: 'child', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: b.agentId } }
+          ]
+        }
+      ],
+      otherwise: { type: 'skip' }
+    }
+    const response = await put(app, botId, { config, channelIds: ['C1'], removals: [] })
+    expect(response.statusCode, response.body).toBe(200)
+    expect(response.json().config).toEqual(config)
+    expect(spy.upserts.some(({ u }) => u.core.decisions?.definitions.some((d) => d.id === child))).toBe(true)
+    expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${child}` })).statusCode).toBe(409)
+    const changed = await app.app.inject({ method: 'PATCH', url: `${ORG}/decisions/${child}`, payload: scoreDraft })
+    expect(changed.statusCode, changed.body).toBe(200)
+    expect((await prisma.botDecisionRouting.findUnique({ where: { botId } }))?.needsReview).toBe(true)
   })
 })

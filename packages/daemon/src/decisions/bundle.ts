@@ -1,7 +1,8 @@
 import {
   DecisionBundle,
   SharedBotRoutingProjection,
-  decisionConditionIssues,
+  decisionGateIssues,
+  decisionChainIds,
   decisionRoutingIssues,
   supportsDecision,
   type ChannelDecisionGate,
@@ -14,6 +15,7 @@ export interface ResolvedDecisionGate {
   channel: string
   binding: ChannelDecisionGate
   definition: DecisionBundleDefinition
+  definitions?: DecisionBundleDefinition[]
 }
 
 /** One shared-bot routed channel; `routing` is present only where this daemon is the named evaluation host. */
@@ -25,6 +27,7 @@ export interface ResolvedRoutedChannel {
     botId: string
     config: SharedBotDecisionRouting
     definition: DecisionBundleDefinition
+    definitions?: DecisionBundleDefinition[]
     defaultAgentId?: string
   }
 }
@@ -80,6 +83,7 @@ export function resolveDecisionBundle(
                   botId: host.botId,
                   config: host.config,
                   definition: host.definition,
+                  ...(host.definitions ? { definitions: host.definitions } : {}),
                   ...(hosted.defaultAgentId ? { defaultAgentId: hosted.defaultAgentId } : {})
                 }
               }
@@ -98,7 +102,8 @@ export function resolveDecisionBundle(
       gates.set(binding.channel, {
         channel: binding.channel,
         binding: gate,
-        definition: definitions.get(gate.decisionId)!
+        definition: definitions.get(gate.decisionId)!,
+        ...(gate.steps?.length ? { definitions: decisionChainIds(gate).map((id) => definitions.get(id)!) } : {})
       })
     }
   }
@@ -117,6 +122,7 @@ function hostRouting(
       botId: string
       config: SharedBotDecisionRouting
       definition: DecisionBundleDefinition
+      definitions?: DecisionBundleDefinition[]
       channels: ReadonlyMap<string, { defaultAgentId?: string }>
     }
   | undefined {
@@ -126,8 +132,12 @@ function hostRouting(
   if (
     !parsed.success ||
     !definition ||
-    decisionRoutingIssues(definition.question, parsed.data.config).length > 0 ||
-    !supportsDecision(definition)
+    decisionRoutingIssues(
+      definition.question,
+      parsed.data.config,
+      new Map([...definitions].map(([id, d]) => [id, d.question]))
+    ).length > 0 ||
+    decisionChainIds(parsed.data.config).some((id) => !definitions.has(id) || !supportsDecision(definitions.get(id)!))
   ) {
     warn?.('decision: shared-bot routing failed validation; holding every routed conversation')
     return undefined
@@ -136,6 +146,9 @@ function hostRouting(
     botId: parsed.data.botId,
     config: parsed.data.config,
     definition,
+    ...(parsed.data.config.steps?.length
+      ? { definitions: decisionChainIds(parsed.data.config).map((id) => definitions.get(id)!) }
+      : {}),
     channels: new Map(
       parsed.data.channels.map((c) => [c.channel, c.defaultAgentId ? { defaultAgentId: c.defaultAgentId } : {}])
     )
@@ -150,8 +163,17 @@ function disabledReason(
   if (binding.consumer.type !== 'gate') return 'not a gate'
   const definition = definitions.get(binding.consumer.decisionId)
   if (!definition) return 'missing definition'
-  if (decisionConditionIssues(definition.question, binding.consumer.when).length > 0) return 'incompatible condition'
-  if (!supportsDecision(definition)) return 'unsupported model'
+  if (
+    decisionGateIssues(
+      definition.question,
+      binding.consumer,
+      new Map([...definitions].map(([id, d]) => [id, d.question]))
+    ).length > 0
+  )
+    return 'incompatible condition'
+  if (decisionChainIds(binding.consumer).some((id) => !definitions.has(id))) return 'missing definition'
+  if (decisionChainIds(binding.consumer).some((id) => !supportsDecision(definitions.get(id)!)))
+    return 'unsupported model'
   return undefined
 }
 
@@ -173,12 +195,24 @@ export function gateFingerprint(gate: ResolvedDecisionGate): string {
     providerId: gate.definition.providerId,
     model: gate.definition.model,
     question: gate.definition.question,
-    when: gate.binding.when
+    when: gate.binding.when,
+    ...(gate.binding.steps?.length
+      ? {
+          binding: gate.binding,
+          definitions: gate.definitions?.map(({ id, providerId, model, question }) => ({
+            id,
+            providerId,
+            model,
+            question
+          }))
+        }
+      : {})
   })
 }
 
 /** The frozen, credential-free configuration a verdict carries. */
 export interface FrozenGateConfig {
+  definitions?: DecisionBundleDefinition[]
   decisionId: string
   providerId: string
   model: string
@@ -197,6 +231,7 @@ export function frozenGateConfig(gate: ResolvedDecisionGate, sessionMode: string
     question: gate.definition.question,
     condition: gate.binding.when,
     binding: { channel: gate.channel, consumer: gate.binding },
+    ...(gate.definitions ? { definitions: gate.definitions } : {}),
     sessionMode,
     fingerprint: gateFingerprint(gate)
   }
@@ -214,6 +249,17 @@ export function routerFingerprint(routing: NonNullable<ResolvedRoutedChannel['ro
     question: routing.definition.question,
     rules: routing.config.rules,
     otherwise: routing.config.otherwise,
+    ...(routing.config.steps?.length
+      ? {
+          steps: routing.config.steps,
+          definitions: routing.definitions?.map(({ id, providerId, model, question }) => ({
+            id,
+            providerId,
+            model,
+            question
+          }))
+        }
+      : {}),
     defaultAgentId: routing.defaultAgentId ?? null
   })
 }

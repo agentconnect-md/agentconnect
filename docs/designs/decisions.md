@@ -694,9 +694,10 @@ existing conversation lock. Adding/removing a sibling preserves still-used histo
 and the bot-owned routing configuration.
 
 In Stage 2, the shared-bot Save operation writes the complete routing record and
-scope changes in one transaction. Additions explicitly select By decision on already-enabled
-channels. Removals supply their replacement trigger/default-agent settings, using
-existing validation. Off channels cannot be enabled by a routing save. A channel
+scope changes in one transaction. Additions explicitly select By decision on every sibling row;
+adding an Off channel enables it, under the owner-edit permission a trigger PATCH needs.
+Removals supply their replacement trigger/default-agent settings, using existing
+validation. A channel
 cannot have both a gate and a router; changing consumers replaces the whole binding.
 Preserve existing thread affinity when any of these settings change.
 
@@ -1577,7 +1578,7 @@ under test. Prefer these focused scenarios over tests mirroring every helper.
 | Score intervals and Otherwise | Reject overlapping intervals; a shared endpoint belongs only to the upper interval; include the rubric maximum; row order cannot change the result; gaps use Otherwise                 |
 | Boolean mapping               | Each value belongs to at most one rule; an unmatched value uses Otherwise                                                                                                              |
 | Target boundaries             | Only authorized connected agents are selectable; unavailable/removed targets never silently reroute; matched actions and provider failure preserve explicit/thread constraints         |
-| Scope and saves               | Routing/scope save together; Off stays Off; scope removal requires replacement settings; Cancel/reopen restore saved values; failed-save Retry preserves drafts                        |
+| Scope and saves               | Routing/scope save together; adding Off enables it; scope removal requires replacement settings; Cancel/reopen restore saved values; failed-save Retry preserves drafts                |
 | Cross-daemon selection        | Evaluate once; crash/retry retains every target and its disposition; never readmit successful siblings; a rejected target does not suppress other targets or invoke Otherwise          |
 | Thread ownership and usage    | One owner plus every admitted participant survives restart; network completion order does not select the owner; provider usage is counted once and target turns separately             |
 | Completed UI flow             | Integrations entry, probability thresholds, non-overlapping Score intervals, preview, readiness/recovery, evaluation snapshots, and ≤768px rule cards all work                         |
@@ -1750,8 +1751,8 @@ The picker uses the existing model catalog to show supported settings. A deliber
 model change resolves effort using the model's offered levels and default, and
 turns Fast mode off when the new model does not offer it. Changing runtime selects
 its own approval vocabulary and default. Merely receiving an updated catalog does not edit the draft.
-`modelSelection: null` removes the binding. Each rule needs a runtime and one of
-its advertised models. The fallback model is required while a binding exists.
+`modelSelection: null` removes the binding. Each rule selects a runtime and one of
+its advertised models, or continues with another Decision. The fallback model is required while a binding exists.
 Launch-time model configuration is supported because selection precedes host start.
 Live model switching continues to follow the runtime's `modelSwitching` capability.
 
@@ -1864,6 +1865,43 @@ Acceptance covers cross-runtime startup, isolation between conversations,
 once-per-session evaluation, restart and fallback persistence, manual precedence, rule
 order, score intervals, bounded PR/MR context, and binding access.
 
+### 10.7. Chained Decisions
+
+Agent runtime/model selection, shared-bot routing, channel activation gates, and
+repository routing can continue a result branch with another saved Decision.
+The consumer owns the chain; a Decision remains a reusable question and evaluator.
+
+The first node keeps the existing configuration shape. Optional `steps` contain
+additional nodes with unique `id` values and their own `decisionId` and conditions.
+
+| Consumer              | Continuation                                               | Terminal behavior                                                                                                         |
+| --------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Agent model selection | A rule uses `nextStepId` instead of a runtime/model target | Select the terminal runtime/model once and pin it to the session                                                          |
+| Shared-bot routing    | A rule action is `{ type: "decision", nextStepId }`        | Collect and deduplicate matched Agent targets; apply the shared Otherwise action at a reached node with no matching rules |
+| Repository routing    | A rule action is `{ type: "decision", nextStepId }`        | Collect matched Agents among the eligible hooks; Otherwise can select every candidate or nobody                           |
+| Channel gate          | `nextStepId` follows a match; `elseStepId` follows a miss  | A terminal match triggers the bound Agent; a terminal miss skips                                                          |
+
+Chains contain at most eight nodes, including the first Decision. All nodes must
+be reachable, references must exist, and cycles are rejected. Routing has at most
+32 uniquely identified rules across the chain. Only reached nodes are evaluated;
+each node runs at most once. Every evaluation uses the same bounded input snapshot,
+and the entire chain shares the consumer's five-second evaluation deadline.
+A missing or unavailable reached Decision follows that consumer's existing failure
+behavior: model fallback, gate continuation, or routing fallback. Continuing
+participants retain their existing routing guarantees.
+
+Saving authorizes every referenced Decision. Usage lists and deletion protection
+include nested references; changing a child's question revalidates its consumers.
+Gate/router bundles deliver all definitions to the daemon ahead of ingress, and
+pending verdicts include child configuration in their fingerprints. Peers without
+`decision-chain-v1` cannot execute a chain; their conversations remain held.
+
+The editors let a rule choose another Decision, edit its conditions, and return
+along the path. Gate and shared-bot routing Try use the same traversal as live execution.
+Recent evaluation details retain the reached steps and their answers with the
+existing transcript retention boundary. The model-selection sample remains
+explicitly simulated.
+
 ## 11. Future possibilities
 
 These are exploratory uses of the same Decision resource, outside Stage 1 and
@@ -1899,8 +1937,6 @@ for routine response, routing, and session choices. Directions to explore includ
   This does not change the established-thread continuity specified for Stage 2.
 - **Built-in templates:** provide editable starting points for common judgments
   that users can apply without creating a Decision from scratch.
-- **Decision composition:** explore successive judgments, such as checking for
-  spam before selecting recipients, without specifying a workflow engine here.
 
 AI-assisted authoring produces saved configuration. Runtime Auto would make choices
 for incoming messages using the candidates and context available at that time;
@@ -1910,14 +1946,15 @@ None is required to complete Stage 1 or Stage 2.
 
 ### Other possible consumers
 
-| Possible consumer                  | Potential judgment                                                                                                                                                         |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Webhooks and code-host events      | Whether an event contains an actionable request, repeated feedback, or ordinary discussion; GitHub hooks are specified in [code-host-decisions.md](code-host-decisions.md) |
-| Memory distillation                | Whether a completed conversation contains durable information worth extracting                                                                                             |
-| Scheduled tasks and monitoring     | Whether a result represents a meaningful change worth notifying the user about                                                                                             |
-| Organization knowledge suggestions | Whether an insight is useful to one agent or worth proposing for broader team reuse                                                                                        |
-| Final-answer context refresh       | Whether newly arrived conversation changes materially affect a pending answer                                                                                              |
-| Tool-approval assistance           | Whether a proposed operation raises concerns about risk or alignment with the user's task                                                                                  |
+| Possible consumer                  | Potential judgment                                                                                                                                                                  |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Webhooks and code-host events      | Whether an event contains an actionable request, repeated feedback, or ordinary discussion; GitHub hooks are specified in [code-host-decisions.md](code-host-decisions.md)          |
+| Memory distillation                | Whether a completed conversation contains durable information worth extracting                                                                                                      |
+| Scheduled tasks and monitoring     | Whether a result represents a meaningful change worth notifying the user about                                                                                                      |
+| Organization knowledge suggestions | Whether an insight is useful to one agent or worth proposing for broader team reuse                                                                                                 |
+| Final-answer context refresh       | Whether newly arrived conversation changes materially affect a pending answer                                                                                                       |
+| Tool-approval assistance           | Whether a proposed operation raises concerns about risk or alignment with the user's task                                                                                           |
+| Workspace preparation              | Which of an agent's authorized repositories a new session should check out before its runtime starts; specified in [multi-repository-workspaces.md](multi-repository-workspaces.md) |
 
 Future consumers would retain their own context, result handling, permissions, and
 failure behavior. A judgment would not replace existing authorization or required

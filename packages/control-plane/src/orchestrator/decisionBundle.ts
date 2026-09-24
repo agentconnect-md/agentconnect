@@ -1,5 +1,6 @@
 import {
-  decisionConditionIssues,
+  decisionGateIssues,
+  decisionChainIds,
   type ChannelDecisionGate,
   type DecisionBundle,
   type DecisionBundleBinding,
@@ -15,6 +16,7 @@ type DecisionChannel = Pick<
   | 'decisionBinding'
   | 'decisionNeedsReview'
   | 'decisionDefinition'
+  | 'decisionDefinitions'
   | 'decisionRouting'
 >
 
@@ -60,7 +62,13 @@ export function decisionGateState(c: DecisionChannel): DecisionGateState | null 
   const definition = c.decisionDefinition
   if (!gate || !definition || definition.id !== gate.decisionId)
     return { gate, definition, enabled: false, disabledReason: 'access_revoked' }
-  if (c.decisionNeedsReview || decisionConditionIssues(definition.question, gate.when).length > 0)
+  const definitions = c.decisionDefinitions ?? [definition]
+  if (decisionChainIds(gate).some((id) => !definitions.some((d) => d.id === id)))
+    return { gate, definition, enabled: false, disabledReason: 'access_revoked' }
+  if (
+    c.decisionNeedsReview ||
+    decisionGateIssues(definition.question, gate, new Map(definitions.map((d) => [d.id, d.question]))).length > 0
+  )
     return { gate, definition, enabled: false, disabledReason: 'needs_review' }
   // By decision applies to group conversations only; a 1:1 DM row never executes a gate.
   if (c.kind === 'im') return { gate, definition, enabled: false }
@@ -104,8 +112,8 @@ export function decisionBundleOf(channels: readonly DecisionChannel[]): Decision
       ...(state.disabledReason ? { disabledReason: state.disabledReason } : {})
     })
     // Disabled bindings keep their definition too: Stage 3b's repair evidence reads it.
-    if (state.definition && !definitions.has(state.definition.id))
-      definitions.set(state.definition.id, state.definition)
+    for (const definition of c.decisionDefinitions ?? (state.definition ? [state.definition] : []))
+      definitions.set(definition.id, definition)
   }
   return { bindings, definitions: [...definitions.values()] }
 }

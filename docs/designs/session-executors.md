@@ -9,7 +9,11 @@ data-plane store out of the design entirely: the executor allocates each launch'
 generation (§6), a relayed `release` retires an environment (§7), and the backstop
 reconcile asks only the Control Plane and this machine's own retention (§7). The
 feature-independent groundwork has landed — #2154, #2155, #2157, #2158, #2160,
-#2161 and #2165 — and so have F1, F2a and F2b (§12). Motivated by
+#2161 and #2165 — and so have F1, F2a and F2b (§12). A third revision on
+2026-09-24 brought in what the first had deferred: an agent names the strategy it
+runs in and every machine offers a table of them (§5), runtime credentials are the
+executor's alone (§8), `srt` becomes a strategy by wrapping the shim (§5), and the
+local microsandbox path converges on the executor's (§11). Motivated by
 [#2111](https://github.com/agentconnect-md/agentconnect/issues/2111): a self-hosted
 team with a handful of Linux machines and no Kubernetes wants an agent's
 concurrent sessions to use the spare compute of the other machines in its daemon
@@ -33,11 +37,11 @@ pool's shape with the Kubernetes-specific parts removed.
 | D4  | The contract            | The shim protocol, exactly as the pool uses it against a session pod. ACP, exec, fs, skills and the credential and MCP tunnels all ride it. The backend behind the shim is private.                                                                                                                            |
 | D5  | Direction               | The executor facet listens; the holder dials. Same rule as the pool: the shim never dials.                                                                                                                                                                                                                     |
 | D6  | Control plane role      | Orchestration only: facts a holder pulls at session birth, a `prepare` and a `release` it relays after checking the ledger, a hint at where a session last ran, upgrades. Never on the data path. Placement is the holder's.                                                                                   |
-| D7  | Execution strategies    | `host` (Linux) and `microsandbox` in v1, in that order; `srt`, `docker` and non-Linux `host` later. Named after `sandbox.backend`. Capabilities are an effective strategy table; placement is a match against it.                                                                                              |
+| D7  | Execution strategies    | `host` (Linux) and `microsandbox` in v1, in that order; `srt` next, as an SRT boundary around the shim; `docker` and non-Linux `host` later. A machine offers a table of them, on by default and made available by its probes; an agent names one; placement is a match (§5).                                  |
 | D8  | State location          | Clones and HOME live in an executor-local directory mounted into the environment, the local confined layout; a replaced VM keeps them. No mounts across machines, no shared filesystem.                                                                                                                        |
-| D9  | Credentials             | Each machine carries its own runtime sign-in or API-key configuration; the executor seeds a session's HOME from its own. Provider credentials and agent secrets travel from the holder over the encrypted link.                                                                                                |
+| D9  | Credentials             | Runtime credentials — sign-in, provider API keys — are the executor's own and never travel; one it lacks is a runtime `authRequired` error. The agent's environment and secrets travel from the holder over the encrypted link (§8).                                                                           |
 | D10 | Upgrades                | The facet upgrades with the daemon through the existing CLI store and the CP-tracked `daemon/upgrade`. Hosted sessions join the daemon's existing shutdown drain; no phase is added. Environments survive as disks and directories; running processes do not.                                                  |
-| D11 | Local convergence       | Later, behind a flag: the holder's own machine becomes a loopback executor, and the direct local path retires. Not in this project.                                                                                                                                                                            |
+| D11 | Local convergence       | For sandboxing strategies: a local session runs through an in-process executor — no Control Plane, no pipe — so local and remote are one path per strategy. `microsandbox` first, then `srt`; the unconfined direct path stays (§11).                                                                          |
 | D12 | Network assumption (v1) | Group members share a LAN. No NAT traversal, no relay. The link is TLS-PSK regardless: the assumption buys reachability and latency headroom, never a plaintext link.                                                                                                                                          |
 | D13 | The link                | Two machines share one thing: a TLS-PSK byte pipe per session, under the unchanged shim protocol. Its key is minted by the executor, relayed by the CP with the `prepare` reply, outlives dials, and is replaced only by a newer launch's `prepare`.                                                           |
 | D14 | No shared store         | Spreading depends on no shared data-plane store. The executor allocates its environment's generation, a relayed `release` retires it, and the backstop asks the CP for its agent and this machine for its retention (§6, §7). A shared store is optional and buys failover that carries session history (§13). |
@@ -203,15 +207,15 @@ WebSocket, as on the pool, and the executor holds one agentd stream per pipe.
 ## 5. Execution strategies and capabilities
 
 The executor facet implements the contract with a **strategy**, named after the
-values `sandbox.backend` already uses:
+sandbox backends:
 
-| Strategy         | Boundary                     | Needs                                                         | Status                                                                                 |
-| ---------------- | ---------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `host`           | none                         | a Linux machine that runs Node                                | v1, first                                                                              |
-| `microsandbox`   | VM                           | Linux, KVM, msb + libkrunfw, the runtime image                | v1, second                                                                             |
-| `srt`            | process (bubblewrap)         | Linux, bwrap, socat, rg on PATH, unprivileged user namespaces | follow-up: the wrapping moves from the daemon's launch path into the shim's spawn path |
-| `docker`         | container, optionally gVisor | docker or podman, the runtime image (already OCI)             | later                                                                                  |
-| `host` off Linux | none                         | macOS or Windows                                              | later: a non-Linux read path and a second look at the socket's protection (below)      |
+| Strategy         | Boundary                     | Needs                                                         | Status                                                                            |
+| ---------------- | ---------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `host`           | none                         | a Linux machine that runs Node                                | v1, first                                                                         |
+| `microsandbox`   | VM                           | Linux, KVM, msb + libkrunfw, the runtime image                | v1, second                                                                        |
+| `srt`            | process (bubblewrap)         | Linux, bwrap, socat, rg on PATH, unprivileged user namespaces | next: an SRT boundary around the shim (below)                                     |
+| `docker`         | container, optionally gVisor | docker or podman, the runtime image (already OCI)             | later                                                                             |
+| `host` off Linux | none                         | macOS or Windows                                              | later: a non-Linux read path and a second look at the socket's protection (below) |
 
 **`host` is a legitimate strategy.** §9.1 of the architecture already says an
 unsandboxed agent is operator-trusted code; spreading such sessions across the
@@ -269,36 +273,179 @@ The wire contract is unchanged; only the paths move.
 **Configured is what a machine offers; reported is what is effective.** A strategy
 whose probe fails at startup is reported unavailable with its reason, the way the
 daemon already reports `sandboxUnavailable`; placement reads only the effective
-table. The console does not display the table; a daemon's own sandbox keeps its
-unavailable reason exactly as before. The table is a process-level fact, so it rides
+table. The console shows it only through the agent's strategy picker (below), with
+each unavailable entry's reason. The table is a process-level fact, so it rides
 registration beside `sandboxUnavailable`, not the heartbeat (§6).
 
-**Placement is a match.** An agent asks for a strategy; the holder places the session
-on an executor whose effective table offers it. In v1 the ask is the existing
-`runInSandbox` boolean: `true` means any sandboxing strategy, `false` means `host`.
-The intended end state replaces the boolean with an enum naming a strategy, which is
-a backward-compatible widening; the executor's capability report uses the strategy
-table from the first version so that later change touches no wire field.
+### The machine's table and the agent's choice
 
-**The configuration to grow into**, not part of this project:
+**A machine offers every strategy by default; its probes decide which are available.**
+The single-valued `sandbox.backend` becomes a table:
 
 ```json
 "sandbox": {
   "host": true,
   "srt": true,
-  "microsandbox": { "image": "…", "cpus": 2, "memoryMiB": 4096 }
+  "microsandbox": { "cpus": 2, "memoryMiB": 2048, "diskGiB": 10 }
 }
 ```
 
-Each value is `false | true | {…}`; strategies with parameters take an object.
-Defaults are `host: true`, `srt: true`, `microsandbox: false`, which is today's
-behavior for an unconfigured machine. When this lands, the single-valued
-`sandbox.backend` and `security.requireSandbox` retire together: `backend: srt` maps
-to the default table, `backend: microsandbox` enables that entry, and
-`requireSandbox: true` is `host: false` — a machine that offers no `host` strategy
-refuses unsandboxed sessions, and a machine whose table has no effective entry at
-all refuses to start, which preserves today's fail-closed behavior. An explicit
-`sandbox.backend: none` was considered and rejected (§15).
+Each value is `false | true | {…}`; a strategy with parameters takes an object, and
+`true` means its defaults. The default is all three on. Configuring a strategy offers
+it; its startup probe makes it available or records why not, and placement reads only
+the effective table. On-by-default is safe only because every probe is cheap and has
+no side effects: the microsandbox probe checks msb, libkrunfw and a usable `/dev/kvm`
+and pulls no image — the image is prepared by the first session that uses it — and the
+backend's state collection runs whenever the strategy is enabled, not only when it
+was the selected backend. `sandbox.env` and `sandbox.mounts` stay where they are and
+apply to every sandboxing strategy.
+
+`sandbox.backend` and `security.requireSandbox` retire together. A file that still
+sets them is mapped once at startup, with a warning: either backend value gives the
+default table, and `requireSandbox: true` is `host: false`. A machine that offers no
+`host` refuses unsandboxed sessions, and a machine whose table has no available entry
+refuses to start, which keeps today's fail-closed behavior. For that rule and for the
+machine's own sessions, `host` is the direct local child and available on every
+platform; the reading an executor reports to other members keeps `host` Linux-only
+(above). An explicit `sandbox.backend: none` stays rejected (§15).
+
+**An agent names one strategy.** `runInSandbox` gives way to `execution`, a strategy
+slug. The user picks what sessions actually run in, instead of a boolean whose meaning
+depended on the machine. The console offers the strategies available where the agent
+is placed — a daemon's table, or for a group those at least one serving member offers —
+each labeled with its boundary (none, process, VM, container), and shows an
+unavailable one disabled with its probe's reason. A `shared` session runs on its
+holder, so for it the holder's table decides. A pool agent's boundary is its pod, and
+the pool shows no picker. The Control Plane validates `execution` against the same
+tables, which replaces today's two conflicts ("required by this daemon", "unavailable
+on this daemon").
+
+Existing agents migrate once: `runInSandbox: false` becomes `host`; `true` becomes
+the backend the agent's daemon last reported at registration, `srt` unless it runs
+`microsandbox`; an agent with no daemon becomes `srt`. Registration reports the legacy
+backend for exactly this purpose while a daemon still reads one.
+
+**No silent downgrade.** A session whose strategy is unavailable where it would run is
+refused with the probe's reason; it never falls back to a weaker boundary. A session
+keeps the strategy it was born with, as the workspace model's tier rule already
+works: changing an agent's `execution` reaches only sessions created afterwards.
+
+**The birth strategy is durable, on both sides.** Nothing reconstructs it from the
+agent's current setting, which may have changed since:
+
+- _The holder_ records the strategy in the session's birth verdict
+  (`setSessionExecutor`), beside the executor it chose or the reason it stayed home,
+  so a local session records one too. Every later launch — a restart, a re-dial —
+  sends the recorded strategy and never asks the agent. A successor holder has no
+  such row without a shared store, so the Control Plane keeps the strategy beside the
+  executor in its hint of where the session last ran (§6), written from the same
+  relayed `ready` prepare, and `executor/candidates` returns both; a successor with
+  neither is launching a new session, not resuming one. A row written before this
+  revision carries none and is filled once at upgrade with the agent's migrated
+  `execution`, which is correct because no one can have changed it in between.
+- _The executor_ already writes the strategy into its environment record
+  (`<daemonRoot>/sessions/<leaf>.json`). A `prepare` for an existing environment that
+  names a different strategy is refused as `strategy_mismatch`: it neither attaches
+  nor rewrites the record, because the directory's state belongs to one boundary — a
+  host tree is not a VM's mount. The holder surfaces the refusal as a startup error
+  and does not recreate the environment, which would discard the session's work.
+
+**Placement is a match.** The holder places a session on an executor whose effective
+table offers the named strategy — its own machine included, which after §11 is the
+same path. The executor's report has used the table since the first version, so the
+change is only the ask: a slug where the boolean was.
+
+**A Decision picks the runtime, never the strategy.** An agent's model selection
+([decisions.md](decisions.md) §10.6) resolves the session's runtime, model and run
+settings before placement, and placement then looks for a machine that can run and
+authenticate that runtime. The strategy stays the agent's: it is a security boundary,
+and a model's judgment of the opening message does not choose one. Two reads change
+with this revision so that the order holds across machines:
+
+- **Whether a rule's target is usable** is judged against the machines the session
+  could land on, not the holder alone. The holder asks `executor/candidates` before
+  it evaluates, since placement needs the answer anyway, and the same answer serves
+  both: a runtime only another member offers is not mistaken for unavailable, and a
+  model the landing machine lacks is not accepted because the holder has it.
+- **The target's catalog is the strategy's.** A microsandbox environment runs the
+  runtimes its image declares, not the ones installed on the host, so a rule naming a
+  runtime the image lacks falls back instead of failing at startup.
+
+Both need a catalog the candidates reply does not carry today: its runtime entries
+hold an id and `authRequired`, no models. And the member's `facts/daemon-runtimes`
+snapshot, the natural source, has one `models` list per runtime, taken from probing
+the host install even when the machine runs microsandbox. With strategies side by
+side that is not enough: the host store and the image can hold different versions of
+a runtime, as the snapshot's separate `version` and `hostVersion` already admit, and
+so advertise different models. A catalog of host model A and image model B would
+accept A for a microsandbox session.
+
+So the catalog is **per strategy**. Each runtime profile in the snapshot carries one
+entry per strategy the machine offers — available or unavailable with a reason, the
+advertised `models`, and their `modelsSource` — and each entry comes from the install
+that strategy starts: the host store's probe for `host` and `srt`, and for
+`microsandbox` a probe of the image's runtime, recorded against the image's identity
+the first time an environment of that image starts it, since the on-by-default probe
+boots no VM. An entry with no probe yet has no model list and stays permissive, as a
+`cached` one already does in the activation check. `authRequired` stays per runtime,
+because the sign-in is the machine's whichever install reads it. The Control Plane
+copies, for each candidate, the entries of the strategies its effective table offers,
+from the same snapshot it already reads for `authRequired`; the holder's own entries
+come from its local facts. The target check reads the entry for the session's
+strategy and nothing else.
+
+### The `srt` strategy: SRT around the shim
+
+`srt` becomes a strategy by putting the whole shim inside an SRT boundary, the way a
+pod or a VM contains it. Its launcher is the `host` launcher with `sandboxWrap` around
+the shim's process, and every runtime, bridge and helper the shim starts inherits the
+boundary. The policy is the executor's, computed from its own paths when the
+environment starts; the holder sends none, and the `prepare` reply is `host`'s. The
+alternative, a host shim that wraps each runtime it spawns, is recorded in §15.
+
+A probe on Linux (bubblewrap 0.8, an unprivileged user, the real shim and holder
+dialer) established that it works: a dial from outside the network namespace reaches
+the shim's unix socket; reads of the daemon root and of other sessions, and writes
+outside the session, are refused; two environments run side by side; the marked
+sweep finds and ends sandboxed processes from the host. It also found what wrapping
+the shim requires:
+
+- **No parent-death descriptor.** The SRT provider hands bubblewrap stdio only, so
+  fd 3 inside is not the daemon's pipe and the shim exits at once, believing its
+  daemon gone. The launcher sets no `AC_SHIM_PARENT_FD`; the provider's own owner
+  watch ends the sandbox when the daemon dies — measured within half a second of a
+  SIGKILL.
+- **SRT's proxy environment reaches the runtimes.** SRT isolates the network
+  namespace and injects `HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY` and
+  `NODE_USE_ENV_PROXY` for its bridge. The shim's base-environment allowlist drops
+  them and the runtime has no network; forwarded, egress works.
+- **The VM's rule for `.git`, not the local path's.** The outer deny on `.git/config`
+  and `.git/hooks` also blocks the holder's own Git, which now runs through the shim
+  inside the boundary: `git config` and `git remote add` fail with `EBUSY`. The deny
+  exists because daemon-side Git runs outside the sandbox
+  ([git-workspace-model.md](git-workspace-model.md) §11); here it runs inside, so a
+  planted hook executes within the boundary, as in a VM. The runtime's inner profile
+  keeps its own deny.
+- **The shim's socket is inside what the runtime can write.** A host shim
+  authenticates nobody who dials it, so a runtime can reach and replace the socket,
+  and at worst take its own session's channel during a re-dial. That is the exposure
+  a pod's loopback port and a VM's guest listener already have. Impersonating the
+  shim to the holder needs the identity token, which exists only in the shim's memory.
+
+Costs, from the same probe on built bundles with an echo runtime — relative, not
+absolute:
+
+| Path                                        | First echo                                    | Round trip p50 / p99 | Throughput   | Extra memory (PSS) |
+| ------------------------------------------- | --------------------------------------------- | -------------------- | ------------ | ------------------ |
+| Direct child, today's local `host`          | 11 ms                                         | 0.02 / 0.3 ms        | ~1,100 MiB/s | —                  |
+| SRT around the runtime, today's local `srt` | 170–290 ms                                    | 0.02 / 0.1–0.24 ms   | ~1,100 MiB/s | 57 MiB             |
+| Host shim                                   | 90 ms                                         | 0.18 / 1.2–1.9 ms    | ~85 MiB/s    | 61 MiB             |
+| SRT around the shim                         | 240 ms; a later runtime in the same one 12 ms | 0.15 / 1.0–1.5 ms    | ~90 MiB/s    | 116 MiB            |
+
+Start-up matches today's `srt`, and later runtimes in a live environment start
+faster. The added round trip is negligible beside a model turn. Throughput falls to
+the shim channel's, which a multi-megabyte tool output notices and ordinary ACP
+traffic does not. Memory is the real cost: one shim process, about 60 MiB per session.
 
 ## 6. Control plane and data plane
 
@@ -357,9 +504,9 @@ the machines talk to each other.
    table, endpoint, capacity, `hostedSessions` and the runtimes it can authenticate.
    An empty answer carries its reason: the group's switch is off (§10), or no member
    shares. When `sessionKey` is named and the CP's hint for that (agent, session
-   key) names an executor, the answer also carries `currentExecutorDaemonId` — a
-   **hint**, not an instruction (§7). These are
-   **facts, never a choice**: the CP ranks nothing and recommends nothing, and
+   key) names an executor, the answer also carries `currentExecutorDaemonId` and the
+   strategy the session was born with (§5) — a **hint**, not an instruction (§7).
+   These are **facts, never a choice**: the CP ranks nothing and recommends nothing, and
    placement stays the holder's.
 2. **`executor/prepare {agentId, sessionKey, executorDaemonId, launchId, strategy, runtime, resources, image}`**
    — holder → CP. The CP checks the ledger: the requester holds the agent's duty
@@ -771,9 +918,11 @@ compute with nothing but its control connection.
 
 **Holder failover.** The successor member claims the agent through the ledger as
 today. It asks `executor/candidates` with the session's key; if the CP's hint names an
-executor the answer carries it as `currentExecutorDaemonId`, and the successor sends
-its own launch's `prepare` there. The ledger now names the successor, so the CP
-relays; the executor attaches, allocates the next generation, rotates the key and
+executor the answer carries it as `currentExecutorDaemonId` with the session's birth
+strategy, and the successor sends its own launch's `prepare` there, naming that
+strategy rather than the agent's current one (§5). The ledger now names the
+successor, so the CP relays; the executor attaches, allocates the next generation,
+rotates the key and
 closes the deposed holder's pipe, and a predecessor's `prepare` that was authorized
 before the duty moved is already on the wire ahead of it, while one authorized after
 never reaches the wire (§6). The environment is still there — nothing on the executor
@@ -862,7 +1011,10 @@ machine it lands on**, which is why lending a machine is its owner's decision (�
 Which runtimes a machine can authenticate is already in its `facts/daemon-runtimes`
 snapshot (`authRequired`), the way the console already shows "Login required" per
 runtime; `executor/candidates` answers from it, and a holder does not place a
-session whose runtime the executor cannot authenticate.
+session whose runtime the executor cannot authenticate. The holder is held to the same
+rule: it keeps a session home only if it authenticates the runtime itself, and
+otherwise places it on a member that does. Only when no machine does is the session
+kept home, where the runtime's `authRequired` is the error.
 
 **The holder composes the launch in the executor's coordinates.** A placed session's
 HOME, XDG directories and runtime state roots (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …)
@@ -900,29 +1052,29 @@ such runtime, or failed the install, leaves the holder's own definition in place
 which starts only where the executor's paths match. The runtime a session sees is
 therefore the version that machine installed, as its sign-in is that machine's.
 
-**Provider credentials and agent secrets are two mechanisms**, and both cross the
-link — encrypted. The earlier text authenticated the dial and left the link itself
-optionally plaintext, while its own §6 noted that sandboxed agents share the LAN: a
-provider key or an agent secret crossing in the clear is readable by anything that
-can see the segment. TLS-PSK covers every byte above the handshake, which is every
-byte these two mechanisms send.
+**Runtime credentials and the agent's secrets are two mechanisms**, and only the
+second crosses the link — encrypted. The earlier text authenticated the dial and left
+the link itself optionally plaintext, while its own §6 noted that sandboxed agents
+share the LAN: an agent secret crossing in the clear is readable by anything that can
+see the segment. TLS-PSK covers every byte above the handshake.
 
-- _Recognized provider credentials_ — what `CREDENTIAL_PREPARERS` handles per
-  runtime, for known provider endpoints — travel in the launch's environment when the
-  holder supplies them, as an unconfined local launch carries them; the ones in the
-  executor's own sign-in are files in the HOME it seeded. The target is that a
-  microsandbox executor additionally protects them by hostname-scoped placeholder
-  substitution on its own host, as the local VM does. That substitution has to happen
-  where the VM runs, so the holder never substitutes placeholders for a placed session:
-  the secrets they stand for would not follow the spawn request, and the runtime would
-  get placeholders nothing replaces. No strategy performs it on an executor yet, so
-  until one does a VM strategy receives these credentials as values, the way `host`
-  exposes them to its process tree. The distinction is the credential's handling, not
-  where it was configured: a recognized provider credential supplied as an agent
-  secret still takes this path.
-- _Everything else_ configured as an agent secret (`runtimeOverrides.secrets`)
-  enters the runtime's environment as a plain value on every backend today, with
-  output masking as its only protection, and does so on an executor the same way.
+- _Runtime credentials_ — a runtime's sign-in, and the provider credentials
+  `CREDENTIAL_PREPARERS` recognizes per runtime for known provider endpoints — are
+  the executor's and never travel. The holder strips recognized provider credentials
+  from a placed session's launch, including one configured as an agent secret, and the
+  executor supplies its own, from the HOME it seeded and its own environment. An
+  executor that has none fails the runtime's authentication, surfaced as the existing
+  `authRequired`. A VM strategy protects them by hostname-scoped placeholder
+  substitution on its own host, as the local VM does, and it can because the values
+  are local: a VM's secrets are fixed when it is created or started, before any spawn
+  request could carry one. Until the microsandbox launcher runs the preparers (§11), a
+  hosted VM mounts the executor's sign-in files and sees these values, the way `host`
+  exposes them to its process tree.
+- _Everything else_ configured on the agent — its environment and its secrets
+  (`runtimeOverrides.secrets`) — travels with the launch and enters the runtime's
+  environment as a plain value on every backend today, with output masking as its
+  only protection, and does so on an executor the same way. An executor can lack
+  such a value but never hold a different one: it holds no agent (§3).
   A `host` executor exposes such values to the process tree; a microsandbox
   executor exposes them to the VM. Neither is a change from the local exposure.
   The one exception is a config-file secret (`KUBECONFIG_DATA`, `DOCKER_CONFIG_DATA`),
@@ -988,16 +1140,15 @@ Daemon configuration grows **one** key, daemon-owned, inside `sandbox`:
 
 ```json
 "sandbox": {
-  "backend": "microsandbox",
   "share": true
 }
 ```
 
 `share` is the executor facet switch and **defaults to off**: the listener opens
-only when `share` is true and the effective strategy table is non-empty — never
-merely because `sandbox.backend` has a value, since it always does (`srt` by
-default). A machine whose table is empty and whose `share` is true starts with the
-facet dark and says why. Executor addresses and keys are not configured anywhere:
+only when `share` is true and the effective strategy table has an available entry —
+never merely because strategies are configured, since every one is by default (§5).
+A machine that shares but has no available entry starts with the facet dark and says
+why. Executor addresses and keys are not configured anywhere:
 registration publishes the endpoint, and each session's key is minted at `prepare`.
 There is no `role` key and no `placement` key (§3, §6), and capacity is the existing
 `limits.maxConcurrentSessions`. Like `share`, it is the machine owner's: how much of
@@ -1023,22 +1174,58 @@ The console adds no new kind of row, and no per-daemon executor readout: the hos
 count, the capacity and the strategy table are reported for placement, not for
 display (#2232 took them off the daemon card). A group has one switch, "spread
 sessions across the group", default off. A session's detail shows
-which daemon executes it, or why it stayed on its holder (§7). The existing "Run in
-sandbox" state and its unavailable reason keep their meaning per strategy.
+which daemon executes it, or why it stayed on its holder (§7). The agent's strategy
+picker (§5) replaces "Run in sandbox". A group's runtime list names the members that
+need a runtime login, since those are the machines whose sign-in a session would
+lack (#2397).
 
 ## 11. Converging the local path
 
-With `host` a real strategy, the holder's own machine is just another executor
-reachable over loopback. That makes full convergence possible: the direct local
-spawn path, the microsandbox host-mount layout and the worktree tier can retire, and
-the "which tier was this session born in" logic of the workspace model disappears
-because every executed session is a clone in an environment the shim owns.
+The holder's own machine is another executor, so for a sandboxing strategy a local
+session and a spread one take the same path: the strategy's launcher prepares the
+environment and `RemoteShimDriver` drives the shim in it. Today each strategy has two
+— the local microsandbox VM is keyed, driven and reached for Git differently from a
+hosted one, and a local `srt` session is a direct child with its own policy plumbing —
+and a fix to one does not reach the other.
 
-This is not part of this project. The order is: land the driver against remote
-executors; add a switch that routes local sessions through a loopback executor;
-run with it as the default for a while; then delete the direct path. One point to
-keep honest when that happens: the simplest install (one laptop, no sandbox) gains a
-shim process and a local socket it did not have.
+The local path reaches the launcher **in process**. It does not relay `prepare`
+through the Control Plane, open a pipe or run the TLS-PSK handshake: a local session
+must start and run while the Control Plane is down, as it does today. What is shared
+is everything from the launcher down — environment keying, the shim channel for ACP,
+Git, workspace files and tunnels, the credential preparers, lifecycle.
+
+**`microsandbox` first.** The runtime already starts through the VM's shim both ways
+(§4), and a VM already carries a shim, so converging costs no memory. What still
+differs locally goes, in four steps that each land alone:
+
+1. **Git and workspace files over the shim.** Locally they run over agentd exec — a
+   shell wrapper around Git (`microsandbox/git.ts`) and a guest Python for renames
+   ([daemon-sandbox-backends.md](daemon-sandbox-backends.md) §3). They move to the
+   shim's exec and fs channels, which the pool and executors use. The shim is in the
+   guest, so its rename is the guest's, and the stale cached view that motivated the
+   Python does not arise.
+2. **The credential preparers move into the launcher**, out of the local launch
+   composition (`microsandbox/launch.ts`), so a hosted VM gets placeholder
+   substitution for its executor's own credentials (§8) and a local one keeps it.
+3. **An in-process executor entry.** `ExecutorPlane` gains a local provider that calls
+   the launcher directly, and the daemon's local microsandbox wiring — environment
+   keying, the manager-driven launch, the Git runner selection — collapses into it.
+4. **Agent-scoped environments.** A local `shared` or retained legacy session runs in
+   `agent/agent` or a host-key environment rather than a per-session one. The executor
+   path gains that environment kind, taken from the local placement rule rather than
+   invented, and existing VMs are carried over by mapping their environment ids once
+   at upgrade, so the old wiring does not live on until they retire.
+
+**`srt` second**, on §5's launcher from its first version, local and remote at once.
+The local direct SRT launch retires with it — the provider around each runtime, the
+per-host settings and temp directories, the host-socket injection for MCP and
+credentials, the local Git runner for confined sessions — and one `srt` policy
+remains. It needs step 4 first, or a `shared` confined agent has nowhere to run, and
+it costs a shim per session (§5).
+
+**The unconfined direct path stays.** Local `host` is a child process with no
+boundary to share. Routing it through a shim would add a process and a socket to the
+simplest install (§5's measurement) and remove nothing. The pool is unaffected.
 
 The end state of "a thinner daemon" is a pool member — a holder that executes
 nothing itself — not a daemon folded into the Control Plane. Thin or not, the
@@ -1085,6 +1272,20 @@ Calibration: the pool's remote path — `k8s/` plus the generic layer now in
 commits, including claim, sleep and orphan machinery this design does not need.
 About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
+
+**The 2026-09-24 revision** adds the following, none started. Each lands alone; S1–S3
+are one feature, and M1–M4 precede R1.
+
+| PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1  | Protocol and CP: the agent's `execution` slug beside `runInSandbox`; the daemon's own effective strategy table at registration, in the executor report's shape, and its legacy backend for the migration; the one-time backfill; validation of `execution` against the placement's tables in place of the two sandbox conflicts; per-strategy runtime entries in `facts/daemon-runtimes` (availability, `models`, `modelsSource`) and those entries on each candidate runtime, the birth strategy in the CP's hint, and the `strategy_mismatch` refusal. |
+| S2  | Daemon: the `sandbox` strategy table with the legacy mapping and on-by-default probes; launch dispatch on the agent's strategy instead of `sandbox.backend`, `srt` and `microsandbox` side by side in one process; refusal instead of downgrade; the birth strategy in the session's verdict, its upgrade backfill, and the executor's mismatch refusal; the image runtime's model probe per image identity; model selection judging targets against the candidates and the strategy's catalog (§5).                                                     |
+| S3  | Console: the strategy picker per placement, boundary labels and unavailable reasons; the pool shows none.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| M1  | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| M2  | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| M3  | The in-process executor entry; local microsandbox launches through it (§11 step 3).                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| M4  | Agent-scoped environments on the executor path and the one-time environment-id mapping (§11 step 4).                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| R1  | The `srt` strategy (§5): the launcher, the three changes the probe found, the executor's policy; local `srt` launches through it and the direct SRT launch retires.                                                                                                                                                                                                                                                                                                                                                                                      |
 
 ## 13. Open questions
 
@@ -1138,8 +1339,6 @@ reused as is. The shim, at twice the size of that whole path, is reused unchange
   setting ([#2188](https://github.com/agentconnect-md/agentconnect/issues/2188)).
 - Adopting running VMs or detached shims across an executor restart (§9).
 - NAT traversal, relays, or an executor behind a firewall the holder cannot reach.
-- Changing `sandbox.backend`, `security.requireSandbox` or `runInSandbox`. §5 records
-  the intended successors; they are separate changes.
 - A member that lends compute and holds nothing — the `role: executor` of an earlier
   draft (§3). Later, if a group ever has such a machine.
 - A placement policy key. v1 has one rule (§6); a `local-first` policy can return
@@ -1202,6 +1401,23 @@ Shapes and mechanisms considered for the design:
   purpose" value. It would let a Linux machine that merely forgot to install bwrap
   look intentional and lose today's warning. The strategy table of §5 expresses the
   intent without a new value: a machine that does not list `srt` does not offer it.
+- **SRT around each runtime, under a host shim**, for the `srt` strategy. The probe of
+  §5 ran it too, and it works with no change to the shim: the provider is already in
+  the shim's bundle, the runtime gets SRT's proxy environment directly, the shim's
+  socket is outside the boundary, and the holder's Git keeps the local path's `.git`
+  deny. But someone has to compose each launch's policy, and neither choice holds up.
+  The holder cannot: the executor would have to apply grants a peer machine sent it.
+  The executor can only by taking over the launch composition that depends on agent
+  configuration, which is most of `launch/prepare.ts`, plus a spawn-request field and
+  a sandbox branch in the shim's runner. It also pays SRT's start-up on every runtime
+  rather than once per environment. Wrapping the shim keeps the policy the executor's
+  alone, changes no wire, and matches the boundary pods and VMs already draw.
+- **Carrying provider credentials from the holder** to an executor. It keeps a
+  per-agent provider key in force wherever a session lands, but puts a runtime
+  credential on the link, and a VM's placeholder secrets are fixed at start, before a
+  spawn request could deliver one. The executor's own credentials, and an
+  `authRequired` when it has none, are simpler and match what already happens for
+  sign-in (§8).
 
 Removed by the 2026-09-20 revision, each with the reason it went:
 

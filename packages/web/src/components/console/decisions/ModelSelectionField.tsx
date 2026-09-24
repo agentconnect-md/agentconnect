@@ -5,8 +5,12 @@ import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
   DECISION_PROVIDER_PROFILES,
+  DECISION_CHAIN_MAX_STEPS,
   decisionModelSelectionIssues,
+  modelSelectionTargets,
   type AgentModelSelection,
+  type DecisionModelStep,
+  type DecisionModelTarget,
   type DecisionCondition,
   type DecisionQuestion,
   type DecisionRuntimeTarget
@@ -19,6 +23,7 @@ import { RuntimeSelectionSample } from './RuntimeSelectionSample'
 import { DecisionPicker } from './DecisionPicker'
 import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
+import { reachableSteps } from '@/lib/decisions/chain'
 
 type Rule = AgentModelSelection['rules'][number]
 
@@ -45,13 +50,13 @@ function nextCondition(question: DecisionQuestion, rules: AgentModelSelection['r
 }
 
 /** A Boolean answer's model: its own rule, split out of a rule that names both answers, or a new one. */
-function setBooleanTarget(rules: AgentModelSelection['rules'], answer: boolean, target: DecisionRuntimeTarget) {
+function setBooleanTarget(rules: AgentModelSelection['rules'], answer: boolean, target: DecisionModelTarget) {
   const index = rules.findIndex((rule) => rule.when.type === 'boolean' && rule.when.values.includes(answer))
   const own: Rule = { ...target, when: { type: 'boolean', values: [answer] } }
   if (index < 0) return [...rules, own]
   const rule = rules[index]!
   if (rule.when.type === 'boolean' && rule.when.values.length === 1)
-    return rules.map((entry, at) => (at === index ? { ...entry, ...target } : entry))
+    return rules.map((entry, at) => (at === index ? { when: entry.when, ...target } : entry))
   const rest: Rule = { ...rule, when: { type: 'boolean', values: [!answer] } }
   return [...rules.slice(0, index), own, rest, ...rules.slice(index + 1)]
 }
@@ -65,10 +70,18 @@ function clearBooleanTarget(rules: AgentModelSelection['rules'], answer: boolean
   })
 }
 
+// Replacing a branch also removes the steps that no remaining branch can reach.
+function pruneSteps(selection: AgentModelSelection): AgentModelSelection {
+  const steps = reachableSteps<DecisionModelStep>(selection, selection.steps ?? [], (step) =>
+    step.rules.flatMap((rule) => ('nextStepId' in rule ? [rule.nextStepId] : []))
+  )
+  return { decisionId: selection.decisionId, rules: selection.rules, ...(steps.length ? { steps } : {}) }
+}
+
 export function ModelSelectionField({
   agentId,
-  value,
-  onChange,
+  value: configuration,
+  onChange: onConfigurationChange,
   onValidityChange,
   fallback,
   onFallbackChange,
@@ -89,7 +102,22 @@ export function ModelSelectionField({
   const t = useTranslations('Agents.dialog.modelSelection')
   const { orgPath } = useOrgs()
   const { api, orgId, decisions = [], loading, error } = useOptionalDecisionsPrototype() ?? {}
-  const [decisionMode, setDecisionMode] = useState(!!value)
+  const [decisionMode, setDecisionMode] = useState(!!configuration)
+  const [stepPath, setStepPath] = useState<string[]>([])
+  const stepIndex = configuration?.steps?.findIndex((step) => step.id === stepPath.at(-1)) ?? -1
+  const value: DecisionModelStep | null = stepIndex >= 0 ? configuration!.steps![stepIndex]! : configuration
+  const onChange = (next: DecisionModelStep | null, steps = configuration?.steps) => {
+    if (!next) {
+      setStepPath([])
+      onConfigurationChange(null)
+      return
+    }
+    const updated: AgentModelSelection =
+      stepIndex < 0
+        ? { ...next, steps }
+        : { ...configuration!, steps: steps?.map((step, index) => (index === stepIndex ? { ...step, ...next } : step)) }
+    onConfigurationChange(pruneSteps(updated))
+  }
   const [dragging, setDragging] = useState<number | null>(null)
   const [dropAt, setDropAt] = useState<number | null>(null)
   const active = !!value || decisionMode
@@ -98,12 +126,22 @@ export function ModelSelectionField({
     agentId && orgId && value && !decision && api?.mode === 'live' ? ['agent-model-decision', orgId, agentId] : null,
     ([, org, id]) => fetchAgentDecisions(id, org, 'model_selection')
   )
-  const issues = value && decision ? decisionModelSelectionIssues(decision.question, value) : []
-  const missingModel = value?.rules.some(
-    (rule) =>
-      !runtimes.includes(rule.runtime) ||
-      !source?.runtimeModels.find((profile) => profile.runtime === rule.runtime)?.models.includes(rule.model)
-  )
+  const rootDecision = decisions.find((entry) => entry.id === configuration?.decisionId)
+  const issues =
+    configuration && rootDecision
+      ? decisionModelSelectionIssues(
+          rootDecision.question,
+          configuration,
+          new Map(decisions.map((entry) => [entry.id, entry.question]))
+        )
+      : []
+  const missingModel =
+    configuration &&
+    modelSelectionTargets(configuration).some(
+      (rule) =>
+        !runtimes.includes(rule.runtime) ||
+        !source?.runtimeModels.find((profile) => profile.runtime === rule.runtime)?.models.includes(rule.model)
+    )
   const fallbackAvailable = source?.runtimeModels
     .find((profile) => profile.runtime === fallback.runtime)
     ?.models.includes(fallback.model)
@@ -114,8 +152,8 @@ export function ModelSelectionField({
     if (next && next.id !== value?.decisionId)
       onChange({ decisionId: next.id, rules: [{ when: nextCondition(next.question, []), ...fallback }] })
   }
-  const replaceRule = (index: number, rule: Rule) => {
-    if (value) onChange({ ...value, rules: value.rules.map((entry, i) => (i === index ? rule : entry)) })
+  const replaceRule = (index: number, rule: Rule, steps = configuration?.steps) => {
+    if (value) onChange({ ...value, rules: value.rules.map((entry, i) => (i === index ? rule : entry)) }, steps)
   }
   const removeRule = (index: number) => {
     if (value) onChange({ ...value, rules: value.rules.filter((_, i) => i !== index) })
@@ -128,7 +166,15 @@ export function ModelSelectionField({
     onChange({ ...value, rules })
   }
   const invalidRow = (index: number) =>
-    issues.some((issue) => issue.path[0] === 'rules' && String(issue.path[1]) === String(index))
+    issues.some((issue) => {
+      const path =
+        stepIndex >= 0 && issue.path[0] === 'steps' && issue.path[1] === stepIndex
+          ? issue.path.slice(2)
+          : stepIndex < 0
+            ? issue.path
+            : []
+      return path[0] === 'rules' && String(path[1]) === String(index)
+    })
   // Fixed and By decision share one control: the fallback's run settings are the agent's own.
   const fallbackPicker = (dense: boolean) => (
     <RuntimeModelSelect
@@ -142,18 +188,110 @@ export function ModelSelectionField({
       runInSandbox={runInSandbox}
     />
   )
-  const rulePicker = (rule: Rule, ariaLabel: string, onPick: (target: DecisionRuntimeTarget) => void) => (
-    <RuntimeModelSelect
-      dense
-      runSettings
-      value={{ effort: fallback.effort, permissionMode: fallback.permissionMode, fastMode: fallback.fastMode, ...rule }}
-      ariaLabel={ariaLabel}
-      source={source}
-      runtimes={runtimes}
-      runInSandbox={runInSandbox}
-      onChange={onPick}
-    />
-  )
+  const rulePicker = (
+    rule: Rule,
+    ariaLabel: string,
+    onPick: (target: DecisionModelTarget, steps?: AgentModelSelection['steps']) => void
+  ) => {
+    const next = 'nextStepId' in rule ? configuration?.steps?.find((step) => step.id === rule.nextStepId) : undefined
+    const nextName =
+      decisions.find((entry) => entry.id === next?.decisionId)?.name ??
+      retained?.find((entry) => entry.id === next?.decisionId)?.name ??
+      t('nextDecision')
+    return (
+      <div className="flex min-w-0 items-center gap-1">
+        {'runtime' in rule ? (
+          <div className="min-w-0 flex-1">
+            <RuntimeModelSelect
+              dense
+              runSettings
+              value={{
+                effort: fallback.effort,
+                permissionMode: fallback.permissionMode,
+                fastMode: fallback.fastMode,
+                ...rule
+              }}
+              ariaLabel={ariaLabel}
+              source={source}
+              runtimes={runtimes}
+              runInSandbox={runInSandbox}
+              onChange={(target) => onPick(target)}
+            />
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="inp mn h-[30px] min-h-0 min-w-0 flex-1 cursor-pointer gap-2 px-[9px] py-0 text-left text-[12px] hover:border-(--border-strong)"
+              aria-label={t('editNext', { name: nextName })}
+              onClick={() => setStepPath([...stepPath, rule.nextStepId])}
+            >
+              <Icon name="git-branch" size={13} className="flex-none" />
+              <span className="truncate">{nextName}</span>
+              <Icon name="chevron-right" size={13} className="ml-auto flex-none" />
+            </button>
+            <button
+              type="button"
+              className={ROW_ACTION}
+              title={t('useModel')}
+              aria-label={t('useModel')}
+              onClick={() => onPick(fallback)}
+            >
+              <Icon name="x" size={13} />
+            </button>
+          </>
+        )}
+        {'runtime' in rule && (
+          <AnchoredFlyout
+            ariaLabel={t('nextDecision')}
+            width={260}
+            align="end"
+            trigger={({ open, menuId, toggle }) => (
+              <button
+                type="button"
+                className={ROW_ACTION}
+                title={t('nextDecision')}
+                aria-label={`${ariaLabel}: ${t('nextDecision')}`}
+                aria-haspopup="menu"
+                aria-expanded={open}
+                aria-controls={open ? menuId : undefined}
+                disabled={(configuration?.steps?.length ?? 0) >= DECISION_CHAIN_MAX_STEPS - 1 || !decisions.length}
+                onClick={toggle}
+              >
+                <Icon name="git-branch" size={13} />
+              </button>
+            )}
+          >
+            {({ close }) =>
+              decisions.map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  role="menuitem"
+                  className="fopt"
+                  onClick={() => {
+                    const id = crypto.randomUUID()
+                    onPick({ nextStepId: id }, [
+                      ...(configuration?.steps ?? []),
+                      {
+                        id,
+                        decisionId: entry.id,
+                        rules: [{ when: nextCondition(entry.question, []), ...fallback }]
+                      }
+                    ])
+                    setStepPath([...stepPath, id])
+                    close()
+                  }}
+                >
+                  <span className="truncate">{entry.name}</span>
+                </button>
+              ))
+            }
+          </AnchoredFlyout>
+        )}
+      </div>
+    )
+  }
   const fallbackPanel = (
     <div className="grid grid-cols-1 items-center gap-3 rounded-b-lg bg-(--surface-sunken) px-3 py-[10px] desktop:grid-cols-[minmax(0,1fr)_minmax(0,250px)]">
       <span className="flex min-w-0 flex-col gap-[2px]">
@@ -222,7 +360,7 @@ export function ModelSelectionField({
   )
   const arrow = <Icon name="arrow-right" size={13} className="hidden flex-none text-(--text-tertiary) desktop:block" />
 
-  const choiceTable = (question: Extract<DecisionQuestion, { type: 'choice' }>, selection: AgentModelSelection) => (
+  const choiceTable = (question: Extract<DecisionQuestion, { type: 'choice' }>, selection: DecisionModelStep) => (
     <>
       <div className={`${HEAD} ${CHOICE_COLS}`}>
         <span>#</span>
@@ -301,8 +439,8 @@ export function ModelSelectionField({
               <span className="font-mono text-[12px] leading-normal text-(--text-tertiary)">%</span>
             </span>
             {arrow}
-            {rulePicker(rule, t('ruleModel', { index: index + 1 }), (target) =>
-              replaceRule(index, { ...rule, ...target })
+            {rulePicker(rule, t('ruleModel', { index: index + 1 }), (target, steps) =>
+              replaceRule(index, { when: rule.when, ...target }, steps)
             )}
             {removeButton(index)}
           </div>
@@ -312,7 +450,7 @@ export function ModelSelectionField({
     </>
   )
 
-  const scoreTable = (selection: AgentModelSelection) => (
+  const scoreTable = (selection: DecisionModelStep) => (
     <>
       <div className={`${HEAD} ${SCORE_COLS}`}>
         <span className="flex items-center gap-1">
@@ -357,8 +495,8 @@ export function ModelSelectionField({
               }
             />
             {arrow}
-            {rulePicker(rule, t('ruleModel', { index: index + 1 }), (target) =>
-              replaceRule(index, { ...rule, ...target })
+            {rulePicker(rule, t('ruleModel', { index: index + 1 }), (target, steps) =>
+              replaceRule(index, { when: rule.when, ...target }, steps)
             )}
             {removeButton(index)}
           </div>
@@ -369,7 +507,7 @@ export function ModelSelectionField({
   )
 
   // Yes and No are always listed; an answer without its own rule shows the fallback until one is picked.
-  const booleanTable = (selection: AgentModelSelection) => (
+  const booleanTable = (selection: DecisionModelStep) => (
     <>
       <div className={`${HEAD} ${BOOLEAN_COLS}`}>
         <span>{t('answerColumn')}</span>
@@ -392,8 +530,8 @@ export function ModelSelectionField({
             <span className="font-mono text-[12.5px] font-medium leading-normal text-(--text-primary)">{label}</span>
             {arrow}
             <div className="min-w-0 desktop:max-w-[300px]">
-              {rulePicker(rule, t('answerModel', { answer: label }), (target) =>
-                onChange({ ...selection, rules: setBooleanTarget(selection.rules, answer, target) })
+              {rulePicker(rule, t('answerModel', { answer: label }), (target, steps) =>
+                onChange({ ...selection, rules: setBooleanTarget(selection.rules, answer, target) }, steps)
               )}
             </div>
             <span className="flex justify-end">
@@ -466,6 +604,30 @@ export function ModelSelectionField({
         </div>
       ) : (
         <>
+          {stepIndex >= 0 && (
+            <nav aria-label={t('decisionPath')} className="flex flex-wrap items-center gap-1 text-[12px]">
+              <button type="button" className="lnk" onClick={() => setStepPath([])}>
+                {rootDecision?.name ?? t('firstDecision')}
+              </button>
+              {stepPath.map((id, index) => {
+                const step = configuration?.steps?.find((entry) => entry.id === id)
+                const name = decisions.find((entry) => entry.id === step?.decisionId)?.name ?? t('nextDecision')
+                return (
+                  <span key={`${id}:${index}`} className="inline-flex items-center gap-1">
+                    <Icon name="chevron-right" size={12} />
+                    <button
+                      type="button"
+                      className="lnk"
+                      aria-current={index === stepPath.length - 1 ? 'page' : undefined}
+                      onClick={() => setStepPath(stepPath.slice(0, index + 1))}
+                    >
+                      {name}
+                    </button>
+                  </span>
+                )
+              })}
+            </nav>
+          )}
           <div className="flex flex-wrap items-center gap-[10px]">
             <DecisionPicker
               decisions={decisions}
@@ -499,10 +661,11 @@ export function ModelSelectionField({
             {value && decision?.question.type === 'boolean' && booleanTable(value)}
             {fallbackPanel}
           </div>
-          {value && decision && (
+          {configuration && rootDecision && (
             <RuntimeSelectionSample
-              question={decision.question}
-              selection={value}
+              question={rootDecision.question}
+              selection={configuration}
+              decisions={decisions}
               fallback={fallback}
               source={source}
               valid={valid}

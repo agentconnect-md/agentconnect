@@ -1,6 +1,7 @@
 import { DecisionBindingDenied, ModelSelectionInvalid } from '../../persistence/decision-binding-fence.js'
 import {
   DecisionToolDefinition,
+  modelSelectionDecisionIds,
   MemoryEntryCreateRequest,
   MemoryEntryUpdateRequest,
   MemoryEntryDeleteRequest,
@@ -2290,9 +2291,7 @@ export function agentRoutes(deps: HttpDeps) {
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         const ids =
           req.query.purpose === 'model_selection'
-            ? agent.modelSelection
-              ? [agent.modelSelection.decisionId]
-              : []
+            ? modelSelectionDecisionIds(agent.modelSelection)
             : (agent.decisionIds ?? [])
         const rows = await deps.repos.decision.listForAgent(agent.orgId, ids, { limit: 64 })
         return rows.map(({ question, ...row }) => ({ ...row, questionType: question.type }))

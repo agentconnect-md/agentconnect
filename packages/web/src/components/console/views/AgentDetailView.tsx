@@ -23,6 +23,7 @@ import {
   MOCK_MODE,
   MOCK_PREFIX,
   runtimeLabel,
+  selectedModelId,
   status,
   supportsModes,
   workspaceStatus,
@@ -63,6 +64,8 @@ import { AgentSecretsCard } from '@/components/console/AgentSecretsCard'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentDecisionsCard } from '@/components/console/AgentDecisionsCard'
+import { DecisionModelLabel } from '@/components/console/decisions/DecisionModelLabel'
+import { ruleSummaries } from '@/components/console/decisions/rule-summary'
 import { useCodeHostRowRouting } from '@/components/console/decisions/routing/useCodeHostRowRouting'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
@@ -892,20 +895,14 @@ export default function AgentDetailView() {
   // editor). Falls back to the static labels when the daemon reports no catalog.
   const defaultModelText = agentModelDisplay(capabilitySource, da.runtime, da.model)
   const selectedDecision = decisions.find((item) => item.id === da.modelSelection?.decisionId)
-  const byDecisionBadge = (
-    <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-      <Icon name="split" size={11} />
-      {t('modelByDecision')}
-    </span>
-  )
-  const modelText = da.modelSelection ? (
-    <>
-      {byDecisionBadge}
-      {selectedDecision && <span>{selectedDecision.name}</span>}
-    </>
-  ) : (
-    defaultModelText
-  )
+  const decisionModel = da.modelSelection ? (
+    <DecisionModelLabel
+      size={14}
+      name={selectedDecision?.name ?? t('modelByDecision')}
+      rules={ruleSummaries(da.modelSelection, selectedDecision?.question)}
+      fallback={selectedModelId(capabilitySource, da.runtime, da.model) || da.model || da.runtime}
+    />
+  ) : null
   const ds = status(effectiveAgentStatus(da, owningDaemon))
   // The agents list's own reading: an agent nothing is serving cannot answer on any integration.
   const agentOffline = ds.label === 'offline'
@@ -1036,8 +1033,12 @@ export default function AgentDetailView() {
           </div>
           <div className="mt-[9px] flex flex-wrap items-center gap-x-4 gap-y-2">
             <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-              <Icon name="cpu" size={14} color="var(--text-tertiary)" />
-              {modelText}
+              {decisionModel ?? (
+                <>
+                  <Icon name="cpu" size={14} color="var(--text-tertiary)" />
+                  {defaultModelText}
+                </>
+              )}
             </span>
             {owningDaemon ? (
               <Link className="lnk font-sans text-[12.5px] font-medium leading-normal" href={daemonHref}>
@@ -1163,8 +1164,12 @@ export default function AgentDetailView() {
           </div>
           <div className="mt-2 flex flex-wrap gap-x-[14px] gap-y-[6px]">
             <span className="inline-flex items-center gap-[6px] font-mono text-[12px] font-medium leading-normal whitespace-nowrap text-(--text-secondary)">
-              <Icon name="cpu" size={14} color="var(--text-tertiary)" className="flex-none" />
-              {modelText}
+              {decisionModel ?? (
+                <>
+                  <Icon name="cpu" size={14} color="var(--text-tertiary)" className="flex-none" />
+                  {defaultModelText}
+                </>
+              )}
             </span>
             <span className="inline-flex items-center gap-[6px] font-mono text-[12px] font-medium leading-normal whitespace-nowrap text-(--text-secondary)">
               <Icon name={daemonIcon} size={14} color="var(--text-tertiary)" />
@@ -1347,13 +1352,8 @@ export default function AgentDetailView() {
                     <span className="text-[14px] text-(--text-tertiary) desktop:text-[13px]">
                       {t('basics.runtimeAndModel')}
                     </span>
-                    <span className="inline-flex min-w-0 items-center gap-[7px]">
-                      {byDecisionBadge}
-                      {selectedDecision && (
-                        <span className="truncate font-sans text-[12.5px] font-medium leading-normal">
-                          {selectedDecision.name}
-                        </span>
-                      )}
+                    <span className="inline-flex min-w-0 font-sans text-[12.5px] font-medium leading-normal">
+                      {decisionModel}
                     </span>
                   </div>
                 ) : (

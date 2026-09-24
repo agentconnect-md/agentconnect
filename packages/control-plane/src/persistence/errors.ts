@@ -74,12 +74,12 @@ export class RoutingScopeChanged extends Error {
   }
 }
 
-// Thrown by `BotDecisionRoutingRepo.save` for an addition that is missing, Off, or a direct conversation.
+// Thrown by `BotDecisionRoutingRepo.save` for an addition that is missing or a direct conversation.
 export class RoutingChannelInvalid extends Error {
   readonly code = 'ROUTING_CHANNEL_INVALID' as const
   constructor(
     readonly channelId: string,
-    readonly reason: 'off' | 'direct' | 'missing'
+    readonly reason: 'direct' | 'missing'
   ) {
     super(`channel ${channelId} cannot be added to routing (${reason})`)
     this.name = 'RoutingChannelInvalid'

@@ -33,7 +33,7 @@ import type {
   RcThreadLookupOk,
   DecisionReadiness
 } from '@agentconnect.md/protocol'
-import { decisionRoutingAgentIds, manifestFor } from '@agentconnect.md/protocol'
+import { decisionRoutingAgentIds, manifestFor, DECISION_CHAIN_V1_FEATURE } from '@agentconnect.md/protocol'
 import type {
   BotRepo,
   BotRecord,
@@ -1067,7 +1067,13 @@ export class HttpBotOrchestrator {
         live: (id) => this.daemonLive(id),
         createdAt: planned.createdAt
       })
-      if (host) evaluationHost = { ...host, status: this.routingHostSupported(host.daemonId) ? 'ready' : 'unsupported' }
+      if (host)
+        evaluationHost = {
+          ...host,
+          status: this.routingHostSupported(host.daemonId, !!planned.record?.config.steps?.length)
+            ? 'ready'
+            : 'unsupported'
+        }
       else if (planned.defaultDaemonId)
         evaluationHost = { daemonId: planned.defaultDaemonId, source: 'default_agent', status: 'daemon_offline' }
     }
@@ -1093,9 +1099,13 @@ export class HttpBotOrchestrator {
   }
 
   /** A routing host must advertise both routing and trigger support, or its conversations are held. */
-  private routingHostSupported(daemonId: string): boolean {
+  private routingHostSupported(daemonId: string, chained = false): boolean {
     const features = this.control.daemonFeatures?.(daemonId)
-    return decisionRoutingSupported(features) && decisionTriggerSupported(features)
+    return (
+      decisionRoutingSupported(features) &&
+      decisionTriggerSupported(features) &&
+      (!chained || !!features?.includes(DECISION_CHAIN_V1_FEATURE))
+    )
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -1407,7 +1417,7 @@ export class HttpBotOrchestrator {
       defaultDaemonId,
       live: (id) => this.daemonLive(id),
       createdAt,
-      hostSupported: (id) => this.routingHostSupported(id)
+      hostSupported: (id) => this.routingHostSupported(id, !!record?.config.steps?.length)
     })
     return {
       record,
@@ -1681,9 +1691,11 @@ export class HttpBotOrchestrator {
     const projection = sharedBotRoutingFor(compiled.routing!.plan, { botId: bot.id, config: record.config }, daemonId)
     if (!projection) return spec
     const decisions = spec.core.decisions ?? { bindings: [], definitions: [] }
-    const definitions: DecisionBundleDefinition[] = decisions.definitions.some((d) => d.id === record.definition!.id)
-      ? decisions.definitions
-      : [...decisions.definitions, record.definition]
+    const definitions: DecisionBundleDefinition[] = [
+      ...new Map(
+        [...decisions.definitions, ...(record.definitions ?? [record.definition])].map((d) => [d.id, d])
+      ).values()
+    ]
     return { ...spec, core: { ...spec.core, decisions: { ...decisions, definitions, sharedBotRouting: projection } } }
   }
 

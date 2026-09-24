@@ -49,6 +49,51 @@ afterEach(() => {
   container?.remove()
 })
 
+it('adds a child Decision, edits its rules, and returns to the root without losing the chain', async () => {
+  const fallback = { runtime: 'claude', model: 'model-standard' }
+  let saved: AgentModelSelection | null = {
+    decisionId: '33333333-3333-4333-8333-333333333333',
+    rules: [{ when: { type: 'score', min: 0, max: 2 }, ...fallback }]
+  }
+  function Form() {
+    const [value, setValue] = useState(saved)
+    return (
+      <ModelSelectionField
+        value={value}
+        onChange={(next) => {
+          saved = next
+          setValue(next)
+        }}
+        onValidityChange={() => {}}
+        fallback={fallback}
+        onFallbackChange={() => {}}
+        runtimes={['claude']}
+        source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
+      />
+    )
+  }
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () => root!.render(<Form />))
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label$="Continue with a Decision"]')!.click())
+  await act(async () =>
+    [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find((button) => button.textContent === 'Urgent')!
+      .click()
+  )
+  expect(saved!.steps).toHaveLength(1)
+  expect(saved!.rules[0]).toMatchObject({ nextStepId: saved!.steps![0]!.id })
+  expect(container.querySelector('[aria-current="page"]')?.textContent).toBe('Urgent')
+  await act(async () =>
+    [...container.querySelectorAll<HTMLButtonElement>('nav button')]
+      .find((button) => button.textContent === 'Complexity')!
+      .click()
+  )
+  expect(container.textContent).toContain('Urgent')
+  expect(saved!.steps![0]!.rules[0]!.when.type).toBe('boolean')
+})
+
 it('creates a binding, flags overlapping intervals, removes rules, and returns to the fixed model', async () => {
   const validity = vi.fn()
   function Form() {

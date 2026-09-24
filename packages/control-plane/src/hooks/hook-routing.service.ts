@@ -1,3 +1,4 @@
+import { DECISION_CHAIN_V1_FEATURE } from '@agentconnect.md/protocol'
 import type { AgentId, DaemonId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
@@ -45,11 +46,10 @@ export class HookRoutingService implements HookRoutingReconciler {
     if (opts.formerHost) hosts.add(opts.formerHost)
     if (record) {
       const current = record.evaluationAgentId
-      const next = chooseEvaluationAgent(
-        current,
-        await this.candidates(routingMembers(scopeHooks, scope)),
-        codeHostProviders[scope.provider].routing.requiredFeatures
-      )
+      const next = chooseEvaluationAgent(current, await this.candidates(routingMembers(scopeHooks, scope)), [
+        ...codeHostProviders[scope.provider].routing.requiredFeatures,
+        ...(record.config?.steps?.length ? [DECISION_CHAIN_V1_FEATURE] : [])
+      ])
       if (next !== current) {
         if (!(await this.deps.routings.setEvaluationAgent(record.id, current, next as AgentId | null))) {
           // A concurrent reconcile moved it first; its own pass converges the scope.

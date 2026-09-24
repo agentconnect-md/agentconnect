@@ -43,6 +43,103 @@ const paths = {
 const patch = 'diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-old\n+new\n'
 
 describe('session model evaluation', () => {
+  it('evaluates only the chosen path against one input snapshot and falls back on a failed next step', async () => {
+    const next = { ...decision, id: '44444444-4444-4444-8444-444444444444', name: 'Urgency' }
+    const chain: AgentModelSelection = {
+      decisionId: decision.id,
+      rules: [{ when: { type: 'boolean', values: [true] }, nextStepId: 'urgency' }],
+      steps: [{ id: 'urgency', decisionId: next.id, rules: selection.rules }]
+    }
+    const state = vi.fn(async () => modelSelectionState('chat', 'Opening message'))
+    const get = vi.fn(async (id: string) => ({ decision: id === decision.id ? decision : next }))
+    const evaluate = vi.fn(async () => ({
+      status: 'answered' as const,
+      model: 'jev-latest',
+      usage: { inputTokens: 1, outputTokens: 0 },
+      answer: { type: 'boolean' as const, value: true, probability: 0.9 }
+    }))
+    const input = {
+      agentId: 'example-agent',
+      selection: chain,
+      supported: () => true,
+      signal: new AbortController().signal,
+      evaluationId: 'example-evaluation',
+      current: () => true,
+      decision: get,
+      state,
+      evaluate
+    }
+    expect(await evaluateSessionModel(input)).toEqual({ runtime: 'claude', model: 'model-capable' })
+    expect(get.mock.calls.map(([id]) => id)).toEqual([decision.id, next.id])
+    expect(state).toHaveBeenCalledOnce()
+    const calls = evaluate.mock.calls as unknown as Array<
+      [{ state: unknown; deadlineAt: number; evaluationId: string }]
+    >
+    expect(calls[1]![0].state).toBe(calls[0]![0].state)
+    expect(calls[1]![0].deadlineAt).toBe(calls[0]![0].deadlineAt)
+    expect(calls[1]![0].evaluationId).not.toBe(calls[0]![0].evaluationId)
+    get.mockClear()
+    evaluate.mockResolvedValueOnce({
+      status: 'answered',
+      model: 'jev-latest',
+      usage: { inputTokens: 1, outputTokens: 0 },
+      answer: { type: 'boolean', value: false, probability: 0.1 }
+    })
+    expect(await evaluateSessionModel(input)).toBeUndefined()
+    expect(get).toHaveBeenCalledExactlyOnceWith(decision.id)
+    expect(
+      await evaluateSessionModel({
+        ...input,
+        decision: async (id) => ({ decision: id === decision.id ? decision : null })
+      })
+    ).toBeUndefined()
+    expect(
+      await evaluateSessionModel({
+        ...input,
+        evaluate: async (request) =>
+          request.decision === next ? { status: 'unavailable', reason: 'provider' } : evaluate()
+      })
+    ).toBeUndefined()
+  })
+
+  it('stops a chain at its shared deadline even when the next definition read stalls', async () => {
+    vi.useFakeTimers()
+    let release!: (value: { decision: DecisionToolDefinition }) => void
+    const evaluate = vi.fn(async () => ({
+      status: 'answered' as const,
+      model: 'jev-latest',
+      usage: { inputTokens: 1, outputTokens: 0 },
+      answer: { type: 'boolean' as const, value: true, probability: 0.9 }
+    }))
+    const nextId = '44444444-4444-4444-8444-444444444444'
+    const result = evaluateSessionModel({
+      agentId: 'example-agent',
+      supported: () => true,
+      signal: new AbortController().signal,
+      evaluationId: 'example-evaluation',
+      current: () => true,
+      selection: {
+        decisionId: decision.id,
+        rules: [{ when: { type: 'boolean', values: [true] }, nextStepId: 'next' }],
+        steps: [{ id: 'next', decisionId: nextId, rules: selection.rules }]
+      },
+      state: async () => ({}),
+      evaluate,
+      decision: async (id) =>
+        id === decision.id
+          ? { decision }
+          : new Promise((resolve) => {
+              release = resolve
+            })
+    })
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(await result).toBeUndefined()
+    release({ decision: { ...decision, id: nextId } })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(evaluate).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('bounds input and ignores stale, invalid, failed and unadvertised results', async () => {
     const state = modelSelectionState('chat', '界'.repeat(4000))
     expect(Buffer.byteLength((state.currentMessage as { text: string }).text)).toBeLessThanOrEqual(8192)

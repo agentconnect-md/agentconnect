@@ -7,6 +7,7 @@ import { useTranslations } from 'next-intl'
 import { AgentMark, MarkSlot } from '@/components/marks'
 import { Icon, Toggle } from '@/components/ui'
 import { ModelOption, ProviderModelMenu } from '@/components/console/ProviderModelMenu'
+import { DecisionModelHover } from '@/components/console/decisions/DecisionModelLabel'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import {
   displayedEffort,
@@ -57,10 +58,6 @@ export interface RuntimeDecisionChoice {
   rules?: readonly { when: string; then: string }[]
   fallback?: string
 }
-
-const HOVER_RULE = 'grid grid-cols-[16px_auto_12px_minmax(0,1fr)] items-center gap-[6px]'
-const HOVER_NUM =
-  'flex h-4 w-4 items-center justify-center rounded-xs font-mono text-[9.5px] font-semibold leading-normal text-(--text-secondary)'
 
 function SettingSelect({ label, control }: { label: string; control: RunSettingControl }) {
   const offered = control.options.some((option) => option.value === control.value)
@@ -231,46 +228,18 @@ export function RuntimeModelSelect({
     })
   }
   const runtimeOnly = allowRuntimeOnly && !search && matching[0]?.options.length === 0 ? matching[0] : undefined
-  const hoverRows: [string, string][] = decision?.selected
-    ? [
-        [t('model'), t('byDecision')],
-        [t('decision'), decision.name]
-      ]
-    : [
+  const hoverContent = decision?.selected ? (
+    <DecisionModelHover name={decision.name} rules={decision.rules} fallback={decision.fallback} />
+  ) : (
+    <HoverCardRows
+      rows={[
         [t('provider'), label(value.runtime)],
         [t('model'), modelName],
         ...(controls?.effort ? [[t('effort'), choiceLabel(controls.effort)] as [string, string]] : []),
         ...(controls?.approval ? [[t('approval'), choiceLabel(controls.approval)] as [string, string]] : []),
         ...(controls?.fast ? [[t('fastMode'), controls.fast.value ? t('on') : t('off')] as [string, string]] : [])
-      ]
-  const hoverContent = (
-    <>
-      <HoverCardRows rows={hoverRows} />
-      {decision?.selected && (!!decision.rules?.length || !!decision.fallback) && (
-        <span className="mt-2 flex flex-col gap-1 border-t border-(--border-subtle) pt-2">
-          {decision.rules?.map((rule, index) => (
-            <span key={index} className={HOVER_RULE}>
-              <span className={`${HOVER_NUM} bg-(--surface-active)`}>{index + 1}</span>
-              <span className="whitespace-nowrap font-mono text-[11px] leading-normal text-(--text-primary)">
-                {rule.when}
-              </span>
-              <Icon name="arrow-right" size={11} className="text-(--text-tertiary)" />
-              <span className="truncate font-mono text-[11px] leading-normal text-(--text-secondary)">{rule.then}</span>
-            </span>
-          ))}
-          {decision.fallback && (
-            <span className={HOVER_RULE}>
-              <span className={`${HOVER_NUM} bg-(--surface-sunken)`}>—</span>
-              <span className="font-sans text-[11px] leading-normal text-(--text-tertiary)">{t('fallback')}</span>
-              <Icon name="arrow-right" size={11} className="text-(--text-tertiary)" />
-              <span className="truncate font-mono text-[11px] leading-normal text-(--text-secondary)">
-                {decision.fallback}
-              </span>
-            </span>
-          )}
-        </span>
-      )}
-    </>
+      ]}
+    />
   )
   return (
     <AnchoredFlyout
@@ -305,7 +274,7 @@ export function RuntimeModelSelect({
             }}
           >
             {decision?.selected ? (
-              <Icon name="git-branch" size={13} color="var(--brand)" className="flex-none" />
+              <Icon name="split" size={13} color="var(--brand)" className="flex-none" />
             ) : (
               <MarkSlot size={14}>
                 <AgentMark model={value.runtime} fillPct={100} />
@@ -313,7 +282,7 @@ export function RuntimeModelSelect({
             )}
             {compact ? (
               <span className="min-w-0 flex-1 truncate text-left">
-                {decision?.selected ? t('byDecision') : modelName || label(value.runtime) || t('choose')}
+                {decision?.selected ? decision.name : modelName || label(value.runtime) || t('choose')}
                 {summary && (
                   <span className="font-mono text-[11px] font-normal text-(--text-tertiary)"> · {summary}</span>
                 )}
@@ -322,7 +291,7 @@ export function RuntimeModelSelect({
               // The name keeps most of the width; the run settings shrink first.
               <span className="flex min-w-0 flex-1 items-center gap-[7px] text-left">
                 <span className={`truncate ${summary ? 'max-w-[62%] flex-none' : 'min-w-0'}`}>
-                  {decision?.selected ? t('byDecision') : modelName || label(value.runtime) || t('choose')}
+                  {decision?.selected ? decision.name : modelName || label(value.runtime) || t('choose')}
                 </span>
                 {summary && (
                   <span className="min-w-0 truncate font-mono text-[10.5px] font-normal text-(--text-tertiary)">
@@ -369,7 +338,7 @@ export function RuntimeModelSelect({
                     close(true)
                   }}
                 >
-                  <Icon name="git-branch" size={14} className="flex-none text-(--text-tertiary)" />
+                  <Icon name="split" size={14} className="flex-none text-(--text-tertiary)" />
                   <span className="min-w-0 flex-1 text-left">
                     <span className="block">{t('byDecision')}</span>
                     <span className="block truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">

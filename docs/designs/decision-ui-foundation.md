@@ -69,7 +69,8 @@ For standalone preview, use `consumer: { type: 'none' }`. For a fixed-target gat
 pass `{ type: 'gate', channelId, when }`. A routing preview accepts the draft config
 and draft scope (`channelIds`) without saving either; `channelId` selects the sample
 channel. Otherwise and provider-failure continuation use that channel's resolved
-default agent. Off, outside-scope, and paused routing return `not_applied` with a
+default agent. Off (outside the draft scope, since saving enables an in-scope one),
+outside-scope, and paused routing return `not_applied` with a
 `notAppliedReason` and no evaluation. Channels must belong to the selected shared bot.
 Use `targets: { type: 'thread', agentIds: [...] }` or `mention`
 to demonstrate constrained recipients. Compare `matchedAgentIds` with
@@ -98,8 +99,8 @@ Invalid fixture output becomes `unavailable`, never an invented negative answer.
 - `saveChannel` accepts a complete trigger setting. Off/Mention/Any removes the
   Decision binding. Shared-bot scope additions use `saveRouting`.
 - `saveRouting` accepts the complete selected `channelIds` and explicit replacement
-  settings for every removed channel. Validation happens before any change; adding
-  an Off channel fails without changing the routing or other channels.
+  settings for every removed channel. Validation happens before any change; an added
+  Off channel turns By decision like any other addition.
 - Incompatible Decision edits preserve saved consumer conditions as Needs review.
   Changing a Score rubric's length invalidates even an interval that still fits.
   Saving the repaired consumer clears that state. Deleting a used Decision returns 409.
@@ -249,7 +250,7 @@ Decision's shared-bot usage links to the bot's configuration.
   puts that row in the draft's scope ("Save to apply By decision rules in this channel");
   the rules are the bot's own, so the modal names the other routed channels they apply to.
   A row Off on any install is added as is: the console neither switches its trigger nor
-  blocks Save, and whether routing may cover an Off conversation is the CP's decision.
+  blocks Save; the CP's routing save turns it By decision.
 - The form reads Routing enabled (pause or resume the bot's routing), Decision (picker, type
   and model, View and edit, inline Create decision — its return URL names the row, which
   reopens on the kept draft),

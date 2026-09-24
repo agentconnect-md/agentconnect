@@ -7,8 +7,14 @@ import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
-import type { DecisionAnswer, DecisionCondition, DecisionDefinition } from '@agentconnect.md/protocol/decision'
+import type {
+  ChannelDecisionGate,
+  DecisionAnswer,
+  DecisionCondition,
+  DecisionDefinition
+} from '@agentconnect.md/protocol/decision'
 import type { DecisionConversationRef, DecisionGatePreviewResult } from '@agentconnect.md/protocol/decision-api'
+import { DecisionChainResults } from './DecisionChainResults'
 import { conditionSummary } from './DecisionConditionFields'
 
 function Row({ label, value }: { label: ReactNode; value: ReactNode }) {
@@ -48,19 +54,21 @@ export function DecisionGateTry({
   conversation,
   decision,
   when,
+  binding,
   agentName,
   open
 }: {
   conversation: DecisionConversationRef
   decision: DecisionDefinition
   when: DecisionCondition
+  binding?: ChannelDecisionGate
   /** The row's agent, named until the server resolves the consumer target. */
   agentName: string
   /** Whether the sample form is shown; a result stays visible when it is collapsed. */
   open: boolean
 }) {
   const t = useTranslations('Decisions')
-  const { api } = useDecisionsPrototype()
+  const { api, decisions } = useDecisionsPrototype()
   const words = { yes: t('condition.yes'), no: t('condition.no'), none: t('condition.noAnswer') }
   const [current, setCurrent] = useState('')
   const [running, setRunning] = useState(false)
@@ -76,13 +84,25 @@ export function DecisionGateTry({
       JSON.stringify({
         decisionId: decision.id,
         updatedAt: decision.updatedAt,
+        steps: binding?.steps?.map((step) => decisions.find((entry) => entry.id === step.decisionId)),
         providerId: decision.providerId,
         model: decision.model,
         question: decision.question,
         when,
+        binding,
         current
       }),
-    [decision.id, decision.updatedAt, decision.providerId, decision.model, decision.question, when, current]
+    [
+      decision.id,
+      decision.updatedAt,
+      decision.providerId,
+      decision.model,
+      decision.question,
+      when,
+      binding,
+      current,
+      decisions
+    ]
   )
   const stale = result !== null && result.signature !== signature
 
@@ -93,7 +113,7 @@ export function DecisionGateTry({
     const ran = signature
     try {
       const preview = await api.previewGate(conversation, {
-        decisionBinding: { type: 'gate', decisionId: decision.id, when },
+        decisionBinding: binding ?? { type: 'gate', decisionId: decision.id, when },
         // The rules modal tries one message on its own, with no sample history.
         state: { history: [], currentMessage: { text: current.trim() } }
       })
@@ -147,6 +167,7 @@ export function DecisionGateTry({
         </div>
       )}
 
+      {result && <DecisionChainResults chain={result.preview.chain} names={decisions} />}
       {failure && (
         <div
           role="alert"

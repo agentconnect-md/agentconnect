@@ -19,6 +19,7 @@
 import {
   CODE_HOST_PROVIDERS,
   HOOK_DECISION_ROUTING_V1_FEATURE,
+  DECISION_CHAIN_V1_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   isSelfManagedGitlabHost,
   type AgentSpec
@@ -39,6 +40,7 @@ type WorkspaceShapedAgent = {
   }
   gitlabHost?: string
   giteaHost?: string
+  modelSelection?: { steps?: readonly unknown[] } | null
 }
 
 export { isSelfManagedGitlabHost }
@@ -65,6 +67,7 @@ export function requiredDaemonFeatures(
   codeHosts: CodeHostProviderRegistry = codeHostProviders
 ): readonly string[] {
   const features: string[] = []
+  if (agent.modelSelection?.steps?.length) features.push(DECISION_CHAIN_V1_FEATURE)
   for (const provider of CODE_HOST_PROVIDERS) {
     const host = codeHosts[provider].features
     // Three sources of a consumer, not one. A vouched workspace (git-workspace-model.md
@@ -127,8 +130,10 @@ export function encodeAgentSpecForPeer<S extends Pick<AgentSpec, 'workspace' | '
     const { hookRoutings: _stripped, ...rest } = spec
     spec = rest as S
   } else if (spec.hookRoutings !== undefined) {
-    const readable = spec.hookRoutings.filter((routing) =>
-      advertises(advertisedFeatures, codeHosts[routing.provider].routing.requiredFeatures)
+    const readable = spec.hookRoutings.filter(
+      (routing) =>
+        advertises(advertisedFeatures, codeHosts[routing.provider].routing.requiredFeatures) &&
+        (!routing.config.steps?.length || advertises(advertisedFeatures, [DECISION_CHAIN_V1_FEATURE]))
     )
     if (readable.length !== spec.hookRoutings.length) spec = { ...spec, hookRoutings: readable }
   }

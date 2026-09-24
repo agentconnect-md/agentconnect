@@ -14,6 +14,7 @@ import {
   type RdRouteBackfillRow,
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
+  DECISION_CHAIN_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
@@ -3913,6 +3914,11 @@ export class Daemon {
     }
   }
 
+  /** Whether this machine authenticates the runtime, read from the same `authRequired` its own `facts/daemon-runtimes` reports (§8). */
+  private holderAuthenticates(runtime: string): boolean {
+    return this.runtimeFacts.profileFor(runtime).authRequired !== true
+  }
+
   /** The strategy v1's ask names: `runInSandbox` true asks for a sandboxing one, false for `host` (§5). */
   private askedStrategy(ask: PlacementAsk): string {
     return ask.runInSandbox ? 'microsandbox' : 'host'
@@ -3953,6 +3959,7 @@ export class Daemon {
       ask,
       holderHostedSessions: await this.hostedSessionCount(sessionKey),
       holderCapacity: this.cfg.limits.maxConcurrentSessions,
+      holderAuthenticates: this.holderAuthenticates(ask.runtime),
       ...(answer ? { answer } : {})
     })
     if ('stayedHome' in placement) return await this.recordSessionExecutor(sessionKey, placement.stayedHome)
@@ -4017,10 +4024,12 @@ export class Daemon {
     const agent = this.sessionAgent(placed.agentId, placed.sessionKey)
     if (!agent) return undefined
     const answer = await this.executorCandidates(placed.agentId, placed.sessionKey)
+    const ask = this.placementAsk(agent, placed.sessionKey)
     const placement = placeSession({
-      ask: this.placementAsk(agent, placed.sessionKey),
+      ask,
       holderHostedSessions: await this.hostedSessionCount(placed.sessionKey),
       holderCapacity: this.cfg.limits.maxConcurrentSessions,
+      holderAuthenticates: this.holderAuthenticates(ask.runtime),
       replacing: placed.executorDaemonId,
       ...(answer ? { answer } : {})
     })
@@ -6239,6 +6248,7 @@ export class Daemon {
       HOOK_DECISION_ROUTING_V2_FEATURE,
       DECISION_TOOLS_V1_FEATURE,
       DECISION_MODEL_SELECTION_V1_FEATURE,
+      DECISION_CHAIN_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
@@ -13603,7 +13613,11 @@ export class Daemon {
     let target: DecisionRuntimeTarget | undefined
     const manualModel =
       manual?.model ?? (agent.allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined)
-    if (!manualModel && client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE)) {
+    if (
+      !manualModel &&
+      client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE) &&
+      (!selection.steps?.length || client.supportsServerFeature(DECISION_CHAIN_V1_FEATURE))
+    ) {
       target = await evaluateSessionModel({
         agentId: agent.id,
         selection,
@@ -13613,10 +13627,10 @@ export class Daemon {
         current: () =>
           this.cpCollab.orgForAgent(agent.id) === orgId &&
           modelSelectionConfiguration(this.agents.get(agent.id)) === configuration,
-        decision: () =>
+        decision: (decisionId) =>
           client.decisionGet({
             requesterAgentId: agent.id,
-            decisionId: selection.decisionId,
+            decisionId,
             purpose: 'model_selection'
           }),
         state: async (decision) => {

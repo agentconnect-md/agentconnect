@@ -17,20 +17,33 @@
   <a href="https://telegram.org"><img src="https://cdn.simpleicons.org/telegram" width="16" height="16" alt="Telegram" title="Telegram" /></a>&nbsp;&nbsp;
   <a href="https://discord.com"><img src="https://cdn.simpleicons.org/discord" width="16" height="16" alt="Discord" title="Discord" /></a>&nbsp;&nbsp;
   <a href="https://www.larksuite.com"><img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" /></a>&nbsp;&nbsp;
+  <a href="https://im.qq.com"><img src="packages/web/public/brands/qq.svg" width="16" height="16" alt="QQ" title="QQ" /></a>&nbsp;&nbsp;
   <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
   <a href="https://gitlab.com"><img src="https://api.iconify.design/logos/gitlab-icon.svg" width="16" height="16" alt="GitLab" title="GitLab" /></a>&nbsp;&nbsp;
   <a href="https://about.gitea.com"><img src="https://cdn.simpleicons.org/gitea" width="16" height="16" alt="Gitea" title="Gitea" /></a>&nbsp;&nbsp;
   <a href="https://linear.app"><img src="https://cdn.simpleicons.org/linear" width="16" height="16" alt="Linear" title="Linear" /></a>&nbsp;&nbsp;
   <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
+  <br />
   <strong>WITH</strong>&nbsp;&nbsp;
   <a href="https://claude.com"><img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude" title="Claude" /></a>&nbsp;&nbsp;
   <a href="https://openai.com"><img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="OpenAI" title="OpenAI" /></a>&nbsp;&nbsp;
-  <a href="https://x.ai/build"><img src="https://cdn.simpleicons.org/x/000000/e6edf3" width="16" height="16" alt="Grok Build" title="Grok Build" /></a>&nbsp;&nbsp;
+  <a href="https://antigravity.google"><img src="https://api.iconify.design/logos/antigravity.svg" width="16" height="16" alt="Google Antigravity" title="Google Antigravity" /></a>&nbsp;&nbsp;
+  <a href="https://github.com/features/copilot/cli/"><img src="https://cdn.simpleicons.org/githubcopilot/000000/e6edf3" width="16" height="16" alt="GitHub Copilot" title="GitHub Copilot" /></a>&nbsp;&nbsp;
+  <a href="https://docs.devin.ai/cli"><img src="https://raw.githubusercontent.com/agentclientprotocol/registry/main/devin/icon.svg" width="16" height="16" alt="Devin" title="Devin" /></a>&nbsp;&nbsp;
+  <a href="https://x.ai/build"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.iconify.design/thesvg/grok-xai.svg?color=%23e6edf3" />
+    <img src="https://api.iconify.design/thesvg/grok-xai.svg?color=%23000000" width="16" height="16" alt="Grok Build" title="Grok Build" />
+  </picture></a>&nbsp;&nbsp;
   <a href="https://www.deepseek.com"><img src="https://cdn.simpleicons.org/deepseek" width="16" height="16" alt="DeepSeek" title="DeepSeek" /></a>&nbsp;&nbsp;
+  <a href="https://github.com/QwenLM/qwen-code"><img src="https://api.iconify.design/logos/qwen-icon.svg" width="16" height="16" alt="Qwen Code" title="Qwen Code" /></a>&nbsp;&nbsp;
   <a href="https://opencode.ai"><img src="https://cdn.simpleicons.org/opencode/000000/e6edf3" width="16" height="16" alt="OpenCode" title="OpenCode" /></a>&nbsp;&nbsp;
   <a href="https://pi.dev"><img src="https://cdn.simpleicons.org/pi/000000/e6edf3" width="16" height="16" alt="Pi" title="Pi" /></a>&nbsp;&nbsp;
-  <strong>ANY ACP AGENT</strong></sub>
+  <span title="Any ACP-compatible agent">…</span>&nbsp;&nbsp;
+  <strong>AND</strong>&nbsp;&nbsp;
+  <a href="https://docs.typesafe.ai/introduction"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/typesafe-dark.svg" />
+    <img src="packages/web/public/brands/typesafe.svg" width="16" height="16" alt="Jev" title="Jev (TypeSafe)" />
+  </picture></a></sub>
 </p>
 
 <p align="center">
@@ -60,7 +73,8 @@ AgentConnect is an open-source platform where teams and multiple AI agents work
 together across Slack, Telegram, Discord, Lark, GitHub, GitLab, Gitea, and
 Linear. Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any
 ACP-compatible agent into the conversations and workflows your team already has
-open.
+open. Use [Jev](https://docs.typesafe.ai/introduction) for agent routing and model
+selection.
 
 Give each agent a role, then let people and agents collaborate in shared
 conversations. Agents can call one another and remember what they learn, and
@@ -90,9 +104,9 @@ AgentConnect turns that glue into a platform.
 
 Teams use it to:
 
-- **Triage issues together.** People and agents investigate in one shared
-  thread, bring in the right specialists, and keep the fix and verification
-  visible from start to finish.
+- **Triage issues together.** Use Jev to route new support conversations
+  to the right specialists. People and agents investigate in one shared thread
+  and keep the fix and verification visible from start to finish.
 - **Support across trusted workspaces.** Start a support conversation in
   Telegram, involve engineering from a trusted Slack workspace, and return the
   resolution where the conversation began.
@@ -102,10 +116,10 @@ Teams use it to:
   a GitHub subscription in Slack, webhooks, or schedules. Let agents assess the
   impact, prepare and test relevant updates, and bring them to the team for
   review.
-- **Run customized code review.** Run a general reviewer on every pull request,
-  then bring in architecture or security reviewers only when a change needs
-  them. Each reviewer can use its own model, instructions, repository access,
-  tools, and sandbox policy.
+- **Run customized code review.** Use Jev to select the reviewers for
+  new GitHub pull requests and the runtime and model for each new review
+  session. Bring in general, architecture, or security reviewers with their
+  own instructions, repository access, tools, and sandbox policies.
 
 ### Features
 
@@ -119,6 +133,10 @@ Teams use it to:
   GitLab, Gitea, and Linear.
 - **Choose the right agent for every job.** Configure each agent's runtime,
   model, workspace, tools, and machine independently.
+- **Decide when and how agents act.** Use reusable Decisions powered by
+  [Jev](https://docs.typesafe.ai/introduction) to decide when agents respond,
+  route new conversations to specialist agents, and choose a runtime and model
+  for each new session.
 - **Carry context forward.** Give each agent its own memory and skills, and
   publish reviewed
   [Knowledge](https://docs.agentconnect.md/docs/knowledge) that every agent can

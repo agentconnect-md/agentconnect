@@ -3,6 +3,9 @@ import {
   DECISION_TRIGGER_V1_FEATURE,
   OWNER_DEFAULT_DECISION_V1_FEATURE,
   manifestFor,
+  DECISION_CHAIN_V1_FEATURE,
+  decisionChainIds,
+  type DecisionChainStep,
   type DecisionDefinition
 } from '@agentconnect.md/protocol'
 import { canView } from '../authorization/policy.js'
@@ -28,6 +31,15 @@ export async function visibleDecision(
 ): Promise<DecisionDefinition | null> {
   const row = await deps.repos.decision.get(orgOf(req), id)
   return row && canView(row, ctxOf(req)) ? row : null
+}
+
+export async function visibleDecisionChain(
+  deps: Pick<HttpDeps, 'repos'>,
+  req: FastifyRequest,
+  chain: DecisionChainStep & { steps?: readonly DecisionChainStep[] }
+): Promise<Map<string, DecisionDefinition> | null> {
+  const definitions = await Promise.all(decisionChainIds(chain).map((id) => visibleDecision(deps, req, id)))
+  return definitions.some((d) => !d) ? null : new Map(definitions.map((d) => [d!.id, d!]))
 }
 
 /** The gate's consumer: a shared bot's compiled conversation owner, else the URL install's agent; null when unresolved. */
@@ -63,13 +75,20 @@ export async function gateConsumer(
 export async function decisionGateReadiness(
   deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns' | 'httpBot'>,
   agent: AgentRecord,
-  bot: Pick<BotRecord, 'transport' | 'platform'>
+  bot: Pick<BotRecord, 'transport' | 'platform'>,
+  chained = false
 ): Promise<DecisionGateReadiness> {
   const ready = (await deps.placementResolver.routableDaemons(agent))
     .map((daemonId) => deps.daemonConns.get(daemonId))
     .filter((conn) => conn?.state === 'READY')
   if (ready.length === 0) return { status: 'daemon_offline', reason: 'No daemon serving this agent is connected.' }
-  if (ready.some((conn) => !decisionTriggerSupported(conn?.capabilities?.features)))
+  if (
+    ready.some(
+      (conn) =>
+        !decisionTriggerSupported(conn?.capabilities?.features) ||
+        (chained && !conn?.capabilities?.features?.includes(DECISION_CHAIN_V1_FEATURE))
+    )
+  )
     return { status: 'unsupported', reason: 'Upgrade the daemon to use By decision.' }
   if (bot.transport === 'http') {
     const relays = deps.httpBot.relayFeatureSupport(DECISION_TRIGGER_V1_FEATURE)

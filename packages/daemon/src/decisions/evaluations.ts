@@ -3,6 +3,7 @@ import {
   DECISION_RAW_JSON_MAX_CHARS,
   DECISION_LIST_MAX_BYTES,
   DecisionAnswer,
+  DecisionChainTrace,
   DecisionCondition,
   DecisionEvaluationEntry,
   DecisionEvaluationRecord,
@@ -309,8 +310,15 @@ function rawRequestText(row: DecisionVerdictRow): string | null {
   return typeof stored?.request === 'string' ? stored.request : null
 }
 
+function chainOf(row: DecisionVerdictRow): { chain?: DecisionChainTrace } {
+  const parsed = DecisionChainTrace.safeParse(record(parseJson(row.answerJson))?.chain)
+  return parsed.success ? { chain: parsed.data } : {}
+}
+
 type RawDetail = {
   input: DecisionEvaluationRecordDetail['input']
+  snapshot?: unknown
+  chain?: DecisionChainTrace
   rawRequest?: DecisionRawJson | null
   rawResponse?: DecisionRawJson | null
 }
@@ -338,6 +346,8 @@ function fitDetail(detail: RawDetail, conversation: DecisionEvaluationConversati
   }
   if (!fits() && detail.rawResponse) detail.rawResponse = null
   if (!fits()) detail.input = null
+  if (!fits()) delete detail.chain
+  if (!fits()) detail.snapshot = null
 }
 
 /** The raw provider bodies a detail carries when asked; both null once retention stripped them. */
@@ -427,6 +437,7 @@ export class DecisionEvaluationReader {
       snapshot: snapshotOf(row),
       input: expired ? null : inputOf(row),
       fullAnswer,
+      ...(!expired ? chainOf(row) : {}),
       evidence:
         row.state === 'admitted' ? { snapshotSeq: Number(row.seq), suppliedBackground: suppliedCount(row) } : null
     }
@@ -487,7 +498,8 @@ export class DecisionEvaluationReader {
       snapshot: routerSnapshotOf(row),
       constraint: expired ? null : routerConstraintOf(row, summary.data.targets),
       input: expired ? null : inputOf(row),
-      fullAnswer: expired ? null : answerOf(row).answer
+      fullAnswer: expired ? null : answerOf(row).answer,
+      ...(!expired ? chainOf(row) : {})
     }
     const { requestText, ...raw } = req.includeRaw ? rawOf(row, expired) : { requestText: null }
     Object.assign(detail, raw)

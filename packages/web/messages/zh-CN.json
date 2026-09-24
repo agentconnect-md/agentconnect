@@ -2295,6 +2295,11 @@
         "fallback": "没有规则匹配，或评估不可用时使用。",
         "providerModel": "Provider · 模型",
         "chooseDecision": "选择 Decision",
+        "nextDecision": "继续判断下一个 Decision",
+        "editNext": "编辑下一步 Decision：{name}",
+        "useModel": "改为选择模型",
+        "decisionPath": "判断路径",
+        "firstDecision": "起始 Decision",
         "openDecision": "在 Decisions 中打开 {name}",
         "evaluator": "评估模型",
         "answerColumn": "答案",
@@ -2332,10 +2337,12 @@
           "noMatch": "没有规则匹配",
           "fallback": "兜底",
           "notNeeded": "无需使用",
+          "continued": "规则匹配",
           "fallbackUsed": "使用兜底 Provider 和模型",
           "startsOn": "Session 将使用",
           "booleanResult": "{value} · true 的概率为 {probability}%",
-          "text4": "评估暂时不可用"
+          "text4": "评估暂时不可用",
+          "branchMatched": "规则 {index} 命中（{condition}）→ {decision}。"
         },
         "add": "添加"
       },
@@ -4771,6 +4778,18 @@
         "hiddenAgent": "你无权查看的 agent",
         "triggerLocked": "由 decision 决定：每次更新都会评估，本行自己的触发方式不再生效。"
       }
+    },
+    "chain": {
+      "path": "Decision 路径",
+      "next": "继续判断",
+      "first": "第一个 Decision",
+      "missing": "Decision 不可用",
+      "remove": "移除下一个 Decision",
+      "matches": "命中条件",
+      "misses": "未命中",
+      "trigger": "触发",
+      "skip": "跳过",
+      "resetCondition": "重新设置条件"
     }
   },
   "ProviderKeys": {

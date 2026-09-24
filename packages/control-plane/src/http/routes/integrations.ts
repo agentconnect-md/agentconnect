@@ -18,7 +18,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { decisionConditionIssues, decisionConditionNeedsReview, manifestFor } from '@agentconnect.md/protocol'
+import { decisionGateIssues, decisionConditionNeedsReview, manifestFor } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
@@ -40,12 +40,14 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
 import { removeIntegrationRow } from '../uninstall.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
+import { DecisionBindingDenied } from '../../persistence/decision-binding-fence.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import {
   decisionChannelView,
   decisionGateReadiness,
   routedChannelReadiness,
   visibleDecision,
+  visibleDecisionChain,
   type DecisionGateReadiness
 } from '../decision-access.js'
 import { isRoutedChannel } from '../../orchestrator/decisionBundle.js'
@@ -641,13 +643,17 @@ export function integrationRoutes(deps: HttpDeps) {
         const consumerOf = (integration: IntegrationRecord, c: IntegrationChannelRecord): string =>
           bots.get(integration.botId)?.transport === 'http' ? (c.agentId ?? integration.agentId) : integration.agentId
         const readinessMemo = new Map<string, Promise<DecisionGateReadiness | undefined>>()
-        const readinessFor = (agentId: string, bot: BotRecord): Promise<DecisionGateReadiness | undefined> => {
-          const key = `${bot.transport}\u0000${agentId}`
+        const readinessFor = (
+          agentId: string,
+          bot: BotRecord,
+          chained: boolean
+        ): Promise<DecisionGateReadiness | undefined> => {
+          const key = `${bot.platform}\u0000${bot.transport}\u0000${agentId}\u0000${chained}`
           let pending = readinessMemo.get(key)
           if (!pending) {
             pending = deps.repos.agent
               .get(orgIdOf(req), AgentId(agentId))
-              .then((agent) => (agent ? decisionGateReadiness(deps, agent, bot) : undefined))
+              .then((agent) => (agent ? decisionGateReadiness(deps, agent, bot, chained) : undefined))
             readinessMemo.set(key, pending)
           }
           return pending
@@ -666,7 +672,7 @@ export function integrationRoutes(deps: HttpDeps) {
           effectiveRows.map(async ({ integration, channels }) => {
             if (!channels.some((c) => c.trigger === 'decision')) return toDto(integration, channels)
             const bot = bots.get(integration.botId)
-            const byAgent = new Map<string, DecisionGateReadiness | undefined>()
+            const gates = new Map<string, DecisionGateReadiness | undefined>()
             const routed = new Map<string, DecisionGateReadiness>()
             if (bot) {
               for (const c of channels) {
@@ -676,12 +682,19 @@ export function integrationRoutes(deps: HttpDeps) {
                   continue
                 }
                 const agentId = consumerOf(integration, c)
-                if (!byAgent.has(agentId)) byAgent.set(agentId, await readinessFor(agentId, bot))
+                gates.set(
+                  c.channelId,
+                  await readinessFor(
+                    agentId,
+                    bot,
+                    c.decisionBinding?.type === 'gate' && !!c.decisionBinding.steps?.length
+                  )
+                )
               }
             }
             return toDto(integration, channels, {
               names,
-              readiness: (c) => (isRoutedChannel(c) ? routed.get(c.channelId) : byAgent.get(consumerOf(integration, c)))
+              readiness: (c) => (isRoutedChannel(c) ? routed.get(c.channelId) : gates.get(c.channelId))
             })
           })
         )
@@ -887,12 +900,14 @@ export function integrationRoutes(deps: HttpDeps) {
         }
         // By decision (decisions.md §6.3): 400 for the conversation kind or condition, 404 when invisible, 409 on capability.
         const gate = req.body.trigger === 'decision' ? req.body.decisionBinding : undefined
+        let validatedChain: Awaited<ReturnType<typeof visibleDecisionChain>> = null
         let validatedDecision: Awaited<ReturnType<typeof visibleDecision>> = null
         if (gate) {
           const badRequest = (message: string, issues?: Array<{ path: Array<string | number>; message: string }>) =>
             reply.code(400).send({ error: 'Bad Request', statusCode: 400, message, ...(issues ? { issues } : {}) })
           if (existingChannel.kind === 'im') return badRequest('By decision applies only to group conversations')
-          validatedDecision = await visibleDecision(deps, req, gate.decisionId)
+          validatedChain = await visibleDecisionChain(deps, req, gate)
+          validatedDecision = validatedChain?.get(gate.decisionId) ?? null
           if (!validatedDecision)
             return reply.code(404).send({
               error: 'Not Found',
@@ -900,7 +915,11 @@ export function integrationRoutes(deps: HttpDeps) {
               message: 'decision not found',
               code: 'DECISION_NOT_FOUND'
             })
-          const issues = decisionConditionIssues(validatedDecision.question, gate.when)
+          const issues = decisionGateIssues(
+            validatedDecision.question,
+            gate,
+            new Map([...validatedChain!].map(([id, d]) => [id, d.question]))
+          )
           if (issues.length > 0) return badRequest('The condition does not match the Decision question', issues)
         }
         const botScopedConversation = bot.transport === 'http'
@@ -944,7 +963,7 @@ export function integrationRoutes(deps: HttpDeps) {
         }
         // The consumer is the owner the relay route is compiled for, not necessarily the URL install's agent.
         if (gate) {
-          const readiness = await decisionGateReadiness(deps, selectedOwner ?? agent, bot)
+          const readiness = await decisionGateReadiness(deps, selectedOwner ?? agent, bot, !!gate?.steps?.length)
           if (readiness.status === 'unsupported') {
             return reply.code(409).send({
               error: 'Conflict',
@@ -1049,13 +1068,19 @@ export function integrationRoutes(deps: HttpDeps) {
           if (!updated)
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
           // A Decision edit that committed after validation may have invalidated this gate; mark it for review.
-          if (gate && validatedDecision) {
-            const current = await deps.repos.decision.get(orgIdOf(req), gate.decisionId)
-            if (
-              current &&
-              current.updatedAt !== validatedDecision.updatedAt &&
-              decisionConditionNeedsReview(validatedDecision.question, current.question, gate.when)
-            ) {
+          if (gate && validatedChain) {
+            const current = await visibleDecisionChain(deps, req, gate)
+            const changed =
+              !current ||
+              [gate, ...(gate.steps ?? [])].some((step) => {
+                const previous = validatedChain!.get(step.decisionId)!
+                const next = current.get(step.decisionId)!
+                return (
+                  next.updatedAt !== previous.updatedAt &&
+                  decisionConditionNeedsReview(previous.question, next.question, step.when)
+                )
+              })
+            if (changed) {
               updated = await markDecisionReview(integration, bot, req.params.channelId, gate, updated)
               routesSynced = false
             }
@@ -1084,11 +1109,21 @@ export function integrationRoutes(deps: HttpDeps) {
               ? undefined
               : isRoutedChannel(updated)
                 ? routedChannelReadiness(await deps.httpBot.describeRouting(bot), updated.channelId)
-                : await decisionGateReadiness(deps, selectedOwner ?? agent, bot)
+                : await decisionGateReadiness(
+                    deps,
+                    selectedOwner ?? agent,
+                    bot,
+                    !!(gate ?? (updated.decisionBinding?.type === 'gate' ? updated.decisionBinding : undefined))?.steps
+                      ?.length
+                  )
           return toChannelDto(updated, { names, readiness: () => readiness })
         } catch (err) {
           // The Decision was deleted between validation and the write (FK RESTRICT on the gate).
-          if (gate && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003')
+          if (
+            gate &&
+            (err instanceof DecisionBindingDenied ||
+              (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003'))
+          )
             return reply.code(404).send({
               error: 'Not Found',
               statusCode: 404,

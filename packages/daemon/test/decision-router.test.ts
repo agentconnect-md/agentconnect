@@ -251,6 +251,57 @@ const entry = (agentId: string, participant: boolean): RdRoutingConstraintEntry 
 })
 
 describe('DecisionRouter', () => {
+  it('fans out through matched child rules and records the selected terminal agent', async () => {
+    const h = await harness()
+    h.state.routing = {
+      ...routingOf(),
+      config: {
+        ...routingConfig,
+        rules: [
+          {
+            id: 'start',
+            when: { type: 'choice', thresholds: { billing: 0.2 } },
+            action: { type: 'decision', nextStepId: 'assign' }
+          }
+        ],
+        steps: [
+          {
+            id: 'assign',
+            decisionId: 'd-2',
+            rules: [
+              { id: 'confirmed', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: C } }
+            ]
+          }
+        ]
+      },
+      definitions: [
+        definition,
+        {
+          ...definition,
+          id: 'd-2',
+          question: { type: 'boolean', instructions: 'Assign the specialist?', criteria: { true: 'Yes', false: 'No' } }
+        }
+      ]
+    }
+    const m = await h.post()
+    await h.router.intake(m.candidate)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    h.calls[0]!.resolve(all)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(2), WAIT)
+    expect(h.calls[1]!.input.state).toBe(h.calls[0]!.input.state)
+    expect(h.calls[1]!.input.deadlineAt).toBe(h.calls[0]!.input.deadlineAt)
+    h.calls[1]!.resolve({
+      status: 'answered',
+      answer: { type: 'boolean', value: true, probability: 0.9 },
+      model: 'jev-latest',
+      usage: { inputTokens: 10, outputTokens: 1 }
+    })
+    await h.router.idle()
+    expect((await h.targetsOf(m.record.seq)).map((t) => [t.agentId, t.effect])).toEqual([[C, 'selected']])
+    expect(JSON.parse((await h.verdict(m.record.seq)).answerJson!).matchedRuleIds).toEqual(['start', 'confirmed'])
+    expect(h.forwards).toHaveLength(0)
+  })
+
   it('(a) one evaluation, one verdict, three dispositions: local admitted by receipt, remote forwarded', async () => {
     const h = await harness()
     const m = await h.post()
