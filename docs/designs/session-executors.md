@@ -335,6 +335,22 @@ table offers the named strategy — its own machine included, which after §11 i
 same path. The executor's report has used the table since the first version, so the
 change is only the ask: a slug where the boolean was.
 
+**A Decision picks the runtime, never the strategy.** An agent's model selection
+([decisions.md](decisions.md) §10.6) resolves the session's runtime, model and run
+settings before placement, and placement then looks for a machine that can run and
+authenticate that runtime. The strategy stays the agent's: it is a security boundary,
+and a model's judgment of the opening message does not choose one. Two reads change
+with this revision so that the order holds across machines:
+
+- **Whether a rule's target is usable** is judged against the machines the session
+  could land on, not the holder alone. The holder asks `executor/candidates` before
+  it evaluates, since placement needs the answer anyway, and the same answer serves
+  both: a runtime only another member offers is not mistaken for unavailable, and a
+  model the landing machine lacks is not accepted because the holder has it.
+- **The target's catalog is the strategy's.** A microsandbox environment runs the
+  runtimes its image declares, not the ones installed on the host, so a rule naming a
+  runtime the image lacks falls back instead of failing at startup.
+
 ### The `srt` strategy: SRT around the shim
 
 `srt` becomes a strategy by putting the whole shim inside an SRT boundary, the way a
@@ -950,7 +966,10 @@ machine it lands on**, which is why lending a machine is its owner's decision (�
 Which runtimes a machine can authenticate is already in its `facts/daemon-runtimes`
 snapshot (`authRequired`), the way the console already shows "Login required" per
 runtime; `executor/candidates` answers from it, and a holder does not place a
-session whose runtime the executor cannot authenticate.
+session whose runtime the executor cannot authenticate. The holder is held to the same
+rule: it keeps a session home only if it authenticates the runtime itself, and
+otherwise places it on a member that does. Only when no machine does is the session
+kept home, where the runtime's `authRequired` is the error.
 
 **The holder composes the launch in the executor's coordinates.** A placed session's
 HOME, XDG directories and runtime state roots (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …)
@@ -1212,16 +1231,16 @@ reused as is. The shim, at twice the size of that whole path, is reused unchange
 **The 2026-09-24 revision** adds the following, none started. Each lands alone; S1–S3
 are one feature, and M1–M4 precede R1.
 
-| PR  | Scope                                                                                                                                                                                                                                                                                                                            |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1  | Protocol and CP: the agent's `execution` slug beside `runInSandbox`; the daemon's own effective strategy table at registration, in the executor report's shape, and its legacy backend for the migration; the one-time backfill; validation of `execution` against the placement's tables in place of the two sandbox conflicts. |
-| S2  | Daemon: the `sandbox` strategy table with the legacy mapping and on-by-default probes; launch dispatch on the agent's strategy instead of `sandbox.backend`, `srt` and `microsandbox` side by side in one process; refusal instead of downgrade.                                                                                 |
-| S3  | Console: the strategy picker per placement, boundary labels and unavailable reasons; the pool shows none.                                                                                                                                                                                                                        |
-| M1  | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                |
-| M2  | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                          |
-| M3  | The in-process executor entry; local microsandbox launches through it (§11 step 3).                                                                                                                                                                                                                                              |
-| M4  | Agent-scoped environments on the executor path and the one-time environment-id mapping (§11 step 4).                                                                                                                                                                                                                             |
-| R1  | The `srt` strategy (§5): the launcher, the three changes the probe found, the executor's policy; local `srt` launches through it and the direct SRT launch retires.                                                                                                                                                              |
+| PR  | Scope                                                                                                                                                                                                                                                                                                                                    |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1  | Protocol and CP: the agent's `execution` slug beside `runInSandbox`; the daemon's own effective strategy table at registration, in the executor report's shape, and its legacy backend for the migration; the one-time backfill; validation of `execution` against the placement's tables in place of the two sandbox conflicts.         |
+| S2  | Daemon: the `sandbox` strategy table with the legacy mapping and on-by-default probes; launch dispatch on the agent's strategy instead of `sandbox.backend`, `srt` and `microsandbox` side by side in one process; refusal instead of downgrade; model selection judging targets against the candidates and the strategy's catalog (§5). |
+| S3  | Console: the strategy picker per placement, boundary labels and unavailable reasons; the pool shows none.                                                                                                                                                                                                                                |
+| M1  | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                        |
+| M2  | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                  |
+| M3  | The in-process executor entry; local microsandbox launches through it (§11 step 3).                                                                                                                                                                                                                                                      |
+| M4  | Agent-scoped environments on the executor path and the one-time environment-id mapping (§11 step 4).                                                                                                                                                                                                                                     |
+| R1  | The `srt` strategy (§5): the launcher, the three changes the probe found, the executor's policy; local `srt` launches through it and the direct SRT launch retires.                                                                                                                                                                      |
 
 ## 13. Open questions
 
