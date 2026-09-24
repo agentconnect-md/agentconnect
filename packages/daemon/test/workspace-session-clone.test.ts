@@ -345,7 +345,7 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
         git(remote.seed, ['push', '-q', 'origin', 'HEAD'])
       }
       const installSkills = vi.fn(async () => [] as string[])
-      const pulls = vi.spyOn(SeamRunner.prototype, 'pull')
+      const raw = vi.spyOn(SeamRunner.prototype, 'raw')
       const cwd = await workspaces.prepareSessionWorkspace(
         agent,
         { sessionKey: KEY, isolation: tier === 'shared' ? 'shared' : 'session', confined: tier === 'clone' },
@@ -354,7 +354,9 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
 
       expect(installSkills.mock.calls).toEqual([[agent, cwd]])
       expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('updated\n')
-      expect(pulls).toHaveBeenCalledTimes(tier === 'clone' ? 0 : 2)
+      // One sync per shared root: its `checkout -B` onto the fetched tip.
+      const syncs = raw.mock.calls.filter(([args]) => args[0] === 'checkout' && args.includes('-B'))
+      expect(syncs).toHaveLength(tier === 'clone' ? 0 : 2)
       for (const root of roots) {
         expect(readFileSync(join(root.path, 'README.md'), 'utf8')).toBe(tier === 'clone' ? 'seed\n' : 'updated\n')
       }
