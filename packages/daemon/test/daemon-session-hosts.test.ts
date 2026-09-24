@@ -386,7 +386,11 @@ it.skipIf(process.platform === 'win32')(
 it.skipIf(process.platform === 'win32')(
   'starts a placed microsandbox session on a holder that runs no VM, and refuses the same strategy locally',
   async () => {
-    const root = scaffold({ workspace: { mode: 'from-scratch', path: 'workspace' }, execution: 'microsandbox' })
+    // The runtime exists only in the executor's image: this holder has no install of it and no VM catalog.
+    const root = withRuntimes(
+      scaffold({ workspace: { mode: 'from-scratch', path: 'workspace' }, execution: 'microsandbox' }),
+      { claude: { command: '/nonexistent/adapter-only-on-the-executor', args: ['unused'] } }
+    )
     const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
     try {
       await daemon.start()
@@ -423,6 +427,7 @@ it.skipIf(process.platform === 'win32')(
       }
 
       // The executor's VM is the boundary, and its image's adapter starts; this holder's missing VM catalog is not consulted.
+      expect((daemon as any).localRuntimeCatalog.entries.claude).toBeUndefined()
       expect(build(placedKey).runtime).toMatchObject(installed)
       expect(runtimeDefFor).toHaveBeenCalledWith(placedKey, expect.objectContaining({ args: ['unused'] }))
       expect(() => build(KEY('local-vm'))).toThrow(

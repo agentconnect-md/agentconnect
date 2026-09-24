@@ -5909,8 +5909,10 @@ export class Daemon {
     // A session placed on another machine runs inside that machine's strategy, so this one's own VM composes none of it (§7).
     const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
     const micro = !this.k8s && opts.strategy === 'microsandbox' && !remoteSession
-    // Each local strategy launches the install it starts: the image's runtimes in a VM, this host's otherwise; a placed session starts from this host's definition, which its executor's install replaces (§8).
-    const catalog = micro ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
+    // Each local strategy launches the install it starts: the image's runtimes in a VM, this host's otherwise.
+    const local = micro ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
+    // A placed session's command is its executor's install (§8), so a runtime only that machine has starts from the resolved definition.
+    const catalog = remoteSession && !local?.entries[agent.runtime] ? this.resolvedRuntimeCatalog : local
     const runtimeEntry = catalog?.entries[agent.runtime]
     if (runtimeEntry?.source === 'curated') {
       this.curatedRuntimeAdmission.assertLaunch(runtimeEntry.aliasOf ?? agent.runtime, runtimeEntry.source)
