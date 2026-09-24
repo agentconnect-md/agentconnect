@@ -330,6 +330,23 @@ describe('IntegrationChannelList shared-bot routing', () => {
     expect(dialog()?.textContent).toContain('deploys was turned on (@-mention), but the routing was not saved.')
   })
 
+  it('keeps the left-on notice when a Retry fails after the row reads as on', async () => {
+    routing.getRouting.mockResolvedValue(detail())
+    routing.integrations = offInstalls()
+    routing.saveRouting.mockImplementation(async () => {
+      routing.integrations = [offInstalls()[0]!, { ...offInstalls()[1]!, channels: [row()] }]
+      throw new Error('network down')
+    })
+    await render([row()])
+    await openAdd()
+    await pickTarget()
+    await click(saveButton())
+    await click(all('button').find((node) => node.textContent?.trim() === 'Retry'))
+    expect(routing.saveRouting).toHaveBeenCalledTimes(2)
+    expect(routing.setChannelTrigger).toHaveBeenCalledTimes(1)
+    expect(dialog()?.textContent).toContain('deploys was turned on (@-mention), but the routing was not saved.')
+  })
+
   it.each(['the header ×', 'the scrim'])(
     'drops an abandoned rules edit closed by %s before the next row opens',
     async (how) => {

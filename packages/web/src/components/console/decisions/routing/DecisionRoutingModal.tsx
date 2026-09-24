@@ -204,7 +204,7 @@ export function DecisionRoutingModal({
       roster.refresh()
       onClose()
     } catch (cause) {
-      setLeftOn(enabled)
+      if (enabled.length) setLeftOn((prev) => [...new Set([...prev, ...enabled])])
       dispatch({ type: 'SAVE_FAIL', error: cause })
       if (routingSaveError(cause).kind === 'decision_missing') void reload()
     } finally {
