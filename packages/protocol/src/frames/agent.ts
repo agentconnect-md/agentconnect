@@ -16,15 +16,23 @@ import { normalizeGitHubSkillSource } from '../git-url.js'
  * with no live caller and has been removed.
  */
 
+// How a session stands in one additional repository (multi-repository-workspaces.md decision 13): `always`
+// clones it as a secondary root, `decision` offers it to the per-session selector, `on-demand` grants
+// credentials only and the agent clones during the turn.
+export const RepoMaterialization = z.enum(['always', 'decision', 'on-demand'])
+export type RepoMaterialization = z.infer<typeof RepoMaterialization>
+
 // One repository of the agent's additional-repository allowlist (multi-repository-workspaces.md decision 2).
 // `repoId` is the host's numeric repository/project id as a decimal string — rename-immune, the identity
 // minting matches on. `provider` qualifies it (gitlab-com-integration.md §8.1): the hosts number their
 // repositories independently, so the pair is the identity. Absent ⇒ `github`, which is what every row a
-// pre-GitLab control plane projects means, so an older peer's list still decodes.
+// pre-GitLab control plane projects means, so an older peer's list still decodes. `materialize` absent ⇒
+// `always`, what every entry an older control plane projects means.
 export const AgentAdditionalRepo = z.object({
   repoFullName: z.string(),
   repoId: z.string(),
-  provider: CodeHostProviderString.default('github')
+  provider: CodeHostProviderString.default('github'),
+  materialize: RepoMaterialization.default('always')
 })
 export type AgentAdditionalRepo = z.infer<typeof AgentAdditionalRepo>
 
@@ -47,8 +55,8 @@ export type AgentAdditionalRepo = z.infer<typeof AgentAdditionalRepo>
  *
  * Every mode carries `additionalRepos`: the agent's additional-repository
  * allowlist, projected by the CP so the daemon has the set before a session
- * starts. A later phase materializes them as secondary workspace roots; today
- * nothing on the daemon reads the list.
+ * starts. The daemon prepares each entry as a secondary workspace root and
+ * scopes credential requests to the list; honoring `materialize` is the next step.
  */
 // Who vouches for a `git` workspace's repository (git-workspace-model.md §3).
 // Absent ⇒ anonymous clone; the daemon's operator-owned `workspaceGitAllowedOrigins`

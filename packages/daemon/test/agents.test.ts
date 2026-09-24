@@ -231,10 +231,11 @@ describe('AgentSchema defaults', () => {
   it('round-trips the CP-replicated additional-repository allowlist, defaulting to none', () => {
     const base = { id: 'x', name: 'x', status: 'active', runtime: 'claude', integrations: [] }
     // A provider-less entry is what a pre-GitLab control plane replicates, and it
-    // means github; a gitlab project keeps its own qualifier.
+    // means github; a gitlab project keeps its own qualifier. An entry without
+    // `materialize` is what an older control plane replicates, and it means always.
     const additionalRepos = [
       { repoFullName: 'example-co/shared-library', repoId: '815' },
-      { repoFullName: 'example-group/example-project', repoId: '4455667', provider: 'gitlab' }
+      { repoFullName: 'example-group/example-project', repoId: '4455667', provider: 'gitlab', materialize: 'on-demand' }
     ]
 
     expect(
@@ -244,8 +245,8 @@ describe('AgentSchema defaults', () => {
       AgentSchema.parse({ ...base, workspace: { mode: 'from-scratch', path: './workspace', additionalRepos } })
         .workspace.additionalRepos
     ).toEqual([
-      { repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github' },
-      { repoFullName: 'example-group/example-project', repoId: '4455667', provider: 'gitlab' }
+      { repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github', materialize: 'always' },
+      { repoFullName: 'example-group/example-project', repoId: '4455667', provider: 'gitlab', materialize: 'on-demand' }
     ])
   })
 })

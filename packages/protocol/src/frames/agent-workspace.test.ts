@@ -5,9 +5,35 @@
  */
 import { describe, expect, it } from 'vitest'
 import { WORKSPACE_GIT_V1_FEATURE } from '../consts.js'
-import { AgentSpec, AgentWorkspace } from './agent.js'
+import { AgentAdditionalRepo, AgentSpec, AgentWorkspace, RepoMaterialization } from './agent.js'
 
 const REPO = 'https://gitlab.example.test/gitlab/example-group/example-project.git'
+
+describe('additionalRepos `materialize` (multi-repository-workspaces.md decision 13)', () => {
+  it('names the three modes on the wire', () => {
+    expect(RepoMaterialization.options).toEqual(['always', 'decision', 'on-demand'])
+  })
+
+  it('decodes an entry without the field as `always`, so an older control plane’s list means what it meant', () => {
+    expect(AgentAdditionalRepo.parse({ repoFullName: 'example-org/example-repo', repoId: '815' })).toEqual({
+      repoFullName: 'example-org/example-repo',
+      repoId: '815',
+      provider: 'github',
+      materialize: 'always'
+    })
+  })
+
+  it('keeps an explicit value and refuses one outside the enum', () => {
+    const parsed = AgentWorkspace.parse({
+      mode: 'scratch',
+      additionalRepos: [{ repoFullName: 'example-org/example-repo', repoId: '815', materialize: 'on-demand' }]
+    })
+    expect(parsed.additionalRepos[0]?.materialize).toBe('on-demand')
+    expect(() =>
+      AgentAdditionalRepo.parse({ repoFullName: 'example-org/example-repo', repoId: '815', materialize: 'never' })
+    ).toThrow()
+  })
+})
 
 describe('§8 workspace-git-v1', () => {
   it('is its own feature string', () => {

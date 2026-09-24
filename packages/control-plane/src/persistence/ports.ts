@@ -4288,6 +4288,8 @@ export interface CodeHostReviewLeaseRepo {
 /** Three tiers (vs GitAccess's two): `comment` = contents:read + issues/PR:write,
  *  the hook write-back shape — see the clamp matrix in the design doc. */
 export type RepoAccess = 'read' | 'comment' | 'write'
+/** The wire spelling; the Prisma enum maps `on_demand` to this value. */
+export type RepoMaterialization = 'always' | 'decision' | 'on-demand'
 
 export interface AgentRepoAuthorizationRecord {
   id: string
@@ -4296,6 +4298,7 @@ export interface AgentRepoAuthorizationRecord {
   repoId: bigint
   repoFullName: string // "owner/repo" as GitHub cases it, or a GitLab namespaced project path; refreshed on rename detection
   access: RepoAccess
+  materialize: RepoMaterialization // how a session stands in the repository (multi-repository-workspaces.md decision 13)
   createdAt: Date
   createdBy: AgentCreator | null // audit: who authorized (identity-assertion subject)
 }
@@ -4311,6 +4314,7 @@ export interface AgentRepoAuthorizationRepo {
     repoId: bigint
     repoFullName: string
     access: RepoAccess
+    materialize?: RepoMaterialization // absent ⇒ always
     createdByUserId?: string
   }): Promise<AgentRepoAuthorizationRecord>
   get(id: string): Promise<AgentRepoAuthorizationRecord | null>
@@ -4320,6 +4324,8 @@ export interface AgentRepoAuthorizationRepo {
   listForRepository(orgId: OrgId, provider: CodeHostProvider, repoId: bigint): Promise<AgentRepoAuthorizationRecord[]>
   /** Raise a grant's capability tier after the caller's GitHub access is re-checked. */
   updateAccess(id: string, access: RepoAccess): Promise<AgentRepoAuthorizationRecord | null>
+  /** Change how sessions stand in the repository; projected, so it advances the agent's config revision. */
+  updateMaterialize(id: string, materialize: RepoMaterialization): Promise<AgentRepoAuthorizationRecord | null>
   /** Best-effort display refresh when the mint gate detects a rename (repoId match
    *  through the slow path); never fails the mint. */
   updateFullName(id: string, repoFullName: string): Promise<void>

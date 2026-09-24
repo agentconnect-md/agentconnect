@@ -4,7 +4,7 @@
  * agent-move fingerprint path), and the instance-owned icon bases reach the spec.
  */
 import { describe, it, expect } from 'vitest'
-import { GITLAB_DEFAULT_BASE_URL } from '@agentconnect.md/protocol'
+import { GITLAB_DEFAULT_BASE_URL, type AgentAdditionalRepo } from '@agentconnect.md/protocol'
 import { AgentSpecAssembler, gitlabHost } from './agentSpecAssembler.js'
 import type {
   AgentRepoAuthorizationRepo,
@@ -87,16 +87,19 @@ function storeWith(values: Record<string, Record<string, string>>): AgentSecretS
 const unused = () => Promise.reject(new Error('not used by this test'))
 
 /** Only `listForAgent` participates in the projection; the writers stay inert. */
-function repoAuthWith(rows: Array<[fullName: string, repoId: bigint]>): AgentRepoAuthorizationRepo {
+function repoAuthWith(
+  rows: Array<[fullName: string, repoId: bigint, materialize?: 'always' | 'on-demand']>
+): AgentRepoAuthorizationRepo {
   return {
     listForAgent: async (agentId) =>
-      rows.map(([repoFullName, repoId], index) => ({
+      rows.map(([repoFullName, repoId, materialize], index) => ({
         id: `auth-${index}`,
         agentId,
         provider: 'github' as const,
         repoId,
         repoFullName,
         access: 'read' as const,
+        materialize: materialize ?? ('always' as const),
         createdAt: new Date('2026-01-01T00:00:00Z'),
         createdBy: null
       })),
@@ -104,6 +107,7 @@ function repoAuthWith(rows: Array<[fullName: string, repoId: bigint]>): AgentRep
     listForRepository: unused,
     get: unused,
     updateAccess: unused,
+    updateMaterialize: unused,
     updateFullName: unused,
     remove: unused,
     removeWithReviewProjectionCleanup: unused
@@ -265,18 +269,19 @@ describe('AgentSpecAssembler', () => {
   it('projects the agent’s authorized repositories onto a scratch workspace, sorted by full name', async () => {
     const specs = assemblerWith(
       repoAuthWith([
-        ['example-co/shared-library', 815n],
+        ['example-co/shared-library', 815n, 'on-demand'],
         ['acme/infra', 4711n]
       ])
     )
 
     const spec = await specs.assemble(AGENT)
 
+    // Each entry carries its own `materialize` (decision 13), the wire spelling untouched.
     expect(spec.workspace).toMatchObject({
       mode: 'scratch',
       additionalRepos: [
-        { repoFullName: 'acme/infra', repoId: '4711' },
-        { repoFullName: 'example-co/shared-library', repoId: '815' }
+        { repoFullName: 'acme/infra', repoId: '4711', provider: 'github', materialize: 'always' },
+        { repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github', materialize: 'on-demand' }
       ]
     })
   })
@@ -304,7 +309,9 @@ describe('AgentSpecAssembler', () => {
 
   it('project trusts the caller-snapshotted allowlist (the move bundle pins it)', () => {
     const specs = assemblerWith(repoAuthWith([['acme/infra', 4711n]]))
-    const pinned = [{ repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github' }]
+    const pinned = [
+      { repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github', materialize: 'always' as const }
+    ]
 
     const spec = specs.project(AGENT, {}, [], [], undefined, pinned)
 
@@ -312,8 +319,12 @@ describe('AgentSpecAssembler', () => {
   })
 
   it('derives the §24.4 host from each consumer in turn, and from none', () => {
-    const gitlabRepo = [{ repoFullName: 'example-group/example-project', repoId: '4455667', provider: 'gitlab' }]
-    const githubRepo = [{ repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github' }]
+    const gitlabRepo: AgentAdditionalRepo[] = [
+      { repoFullName: 'example-group/example-project', repoId: '4455667', provider: 'gitlab', materialize: 'always' }
+    ]
+    const githubRepo: AgentAdditionalRepo[] = [
+      { repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github', materialize: 'always' }
+    ]
 
     // The workspace consumer is the credential OR an anonymous checkout on the
     // managed host itself — the daemon widens its clone-origin allowlist from
