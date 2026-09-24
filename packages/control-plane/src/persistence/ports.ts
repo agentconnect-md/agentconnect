@@ -1412,6 +1412,15 @@ export interface SessionFacetIndex {
   triggers: SessionFacetRecord[]
 }
 
+/** One sighting of where a session key runs: a relayed ready `prepare` (CP clock) or a reported verdict (the report's `ts`). */
+export interface ExecutorObservation {
+  agentId: AgentId
+  key: SessionKey
+  executorDaemonId: DaemonId | null
+  at: Date
+  source: 'prepare' | 'report'
+}
+
 export interface SessionRepo {
   /** Upsert the converged milestone for a session (advance `phase`; NO message body).
    *  `recorded: false` means the global session id is already bound to a different
@@ -1461,9 +1470,10 @@ export interface SessionRepo {
    *  agent with one checkout has one branch, so that branch only speaks for the session using it now
    *  (webchat-side-panels.md §12.6). Rides `session_meta_agent_activity_page_idx`. */
   latestSessionIdForAgent(orgId: OrgId, agentId: AgentId): Promise<SessionId | null>
-  /** The executor the newest row for one agent's session key names (session-executors.md §6). A HINT for a successor
-   *  holder — the row is written asynchronously and kept after the session retires, so stale is expected and harmless. */
+  /** Where one agent's session key last ran (session-executors.md §7): the newest observation, else the newest row naming an executor. A HINT — stale is harmless. */
   executorForKey(agentId: AgentId, key: SessionKey): Promise<DaemonId | null>
+  /** Record where a session key runs, if newer than what is recorded; a report wins a tie and a stayed-home report only overwrites (§7). */
+  recordExecutorObservation(o: ExecutorObservation): Promise<void>
   /** One latest representative per distinct facet value after applying every
    *  other active facet. The database reduces the full history before returning
    *  this compact index to the HTTP layer. */

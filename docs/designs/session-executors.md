@@ -325,9 +325,10 @@ design put it, and this design adds no exception:
 - The CP **relays `executor/prepare` and `executor/release`** (below) after checking
   the duty ledger.
 - The CP's own session row records `executorDaemonId`, so the console can show it
-  (§10) and so `executor/candidates` can **hint** where a session last ran (below).
-  The holder also records it locally, for its own sessions; nothing reads that
-  column across machines.
+  (§10). The CP also keeps a **hint** of where each (agent, session key) last ran,
+  written when it relays a `ready` `prepare` as well as from the session report, so
+  `executor/candidates` can answer a successor (below). The holder also records it
+  locally, for its own sessions; nothing reads that column across machines.
 - Upgrades and restarts reuse `daemon/upgrade` and `daemon/lifecycle/progress`
   unchanged (§9).
 
@@ -355,9 +356,9 @@ the machines talk to each other.
    the agent's set whose executor facet is on, each with its effective strategy
    table, endpoint, capacity, `hostedSessions` and the runtimes it can authenticate.
    An empty answer carries its reason: the group's switch is off (§10), or no member
-   shares. When `sessionKey` is named and the CP's own session row for that
-   (agent, session) names an executor, the answer also carries
-   `currentExecutorDaemonId` — a **hint**, not an instruction (§7). These are
+   shares. When `sessionKey` is named and the CP's hint for that (agent, session
+   key) names an executor, the answer also carries `currentExecutorDaemonId` — a
+   **hint**, not an instruction (§7). These are
    **facts, never a choice**: the CP ranks nothing and recommends nothing, and
    placement stays the holder's.
 2. **`executor/prepare {agentId, sessionKey, executorDaemonId, launchId, strategy, runtime, resources, image}`**
@@ -769,7 +770,7 @@ onto PostgreSQL (§15). Neither rule above reads a store, so a machine can lend
 compute with nothing but its control connection.
 
 **Holder failover.** The successor member claims the agent through the ledger as
-today. It asks `executor/candidates` with the session's key; if the CP's row names an
+today. It asks `executor/candidates` with the session's key; if the CP's hint names an
 executor the answer carries it as `currentExecutorDaemonId`, and the successor sends
 its own launch's `prepare` there. The ledger now names the successor, so the CP
 relays; the executor attaches, allocates the next generation, rotates the key and
@@ -778,6 +779,33 @@ before the duty moved is already on the wire ahead of it, while one authorized a
 never reaches the wire (§6). The environment is still there — nothing on the executor
 depended on which holder was driving it — so failover costs one relayed request and
 a dial, not a re-preparation.
+
+**Where the hint comes from.** The session report alone would leave a gap: it is
+sent asynchronously, so a holder that dies after its `prepare` came back `ready` but
+before its report lands would leave the successor with no hint, and placement would
+then rank by load and could start the session somewhere else, away from its
+uncommitted work. The CP relays that `prepare` itself, so it records the executor
+when it relays a `ready` answer to the current duty holder, before the holder
+receives the key. The hint is a small CP table keyed by (agent, session key)
+that holds the executor's id and the time of the observation; nothing else is
+stored in it. It is kept separate from the session row for three reasons. At
+`prepare` time the CP knows the session key but not the session id the row is
+keyed by. A row invented by the CP would appear in session listings before any
+report. And it would fix visibility, which is first-wins, before the report that
+classifies the session arrives.
+
+Every observation carries a time: the CP's clock when the `ready` answer arrived,
+or the report's own `ts`. An observation replaces the recorded one only if it is
+newer, and a report also wins a tie. A report is therefore authoritative for
+everything after the `prepare` it describes. A `prepare` answered before a newer
+report cannot take the hint back. A re-emit written before the `prepare` and
+delivered after it cannot either. A stayed-home verdict clears the hint but never
+creates one, so a key that never ran remotely has no row. A key that has no hint
+yet, because it last ran before the table existed, falls back to the newest
+session row that names an executor. The two clocks are compared only where one
+holder reports shortly after its own `prepare`, or where a later move follows a loss
+grace. In the first case both observations name the same executor. In the second,
+the gap is far larger than any plausible skew.
 
 The hint is only a hint. Stale is harmless: a `prepare` at a machine that no longer
 has the environment simply creates one, and an executor that is offline follows the
@@ -1231,9 +1259,10 @@ Removed by the 2026-09-21 revision:
   and is better placed besides: the executor is the single writer of the environment
   the generation fences.
 - **Reading a successor's executor from the shared store's session row.** Same store,
-  same cost. The CP already keeps `executorDaemonId` on its own row for the console,
-  so `executor/candidates` returns it as a hint — and a hint is all it has to be,
-  since a wrong one costs a `prepare` that creates rather than attaches (§7).
+  same cost. The CP already relays every `prepare` and receives every report, so
+  it keeps the hint itself and `executor/candidates` returns it. A hint is all it
+  has to be, since a wrong one costs a `prepare` that creates rather than attaches
+  (§7).
 - **Reading session existence from the shared store in the reconcile.** Same store,
   same cost, and it made sharing depend on a connection the sharing machine has no
   other use for. `agent/exists` plus this machine's own session retention answer the

@@ -47,10 +47,11 @@ import type {
   ExternalResolution,
   ExternalScopeRecord,
   SessionExternalAccessPolicyRecord,
-  ExternalAccessPolicyState
+  ExternalAccessPolicyState,
+  ExecutorObservation
 } from '../ports.js'
 import { AgentId, BotId, DaemonId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
-import type { SessionKey } from '../../domain/sessionKey.js'
+import { sessionKeyStr, type SessionKey } from '../../domain/sessionKey.js'
 import { sessionViewerSql } from './session-access-sql.js'
 
 /** Webchat conversation ids are CP-minted UUIDs; any other `channel` shape can
@@ -1356,7 +1357,13 @@ export class PgSessionRepo implements SessionRepo {
   }
 
   async executorForKey(agentId: AgentId, key: SessionKey): Promise<DaemonId | null> {
-    // Newest row wins, the same tie-break as every session listing; only a row that names an executor answers.
+    // An observation is at least as fresh as the prepare that ran the session, so it answers whenever there is one, null included.
+    const hint = await this.db.sessionExecutorHint.findUnique({
+      where: { agentId_sessionKey: { agentId, sessionKey: sessionKeyStr(key) } },
+      select: { executorDaemonId: true }
+    })
+    if (hint) return hint.executorDaemonId ? DaemonId(hint.executorDaemonId) : null
+    // Keys last seen before observations were kept: newest row wins, the same tie-break as every session listing.
     const row = await this.db.sessionMeta.findFirst({
       where: {
         agentId,
@@ -1369,6 +1376,27 @@ export class PgSessionRepo implements SessionRepo {
       select: { executorDaemonId: true }
     })
     return row?.executorDaemonId ? DaemonId(row.executorDaemonId) : null
+  }
+
+  async recordExecutorObservation(o: ExecutorObservation): Promise<void> {
+    // A report wins a tie: it comes from the holder after the prepare it describes, never before.
+    const newer = o.source === 'report' ? Prisma.sql`<=` : Prisma.sql`<`
+    const sessionKey = sessionKeyStr(o.key)
+    // Stayed home only overwrites: a key that never ran remote needs no row, and one would exist for every session otherwise.
+    if (o.executorDaemonId === null) {
+      await this.db.$executeRaw(Prisma.sql`
+        UPDATE "session_executor_hint" SET "executorDaemonId" = NULL, "observedAt" = ${o.at}
+        WHERE "agentId" = ${o.agentId}::uuid AND "sessionKey" = ${sessionKey} AND "observedAt" ${newer} ${o.at}
+      `)
+      return
+    }
+    await this.db.$executeRaw(Prisma.sql`
+      INSERT INTO "session_executor_hint" ("agentId", "sessionKey", "executorDaemonId", "observedAt")
+      VALUES (${o.agentId}::uuid, ${sessionKey}, ${o.executorDaemonId}::uuid, ${o.at})
+      ON CONFLICT ("agentId", "sessionKey") DO UPDATE
+        SET "executorDaemonId" = EXCLUDED."executorDaemonId", "observedAt" = EXCLUDED."observedAt"
+        WHERE "session_executor_hint"."observedAt" ${newer} EXCLUDED."observedAt"
+    `)
   }
 
   async listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex> {

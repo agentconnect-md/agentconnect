@@ -311,6 +311,84 @@ describe('executor/candidates — facts the duty holder pulls (real Postgres)', 
     expect(other.currentExecutorDaemonId).toBeUndefined()
   })
 
+  describe('the hint is at least as fresh as the prepare', () => {
+    const OTHER = 'd4444444-4444-4444-8444-444444444444'
+
+    /** A holder that prepared the session on EXECUTOR, and a successor that is connected but does not hold the duty yet. */
+    async function prepared(h: WsHarness) {
+      const setId = await memberSet()
+      const holder = await member(h, HOLDER, { setId })
+      const executor = await member(h, EXECUTOR, { setId, executor: FACTS })
+      const successor = await member(h, THIRD, { setId })
+      await placedAgent(setId)
+      executor.respondTo('executor/prepare', () => ({ type: 'executor/prepare/result', payload: READY }))
+      expect(await ask(holder, 'executor/prepare', PREPARE)).toEqual(READY)
+      return { holder, executor, successor }
+    }
+
+    const hintFor = async (stub: InMemoryDaemonStub) =>
+      (await ask<ExecutorCandidatesResult>(stub, 'executor/candidates', { agentId: AGENT, sessionKey: SESSION_KEY }))
+        .currentExecutorDaemonId
+
+    const report = async (stub: InMemoryDaemonStub, sessionId: string, ts: Date, verdict: Record<string, string>) => {
+      stub.inject('event/session', {
+        sessionId,
+        agentId: AGENT,
+        phase: 'start',
+        platform: 'slack',
+        channel: 'C1',
+        thread: '1700000000.000100',
+        ...verdict,
+        ts: ts.toISOString()
+      })
+      await stub.settled()
+    }
+
+    it('a successor is hinted at the executor of a ready prepare whose holder died before any session report', async () => {
+      const h = buildWsHarness(prisma)
+      const { holder, successor } = await prepared(h)
+      // The holder never reported: the CP has no session row at all.
+      expect(await prisma.sessionMeta.count()).toBe(0)
+      holder.close(1006, 'gone')
+      await prisma.dutyGroup.update({ where: { id: GROUP }, data: { holder: THIRD } })
+
+      expect(await hintFor(successor)).toBe(EXECUTOR)
+      // Ids and a stamp: the key the executor minted is nowhere in what the CP kept.
+      const rows = await prisma.sessionExecutorHint.findMany()
+      expect(rows.map((r) => [r.sessionKey, r.executorDaemonId])).toEqual([[SESSION_KEY, EXECUTOR]])
+      expect(dump(rows)).not.toContain(PSK)
+    })
+
+    it('a later report wins over the prepare, and neither a stale report nor a stale prepare overrides a newer one', async () => {
+      const h = buildWsHarness(prisma)
+      const { holder } = await prepared(h)
+      const preparedAt = h.clock.now()
+      const session = `s-${randomUUID()}`
+
+      // A re-emit written before the prepare, delivered after it, names the executor the session is leaving.
+      await report(holder, session, new Date(preparedAt - 60_000), { executorDaemonId: OTHER })
+      expect(await hintFor(holder)).toBe(EXECUTOR)
+
+      // A report written after the prepare is the holder's own word, and it wins.
+      await report(holder, session, new Date(preparedAt + 60_000), { executorDaemonId: OTHER })
+      expect(await hintFor(holder)).toBe(OTHER)
+
+      // A prepare answered before that report cannot take the hint back...
+      h.clock.advance(30_000)
+      expect(await ask(holder, 'executor/prepare', { ...PREPARE, launchId: NEXT_LAUNCH })).toEqual(READY)
+      expect(await hintFor(holder)).toBe(OTHER)
+
+      // ...and one answered after it can.
+      h.clock.advance(60_000)
+      expect(await ask(holder, 'executor/prepare', { ...PREPARE, launchId: randomUUID() })).toEqual(READY)
+      expect(await hintFor(holder)).toBe(EXECUTOR)
+
+      // A newer stayed-home verdict clears it.
+      await report(holder, session, new Date(h.clock.now() + 60_000), { stayedHomeReason: 'no_candidate' })
+      expect(await hintFor(holder)).toBeUndefined()
+    })
+  })
+
   it('never lists a member that shares but does not speak the executor frames', async () => {
     const h = buildWsHarness(prisma)
     const setId = await memberSet()
