@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { FakeClock } from '@agentconnect.md/connection'
+import { FakeClock, type Clock } from '@agentconnect.md/connection'
 import { ChannelBinder } from '../src/remote/channel-binder.js'
 import { LaunchRegistry } from '../src/remote/launch-registry.js'
 import { noopClusterMetrics } from '../src/metrics/cluster-metrics.js'
 import { fakeGenerations } from './fake-generations.js'
-import type { ShimEndpointProvider } from '../src/remote/shim-endpoint.js'
+import { LaunchTimeoutError, type ShimEndpointProvider } from '../src/remote/shim-endpoint.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 
 const log = { info: () => {}, warn: () => {}, debug: () => {} }
@@ -141,6 +141,39 @@ describe('cluster channel binder', () => {
     subject.onChannelBound(stubConnection(7))
     expect(subject.workspaceRootFor('agent-a')).toBeUndefined()
     expect(subject.sessionFor('agent-a')).toBeDefined()
+  })
+
+  it('reports a channel that never arrived as a timeout when the deadline fires before the clock shows it spent', async () => {
+    // A Node timer is armed from the event loop's cached time, so under load it comes due before Date.now() reaches it.
+    const { clock, registry, launch } = await withLaunch()
+    const stale: Clock = {
+      now: () => clock.now(),
+      setTimeout: (fn, ms) => clock.setTimeout(fn, ms - 5),
+      clearTimeout: (handle) => clock.clearTimeout(handle)
+    }
+    let armed = (): void => {}
+    const dialing = new Promise<void>((resolve) => (armed = resolve))
+    const subject = new ChannelBinder({
+      registry,
+      endpoints,
+      clock: stale,
+      log,
+      metrics: noopClusterMetrics,
+      channelTimeoutMs: 1_000,
+      connectChannel: (_record, _address, timeoutMs) =>
+        new Promise((_resolve, reject) => {
+          stale.setTimeout(() => reject(new Error('binding timed out')), timeoutMs)
+          armed()
+        })
+    })
+
+    const outcome = expect(subject.bindChannel('agent-a', launch, undefined, ['acp'])).rejects.toBeInstanceOf(
+      LaunchTimeoutError
+    )
+    await dialing
+    clock.advance(995)
+    await outcome
+    expect(clock.pending).toBe(0)
   })
 
   it('tells the host of a failed bind while the bind still holds the launch', async () => {

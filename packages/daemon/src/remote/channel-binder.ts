@@ -80,6 +80,9 @@ export class ChannelBinder<L extends Launch = Launch> {
     const endpoint = await this.deps.endpoints.resolve(launch, timer)
     const channelTimeoutMs = this.deps.channelTimeoutMs
     const waitingSince = this.deps.clock.now()
+    // Armed before the host's own deadline, so it fires first: a timer can come due before now() shows its budget spent.
+    let expired = false
+    const deadline = this.deps.clock.setTimeout(() => (expired = true), channelTimeoutMs)
     const connection = await this.deps
       .connectChannel(
         {
@@ -95,14 +98,13 @@ export class ChannelBinder<L extends Launch = Launch> {
         channelTimeoutMs
       )
       .catch((err: unknown) => {
-        // connectChannel is supplied by the host, so its error text is not ours to match on.
-        // Elapsed-versus-the-deadline-we-set is a fact we own, and it is what distinguishes a
-        // channel that never arrived from one that failed for another reason.
-        if (this.deps.clock.now() - waitingSince >= channelTimeoutMs) {
+        // The host's error text is not ours to match on; our own deadline, by timer or by clock, is.
+        if (expired || this.deps.clock.now() - waitingSince >= channelTimeoutMs) {
           throw new LaunchTimeoutError(`no shim channel bound for ${subject} in time`)
         }
         throw err
       })
+      .finally(() => this.deps.clock.clearTimeout(deadline))
     timer?.mark('shim_handshake')
     // Released mid-bind: the pod is another member's to serve now, so the channel is dropped.
     if (!this.deps.registry.stillServed(subject, releasedAt)) {
