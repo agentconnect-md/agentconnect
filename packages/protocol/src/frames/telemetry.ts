@@ -3,7 +3,7 @@ import { ReportedCostAmount } from '../decimal-amount.js'
 import { SessionUsage } from './session.js'
 import { Platform } from './route.js'
 import { HeartbeatDuties } from './duty.js'
-import { SessionStayedHomeReason } from './executor.js'
+import { RuntimeStrategyEntries, SessionStayedHomeReason } from './executor.js'
 
 /**
  * Telemetry & facts (D→C) — protocol §7.
@@ -340,6 +340,8 @@ export const FactsRuntimeProfile = z.object({
   authRequired: z.boolean().optional(),
   // A saved login remains discoverable when the selected execution environment lacks its binary.
   unavailableReason: z.enum(['image-binary-missing', 'host-binary-missing']).optional(),
+  // One entry per strategy the machine offers, from the install that strategy starts (session-executors.md §5); absent ⇒ an older daemon.
+  strategies: RuntimeStrategyEntries.optional(),
   // Discovered model × config capability matrix (last-good; survives probe
   // failures — advertisement (`models`) empties on failure, capability
   // knowledge does not). Absent = this daemon has no catalog for the runtime.

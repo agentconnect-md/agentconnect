@@ -32,6 +32,8 @@ export async function seedDaemon(
       acp: boolean
       features: string[]
       sandboxUnavailable?: string
+      strategies?: Record<string, { available: true } | { available: false; reason: string }>
+      sandboxBackend?: string
     }
     visibility?: 'org' | 'restricted'
     sharedWith?: string[]

@@ -70,6 +70,7 @@ const AGENT: AgentRecord = {
   allowedTargetAgentIds: [],
   introduceOnJoin: false,
   runInSandbox: false,
+  execution: 'host',
   lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
   lastModifiedBy: null,
   configRevision: 0n
@@ -160,6 +161,18 @@ describe('AgentSpecAssembler', () => {
     expect(reads).toBe(1)
     expect(specs.project(AGENT, pinned, []).secrets).toEqual({ LIVE: 'now' })
     expect(reads).toBe(1) // project() added none
+  })
+
+  it('ships the execution strategy beside runInSandbox, and nothing while it is not yet migrated', () => {
+    const specs = new AgentSpecAssembler(storeWith({}))
+    const sandboxed = { ...AGENT, runInSandbox: true }
+    expect(specs.project({ ...sandboxed, execution: 'microsandbox' }, {}, [])).toMatchObject({
+      runInSandbox: true,
+      execution: 'microsandbox'
+    })
+    const pending = specs.project({ ...sandboxed, execution: null }, {}, [])
+    expect(pending.runInSandbox).toBe(true)
+    expect('execution' in pending).toBe(false)
   })
 
   it('redacts legacy URL secrets before projecting an anonymous workspace onto the daemon wire', () => {

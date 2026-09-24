@@ -48,7 +48,8 @@ import type {
   ExternalScopeRecord,
   SessionExternalAccessPolicyRecord,
   ExternalAccessPolicyState,
-  ExecutorObservation
+  ExecutorObservation,
+  ExecutorHint
 } from '../ports.js'
 import { AgentId, BotId, DaemonId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../../domain/sessionKey.js'
@@ -1356,13 +1357,16 @@ export class PgSessionRepo implements SessionRepo {
     return row ? SessionId(row.id) : null
   }
 
-  async executorForKey(agentId: AgentId, key: SessionKey): Promise<DaemonId | null> {
+  async executorForKey(agentId: AgentId, key: SessionKey): Promise<ExecutorHint | null> {
     // An observation is at least as fresh as the prepare that ran the session, so it answers whenever there is one, null included.
     const hint = await this.db.sessionExecutorHint.findUnique({
       where: { agentId_sessionKey: { agentId, sessionKey: sessionKeyStr(key) } },
-      select: { executorDaemonId: true }
+      select: { executorDaemonId: true, strategy: true }
     })
-    if (hint) return hint.executorDaemonId ? DaemonId(hint.executorDaemonId) : null
+    if (hint)
+      return hint.executorDaemonId
+        ? { executorDaemonId: DaemonId(hint.executorDaemonId), strategy: hint.strategy }
+        : null
     // Keys last seen before observations were kept: newest row wins, the same tie-break as every session listing.
     const row = await this.db.sessionMeta.findFirst({
       where: {
@@ -1375,7 +1379,7 @@ export class PgSessionRepo implements SessionRepo {
       orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
       select: { executorDaemonId: true }
     })
-    return row?.executorDaemonId ? DaemonId(row.executorDaemonId) : null
+    return row?.executorDaemonId ? { executorDaemonId: DaemonId(row.executorDaemonId), strategy: null } : null
   }
 
   async recordExecutorObservation(o: ExecutorObservation): Promise<void> {
@@ -1390,11 +1394,13 @@ export class PgSessionRepo implements SessionRepo {
       `)
       return
     }
+    // A session keeps its birth strategy wherever it moves, so an observation without one keeps the recorded one.
     await this.db.$executeRaw(Prisma.sql`
-      INSERT INTO "session_executor_hint" ("agentId", "sessionKey", "executorDaemonId", "observedAt")
-      VALUES (${o.agentId}::uuid, ${sessionKey}, ${o.executorDaemonId}::uuid, ${o.at})
+      INSERT INTO "session_executor_hint" ("agentId", "sessionKey", "executorDaemonId", "strategy", "observedAt")
+      VALUES (${o.agentId}::uuid, ${sessionKey}, ${o.executorDaemonId}::uuid, ${o.strategy ?? null}, ${o.at})
       ON CONFLICT ("agentId", "sessionKey") DO UPDATE
-        SET "executorDaemonId" = EXCLUDED."executorDaemonId", "observedAt" = EXCLUDED."observedAt"
+        SET "executorDaemonId" = EXCLUDED."executorDaemonId", "observedAt" = EXCLUDED."observedAt",
+          "strategy" = COALESCE(EXCLUDED."strategy", "session_executor_hint"."strategy")
         WHERE "session_executor_hint"."observedAt" ${newer} EXCLUDED."observedAt"
     `)
   }

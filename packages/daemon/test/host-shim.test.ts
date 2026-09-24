@@ -15,7 +15,7 @@ import {
   sweepStaleHostShims,
   type HostShim
 } from '../src/execution/host-shim.js'
-import { effectiveStrategies } from '../src/execution/strategies.js'
+import { effectiveStrategies, ownStrategies } from '../src/execution/strategies.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimSession } from '../src/shim/session.js'
 import { WAIT } from './wait-support.js'
@@ -315,5 +315,22 @@ describe('effective strategy table', () => {
       available: false,
       reason: 'microsandbox is not the configured sandbox backend'
     })
+  })
+})
+
+describe('the machine’s own strategy table', () => {
+  it('offers host and the configured backend, and says why the other one is not offered', () => {
+    expect(ownStrategies({ backend: 'srt', requireSandbox: false })).toEqual({
+      host: { available: true },
+      srt: { available: true },
+      microsandbox: { available: false, reason: 'microsandbox is not the configured sandbox backend' }
+    })
+  })
+
+  it('withdraws host when a sandbox is required, and carries the backend’s probe failure', () => {
+    const table = ownStrategies({ backend: 'microsandbox', requireSandbox: true, unavailable: 'no KVM' })
+    expect(table.host).toEqual({ available: false, reason: 'security.requireSandbox is set on this daemon' })
+    expect(table.microsandbox).toEqual({ available: false, reason: 'no KVM' })
+    expect(table.srt).toEqual({ available: false, reason: 'srt is not the configured sandbox backend' })
   })
 })

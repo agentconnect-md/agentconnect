@@ -17,7 +17,8 @@ import type {
   RuntimeModelCatalog,
   SecretsRequest,
   SecretsGrant,
-  ExecutorStrategyTable
+  ExecutorStrategyTable,
+  RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import type { AgentId, DaemonId, LeaseId, OrgId } from './domain/ids.js'
 import type { DaemonStatus, HealthState, AcpSupport, ResourceVisibility, ViewCtx } from './persistence/ports.js'
@@ -183,6 +184,10 @@ export interface DaemonCapabilities {
   sandboxUnavailable?: string
   /** Session-executor facts (session-executors.md §10); absent while the facet is off. */
   executor?: DaemonExecutorFacts
+  /** The machine's own effective strategy table (§5); absent for a daemon that predates it. */
+  strategies?: ExecutorStrategyTable
+  /** Its retiring `sandbox.backend`, which the one-time `execution` migration reads (§5). */
+  sandboxBackend?: string
 }
 
 /** What a sharing daemon offers, for the console. The endpoint is deliberately dropped here: it is topology, never configured or shown (§10). */
@@ -230,6 +235,8 @@ export interface DaemonRuntimeProfile {
    *  Drives the console's per-runtime login warning. */
   authRequired: boolean
   unavailableReason?: 'image-binary-missing' | 'host-binary-missing' | null
+  /** One entry per strategy the daemon offers (session-executors.md §5); null ⇒ an older daemon. */
+  strategies?: RuntimeStrategyEntries | null
   hostVersion?: string | null
   hostAvailable?: boolean | null
   credentialsConfigured?: boolean | null

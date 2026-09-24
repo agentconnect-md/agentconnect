@@ -1,7 +1,7 @@
 // Session executors (session-executors.md §6, §7): the registration facts, the three requests a holder sends, and the birth verdict.
 import { z } from 'zod'
 
-/** A strategy as `sandbox.backend` names it; a slug rather than an enum, so a later strategy needs no frame revision. */
+/** A strategy as `sandbox.backend` and the agent's `execution` name it; a slug rather than an enum, so a later strategy needs no frame revision. */
 export const ExecutorStrategyName = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/)
 export type ExecutorStrategyName = z.infer<typeof ExecutorStrategyName>
 
@@ -15,6 +15,22 @@ export type ExecutorStrategyAvailability = z.infer<typeof ExecutorStrategyAvaila
 /** The EFFECTIVE strategy table (§5): what the machine can run, never merely what it is configured to offer. */
 export const ExecutorStrategyTable = z.record(ExecutorStrategyName, ExecutorStrategyAvailability)
 export type ExecutorStrategyTable = z.infer<typeof ExecutorStrategyTable>
+
+/** The strategy an unsandboxed agent names: the direct child on the machine's own sessions, a host shim on an executor (§5). */
+export const HOST_STRATEGY = 'host'
+
+/** One runtime under one strategy (§5): whether that strategy's install can start it, and the models it advertises there. */
+export const RuntimeStrategyEntry = z.object({
+  available: z.boolean(),
+  unavailableReason: z.string().max(2000).optional(),
+  models: z.array(z.string()).optional(), // absent ⇒ not probed yet, which a model check treats as permissive
+  modelsSource: z.enum(['cached', 'probed']).optional()
+})
+export type RuntimeStrategyEntry = z.infer<typeof RuntimeStrategyEntry>
+
+/** A runtime's catalog per strategy the machine offers; `authRequired` stays on the runtime, since the sign-in is the machine's. */
+export const RuntimeStrategyEntries = z.record(ExecutorStrategyName, RuntimeStrategyEntry)
+export type RuntimeStrategyEntries = z.infer<typeof RuntimeStrategyEntries>
 
 /** Where a holder dials an executor's TLS-PSK listener. */
 export const ExecutorEndpoint = z.object({
@@ -55,7 +71,10 @@ export const ExecutorCandidate = z.object({
   endpoint: ExecutorEndpoint.optional(),
   capacity: z.number().int().min(0).optional(),
   hostedSessions: z.number().int().min(0).optional(), // latest heartbeat or relayed `liveCount`; absent before the first
-  runtimes: z.array(z.object({ runtime: z.string(), authRequired: z.boolean() })) // from the member's `facts/daemon-runtimes`
+  // From the member's `facts/daemon-runtimes`; `strategies` holds the entries of the strategies its table offers.
+  runtimes: z.array(
+    z.object({ runtime: z.string(), authRequired: z.boolean(), strategies: RuntimeStrategyEntries.optional() })
+  )
 })
 export type ExecutorCandidate = z.infer<typeof ExecutorCandidate>
 
@@ -63,7 +82,8 @@ export type ExecutorCandidate = z.infer<typeof ExecutorCandidate>
 export const ExecutorCandidatesResult = z.object({
   candidates: z.array(ExecutorCandidate),
   reason: ExecutorCandidatesEmptyReason.optional(),
-  currentExecutorDaemonId: z.string().uuid().optional() // a HINT from the CP's own session row, possibly stale and not necessarily a candidate
+  currentExecutorDaemonId: z.string().uuid().optional(), // a HINT from the CP's own session row, possibly stale and not necessarily a candidate
+  birthStrategy: ExecutorStrategyName.optional() // rides the hint when the CP saw the strategy a relayed prepare named; a resume names it, never the agent's current one
 })
 export type ExecutorCandidatesResult = z.infer<typeof ExecutorCandidatesResult>
 
@@ -87,11 +107,13 @@ export const ExecutorPrepareReq = z.object({
 })
 export type ExecutorPrepareReq = z.infer<typeof ExecutorPrepareReq>
 
-/** Why nothing was prepared. The first three are the executor's; the rest are the CP's, decided without relaying (`relay_failed`: the executor did not answer in time). */
+/** Why nothing was prepared. The first four are the executor's; the rest are the CP's, decided without relaying (`relay_failed`: the executor did not answer in time). */
 export const ExecutorPrepareRefusal = z.enum([
   'launch_retired',
   'draining',
   'strategy_unavailable',
+  // The environment exists under another strategy: it neither attaches nor rewrites the record (§5). A peer that predates it fails that one reply.
+  'strategy_mismatch',
   'not_holder',
   'not_on_group',
   'group_switch_off',

@@ -69,7 +69,8 @@ import {
   WorkspaceErrorReason,
   TaskErrorReason,
   gitRepoLabel,
-  isCodeHostHookKind
+  isCodeHostHookKind,
+  HOST_STRATEGY
 } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
@@ -91,6 +92,13 @@ import {
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, OrgId, SessionId } from '../../domain/ids.js'
 import { advertises } from '../../domain/daemon-features.js'
+import {
+  UNPLACED,
+  placementStrategies,
+  resolveExecution,
+  type DaemonStrategyReport,
+  type PlacementStrategies
+} from '../../domain/execution.js'
 import { codeHostProviders, codeHostsOf } from '../../codehost/registry.js'
 import {
   dutyEligibility,
@@ -279,6 +287,33 @@ function sandboxPolicyOf(daemon: DaemonView | null): SandboxPolicy {
   }
 }
 
+const EXECUTION_CONTRADICTION =
+  'runInSandbox contradicts execution: host runs unsandboxed, every other strategy is a sandbox'
+
+/** A request naming both must agree, since `runInSandbox` is derived from `execution`. */
+function contradictsExecution(body: { execution?: string; runInSandbox?: boolean }): boolean {
+  return (
+    body.execution !== undefined &&
+    body.runInSandbox !== undefined &&
+    body.runInSandbox !== (body.execution !== HOST_STRATEGY)
+  )
+}
+
+function badRequest(reply: FastifyReply, message: string) {
+  return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message })
+}
+
+/** What one daemon reports about where its own sessions run; its legacy policy speaks only when it reports no table. */
+function strategyReportOf(daemon: DaemonView): DaemonStrategyReport {
+  const { strategies, sandboxBackend } = daemon.capabilities
+  const { supported, required } = sandboxPolicyOf(daemon)
+  return {
+    ...(strategies ? { strategies } : {}),
+    ...(sandboxBackend ? { sandboxBackend } : {}),
+    legacy: { supported, required }
+  }
+}
+
 /** Version-skew gate for memory dreaming. A daemon that predates the feature
  *  omits it, and the CP must NOT forward `memory/dream/*` to it: that daemon
  *  silently ignores unknown frames, so the request would hang until it times
@@ -397,6 +432,7 @@ function toDto(
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
     runInSandbox: a.runInSandbox,
+    execution: a.execution,
     sandboxSupported: placementView.sandbox.supported,
     sandboxRequired: placementView.sandbox.required,
     sandboxUnavailable: placementView.sandbox.unavailable,
@@ -408,18 +444,21 @@ function toDto(
 interface PlacementView {
   daemonName: string | null
   sandbox: SandboxPolicy
+  /** What `execution` is checked against: the daemon's table, or every ready member's for a set. */
+  strategies: PlacementStrategies
   ready: boolean
   /** Set only for an org's own group: the pool shares its store, and a machine placement names its daemon. */
   holderDaemonId?: string | null
 }
 
-const NO_PLACEMENT: PlacementView = { daemonName: null, sandbox: NO_SANDBOX, ready: false }
+const NO_PLACEMENT: PlacementView = { daemonName: null, sandbox: NO_SANDBOX, strategies: UNPLACED, ready: false }
 
 function placementViewOf(deps: HttpDeps, daemon: DaemonView | null): PlacementView {
   const live = daemon ? deps.liveness.get(daemon.daemonId) : undefined
   return {
     daemonName: daemon?.name ?? null,
     sandbox: sandboxPolicyOf(daemon),
+    strategies: placementStrategies(daemon ? [strategyReportOf(daemon)] : []),
     ready: live?.reachable === true && live.state === 'READY'
   }
 }
@@ -484,7 +523,10 @@ async function placementViewFor(deps: HttpDeps, a: AgentRecord, setMembers?: Dae
     return placementViewOf(deps, await deps.registry.getAvailable(a.orgId, eligibility.daemonId))
   }
   const members = setMembers ?? (await readySetMembers(deps, OrgId(a.orgId), eligibility.setId))
-  const view = placementViewOf(deps, members[0] ?? null)
+  const view = {
+    ...placementViewOf(deps, members[0] ?? null),
+    strategies: placementStrategies(members.map(strategyReportOf))
+  }
   if (eligibility.setId === (await deps.repos.memberSet.crossOrgSetId())) return view
   return { ...view, holderDaemonId: await deps.placementResolver.routableDaemon(a) }
 }
@@ -1799,7 +1841,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Create an agent',
           description:
-            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon.',
+            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason. The legacy `runInSandbox` maps to `host` or the placement’s sandbox, and a request naming both must agree (400).',
           operationId: 'createAgent',
           body: CreateAgentBody,
           querystring: z.object({ connect: z.stringbool().default(false) }),
@@ -1840,18 +1882,12 @@ export function agentRoutes(deps: HttpDeps) {
         if (req.body.managedSkills?.length && placedDaemon && !organizationKnowledgeSupportedOn(placedDaemon)) {
           return conflict('managed skills require a daemon that supports organization knowledge')
         }
-        const sandboxPolicy = sandboxPolicyOf(placedDaemon)
-        if (sandboxPolicy.required && req.body.runInSandbox === false) {
-          return conflict('Run in sandbox is required by this daemon')
-        }
-        if (!sandboxPolicy.supported && req.body.runInSandbox === true) {
-          return conflict('Run in sandbox is unavailable on this daemon')
-        }
-        const runInSandbox = sandboxPolicy.required
-          ? true
-          : sandboxPolicy.supported
-            ? (req.body.runInSandbox ?? false)
-            : false
+        if (contradictsExecution(req.body)) return badRequest(reply, EXECUTION_CONTRADICTION)
+        const executionChoice = resolveExecution(
+          placementStrategies((wantsSet ? setMembers : placedDaemon ? [placedDaemon] : []).map(strategyReportOf)),
+          { execution: req.body.execution, runInSandbox: req.body.runInSandbox }
+        )
+        if ('refused' in executionChoice) return conflict(executionChoice.refused)
         // The one credential derivation (git-workspace-model.md §6) decides who
         // vouches for the address — the identity gate runs inside it. Ordered
         // AFTER the daemonId visibility gate (404 semantics); refusals answer
@@ -2012,7 +2048,8 @@ export function agentRoutes(deps: HttpDeps) {
                     : {}),
                   ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
                   ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
-                  runInSandbox,
+                  runInSandbox: executionChoice.runInSandbox,
+                  execution: executionChoice.execution,
                   ...(req.body.env !== undefined ? { env: req.body.env } : {}),
                   ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
                   ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
@@ -2451,7 +2488,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an agent',
           description:
-            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home.',
+            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home. A new `execution` (or the legacy `runInSandbox`) is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards.',
           operationId: 'updateAgent',
           params: IdParam,
           body: UpdateAgentBody,
@@ -2502,19 +2539,17 @@ export function agentRoutes(deps: HttpDeps) {
               .send({ error: 'Conflict', statusCode: 409, message: 'agent changed; refresh and retry the edit' })
           }
           const placementView = await placementViewFor(deps, existing)
-          if (placementView.sandbox.required && req.body.runInSandbox === false) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'Run in sandbox is required by this daemon'
-            })
-          }
-          if (!placementView.sandbox.supported && req.body.runInSandbox === true) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'Run in sandbox is unavailable on this daemon'
-            })
+          if (contradictsExecution(req.body)) return badRequest(reply, EXECUTION_CONTRADICTION)
+          const asksExecution = req.body.execution !== undefined || req.body.runInSandbox !== undefined
+          const executionChoice = asksExecution
+            ? resolveExecution(
+                placementView.strategies,
+                { execution: req.body.execution, runInSandbox: req.body.runInSandbox },
+                existing.execution
+              )
+            : undefined
+          if (executionChoice && 'refused' in executionChoice) {
+            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: executionChoice.refused })
           }
           if (req.body.agentDir !== undefined && existing.workspace.mode !== 'git') {
             return reply.code(409).send({
@@ -2622,7 +2657,14 @@ export function agentRoutes(deps: HttpDeps) {
           // that transaction (the skillSources opts), so the row can't commit
           // inside a concurrent registry-delete's check→drop window.
           // `force` and the submitted binding are consumed above; the row gets the resolved binding.
-          const { secrets: secretsPatch, force: _force, memory: _memory, ...bodyPatch } = req.body
+          const {
+            secrets: secretsPatch,
+            force: _force,
+            memory: _memory,
+            execution: _execution,
+            runInSandbox: _runInSandbox,
+            ...bodyPatch
+          } = req.body
           const skillsFence = skillSourceFenceFor(orgOf(req), ctxOf(req), req.body.skills)
           let agent: AgentRecord
           try {
@@ -2636,6 +2678,7 @@ export function agentRoutes(deps: HttpDeps) {
                   AgentId(req.params.id),
                   {
                     ...bodyPatch,
+                    ...(executionChoice ?? {}),
                     ...(memoryChange.kind === 'write' ? { memory: memoryChange.memory } : {}),
                     ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
                   },

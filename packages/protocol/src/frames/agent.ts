@@ -4,6 +4,7 @@ import { CodeHostProviderString } from '../code-host.js'
 import { AgentMemoryBinding } from './memory-connection.js'
 import { IntegrationSpec } from './integration.js'
 import { CronUpsert } from './cron.js'
+import { ExecutorStrategyName } from './executor.js'
 import { normalizeGitHubSkillSource } from '../git-url.js'
 
 /**
@@ -453,6 +454,8 @@ export const AgentSpec = z.object({
   // prevents daemon startup when no mechanism exists. Optional means leave the
   // on-disk agent.json value alone; a brand-new agent defaults to false.
   runInSandbox: z.boolean().optional(),
+  // The strategy this agent's sessions run in (session-executors.md §5), kept beside `runInSandbox`; absent ⇒ not yet migrated, and the daemon reads the boolean.
+  execution: ExecutorStrategyName.optional(),
   // True when this agent is an org built-in preset (preset-agents.md §3.1): a
   // `preset_agent` row references it. Replicated so the daemon can gate preset-only
   // behavior locally, including attaching `agentconnect-admin` only when the CP

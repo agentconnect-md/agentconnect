@@ -161,6 +161,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(unsupported.statusCode).toBe(201)
     expect(unsupported.json()).toMatchObject({
       runInSandbox: false,
+      execution: 'host',
       sandboxSupported: false,
       sandboxRequired: false
     })
@@ -184,7 +185,8 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: { runInSandbox: true }
     })
     expect(enable.statusCode).toBe(200)
-    expect(enable.json()).toMatchObject({ runInSandbox: true })
+    // A daemon that reports no backend leaves the strategy for its next registration to name.
+    expect(enable.json()).toMatchObject({ runInSandbox: true, execution: null })
 
     const required = await app.app.inject({
       method: 'POST',
@@ -195,6 +197,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const requiredBody = required.json() as { id: string }
     expect(required.json()).toMatchObject({
       runInSandbox: true,
+      execution: null,
       sandboxSupported: true,
       sandboxRequired: true
     })
@@ -205,7 +208,69 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: { runInSandbox: false }
     })
     expect(disable.statusCode).toBe(409)
-    expect(disable.json()).toMatchObject({ message: 'Run in sandbox is required by this daemon' })
+    expect(disable.json()).toMatchObject({
+      message: 'execution strategy "host" is unavailable where this agent is placed: its daemon requires a sandbox'
+    })
+
+    const refused = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'no-sandbox-here', runtime: 'claude', daemonId: unsupportedId, runInSandbox: true }
+    })
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ message: 'no sandbox is available where this agent is placed' })
+  })
+
+  it('checks execution against the strategy table the placed daemon reports, and keeps runInSandbox in step', async () => {
+    const app = build()
+    const daemonId = randomUUID()
+    await seedDaemon(prisma, daemonId, {
+      capabilities: {
+        platforms: [],
+        runtimes: ['claude'],
+        acp: true,
+        features: ['sandbox'],
+        strategies: {
+          host: { available: true },
+          srt: { available: true },
+          microsandbox: { available: false, reason: 'microsandbox is not the configured sandbox backend' }
+        },
+        sandboxBackend: 'srt'
+      }
+    })
+    const create = (payload: Record<string, unknown>) =>
+      app.app.inject({ method: 'POST', url: `${ORG}/agents`, payload: { runtime: 'claude', daemonId, ...payload } })
+
+    const vm = await create({ name: 'vm-agent', execution: 'microsandbox' })
+    expect(vm.statusCode).toBe(409)
+    expect(vm.json()).toMatchObject({
+      message:
+        'execution strategy "microsandbox" is unavailable where this agent is placed: microsandbox is not the configured sandbox backend'
+    })
+    const unknown = await create({ name: 'docker-agent', execution: 'docker' })
+    expect(unknown.statusCode).toBe(409)
+    expect(unknown.json()).toMatchObject({
+      message: 'execution strategy "docker" is not offered where this agent is placed'
+    })
+
+    // The legacy boolean names the daemon's backend.
+    const legacy = await create({ name: 'legacy-agent', runInSandbox: true })
+    expect(legacy.statusCode).toBe(201)
+    expect(legacy.json()).toMatchObject({ runInSandbox: true, execution: 'srt' })
+
+    const id = (legacy.json() as { id: string }).id
+    const patch = (payload: Record<string, unknown>) =>
+      app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${id}`, payload })
+    const host = await patch({ execution: 'host' })
+    expect(host.statusCode).toBe(200)
+    expect(host.json()).toMatchObject({ runInSandbox: false, execution: 'host' })
+    const contradiction = await patch({ execution: 'srt', runInSandbox: false })
+    expect(contradiction.statusCode).toBe(400)
+    // An edit that names neither leaves the strategy alone.
+    const rename = await patch({ displayName: 'Legacy Agent' })
+    expect(rename.json()).toMatchObject({ runInSandbox: false, execution: 'host' })
+    const row = await prisma.agent.findUniqueOrThrow({ where: { id }, select: { execution: true, runInSandbox: true } })
+    expect(row).toEqual({ execution: 'host', runInSandbox: false })
   })
 
   it('keeps Run in sandbox on a daemon whose sandbox is down, and reports why', async () => {
@@ -231,6 +296,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(created.statusCode).toBe(201)
     expect(created.json()).toMatchObject({
       runInSandbox: true,
+      execution: null,
       sandboxSupported: true,
       sandboxRequired: false,
       sandboxUnavailable: reason

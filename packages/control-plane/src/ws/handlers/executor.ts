@@ -11,7 +11,9 @@ import {
   type ExecutorPrepareRefusal,
   type ExecutorPrepareReq,
   type ExecutorReleaseRefusal,
-  type ExecutorReleaseReq
+  type ExecutorReleaseReq,
+  type ExecutorStrategyTable,
+  type RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
 import { ProtocolError } from '../../domain/errors.js'
@@ -46,6 +48,15 @@ function sharingFacts(state: DaemonConnState | undefined): ExecutorFacts | undef
   return capabilities.executor?.enabled ? capabilities.executor : undefined
 }
 
+/** A runtime's per-strategy entries narrowed to what the candidate's table offers (§5); absent when the member reports none. */
+function offeredEntries(
+  entries: RuntimeStrategyEntries | null | undefined,
+  table: ExecutorStrategyTable | undefined
+): RuntimeStrategyEntries | undefined {
+  if (!entries) return undefined
+  return Object.fromEntries(Object.entries(entries).filter(([strategy]) => table?.[strategy]?.available === true))
+}
+
 export const handleExecutorCandidates: Handler = async (frame, conn, deps) => {
   if (!isFrame('executor/candidates')(frame)) return
   const reply = (result: ExecutorCandidatesResult): void => conn.replyTo(frame, 'executor/candidates/result', result)
@@ -59,7 +70,7 @@ export const handleExecutorCandidates: Handler = async (frame, conn, deps) => {
   if ('refused' in gate) return reply({ candidates: [], reason: gate.refused })
   if (!gate.spreads) return reply({ candidates: [], reason: 'group_switch_off' })
 
-  // A HINT for a successor holder: where this session last ran, as fresh as the last ready prepare (§7). Stale is harmless — a prepare there attaches or creates.
+  // A HINT for a successor holder: where this session last ran and the strategy it was born with, as fresh as the last ready prepare (§7). Stale is harmless.
   const asked = frame.payload.sessionKey
   const current = asked ? await deps.session.executorForKey(agentId, parseSessionKey(asked)) : null
 
@@ -77,13 +88,17 @@ export const handleExecutorCandidates: Handler = async (frame, conn, deps) => {
       ...(facts.endpoint ? { endpoint: facts.endpoint } : {}),
       ...(facts.capacity !== undefined ? { capacity: facts.capacity } : {}),
       ...(member.hostedSessions !== null ? { hostedSessions: member.hostedSessions } : {}),
-      runtimes: member.runtimeProfiles.map((p) => ({ runtime: p.runtime, authRequired: p.authRequired }))
+      runtimes: member.runtimeProfiles.map((p) => {
+        const strategies = offeredEntries(p.strategies, facts.strategies)
+        return { runtime: p.runtime, authRequired: p.authRequired, ...(strategies ? { strategies } : {}) }
+      })
     })
   }
   reply({
     candidates,
     ...(candidates.length === 0 ? { reason: 'no_member_shares' as const } : {}),
-    ...(current ? { currentExecutorDaemonId: current } : {})
+    ...(current ? { currentExecutorDaemonId: current.executorDaemonId } : {}),
+    ...(current?.strategy ? { birthStrategy: current.strategy } : {})
   })
 }
 
@@ -155,6 +170,7 @@ async function recordPrepared(deps: DaemonWsDeps, holderId: string, req: Executo
       agentId: AgentId(req.agentId),
       key: parseSessionKey(req.sessionKey),
       executorDaemonId: DaemonId(req.executorDaemonId),
+      strategy: req.strategy,
       at,
       source: 'prepare'
     })

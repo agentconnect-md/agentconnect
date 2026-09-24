@@ -26,6 +26,28 @@ export function effectiveStrategies(input: {
   }
 }
 
+/** The machine's own table (§5) under the single `sandbox.backend` it still reads: `host` is the direct child on every platform unless a sandbox is required, and the backend only when its probe passed. */
+export function ownStrategies(input: {
+  backend: 'srt' | 'microsandbox'
+  requireSandbox: boolean
+  /** Why the configured backend cannot run a session; absent when its probe passed. */
+  unavailable?: string
+}): Record<'host' | 'srt' | 'microsandbox', StrategyAvailability> {
+  const entry = (strategy: 'srt' | 'microsandbox'): StrategyAvailability =>
+    input.backend !== strategy
+      ? { available: false, reason: `${strategy} is not the configured sandbox backend` }
+      : input.unavailable
+        ? { available: false, reason: input.unavailable }
+        : { available: true }
+  return {
+    host: input.requireSandbox
+      ? { available: false, reason: 'security.requireSandbox is set on this daemon' }
+      : { available: true },
+    srt: entry('srt'),
+    microsandbox: entry('microsandbox')
+  }
+}
+
 /** One session's environment on this machine, as the strategy that started it hands it over. */
 export interface SessionEnvironment {
   /** Opens the shim; the facet's pipe hands an admitted dial to it and parses nothing (§6). */
