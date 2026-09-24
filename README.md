@@ -22,7 +22,7 @@
   <a href="https://about.gitea.com"><img src="https://cdn.simpleicons.org/gitea" width="16" height="16" alt="Gitea" title="Gitea" /></a>&nbsp;&nbsp;
   <a href="https://linear.app"><img src="https://cdn.simpleicons.org/linear" width="16" height="16" alt="Linear" title="Linear" /></a>&nbsp;&nbsp;
   <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
+  <br />
   <strong>WITH</strong>&nbsp;&nbsp;
   <a href="https://claude.com"><img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude" title="Claude" /></a>&nbsp;&nbsp;
   <a href="https://openai.com"><img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="OpenAI" title="OpenAI" /></a>&nbsp;&nbsp;
@@ -30,7 +30,13 @@
   <a href="https://www.deepseek.com"><img src="https://cdn.simpleicons.org/deepseek" width="16" height="16" alt="DeepSeek" title="DeepSeek" /></a>&nbsp;&nbsp;
   <a href="https://opencode.ai"><img src="https://cdn.simpleicons.org/opencode/000000/e6edf3" width="16" height="16" alt="OpenCode" title="OpenCode" /></a>&nbsp;&nbsp;
   <a href="https://pi.dev"><img src="https://cdn.simpleicons.org/pi/000000/e6edf3" width="16" height="16" alt="Pi" title="Pi" /></a>&nbsp;&nbsp;
-  <strong>ANY ACP AGENT</strong></sub>
+  <strong>ANY ACP AGENT</strong>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <strong>DECIDE WITH</strong>&nbsp;&nbsp;
+  <a href="https://docs.typesafe.ai/introduction"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/typesafe-dark.svg" />
+    <img src="packages/web/public/brands/typesafe.svg" width="16" height="16" alt="Jev" title="Jev (TypeSafe)" />
+  </picture></a></sub>
 </p>
 
 <p align="center">
