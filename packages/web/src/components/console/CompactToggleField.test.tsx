@@ -1,7 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { CompactToggleField } from './CompactToggleField'
-import { SandboxField } from './SandboxField'
 
 describe('CompactToggleField', () => {
   it('keeps its detail keyboard reachable and accessibly described', () => {
@@ -24,70 +23,5 @@ describe('CompactToggleField', () => {
     expect(html).toContain('w-[200px]')
     expect(html).toContain('Replies include agent and session links.</span>')
     expect(html).toContain('aria-label="Show footer: On"')
-  })
-
-  it('keeps unavailable sandbox details reachable beside a disabled switch', () => {
-    const html = renderToStaticMarkup(
-      <SandboxField checked={false} supported={false} required={false} onChange={() => undefined} />
-    )
-
-    const helpButton = html.match(/<button[^>]*aria-label="About Run in sandbox"[^>]*>/)?.[0] ?? ''
-    const descriptionId = helpButton.match(/aria-describedby="([^"]+)"/)?.[1]
-
-    expect(helpButton).not.toBe('')
-    expect(helpButton).not.toContain('disabled')
-    expect(descriptionId).toBeTruthy()
-    expect(html).toContain(`id="${descriptionId}" role="tooltip"`)
-    expect(html).toContain('group-focus-within:visible')
-    expect(html).toContain('Sandboxing is not available for the current selection')
-    expect(html).toContain('aria-label="Run in sandbox: Unavailable" disabled=""')
-  })
-
-  it('says nothing about the OS sandbox on a cluster placement', () => {
-    // A cluster runtime is isolated by its own pod, so the in-process SRT mechanism is off
-    // there and the member advertises neither capability. Rendered literally the field said
-    // "Unavailable" about the placement whose isolation is strongest.
-    const html = renderToStaticMarkup(
-      <SandboxField checked={false} supported={false} required={false} clusterPlacement onChange={() => undefined} />
-    )
-
-    expect(html).toBe('')
-  })
-
-  it('still explains an unconfined MACHINE — there "Unavailable" is true and worth reading', () => {
-    const html = renderToStaticMarkup(
-      <SandboxField checked={false} supported={false} required={false} onChange={() => undefined} />
-    )
-
-    expect(html).toContain('Run in sandbox')
-  })
-
-  it('tells a BROKEN sandbox apart from a missing one, and keeps the setting editable', () => {
-    // The machine has a sandbox it cannot provide, so "uses its normal environment" would say the opposite of what happens.
-    const html = renderToStaticMarkup(
-      <SandboxField
-        checked
-        supported
-        required={false}
-        unavailable="microsandbox requires KVM, but this daemon cannot open /dev/kvm"
-        onChange={() => undefined}
-      />
-    )
-
-    expect(html).toContain('aria-label="Run in sandbox: Unavailable"')
-    expect(html).toContain('sessions that need one are refused rather than run unconfined')
-    expect(html).toContain('cannot open /dev/kvm')
-    expect(html).not.toContain('uses its normal environment')
-    // Supported, so the operator can still turn the setting off deliberately.
-    expect(html).not.toContain('aria-label="Run in sandbox: Unavailable" disabled=""')
-  })
-
-  it('keeps saying "Unavailable" plainly when the machine has no sandbox at all', () => {
-    const html = renderToStaticMarkup(
-      <SandboxField checked={false} supported={false} required={false} onChange={() => undefined} />
-    )
-
-    expect(html).toContain('Sandboxing is not available for the current selection')
-    expect(html).not.toContain('refused rather than run unconfined')
   })
 })

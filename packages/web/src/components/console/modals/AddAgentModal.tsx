@@ -31,6 +31,16 @@ import {
   supportsModes
 } from '@/lib/data'
 import { sessionIsolationLabel } from '@/lib/session-isolation'
+import {
+  daemonStrategies,
+  defaultStrategy,
+  executionAsk,
+  groupStrategies,
+  isSandboxStrategy,
+  strategyOptions,
+  strategyUsesImage,
+  type PlacementStrategies
+} from '@/lib/execution-strategy'
 import { addAgentDaemonChoice } from './add-agent-daemon-choice'
 import { addAgentDraftSeed } from './add-agent-draft'
 import type { AgentSetupDraft } from '@agentconnect.md/protocol/mcp-app'
@@ -59,7 +69,7 @@ import { VisibilityField, type SharingValue } from '@/components/console/Visibil
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { OutputModeField } from '@/components/console/OutputModeField'
 import { RuntimeChatField } from '@/components/console/RuntimeChatField'
-import { SandboxField } from '@/components/console/SandboxField'
+import { ExecutionStrategyField } from '@/components/console/ExecutionStrategyField'
 import {
   EnvSecretsFields,
   envRecordFromRows,
@@ -173,7 +183,8 @@ export default function AddAgentModal({
   const [allowRuntimeChangesInChat, setAllowRuntimeChangesInChat] = useState(false)
   const [description, setDescription] = useState(seed.description)
   const [daemonId, setDaemonId] = useState(seed.daemonValue)
-  const [runInSandbox, setRunInSandbox] = useState(false)
+  // '' until the user picks one, so the placement's default applies.
+  const [execution, setExecution] = useState('')
   const [wsMode, setWsMode] = useState<WsMode>(seed.wsMode)
   const [repo, setRepo] = useState(seed.repo)
   const [branch, setBranch] = useState(seed.branch)
@@ -355,16 +366,33 @@ export default function AddAgentModal({
       title: candidate.status === 'online' ? t('daemonSelect.localOnline') : t('daemonSelect.localOffline')
     }))
   ]
-  const sandboxRequired = daemon?.caps.features.includes('sandbox-required') ?? false
-  const sandboxSupported = sandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
-  const sandboxUnavailable = daemon?.caps.sandboxUnavailable ?? null
-  const effectiveRunInSandbox = sandboxRequired || (sandboxSupported && runInSandbox)
-  // The pool advertises no `sandbox` capability, so its pod — not the triple above — is what encloses a session there.
+  // A group offers what one serving member offers, as the Control Plane checks it; the pool's boundary is its pod.
+  const selectedGroup = placement?.kind === 'set' ? memberSets.find((g) => g.setId === placement.setId) : undefined
+  const placementStrategies: PlacementStrategies =
+    placement?.kind === 'pool'
+      ? { kind: 'pool' }
+      : selectedGroup
+        ? groupStrategies(
+            placementDaemons
+              .filter((d) => d.status === 'online' && selectedGroup.memberDaemonIds.includes(d.daemonId))
+              .map((d) => d.caps)
+          )
+        : daemonStrategies(daemon?.caps)
+  const executionOptions = strategyOptions(placementStrategies)
+  // An explicit pick survives a placement change only where it can still run.
+  const effectiveExecution =
+    executionOptions.find((option) => option.value === execution && option.available)?.value ??
+    defaultStrategy(executionOptions) ??
+    ''
+  const effectiveRunInSandbox = placementStrategies.kind !== 'pool' && isSandboxStrategy(effectiveExecution)
+  // Only a strategy that starts the image's install reads its image-binary warning.
+  const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(effectiveExecution)
+  // The pool's pod, not the strategy, is what encloses a session there.
   const isolationLabel = sessionIsolationLabel({
     pool: placement?.kind === 'pool',
-    runInSandbox,
-    sandboxSupported,
-    sandboxRequired
+    runInSandbox: effectiveRunInSandbox,
+    sandboxSupported: true,
+    sandboxRequired: false
   })
   const isolationMode = isolationLabel.mode === 'Session isolation' ? t('sessionIsolation') : t('worktree')
   // A selected daemon's reported profiles are authoritative, including an empty list.
@@ -372,7 +400,7 @@ export default function AddAgentModal({
   // Runtimes the daemon reports as logged out. Marked in the picker, never blocked —
   // creating on one is a supported state (docs/designs/preset-agents.md §3.2).
   const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
-  const runtimesMissingImageBinary = effectiveRunInSandbox ? imageBinaryMissingRuntimeIds(daemon) : []
+  const runtimesMissingImageBinary = readsImage ? imageBinaryMissingRuntimeIds(daemon) : []
   // …but the DEFAULT prefers a signed-in one, mirroring how auto-placement picks a
   // preset's runtime. Falls through to the first reported id when all are logged out.
   const defaultRuntime =
@@ -411,12 +439,6 @@ export default function AddAgentModal({
   // currentValue), else the first offered mode. No "(unavailable)" here: unlike
   // Edit, nothing in this modal is stored yet.
   const selectedPermissionMode = resolvedPermissionMode(permissionMode, permissionChoices, modelCatalog)
-
-  // A daemon selection defines the product default: optional means off; required
-  // means on and immutable. Capability refreshes converge the same way.
-  useEffect(() => {
-    setRunInSandbox(sandboxRequired)
-  }, [effectiveDaemonId, sandboxRequired])
 
   // Probe on open: App enabled on this deployment? Any installations? Refetch on
   // window focus too — "Install GitHub app" finishes in another tab, and coming
@@ -848,7 +870,7 @@ export default function AddAgentModal({
           : memoryProvider !== 'managed'
             ? { memory: { provider: memoryProvider as 'native' | 'none' } }
             : {}),
-        runInSandbox: effectiveRunInSandbox,
+        ...(effectiveExecution ? executionAsk(placementStrategies, effectiveExecution) : {}),
         ...(Object.keys(envRecord).length ? { env: envRecord } : {}),
         ...(Object.keys(secretsRecord).length ? { secrets: secretsRecord } : {}),
         permissionMode: selectedPermissionMode,
@@ -1029,7 +1051,7 @@ export default function AddAgentModal({
               }}
               source={daemon}
               runtimes={runtimeIds}
-              runInSandbox={effectiveRunInSandbox}
+              runInSandbox={readsImage}
               onFallbackChange={(target) => {
                 if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
                 setRuntime(target.runtime)
@@ -1049,14 +1071,9 @@ export default function AddAgentModal({
             />
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
               <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
-              <SandboxField
-                checked={effectiveRunInSandbox}
-                supported={sandboxSupported}
-                required={sandboxRequired}
-                unavailable={sandboxUnavailable}
-                clusterPlacement={placement?.kind === 'pool'}
-                onChange={setRunInSandbox}
-              />
+              {placementStrategies.kind !== 'pool' && (
+                <ExecutionStrategyField options={executionOptions} value={effectiveExecution} onChange={setExecution} />
+              )}
               <OutputModeField
                 className="desktop:col-span-2"
                 value={outputMode}

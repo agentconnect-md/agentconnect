@@ -41,13 +41,16 @@ export function DaemonSelect({
   options,
   onChange,
   ariaLabel,
-  placeholder
+  placeholder,
+  disabled = false
 }: {
   value: string
   options: readonly DaemonSelectOption[]
   onChange: (value: string) => void
   ariaLabel?: string
   placeholder?: string
+  /** Shows the current value but refuses to open, as when another pending change must be saved first. */
+  disabled?: boolean
 }) {
   const t = useTranslations('Agents.dialog.daemonSelect')
   const effectiveAriaLabel = ariaLabel ?? t('runsOn')
@@ -128,16 +131,18 @@ export function DaemonSelect({
       <button
         ref={triggerRef}
         type="button"
-        className={`inp relative w-full cursor-pointer text-left outline-none transition-[background-color,border-color,box-shadow] ${
+        className={`inp relative w-full text-left outline-none transition-[background-color,border-color,box-shadow] ${
           open
-            ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
-            : 'hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
+            ? 'cursor-pointer border-(--border-focus) ring-[3px] ring-(--brand-ring)'
+            : disabled
+              ? 'cursor-default opacity-60'
+              : 'cursor-pointer hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
         }`}
         aria-label={effectiveAriaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
-        disabled={options.length === 0}
+        disabled={disabled || options.length === 0}
         onClick={() => {
           setActiveIndex(initialActiveIndex())
           setOpen((current) => !current)

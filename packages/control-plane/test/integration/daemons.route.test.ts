@@ -130,6 +130,7 @@ type DaemonDto = {
       strategies?: Record<string, { available: true } | { available: false; reason: string }>
       capacity?: number
     }
+    strategies?: Record<string, { available: true } | { available: false; reason: string }>
   }
   runtimeProfiles: {
     runtime: string
@@ -567,6 +568,39 @@ describe('GET /daemons — live-status overlay', () => {
     // console reads a capacity from the executor facts rather than inventing one here.
     expect(fleet.find((r) => r.daemonId === DAEMON)!.hostedSessions).toBeNull()
     expect((await listCapabilities()).find((r) => r.daemonId === DAEMON)!.capabilities.executor).toBeUndefined()
+  })
+
+  // session-executors.md §5: the agent's strategy picker offers what this machine's own sessions can run in.
+  it('carries the daemon’s own strategy table, and not the backend only the migration reads', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    await repo.upsertOnAuth({ daemonId: DaemonId(DAEMON), orgId: OrgId(DEFAULT_ORG_ID), agentVersion: '0.4.2' })
+    const strategies = {
+      host: { available: true as const },
+      srt: { available: false as const, reason: 'no bwrap on this host' }
+    }
+    await repo.applyRegister(
+      DaemonId(DAEMON),
+      {
+        host: 'edge-1',
+        capabilities: {
+          platforms: [],
+          runtimes: ['claude'],
+          acp: true,
+          features: [],
+          strategies,
+          sandboxBackend: 'srt'
+        },
+        maxAgents: 3
+      },
+      new Date()
+    )
+    running = buildHttpApp(prisma)
+
+    const caps = (await listCapabilities()).find((r) => r.daemonId === DAEMON)!
+    expect(caps.capabilities.strategies).toEqual(strategies)
+    expect(caps.capabilities).not.toHaveProperty('sandboxBackend')
+    const one = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })).json() as DaemonDto
+    expect(one.capabilities.strategies).toEqual(strategies)
   })
 })
 

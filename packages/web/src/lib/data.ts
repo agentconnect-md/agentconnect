@@ -637,11 +637,15 @@ export interface Agent {
   allowedTargetAgentIds: string[]
   /** #536: when true, the agent introduces itself to peers on a genuine channel join. */
   introduceOnJoin: boolean
-  /** #642: persisted per-agent Run in sandbox preference. */
+  /** #642: kept in step with `execution` — false only for `host`. */
   runInSandbox: boolean
-  /** #642: whether the placed daemon can provide the sandbox (else the toggle is disabled). */
+  /** The strategy sessions run in (session-executors.md §5); null ⇒ sandboxed where the backend is not yet reported. */
+  execution?: string | null
+  /** What the placement offers `execution`; null ⇒ it reports no table and the sandbox fields below apply. */
+  strategies?: StrategyTable | null
+  /** #642: whether the placed daemon can provide a sandbox; read only where `strategies` is null. */
   sandboxSupported: boolean
-  /** #642: whether daemon policy forces the effective value on and locks the toggle. */
+  /** #642: whether daemon policy requires a sandbox; read only where `strategies` is null. */
   sandboxRequired: boolean
   /** Why the placed daemon cannot provide the sandbox it HAS; supported stays true, since it refuses the session rather than running it unconfined. */
   sandboxUnavailable?: string | null
@@ -2266,13 +2270,17 @@ export interface DaemonCaps {
   sandboxUnavailable?: string
   /** What this daemon offers the group's sessions (session-executors.md §10); absent while its executor facet is off. */
   executor?: DaemonExecutor
+  /** Where this daemon's own sessions can run (§5); absent for a daemon that predates the table. */
+  strategies?: StrategyTable
 }
+
+/** An effective strategy table, keyed by strategy slug, with the reason a strategy cannot run here. */
+export type StrategyTable = Record<string, { available: true } | { available: false; reason: string }>
 
 /** A sharing daemon's effective strategy table and session ceiling. No address: an executor's is topology, never configured or shown. */
 export interface DaemonExecutor {
   enabled: boolean
-  /** Keyed by strategy — the `sandbox.backend` name — with the reason a strategy cannot run here. */
-  strategies?: Record<string, { available: true } | { available: false; reason: string }>
+  strategies?: StrategyTable
   capacity?: number
 }
 

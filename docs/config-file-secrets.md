@@ -92,10 +92,11 @@ cluster's audit log attributes each action to the agent's own identity.
 - If the pointer var (`KUBECONFIG` / `DOCKER_CONFIG`) is also set explicitly on
   the agent, the explicit value wins: the secret is left as a plain env var and
   the daemon posts a warning into the session.
-- Sandboxed agents (**Run in sandbox**) can read the files: they live under the
-  agent's directory, which stays readable (and non-writable) inside the
-  sandbox. This is also why the daemon avoids the system temp dir — the Linux
-  sandbox mounts a fresh tmpfs over it, which would hide the files.
+- Sandboxed agents (any **Execution strategy** but `host`) can read the files:
+  they live under the agent's directory, which stays readable (and
+  non-writable) inside the sandbox. This is also why the daemon avoids the
+  system temp dir — the Linux sandbox mounts a fresh tmpfs over it, which would
+  hide the files.
 - Transcript masking extends into structured secret values (a docker `auth`,
   kubeconfig tokens and client key/cert data, whole-file echoes): values the
   agent emits render as `[secret:NAME]`.

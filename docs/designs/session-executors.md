@@ -321,11 +321,13 @@ slug. The user picks what sessions actually run in, instead of a boolean whose m
 depended on the machine. The console offers the strategies available where the agent
 is placed — a daemon's table, or for a group those at least one serving member offers —
 each labeled with its boundary (none, process, VM, container), and shows an
-unavailable one disabled with its probe's reason. A `shared` session runs on its
-holder, so for it the holder's table decides. A pool agent's boundary is its pod, and
-the pool shows no picker. The Control Plane validates `execution` against the same
-tables, which replaces today's two conflicts ("required by this daemon", "unavailable
-on this daemon").
+unavailable one disabled with its probe's reason. It reads each machine's own table
+from the daemon read model and, for the agent's saved placement, the table the agent
+carries; a daemon that predates the table keeps a "Sandbox" choice sent as the legacy
+boolean. A `shared` session runs on its holder, so for it the holder's table decides.
+A pool agent's boundary is its pod, and the pool shows no picker. The Control Plane
+validates `execution` against the same tables, which replaces today's two conflicts
+("required by this daemon", "unavailable on this daemon").
 
 Existing agents migrate once: `runInSandbox: false` becomes `host`; `true` becomes
 the backend the agent's daemon last reported at registration, `srt` unless it runs
@@ -1347,7 +1349,7 @@ commits, including claim, sleep and orphan machinery this design does not need.
 About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
-**The 2026-09-24 revision** adds the following. S1, S2a, S2c, M1, M2 and M3 have
+**The 2026-09-24 revision** adds the following. S1, S2a, S2c, S3, M1, M2 and M3 have
 landed and the rest have not started. Each lands alone; S1–S3 are one feature, S2
 lands in three parts, and M1–M4 precede R1.
 
