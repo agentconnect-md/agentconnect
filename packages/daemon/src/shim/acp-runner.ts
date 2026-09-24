@@ -10,7 +10,7 @@ import {
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { seedDshPreset } from './dsh-preset.js'
 import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
-import { SHIM_RUNTIME_MARK_ENV, type ShimEvent } from './protocol.js'
+import { SHIM_RUNTIME_MARK_ENV, SHIM_SEED_ENV, type ShimEvent } from './protocol.js'
 
 /** How the runner reports back: many events per opened stream, not one response. */
 export type EmitEvent = (event: ShimEvent['event']) => void
@@ -41,6 +41,19 @@ function podBaseEnv(podEnv: Record<string, string | undefined>): Record<string, 
     if (value) env[name] = value
   }
   return env
+}
+
+/** A hosted VM's seed (`SHIM_SEED_ENV`): its executor's placeholders and proxy trust, string entries only; unreadable ⇒ none. */
+function seedEnv(podEnv: Record<string, string | undefined>): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(podEnv[SHIM_SEED_ENV] ?? '{}')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+    )
+  } catch {
+    return {}
+  }
 }
 
 /** PATH with the image's gh wrapper first, or unchanged when this image ships none. */
@@ -196,7 +209,7 @@ export class AcpRunner {
     // the daemon. An allowlist rather than all of process.env: this env can carry provider
     // credentials from the SandboxTemplate, and those are forwarded deliberately by
     // sandboxProviderEnv, not in bulk.
-    const env = { ...podBaseEnv(this.deps.podEnv ?? {}), ...payload.env }
+    const env = { ...podBaseEnv(this.deps.podEnv ?? {}), ...seedEnv(this.deps.podEnv ?? {}), ...payload.env }
     // After the daemon's env, so an agent's `gh` reaches the image's per-repo wrapper even when a PATH travelled.
     const ghPath = ghWrapperPath(env.PATH)
     if (ghPath !== undefined) env.PATH = ghPath

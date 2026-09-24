@@ -3782,7 +3782,17 @@ export class Daemon {
       share: cfg.sandbox.share,
       strategies: () => this.executionStrategies(),
       // Both are offered; the effective table above is what decides which of them a `prepare` may ask for.
-      launchers: { host: hostLauncher(), microsandbox: microsandboxLauncher({ manager: () => this.microsandbox }) },
+      launchers: {
+        host: hostLauncher(),
+        // A VM seeds its own HOME from the same admitted runtimes, with their credentials behind placeholders (§8).
+        microsandbox: microsandboxLauncher({
+          manager: () => this.microsandbox,
+          runtimes: () => {
+            this.refreshAdmittedRuntimes()
+            return this.runtimes
+          }
+        })
+      },
       capacity: () => this.cfg.limits.maxConcurrentSessions,
       ownSessions: () => this.ownIsolatedSessionCount,
       draining: () => this.draining,

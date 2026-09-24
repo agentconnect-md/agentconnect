@@ -16,6 +16,7 @@ import {
   DEFAULT_SHIM_LISTEN_PORT,
   SHIM_COMPLETE_ENV_FLAG,
   SHIM_LISTEN_PORT_ENV,
+  SHIM_SEED_ENV,
   SHIM_WORKSPACE_ROOT_ENV
 } from '../shim/protocol.js'
 import { TunnelNameSchema, type TunnelName } from '../shim/tunnel.js'
@@ -201,8 +202,10 @@ export async function startGuestShim(input: {
     handle = await openExecStream(sdk, sandbox, MICROSANDBOX_NODE, [`${directory}/index.js`, '--identity-stdin'], {
       cwd: '/',
       env: {
-        // First, so a seed can name none of the shim's own variables.
-        ...input.seedEnv,
+        // One variable the runner fills in beneath the holder's env, so a seed can name none of the shim's own.
+        ...(input.seedEnv && Object.keys(input.seedEnv).length
+          ? { [SHIM_SEED_ENV]: JSON.stringify(input.seedEnv) }
+          : {}),
         [SHIM_WORKSPACE_ROOT_ENV]: input.workspaceRoot,
         [SHIM_LISTEN_PORT_ENV]: String(DEFAULT_SHIM_LISTEN_PORT),
         ...(input.completeEnv ? { [SHIM_COMPLETE_ENV_FLAG]: '1' } : {})

@@ -372,7 +372,7 @@ class Facet implements ExecutorFacet {
       if (env.stopping) await env.stopping
       if (this.stopped) throw new Error('the executor facet is stopping')
       if (env.shim || env.generation !== generation) return
-      const seed = this.deps.seedHome(join(this.sessionsDir, env.leaf, 'home'))
+      const seed = launcher.seedsHome ? undefined : this.deps.seedHome(join(this.sessionsDir, env.leaf, 'home'))
       const shim = await launcher.start({
         daemonRoot: this.deps.daemonRoot,
         sessionLeaf: env.leaf,

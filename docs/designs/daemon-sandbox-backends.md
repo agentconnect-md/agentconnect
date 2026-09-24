@@ -628,6 +628,16 @@ disappears, restore that credential and retry or start a new session; no VM or
 session data is automatically discarded. SRT and Kubernetes authentication
 paths are unchanged. No separate daemon HTTP proxy or networking option is added.
 
+A VM this machine hosts for another member of its daemon group takes the same
+protection, from this machine's own environment and sign-in, for every runtime it
+admits ([Sharing a machine with its group](#sharing-a-machine-with-its-group)). The
+agent's environment cannot widen it: the holder strips recognized provider keys from
+the launch, an endpoint the agent sets authorizes no host, and a trust bundle it sets
+only leaves the proxy's CA untrusted. Its
+durable state is a mounted directory rather than the VM's disks, so the spec change
+that adds the secrets replaces a hosted VM that predates them without losing the
+session.
+
 ## 2. Selecting the backend
 
 The choice favors session development workflows over maximum hardening.
@@ -1114,14 +1124,21 @@ seeds the session's `home` from it with the local confined tier's own preparers
 (`prepareRuntimeHome`, `prepareSharedRuntimeCredentials`), for every runtime the
 machine admits, because a `prepare` names no runtime: a shared login is linked to
 the machine's own file, other runtimes' small config and credential files are
-copied once, and files already in the session's `home` always win. Runtime
-credentials — sign-in and recognized provider keys — are this machine's only: the
-holder strips them from the launch, and a runtime this machine cannot authenticate
-answers `authRequired` (session-executors.md §8). The agent's environment and secrets
-come from the session's holder, over the encrypted pipe. One gap is open: a preparer
-that answers with an environment variable rather than a file in HOME (the Claude secure-storage directory) has no
-channel to a `host` runtime yet, so that sign-in is not usable on an executor
-until one exists.
+copied once, and files already in the session's `home` always win. A `host`
+runtime reads the one variable that seed answers with, the Claude secure-storage
+directory, through the shim's base environment. A `microsandbox` environment seeds
+its own `home` instead, through the local VM's credential step
+([API key protection](#api-key-protection)): the VM starts with this machine's
+recognized keys as placeholder secrets, `home` holds the projected files with
+placeholders, the raw files are neither copied nor mounted, and the shim fills the
+placeholders and the proxy's CA in beneath the holder's environment. A runtime whose
+credentials that step refuses, such as for a custom trust bundle or an unsupported
+endpoint, gets no sign-in in the VM rather than a plain copy. Runtime credentials —
+sign-in and recognized provider keys — are this machine's only: the holder strips
+them from the launch, including one configured as an agent secret, and a runtime this
+machine cannot authenticate answers `authRequired` (session-executors.md §8). The
+agent's other environment and secrets come from the session's holder, over the
+encrypted pipe.
 
 **When the facet is on.** Only when `share` is true, the effective strategy table
 has an available entry, and the listener is bound. This version prepares the

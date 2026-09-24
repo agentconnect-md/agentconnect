@@ -267,7 +267,7 @@ describe('microsandbox shim', () => {
   })
 
   // A hosted session's shim (session-executors.md §6): its holder is on another machine, and this one binds nothing.
-  it('starts a hosted shim unbound, without the complete-env claim, with the seed beneath its own variables', async () => {
+  it('starts a hosted shim unbound, without the complete-env claim, with the seed in one variable of its own', async () => {
     const { vm } = await fixture()
     const guest = await startGuestShim({
       sdk: vm.sdk,
@@ -280,10 +280,13 @@ describe('microsandbox shim', () => {
     })
     closers.push(() => guest.stop())
     const run = vm.execs[1]!
+    const seed = { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude', AC_SHIM_WORKSPACE_ROOT: '/elsewhere' }
+    // The runner fills the seed in beneath a holder's env; as one JSON value it can name none of the shim's own variables.
     expect(run.env).toEqual(
-      expect.arrayContaining(['AC_SHIM_WORKSPACE_ROOT=/workspace', 'CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/op/.claude'])
+      expect.arrayContaining(['AC_SHIM_WORKSPACE_ROOT=/workspace', `AC_SHIM_SEED_ENV=${JSON.stringify(seed)}`])
     )
     expect(run.env).not.toContain('AC_SHIM_WORKSPACE_ROOT=/elsewhere')
+    expect(run.env).not.toContain('CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/op/.claude')
     expect(run.env.filter((entry) => entry.startsWith('AC_SHIM_COMPLETE_ENV'))).toEqual([])
     // What the executor's pipe connects to: agentd's TCP stream to the shim's guest port, which the fake asserts.
     const socket = await guest.connect()

@@ -1162,15 +1162,22 @@ describe('prepareRuntimeLaunch', () => {
       daemonRoot: dirname(scopeDir),
       credentialPlatform: 'linux',
       microsandbox: { mounts: [] },
-      explicitEnv: { ANTHROPIC_API_KEY: 'agent-secret', XDG_CONFIG_HOME: '/holder/config' },
+      explicitEnv: {
+        ANTHROPIC_API_KEY: 'fixture-agent-provider-key',
+        AC_CLAUDE_API_KEY: 'fixture-agent-binding',
+        EXAMPLE_SERVICE_TOKEN: 'fixture-agent-secret',
+        ANTHROPIC_BASE_URL: 'https://api.example.test',
+        XDG_CONFIG_HOME: '/holder/config'
+      },
       hostEnv: { HOME: hostHome, PATH: '/holder/bin', SSH_AUTH_SOCK: '/holder/agent.sock' },
       executor: { home: PLACED_HOME }
     })
 
     expect(launch).toEqual({
       env: {
-        // The holder's own credential travels as the launch's value, never a placeholder whose secret could not follow.
-        ANTHROPIC_API_KEY: 'agent-secret',
+        // The runtime's provider key is the executor's own, even configured as an agent secret; every other agent value travels (§8).
+        EXAMPLE_SERVICE_TOKEN: 'fixture-agent-secret',
+        ANTHROPIC_BASE_URL: 'https://api.example.test',
         HOME: PLACED_HOME,
         XDG_CONFIG_HOME: `${PLACED_HOME}/.config`,
         XDG_CACHE_HOME: `${PLACED_HOME}/.cache`,
@@ -1511,6 +1518,38 @@ describe('composeRuntimeLaunch', () => {
     expect(composed.runtime.command).toBe('claude-agent-acp')
     expect(composed.launch.sandbox).toBeUndefined()
     expect(composed.launch.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1')
+  })
+
+  it("strips the runtime's recognized provider key from a placed launch, from its definition too, and keeps the rest", () => {
+    const { scopeDir, cwd } = fixture()
+    const definition = {
+      command: 'dsh-acp',
+      args: [],
+      env: [
+        { name: 'DEEPSEEK_API_KEY', value: 'fixture-definition-key' },
+        { name: 'DEEPSEEK_BASE_URL', value: 'https://api.deepseek.com' }
+      ]
+    }
+    const compose = (executor?: { home: string }) =>
+      composeRuntimeLaunch({
+        runtimeId: 'dsh-acp',
+        runtime: definition,
+        provider: 'managed',
+        scopeDir,
+        cwd,
+        runInSandbox: false,
+        explicitEnv: { DEEPSEEK_API_KEY: 'fixture-agent-secret', EXAMPLE_SERVICE_TOKEN: 'fixture-other-secret' },
+        ...(executor ? { executor } : {})
+      })
+    const placed = compose({ home: PLACED_HOME })
+    // The executor supplies its own, behind a placeholder on a VM; one it lacks is the runtime's authRequired (§8).
+    expect(placed.launch.env.DEEPSEEK_API_KEY).toBeUndefined()
+    expect(placed.runtime.env).toEqual([{ name: 'DEEPSEEK_BASE_URL', value: 'https://api.deepseek.com' }])
+    expect(placed.launch.env.EXAMPLE_SERVICE_TOKEN).toBe('fixture-other-secret')
+    // A launch on this machine is unchanged.
+    const local = compose()
+    expect(local.launch.env.DEEPSEEK_API_KEY).toBe('fixture-agent-secret')
+    expect(local.runtime.env).toEqual(definition.env)
   })
 
   it.each([

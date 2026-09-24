@@ -325,6 +325,17 @@ describe('executor facet', () => {
       expect(vmStarts).toHaveLength(1)
     })
 
+    it('seeds nothing for a launcher that seeds its own HOME, as a VM protecting its credentials does (§8)', async () => {
+      const { facet } = await start({
+        launchers: { host: { start: startShim }, microsandbox: { ...vmLauncher, seedsHome: true } }
+      })
+      ready(await facet.prepare(req(1, { strategy: 'microsandbox' })))
+      expect(vmStarts).toEqual([LEAF])
+      // The plain seed would copy the raw sign-in files the VM's own seed projects behind placeholders.
+      expect(seeded).toEqual([])
+      expect(seeds).toEqual([undefined])
+    })
+
     it('says how the environment it prepared starts the runtime a launch names: this machine’s install, or its image’s', async () => {
       const installed = { command: '/usr/bin/node', args: ['/srv/agentconnect/runtimes/adapter/dist/index.js'] }
       const imaged = { command: 'codex-acp', args: [] }

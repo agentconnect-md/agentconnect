@@ -5,7 +5,7 @@ import { prepareSandboxTempDir, SANDBOX_TEMP_DIR_ENV } from '../acp/sandbox-temp
 import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
 import { prepareMicrosandboxLaunch } from '../microsandbox/launch.js'
-import type { MicrosandboxSecret } from '../microsandbox/secrets.js'
+import { isRecognizedCredentialEnv, type MicrosandboxSecret } from '../microsandbox/secrets.js'
 import { compactReadRoots, protectedSandboxRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import {
@@ -180,6 +180,9 @@ function prepareExecutorLaunch(
 ): PreparedRuntimeLaunch {
   // An empty host env: this daemon's own variables describe a machine the runtime is not on.
   const env = runtimeHomeEnvironment(opts.runtimeId, home, opts.explicitEnv, {})
+  // Runtime credentials are the executor's own, even one configured as an agent secret; the rest travels (§8).
+  for (const name of Object.keys(env))
+    if (isRecognizedCredentialEnv(opts.runtimeId, opts.runtime, name)) delete env[name]
   if (sharedCredentialProfile(opts.runtimeId, opts.runtime) !== 'codex') {
     return { env, inheritProcessEnv: false, runtimeHome: home, gitMetadataWriteRoots: [] }
   }
