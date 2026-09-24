@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -551,6 +551,30 @@ describe('session-pinned Decision model', () => {
   )
 })
 
+it('judges a resumed session’s targets in the strategy its verdict recorded, loaded before model selection', async () => {
+  const root = scaffold()
+  const first = await start(root)
+  await first.turn('first')
+  const key = (await first.internal.store.listSessions(agentId))[0].key
+  expect(await first.internal.store.getSessionExecutor(key)).toMatchObject({ birthStrategy: 'host' })
+  await first.daemon.stop()
+  daemons.splice(daemons.indexOf(first.daemon), 1)
+
+  const path = join(root, 'agents', agentId, 'agent.json')
+  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), execution: 'srt' }))
+  const second = await start(root)
+  const agent = second.internal.agents.get(agentId)
+  expect(second.internal.agentStrategy(agent)).toBe('srt')
+  const seen: string[] = []
+  const select = second.internal.selectSessionModel.bind(second.internal)
+  vi.spyOn(second.internal, 'selectSessionModel').mockImplementation(async (...args: unknown[]) => {
+    seen.push(second.internal.sessionStrategy(agent, key))
+    return await select(...args)
+  })
+  await second.turn('first', 'A follow-up after the restart')
+  expect(seen).toEqual(['host'])
+})
+
 describe('a target judged where the session could land (session-executors.md §5)', () => {
   const executorId = '44444444-4444-4444-8444-444444444444'
   const key = 'birth-session'
@@ -660,7 +684,10 @@ describe('a target judged where the session could land (session-executors.md §5
     })
     expect(selected).toMatchObject({ runtime: 'alternative', model: 'model-capable' })
     expect(prepareAt).not.toHaveBeenCalled()
-    expect(internal.sessionExecutorVerdicts.get(key)).toBe('no_candidate')
+    expect(internal.sessionExecutorVerdicts.get(key)).toEqual({
+      stayedHomeReason: 'no_candidate',
+      birthStrategy: 'host'
+    })
   })
 
   it.each([

@@ -136,6 +136,7 @@ import {
   transcriptQuoted,
   type InboxRow,
   type SessionPurgeRow,
+  type SessionExecutorVerdict,
   type SessionRecord,
   type TranscriptAdmission,
   type TranscriptEntry,
@@ -1364,7 +1365,9 @@ export class Daemon {
   // The holder half (§7): this daemon's own sessions placed on other machines of its group. Empty until one is.
   private executorPlane?: ExecutorPlane
   /** Birth verdicts waiting for their session's row, which is written after placement decides its host key. */
-  private readonly sessionExecutorVerdicts = new Map<string, SessionStayedHomeReason | { executorDaemonId: string }>()
+  private readonly sessionExecutorVerdicts = new Map<string, SessionExecutorVerdict>()
+  /** The strategy each session placement read or decided was born with (§5); every later launch of the session reads it. */
+  private readonly sessionStrategies = new Map<string, string>()
   /** Open isolated sessions executing here as last counted; the facet and heartbeat read it synchronously, each idle sweep and placement refresh it. */
   private ownIsolatedSessionCount = 0
   /** The plane every scope of this daemon falls back to — its VMs or its pods; a spread session resolves to the executor plane instead. */
@@ -3987,6 +3990,7 @@ export class Daemon {
       clock: this.clock
     })
     this.startExecutorPlane(root)
+    await this.backfillBirthStrategies()
   }
 
   /**
@@ -4084,7 +4088,7 @@ export class Daemon {
   private placementAsk(agent: LoadedAgent, sessionKey: string): PlacementAsk {
     return {
       isolation: this.sessionIsolation.get(sessionKey),
-      strategy: this.agentStrategy(agent),
+      strategy: this.sessionStrategy(agent, sessionKey),
       runtime: agent.runtime,
       ...(agent.runtimeOverrides?.model ? { model: agent.runtimeOverrides.model } : {}),
       // The only memory condition left: a binding the Control Plane's boot-time flip has not reached yet (§7).
@@ -4138,13 +4142,7 @@ export class Daemon {
     return !(await this.store.getSessionExecutor(sessionKey).catch(() => undefined))
   }
 
-  /**
-   * Where this session executes, decided once at its birth and kept for its whole life (§6, §7).
-   *
-   * Nothing is asked for a session already placed here, for one whose verdict this daemon recorded,
-   * or on a connection that belongs to no member set — the two consents are the group's and each
-   * machine's, and a daemon in no group has neither to read.
-   */
+  /** Where this session executes and in which strategy, decided once at its birth and kept for its whole life (§5, §6, §7); a recorded verdict is never re-decided. */
   private async placeSessionOnExecutor(
     agent: LoadedAgent,
     sessionKey: string,
@@ -4155,11 +4153,11 @@ export class Daemon {
     // A verdict this daemon reached for a turn that never recorded it: the row exists by now.
     await this.flushSessionExecutorVerdict(sessionKey)
     if (plane.placementOf(sessionKey)) return
-    const recorded = await this.store.getSessionExecutor(sessionKey).catch(() => undefined)
+    const recorded = await this.loadBirthStrategy(agent, sessionKey)
     if (recorded && 'stayedHomeReason' in recorded) return
     const ask = this.placementAsk(agent, sessionKey)
     if (recorded) {
-      // Sticky, and a restart does not re-decide: the next launch prepares the environment again where the session was born.
+      // Sticky, and a restart does not re-decide: the next launch prepares the environment again where the session was born, in the strategy it was born with.
       plane.place({
         agentId: agent.id,
         sessionKey,
@@ -4170,12 +4168,14 @@ export class Daemon {
     }
     // A daemon with no control plane has no group to spread onto and nobody to report a verdict to.
     if (!this.cpClient) return
-    if (ask.isolation !== 'session') return await this.recordSessionExecutor(sessionKey, 'shared_session')
-    if (!this.cpClient.memberSet()) return await this.recordSessionExecutor(sessionKey, 'not_on_group')
+    if (ask.isolation !== 'session') return await this.recordSessionExecutor(sessionKey, 'shared_session', ask.strategy)
+    if (!this.cpClient.memberSet()) return await this.recordSessionExecutor(sessionKey, 'not_on_group', ask.strategy)
     // A strategy that does not spread yet stays home without asking.
     const answer = strategySpreads(ask.strategy)
       ? await (candidates ?? (() => this.executorCandidates(agent.id, sessionKey)))()
       : undefined
+    // A successor resuming a session placed elsewhere names the strategy it was born with, never the agent's current one (§5, §7).
+    if (answer?.birthStrategy) ask.strategy = answer.birthStrategy
     const placement = placeSession({
       ask,
       holderHostedSessions: await this.hostedSessionCount(sessionKey),
@@ -4184,33 +4184,80 @@ export class Daemon {
       holderOffers: this.holderOffers(ask),
       ...(answer ? { answer } : {})
     })
-    if ('stayedHome' in placement) return await this.recordSessionExecutor(sessionKey, placement.stayedHome)
+    if ('stayedHome' in placement)
+      return await this.recordSessionExecutor(sessionKey, placement.stayedHome, ask.strategy)
     const landed = await plane.prepareAt(agent.id, sessionKey, placement.spread)
     if ('refused' in landed) {
       return await this.recordSessionExecutor(
         sessionKey,
-        landed.refused === 'full' ? 'candidates_full' : 'no_candidate'
+        landed.refused === 'full' ? 'candidates_full' : 'no_candidate',
+        ask.strategy
       )
     }
     this.log.info(
       `executor: session ${landed.placed.leaf} of agent ${agent.id} runs on daemon ${landed.placed.executorDaemonId}`
     )
-    await this.recordSessionExecutor(sessionKey, { executorDaemonId: landed.placed.executorDaemonId })
+    await this.recordSessionExecutor(sessionKey, { executorDaemonId: landed.placed.executorDaemonId }, ask.strategy)
   }
 
-  /**
-   * The birth verdict on this daemon's own row; the Control Plane's copy rides the session's
-   * metadata (§7).
-   *
-   * Held until the row exists: placement is decided BEFORE `SessionManager` records the session,
-   * because the host key it decides is what that call needs, and a write for a key the store does
-   * not know yet is a no-op that would lose the verdict for good.
-   */
+  /** Read the session's verdict and cache the strategy it names; null when the row has none, undefined when the store could not be read, which keeps what is cached (§5). */
+  private async loadBirthStrategy(
+    agent: LoadedAgent,
+    sessionKey: string
+  ): Promise<SessionExecutorVerdict | null | undefined> {
+    const recorded = await this.store.getSessionExecutor(sessionKey).then(
+      (verdict) => verdict ?? null,
+      () => undefined
+    )
+    if (recorded) this.sessionStrategies.set(sessionKey, await this.recordedBirthStrategy(agent, sessionKey, recorded))
+    // A key whose row was purged is born again, in the agent's strategy now rather than one cached from its earlier life.
+    else if (recorded === null && !this.sessionExecutorVerdicts.has(sessionKey))
+      this.sessionStrategies.delete(sessionKey)
+    return recorded
+  }
+
+  /** The strategy a recorded verdict names; one recorded before strategies were is filled once with the agent's migrated `execution` (§5). */
+  private async recordedBirthStrategy(
+    agent: LoadedAgent,
+    sessionKey: string,
+    recorded: SessionExecutorVerdict
+  ): Promise<string> {
+    if (recorded.birthStrategy) return recorded.birthStrategy
+    const strategy = this.agentStrategy(agent)
+    await this.store.setSessionExecutor(sessionKey, { ...recorded, birthStrategy: strategy }).catch((err: unknown) => {
+      this.log.warn(`executor: recording the birth strategy of session ${sessionKey} failed: ${formatErr(err)}`)
+    })
+    return strategy
+  }
+
+  /** At startup, every verdict from before strategies were recorded is filled with its agent's migrated `execution`, before anyone can change it (§5). */
+  private async backfillBirthStrategies(): Promise<void> {
+    if (!this.executorPlane) return
+    for (const agent of this.agents.values()) {
+      await this.store.backfillBirthStrategy(agent.id, this.agentStrategy(agent)).catch((err: unknown) => {
+        this.log.warn(
+          `executor: recording the birth strategy of agent ${agent.id}'s sessions failed: ${formatErr(err)}`
+        )
+      })
+    }
+  }
+
+  /** The strategy this session launches in: the one it was born with once placement read or decided it, else the agent's (§5). */
+  private sessionStrategy(agent: Agent, sessionKey: string | undefined): string {
+    return (sessionKey === undefined ? undefined : this.sessionStrategies.get(sessionKey)) ?? this.agentStrategy(agent)
+  }
+
+  /** The birth verdict on this daemon's row, held until the row exists: placement runs before `SessionManager` writes it, and a write for an unknown key is a no-op (§7). */
   private async recordSessionExecutor(
     sessionKey: string,
-    verdict: SessionStayedHomeReason | { executorDaemonId: string }
+    verdict: SessionStayedHomeReason | { executorDaemonId: string },
+    birthStrategy: string
   ): Promise<void> {
-    this.sessionExecutorVerdicts.set(sessionKey, verdict)
+    this.sessionStrategies.set(sessionKey, birthStrategy)
+    this.sessionExecutorVerdicts.set(sessionKey, {
+      ...(typeof verdict === 'string' ? { stayedHomeReason: verdict } : verdict),
+      birthStrategy
+    })
     await this.flushSessionExecutorVerdict(sessionKey)
   }
 
@@ -4220,10 +4267,7 @@ export class Daemon {
     if (verdict === undefined) return
     try {
       if (!(await this.store.getSession(sessionKey))) return
-      await this.store.setSessionExecutor(
-        sessionKey,
-        typeof verdict === 'string' ? { stayedHomeReason: verdict } : verdict
-      )
+      await this.store.setSessionExecutor(sessionKey, verdict)
       // Dropped only once it is written, and only when nothing replaced it while the write was in flight.
       if (this.sessionExecutorVerdicts.get(sessionKey) === verdict) this.sessionExecutorVerdicts.delete(sessionKey)
     } catch (err) {
@@ -4246,7 +4290,8 @@ export class Daemon {
     const agent = this.sessionAgent(placed.agentId, placed.sessionKey)
     if (!agent) return undefined
     const answer = await this.executorCandidates(placed.agentId, placed.sessionKey)
-    const ask = this.placementAsk(agent, placed.sessionKey)
+    // It moves in the strategy it was born with: a new environment elsewhere, never a different boundary (§5).
+    const ask = { ...this.placementAsk(agent, placed.sessionKey), strategy: placed.strategy }
     const placement = placeSession({
       ask,
       holderHostedSessions: await this.hostedSessionCount(placed.sessionKey),
@@ -4260,7 +4305,7 @@ export class Daemon {
     if ('stayedHome' in placement) return undefined
     const next = placement.spread[0]
     if (!next) return undefined
-    await this.recordSessionExecutor(placed.sessionKey, { executorDaemonId: next.daemonId })
+    await this.recordSessionExecutor(placed.sessionKey, { executorDaemonId: next.daemonId }, ask.strategy)
     this.noteEnvironmentLost(placed)
     return next
   }
@@ -5146,24 +5191,19 @@ export class Daemon {
     }
   }
 
-  /**
-   * git-workspace-model §11: whether one logical session is served on the CONFINED tier — its own
-   * clones, its own ACP host (its own pod on a pool member), its own private HOME. The single rule
-   * the host key, preparation, the launch and cleanup all ask.
-   *
-   * A session is served in the tier it was BORN in, for its whole life: its recorded isolation says
-   * whether it has a tier of its own at all, and the clones or worktree it already stands in say
-   * which. Changing the agent's `runInSandbox` or `workspaceIsolation` therefore reaches only
-   * sessions created afterwards, and no half of the daemon can start serving a live one somewhere
-   * the others do not address.
-   */
+  /** git-workspace-model §11: whether a session is served on the CONFINED tier (own clones, host, HOME) — decided by the tier it was born in, never the agent's current settings. */
   private confinedSession(agent: Agent, sessionKey?: string): boolean {
     if (sessionKey === undefined) return false
     // A session placed on another machine is always the clone tier: the primary checkout is not on it (§2).
     if (this.placedSession(sessionKey)) return true
     // Workspace isolation is independent of whether the runtime owns a VM.
     if (!this.sessionIsolated(agent, sessionKey)) return false
-    return this.workspaces.confinedSessionTier(agent, sessionKey, this.k8s || this.agentRunsInSandbox(agent))
+    // A session standing nowhere yet takes the tier of the boundary it was born with (§5).
+    return this.workspaces.confinedSessionTier(
+      agent,
+      sessionKey,
+      this.k8s || this.sessionStrategy(agent, sessionKey) !== 'host'
+    )
   }
 
   /**
@@ -5977,7 +6017,8 @@ export class Daemon {
     const launchCwd = cwd ?? agent.workspace.path
     const built = this.buildAcpHost(agent, cfg, {
       hostKey: key,
-      strategy: this.agentStrategy(agent),
+      // A host of the session's own launches in its birth strategy; the agent's shared host, in the agent's (§5).
+      strategy: this.sessionStrategy(agent, hostKeySessionKey(key)),
       cwd: launchCwd,
       ...(sessionGitDirs ? { sessionGitDirs } : {})
     })
@@ -6633,7 +6674,7 @@ export class Daemon {
         : undefined
       const { host, configFileState } = this.buildAcpHost(agent, this.cfg, {
         hostKey,
-        strategy: this.agentStrategy(agent),
+        strategy: this.sessionStrategy(agent, entry.sessionKey),
         cwd,
         ...(sessionGitDirs ? { sessionGitDirs } : {}),
         modelCredential: {
@@ -13662,6 +13703,8 @@ export class Daemon {
     // …and WHERE it runs, which the host key below reads: decided once at birth, recorded, and kept for the session's life (session-executors.md §7).
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
+      // A recorded strategy is loaded first: model selection judges its targets in that strategy's catalog (session-executors.md §5).
+      if (this.executorPlane) await this.loadBirthStrategy(agent, key)
       // One `executor/candidates` per birth: model selection judges its targets by it, and placement reuses it (session-executors.md §5).
       const candidates = this.birthCandidates(agentId, key)
       await this.selectSessionModel(run, persisted, candidates)
@@ -13940,8 +13983,13 @@ export class Daemon {
   ): boolean {
     // The model is the strategy catalog's to judge, not this host's own list.
     if (this.activationCapabilityError(agentWithRuntime(agent, target), { model: false })) return false
-    // A Decision picks the runtime, never the strategy: the ask keeps the agent's.
-    const ask = { ...this.placementAsk(agent, sessionKey), runtime: target.runtime, model: target.model }
+    // A Decision picks the runtime, never the strategy: the ask keeps the session's, which a successor takes from the hint as placement does (§5).
+    const ask = {
+      ...this.placementAsk(agent, sessionKey),
+      ...(answer?.birthStrategy ? { strategy: answer.birthStrategy } : {}),
+      runtime: target.runtime,
+      model: target.model
+    }
     return this.holderOffers(ask) || (answer?.candidates ?? []).some((candidate) => candidateEligible(ask, candidate))
   }
 
@@ -20301,6 +20349,7 @@ export class Daemon {
         ) {
           removed += 1
           this.memoryWriteGrants.delete(rec.key)
+          this.sessionStrategies.delete(rec.key)
           this.expireAppCards({ sessionKey: rec.key })
           if (rec.acpSessionId)
             this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))

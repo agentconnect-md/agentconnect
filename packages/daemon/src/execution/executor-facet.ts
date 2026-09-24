@@ -321,18 +321,20 @@ class Facet implements ExecutorFacet {
     if (known?.discarding) return refused('launch_retired')
     if (!this.listener) return refused('facet_off')
     if (this.stopped || this.deps.draining()) return refused('draining')
+    if (known) {
+      // The CP vouched that the asker holds `req.agentId`; that says nothing about another agent's environment.
+      if (known.agentId !== req.agentId) return refused('not_holder')
+      // The directory's state belongs to one boundary: another strategy neither attaches nor rewrites the record (§5).
+      if (known.strategy !== req.strategy) return refused('strategy_mismatch')
+    }
     // Which strategies may be asked for is the effective table narrowed to this facet's launchers, never a name written here.
     const strategy = EXECUTION_STRATEGIES.find((name) => name === req.strategy)
     const launcher = strategy && this.offered(strategy).available ? this.deps.launchers[strategy] : undefined
     if (!strategy || !launcher) return refused('strategy_unavailable')
-    if (known) {
-      // The CP vouched that the asker holds `req.agentId`; that says nothing about another agent's environment.
-      if (known.agentId !== req.agentId) return refused('not_holder')
-      if (known.launchId === req.launchId) {
-        // The same launch asked again: its answer in flight or as given — the same key, nothing rotated — or none at all once it is gone.
-        if (known.launching) return known.launching
-        return known.reply ? { ...known.reply, liveCount: this.liveCount() } : refused('launch_retired')
-      }
+    if (known && known.launchId === req.launchId) {
+      // The same launch asked again: its answer in flight or as given — the same key, nothing rotated — or none at all once it is gone.
+      if (known.launching) return known.launching
+      return known.reply ? { ...known.reply, liveCount: this.liveCount() } : refused('launch_retired')
     }
     // A slot is a live shim or a preparation in flight; an environment that already has one needs no second.
     if (!known?.shim && !known?.launching && this.liveCount() >= this.capacity()) {

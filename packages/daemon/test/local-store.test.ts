@@ -3757,7 +3757,7 @@ describe.skipIf(pg)('the v25 → v26 decision tables', () => {
   }
 
   it('creates both tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(28)
+    expect(SCHEMA_VERSION).toBe(29)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
@@ -3831,7 +3831,7 @@ describe.skipIf(pg)('the v27 → v28 on-demand clones column', () => {
     const check = new DatabaseSync(path)
     const version = (check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
     check.close()
-    expect(version).toBe(28)
+    expect(version).toBe(SCHEMA_VERSION)
   })
 })
 

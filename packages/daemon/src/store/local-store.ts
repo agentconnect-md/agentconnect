@@ -307,6 +307,13 @@ export interface SessionRecord {
   stayedHomeReason?: SessionStayedHomeReason | null
   // 1 once the runtime was handed an on-demand clone directory (multi-repository-workspaces.md decision 20), written by `markSessionOnDemandClones`, so retention judges it whatever the agent's rows say later.
   onDemandClones?: number | null
+  // The strategy the session was born with (§5); null on a verdict from before it was recorded.
+  birthStrategy?: string | null
+}
+
+/** A session's birth verdict (session-executors.md §5, §7): where it executes or why it stayed home, and the strategy it was born with. */
+export type SessionExecutorVerdict = ({ executorDaemonId: string } | { stayedHomeReason: SessionStayedHomeReason }) & {
+  birthStrategy?: string
 }
 
 export type PermissionRequestStatus = 'pending' | 'allowed' | 'denied' | 'expired'
@@ -1204,7 +1211,7 @@ const DECISION_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 28
+export const SCHEMA_VERSION = 29
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1520,6 +1527,16 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
     if (!columns.some((c) => c.name === 'onDemandClones'))
       await db.exec('ALTER TABLE sessions ADD COLUMN onDemandClones INTEGER')
+  },
+  // v29: the birth strategy beside the verdict (session-executors.md §5); the daemon fills existing verdicts at startup.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS birthStrategy TEXT')
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
+    if (!columns.some((c) => c.name === 'birthStrategy'))
+      await db.exec('ALTER TABLE sessions ADD COLUMN birthStrategy TEXT')
   }
 ]
 
@@ -1659,7 +1676,7 @@ export class LocalStore {
         conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT,
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
-        onDemandClones INTEGER
+        onDemandClones INTEGER, birthStrategy TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -3231,16 +3248,16 @@ export class LocalStore {
       .run(outcome, updatedAt, key)
   }
 
-  /** Record a session's birth verdict (session-executors.md §7): each write clears the other half, and an unknown key is a no-op. */
-  async setSessionExecutor(
-    key: string,
-    verdict: { executorDaemonId: string } | { stayedHomeReason: SessionStayedHomeReason }
-  ): Promise<void> {
+  /** Record a session's birth verdict (session-executors.md §7): each write clears the other half, the first strategy recorded stays (§5), and an unknown key is a no-op. */
+  async setSessionExecutor(key: string, verdict: SessionExecutorVerdict): Promise<void> {
     await this.db
-      .prepare('UPDATE sessions SET executorDaemonId = ?, stayedHomeReason = ? WHERE key = ?')
+      .prepare(
+        'UPDATE sessions SET executorDaemonId = ?, stayedHomeReason = ?, birthStrategy = COALESCE(birthStrategy, ?) WHERE key = ?'
+      )
       .run(
         'executorDaemonId' in verdict ? verdict.executorDaemonId : null,
         'stayedHomeReason' in verdict ? verdict.stayedHomeReason : null,
+        verdict.birthStrategy ?? null,
         key
       )
   }
@@ -3251,14 +3268,29 @@ export class LocalStore {
   }
 
   /** The verdict on the shared row — how a successor holder finds a session's environment; undefined when none was recorded. */
-  async getSessionExecutor(
-    key: string
-  ): Promise<{ executorDaemonId: string } | { stayedHomeReason: SessionStayedHomeReason } | undefined> {
+  async getSessionExecutor(key: string): Promise<SessionExecutorVerdict | undefined> {
     const row = (await this.db
-      .prepare('SELECT executorDaemonId, stayedHomeReason FROM sessions WHERE key = ?')
-      .get(key)) as { executorDaemonId: string | null; stayedHomeReason: SessionStayedHomeReason | null } | undefined
-    if (row?.executorDaemonId) return { executorDaemonId: row.executorDaemonId }
-    return row?.stayedHomeReason ? { stayedHomeReason: row.stayedHomeReason } : undefined
+      .prepare('SELECT executorDaemonId, stayedHomeReason, birthStrategy FROM sessions WHERE key = ?')
+      .get(key)) as
+      | {
+          executorDaemonId: string | null
+          stayedHomeReason: SessionStayedHomeReason | null
+          birthStrategy: string | null
+        }
+      | undefined
+    const strategy = row?.birthStrategy ? { birthStrategy: row.birthStrategy } : {}
+    if (row?.executorDaemonId) return { executorDaemonId: row.executorDaemonId, ...strategy }
+    return row?.stayedHomeReason ? { stayedHomeReason: row.stayedHomeReason, ...strategy } : undefined
+  }
+
+  /** Fill the birth strategy of an agent's verdicts recorded before it was (§5); a recorded strategy is never replaced. */
+  async backfillBirthStrategy(agentId: string, strategy: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE sessions SET birthStrategy = ? WHERE agentId = ? AND birthStrategy IS NULL
+         AND (executorDaemonId IS NOT NULL OR stayedHomeReason IS NOT NULL)`
+      )
+      .run(strategy, agentId)
   }
 
   /** Open `session`-isolated sessions of `agentIds` that execute here (session-executors.md §6): a placed one is its executor's to count. */

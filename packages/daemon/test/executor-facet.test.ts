@@ -516,6 +516,39 @@ describe('executor facet', () => {
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('still mine'), WAIT)
     })
 
+    it('refuses another strategy for an existing environment: no attach, no rotation, the record as it was (§5)', async () => {
+      const { facet } = await start()
+      const first = ready(await facet.prepare(req(3)))
+      const socket = await admitted(first)
+      const recorded = readFileSync(join(root!, 'sessions', `${LEAF}.json`), 'utf8')
+      expect(await facet.prepare(req(4, { strategy: 'microsandbox' }))).toEqual({
+        status: 'refused',
+        reason: 'strategy_mismatch'
+      })
+      expect(readFileSync(join(root!, 'sessions', `${LEAF}.json`), 'utf8')).toBe(recorded)
+      expect(vmStarts).toEqual([])
+      expect(starts).toHaveLength(1)
+      // The pipe the rightful launch admitted is untouched, and its key still opens one.
+      socket.write('still here')
+      await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('still here'), WAIT)
+      await dial(first)
+
+      // After a restart the record decides, even while the other strategy is not one this machine can run.
+      await facet.stop()
+      facets = []
+      const restarted = await start({
+        strategies: () => ({ host: { available: true }, microsandbox: { available: false, reason: 'no KVM here' } })
+      })
+      expect(await restarted.facet.prepare(req(5, { strategy: 'microsandbox' }))).toEqual({
+        status: 'refused',
+        reason: 'strategy_mismatch'
+      })
+      expect(readFileSync(join(root!, 'sessions', `${LEAF}.json`), 'utf8')).toBe(recorded)
+      // A launch in the strategy the environment was made under attaches as ever.
+      expect(ready(await restarted.facet.prepare(req(6))).generation).toBe(2)
+      expect(record()).toMatchObject({ generation: 2, launchId: LAUNCH(6), strategy: 'host' })
+    })
+
     it('prepares only what the effective table offers, and nothing while the daemon drains', async () => {
       let draining = false
       const { facet } = await start({

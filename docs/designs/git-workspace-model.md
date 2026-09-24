@@ -506,8 +506,10 @@ agent.workspace.isolation`, and always `shared` for a from-scratch agent, whose 
    artifact of the original decision, not an inference about it. A session that stands
    nowhere yet takes what one created now would get: a boundary around the runtime (its own
    pod on a pool member, the effective OS sandbox on a self-hosted daemon) means clones, and
-   no boundary means a worktree. A pool member has no local disk to ask, so its session pod
-   holds that record. A session placed on another machine of the daemon group
+   no boundary means a worktree. Once its birth verdict has recorded a strategy
+   ([session-executors.md](session-executors.md) §5), that strategy is the boundary asked
+   about, not the agent's current one. A pool member has no local disk to ask, so its
+   session pod holds that record. A session placed on another machine of the daemon group
    ([session-executors.md](session-executors.md) §7) is **always** clones, whatever this
    machine would have given it: the primary checkout it would have worktree'd is not on the
    machine it runs on, and the directory that records its tier is that machine's.

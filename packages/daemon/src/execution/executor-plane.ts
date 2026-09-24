@@ -221,13 +221,7 @@ export class ExecutorPlane implements ExecutionPlane {
     return placed ? this.rootsFor(placed.sessionKey) : undefined
   }
 
-  /**
-   * Birth (§7): prepare this session's environment on the first candidate that takes it.
-   *
-   * `full` and every refusal move to the next candidate, which is what admission being the
-   * executor's means for a holder — the counts it placed from are as fresh as a heartbeat, and
-   * nothing of the session exists yet, so moving on costs nothing.
-   */
+  /** Birth (§7): the first candidate that takes it; any refusal moves on, except `strategy_mismatch`, whose environment holds the session's work and so fails the turn (§5). */
   async prepareAt(
     agentId: string,
     sessionKey: string,
@@ -247,6 +241,10 @@ export class ExecutorPlane implements ExecutionPlane {
       } catch (error) {
         full ||= error instanceof ExecutorUnavailableError && error.why === 'full'
         this.forgetLaunch(placed.subject, 'nothing was prepared there')
+        if (error instanceof ExecutorUnavailableError && error.why === 'strategy_mismatch') {
+          this.unplace(agentId, sessionKey)
+          throw error
+        }
         this.deps.log.warn(
           `executor: daemon ${choice.daemonId} prepared nothing for ${placed.leaf} (${message(error)})`
         )

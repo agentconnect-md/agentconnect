@@ -31,6 +31,7 @@ export const canonicalColumns = [
   'automaticCount',
   'automaticWindowStartedAt',
   'backendOperationId',
+  'birthStrategy',
   'callEnvelope',
   'callMeta',
   'capsJson',

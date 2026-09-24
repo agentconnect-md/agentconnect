@@ -109,6 +109,16 @@ describe('preparing a session at birth', () => {
     const { executor } = plane([{ status: 'refused', reason: 'draining' }])
     await expect(executor.prepareAt(AGENT, KEY, [HOST])).resolves.toEqual({ refused: 'none' })
   })
+
+  it('stops at an environment made under another strategy: a startup error, no other candidate, nothing placed (§5)', async () => {
+    const { executor, sent } = plane([{ status: 'refused', reason: 'strategy_mismatch' }, ready(1)])
+    await expect(executor.prepareAt(AGENT, KEY, [HOST, OTHER])).rejects.toThrow(
+      `session ${LEAF} has an environment on daemon ${HOST.daemonId} made under another strategy than host`
+    )
+    // Moving on would start the session over on another machine, away from the work its environment holds.
+    expect(sent.map((req) => req.executorDaemonId)).toEqual([HOST.daemonId])
+    expect(executor.placementOf(KEY)).toBeUndefined()
+  })
 })
 
 describe('a launch the executor has retired', () => {
