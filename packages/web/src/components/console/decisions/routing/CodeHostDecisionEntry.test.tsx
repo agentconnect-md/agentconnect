@@ -186,7 +186,7 @@ describe('CodeHostDecisionEntry', () => {
     }
   )
 
-  it('stacks a child Decision in a sheet: Cancel drops the child, Save keeps it unsaved, Escape cancels', async () => {
+  it('stacks a child Decision in a focused sheet: Cancel drops it, Save keeps it unsaved, Escape returns focus', async () => {
     const sheet = () => all('[role="dialog"]').find((node) => node.getAttribute('aria-label') === 'Needs a response')
     const inSheet = (text: string) =>
       [...(sheet()?.querySelectorAll('button') ?? [])].find((node) => node.textContent?.trim() === text)
@@ -211,12 +211,20 @@ describe('CodeHostDecisionEntry', () => {
     expect(sheet()).toBeUndefined()
     expect(mocks.saveCodeHostRouting).not.toHaveBeenCalled()
     expect(continuation()).toBeTruthy()
-    await click(continuation())
+    const chip = continuation() as HTMLButtonElement
+    const editor = [...document.body.children].find((node) => node.contains(chip)) as HTMLElement
+    chip.focus()
+    await click(chip)
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+    expect(editor.inert).toBe(true)
+    expect(sheet()?.contains(document.activeElement)).toBe(true)
     await act(async () => {
       document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     })
     expect(sheet()).toBeUndefined()
     expect(document.body.querySelector('[role="dialog"]')).toBeTruthy()
+    expect(editor.inert).toBe(false)
+    expect(document.activeElement).toBe(chip)
   })
 
   it('picks reviewers per answer among the members and keeps them as the row’s pill until ×', async () => {

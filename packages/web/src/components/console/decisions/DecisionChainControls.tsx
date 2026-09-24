@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
@@ -50,7 +50,7 @@ export function DecisionChainSheet({
 }: {
   /** 1 for the first Decision after the root. */
   depth: number
-  /** Only the top sheet answers Escape, before the editor underneath can close. */
+  /** Only the top sheet takes focus and answers Escape; everything beneath it is inert. */
   top: boolean
   /** The Decision this one follows, and the rule that leads here. */
   parent: string
@@ -64,6 +64,27 @@ export function DecisionChainSheet({
   children: ReactNode
 }) {
   const t = useTranslations('Decisions')
+  const scrim = useRef<HTMLDivElement>(null)
+  const dialog = useRef<HTMLDivElement>(null)
+  // Whatever held focus when this sheet opened, read before the editor beneath goes inert.
+  const [opener] = useState(() => (document.activeElement instanceof HTMLElement ? document.activeElement : null))
+  // Layout-phase, so a closing menu's queued focus lands on an inert trigger instead of the covered editor.
+  useLayoutEffect(() => {
+    if (!top) return
+    const covered = [...document.body.children].filter(
+      (node): node is HTMLElement => node instanceof HTMLElement && node !== scrim.current && !node.inert
+    )
+    for (const node of covered) node.inert = true
+    const frame = requestAnimationFrame(() => {
+      if (!dialog.current?.contains(document.activeElement)) dialog.current?.focus()
+    })
+    return () => {
+      cancelAnimationFrame(frame)
+      for (const node of covered) node.inert = false
+    }
+  }, [top])
+  // Declared after the inert effect, so on close the opener is focusable again before it takes focus back.
+  useLayoutEffect(() => () => void (opener?.isConnected && opener.focus()), [opener])
   useEffect(() => {
     if (!top) return
     const onKey = (event: KeyboardEvent) => {
@@ -75,11 +96,13 @@ export function DecisionChainSheet({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [top, onCancel])
   return createPortal(
-    <div className="scrim bg-[rgba(17,22,29,0.28)]" onClick={onCancel}>
+    <div ref={scrim} className="scrim bg-[rgba(17,22,29,0.28)]" onClick={onCancel}>
       <div
+        ref={dialog}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
         className={`modal ${SHEET_STACK[Math.min(depth, SHEET_STACK.length) - 1]}`}
         onClick={(event) => event.stopPropagation()}
       >
