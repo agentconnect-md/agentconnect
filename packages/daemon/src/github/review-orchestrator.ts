@@ -474,9 +474,9 @@ export class GithubReviewOrchestrator {
     cleanup: CodeHostThreadWorktreeCleanup,
     owner: HookCompletionOwner
   ): Promise<void> {
+    let session: { sessionId?: string } = {}
     try {
-      // A merge/close can race the last review turn. Let that exact dispatch
-      // settle before applying the same safety checks used by retention.
+      // Let the last turn settle before cleaning up its worktree.
       await this.host.activeDispatchDone(key)?.catch(() => undefined)
       const rec = await this.host.getSession(key)
       if (!rec) {
@@ -484,10 +484,11 @@ export class GithubReviewOrchestrator {
         await this.host.emitHookCompletion(hook, 'success', { reason: 'worktree_cleanup_no_session' }, owner)
         return
       }
+      session = rec.acpSessionId ? { sessionId: rec.acpSessionId } : {}
       const result = await this.host.cleanupSessionWorktree(rec)
       if (result.outcome === 'failed') {
         this.log.warn(`github lifecycle: ${cleanup} worktree cleanup failed for ${key} (${result.error})`)
-        await this.host.emitHookCompletion(hook, 'failed', { reason: 'worktree_cleanup_failed' }, owner)
+        await this.host.emitHookCompletion(hook, 'failed', { ...session, reason: 'worktree_cleanup_failed' }, owner)
         return
       }
       if (result.outcome === 'retained') {
@@ -495,21 +496,26 @@ export class GithubReviewOrchestrator {
         await this.host.emitHookCompletion(
           hook,
           'success',
-          { reason: `worktree_cleanup_retained_${result.reason}` },
+          { ...session, reason: `worktree_cleanup_retained_${result.reason}` },
           owner
         )
         return
       }
       if (result.outcome === 'active') {
         this.log.info(`github lifecycle: ${cleanup} deferred worktree cleanup for active session ${key}`)
-        await this.host.emitHookCompletion(hook, 'success', { reason: 'worktree_cleanup_deferred_active' }, owner)
+        await this.host.emitHookCompletion(
+          hook,
+          'success',
+          { ...session, reason: 'worktree_cleanup_deferred_active' },
+          owner
+        )
         return
       }
       this.log.info(`github lifecycle: ${cleanup} worktree cleanup ${result.outcome} for ${key}`)
-      await this.host.emitHookCompletion(hook, 'success', undefined, owner)
+      await this.host.emitHookCompletion(hook, 'success', session, owner)
     } catch (err) {
       this.log.warn(`github lifecycle: ${cleanup} worktree cleanup failed for ${key} (${formatErr(err)})`)
-      await this.host.emitHookCompletion(hook, 'failed', { reason: 'worktree_cleanup_failed' }, owner)
+      await this.host.emitHookCompletion(hook, 'failed', { ...session, reason: 'worktree_cleanup_failed' }, owner)
     }
   }
 

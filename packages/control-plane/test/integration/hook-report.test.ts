@@ -242,6 +242,60 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     expect(runs[0]).toMatchObject({ status: 'success', durationMs: 5200, sessionId: 'ses_9' })
   })
 
+  it.each(['github:987654321', 'acme/infra'])(
+    'links a historical merge cleanup in %s only when its prior session is unambiguous',
+    async (channel) => {
+      const { agentId, hookId } = await placedGithubHook()
+      await prisma.hookDef.update({
+        where: { id: hookId },
+        data: { githubSessionKey: channel === 'acme/infra' ? null : channel }
+      })
+      const firedAt = new Date('2026-07-03T09:00:00.000Z')
+      const sessionId = randomUUID()
+      const session = {
+        agentId,
+        orgId: DEFAULT_ORG_ID,
+        platform: 'hook',
+        triggeredBy: `hook:${randomUUID()}`,
+        channel,
+        thread: '42',
+        daemonId: DAEMON,
+        phase: 'end' as const,
+        startedAt: new Date(firedAt.getTime() - 60_000),
+        lastActivityAt: firedAt
+      }
+      await prisma.sessionMeta.create({ data: { ...session, id: sessionId } })
+      const run = {
+        hookId,
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        event: 'pull_request:merged',
+        repoId: 987654321n,
+        pullNumber: 42,
+        subjectKind: 'pull_request',
+        dispatchDaemonId: DAEMON,
+        status: 'success' as const,
+        startedAt: firedAt,
+        completedAt: firedAt
+      }
+      await prisma.hookRun.createMany({
+        data: [
+          { ...run, deliveryKey: 'merge-cleanup' },
+          { ...run, deliveryKey: 'merge-no-session', reason: 'worktree_cleanup_no_session' }
+        ]
+      })
+
+      let runs = await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId))
+      expect(runs.find((item) => item.deliveryKey === 'merge-cleanup')?.sessionId).toBe(sessionId)
+      expect(runs.find((item) => item.deliveryKey === 'merge-no-session')?.sessionId).toBeNull()
+      expect((await repo().getRun(HookId(hookId), 'merge-cleanup'))?.sessionId).toBeNull()
+
+      await prisma.sessionMeta.create({ data: { ...session, id: randomUUID() } })
+      runs = await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId))
+      expect(runs.find((item) => item.deliveryKey === 'merge-cleanup')?.sessionId).toBeNull()
+    }
+  )
+
   it('a failed delivery records the failure outright (no daemon report needed)', async () => {
     const { hookId } = await placedHook()
     await repo().recordDelivery(HookId(hookId), {

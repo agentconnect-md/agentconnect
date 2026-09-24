@@ -4117,7 +4117,7 @@ export interface HookRunDto {
   startedAt: string
   status: 'running' | 'success' | 'failed'
   durationMs: number | null
-  sessionId: string | null // ACP session id — deep-links into the session view
+  sessionId: string | null // Console session id, when the delivery has a related session
   reason: string | null
 }
 

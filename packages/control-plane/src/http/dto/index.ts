@@ -3014,7 +3014,7 @@ export const HookRunDto = z.object({
   startedAt: z.string(),
   status: z.enum(['running', 'success', 'failed']),
   durationMs: z.number().int().nullable(),
-  sessionId: z.string().nullable(), // ACP session id (console deep-link)
+  sessionId: z.string().nullable(), // Console session id when the delivery has one
   reason: z.string().nullable(),
   redeliveryAttempts: z.number().int().nonnegative(),
   redeliveryLastRequestedAt: z.string().nullable()

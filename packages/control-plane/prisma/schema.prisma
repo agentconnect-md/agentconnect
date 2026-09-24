@@ -2021,7 +2021,7 @@ model HookRun {
   publishedCommentId        String?
   status                    CronRunStatus      @default(running)
   durationMs                Int?
-  sessionId                 String? // ACP session id (console deep-link); null while running
+  sessionId                 String? // Console session id when the delivery has one
   reason                    String? // short failure text: daemon_offline / dispatch_timeout / orphaned / turn failure
   // Durable, metadata-only GitHub redelivery schedule. These fields are used
   // only for delivery-stage failures that are explicitly classified as safe

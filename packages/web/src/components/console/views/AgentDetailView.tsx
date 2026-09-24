@@ -3087,7 +3087,7 @@ const HOOK_RUN_DOT: Record<HookRunDto['status'], string> = {
 }
 
 // Recent deliveries for one webhook (GET /hooks/:id/runs), fetched on expand.
-// Each row: delivery outcome + the session it opened (deep-link when reported).
+// Link the session a delivery ran in or cleaned up when one is known.
 function HookRunsPanel({ hookId, sessionHref }: { hookId: string; sessionHref: (sessionId: string) => string }) {
   const t = useTranslations('Agents.detail')
   const { activeOrg } = useOrgs()
