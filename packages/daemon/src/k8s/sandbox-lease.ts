@@ -48,6 +48,10 @@ export class SandboxLease {
     this.busy.set(sandboxName, (this.busy.get(sandboxName) ?? 0) + 1)
   }
 
+  isHeld(sandboxName: string): boolean {
+    return (this.busy.get(sandboxName) ?? 0) > 0
+  }
+
   release(sandboxName: string): void {
     const left = (this.busy.get(sandboxName) ?? 0) - 1
     if (left > 0) {
@@ -85,7 +89,7 @@ export class SandboxLease {
    */
   async suspendIfIdle(subject: string, sandboxName: string, onSuspended: () => void): Promise<'suspended' | 'busy'> {
     if (this.suspending.has(subject)) return 'busy'
-    if ((this.busy.get(sandboxName) ?? 0) > 0) return 'busy'
+    if (this.isHeld(sandboxName)) return 'busy'
     let opened: () => void = () => {}
     this.suspending.set(subject, new Promise<void>((resolve) => (opened = resolve)))
     this.retain(sandboxName)

@@ -250,6 +250,13 @@ took the launch when the shared store records no activity. So a Running pod
 has exactly one member that owns its idleness, an ex-holder can never suspend
 a successor's pod, and a rollout leaves no pod without a candidate to suspend it.
 
+A cached launch is checked against Kubernetes before an unheld acquisition reuses
+it. If its Sandbox is gone, the driver drops that exact launch and its channel,
+then reads the claim again before taking a lease. A workspace operation already
+holding a pod cannot silently switch to a replacement behind that lease. A 404
+observed by the idle sweep also forgets the stale launch; claims and volumes are
+never deleted as part of this recovery.
+
 **An open console page can hold a pod against the sweep, for as long as it is
 looking.** The sweep's clock is MESSAGE activity, which is the right rule for a
 conversation and the wrong one for a page: a session whose worktree holds

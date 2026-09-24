@@ -1,5 +1,6 @@
 import { noopClusterMetrics, type LaunchTimer, type ClusterMetrics } from '../metrics/cluster-metrics.js'
 import { systemClock, type Clock } from '@agentconnect.md/connection'
+import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
@@ -88,7 +89,8 @@ export class K8sDriver implements SpawnDriver {
     })
     const endpoints = sandboxEndpointProvider({
       lease: this.lease,
-      awaitReady: (sandboxName) => awaitReady(sandboxName, this.waits)
+      awaitReady: (sandboxName) => awaitReady(sandboxName, this.waits),
+      onNotFound: (launch) => this.checkMissingLaunch(launch)
     })
     this.binder = new ChannelBinder({
       registry: this.registry,
@@ -129,12 +131,7 @@ export class K8sDriver implements SpawnDriver {
     return this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
   }
 
-  // Ensure the subject has a claim and a bound Sandbox; idempotent, the claim name derives from it.
-  // The ordering is the point: wait out an in-flight idle suspension (its pod is being deleted) and
-  // then an in-flight takeover — the same answer from the cluster — before claiming against a fence
-  // snapshot. Nothing per-agent or per-session goes in the claim SPEC beyond the pod labels, or it would
-  // bypass warm-pool adoption; the same labels ride the claim's own metadata so a member can list an
-  // agent's session claims without knowing their sessions.
+  // Reuse or claim the subject's Sandbox after waiting out suspension and takeover.
   async ensureSandbox(subject: SandboxSubject, timer?: LaunchTimer): Promise<SandboxLaunch> {
     const ensure = () => this.ensureSandboxInner(subject, timer)
     return this.sessionFor(subject)?.isAttached() ? await ensure() : await withStartupPhase('sandbox', ensure)
@@ -145,9 +142,22 @@ export class K8sDriver implements SpawnDriver {
     if (suspending) await suspending
     const adopting = this.registry.adoptInFlight(subject)
     if (adopting) await adopting
-    const existing = this.registry.currentLaunch(subject)
-    if (existing) return existing
     const releasedAt = this.registry.releaseFence(subject)
+    const existing = this.registry.currentLaunch(subject)
+    if (existing) {
+      // A held operation must fail on its original pod rather than switch behind its lease.
+      if (this.lease.isHeld(existing.sandboxName)) return existing
+      await this.checkMissingLaunch(existing)
+      this.registry.assertStillServed(subject, releasedAt)
+      const suspending = this.lease.suspensionOf(subject)
+      if (suspending) {
+        await suspending
+        this.registry.assertStillServed(subject, releasedAt)
+        return await this.ensureSandboxInner(subject, timer)
+      }
+      const current = this.registry.currentLaunch(subject)
+      if (current) return current
+    }
     const name = this.claimName(subject)
     const agentId = sandboxSubjectAgentId(subject)
     const orgId = this.deps.orgForAgent(agentId)
@@ -377,7 +387,10 @@ export class K8sDriver implements SpawnDriver {
     const launch = this.registry.currentLaunch(subject)
     if (!launch) return 'absent'
     const sandbox = await readIfPresent(() => this.deps.api.getSandbox(launch.sandboxName, opts))
-    if (!sandbox) return 'absent'
+    if (!sandbox) {
+      this.forgetMissingLaunch(subject, launch)
+      return 'absent'
+    }
     // Suspended is a decision this daemon made: the pod is gone and none is coming up for it.
     if ((sandbox.spec?.operatingMode ?? 'Running') !== 'Running') return 'absent'
     return isSandboxReady(sandbox) && resolvePodIp(sandbox) ? 'ready' : 'starting'
@@ -400,13 +413,21 @@ export class K8sDriver implements SpawnDriver {
   }
 
   // Opens the lease's gate synchronously, so a caller that judged `launch` in the same tick decides against exactly that launch; the re-read guards one replaced during the write.
-  private suspendLaunch(subject: string, launch: SandboxLaunch): Promise<'suspended' | 'busy'> {
-    return this.lease.suspendIfIdle(subject, launch.sandboxName, () => {
-      if (this.registry.currentLaunch(subject) === launch) {
-        this.binder.dropSession(subject)
-        this.forgetLaunch(subject)
-      }
-    })
+  private async suspendLaunch(subject: string, launch: SandboxLaunch): Promise<'suspended' | 'busy' | 'absent'> {
+    return await this.lease
+      .suspendIfIdle(subject, launch.sandboxName, () => {
+        if (this.registry.currentLaunch(subject) === launch) {
+          this.binder.dropSession(subject)
+          this.forgetLaunch(subject)
+        }
+      })
+      .catch((err: unknown) => {
+        if (err instanceof K8sApiError && err.isNotFound) {
+          this.forgetMissingLaunch(subject, launch)
+          return 'absent' as const
+        }
+        throw err
+      })
   }
 
   // A failed bind leaves a Running pod nothing uses, often one this member just woke; left so, a pod that cannot schedule keeps its CPU request and starves every later wake.
@@ -449,7 +470,26 @@ export class K8sDriver implements SpawnDriver {
   private setMode(subject: string, desired: OperatingMode): Promise<OperatingMode | undefined> {
     const launch = this.registry.currentLaunch(subject)
     if (!launch) return Promise.reject(new Error(`no sandbox launch recorded for ${subject}`))
-    return this.lease.queueMode(launch.sandboxName, desired)
+    return this.lease.queueMode(launch.sandboxName, desired).catch(async (err: unknown) => {
+      if (err instanceof K8sApiError && err.isNotFound) await this.checkMissingLaunch(launch)
+      throw err
+    })
+  }
+
+  private async checkMissingLaunch(launch: SandboxLaunch): Promise<void> {
+    if (this.registry.currentLaunch(launch.subject) !== launch) return
+    const sandbox = await readIfPresent(() => this.deps.api.getSandbox(launch.sandboxName))
+    if (!sandbox) this.forgetMissingLaunch(launch.subject, launch)
+  }
+
+  private forgetMissingLaunch(subject: string, launch: SandboxLaunch): void {
+    if (this.registry.currentLaunch(subject) !== launch) return
+    this.binder.loseChannel(subject, 'sandbox no longer exists')
+    this.binder.forget(subject)
+    this.registry.forgetLaunch(subject)
+    this.lease.forgetSandbox(launch.sandboxName)
+    this.deps.revokeChannel?.(subject)
+    this.deps.log.warn(`cluster: sandbox ${launch.sandboxName} is gone — forgetting the launch of ${subject}`)
   }
 
   // `withSandbox` without the ensure: retain a Sandbox this member ALREADY launched and is not suspending, or answer undefined; the idle gate reads `busy` synchronously, so the retain excludes the sweep rather than racing it.
