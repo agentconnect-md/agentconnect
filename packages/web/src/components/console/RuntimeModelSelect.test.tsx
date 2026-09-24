@@ -138,7 +138,7 @@ it('opens read-only chat settings to the notice alone while the pill still reads
   expect(dialog.querySelectorAll('button, input, select')).toHaveLength(0)
 })
 
-it('omits the footer while By decision is selected and Fast mode where the model lacks it', async () => {
+it('names the Decision and omits the footer while By decision is selected, and Fast mode where the model lacks it', async () => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -156,7 +156,8 @@ it('omits the footer while By decision is selected and Fast mode where the model
     )
   )
   const trigger = container.querySelector('button')!
-  expect(trigger.textContent).not.toContain('High')
+  expect(trigger.textContent).toBe('Task type')
+  expect(trigger.querySelector('svg.lucide-split')).toBeTruthy()
   await act(async () => trigger.click())
   expect(document.querySelector('select')).toBeNull()
   await act(async () => trigger.click())
