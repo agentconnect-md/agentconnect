@@ -98,6 +98,9 @@
       "title": "Built-in agent",
       "label": "builtin"
     },
+    "selfAgentTag": {
+      "label": "this agent"
+    },
     "commandMenu": {
       "runCommand": "Run a command",
       "oneAgent": "One agent",
@@ -1310,8 +1313,7 @@
       },
       "defaultDispatch": {
         "button": "Default dispatch — {agent}",
-        "label": "Default dispatch",
-        "thisAgent": "this agent"
+        "label": "Default dispatch"
       },
       "dispatch": {
         "sendTo": "Send every message to",

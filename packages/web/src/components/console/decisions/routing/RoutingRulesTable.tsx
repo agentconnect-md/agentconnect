@@ -18,6 +18,7 @@ import type { DecisionCondition, DecisionQuestion } from '@agentconnect.md/proto
 import { RoutingContinuation } from '../DecisionChainControls'
 import { IntervalSlider } from '../DecisionConditionFields'
 import { AgentMark16, FieldIssue, Note, RuleRow, issueText } from './RoutingFields'
+import { SelfAgentTag, useSelfAgentId } from '@/components/console/SelfAgentTag'
 
 // The design's compact table: a 34px header, 8px rows, and 30px controls.
 const HEAD =
@@ -98,6 +99,7 @@ function TargetPicker({
   onChange: (target: Target) => void
 }) {
   const t = useTranslations('Decisions.routing.modal')
+  const selfAgentId = useSelfAgentId()
   const selected = value.type === 'agent' ? agents.find((agent) => agent.id === value.agentId) : undefined
   const text =
     value.type === 'agent'
@@ -163,6 +165,7 @@ function TargetPicker({
                 <>
                   <AgentMark16 agent={agent} />
                   <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{agent.name}</span>
+                  {agent.id === selfAgentId && <SelfAgentTag />}
                   <span
                     aria-hidden="true"
                     className={`h-[7px] w-[7px] flex-none rounded-full ${agent.available ? 'bg-(--status-online)' : 'bg-(--gray-300)'}`}

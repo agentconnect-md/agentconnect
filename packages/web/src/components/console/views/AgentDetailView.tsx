@@ -90,6 +90,7 @@ import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import { LabelFilterField } from '@/components/console/LabelFilterField'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import { IntegrationPlatformGroups } from '@/components/console/IntegrationPlatformGroups'
+import { SelfAgentContext } from '@/components/console/SelfAgentTag'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import { AgentMark, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
@@ -270,6 +271,15 @@ function rowSettingsTitle(hook: HookDto): string {
 }
 
 export default function AgentDetailView() {
+  const { id } = useParams<{ id: string }>()
+  return (
+    <SelfAgentContext value={id}>
+      <AgentDetail />
+    </SelfAgentContext>
+  )
+}
+
+function AgentDetail() {
   const t = useTranslations('Agents.detail')
   const decisionsPrototype = useOptionalDecisionsPrototype()
   const decisions = useMemo(() => decisionsPrototype?.decisions ?? [], [decisionsPrototype])
