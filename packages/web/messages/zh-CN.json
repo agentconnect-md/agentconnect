@@ -98,6 +98,9 @@
       "title": "内置 Agent",
       "label": "内置"
     },
+    "selfAgentTag": {
+      "label": "当前Agent"
+    },
     "commandMenu": {
       "runCommand": "运行命令",
       "oneAgent": "一个 Agent",
@@ -1310,8 +1313,7 @@
       },
       "defaultDispatch": {
         "button": "默认分发——{agent}",
-        "label": "默认分发",
-        "thisAgent": "当前Agent"
+        "label": "默认分发"
       },
       "dispatch": {
         "sendTo": "所有消息发送给",

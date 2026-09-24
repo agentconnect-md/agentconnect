@@ -11,6 +11,7 @@ import { DecisionsPrototypeProvider, useDecisionsPrototype } from '@/lib/decisio
 import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
 import type { IntegrationChannelRow } from '@/lib/data'
 import { ApiError } from '@/lib/api'
+import { SelfAgentContext } from '@/components/console/SelfAgentTag'
 
 const routing = vi.hoisted(() => ({
   getRouting: vi.fn(),
@@ -173,7 +174,7 @@ function Harness({ channels }: { channels: IntegrationChannelRow[] }) {
   ) : null
 }
 
-async function render(channels: IntegrationChannelRow[]) {
+async function render(channels: IntegrationChannelRow[], selfAgentId?: string) {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -181,7 +182,9 @@ async function render(channels: IntegrationChannelRow[]) {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
         <DecisionsPrototypeProvider>
-          <Harness channels={channels} />
+          <SelfAgentContext value={selfAgentId}>
+            <Harness channels={channels} />
+          </SelfAgentContext>
         </DecisionsPrototypeProvider>
       </SWRConfig>
     )
@@ -256,6 +259,26 @@ describe('IntegrationChannelList shared-bot routing', () => {
     expect(document.body.querySelector('button[aria-label="Target for billing"]')?.textContent).toContain('deploy-bot')
     expect(document.body.querySelector('button[aria-label="Target for sales"]')?.textContent).toContain('Use Otherwise')
     expect(dialog()?.textContent).toContain('also apply to C9')
+  })
+
+  it('tags the page’s own agent in the rule target picker', async () => {
+    routing.getRouting.mockResolvedValue(routed)
+    await render(
+      [
+        row({
+          trigger: 'decision',
+          decisionBinding: { type: 'shared_bot_routing' },
+          decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
+        })
+      ],
+      'agent-1'
+    )
+    await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+    await click(all('button').find((node) => node.getAttribute('title') === 'Edit By decision rules'))
+    await click(document.body.querySelector('button[aria-label="Target for billing"]'))
+    const options = all('[role="menuitemradio"]')
+    expect(options.find((node) => node.textContent?.includes('deploy-bot'))?.textContent).toContain('this agent')
+    expect(options.find((node) => node.textContent?.includes('review-bot'))?.textContent).not.toContain('this agent')
   })
 
   it('adds an unrouted row from + Decision and saves it into the bot’s scope with the picked target', async () => {

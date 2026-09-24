@@ -23,6 +23,7 @@ import {
   stopRouting
 } from '@/components/console/decisions/routing/DecisionRoutingModal'
 import { RoutingEntry, type DispatchRouting } from '@/components/console/DefaultDispatchPicker'
+import { SelfAgentTag } from '@/components/console/SelfAgentTag'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
 import type { WebChannelListMessage } from '@/components/console/platforms/contract'
@@ -644,11 +645,7 @@ function DispatchPicker({
                   <span className="mono min-w-0 flex-1 truncate text-[11.5px] text-(--text-primary)">
                     {member.label}
                   </span>
-                  {member.id === viewer?.id && (
-                    <span className="flex-none font-sans text-[10.5px] leading-normal text-(--text-tertiary)">
-                      {translate('defaultDispatch.thisAgent')}
-                    </span>
-                  )}
+                  {member.id === viewer?.id && <SelfAgentTag />}
                   <Icon
                     name="check"
                     size={13}
