@@ -38,6 +38,7 @@ import {
   groupStrategies,
   isSandboxStrategy,
   strategyOptions,
+  strategyUsesImage,
   type PlacementStrategies
 } from '@/lib/execution-strategy'
 import { addAgentDaemonChoice } from './add-agent-daemon-choice'
@@ -386,6 +387,8 @@ export default function AddAgentModal({
     defaultStrategy(executionOptions) ??
     ''
   const effectiveRunInSandbox = placementStrategies.kind !== 'pool' && isSandboxStrategy(effectiveExecution)
+  // Only a strategy that starts the image's install reads its image-binary warning.
+  const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(effectiveExecution)
   // The pool's pod, not the strategy, is what encloses a session there.
   const isolationLabel = sessionIsolationLabel({
     pool: placement?.kind === 'pool',
@@ -399,7 +402,7 @@ export default function AddAgentModal({
   // Runtimes the daemon reports as logged out. Marked in the picker, never blocked —
   // creating on one is a supported state (docs/designs/preset-agents.md §3.2).
   const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
-  const runtimesMissingImageBinary = effectiveRunInSandbox ? imageBinaryMissingRuntimeIds(daemon) : []
+  const runtimesMissingImageBinary = readsImage ? imageBinaryMissingRuntimeIds(daemon) : []
   // …but the DEFAULT prefers a signed-in one, mirroring how auto-placement picks a
   // preset's runtime. Falls through to the first reported id when all are logged out.
   const defaultRuntime =
@@ -1051,7 +1054,7 @@ export default function AddAgentModal({
                 }}
                 source={daemon}
                 runtimes={runtimeIds}
-                runInSandbox={effectiveRunInSandbox}
+                runInSandbox={readsImage}
                 onFallbackChange={(target) => {
                   if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))
                   setRuntime(target.runtime)

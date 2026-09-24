@@ -137,6 +137,11 @@ export function isSandboxStrategy(value: string): boolean {
   return value !== HOST_STRATEGY
 }
 
+/** Whether a picker value starts the image's runtime install, so its image-binary warning applies; `host` and `srt` start the host's. */
+export function strategyUsesImage(value: string): boolean {
+  return value === 'microsandbox' || value === LEGACY_SANDBOX
+}
+
 /** The request field naming `value`: the slug where the placement reports a table, the legacy boolean where it does not, nothing on the pool. */
 export function executionAsk(
   placement: PlacementStrategies,

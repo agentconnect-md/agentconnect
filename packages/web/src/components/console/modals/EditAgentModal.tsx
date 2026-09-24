@@ -57,8 +57,8 @@ import {
   daemonStrategies,
   executionAsk,
   groupStrategies,
-  isSandboxStrategy,
   strategyOptions,
+  strategyUsesImage,
   type PlacementStrategies
 } from '@/lib/execution-strategy'
 import { isOutputMode, type OutputMode } from '@/lib/output-mode'
@@ -413,7 +413,8 @@ export default function EditAgentModal({
             )
           : daemonStrategies(daemon?.caps)
   const executionOptions = strategyOptions(placementStrategies, execution)
-  const effectiveRunInSandbox = placementStrategies.kind !== 'pool' && isSandboxStrategy(execution)
+  // Only a strategy that starts the image's install reads its image-binary warning.
+  const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(execution)
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
     // With the flag off the picker offers Cloud only to an agent already ON it — same rule
@@ -848,7 +849,7 @@ export default function EditAgentModal({
                   fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
                   source={daemon}
                   runtimes={runtimeOptions}
-                  runInSandbox={effectiveRunInSandbox}
+                  runInSandbox={readsImage}
                   onFallbackChange={(target) => {
                     if (target.runtime !== runtime) onRuntimeChange(target.runtime)
                     setModel((stored) => storedModelAfterPick(target, runtime, selectedModel, stored))

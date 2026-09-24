@@ -8,7 +8,8 @@ import {
   executionAsk,
   groupStrategies,
   LEGACY_SANDBOX,
-  strategyOptions
+  strategyOptions,
+  strategyUsesImage
 } from './execution-strategy'
 
 const caps = (extra: Partial<DaemonCaps> = {}): DaemonCaps => ({
@@ -111,6 +112,15 @@ describe('the choice and its request', () => {
     expect(executionAsk(legacy, 'host')).toEqual({ runInSandbox: false })
     // The legacy sandbox is never sent as a slug, even to a placement that now reports a table.
     expect(executionAsk(daemonStrategies(caps({ strategies: TABLE })), LEGACY_SANDBOX)).toEqual({ runInSandbox: true })
+  })
+
+  it('applies the image’s runtime warnings only to a strategy that starts the image’s install', () => {
+    expect(strategyUsesImage('microsandbox')).toBe(true)
+    // An unreported backend may be the VM, as the old toggle read it.
+    expect(strategyUsesImage(LEGACY_SANDBOX)).toBe(true)
+    // `srt` confines the host's install, so an image-only binary gap says nothing about it.
+    expect(strategyUsesImage('srt')).toBe(false)
+    expect(strategyUsesImage('host')).toBe(false)
   })
 
   it('reads an agent’s stored strategy, or the legacy sandbox while its backend is unreported', () => {
