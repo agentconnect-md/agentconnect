@@ -1253,20 +1253,27 @@ differs locally goes, in four steps that each land alone:
    placeholder substitution for its executor's own credentials (§8) and a local one
    keeps it. The local launch still calls the step itself until step 4 routes it through
    the launcher.
-3. **The launcher takes an environment, not a leaf.** A `StrategyLauncher` today
-   derives everything from `(daemonRoot, sessionLeaf)`: `hostedEnvironment` names the
-   VM `executor/<leaf>` and mounts `<daemonRoot>/sessions/<leaf>`. It takes an
-   environment descriptor instead — its id, workspace root, mounts, placeholder
-   secrets and HOME seed — the shape `MicrosandboxEnvironment` already has. The facet
-   builds the hosted descriptor from the leaf exactly as today; the local path passes
-   the one its placement rule already builds (`microsandboxPlacement`,
-   `microsandboxContext`): `agent/session-…` for a session-isolated session, and
-   `agent/agent` or `agent/<host key>` for a `shared` or retained legacy one, with the
-   agent's own mounts. Identities do not change, so every existing VM, disk and binding
-   is adopted as it is and **nothing is migrated**. The remote contract does not change
-   either: a relayed `prepare` names only a session leaf, so an agent-scoped
-   environment is unreachable from another machine by construction, and the two id
-   spaces already cannot collide (`HOSTED_PREFIX`).
+3. **The launcher takes an environment, not a leaf — landed.** A `StrategyLauncher`
+   derived everything from `(daemonRoot, sessionLeaf)`. It now starts an
+   `EnvironmentDescriptor` — its id, workspace root, mounts, placeholder secrets and
+   HOME seed, the shape `MicrosandboxEnvironment` had and is now an alias of — and
+   `discard` finds one by its id. The facet builds the hosted descriptor from the leaf
+   exactly as before (`hostedEnvironment`: `executor/<leaf>` over
+   `<daemonRoot>/sessions/<leaf>`), after seeding the HOME through the launcher's own
+   `seedHome` where it has one, so a VM's protected seed is in the descriptor before
+   `start`. That seed readies the image first, as a start did, because a first use
+   adopts the image's runtime table and the seed must cover its runtimes. The `host`
+   launcher takes its roots from the descriptor. The local placement rule
+   (`microsandbox/placement.ts`, behind `microsandboxPlacement` and
+   `microsandboxContext`) yields the same type: `agent/session-…` for a
+   session-isolated session, and `agent/agent` or `agent/<host key>` for a `shared` or
+   retained legacy one, with the agent's own mounts. Local launches do not go through
+   the launcher yet; step 4 passes that descriptor straight through. Identities do not
+   change, so every existing VM, disk and binding is adopted as it is and **nothing is
+   migrated**. The remote contract does not change either: a relayed `prepare` names
+   only a session leaf, so an agent-scoped environment is unreachable from another
+   machine by construction, and the two id spaces already cannot collide
+   (`HOSTED_PREFIX`).
 4. **An in-process executor entry.** `ExecutorPlane` gains a local provider that calls
    the launcher with the local descriptor, and `RemoteShimDriver` binds the shim as it
    binds any executor's, with this daemon's own generation allocator. The manager's two
@@ -1342,7 +1349,7 @@ commits, including claim, sleep and orphan machinery this design does not need.
 About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
-**The 2026-09-24 revision** adds the following. S1, S2a, S2c, S3, M1 and M2 have
+**The 2026-09-24 revision** adds the following. S1, S2a, S2c, S3, M1, M2 and M3 have
 landed and the rest have not started. Each lands alone; S1–S3 are one feature, S2
 lands in three parts, and M1–M4 precede R1.
 

@@ -89,7 +89,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import {
   installMicrosandbox,
   installedMicrosandbox,
@@ -100,6 +100,11 @@ import { resolveMicrosandboxImage } from './release-image.js'
 import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
 import { microsandboxGitRunner } from './microsandbox/git.js'
+import {
+  localMicrosandboxEnvironment,
+  localMicrosandboxPlacement,
+  type LocalMicrosandboxPlacement
+} from './microsandbox/placement.js'
 import { ShimWorkspaceFs } from './shim/workspace-fs-channel.js'
 import { ShimWorkspaceFiles } from './shim/workspace-files-channel.js'
 import { ClusterSkillClient } from './shim/skill-client.js'
@@ -3942,7 +3947,7 @@ export class Daemon {
       strategies: () => this.executionStrategies(),
       // Both are offered; the effective table above is what decides which of them a `prepare` may ask for.
       launchers: {
-        host: hostLauncher(),
+        host: hostLauncher(root),
         // A VM seeds its own HOME from the same admitted runtimes, with their credentials behind placeholders (§8).
         microsandbox: microsandboxLauncher({
           manager: () => this.microsandbox,
@@ -4828,20 +4833,13 @@ export class Daemon {
     return !this.k8s && this.agentStrategy(agent) === 'microsandbox'
   }
 
-  private microsandboxPlacement(
-    agent: LoadedAgent,
-    cwd: string,
-    key?: HostKey
-  ): { id: string; trustedSessionDir?: string; homeKey?: HostKey } {
-    const parts = relative(agent.dir, cwd).split(sep)
-    if (parts[0] === 'sessions' && /^session-[a-f0-9]{24}$/.test(parts[1] ?? '')) {
-      return { id: `${agent.id}/${parts[1]}`, trustedSessionDir: join(agent.dir, 'sessions', parts[1]!) }
-    }
-    // A legacy session keeps its VM and HOME even when its MCP scope requires a separate ACP process.
-    if (key && this.legacyMicrosandboxSessions.has(key)) {
-      return { id: `${agent.id}/agent`, homeKey: agentHostKey(agent.id) }
-    }
-    return { id: `${agent.id}/${hostKeyDirName(key)}` }
+  private microsandboxPlacement(agent: LoadedAgent, cwd: string, key?: HostKey): LocalMicrosandboxPlacement {
+    return localMicrosandboxPlacement({
+      agentId: agent.id,
+      agentDir: agent.dir,
+      cwd,
+      ...(key ? { hostKey: key, legacy: this.legacyMicrosandboxSessions.has(key) } : {})
+    })
   }
 
   private microsandboxContext(
@@ -4910,7 +4908,7 @@ export class Daemon {
       trustedMounts: microsandboxSupportMounts(this.root, git?.GIT_CONFIG_GLOBAL),
       mounts: this.cfg.sandbox.mounts
     })
-    return { environment: { id: placement.id, ...launch.microsandbox }, launch }
+    return { environment: localMicrosandboxEnvironment(placement.id, launch.microsandbox), launch }
   }
 
   private microsandboxGit(agentId: string, cwd?: string, abort?: AbortSignal) {
@@ -4984,10 +4982,9 @@ export class Daemon {
   private readonly microsandboxPlane: ExecutionPlane = {
     // The environment names the VM; the host key rides along on every launch.
     spawnFor: ({ agent, hostKey, cwd, prepared }) => ({
-      driver: this.microsandbox!.driverFor({
-        id: this.microsandboxPlacement(agent, cwd, hostKey).id,
-        ...prepared.microsandbox!
-      }),
+      driver: this.microsandbox!.driverFor(
+        localMicrosandboxEnvironment(this.microsandboxPlacement(agent, cwd, hostKey).id, prepared.microsandbox!)
+      ),
       hostKey
     }),
     gitRunnerFor: (agentId, cwd, abort) => this.microsandboxGit(agentId, cwd, abort),
@@ -20120,16 +20117,12 @@ export class Daemon {
     )
   }
 
-  /** The one safe per-session worktree deletion path shared by age retention
-   * and GitHub thread lifecycle cleanup. It deliberately preserves the current
-   * dirty/untracked and unique-commit protections in this.workspaces.removeSessionWorktree(). */
+  /** The one safe per-session directory deletion path, shared by age retention and GitHub thread lifecycle cleanup, under the workspace manager's dirty and unique-commit rules. */
   private async cleanupSessionWorktree(rec: SessionRecord): Promise<SessionWorktreeCleanupResult> {
     if (await this.sessionRetentionActive(rec)) return { outcome: 'active' }
     const agent = this.agents.get(rec.agentId)
-    // A scratch agent has no primary worktree but may still own one per secondary root, so the
-    // prefilter is "could this agent own one at all" rather than "the primary is a repository" —
-    // and it is answered from the spec, because the disk that holds the roots is not bound yet.
-    if (!agent || rec.workspaceIsolation === 'shared' || !this.workspaces.mayOwnSessionWorktrees(agent)) {
+    // "Could this session own a directory at all", from the spec, since the disk that holds the roots is not bound yet.
+    if (!agent || !this.sessionMayOwnDirectories(agent, rec)) {
       return { outcome: 'not_applicable' }
     }
     return this.withWorkspaceAdmissionFence(rec.agentId, async () => {
@@ -20137,17 +20130,13 @@ export class Daemon {
       // queued mutation boundary. In that case it owns the worktree, so defer.
       if (await this.sessionRetentionActive(rec)) return { outcome: 'active' }
       const currentAgent = this.agents.get(rec.agentId)
-      if (
-        !currentAgent ||
-        rec.workspaceIsolation === 'shared' ||
-        !this.workspaces.mayOwnSessionWorktrees(currentAgent)
-      ) {
+      if (!currentAgent || !this.sessionMayOwnDirectories(currentAgent, rec)) {
         return { outcome: 'not_applicable' }
       }
       // A host bound to this session runs inside the directory about to go: stop it before the removal.
       await this.stopSessionHost(rec.agentId, rec.key, { ...this.sessionHostFence(rec.agentId, rec.key), row: rec })
       // A pod that will not come up is THIS session's failure, never the whole sweep's: it retries next pass.
-      const result = await this.judgeSessionDirectories(currentAgent, rec.key).catch(
+      const result = await this.judgeSessionDirectories(currentAgent, rec.key, rec.workspaceIsolation).catch(
         (err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message })
       )
       if (result === undefined) return { outcome: 'not_applicable' }
@@ -20167,19 +20156,39 @@ export class Daemon {
     })
   }
 
+  /** Whether retention has a directory of this session's to judge: its on-demand clones beside the agent's roots (decision 20) — recorded on its row once handed, so later rows cannot hide them — shared or not, else an isolated one's worktrees or clones. */
+  private sessionMayOwnDirectories(agent: Agent, rec: SessionRecord): boolean {
+    if (rec.onDemandClones === 1 || this.workspaces.mayOwnOnDemandClones(agent, rec.key)) return true
+    return rec.workspaceIsolation !== 'shared' && this.workspaces.mayOwnSessionWorktrees(agent)
+  }
+
   // Locally one call judges every root. On a pool the session's clones are judged on its own pod, woken only when it has one; the legacy worktrees on the agent pod, asked of that pod and never of this disk — woken for a session with no pod of its own, whose workspace can only be there, and otherwise judged only while already bound (#1896).
-  private async judgeSessionDirectories(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval | undefined> {
+  private async judgeSessionDirectories(
+    agent: Agent,
+    sessionKey: string,
+    isolation: SessionRecord['workspaceIsolation']
+  ): Promise<SessionWorktreeRemoval | undefined> {
     const plane = this.k8sPlane
+    // A shared session owns nothing but its on-demand clone directory, which is on the agent's own volume.
+    if (isolation === 'shared') {
+      return await this.withSandboxVolume(agentSandboxSubject(agent.id), async () =>
+        (await this.workspaces.hasOnDemandCloneDir(agent, sessionKey))
+          ? await this.workspaces.removeOnDemandClones(agent, sessionKey)
+          : undefined
+      )
+    }
     if (!plane) {
       return (await this.workspaces.hasSessionWorktreeRoots(agent)) ||
-        this.workspaces.confinedSessionDir(agent, sessionKey) !== undefined
+        this.workspaces.confinedSessionDir(agent, sessionKey) !== undefined ||
+        (await this.workspaces.hasOnDemandCloneDir(agent, sessionKey))
         ? await this.workspaces.removeSessionWorktree(agent, sessionKey)
         : undefined
     }
     const pod = sessionSandboxSubject(agent.id, hostKeyDirName(sessionHostKey(agent.id, sessionKey)))
     const ownPod = await plane.hasSandbox(pod)
     const judgeLegacy = async (): Promise<SessionWorktreeRemoval | undefined> =>
-      (await this.workspaces.hasSessionWorktreeRoots(agent))
+      (await this.workspaces.hasSessionWorktreeRoots(agent)) ||
+      (await this.workspaces.hasOnDemandCloneDir(agent, sessionKey))
         ? await this.workspaces.removeSessionWorktree(agent, sessionKey, 'worktrees')
         : undefined
     let legacy: SessionWorktreeRemoval | undefined

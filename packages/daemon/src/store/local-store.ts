@@ -305,6 +305,8 @@ export interface SessionRecord {
   // Birth verdict (session-executors.md §7), written by `setSessionExecutor`: the executing daemon, or why the session stayed with its holder.
   executorDaemonId?: string | null
   stayedHomeReason?: SessionStayedHomeReason | null
+  // 1 once the runtime was handed an on-demand clone directory (multi-repository-workspaces.md decision 20), written by `markSessionOnDemandClones`, so retention judges it whatever the agent's rows say later.
+  onDemandClones?: number | null
 }
 
 export type PermissionRequestStatus = 'pending' | 'allowed' | 'denied' | 'expired'
@@ -1202,7 +1204,7 @@ const DECISION_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 27
+export const SCHEMA_VERSION = 28
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1508,6 +1510,16 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     const columns = (await db.query('PRAGMA table_info(decision_verdict)', [])).rows as { name: string }[]
     if (columns.length > 0 && !columns.some((c) => c.name === 'targetsJson'))
       await db.exec('ALTER TABLE decision_verdict ADD COLUMN targetsJson TEXT')
+  },
+  // v28: whether a session was handed an on-demand clone directory (multi-repository-workspaces.md decision 20); null on every existing row, added only where it is missing, as v27 does.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS onDemandClones INTEGER')
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
+    if (!columns.some((c) => c.name === 'onDemandClones'))
+      await db.exec('ALTER TABLE sessions ADD COLUMN onDemandClones INTEGER')
   }
 ]
 
@@ -1646,7 +1658,8 @@ export class LocalStore {
         -- carries them, not just the one dispatch that knew the message.
         conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT,
         platformStanding TEXT,
-        executorDaemonId TEXT, stayedHomeReason TEXT
+        executorDaemonId TEXT, stayedHomeReason TEXT,
+        onDemandClones INTEGER
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -3230,6 +3243,11 @@ export class LocalStore {
         'stayedHomeReason' in verdict ? verdict.stayedHomeReason : null,
         key
       )
+  }
+
+  /** Record, once, that a session's runtime was handed an on-demand clone directory (multi-repository-workspaces.md decision 20); an unknown key is a no-op. */
+  async markSessionOnDemandClones(key: string): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET onDemandClones = 1 WHERE key = ? AND onDemandClones IS NULL').run(key)
   }
 
   /** The verdict on the shared row — how a successor holder finds a session's environment; undefined when none was recorded. */

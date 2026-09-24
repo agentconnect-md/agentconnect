@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
-import type { MicrosandboxEnvironment, MicrosandboxManager } from '../microsandbox/driver.js'
+import type { MicrosandboxManager } from '../microsandbox/driver.js'
 import {
   definitionEnv,
   microsandboxCredentialStep,
@@ -13,15 +13,10 @@ import {
 import { canonicalPath, contains } from '../runtimes/read-roots.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT } from '../shim/sandbox-paths.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
-import type { SessionSeed, StrategyLauncher } from './strategies.js'
+import type { EnvironmentDescriptor, SessionSeed, StrategyLauncher } from './strategies.js'
 
 /** Hosted environments are keyed apart from every agent-owned one: this machine holds none of their agents. */
 export const HOSTED_PREFIX = 'executor/'
-
-/** A hosted VM's seed: what its HOME points at, and the placeholder substitutions the VM fixes when it starts (§8). */
-export interface HostedSeed extends SessionSeed {
-  secrets?: MicrosandboxSecret[]
-}
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
@@ -31,7 +26,7 @@ export function seedHostedHome(
   runtimes: Record<string, RuntimeDef>,
   log: Pick<Logger, 'warn'>,
   hostEnv: NodeJS.ProcessEnv = process.env
-): Required<HostedSeed> {
+): Required<SessionSeed> {
   // Every preparer before any seed, so no runtime's plain seed copies a file another one projects.
   const steps = Object.entries(runtimes).flatMap(([runtimeId, runtime]) => {
     try {
@@ -79,13 +74,13 @@ export function seedHostedHome(
   return { env, paths: [...new Set(paths)], secrets: [...secrets.values()] }
 }
 
-/** A hosted session's VM, whose durable state is an executor-local directory MOUNTED into it, never on its own disks (§7). */
+/** A hosted session's environment, which the facet builds from its leaf for every strategy: a VM's durable state is this directory MOUNTED into it, never its own disks (§7). */
 // `replace()` retires and destroys a VM whenever its spec or image identity changes, with no dirty check, so work on those disks would go with it.
 export function hostedEnvironment(
   daemonRoot: string,
   sessionLeaf: string,
-  seed: HostedSeed = { env: {}, paths: [] }
-): MicrosandboxEnvironment {
+  seed: SessionSeed = { env: {}, paths: [] }
+): EnvironmentDescriptor {
   const directory = join(daemonRoot, SESSIONS_DIR, sessionLeaf)
   return {
     id: `${HOSTED_PREFIX}${sessionLeaf}`,
@@ -113,20 +108,23 @@ export function microsandboxLauncher(deps: {
     return manager
   }
   return {
-    seedsHome: true,
-    start: async ({ daemonRoot, sessionLeaf, log }) => {
+    // The guest sees placeholders where the facet's plain seed would copy values, so this seed replaces that one.
+    seedHome: async (home, log) => {
+      // Ready and present first, as a start was: a first use adopts the image's runtime table, whose sign-ins this seed must include.
+      await deps.ready?.()
+      required()
+      return seedHostedHome(home, deps.runtimes?.() ?? {}, log, deps.hostEnv)
+    },
+    start: async ({ environment }) => {
       // The first hosted VM may be this machine's first: it installs msb and prepares the image before any environment starts.
       await deps.ready?.()
       const manager = required()
-      const directory = join(daemonRoot, SESSIONS_DIR, sessionLeaf)
       // The mount source must exist before the VM starts.
       for (const leaf of ['workspace', 'repos', 'home'])
-        await mkdir(join(directory, leaf), { recursive: true, mode: 0o700 })
-      const seed = seedHostedHome(join(directory, 'home'), deps.runtimes?.() ?? {}, log, deps.hostEnv)
-      const environment = hostedEnvironment(daemonRoot, sessionLeaf, seed)
+        await mkdir(join(environment.workspaceRoot, leaf), { recursive: true, mode: 0o700 })
       await manager.prepareEnvironment(environment)
       const guest = manager.guestShim(environment.id)
-      if (!guest) throw new Error(`the hosted VM of ${sessionLeaf} started no shim`)
+      if (!guest) throw new Error(`the VM ${environment.id} started no shim`)
       return {
         connect: () => guest.connect(),
         // The image's fixed layout, NOT a per-session root: in a VM the shim owns its filesystem namespace, which is why #2155's parameterization was needed for `host` alone (§5).
@@ -139,8 +137,8 @@ export function microsandboxLauncher(deps: {
       }
     },
     // A release takes the VM and its disposable disks; the session's directory is the facet's own to remove.
-    discard: async (sessionLeaf) => {
-      await deps.manager()?.discard(`${HOSTED_PREFIX}${sessionLeaf}`)
+    discard: async (id) => {
+      await deps.manager()?.discard(id)
     }
   }
 }

@@ -53,10 +53,7 @@ export type AgentAdditionalRepo = z.infer<typeof AgentAdditionalRepo>
  *   rollout (git-workspace-model.md §8). The CP still projects them to daemons
  *   that do not advertise `workspace-git-v1`.
  *
- * Every mode carries `additionalRepos`: the agent's additional-repository
- * allowlist, projected by the CP so the daemon has the set before a session
- * starts. The daemon prepares each entry as a secondary workspace root and
- * scopes credential requests to the list; honoring `materialize` is the next step.
+ * Every mode carries `additionalRepos`, the CP-projected allowlist: the daemon checks out each `always` entry and scopes credentials to the whole list.
  */
 // Who vouches for a `git` workspace's repository (git-workspace-model.md §3).
 // Absent ⇒ anonymous clone; the daemon's operator-owned `workspaceGitAllowedOrigins`

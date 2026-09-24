@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
@@ -17,7 +17,7 @@ import { testPlane } from './workspace-plane-support.js'
 
 const AGENT = 'bot-roots'
 
-function scaffold(): string {
+function scaffold(additionalRepos: unknown[] = []): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-retired-roots-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -36,8 +36,8 @@ function scaffold(): string {
       name: AGENT,
       status: 'active',
       runtime: 'claude',
-      // No `additionalRepos`, so every subtree seeded below is retired by construction.
-      workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
+      // No `always` row, so every subtree seeded below is retired by construction.
+      workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace'), additionalRepos },
       integrations: [],
       output: { mode: 'low' }
     })
@@ -112,6 +112,42 @@ describe('retired workspace roots are swept only while the agent is quiescent (d
 
     expect(existsSync(attested)).toBe(true)
     expect(existsSync(unattested)).toBe(true)
+    await daemon.stop()
+  })
+})
+
+describe('a shared session’s on-demand clones are judged with its row (decision 20)', () => {
+  it('keeps the row while its clone directory holds work, and removes both once it holds none', async () => {
+    const root = scaffold([{ repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'on-demand' }])
+    const { daemon, inner } = await boot(root)
+    const key = `slack:C1:t1:${AGENT}`
+    await inner.store.upsertSession({
+      key,
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 't1',
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1,
+      workspaceIsolation: 'shared'
+    })
+    const clones = join(root, 'agents', AGENT, 'clones', inner.workspaces.sessionWorktreeId(key))
+    // A file where only clones belong: the session's own work, which only a human removes.
+    mkdirSync(join(clones, 'example-co'), { recursive: true })
+    writeFileSync(join(clones, 'example-co', 'notes.txt'), 'kept\n')
+    // A month on, well past the default retention window, without firing the clock's timers.
+    vi.spyOn(inner.clock, 'now').mockReturnValue(30 * 86_400_000)
+
+    await inner.sweepExpiredSessions()
+    expect(await inner.store.getSession(key)).toBeDefined()
+    expect(existsSync(join(clones, 'example-co', 'notes.txt'))).toBe(true)
+
+    rmSync(join(clones, 'example-co', 'notes.txt'))
+    await inner.sweepExpiredSessions()
+    expect(await inner.store.getSession(key)).toBeUndefined()
+    expect(existsSync(clones)).toBe(false)
     await daemon.stop()
   })
 })

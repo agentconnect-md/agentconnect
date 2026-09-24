@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AF_UNIX_PATH_MAX } from '../acp/sandbox-temp.js'
 import type { Logger } from '../log.js'
@@ -62,9 +62,10 @@ export interface HostShim {
 }
 
 export interface HostShimInput {
+  /** Where the runtime roots live, under `hs/`, beside the sessions. */
   daemonRoot: string
-  /** The session's leaf under `<daemonRoot>/sessions`; `{workspace,repos,home}` are created beneath it. */
-  sessionLeaf: string
+  /** The environment's directory, the shim's cwd; `{workspace,repos,home}` are created beneath it. */
+  workspaceRoot: string
   /** The machine environment the runtimes inherit from; only `INHERITED_ENV` is read. */
   env?: Record<string, string | undefined>
   /** What seeding the session HOME points a runtime at on this machine; the shim fills it in under a holder's env. */
@@ -131,7 +132,8 @@ function builtShimEntry(): string {
 export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   const unavailable = hostShimUnavailableReason()
   if (unavailable) throw new Error(unavailable)
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(input.sessionLeaf)) throw new Error('invalid session leaf')
+  // Absolute and normalized, so no relative or `..` path resolves against wherever this daemon runs.
+  if (resolve(input.workspaceRoot) !== input.workspaceRoot) throw new Error('invalid workspace root')
   const entry = input.entry ?? { execArgv: [], path: builtShimEntry() }
   // The helper root is the entry's grandparent: `<root>/shim/index.js` is the layout both the image and dist share.
   const helperRoot = dirname(dirname(entry.path))
@@ -142,7 +144,7 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   const longest = Object.values(shimPaths(runtimeRoot).tunnels).reduce((a, b) => (b.length > a.length ? b : a))
   if (Buffer.byteLength(longest) > AF_UNIX_PATH_MAX) throw new Error('daemon root is too long for a host shim socket')
   const socketPath = join(runtimeRoot, 'shim.sock')
-  const workspaceRoot = join(input.daemonRoot, 'sessions', input.sessionLeaf)
+  const workspaceRoot = input.workspaceRoot
   const home = join(workspaceRoot, 'home')
   const token = randomBytes(32).toString('base64url')
   // Not the identity token: every runtime's environment carries this, and the identity must reach none of them.
@@ -212,7 +214,7 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   child.stderr!.on('data', (chunk: Buffer) => {
     const lines = (tail + chunk.toString()).split('\n')
     tail = lines.pop() ?? ''
-    for (const line of lines) log?.debug(`host shim ${input.sessionLeaf}: ${line}`)
+    for (const line of lines) log?.debug(`host shim ${basename(workspaceRoot)}: ${line}`)
   })
   const signalGroup = (signal: NodeJS.Signals): void => {
     if (!child.pid) return

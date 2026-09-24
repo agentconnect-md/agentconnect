@@ -2,8 +2,9 @@
 
 > **Status:** Implemented, on self-hosted daemons (phases 1–6) and on cluster
 > (pod) daemons (phase 7), `gh` in the pod included. Per-authorization
-> materialization and the repository selector below (decisions 13–20) are
-> **proposed, not implemented**.
+> materialization below is implemented for `always` and `on-demand` rows
+> (decisions 13 and 20); installation grants and the repository selector
+> (decisions 14–19) are **proposed, not implemented**.
 >
 > Before this design an agent's workspace was exactly one repository.
 > Additional repositories existed only as an authorization allowlist
@@ -256,10 +257,11 @@ no root for a secondary repository on a cluster agent.
 
 ## Materialization modes and on-demand repositories
 
-> **Status:** in progress. Decisions 13–20 extend the design above. The
-> protocol and control-plane half of change-map step 1 has landed (the
-> `materialize` column, its REST surface and its projection, `always` and
-> `on-demand` only); the daemon, the console, and decisions 14–20 have not.
+> **Status:** in progress. Decisions 13–20 extend the design above. Change-map
+> step 1 has landed but for the console: the `materialize` column, its REST
+> surface and its projection (`always` and `on-demand` only), and the daemon
+> checking out only `always` rows with decision 20's clone directory.
+> Decisions 14–19 have not.
 
 Decision 1 scales with the number of rows. An organization with a few hundred
 repositories that authorizes them all — or that holds an installation grant
@@ -284,7 +286,7 @@ out to need later can be cloned on demand.
 | 17  | **Selection is relative to `none`, bounded by a cap.** Within a chunk every option whose probability exceeds `none`'s is a hit; hits across chunks are ordered by probability and at most 5 are materialized (a proposal to measure). A chunk in which `none` leads contributes nothing. The primary is always present, and a review session's subject root is always its `cwd` (decision 6) whatever the selector said.                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Probabilities within a chunk sum to one, so a request about two repositories in the same chunk splits its mass between them; an absolute threshold would drop both, while beating `none` keeps both. The cap bounds preparation time the way the clone budget bounds one root.                                                                                        |
 | 18  | **No fallback.** When any authorization is marked `decision`, an evaluator that is not ready (`DecisionReadiness` other than `ready`) or an `unavailable` evaluation fails the session's start with a visible error naming the cause. The daemon never treats a failed selection as `always` or as `on-demand`. The console offers **By decision** on a row or grant only while at least one provider is ready, and disables it otherwise.                                                                                                                                                                                                                                                                                                                                                                                                                                    | A silent downgrade would make which repositories a session stands in depend on provider health that nobody can see. The operator chose by decision; a failure of its precondition is theirs to see and fix, exactly as a runtime that cannot start is.                                                                                                                |
 | 19  | **The selection is per session and recorded.** The selected set is saved in the session's Decision snapshot beside the model selection, so restart and resume re-materialize the same roots and a later turn does not re-evaluate. The evaluation is recorded as evidence with the session's other Decision evaluations. Widening a running session's roots is a follow-up (see below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | The runtime's directories are fixed at `session/new`; re-selecting on a later turn would need a host restart to take effect, which is a separate design.                                                                                                                                                                                                              |
-| 20  | **On-demand clones live in the session's own directory, and the prompt says where.** A confined session clones into `sessions/<leaf>/repos/<owner>/<repo>`, the place a daemon-materialized secondary would occupy; a worktree-tier or shared session clones into `<agentDir>/clones/<sid>/<owner>/<repo>`, a subtree nothing else enumerates. Both are swept with the session's other directories at retirement and carved into the OS-sandbox boundary like `repos/`. The standing context names the directory, lists what is authorized but not checked out (rows by name, installation grants by account), and states that credentials for those repositories are automatic.                                                                                                                                                                                              | A clone inside the primary's worktree would show up as untracked work; one under `repos/<o>/<r>/checkout` would race the daemon's own staging. Using the confined session's `repos/` lets the console browser and a key-server host's clone listing find it without new code. Telling the model the rule is what makes on-demand cloning reliable instead of a guess. |
+| 20  | **On-demand clones live in the session's own directory, and the prompt says where.** A confined session clones into `sessions/<leaf>/repos/<owner>/<repo>`, the place a daemon-materialized secondary would occupy; a worktree-tier or shared session clones into `<agentDir>/clones/<sid>/<owner>/<repo>`, a subtree nothing else enumerates. The daemon makes it only for a session with something to clone and hands it to the runtime as an additional directory. Both go with the session, shared ones too, under a session clone's rules, and are carved into the OS-sandbox boundary like `repos/`. The standing context names the directory, gives one clone command with the host's own URL, says credentials for those repositories are automatic, and lists what is authorized but not checked out (at most 100 rows by name; installation grants by account).     | A clone inside the primary's worktree would show up as untracked work; one under `repos/<o>/<r>/checkout` would race the daemon's own staging. Using the confined session's `repos/` lets the console browser and a key-server host's clone listing find it without new code. Telling the model the rule is what makes on-demand cloning reliable instead of a guess. |
 
 ### The selector
 
@@ -343,8 +345,12 @@ turn's path, in the same class as `gitcred/request` and the model-selection
    boundary. _Landed:_ the protocol and control-plane half — the column
    (default `always`), `materialize` on `POST`/`PATCH` repository grants and on
    each projected entry, a config-revision bump on change, and `decision`
-   refused with 400 until step 3. _Pending:_ the daemon honoring the field and
-   the console surface.
+   refused with 400 until step 3; and the daemon half — only `always` rows are
+   prepared on every tier (`decision` is on demand until step 3), a review
+   still checks its subject out as `cwd`, a session with anything on demand is
+   handed its clone directory and told of it, and retention judges that
+   directory with the session, a shared one included. _Pending:_ the console
+   surface.
 2. **Installation grants** — [agent-multi-repo-authorization.md](agent-multi-repo-authorization.md)
    decision 10, independently mergeable; `on-demand` only until step 3.
 3. **`decision`** — the evaluator pair on the agent, the roster request and

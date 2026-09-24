@@ -66,6 +66,36 @@ it('pins a Decision model once, independently of manual overrides and subsequent
   await s.close()
 })
 
+// multi-repository-workspaces.md decision 20: what lets retention judge a session's on-demand clones whatever the rows say later.
+it('records once that a session was handed an on-demand clone directory, which later upserts keep', async () => {
+  const s = await store()
+  const row = {
+    key: 'on-demand-clones',
+    agentId: 'bot-a',
+    platform: 'webchat',
+    channel: 'conversation',
+    thread: 'thread',
+    acpSessionId: 'acp-1',
+    state: 'idle' as const,
+    lastDeliveredTs: null,
+    updatedAt: 1,
+    workspaceIsolation: 'shared' as const
+  }
+  await s.upsertSession(row)
+  expect((await s.getSession(row.key))?.onDemandClones ?? null).toBeNull()
+
+  await s.markSessionOnDemandClones(row.key)
+  await s.markSessionOnDemandClones(row.key)
+  await s.upsertSession({ ...row, state: 'closed', updatedAt: 2 })
+
+  expect((await s.getSession(row.key))?.onDemandClones).toBe(1)
+  expect((await s.listExpiredSessions(10)).map((rec) => [rec.key, rec.onDemandClones])).toEqual([[row.key, 1]])
+  // A key with no row is a no-op, never a row of its own.
+  await s.markSessionOnDemandClones('never-opened')
+  expect(await s.getSession('never-opened')).toBeUndefined()
+  await s.close()
+})
+
 /** A second handle on the same durable store — a daemon restart, not a new store. */
 async function reopen(path: string): Promise<LocalStore> {
   return await openTestStore(path)
@@ -3727,7 +3757,7 @@ describe.skipIf(pg)('the v25 → v26 decision tables', () => {
   }
 
   it('creates both tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(27)
+    expect(SCHEMA_VERSION).toBe(28)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
@@ -3766,7 +3796,42 @@ describe.skipIf(pg)('the v26 → v27 router targets column', () => {
     const version = (check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
     check.close()
     expect(columns).toContain('targetsJson')
-    expect(version).toBe(27)
+    expect(version).toBe(SCHEMA_VERSION)
+  })
+})
+
+// multi-repository-workspaces.md decision 20: v28 records that a session was handed an on-demand clone directory.
+describe.skipIf(pg)('the v27 → v28 on-demand clones column', () => {
+  it('adds onDemandClones to a v27 store, empty on the sessions it already holds', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v27-')), 'local.sqlite')
+    const first = await LocalStore.open(path)
+    const row = {
+      key: 'held',
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: null,
+      state: 'idle' as const,
+      lastDeliveredTs: null,
+      updatedAt: 1
+    }
+    await first.upsertSession(row)
+    await first.close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE sessions DROP COLUMN onDemandClones; PRAGMA user_version = 27')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    expect((await upgraded.getSession(row.key))?.onDemandClones).toBeNull()
+    await upgraded.markSessionOnDemandClones(row.key)
+    expect((await upgraded.getSession(row.key))?.onDemandClones).toBe(1)
+    await upgraded.close()
+
+    const check = new DatabaseSync(path)
+    const version = (check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+    check.close()
+    expect(version).toBe(28)
   })
 })
 
