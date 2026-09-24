@@ -9,14 +9,14 @@ import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
-function scaffold(): string {
+function scaffold(turnFinalContextRefresh = true): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-turn-output-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      features: { turnFinalContextRefresh: true },
+      features: { turnFinalContextRefresh },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )
@@ -265,7 +265,64 @@ describe('TurnOutputWorkflow', () => {
     await daemon.stop()
   })
 
-  it('keeps a committed segment through regeneration and replaces only the closing segment', async () => {
+  it('flushes complete paragraphs on time while background output continues', async () => {
+    let releasePrompt!: () => void
+    const blocked = new Promise<void>((resolve) => (releasePrompt = resolve))
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => {
+        await blocked
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(false),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    const conn = connect(daemon)
+    const turn = (daemon as any).dispatch('bot-a', msg('100.1', 'check the build'), 'int-a')
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
+    const p = [...(daemon as any).pending.values()][0] as any
+    const emit = (update: unknown) => (daemon as any).onAcpUpdate(p.hostKey, 'acp-1', update)
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      await emit({ sessionUpdate: 'tool_call', toolCallId: 'shell', title: 'Build', status: 'in_progress' })
+      await emit({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'First paragraph.\n\nNext ' } })
+      await vi.advanceTimersByTimeAsync(1500)
+      await emit({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'shell',
+        _meta: { terminal_output_delta: { terminal_id: 'shell', data: 'building\n' } }
+      })
+      await p.signals.applyChain
+      expect(conn.postMessage).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(500)
+      await p.signals.applyChain
+      expect(conn.postMessage.mock.calls.map((call) => String(call[1]))).toEqual(['First paragraph.\n\n'])
+      await emit({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'paragraph.' } })
+      await emit({ sessionUpdate: 'tool_call_update', toolCallId: 'shell', status: 'completed' })
+      await p.signals.applyChain
+      expect(conn.postMessage).toHaveBeenCalledTimes(1)
+    } finally {
+      ;(daemon as any).clearIdle(p)
+      vi.useRealTimers()
+      releasePrompt()
+      await turn
+      await daemon.stop()
+    }
+    expect(conn.postMessage.mock.calls.map((call) => String(call[1]))).toEqual([
+      'First paragraph.\n\n',
+      'Next paragraph.'
+    ])
+  })
+
+  it('keeps a committed segment through regeneration without committing the tail on background tool output', async () => {
     let onUpdate!: (sessionId: string, update: unknown) => void
     let releaseFirst!: () => void
     const firstBlocked = new Promise<void>((resolve) => (releaseFirst = resolve))
@@ -288,6 +345,12 @@ describe('TurnOutputWorkflow', () => {
             status: 'in_progress'
           })
           onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'stale tail' } })
+          onUpdate(sessionId, {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'tc-1',
+            _meta: { terminal_output_delta: { terminal_id: 'tc-1', data: 'still running\n' } }
+          })
+          onUpdate(sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'tc-1', status: 'completed' })
           await firstBlocked
         } else {
           onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'fresh tail' } })

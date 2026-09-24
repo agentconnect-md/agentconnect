@@ -1,11 +1,4 @@
-// A runtime may compose SEVERAL messages inside one uninterrupted answer run — Codex does, and names
-// each one with `messageId`. Nothing else in the stream marks where one ends: the boundaries a
-// converger already flushes on (tool call, thought, plan) are boundaries in the WORK, and a run that
-// only speaks has none. So without reading the id, "say, say, say" reaches the channel as one post
-// with the messages run together — and a leading `# heading` on the second one is swallowed into the
-// first one's paragraph, which stops it rendering as a heading at all.
-//
-// Only the GitHub reply collector read this id before; every chat converger appended blindly.
+// Runtime message IDs separate successive replies even when no tool or thought occurs between them.
 
 /** The runtime's own id for the message a chunk belongs to, or `''` where it names none. */
 export function agentMessageId(update: unknown): string {
@@ -17,13 +10,28 @@ export function agentMessageId(update: unknown): string {
 export class AgentMessageRun {
   private current = ''
 
-  /** True only where a NAMED id replaces a different named one. A runtime that names nothing never
-   *  reports a boundary, and neither does the first message of a run — both keep prior behavior. */
+  /** Only a change between named messages closes the preceding reply. */
   opens(update: unknown): boolean {
     const id = agentMessageId(update)
     if (!id) return false
     const opens = this.current !== '' && id !== this.current
     this.current = id
+    return opens
+  }
+}
+
+/** Tracks new work in one turn; ongoing tool output does not finish the agent's current text block. */
+export class WorkBoundary {
+  private readonly tools = new Set<string>()
+
+  opens(update: unknown): boolean {
+    const u = update as { sessionUpdate?: string; toolCallId?: unknown } | undefined
+    if (u?.sessionUpdate === 'agent_thought_chunk' || u?.sessionUpdate === 'plan') return true
+    if (u?.sessionUpdate !== 'tool_call' && u?.sessionUpdate !== 'tool_call_update') return false
+    const id = u.toolCallId
+    if (typeof id !== 'string' || !id) return true
+    const opens = !this.tools.has(id)
+    this.tools.add(id)
     return opens
   }
 }

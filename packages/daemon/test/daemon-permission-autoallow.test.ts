@@ -3,6 +3,7 @@ import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentc
 import { Daemon, noneSuppressedApprovalSurface, isBuiltinSystemTool, isBuiltinSystemToolCall } from '../src/daemon.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
+import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -241,7 +242,8 @@ function installPending(daemon: Daemon): {
     builtinSystemToolCallIds: new Set<string>(),
     conv: { onUpdate: () => [], hasBuffered: () => false },
     rec: { onUpdate: () => [] },
-    termOut: new TerminalOutputFolder()
+    termOut: new TerminalOutputFolder(),
+    workBoundary: new WorkBoundary()
   }
   ;(daemon as any).pending.set(JSON.stringify(['agent-1', 's1']), pending)
   return pending

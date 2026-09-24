@@ -23,6 +23,7 @@
 import type { GithubPublishedComment } from '@agentconnect.md/protocol'
 import { flattenUnsafeLinks, type FlattenOptions } from '../messages/agent-links.js'
 import { renderAttributionMessage } from '../messages/attribution.js'
+import { WorkBoundary } from '../messages/message-boundary.js'
 import { isNoResponseBody } from '../session/no-response.js'
 
 /** Minimal timer seam so tests drive the bounded publish deadline deterministically. */
@@ -64,7 +65,6 @@ const DEFAULT_FINALIZE_TIMEOUT_MS = 15_000
 /** GitHub caps comment bodies at 65536 chars — truncate with a marker well below. */
 const MAX_COMMENT_CHARS = 60_000
 const TRUNCATION_MARKER = '\n\n_(truncated — see the session transcript for the full reply)_'
-const LEGACY_BOUNDARIES = new Set(['agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan'])
 const NO_FINAL_MESSAGE_ID = Symbol('no-final-message-id')
 const NO_COMMENTARY_MESSAGE_ID = Symbol('no-commentary-message-id')
 
@@ -97,6 +97,7 @@ function publicReplyText(text: string | undefined, linkOptions: FlattenOptions):
  * thought/tool/plan boundary is the best runtime-agnostic approximation.
  */
 export class GithubReplyCollector {
+  private readonly work = new WorkBoundary()
   private readonly messages = new Map<MessageKey, ReplyCandidate>()
   private nextOrder = 0
   private lastCommentarySeen = -1
@@ -109,7 +110,7 @@ export class GithubReplyCollector {
     if (!u) return
     const kind = typeof u.sessionUpdate === 'string' ? u.sessionUpdate : undefined
     if (kind !== 'agent_message_chunk') {
-      if (kind && LEGACY_BOUNDARIES.has(kind)) this.commitLegacyBoundary()
+      if (this.work.opens(u)) this.commitLegacyBoundary()
       return
     }
 

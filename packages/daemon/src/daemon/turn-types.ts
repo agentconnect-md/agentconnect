@@ -6,6 +6,7 @@ import type { TurnPlan } from './turn-plan.js'
 import type { TurnEvaluationReporter } from './turn-evaluation.js'
 import type { KeyGrant } from '../key-server/client.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
+import type { WorkBoundary } from '../messages/message-boundary.js'
 import type { ApprovalWait } from '../permissions/coordinator.js'
 import type { GithubTurnState } from '../platforms/github/turn-output.js'
 import type { ModelProviderTarget } from '../runtimes/model-provider-config.js'
@@ -600,6 +601,8 @@ export interface Pending {
   /** Folds codex-acp's out-of-band `_meta.terminal_output*` stream back into the owning tool
    *  call at ingress, so every consumer sees the command's real output. */
   termOut: TerminalOutputFolder
+  /** Keeps staged answer commits aligned with the renderer's work boundaries. */
+  workBoundary: WorkBoundary
   /** Tool-call ids structurally identified as this daemon's own MCP tools. Approval
    *  requests may carry only this opaque id, regardless of which ACP path is used. */
   builtinSystemToolCallIds: Set<string>

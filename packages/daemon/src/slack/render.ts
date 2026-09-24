@@ -26,7 +26,7 @@ export {
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { flattenUnsafeLinks } from '../messages/agent-links.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
-import { AgentMessageRun } from '../messages/message-boundary.js'
+import { AgentMessageRun, WorkBoundary } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { splitIntoSections } from './formatter.js'
@@ -2245,6 +2245,7 @@ export class OutputConverger {
   private replyCards = 0
   // The runtime's own message identity, which is the only boundary a speak-only run offers.
   private readonly messages = new AgentMessageRun()
+  private readonly work = new WorkBoundary()
   // ── Native tool-call chrome (slack-streaming-turn-output.md §3) ──────────────
   // The axis, plus the one stream's card bookkeeping. Nothing here touches the body.
   private streaming = false
@@ -2793,16 +2794,16 @@ export class OutputConverger {
         const label = this.mode === 'minimal' ? WORKING : this.toolLabel(u)
         this.noteToolInput(u)
         const status = this.pushActivity(label)
-        // minimal: a tool boundary closes the current reply segment into a history card and
-        // the transcript. No progress/tool-output message — activity lives in the status only.
-        if (this.mode === 'minimal') return [...status, ...this.closeSegment()]
+        const closed = this.work.opens(update) ? (this.mode === 'minimal' ? this.closeSegment() : this.flush()) : []
+        // minimal: only new work closes the reply segment into a history card and transcript.
+        if (this.mode === 'minimal') return [...status, ...closed]
         // none/low: just record the buffered body — no tool card, no status (none emits none).
-        if (this.mode === 'low' || this.mode === 'none') return [...this.flush(), ...status]
+        if (this.mode === 'low' || this.mode === 'none') return [...closed, ...status]
         // medium/high: reflect the current tool on the in-place progress message. The
         // label (a command line / tool title) is wrapped in a code span so it renders
         // verbatim in the `markdown` block instead of being parsed as emphasis.
         const progressText = `:hammer_and_wrench: ${codeSpan(label)}`
-        const actions: SlackAction[] = [...this.flush(), ...status]
+        const actions: SlackAction[] = [...closed, ...status]
         // streaming: that in-place message becomes one task card on the stream, keyed by
         // toolCallId so streamed updates edit a card instead of stacking (§4). The append
         // still carries the legacy text, so a stream that never opened degrades to it.

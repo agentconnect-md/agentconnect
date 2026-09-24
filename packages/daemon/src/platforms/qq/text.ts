@@ -3,7 +3,6 @@ import type { Nodes } from 'mdast'
 
 export const QQTextMaxBytes = 4000
 export const QQProgressMaxBytes = 1200
-export const QQTextBoundaries = new Set(['agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan'])
 
 // Keep literal punctuation stable when a later unsafe link causes the shared renderer to escape it.
 export function QQStreamText(text: string, complete = false): string {

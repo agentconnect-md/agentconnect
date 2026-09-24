@@ -9,6 +9,7 @@ import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
 import { elicitFormBlockId } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
+import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { DiscordConnection } from '../src/discord/connection.js'
 import type { DiscordComponents } from '../src/discord/render.js'
@@ -203,7 +204,8 @@ function discordTurn(turn: { thread?: string } = {}): Harness {
     builtinSystemToolCallIds: new Set<string>(),
     conv: { onUpdate: () => [], hasBuffered: () => false },
     rec: { onUpdate: () => [] },
-    termOut: new TerminalOutputFolder()
+    termOut: new TerminalOutputFolder(),
+    workBoundary: new WorkBoundary()
   })
   const applied: any[] = []
   daemon.enqueueApply = (_p: any, action: any) => void applied.push(action)

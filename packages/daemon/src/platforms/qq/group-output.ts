@@ -1,16 +1,17 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { GithubReplyCollector } from '../../github/poster.js'
 import { flattenUnsafeLinks } from '../../messages/agent-links.js'
-import { AgentMessageRun } from '../../messages/message-boundary.js'
+import { AgentMessageRun, WorkBoundary } from '../../messages/message-boundary.js'
 import { isNoResponseBody } from '../../session/no-response.js'
 import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-links.js'
 import type { QQAction } from './turn-output.js'
-import { QQProgressMaxBytes, QQTextBoundaries } from './text.js'
+import { QQProgressMaxBytes } from './text.js'
 
 // Group progress consists of completed public messages, never partial text or private thoughts.
 export class QQGroupOutput {
   private readonly collector = new GithubReplyCollector()
   private readonly messages = new AgentMessageRun()
+  private readonly work = new WorkBoundary()
   private text = ''
   private phase = ''
   private progressCount = 0
@@ -32,7 +33,7 @@ export class QQGroupOutput {
         actions.push(...this.completeMessage())
       this.text += update.content.text
       if (phase) this.phase = phase
-    } else if (QQTextBoundaries.has(update.sessionUpdate)) actions.push(...this.completeMessage())
+    } else if (this.work.opens(update)) actions.push(...this.completeMessage())
     this.collector.onUpdate(update)
     return actions
   }
