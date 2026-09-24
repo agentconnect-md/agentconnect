@@ -15,6 +15,21 @@ export interface DecisionPickerEntry {
   model: string
 }
 
+// A saved Decision's hover details: its name, question type, provider, and model.
+export function DecisionHoverRows({ decision }: { decision: DecisionPickerEntry }) {
+  const t = useTranslations('Decisions')
+  return (
+    <HoverCardRows
+      rows={[
+        [t('binding.decision'), decision.name],
+        [t('questionType'), t(`types.${decision.question.type}`)],
+        [t('provider'), decision.providerId],
+        [t('model'), decision.model]
+      ]}
+    />
+  )
+}
+
 // The saved-Decision chooser shared by every surface that binds one (a channel gate, an agent's runtime).
 export function DecisionPicker<T extends DecisionPickerEntry>({
   decisions,
@@ -75,18 +90,7 @@ export function DecisionPicker<T extends DecisionPickerEntry>({
               className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-180' : ''}`}
             />
           </button>
-          {selected &&
-            !open &&
-            hover.card(
-              <HoverCardRows
-                rows={[
-                  [t('binding.decision'), selected.name],
-                  [t('questionType'), t(`types.${selected.question.type}`)],
-                  [t('provider'), selected.providerId],
-                  [t('model'), selected.model]
-                ]}
-              />
-            )}
+          {selected && !open && hover.card(<DecisionHoverRows decision={selected} />)}
         </>
       )}
     >
