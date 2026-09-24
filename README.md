@@ -32,7 +32,13 @@
   <strong>WORK WITH</strong>&nbsp;&nbsp;
   <a href="https://claude.com"><img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude" title="Claude" /></a>&nbsp;&nbsp;
   <a href="https://openai.com"><img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="OpenAI" title="OpenAI" /></a>&nbsp;&nbsp;
-  <a href="https://x.ai/build"><img src="https://cdn.simpleicons.org/x/000000/e6edf3" width="16" height="16" alt="Grok Build" title="Grok Build" /></a>&nbsp;&nbsp;
+  <a href="https://antigravity.google"><img src="https://api.iconify.design/logos/antigravity.svg" width="16" height="16" alt="Google Antigravity" title="Google Antigravity" /></a>&nbsp;&nbsp;
+  <a href="https://github.com/features/copilot/cli/"><img src="https://cdn.simpleicons.org/githubcopilot/000000/e6edf3" width="16" height="16" alt="GitHub Copilot" title="GitHub Copilot" /></a>&nbsp;&nbsp;
+  <a href="https://docs.devin.ai/cli"><img src="docs/assets/devin.svg" width="16" height="16" alt="Devin" title="Devin" /></a>&nbsp;&nbsp;
+  <a href="https://x.ai/build"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.iconify.design/thesvg/grok-xai.svg?color=%23e6edf3" />
+    <img src="https://api.iconify.design/thesvg/grok-xai.svg?color=%23000000" width="16" height="16" alt="Grok Build" title="Grok Build" />
+  </picture></a>&nbsp;&nbsp;
   <a href="https://www.deepseek.com"><img src="https://cdn.simpleicons.org/deepseek" width="16" height="16" alt="DeepSeek" title="DeepSeek" /></a>&nbsp;&nbsp;
   <a href="https://opencode.ai"><img src="https://cdn.simpleicons.org/opencode/000000/e6edf3" width="16" height="16" alt="OpenCode" title="OpenCode" /></a>&nbsp;&nbsp;
   <a href="https://pi.dev"><img src="https://cdn.simpleicons.org/pi/000000/e6edf3" width="16" height="16" alt="Pi" title="Pi" /></a>&nbsp;&nbsp;
