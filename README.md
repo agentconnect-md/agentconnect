@@ -90,9 +90,9 @@ AgentConnect turns that glue into a platform.
 
 Teams use it to:
 
-- **Triage issues together.** People and agents investigate in one shared
-  thread, bring in the right specialists, and keep the fix and verification
-  visible from start to finish.
+- **Triage issues together.** Use Decisions to route new support conversations
+  to the right specialists. People and agents investigate in one shared thread
+  and keep the fix and verification visible from start to finish.
 - **Support across trusted workspaces.** Start a support conversation in
   Telegram, involve engineering from a trusted Slack workspace, and return the
   resolution where the conversation began.
@@ -102,10 +102,10 @@ Teams use it to:
   a GitHub subscription in Slack, webhooks, or schedules. Let agents assess the
   impact, prepare and test relevant updates, and bring them to the team for
   review.
-- **Run customized code review.** Run a general reviewer on every pull request,
-  then bring in architecture or security reviewers only when a change needs
-  them. Each reviewer can use its own model, instructions, repository access,
-  tools, and sandbox policy.
+- **Run customized code review.** Use Decisions to select the reviewers for
+  new GitHub pull requests and the runtime and model for each new review
+  session. Bring in general, architecture, or security reviewers with their
+  own instructions, repository access, tools, and sandbox policies.
 
 ### Features
 
@@ -119,6 +119,10 @@ Teams use it to:
   GitLab, Gitea, and Linear.
 - **Choose the right agent for every job.** Configure each agent's runtime,
   model, workspace, tools, and machine independently.
+- **Decide when and how agents act.** Use reusable Decisions powered by
+  [Jev](https://docs.typesafe.ai/introduction) to decide when agents respond,
+  route new conversations to specialist agents, and choose a runtime and model
+  for each new session.
 - **Carry context forward.** Give each agent its own memory and skills, and
   publish reviewed
   [Knowledge](https://docs.agentconnect.md/docs/knowledge) that every agent can
