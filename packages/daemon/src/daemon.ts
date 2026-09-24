@@ -7158,6 +7158,12 @@ export class Daemon {
       // Redundant while the dream owns a dedicated host the gate already excludes, but it keeps one
       // rule: every session the daemon opens for itself is registered, synchronously, right here.
       this.internalPassSessions.add(internalPassSlot.dream(agentId), pendingTurnKey(owner, sessionId))
+      const modes = host.permissionModeOptions?.(sessionId)?.modes ?? host.permissionModeOptions?.()?.modes ?? []
+      const readOnlyMode = readOnlyExtractionMode(modes)
+      await this.applyConfiguredRuntimeSettings(agent, host, sessionId, undefined, readOnlyMode)
+      if (readOnlyMode && host.setSessionPermissionMode) {
+        await host.setSessionPermissionMode(sessionId, readOnlyMode)
+      }
       const result = await this.runDreamExtractionSession(
         host,
         owner,
@@ -7245,8 +7251,8 @@ export class Daemon {
       text: 'Memory dream started.'
     })
     // Resolved before the start snapshot so the console shows the forced mode, not the agent's default (#2091).
-    const modes = host.permissionModeOptions()?.modes ?? []
-    const readOnlyMode = modes.find((mode) => mode === 'read-only') ?? modes.find((mode) => mode === 'plan')
+    const modes = host.permissionModeOptions?.(sessionId)?.modes ?? host.permissionModeOptions?.()?.modes ?? []
+    const readOnlyMode = readOnlyExtractionMode(modes)
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId,
       sessionKey: executionKey,
@@ -7459,7 +7465,9 @@ export class Daemon {
     if (!rec) return
     const message: Partial<Record<DreamLifecycleEvent['type'], string>> = {
       'memory.dream.completed': 'Dream completed. The staged memory is ready for review.',
-      'memory.dream.failed': 'Dream failed during proposal validation or staging.',
+      'memory.dream.failed': dream.error?.message
+        ? `Dream failed during proposal validation or staging: ${dream.error.message}`
+        : 'Dream failed during proposal validation or staging.',
       'memory.dream.adopted': 'The staged memory was adopted.',
       'memory.dream.skill_accepted': 'A recommended skill was accepted.',
       'memory.dream.skill_dismissed': 'A recommended skill was dismissed.'
@@ -8479,7 +8487,8 @@ export class Daemon {
     agent: LoadedAgent,
     host: AcpHost,
     sessionId: string,
-    sessionModel?: string
+    sessionModel?: string,
+    permissionModeOverride?: string
   ): Promise<void> {
     const catalog = this.runtimeFacts.modelCatalog(agent.runtime)
     // Catalog defaults resolve ACP's opaque `default` to a concrete selectable model.
@@ -8491,14 +8500,14 @@ export class Daemon {
     const effort =
       agent.reasoningEffort ??
       (model ? catalog?.models.find((candidate) => candidate.id === model)?.defaultEffort : undefined)
-    const permissionMode = agent.permissionMode ?? catalog?.defaultPermissionMode
+    const permissionMode = permissionModeOverride ?? agent.permissionMode ?? catalog?.defaultPermissionMode
     // The console treats an unset fast-mode default as off. Explicitly restore
     // that value so disabling chat authority also revokes a live `fast on`.
     const fastMode = agent.fastMode ?? false
-    if (model) await host.setSessionModel(sessionId, model)
-    if (effort) await host.setSessionEffort(sessionId, effort)
-    if (permissionMode) await host.setSessionPermissionMode(sessionId, permissionMode)
-    await host.setSessionFastMode(sessionId, fastMode)
+    if (model && host.setSessionModel) await host.setSessionModel(sessionId, model)
+    if (effort && host.setSessionEffort) await host.setSessionEffort(sessionId, effort)
+    if (permissionMode && host.setSessionPermissionMode) await host.setSessionPermissionMode(sessionId, permissionMode)
+    if (host.setSessionFastMode) await host.setSessionFastMode(sessionId, fastMode)
   }
 
   /** Removing chat authority also removes its effect from every live session. This
