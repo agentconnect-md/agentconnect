@@ -1159,10 +1159,11 @@ export class GithubService {
     if (!ref) {
       throw new GitCredDeniedError(`${repoFullName} ${NOT_COVERED_BY_INSTALLATION}`, 'SCOPE_DENIED', false)
     }
+    // Once probed, identity is the resolved id across every owner: an account rename leaves a row or the workspace under its old owner, and its own tier must still win over a grant's.
     if (
       workspace.mode === 'git' &&
       workspace.credential?.provider === 'github' &&
-      workspaceRenameCandidate &&
+      agent.workspaceRepoId !== undefined &&
       ref.repoId === agent.workspaceRepoId
     ) {
       return {
@@ -1173,13 +1174,10 @@ export class GithubService {
         installation
       }
     }
-    const renamed = renameCandidates.find((row) => row.repoId === ref.repoId)
+    const renamed = grants.find((row) => row.repoId === ref.repoId)
     if (!renamed) {
-      // The daemon verifies a skill source's numeric identity before any name-based
-      // read, so a renamed private skill repo arrives here under its OLD name with
-      // the id the registry still carries; the CP's PATCH re-bind is what moves the
-      // stored slug, and the token is minted for the id regardless.
-      const renamedSkill = skillRenameCandidates.find((row) => row.repoId === ref.repoId)
+      // A renamed private skill repo arrives under its OLD name with the id the registry still carries; the token is minted for the id regardless.
+      const renamedSkill = skillRepos.find((row) => row.repoId === ref.repoId)
       if (renamedSkill) {
         return { kind: 'skill-source', repoId: renamedSkill.repoId, repoFullName, access: 'read', installation }
       }

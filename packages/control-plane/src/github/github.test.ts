@@ -1590,6 +1590,44 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       expect(renamed.mintBodies[0]).toMatchObject({ repository_ids: [222], permissions: { contents: 'write' } })
     })
 
+    it('after an account rename, a row under the old owner keeps its tier over the grant', async () => {
+      // The row still names the account's old login; the probe the grant justified resolves the same id.
+      const { svc, mintBodies, updateFullName } = harness({
+        rows: [grantRow({ repoId: 111n, repoFullName: 'acme-previous/tools', access: 'read' })],
+        installationGrants: [installationGrant({ access: 'write' })],
+        repoRefs: TOOLS
+      })
+
+      const grant = await svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')
+
+      expect(grant).toMatchObject({ repoFullName: 'acme/tools', access: 'read', repoId: 111n })
+      expect(mintBodies[0]).toMatchObject({ repository_ids: [111], permissions: { contents: 'read' } })
+      expect(updateFullName).toHaveBeenCalledWith('ra-1', 'acme/tools')
+    })
+
+    it('after an account rename, the workspace repository keeps the workspace tier over the grant', async () => {
+      const renamedWorkspace = {
+        id: 'agent-renamed',
+        orgId: 'org-a',
+        workspaceRepoId: 777n,
+        workspace: {
+          mode: 'git',
+          gitRepo: 'https://github.com/acme-previous/infra',
+          credential: { provider: 'github', installationId: 'row-1', access: 'read' }
+        }
+      } as never
+      const { svc, mintBodies } = harness({
+        rows: [],
+        installationGrants: [installationGrant({ access: 'write' })],
+        repoRefs: { 'acme/infra': { id: 777, full_name: 'acme/infra' } }
+      })
+
+      const grant = await svc.mintForAgent(renamedWorkspace, [], CONTENTS, 'acme/infra')
+
+      expect(grant).toMatchObject({ repoFullName: 'acme/infra', access: 'read' })
+      expect(mintBodies[0]).toMatchObject({ permissions: { contents: 'read' } })
+    })
+
     it('a grant on another owner’s installation does not apply, and nothing is probed', async () => {
       const { svc, repoLookups, mintBodies } = harness({
         rows: [],
