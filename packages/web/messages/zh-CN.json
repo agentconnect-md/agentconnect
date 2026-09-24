@@ -331,6 +331,10 @@
       "loading": "正在加载界面…",
       "unavailable": "此界面曾实时显示，但页面无法加载。"
     },
+    "decisionResult": {
+      "received": "收到决策结果",
+      "open": "在最近评估中打开此次评估"
+    },
     "userTurnDetails": {
       "subject": "主题",
       "event": "事件",

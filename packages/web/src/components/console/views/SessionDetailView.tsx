@@ -167,6 +167,8 @@ import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
 import { approvalNotice, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
+import { DecisionResultMarker, useSessionDecisionResults } from '@/components/console/decisions/SessionDecisionResults'
+import { DecisionEvaluationsDrawer } from '@/components/console/decisions/DecisionEvaluationsDrawer'
 import {
   sessionEffortAfterModelChange,
   sessionEffortChoicesForSelection,
@@ -2094,6 +2096,8 @@ type Turn =
       platform?: string
       /** The facts behind a delivery turn (transcript-full-tool-body.md §9) — the bubble's "more". */
       body?: UserTurnBody
+      /** The persisted row's transcript seq, which a By decision evaluation of this message is keyed by. */
+      seq?: number
     }
   // `wake` marks a block opened by a background-task wake that no reply has
   // merged into yet — the run that follows binds to it, then clears the flag.
@@ -3375,6 +3379,22 @@ export default function SessionDetailView() {
   const visibleTailReady = wantTranscript && transcriptMatchesSession && tailReady
   const visibleHasEarlier = wantTranscript && transcriptMatchesSession && hasEarlier
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a.id, agentLabel(a)])), [agents])
+  // The owner's judged messages: a merged row from another member's source is that member's gate, not this one's.
+  const judgedSeqs = useMemo(
+    () =>
+      (visibleMsgs ?? [])
+        .filter((m) => {
+          const owner = conversationSourceAgentByMessageRef.current.get(m)
+          return m.sender !== session?.agentId && (!owner || owner === session?.agentId)
+        })
+        .map((m) => m.seq),
+    [visibleMsgs, session?.agentId, conversationSourceAgentByMessageRef]
+  )
+  const decisionResults = useSessionDecisionResults(
+    { agentId: session?.agentId, platform: session?.platform, channelId: session?.channelId },
+    judgedSeqs
+  )
+  const [openDecisionSeq, setOpenDecisionSeq] = useState<number | null>(null)
   const memberNameByIdentity = useMemo(() => {
     const names = new Map<string, string>()
     for (const m of members) {
@@ -4234,7 +4254,8 @@ export default function SessionDetailView() {
           isCron: !!cron,
           cronId: cron?.id ?? null,
           platform: rowPlatform,
-          body: parseUserTurnBody(m.body)
+          body: parseUserTurnBody(m.body),
+          seq: m.seq
         })
       }
     }
@@ -5505,9 +5526,31 @@ export default function SessionDetailView() {
                             )
                           })()
                         )}
+                        {turn.kind === 'user' &&
+                          turn.seq !== undefined &&
+                          (() => {
+                            const record = decisionResults.bySeq.get(turn.seq)
+                            return record ? (
+                              <DecisionResultMarker
+                                record={record}
+                                decisionName={decisionCatalog?.decisions.find((d) => d.id === record.decisionId)?.name}
+                                onOpen={() => setOpenDecisionSeq(record.seq)}
+                              />
+                            ) : null
+                          })()}
                       </div>
                     ))}
                   </div>
+                )}
+                {openDecisionSeq !== null && decisionResults.lane && (
+                  <DecisionEvaluationsDrawer
+                    key={openDecisionSeq}
+                    conversation={decisionResults.lane.conversation}
+                    channelName={decisionResults.lane.channelName}
+                    agentName={session.agentName}
+                    initialSeq={openDecisionSeq}
+                    onClose={() => setOpenDecisionSeq(null)}
+                  />
                 )}
 
                 {/* LIVE INDICATOR — mobile-only trailing bot avatar + blue-dot note while a

@@ -331,6 +331,10 @@
       "loading": "Loading the interface…",
       "unavailable": "This interface was shown live; its page could not be loaded."
     },
+    "decisionResult": {
+      "received": "Received a decision result",
+      "open": "Open this evaluation in Recent evaluations"
+    },
     "userTurnDetails": {
       "subject": "Subject",
       "event": "Event",
