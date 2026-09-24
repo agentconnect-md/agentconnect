@@ -2303,6 +2303,7 @@
         "no": "No",
         "answer": "Answer for rule {index}",
         "answerModel": "Provider and model when the answer is {answer}",
+        "useFallback": "Use the fallback when the answer is {answer}",
         "probability": "Probability for rule {index}",
         "intervalStart": "Interval start for rule {index}",
         "intervalEnd": "Interval end for rule {index}",

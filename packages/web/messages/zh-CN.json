@@ -2303,6 +2303,7 @@
         "no": "否",
         "answer": "规则 {index} 的答案",
         "answerModel": "答案为 {answer} 时的 Provider 和模型",
+        "useFallback": "答案为 {answer} 时使用兜底配置",
         "probability": "规则 {index} 的概率",
         "intervalStart": "规则 {index} 的区间起点",
         "intervalEnd": "规则 {index} 的区间终点",

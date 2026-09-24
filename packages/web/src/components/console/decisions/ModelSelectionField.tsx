@@ -25,7 +25,7 @@ type Rule = AgentModelSelection['rules'][number]
 // The rule table's desktop columns per question type, as the design lays them out.
 const CHOICE_COLS = 'desktop:grid-cols-[34px_minmax(0,1fr)_92px_12px_minmax(0,1.35fr)_28px]'
 const SCORE_COLS = 'desktop:grid-cols-[70px_70px_12px_minmax(0,1fr)_28px]'
-const BOOLEAN_COLS = 'desktop:grid-cols-[80px_12px_minmax(0,1fr)]'
+const BOOLEAN_COLS = 'desktop:grid-cols-[80px_12px_minmax(0,1fr)_28px]'
 const HEAD =
   'hidden items-center gap-2 rounded-t-lg border-b border-(--border-subtle) bg-(--surface-app) px-3 py-[7px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary) desktop:grid'
 const ROW = 'grid grid-cols-1 items-center gap-2 border-b border-(--border-subtle) px-3 py-2'
@@ -54,6 +54,15 @@ function setBooleanTarget(rules: AgentModelSelection['rules'], answer: boolean, 
     return rules.map((entry, at) => (at === index ? { ...entry, ...target } : entry))
   const rest: Rule = { ...rule, when: { type: 'boolean', values: [!answer] } }
   return [...rules.slice(0, index), own, rest, ...rules.slice(index + 1)]
+}
+
+/** A Boolean answer back on the fallback: dropped from its rule, and the rule too once it names nothing. */
+function clearBooleanTarget(rules: AgentModelSelection['rules'], answer: boolean) {
+  return rules.flatMap((rule): Rule[] => {
+    if (rule.when.type !== 'boolean' || !rule.when.values.includes(answer)) return [rule]
+    const values = rule.when.values.filter((value) => value !== answer)
+    return values.length ? [{ ...rule, when: { type: 'boolean', values } }] : []
+  })
 }
 
 export function ModelSelectionField({
@@ -176,6 +185,24 @@ export function ModelSelectionField({
       </Button>
     </span>
   )
+  // The header, and its Add, is desktop-only; narrow screens add from below the rules.
+  const mobileAdd = decision && value && (
+    <button
+      type="button"
+      className="lnk m-3 gap-[6px] text-[12.5px] font-medium desktop:hidden"
+      aria-label={t('addRule')}
+      disabled={value.rules.length >= 32}
+      onClick={() =>
+        onChange({
+          ...value,
+          rules: [...value.rules, { when: nextCondition(decision.question, value.rules), ...fallback }]
+        })
+      }
+    >
+      <Icon name="plus" size={14} />
+      {t('addRule')}
+    </button>
+  )
   const removeButton = (index: number) => (
     <span className="flex justify-end">
       <button
@@ -281,6 +308,7 @@ export function ModelSelectionField({
           </div>
         )
       })}
+      {mobileAdd}
     </>
   )
 
@@ -336,6 +364,7 @@ export function ModelSelectionField({
           </div>
         )
       })}
+      {mobileAdd}
     </>
   )
 
@@ -346,6 +375,7 @@ export function ModelSelectionField({
         <span>{t('answerColumn')}</span>
         <span />
         <span>{t('providerModel')}</span>
+        <span />
       </div>
       {([true, false] as const).map((answer) => {
         const index = selection.rules.findIndex(
@@ -366,6 +396,21 @@ export function ModelSelectionField({
                 onChange({ ...selection, rules: setBooleanTarget(selection.rules, answer, target) })
               )}
             </div>
+            <span className="flex justify-end">
+              {index >= 0 && (
+                <button
+                  type="button"
+                  className={ROW_ACTION}
+                  // The last rule stays: a binding needs one, and Fixed is how to drop it.
+                  disabled={clearBooleanTarget(selection.rules, answer).length === 0}
+                  aria-label={t('useFallback', { answer: label })}
+                  title={t('useFallback', { answer: label })}
+                  onClick={() => onChange({ ...selection, rules: clearBooleanTarget(selection.rules, answer) })}
+                >
+                  <Icon name="x" size={13} />
+                </button>
+              )}
+            </span>
           </div>
         )
       })}

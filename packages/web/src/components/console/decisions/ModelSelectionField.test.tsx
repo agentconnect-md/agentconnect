@@ -303,3 +303,66 @@ it('lists Yes and No and splits a shared Boolean rule when one answer gets its o
     { when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'model-standard' }
   ])
 })
+
+it('adds a rule below the table on narrow screens, where the header is hidden', async () => {
+  const onChange = vi.fn()
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () =>
+    root!.render(
+      <ModelSelectionField
+        value={{
+          decisionId: '44444444-4444-4444-8444-444444444444',
+          rules: [{ when: { type: 'choice', thresholds: { deploy: 0.6 } }, runtime: 'claude', model: 'model-standard' }]
+        }}
+        onChange={onChange}
+        onValidityChange={vi.fn()}
+        source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
+        runtimes={['claude']}
+        fallback={{ runtime: 'claude', model: 'model-standard' }}
+        onFallbackChange={vi.fn()}
+      />
+    )
+  )
+  const mobile = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label="Add rule"]')].find(
+    (button) => !button.closest('.hidden')
+  )!
+  expect(mobile.className).toContain('desktop:hidden')
+  await act(async () => mobile.click())
+  expect(onChange.mock.calls[0]![0].rules[1].when).toEqual({
+    type: 'choice',
+    thresholds: { infrastructure_maintenance: 0.5 }
+  })
+})
+
+it('returns a Boolean answer to the fallback but keeps the last rule', async () => {
+  const onChange = vi.fn()
+  const render = (rules: AgentModelSelection['rules']) =>
+    root!.render(
+      <ModelSelectionField
+        value={{ decisionId: '55555555-5555-4555-8555-555555555555', rules }}
+        onChange={onChange}
+        onValidityChange={vi.fn()}
+        source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard'] }] }}
+        runtimes={['claude']}
+        fallback={{ runtime: 'claude', model: 'model-standard' }}
+        onFallbackChange={vi.fn()}
+      />
+    )
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  const yes = { when: { type: 'boolean' as const, values: [true] }, runtime: 'claude', model: 'model-standard' }
+  const no = { when: { type: 'boolean' as const, values: [false] }, runtime: 'claude', model: 'model-standard' }
+  await act(async () => render([yes, no]))
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Use the fallback when the answer is No"]')!.click()
+  )
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ rules: [yes] }))
+  await act(async () => render([yes]))
+  expect(container.querySelector('[aria-label="Use the fallback when the answer is No"]')).toBeNull()
+  expect(
+    container.querySelector<HTMLButtonElement>('[aria-label="Use the fallback when the answer is Yes"]')!.disabled
+  ).toBe(true)
+})
