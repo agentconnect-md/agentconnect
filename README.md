@@ -17,6 +17,7 @@
   <a href="https://telegram.org"><img src="https://cdn.simpleicons.org/telegram" width="16" height="16" alt="Telegram" title="Telegram" /></a>&nbsp;&nbsp;
   <a href="https://discord.com"><img src="https://cdn.simpleicons.org/discord" width="16" height="16" alt="Discord" title="Discord" /></a>&nbsp;&nbsp;
   <a href="https://www.larksuite.com"><img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" /></a>&nbsp;&nbsp;
+  <a href="https://im.qq.com"><img src="packages/web/public/brands/qq.svg" width="16" height="16" alt="QQ" title="QQ" /></a>&nbsp;&nbsp;
   <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
   <a href="https://gitlab.com"><img src="https://api.iconify.design/logos/gitlab-icon.svg" width="16" height="16" alt="GitLab" title="GitLab" /></a>&nbsp;&nbsp;
   <a href="https://about.gitea.com"><img src="https://cdn.simpleicons.org/gitea" width="16" height="16" alt="Gitea" title="Gitea" /></a>&nbsp;&nbsp;
@@ -40,6 +41,7 @@
     <img src="https://api.iconify.design/thesvg/grok-xai.svg?color=%23000000" width="16" height="16" alt="Grok Build" title="Grok Build" />
   </picture></a>&nbsp;&nbsp;
   <a href="https://www.deepseek.com"><img src="https://cdn.simpleicons.org/deepseek" width="16" height="16" alt="DeepSeek" title="DeepSeek" /></a>&nbsp;&nbsp;
+  <a href="https://github.com/QwenLM/qwen-code"><img src="https://api.iconify.design/logos/qwen-icon.svg" width="16" height="16" alt="Qwen Code" title="Qwen Code" /></a>&nbsp;&nbsp;
   <a href="https://opencode.ai"><img src="https://cdn.simpleicons.org/opencode/000000/e6edf3" width="16" height="16" alt="OpenCode" title="OpenCode" /></a>&nbsp;&nbsp;
   <a href="https://pi.dev"><img src="https://cdn.simpleicons.org/pi/000000/e6edf3" width="16" height="16" alt="Pi" title="Pi" /></a>&nbsp;&nbsp;
   <span title="Any ACP-compatible agent">…</span></sub>
