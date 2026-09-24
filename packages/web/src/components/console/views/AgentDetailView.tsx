@@ -40,6 +40,7 @@ import {
   createGitlabHook,
   creatorLabel,
   fetchAgentHooks,
+  fetchAgentInstallations,
   fetchAgentRepos,
   fetchGithubInstallations,
   fetchGiteaConnections,
@@ -422,6 +423,11 @@ function AgentDetail() {
   const wsForRepos = getAgent(id)?.workspace
   const reposKey = wsForRepos ? consoleKeys.agentRepos(activeOrg?.id, id) : null
   const { data: agentReposData } = useSWR(reposKey, ([, orgId, , agentId]) => fetchAgentRepos(agentId, orgId))
+  // Installation grants authorize their account's repositories too (decision 10).
+  const grantsKey = wsForRepos ? consoleKeys.agentInstallations(activeOrg?.id, id) : null
+  const { data: installationGrantsData, error: installationGrantsError } = useSWR(grantsKey, ([, orgId, , agentId]) =>
+    fetchAgentInstallations(agentId, orgId)
+  )
   // Which ROOT the Workspace tab browses, beside `?worktree=` which chooses the checkout within it.
   // Pool placements hold their grants as authorization only — no secondary root is materialized
   // there yet — so the menu offers nothing to switch to and the browser stays on the workspace.
@@ -452,11 +458,13 @@ function AgentDetail() {
   const watchUnauthorized = (h: HookDto): boolean =>
     wsForRepos !== undefined &&
     agentReposData !== undefined &&
+    (installationGrantsData !== undefined || installationGrantsError !== undefined) &&
     effectiveRepoAccess({
       repoId: h.repoId,
       repoFullName: h.repoFullName,
       workspace: wsForRepos ?? { mode: 'scratch' },
-      authorizations: agentReposData
+      authorizations: agentReposData,
+      installationGrants: installationGrantsData
     }) === 'none'
 
   // The group-card identity line: the repos' common owner when they share one,
@@ -479,7 +487,8 @@ function AgentDetail() {
     repoId: reviewSettingsHook?.repoId,
     repoFullName: reviewSettingsHook?.repoFullName,
     workspace: wsForRepos ?? { mode: 'scratch' },
-    authorizations: agentReposData ?? []
+    authorizations: agentReposData ?? [],
+    installationGrants: installationGrantsData
   })
   const reviewSettingsInstallation = installationForRepo(reviewSettingsHook?.repoFullName, githubInstallations)
   const reviewSettingsNeededAccess = reviewSettingsDraft ? requiredRepoAccess(reviewSettingsDraft) : 'none'

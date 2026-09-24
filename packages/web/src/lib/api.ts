@@ -6152,6 +6152,79 @@ export async function deleteAgentRepo(agentId: string, repoAuthId: string): Prom
   await apiDelete<void>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/repos/${encodeURIComponent(repoAuthId)}`)
 }
 
+// ── agent installation grants (agent-multi-repo-authorization.md decision 10) ─
+
+/** How an installation grant's repositories materialize — never `always` (multi-repository-workspaces.md decision 14). */
+export type InstallationMaterialize = Exclude<RepoMaterialize, 'always'>
+
+/** Every repository one of the organization's GitHub App installations covers, at one tier. */
+export interface AgentInstallationAuthDto {
+  id: string
+  provider: 'github'
+  installationId: number // GitHub-side id, matching GithubInstallationDto.installationId
+  accountLogin: string
+  access: RepoAccess
+  materialize: InstallationMaterialize
+  createdBy: string | null
+  createdAt: string // ISO-8601
+}
+
+/** Gated by the agent's visibility; a CP without the route (404) reads as no grants. */
+export async function fetchAgentInstallations(agentId: string, orgId?: string): Promise<AgentInstallationAuthDto[]> {
+  try {
+    return await apiGet<AgentInstallationAuthDto[]>(
+      `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/installations`
+    )
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return []
+    throw e
+  }
+}
+
+async function sendAgentInstallation(
+  method: 'POST' | 'PATCH',
+  path: string,
+  input: object
+): Promise<AgentInstallationAuthDto> {
+  const res = await authenticatedFetch(
+    path,
+    { method, body: JSON.stringify(input) },
+    { 'content-type': 'application/json' }
+  )
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
+    throw new ApiError(body.message ?? `${method} ${path} → ${res.status} ${res.statusText}`, res.status, body.code)
+  }
+  return (await res.json()) as AgentInstallationAuthDto
+}
+
+// Owner-only: the 403 / 400 / 409 denial message is surfaced verbatim.
+export function createAgentInstallation(
+  agentId: string,
+  input: { installationId: number; access: RepoAccess; materialize?: InstallationMaterialize }
+): Promise<AgentInstallationAuthDto> {
+  return sendAgentInstallation('POST', `${orgBase()}/agents/${encodeURIComponent(agentId)}/installations`, input)
+}
+
+// Access only rises (a lower tier is 409); at least one field is required.
+export function updateAgentInstallation(
+  agentId: string,
+  id: string,
+  input:
+    | { access: RepoAccess; materialize?: InstallationMaterialize }
+    | { access?: RepoAccess; materialize: InstallationMaterialize }
+): Promise<AgentInstallationAuthDto> {
+  return sendAgentInstallation(
+    'PATCH',
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/installations/${encodeURIComponent(id)}`,
+    input
+  )
+}
+
+export async function deleteAgentInstallation(agentId: string, id: string): Promise<void> {
+  await apiDelete<void>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/installations/${encodeURIComponent(id)}`)
+}
+
 // ── crons ─────────────────────────────────────────────────────────────────────
 export async function fetchCrons(orgId?: string): Promise<CronDto[]> {
   return apiGet<CronDto[]>(`${orgBase(orgId)}/crons`)

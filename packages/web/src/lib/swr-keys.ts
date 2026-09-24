@@ -125,6 +125,8 @@ export const consoleKeys = {
     hookId ? consoleKey(orgId, 'hook-trusted-actors', hookId) : null,
   agentRepos: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-repos', agentId) : null,
+  agentInstallations: (orgId: string | null | undefined, agentId: string | null | undefined) =>
+    agentId ? consoleKey(orgId, 'agent-installations', agentId) : null,
   /** The Integrations card's bot roster. The bound-project signature is part of the key, so
    *  binding or removing a project makes the entry recorded under the old set unreachable. */
   gitlabAccounts: (orgId: string | null | undefined, bindings: string) =>

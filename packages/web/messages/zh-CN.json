@@ -1905,6 +1905,10 @@
       "authorizeRepository": "授权仓库",
       "noAdditionalRepositories": "尚未授权其他仓库。",
       "revokeRepositoryAccess": "撤销仓库访问权限",
+      "authorizeInstallation": "授权安装",
+      "installationOwnerOnly": "只有组织所有者可以授权或撤销安装",
+      "allRepositoriesIn": "<mono>{account}</mono> 中的所有仓库",
+      "revokeInstallationAccess": "撤销安装访问权限",
       "cancel": "取消",
       "saving": "保存中…",
       "replaceWorkspace": "替换工作区",
@@ -2004,6 +2008,23 @@
       "cancel": "取消",
       "adding": "添加中…",
       "add": "添加"
+    },
+    "installationModal": {
+      "title": "授权安装",
+      "subtitle": "为以下对象授权一个安装覆盖的所有仓库",
+      "backToWorkspace": "返回工作区设置",
+      "installation": "安装",
+      "allRepositories": "所有仓库",
+      "selectedRepositories": "选定的仓库",
+      "noInstallations": "没有可授权的安装",
+      "access": "访问权限",
+      "readOnly": "只读",
+      "readOnlyDescription": "仅克隆和读取文件",
+      "readWrite": "读写",
+      "writeDescription": "在所有仓库中推送、创建 PR 并运行 GitHub Actions",
+      "cancel": "取消",
+      "authorizing": "授权中…",
+      "authorize": "授权"
     },
     "filters": {
       "all": "全部",
@@ -2660,6 +2681,8 @@
         "manageRepository": "管理仓库",
         "authorizeRepository": "授权仓库",
         "repositoryGrantsError": "无法加载仓库授权。",
+        "allRepositoriesIn": "<mono>{account}</mono> 中的所有仓库",
+        "installationGrantTitle": "{account} 中的所有仓库——{access} 权限；由 {creator} 添加",
         "files": "文件",
         "noFilesReported": "暂未发现文件——Daemon 会在首次运行时索引工作树。"
       },

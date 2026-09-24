@@ -37,6 +37,7 @@ vi.mock('@/lib/data-context', () => ({
 vi.mock('@/lib/api', () => ({
   fetchAgentHooks: mocks.fetchAgentHooks,
   fetchAgentRepos: async () => [],
+  fetchAgentInstallations: async () => [],
   fetchGithubInstallations: async () => ({ installations: [] }),
   updateGithubHook: mocks.updateGithubHook,
   updateGitlabHook: mocks.updateGitlabHook,

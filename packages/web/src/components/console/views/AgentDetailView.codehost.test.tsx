@@ -14,6 +14,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const mocks = vi.hoisted(() => ({
   hooks: [] as unknown[],
+  grants: [] as unknown[],
   createGithubHook: vi.fn(),
   openModal: vi.fn()
 }))
@@ -51,6 +52,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchAgentHooks: vi.fn(async () => mocks.hooks),
   fetchAgentRepos: vi.fn(async () => []),
+  fetchAgentInstallations: vi.fn(async () => mocks.grants),
   fetchGithubInstallations: vi.fn(async () => ({ enabled: false, installations: [] })),
   fetchGitlabConnections: vi.fn(async () => ({ enabled: false, connections: [] })),
   createGithubHook: mocks.createGithubHook
@@ -184,6 +186,7 @@ function triggerOrder(scope: HTMLElement): string[] {
 
 beforeEach(() => {
   mocks.hooks = [ISSUES_ROW, PR_ROW, DEPLOY_ROW, RELEASE_ROW, WEB_ISSUES_ROW]
+  mocks.grants = []
   mocks.createGithubHook.mockReset()
   mocks.createGithubHook.mockResolvedValue({ id: 'hook-new' })
   mocks.openModal.mockReset()
@@ -346,5 +349,20 @@ describe('AgentDetailView, code-host repository blocks', () => {
     await act(async () => deployMore.click())
     expect(menuItem('Settings…')).toBeUndefined()
     expect(menuItem('Recent deliveries')).toBeTruthy()
+  })
+})
+
+describe('AgentDetailView, repositories an installation grant covers', () => {
+  it('badges a scratch agent’s watch as unauthorized until a grant covers its owner', async () => {
+    mocks.hooks = [WEB_ISSUES_ROW]
+    const uncovered = await render()
+    expect(uncovered.textContent).toContain('write-back unauthorized')
+    await act(async () => root!.unmount())
+    host?.remove()
+
+    mocks.grants = [{ id: 'grant-1', provider: 'github', installationId: 12345, accountLogin: 'acme', access: 'read' }]
+    const covered = await render()
+    expect(covered.textContent).toContain('acme/web')
+    expect(covered.textContent).not.toContain('write-back unauthorized')
   })
 })

@@ -53,6 +53,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchAgentHooks: vi.fn(async () => []),
   fetchAgentRepos: vi.fn(async () => []),
+  fetchAgentInstallations: vi.fn(async () => []),
   fetchSlackConfig: vi.fn(async () => ({
     configured: false,
     durable: false,

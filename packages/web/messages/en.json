@@ -1905,6 +1905,10 @@
       "authorizeRepository": "Authorize repository",
       "noAdditionalRepositories": "No additional repositories authorized.",
       "revokeRepositoryAccess": "Revoke repository access",
+      "authorizeInstallation": "Authorize an installation",
+      "installationOwnerOnly": "Only organization owners can authorize or revoke an installation",
+      "allRepositoriesIn": "All repositories in <mono>{account}</mono>",
+      "revokeInstallationAccess": "Revoke installation access",
       "cancel": "Cancel",
       "saving": "Saving…",
       "replaceWorkspace": "Replace workspace",
@@ -2004,6 +2008,23 @@
       "cancel": "Cancel",
       "adding": "Adding…",
       "add": "Add"
+    },
+    "installationModal": {
+      "title": "Authorize an installation",
+      "subtitle": "Every repository an installation covers, for",
+      "backToWorkspace": "Back to workspace settings",
+      "installation": "Installation",
+      "allRepositories": "All repositories",
+      "selectedRepositories": "Selected repositories",
+      "noInstallations": "No installations left to authorize",
+      "access": "Access",
+      "readOnly": "Read only",
+      "readOnlyDescription": "Clone & read files only",
+      "readWrite": "Read & write",
+      "writeDescription": "Push, open PRs & run GitHub Actions in every repository",
+      "cancel": "Cancel",
+      "authorizing": "Authorizing…",
+      "authorize": "Authorize"
     },
     "filters": {
       "all": "All",
@@ -2660,6 +2681,8 @@
         "manageRepository": "Manage repository",
         "authorizeRepository": "Authorize repository",
         "repositoryGrantsError": "Couldn't load repository grants.",
+        "allRepositoriesIn": "All repositories in <mono>{account}</mono>",
+        "installationGrantTitle": "All repositories in {account} — {access} access; added by {creator}",
         "files": "Files",
         "noFilesReported": "No files reported yet — the daemon indexes the working tree on first run."
       },

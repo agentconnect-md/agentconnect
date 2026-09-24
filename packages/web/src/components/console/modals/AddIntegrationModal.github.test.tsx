@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
     kind: 'github'
   })),
   fetchAgentRepos: vi.fn(),
+  fetchAgentInstallations: vi.fn(async () => []),
   fetchAgentHooks: vi.fn(async () => [] as unknown[])
 }))
 
@@ -74,6 +75,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchAgentHooks: mocks.fetchAgentHooks,
   fetchAgentRepos: mocks.fetchAgentRepos,
+  fetchAgentInstallations: mocks.fetchAgentInstallations,
   fetchGithubInstallations: vi.fn(async () => ({ enabled: true, installations: [installation] })),
   fetchGithubInstallUrl: vi.fn(async () => null),
   fetchGithubRepoRoster: vi.fn(async () => ({ repos: [repo], privateReposHidden: false, failed: false })),

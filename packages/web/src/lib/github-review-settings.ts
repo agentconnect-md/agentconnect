@@ -104,8 +104,16 @@ export function isWorkspaceRepo(input: WorkspaceRepoMatchInput): boolean {
   )
 }
 
-/** Resolve the hook repo against the agent's implicit App-backed workspace grant first, then its
- *  explicit repo grants — scratch has no implicit repo, a manual workspace may grant its own. */
+/** The tier an installation grant covering the repository's owner confers, or `none`. */
+export function installationGrantAccess(
+  repoFullName: string | null | undefined,
+  grants: ReadonlyArray<{ accountLogin: string; access: 'read' | 'comment' | 'write' }> | undefined
+): EffectiveRepoAccess {
+  const owner = repoFullName?.trim().split('/')[0]?.toLowerCase()
+  return (owner && grants?.find((grant) => grant.accountLogin.toLowerCase() === owner)?.access) || 'none'
+}
+
+/** Resolve the hook repo against the implicit workspace grant, then explicit repo grants, then installation grants. */
 export function effectiveRepoAccess(input: {
   repoId?: string | null
   repoFullName: string | null | undefined
@@ -121,6 +129,8 @@ export function effectiveRepoAccess(input: {
     repoFullName: string
     access: 'read' | 'comment' | 'write'
   }>
+  /** An explicit row keeps its own tier; a grant counts only when no row matches (decision 10). */
+  installationGrants?: ReadonlyArray<{ accountLogin: string; access: 'read' | 'comment' | 'write' }>
 }): EffectiveRepoAccess {
   const wantedId = input.repoId?.trim()
   const wanted = input.repoFullName?.trim().toLowerCase()
@@ -132,15 +142,11 @@ export function effectiveRepoAccess(input: {
     // write on the CP, so preserve that safe compatibility interpretation.
     return input.workspace.gitAccess ?? 'write'
   }
-  if (wantedId) {
-    const exact = input.authorizations.find((row) => row.repoId?.trim() === wantedId)
-    if (exact) return exact.access
-    const legacy = input.authorizations.find(
-      (row) => !row.repoId && !!wanted && row.repoFullName.toLowerCase() === wanted
-    )
-    return legacy?.access ?? 'none'
-  }
-  return input.authorizations.find((row) => !!wanted && row.repoFullName.toLowerCase() === wanted)?.access ?? 'none'
+  const explicit = wantedId
+    ? (input.authorizations.find((row) => row.repoId?.trim() === wantedId) ??
+      input.authorizations.find((row) => !row.repoId && !!wanted && row.repoFullName.toLowerCase() === wanted))
+    : input.authorizations.find((row) => !!wanted && row.repoFullName.toLowerCase() === wanted)
+  return explicit?.access ?? installationGrantAccess(input.repoFullName, input.installationGrants)
 }
 
 export function installationForRepo<T extends { accountLogin: string }>(

@@ -60,6 +60,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import {
   creatorLabel,
   fetchAgentHooks,
+  fetchAgentInstallations,
   fetchAgentRepos,
   repoAuthProvider,
   fetchGithubInstallationRepo,
@@ -125,6 +126,7 @@ import {
   hasPullRequestsReadPermission,
   hasPullRequestsWritePermission,
   installationForRepo,
+  installationGrantAccess,
   isWorkspaceRepo,
   repoAccessSatisfies,
   requiredRepoAccess,
@@ -592,6 +594,12 @@ export default function AddIntegrationModal({
     fetchAgentRepos(agentId, orgId)
   )
   const authorizedRepos = useMemo(() => agentReposData ?? [], [agentReposData])
+  // A repository its owner's installation grant covers is authorized too (decision 10); explicit rows keep their tier.
+  const agentGrantsKey = consoleKeys.agentInstallations(activeOrg?.id, agent.id)
+  const { data: agentGrantsData, error: agentGrantsError } = useSWR(agentGrantsKey, ([, orgId, , agentId]) =>
+    fetchAgentInstallations(agentId, orgId)
+  )
+  const installationGrants = useMemo(() => agentGrantsData ?? [], [agentGrantsData])
   const canEditAgent = agent.canEdit
   // Non-null ⇒ the unified workspace dialog is open at repository
   // authorization, prefilled with this owner/repo + minimum required tier.
@@ -609,8 +617,10 @@ export default function AddIntegrationModal({
     repoId: ghSelectedRepo?.repoId,
     repoFullName: ghRepoPick,
     workspace: agent.workspace,
-    authorizations: authorizedRepos
+    authorizations: authorizedRepos,
+    installationGrants
   })
+  const ghSelectedGrantCovered = installationGrantAccess(ghRepoPick, installationGrants) !== 'none'
   const ghRepoAccess =
     ghSelectedIsWorkspace && ghWorkspaceAccessOverride ? ghWorkspaceAccessOverride : resolvedGhRepoAccess
   const ghNeededAccess = requiredRepoAccess({
@@ -1689,8 +1699,14 @@ export default function AddIntegrationModal({
                   const q = ghQ.trim().toLowerCase()
                   const wsLc = wsRepo?.toLowerCase() ?? null
                   const authByName = new Map(authorizedRepos.map((r) => [r.repoFullName.toLowerCase(), r.access]))
+                  const tierOf = (fullName: string) => {
+                    const tier =
+                      authByName.get(fullName.toLowerCase()) ?? installationGrantAccess(fullName, installationGrants)
+                    return tier === 'none' ? undefined : tier
+                  }
                   const reposLoading = ghRepos === null
-                  const grantsLoading = agentReposData === undefined
+                  const grantsLoading =
+                    agentReposData === undefined || (agentGrantsData === undefined && agentGrantsError === undefined)
                   // Both must be in before rows render — otherwise grants-still-
                   // loading would paint every row as unauthorized.
                   const loading = reposLoading || grantsLoading
@@ -1720,7 +1736,7 @@ export default function AddIntegrationModal({
                         repo: r,
                         watched: repoFullyWatched(lc),
                         isWorkspace: wsLc === lc,
-                        authTier: authByName.get(lc)
+                        authTier: tierOf(r.fullName)
                       }
                     })
                     .sort((a, b) => {
@@ -1736,7 +1752,7 @@ export default function AddIntegrationModal({
                   const typedInList = !!typedLc && listSource.some((r) => r.fullName.toLowerCase() === typedLc)
                   const typedWatched = !!typedLc && repoFullyWatched(typedLc)
                   const typedWorkspace = !!typedLc && wsLc === typedLc
-                  const typedAuthorized = !!typedLc && authByName.has(typedLc)
+                  const typedAuthorized = !!typedRepo && tierOf(typedRepo) !== undefined
                   return (
                     <div className="fld relative mb-[18px] min-w-0">
                       <span className="fldlbl">{t('repository')}</span>
@@ -2017,7 +2033,10 @@ export default function AddIntegrationModal({
                           repoSelected={Boolean(ghRepoPick)}
                           canAuthorizeRepo={
                             canEditAgent &&
-                            (ghRepoAccess === 'none' || ghSelectedIsWorkspace || ghSelectedAuthorization !== undefined)
+                            (ghRepoAccess === 'none' ||
+                              ghSelectedIsWorkspace ||
+                              ghSelectedAuthorization !== undefined ||
+                              ghSelectedGrantCovered)
                           }
                           authorizingRepo={ghAccessSaving}
                           onAuthorizeRepo={() => void authorizeSelectedRepo()}
