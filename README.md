@@ -73,7 +73,9 @@ AgentConnect is an open-source platform where teams and multiple AI agents work
 together across Slack, Telegram, Discord, Lark, GitHub, GitLab, Gitea, and
 Linear. Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any
 ACP-compatible agent into the conversations and workflows your team already has
-open.
+open. Use [Jev](https://docs.typesafe.ai/introduction) as a decision engine to
+decide when agents respond, route new conversations to specialists, and choose
+a runtime and model for each new session.
 
 Give each agent a role, then let people and agents collaborate in shared
 conversations. Agents can call one another and remember what they learn, and
