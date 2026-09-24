@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { mkdtemp, rm } from 'node:fs/promises'
 import { connect as netConnect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { connect, type TLSSocket } from 'node:tls'
 import { FakeClock } from '@agentconnect.md/connection'
 import type { ExecutorPrepareReq, ExecutorPrepareResult } from '@agentconnect.md/protocol'
@@ -18,7 +18,7 @@ import {
   type ExecutorFacetDeps
 } from '../src/execution/executor-facet.js'
 import { PIPE_TLS } from '../src/execution/executor-pipe.js'
-import type { SessionSeed, StrategyLauncher } from '../src/execution/strategies.js'
+import type { EnvironmentDescriptor, StrategyLauncher } from '../src/execution/strategies.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT } from '../src/shim/sandbox-paths.js'
 import { WAIT } from './wait-support.js'
 
@@ -61,7 +61,7 @@ describe('executor facet', () => {
   let hold: Promise<void> | undefined
   let fail: Error | undefined
   let seeded: string[] = []
-  const seeds: Array<SessionSeed | undefined> = []
+  const environments: EnvironmentDescriptor[] = []
 
   const leftovers: ChildProcess[] = []
 
@@ -87,20 +87,21 @@ describe('executor facet', () => {
     inFlight = mostInFlight = 0
     hold = fail = undefined
     seeded = []
-    seeds.length = 0
+    environments.length = 0
     lines.length = 0
     minted.clear()
   })
 
-  const startShim: StrategyLauncher['start'] = async ({ daemonRoot, sessionLeaf, seed }) => {
+  const startShim: StrategyLauncher['start'] = async ({ environment }) => {
+    const sessionLeaf = basename(environment.workspaceRoot)
     starts.push(sessionLeaf)
-    seeds.push(seed)
+    environments.push(environment)
     mostInFlight = Math.max(mostInFlight, ++inFlight)
     try {
       await hold
       if (fail) throw fail
       // Short on purpose: a unix socket path has a budget of about a hundred bytes.
-      const runtimeRoot = join(daemonRoot, 'hs', String(starts.length))
+      const runtimeRoot = join(root!, 'hs', String(starts.length))
       mkdirSync(runtimeRoot, { recursive: true })
       const socketPath = join(runtimeRoot, 's')
       const connections: Socket[] = []
@@ -150,7 +151,7 @@ describe('executor facet', () => {
   const vmLauncher: StrategyLauncher = {
     start: async (input) => {
       const environment = await startShim(input)
-      vmStarts.push(input.sessionLeaf)
+      vmStarts.push(basename(input.environment.workspaceRoot))
       return {
         connect: environment.connect,
         // What a VM reports (§5): the image's fixed layout, and no helper root at all.
@@ -160,7 +161,7 @@ describe('executor facet', () => {
         stop: environment.stop
       }
     },
-    discard: async (sessionLeaf) => void vmDiscards.push(sessionLeaf)
+    discard: async (id) => void vmDiscards.push(id)
   }
 
   async function start(over: Partial<ExecutorFacetDeps> = {}): Promise<{ facet: ExecutorFacet; clock: FakeClock }> {
@@ -308,8 +309,8 @@ describe('executor facet', () => {
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('hello shim'), WAIT)
     })
 
-    // §8: only this machine can say where the sign-in its HOME seed points at lives, so its shim says it for the runtime.
-    it('hands whichever launcher the strategy names what the HOME seed points a runtime at', async () => {
+    // §8, §11 step 3: the facet builds the environment from the leaf alone, whichever strategy starts it, and only this machine can say where its seed points.
+    it('hands whichever launcher the strategy names the environment built from the leaf, with what the HOME seed points at', async () => {
       const seed = { env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude' }, paths: ['/home/op/.claude'] }
       const { facet } = await start({
         seedHome: (home) => {
@@ -317,23 +318,58 @@ describe('executor facet', () => {
           return seed
         }
       })
+      const second = `slack:C2:1700000000.000200:${AGENT}`
       ready(await facet.prepare(req(3)))
-      ready(
-        await facet.prepare(req(4, { sessionKey: `slack:C2:1700000000.000200:${AGENT}`, strategy: 'microsandbox' }))
-      )
-      expect(seeds).toEqual([seed, seed])
+      ready(await facet.prepare(req(4, { sessionKey: second, strategy: 'microsandbox' })))
+      const hosted = (leaf: string) => {
+        const directory = join(root!, 'sessions', leaf)
+        return {
+          id: `executor/${leaf}`,
+          workspaceRoot: directory,
+          mounts: [directory, '/home/op/.claude'].map((source) => ({ source, target: source, mode: 'writable' })),
+          hosted: { env: seed.env }
+        }
+      }
+      expect(environments).toEqual([hosted(LEAF), hosted(sessionKeyDirName(second))])
       expect(vmStarts).toHaveLength(1)
     })
 
-    it('seeds nothing for a launcher that seeds its own HOME, as a VM protecting its credentials does (§8)', async () => {
+    it("seeds through a launcher's own seed in place of the plain one, as a VM protecting its credentials does (§8)", async () => {
+      const secret = {
+        env: 'DEEPSEEK_API_KEY',
+        placeholder: 'msb-secret-DEEPSEEK_API_KEY',
+        host: 'api.deepseek.com',
+        readValue: () => 'fixture-executor-key'
+      }
+      const launcherSeeded: string[] = []
       const { facet } = await start({
-        launchers: { host: { start: startShim }, microsandbox: { ...vmLauncher, seedsHome: true } }
+        launchers: {
+          host: { start: startShim },
+          microsandbox: {
+            ...vmLauncher,
+            seedHome: async (home) => {
+              launcherSeeded.push(home)
+              return { env: { DEEPSEEK_API_KEY: secret.placeholder }, paths: [], secrets: [secret] }
+            }
+          }
+        }
       })
       ready(await facet.prepare(req(1, { strategy: 'microsandbox' })))
       expect(vmStarts).toEqual([LEAF])
       // The plain seed would copy the raw sign-in files the VM's own seed projects behind placeholders.
       expect(seeded).toEqual([])
-      expect(seeds).toEqual([undefined])
+      const directory = join(root!, 'sessions', LEAF)
+      expect(launcherSeeded).toEqual([join(directory, 'home')])
+      // The environment carries that seed's secrets for the VM to fix when it starts.
+      expect(environments).toEqual([
+        {
+          id: `executor/${LEAF}`,
+          workspaceRoot: directory,
+          mounts: [{ source: directory, target: directory, mode: 'writable' }],
+          secrets: [secret],
+          hosted: { env: { DEEPSEEK_API_KEY: secret.placeholder } }
+        }
+      ])
     })
 
     it('says how the environment it prepared starts the runtime a launch names: this machine’s install, or its image’s', async () => {
@@ -531,7 +567,7 @@ describe('executor facet', () => {
       ).toEqual({
         status: 'released'
       })
-      expect(vmDiscards).toEqual([LEAF])
+      expect(vmDiscards).toEqual([`executor/${LEAF}`])
       expect(existsSync(join(root!, 'sessions', LEAF))).toBe(false)
     })
 

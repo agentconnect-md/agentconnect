@@ -158,7 +158,7 @@ describe('executor facet, end to end', () => {
     agentsExist: async (agentIds) => new Set(agentIds),
     retentionMs: () => null,
     log: quiet,
-    launchers: { host: hostLauncher((input) => startHostShim({ ...input, entry })) },
+    launchers: { host: hostLauncher(daemonRoot, (input) => startHostShim({ ...input, entry })) },
     listen: { host: '127.0.0.1' },
     ...over
   })

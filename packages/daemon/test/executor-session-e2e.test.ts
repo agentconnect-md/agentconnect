@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type {
   ExecutorPrepareReq,
   ExecutorPrepareResult,
@@ -108,13 +108,14 @@ describe('a session on another machine of the group', () => {
     if (!root) dirs.push(daemonRoot)
     const exec: GitExecPayload[] = []
     const launcher: StrategyLauncher = {
-      start: async ({ sessionLeaf, seed: handed }) => {
+      start: async ({ environment }) => {
         const server = new ShimServer()
         servers.push(server)
         const socketPath = join(await mkdtemp(join(tmpdir(), 'ac-xsk-')), 's.sock')
         dirs.push(socketPath)
         await server.startOnSocket(socketPath)
-        const workspaceRoot = join(daemonRoot, 'sessions', sessionLeaf)
+        const { workspaceRoot, hosted: handed } = environment
+        const sessionLeaf = basename(workspaceRoot)
         const client = new ShimClient({
           endpoint: 'accepted-daemon-channel',
           dial: () => server.nextTransport() as Promise<ShimTransport>,

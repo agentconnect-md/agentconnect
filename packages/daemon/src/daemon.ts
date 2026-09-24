@@ -89,7 +89,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import {
   installMicrosandbox,
   installedMicrosandbox,
@@ -100,6 +100,11 @@ import { resolveMicrosandboxImage } from './release-image.js'
 import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
 import { microsandboxGitRunner } from './microsandbox/git.js'
+import {
+  localMicrosandboxEnvironment,
+  localMicrosandboxPlacement,
+  type LocalMicrosandboxPlacement
+} from './microsandbox/placement.js'
 import { ShimWorkspaceFs } from './shim/workspace-fs-channel.js'
 import { ShimWorkspaceFiles } from './shim/workspace-files-channel.js'
 import { ClusterSkillClient } from './shim/skill-client.js'
@@ -3942,7 +3947,7 @@ export class Daemon {
       strategies: () => this.executionStrategies(),
       // Both are offered; the effective table above is what decides which of them a `prepare` may ask for.
       launchers: {
-        host: hostLauncher(),
+        host: hostLauncher(root),
         // A VM seeds its own HOME from the same admitted runtimes, with their credentials behind placeholders (§8).
         microsandbox: microsandboxLauncher({
           manager: () => this.microsandbox,
@@ -4828,20 +4833,13 @@ export class Daemon {
     return !this.k8s && this.agentStrategy(agent) === 'microsandbox'
   }
 
-  private microsandboxPlacement(
-    agent: LoadedAgent,
-    cwd: string,
-    key?: HostKey
-  ): { id: string; trustedSessionDir?: string; homeKey?: HostKey } {
-    const parts = relative(agent.dir, cwd).split(sep)
-    if (parts[0] === 'sessions' && /^session-[a-f0-9]{24}$/.test(parts[1] ?? '')) {
-      return { id: `${agent.id}/${parts[1]}`, trustedSessionDir: join(agent.dir, 'sessions', parts[1]!) }
-    }
-    // A legacy session keeps its VM and HOME even when its MCP scope requires a separate ACP process.
-    if (key && this.legacyMicrosandboxSessions.has(key)) {
-      return { id: `${agent.id}/agent`, homeKey: agentHostKey(agent.id) }
-    }
-    return { id: `${agent.id}/${hostKeyDirName(key)}` }
+  private microsandboxPlacement(agent: LoadedAgent, cwd: string, key?: HostKey): LocalMicrosandboxPlacement {
+    return localMicrosandboxPlacement({
+      agentId: agent.id,
+      agentDir: agent.dir,
+      cwd,
+      ...(key ? { hostKey: key, legacy: this.legacyMicrosandboxSessions.has(key) } : {})
+    })
   }
 
   private microsandboxContext(
@@ -4910,7 +4908,7 @@ export class Daemon {
       trustedMounts: microsandboxSupportMounts(this.root, git?.GIT_CONFIG_GLOBAL),
       mounts: this.cfg.sandbox.mounts
     })
-    return { environment: { id: placement.id, ...launch.microsandbox }, launch }
+    return { environment: localMicrosandboxEnvironment(placement.id, launch.microsandbox), launch }
   }
 
   private microsandboxGit(agentId: string, cwd?: string, abort?: AbortSignal) {
@@ -4984,10 +4982,9 @@ export class Daemon {
   private readonly microsandboxPlane: ExecutionPlane = {
     // The environment names the VM; the host key rides along on every launch.
     spawnFor: ({ agent, hostKey, cwd, prepared }) => ({
-      driver: this.microsandbox!.driverFor({
-        id: this.microsandboxPlacement(agent, cwd, hostKey).id,
-        ...prepared.microsandbox!
-      }),
+      driver: this.microsandbox!.driverFor(
+        localMicrosandboxEnvironment(this.microsandboxPlacement(agent, cwd, hostKey).id, prepared.microsandbox!)
+      ),
       hostKey
     }),
     gitRunnerFor: (agentId, cwd, abort) => this.microsandboxGit(agentId, cwd, abort),
