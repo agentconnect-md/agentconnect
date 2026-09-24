@@ -13,9 +13,10 @@ import {
   sandboxSubjectForPath,
   sessionSandboxSubject
 } from '../src/k8s/sandbox-identity.js'
-import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { fakeGenerations } from './fake-generations.js'
+import { fenceFakeSandbox } from './fake-sandbox-fence.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 
@@ -47,6 +48,8 @@ function cluster() {
   let minted = 0
   let versions = 0
   const api = {
+    generations: fakeGenerations(),
+    fenceSandbox: async (name: string, fence: SandboxFence) => fenceFakeSandbox(sandboxes.get(name)!, fence),
     ensureClaim: vi.fn(async (claim: SandboxClaim & { metadata: { name: string } }) => {
       const existing = claims.get(claim.metadata.name)
       if (existing) {
@@ -165,7 +168,7 @@ function member(
 ) {
   const records: SpawnRecord[] = []
   const warnings: string[] = []
-  const generations = fakeGenerations()
+  const generations = api.generations
   const clock = new FakeClock()
   const driver = new K8sDriver({
     api: api as never,
@@ -187,6 +190,22 @@ const request = (hostKey?: typeof T1) =>
   ({ command: 'x', args: [], env: { AC_AGENT_ID: AGENT }, ...(hostKey ? { hostKey } : {}) }) as never
 
 describe('one sandbox pod per session host (git-workspace-model §11)', () => {
+  it('releases disconnected session pods with the agent while preserving their claims', async () => {
+    const { api, claims } = cluster()
+    const { driver } = member(api, podSide().connect)
+    const first = sandboxSubjectFor(T1)
+    const second = sandboxSubjectFor(T2)
+    await driver.ensureBoundChannel(first)
+    await driver.ensureBoundChannel(second)
+    driver.onChannelLost(first, 'reconnect window elapsed')
+    expect(driver.sessionSubjectsOf(AGENT).sort()).toEqual([first, second].sort())
+    driver.releaseAgentSandboxes(AGENT)
+    expect(driver.launched()).toEqual([])
+    expect(await driver.suspendIfIdle(first)).toBe('absent')
+    expect(await driver.suspendIfIdle(second)).toBe('absent')
+    expect(claims.size).toBe(2)
+  })
+
   it('claims a pod per session host and nothing of the agent’s, labelled by agent AND session leaf', async () => {
     const { api, claims } = cluster()
     const { driver, records } = member(api, podSide().connect)

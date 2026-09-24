@@ -236,9 +236,7 @@ describe.skipIf(!ENABLED)('Kubernetes client against a real API server', () => {
   }, 120_000)
 
   it('returns 409 Conflict for a stale resourceVersion precondition', async () => {
-    // The alternative mechanism, measured: it IS a structured 409. It stays unused because it
-    // guards the whole object, so unrelated status writes would conflict — but the next
-    // person deciding this should not have to guess either.
+    // Ownership stamps use this CAS; frequent mode changes instead test only their relevant fields.
     const created = await http.json<{ metadata: { resourceVersion: string } }>({
       method: 'POST',
       path: probePath,

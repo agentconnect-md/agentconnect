@@ -1,22 +1,17 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
 import { closeFakeApiServers, fakeApiServer } from '@agentconnect.md/k8s-client/testing'
 import { K8sDriver } from '../src/k8s/driver.js'
-import { SandboxApi } from '../src/k8s/sandbox-api.js'
+import { SANDBOX_LAUNCH_GENERATION, SandboxApi } from '../src/k8s/sandbox-api.js'
 import { LocalStore } from '../src/store/local-store.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 
-/**
- * Two pool members, one shared store, one cluster: what a member may do to an agent's sandbox is
- * scoped to WHILE it serves that agent. An ex-holder forgets the launch when the duty leaves and
- * never suspends the pod its successor is using; the successor re-derives the launch from the
- * cluster on takeover, so a Running pod always has exactly one member that owns its idleness.
- */
+// Two members share a store and cluster; only the current holder may suspend the Sandbox.
 
 const AGENT = 'agent-a'
 const CLAIM = `agent-${AGENT}`
@@ -30,17 +25,24 @@ async function cluster() {
   const state = {
     claim: undefined as Record<string, unknown> | undefined,
     mode: 'Running' as 'Running' | 'Suspended',
-    modeWrites: [] as string[]
+    modeWrites: [] as string[],
+    resourceVersion: 1,
+    annotations: {} as Record<string, string>
   }
   const sandbox = () => ({
-    metadata: { name: 'sb-1', uid: 'sandbox-uid-1' },
+    metadata: {
+      name: 'sb-1',
+      uid: 'sandbox-uid-1',
+      resourceVersion: String(state.resourceVersion),
+      annotations: { ...state.annotations }
+    },
     spec: {
       operatingMode: state.mode,
       podTemplate: { spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] } }
     },
     status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['10.0.0.8'] }
   })
-  const { config } = await fakeApiServer(({ method, url, body }) => {
+  const { config } = await fakeApiServer(({ method, url, body, headers }) => {
     const path = url.pathname
     if (path.endsWith('/sandboxclaims') && method === 'POST') {
       if (state.claim) return { status: 409, json: { kind: 'Status', reason: 'AlreadyExists' } }
@@ -61,14 +63,33 @@ async function cluster() {
     }
     if (path.endsWith('/sandboxes/sb-1')) {
       if (method === 'PATCH') {
-        // Both the mode write and the guarded resume test the mode first, then replace it.
+        if (headers['content-type'] === 'application/merge-patch+json') {
+          const patch = JSON.parse(body) as {
+            metadata: { resourceVersion: string; annotations: Record<string, string> }
+          }
+          if (patch.metadata.resourceVersion !== String(state.resourceVersion)) {
+            return { status: 409, json: { kind: 'Status', reason: 'Conflict' } }
+          }
+          Object.assign(state.annotations, patch.metadata.annotations)
+          state.resourceVersion++
+          return { json: sandbox() }
+        }
         const ops = JSON.parse(body) as Array<{ op: string; path: string; value: unknown }>
-        const test = ops.find((op) => op.op === 'test' && op.path === '/spec/operatingMode')
-        if (test && test.value !== state.mode) return { status: 422, json: { kind: 'Status', reason: 'Invalid' } }
+        const values: Record<string, string | undefined> = {
+          '/metadata/uid': 'sandbox-uid-1',
+          '/metadata/annotations/agentconnect.md~1launch-generation': state.annotations[SANDBOX_LAUNCH_GENERATION],
+          '/spec/operatingMode': state.mode,
+          '/spec/podTemplate/spec/containers/0/name': 'runtime',
+          '/spec/podTemplate/spec/containers/0/image': 'runtime:1'
+        }
+        if (ops.some((op) => op.op === 'test' && values[op.path] !== op.value)) {
+          return { status: 422, json: { kind: 'Status', reason: 'Invalid' } }
+        }
         const replace = ops.find((op) => op.op === 'replace' && op.path === '/spec/operatingMode')
         if (replace) {
           state.mode = replace.value as 'Running' | 'Suspended'
           state.modeWrites.push(state.mode)
+          state.resourceVersion++
         }
       }
       return { json: sandbox() }
@@ -119,6 +140,97 @@ async function sharedStore(): Promise<LocalStore> {
 }
 
 describe('sandbox launches follow the duty', () => {
+  it('keeps a disconnected pod reclaimable when acquiring a fresh binding fails', async () => {
+    const { api, state } = await cluster()
+    const store = await sharedStore()
+    const { driver } = member(api, store, new FakeClock())
+    await driver.ensureBoundChannel(AGENT)
+    const candidates = driver.launched()
+    driver.onChannelLost(AGENT, 'reconnect window elapsed')
+    expect(driver.currentLaunch(AGENT)).toBeUndefined()
+    expect(driver.sessionFor(AGENT)).toBeUndefined()
+    expect(driver.launched()).toEqual(candidates)
+    vi.spyOn(api, 'fenceSandbox').mockRejectedValueOnce(new Error('API unavailable'))
+    await expect(driver.ensureSandbox(AGENT)).rejects.toThrow('API unavailable')
+    expect(driver.launched()).toEqual(candidates)
+    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
+    expect(state.mode).toBe('Suspended')
+    expect(state.claim).toBeDefined()
+    expect(driver.launched()).toEqual([])
+    await store.close()
+  })
+
+  it('rebinds a disconnected pod at a fresh generation before querying its watchers', async () => {
+    const { api, state } = await cluster()
+    const store = await sharedStore()
+    const { driver, dialed } = member(api, store, new FakeClock())
+    await driver.ensureBoundChannel(AGENT)
+    driver.onChannelLost(AGENT, 'reconnect window elapsed')
+    const ensure = vi.spyOn(api, 'ensureClaim')
+    expect((await driver.bindLaunched(AGENT))?.isAttached()).toBe(true)
+    expect(dialed.map((record) => record.generation)).toEqual([1, 2])
+    expect(ensure).not.toHaveBeenCalled()
+    expect(driver.launched()).toHaveLength(1)
+    expect(state.modeWrites).toEqual([])
+    expect(state.mode).toBe('Running')
+    await store.close()
+  })
+
+  it.each(['read', 'write'] as const)('rejects an old suspension paused at the %s across takeover', async (pauseAt) => {
+    const { api, state } = await cluster()
+    const store = await sharedStore()
+    const clock = new FakeClock()
+    const a = member(api, store, clock)
+    const b = member(api, store, clock)
+    await a.driver.ensureBoundChannel(AGENT)
+    let pause!: () => void
+    const paused = new Promise<void>((resolve) => (pause = resolve))
+    let resume!: () => void
+    const resumed = new Promise<void>((resolve) => (resume = resolve))
+    if (pauseAt === 'read') {
+      const get = api.getSandbox.bind(api)
+      vi.spyOn(api, 'getSandbox').mockImplementationOnce(async (...args) => {
+        const snapshot = await get(...args)
+        pause()
+        await resumed
+        return snapshot
+      })
+    } else {
+      const set = api.setOperatingMode.bind(api)
+      vi.spyOn(api, 'setOperatingMode').mockImplementationOnce(async (...args) => {
+        pause()
+        await resumed
+        return await set(...args)
+      })
+    }
+    const oldSuspension = a.driver.suspendIfIdle(AGENT)
+    const rejected = expect(oldSuspension).rejects.toThrow(/left this member/)
+    await paused
+    a.driver.release(AGENT)
+    await b.driver.adopt(AGENT)
+    await b.driver.ensureBoundChannel(AGENT)
+    resume()
+    await rejected
+    expect(state.mode).toBe('Running')
+    expect(state.modeWrites).toEqual([])
+    expect(b.driver.sessionFor(AGENT)?.isAttached()).toBe(true)
+    await store.close()
+  })
+
+  it('shares launch publication across simultaneous acquisitions of the same pod', async () => {
+    const { api } = await cluster()
+    const store = await sharedStore()
+    const { driver } = member(api, store, new FakeClock())
+    const launches = await Promise.all([driver.ensureSandbox(AGENT), driver.ensureSandbox(AGENT)])
+    expect(launches[0]).toBe(launches[1])
+    expect(launches[0]!.generation).toBe(1)
+    const release = driver.retainLaunched(AGENT)!
+    expect(await driver.suspendIfIdle(AGENT)).toBe('busy')
+    release()
+    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
+    await store.close()
+  })
+
   it('an ex-holder forgets its launch and cannot suspend the pod its successor serves', async () => {
     const { api, state } = await cluster()
     const store = await sharedStore()

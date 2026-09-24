@@ -8,6 +8,8 @@ import { Daemon } from '../src/daemon.js'
 import { agentHostKey, hostKeyDirName, sessionHostKey, type HostKey } from '../src/acp/host-key.js'
 import { buildCpClientDeps } from '../src/cp/cp-client-deps.js'
 import { K8sDriver } from '../src/k8s/driver.js'
+import { fenceFakeSandbox } from './fake-sandbox-fence.js'
+import type { SandboxFence, Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import {
   agentSandboxSubject,
   sandboxClaimName,
@@ -15,7 +17,6 @@ import {
   sandboxSubjectForPath,
   sandboxSubjectSessionLeaf
 } from '../src/k8s/sandbox-identity.js'
-import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 import { SANDBOX_CHECKOUT_DIR } from '../src/shim/sandbox-paths.js'
@@ -47,6 +48,7 @@ function cluster(refused: (claimName: string) => boolean) {
     if (refused(claimName)) throw new K8sApiError(503, 'ServiceUnavailable', 'the agent pod refuses every call')
   }
   const api = {
+    fenceSandbox: async (name: string, fence: SandboxFence) => fenceFakeSandbox(sandboxes.get(name)!, fence),
     ensureClaim: async (claim: SandboxClaim & { metadata: { name: string } }) => {
       record('ensureClaim', claim.metadata.name)
       const existing = claims.get(claim.metadata.name)

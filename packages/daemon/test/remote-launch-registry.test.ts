@@ -77,6 +77,22 @@ describe('launch registry release fence', () => {
     await expect(recording).rejects.toThrow('left this member')
     expect(subject.launched()).toEqual([])
   })
+
+  it('publishes reacquired ownership while an old ownership stamp is still pending', async () => {
+    const { subject } = registry()
+    let resume!: () => void
+    const stamping = new Promise<void>((resolve) => (resume = resolve))
+    const extension = { sandboxName: 'sb-1', claimUid: 'claim-1' }
+    const old = subject.recordLaunch('agent-a', 'uid-1', extension, () => stamping)
+    await Promise.resolve()
+    expect(subject.launched()).toEqual([])
+    subject.bumpRelease('agent-a')
+    const current = await subject.recordLaunch('agent-a', 'uid-1', extension)
+    resume()
+    await expect(old).rejects.toThrow(/left this member/)
+    expect(subject.currentLaunch('agent-a')).toBe(current)
+    expect(current.generation).toBe(2)
+  })
 })
 
 describe('launch registry takeover', () => {

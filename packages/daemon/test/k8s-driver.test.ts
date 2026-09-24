@@ -8,9 +8,10 @@ import { AC_LABEL_AGENT, AC_LABEL_ORG, sessionSandboxSubject } from '../src/k8s/
 import { observeStartup } from '../src/session/startup-progress.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { fakeGenerations } from './fake-generations.js'
+import { fenceFakeSandbox } from './fake-sandbox-fence.js'
+import type { SandboxFence, Sandbox, SandboxClaim, SandboxWarmPool } from '../src/k8s/sandbox-api.js'
 import { GuardedResumeRejectedError, OperatingModeRejectedError } from '../src/k8s/sandbox-api.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import type { Sandbox, SandboxClaim, SandboxWarmPool } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 
@@ -50,6 +51,7 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended'; tem
     deleted: [] as string[]
   }
   const api = {
+    fenceSandbox: async (_name: string, fence: SandboxFence) => fenceFakeSandbox(state.sandbox, fence),
     ensureClaim: vi.fn(async (claim: SandboxClaim & { metadata: { name: string } }) => {
       state.created.push(claim)
       state.claims.set(claim.metadata.name, { ...claim, status: { sandbox: { name: 'sb-1' } } })
@@ -237,12 +239,12 @@ describe('cluster spawn driver', () => {
 
   it('names the ADOPTED warm-pool pod, not the Sandbox, when one was adopted', async () => {
     // An adopted pod's pool-generated name is the identity TokenReview must return.
-    const { api } = fakeApi()
-    api.getSandbox = vi.fn(async (): Promise<Sandbox> => ({
+    const { api, state } = fakeApi()
+    state.sandbox = {
       metadata: { name: 'sb-1', uid: 'sandbox-uid-1', annotations: { 'agents.x-k8s.io/pod-name': 'pool-xyz-7' } },
       spec: { operatingMode: 'Running' },
       status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['10.0.0.9'] }
-    }))
+    }
     const { instance, records } = driver(api)
     await instance.launch(launchRequest)
     expect(records.at(-1)?.podName).toBe('pool-xyz-7')
@@ -522,12 +524,9 @@ describe('cluster spawn driver', () => {
   })
 
   it('does not hand a resumed sandbox the session its departed pod already closed', async () => {
-    // A lost session is terminal and `attach()` is a no-op once closed, while a CACHED launch
-    // keeps its generation — so a re-bind that matched generations re-attached the dead session
-    // and handed the runtime a channel that could never serve a request. Losing the channel has
-    // to end the launch, which is what makes the next turn claim a fresh generation.
+    // A terminal session retires its binding, while the idle sweep retains responsibility for the pod.
     const { api } = fakeApi()
-    const { instance } = driver(api, {
+    const { instance, records } = driver(api, {
       connectChannel: async (record: SpawnRecord) => stubConnection(record.generation)
     })
     await instance.ensureBoundChannel('agent-a')
@@ -538,6 +537,8 @@ describe('cluster spawn driver', () => {
 
     await instance.ensureBoundChannel('agent-a')
     expect(instance.sessionFor('agent-a')?.isAttached()).toBe(true)
+    expect(records.map((record) => record.generation)).toEqual([1, 2])
+    expect(instance.launched()).toHaveLength(1)
   })
 
   it('suspends an idle agent, keeps its claim, and resumes it at a new generation', async () => {
@@ -832,7 +833,8 @@ describe('cluster launch generations', () => {
     expect((await instance.ensureSandbox('agent-a')).generation).toBe(1)
     instance.forgetLaunch('agent-a')
     expect((await instance.ensureSandbox('agent-a')).generation).toBe(2)
-    expect((await instance.ensureSandbox('agent-b')).generation).toBe(1)
+    const other = driver(fakeApi().api, { generations: store })
+    expect((await other.instance.ensureSandbox('agent-b')).generation).toBe(1)
     await store.close()
   })
 

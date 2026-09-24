@@ -11,8 +11,9 @@ import { ShimServer } from '../src/shim/server.js'
 import { TunnelHost } from '../src/shim/tunnel-host.js'
 import { TunnelProxy } from '../src/shim/tunnel-proxy.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
+import { fenceFakeSandbox } from './fake-sandbox-fence.js'
 import type { ShimEvent } from '../src/shim/protocol.js'
 import type { TunnelName } from '../src/shim/tunnel.js'
 import { waitBudget } from './wait-support.js'
@@ -64,6 +65,7 @@ function fakeApi() {
   } satisfies Sandbox
   let claim: SandboxClaim | undefined
   return {
+    fenceSandbox: async (_name: string, fence: SandboxFence) => fenceFakeSandbox(sandbox, fence),
     ensureClaim: async (input: SandboxClaim & { metadata: { name: string } }) => {
       const created = claim === undefined
       claim = { ...input, status: { sandbox: { name: 'sb-1' } } }

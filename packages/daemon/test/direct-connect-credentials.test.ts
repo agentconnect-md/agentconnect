@@ -2,9 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED } from '@agentconnect.md/protocol'
 import { turnFailureCode } from '../src/acp/acp-host.js'
 import { K8sDriver } from '../src/k8s/driver.js'
+import {
+  SANDBOX_LAUNCH_GENERATION,
+  type SandboxFence,
+  type Sandbox,
+  type SandboxClaim
+} from '../src/k8s/sandbox-api.js'
 import { RUNTIME_GRANTS } from '../src/k8s/sandbox-identity.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 
@@ -22,10 +27,14 @@ import type { ShimConnection } from '../src/shim/connection.js'
 const SECRET = 'sk-ant-not-a-real-key-000000'
 
 function fakeApi() {
+  let generation = 0
   const created: SandboxClaim[] = []
   return {
     created,
     api: {
+      fenceSandbox: async (_name: string, fence: SandboxFence) => {
+        generation = fence.generation
+      },
       ensureClaim: async (claim: SandboxClaim & { metadata: { name: string } }) => {
         created.push(claim)
         return { ...claim, status: { sandbox: { name: 'sb-1' } } }
@@ -38,7 +47,11 @@ function fakeApi() {
       deleteClaim: async () => {},
       getSandbox: async () =>
         ({
-          metadata: { name: 'sb-1', uid: 'sandbox-uid-1' },
+          metadata: {
+            name: 'sb-1',
+            uid: 'sandbox-uid-1',
+            annotations: { [SANDBOX_LAUNCH_GENERATION]: String(generation) }
+          },
           spec: { operatingMode: 'Running' },
           status: { conditions: [{ type: 'Ready', status: 'True' }], podIPs: ['10.0.0.8'] }
         }) as Sandbox,

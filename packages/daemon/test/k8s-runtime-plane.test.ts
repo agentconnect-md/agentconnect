@@ -26,8 +26,9 @@ import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
+import { fenceFakeSandbox } from './fake-sandbox-fence.js'
 
 /**
  * The assembly itself, which is the thing that did not exist: every part of the k8s path was
@@ -74,6 +75,7 @@ function fakeApi(options: { podName?: string; adopt?: boolean } = {}) {
   return {
     podName,
     api: {
+      fenceSandbox: async (_name: string, fence: SandboxFence) => fenceFakeSandbox(sandbox, fence),
       ensureClaim: async (input: SandboxClaim & { metadata: { name: string } }) => {
         const created = claim === undefined
         claim = { ...input, status: { sandbox: { name: 'sb-1' } } }
@@ -421,6 +423,7 @@ function fakeCluster() {
     podName,
     claims,
     api: {
+      fenceSandbox: async (name: string, fence: SandboxFence) => fenceFakeSandbox(sandboxes.get(name)!, fence),
       ensureClaim: async (input: SandboxClaim & { metadata: { name: string } }) => {
         const existing = claims.get(input.metadata.name)
         if (existing) return { claim: existing, created: false }

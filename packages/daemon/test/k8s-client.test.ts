@@ -4,6 +4,7 @@ import { closeFakeApiServers, fakeApiServer } from '@agentconnect.md/k8s-client/
 import {
   GuardedResumeRejectedError,
   OperatingModeRejectedError,
+  SANDBOX_LAUNCH_GENERATION,
   SandboxApi,
   isSandboxReady
 } from '../src/k8s/sandbox-api.js'
@@ -11,6 +12,8 @@ import {
 // Generic config/http/watch coverage lives in packages/k8s-client; this file
 // covers the daemon-owned agent-sandbox verb surface only.
 afterEach(closeFakeApiServers)
+
+const fence = { sandboxUid: 'sandbox-uid-1', generation: 7 }
 
 describe('SandboxApi', () => {
   it('addresses v1beta1 collections in the pod namespace', async () => {
@@ -205,7 +208,49 @@ describe('SandboxApi', () => {
     expect(requests[0]?.searchParams.get('labelSelector')).toBe('agentconnect.md/runtime-probe=true')
   })
 
-  it('guards an operatingMode patch with a test op on the value it observed', async () => {
+  it.each([false, true])('re-reads a launch stamp conflict without overwriting a successor: %s', async (successor) => {
+    let resourceVersion = 1
+    let generation: string | undefined
+    const patches: unknown[] = []
+    const { config } = await fakeApiServer(({ method, body }) => {
+      if (method === 'PATCH') {
+        const patch = JSON.parse(body)
+        patches.push(patch)
+        if (patches.length === 1) {
+          resourceVersion++
+          if (successor) generation = '8'
+          return { status: 409, json: { kind: 'Status', reason: 'Conflict' } }
+        }
+        expect(patch.metadata.resourceVersion).toBe(String(resourceVersion))
+        generation = patch.metadata.annotations[SANDBOX_LAUNCH_GENERATION]
+      }
+      return {
+        json: {
+          metadata: {
+            name: 'sb-1',
+            uid: fence.sandboxUid,
+            resourceVersion: String(resourceVersion),
+            annotations: generation ? { [SANDBOX_LAUNCH_GENERATION]: generation } : {}
+          }
+        }
+      }
+    })
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    if (successor) {
+      await expect(api.fenceSandbox('sb-1', fence)).rejects.toThrow(/no longer accepts launch/)
+      expect(generation).toBe('8')
+      expect(patches).toHaveLength(1)
+    } else {
+      await api.fenceSandbox('sb-1', fence)
+      expect(generation).toBe('7')
+      expect(patches).toHaveLength(2)
+    }
+    expect(patches[0]).toEqual({
+      metadata: { resourceVersion: '1', annotations: { [SANDBOX_LAUNCH_GENERATION]: '7' } }
+    })
+  })
+
+  it('guards an operatingMode patch with ownership and the value it observed', async () => {
     let patch: any
     let contentType: string | undefined
     const { config } = await fakeApiServer(({ body, headers }) => {
@@ -214,9 +259,11 @@ describe('SandboxApi', () => {
       return { json: { spec: { operatingMode: 'Running' } } }
     })
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    await api.setOperatingMode('sb-1', 'Running', 'Suspended')
+    await api.setOperatingMode('sb-1', 'Running', 'Suspended', fence)
     expect(contentType).toBe('application/json-patch+json')
     expect(patch).toEqual([
+      { op: 'test', path: '/metadata/uid', value: 'sandbox-uid-1' },
+      { op: 'test', path: '/metadata/annotations/agentconnect.md~1launch-generation', value: '7' },
       { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
       { op: 'replace', path: '/spec/operatingMode', value: 'Running' }
     ])
@@ -231,14 +278,20 @@ describe('SandboxApi', () => {
       return { json: { spec: { operatingMode: 'Running' } } }
     })
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    await api.resumeWithRuntimeImage('sb-1', {
-      containerIndex: 1,
-      observedName: 'runtime',
-      observedImage: 'runtime:old',
-      targetImage: 'runtime:new'
-    })
+    await api.resumeWithRuntimeImage(
+      'sb-1',
+      {
+        containerIndex: 1,
+        observedName: 'runtime',
+        observedImage: 'runtime:old',
+        targetImage: 'runtime:new'
+      },
+      fence
+    )
     expect(contentType).toBe('application/json-patch+json')
     expect(patch).toEqual([
+      { op: 'test', path: '/metadata/uid', value: 'sandbox-uid-1' },
+      { op: 'test', path: '/metadata/annotations/agentconnect.md~1launch-generation', value: '7' },
       { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
       { op: 'test', path: '/spec/podTemplate/spec/containers/1/name', value: 'runtime' },
       { op: 'test', path: '/spec/podTemplate/spec/containers/1/image', value: 'runtime:old' },
@@ -254,13 +307,19 @@ describe('SandboxApi', () => {
       return { json: { spec: { operatingMode: 'Running' } } }
     })
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    await api.resumeWithRuntimeImage('sb-1', {
-      containerIndex: 1,
-      observedName: 'runtime',
-      observedImage: 'runtime:new',
-      targetImage: 'runtime:new'
-    })
+    await api.resumeWithRuntimeImage(
+      'sb-1',
+      {
+        containerIndex: 1,
+        observedName: 'runtime',
+        observedImage: 'runtime:new',
+        targetImage: 'runtime:new'
+      },
+      fence
+    )
     expect(patch).toEqual([
+      { op: 'test', path: '/metadata/uid', value: 'sandbox-uid-1' },
+      { op: 'test', path: '/metadata/annotations/agentconnect.md~1launch-generation', value: '7' },
       { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
       { op: 'test', path: '/spec/podTemplate/spec/containers/1/name', value: 'runtime' },
       { op: 'test', path: '/spec/podTemplate/spec/containers/1/image', value: 'runtime:new' },
@@ -275,12 +334,16 @@ describe('SandboxApi', () => {
     }))
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
     const error = await api
-      .resumeWithRuntimeImage('sb-1', {
-        containerIndex: 1,
-        observedName: 'runtime',
-        observedImage: 'runtime:old',
-        targetImage: 'runtime:new'
-      })
+      .resumeWithRuntimeImage(
+        'sb-1',
+        {
+          containerIndex: 1,
+          observedName: 'runtime',
+          observedImage: 'runtime:old',
+          targetImage: 'runtime:new'
+        },
+        fence
+      )
       .catch((err: unknown) => err)
     expect(error).toBeInstanceOf(GuardedResumeRejectedError)
     expect((error as GuardedResumeRejectedError).cause.isUnprocessable).toBe(true)
@@ -293,8 +356,10 @@ describe('SandboxApi', () => {
       return { json: {} }
     })
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    await api.setOperatingMode('sb-1', 'Suspended', 'Running')
+    await api.setOperatingMode('sb-1', 'Suspended', 'Running', fence)
     expect(patch).toEqual([
+      { op: 'test', path: '/metadata/uid', value: 'sandbox-uid-1' },
+      { op: 'test', path: '/metadata/annotations/agentconnect.md~1launch-generation', value: '7' },
       { op: 'test', path: '/spec/operatingMode', value: 'Running' },
       { op: 'replace', path: '/spec/operatingMode', value: 'Suspended' }
     ])
@@ -315,7 +380,7 @@ describe('SandboxApi', () => {
       }
     }))
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    const error = await api.setOperatingMode('sb-1', 'Running', 'Suspended').catch((err: unknown) => err)
+    const error = await api.setOperatingMode('sb-1', 'Running', 'Suspended', fence).catch((err: unknown) => err)
     expect(error).toBeInstanceOf(OperatingModeRejectedError)
     const typed = error as OperatingModeRejectedError
     expect(typed.observed).toBe('Suspended')
@@ -339,7 +404,7 @@ describe('SandboxApi', () => {
       return { json: { metadata: { name: 'sb-1' }, spec: { operatingMode: 'Suspended' } } }
     })
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    const error = await api.setOperatingMode('sb-1', 'Running', 'Suspended').catch((err: unknown) => err)
+    const error = await api.setOperatingMode('sb-1', 'Running', 'Suspended', fence).catch((err: unknown) => err)
     expect(patched).toBe(true)
     expect(error).toBeInstanceOf(OperatingModeRejectedError)
   })
@@ -350,7 +415,7 @@ describe('SandboxApi', () => {
       json: { kind: 'Status', code: 403, reason: 'Forbidden', message: 'admission policy denied the update' }
     }))
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    const error = await api.setOperatingMode('sb-1', 'Suspended', 'Running').catch((err: unknown) => err)
+    const error = await api.setOperatingMode('sb-1', 'Suspended', 'Running', fence).catch((err: unknown) => err)
     expect(error).toBeInstanceOf(K8sApiError)
     expect(error).not.toBeInstanceOf(OperatingModeRejectedError)
     expect((error as K8sApiError).status).toBe(403)
