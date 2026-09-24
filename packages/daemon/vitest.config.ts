@@ -33,6 +33,7 @@ export const WINDOWS_EXCLUDED = [
   'test/shim-gh-token.test.ts',
   'test/shim-tunnel.test.ts',
   'test/microsandbox-shim.test.ts',
+  'test/local-executor.test.ts',
   'test/sandbox-credential-helper.test.ts',
   'test/gitlab-self-managed-host.test.ts',
   'test/executor-pipe.test.ts',
