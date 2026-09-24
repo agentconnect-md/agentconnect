@@ -120,8 +120,8 @@ export interface EnvironmentDescriptor {
 
 /** How one strategy starts an environment it is handed: everything above this is strategy-agnostic (§5). */
 export interface StrategyLauncher {
-  /** Seeds a session HOME itself, with protections the facet's plain seed lacks (a VM's placeholders, §8), in place of that seed. */
-  seedHome?(home: string, log: Logger): SessionSeed
+  /** Seeds a session HOME itself, with protections the facet's plain seed lacks (a VM's placeholders, §8), in place of that seed; whatever it must be ready for first is its own to await. */
+  seedHome?(home: string, log: Logger): Promise<SessionSeed>
   start(input: { environment: EnvironmentDescriptor; log: Logger }): Promise<SessionEnvironment>
   /** Remove what the strategy owns beyond the environment's directory — a VM and its disks — by the environment's id; `host` owns nothing that outlives its shim. */
   discard?(id: string): Promise<void>

@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -37,7 +37,7 @@ function stubManager() {
 
 /** What the facet does for a hosted prepare: the launcher's own seed into the session HOME, then the environment built from the leaf. */
 async function startHosted(launcher: StrategyLauncher, root: string, log: Logger = quiet) {
-  const seed = launcher.seedHome!(join(root, 'sessions', LEAF, 'home'), log)
+  const seed = await launcher.seedHome!(join(root, 'sessions', LEAF, 'home'), log)
   return launcher.start({ environment: hostedEnvironment(root, LEAF, seed), log })
 }
 
@@ -208,9 +208,37 @@ describe('the microsandbox strategy launcher', () => {
     )
   })
 
-  it('refuses on a machine that runs no microsandbox backend, and discards nothing there', async () => {
+  // The first use adopts the image's runtime table, so a seed taken before it would miss an image-only runtime's sign-in.
+  it('prepares the image before it seeds, so a runtime the image table adds is seeded with its credentials', async () => {
     root = await mkdtemp(join(tmpdir(), 'ac-xv-'))
-    const launcher = microsandboxLauncher({ manager: () => undefined })
+    const { manager, prepared } = stubManager()
+    const admitted: Record<string, (typeof DSH)['dsh-acp']> = {}
+    const order: string[] = []
+    const launcher = microsandboxLauncher({
+      manager: () => manager,
+      runtimes: () => {
+        order.push('runtimes')
+        return admitted
+      },
+      hostEnv: { HOME: join(root, 'machine'), DEEPSEEK_API_KEY: KEY },
+      ready: async () => {
+        order.push('ready')
+        Object.assign(admitted, DSH)
+      }
+    })
+    await startHosted(launcher, root)
+
+    expect(order.slice(0, 2)).toEqual(['ready', 'runtimes'])
+    expect(prepared[0]!.secrets!.map((secret) => secret.env)).toEqual(['DEEPSEEK_API_KEY'])
+    expect(prepared[0]!.hosted!.env.DEEPSEEK_API_KEY).toBe('msb-secret-DEEPSEEK_API_KEY')
+  })
+
+  it('refuses on a machine that runs no microsandbox backend, writes no HOME, and discards nothing there', async () => {
+    root = await mkdtemp(join(tmpdir(), 'ac-xv-'))
+    const launcher = microsandboxLauncher({ manager: () => undefined, runtimes: () => DSH, hostEnv: { HOME: root } })
+    const home = join(root, 'sessions', LEAF, 'home')
+    await expect(launcher.seedHome!(home, quiet)).rejects.toThrow(/no microsandbox backend/)
+    expect(existsSync(home)).toBe(false)
     await expect(launcher.start({ environment: hostedEnvironment(root, LEAF), log: quiet })).rejects.toThrow(
       /no microsandbox backend/
     )

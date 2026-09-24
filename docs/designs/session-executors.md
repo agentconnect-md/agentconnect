@@ -1243,7 +1243,9 @@ differs locally goes, in four steps that each land alone:
    exactly as before (`hostedEnvironment`: `executor/<leaf>` over
    `<daemonRoot>/sessions/<leaf>`), after seeding the HOME through the launcher's own
    `seedHome` where it has one, so a VM's protected seed is in the descriptor before
-   `start`; the `host` launcher takes its roots from it. The local placement rule
+   `start`. That seed readies the image first, as a start did, because a first use
+   adopts the image's runtime table and the seed must cover its runtimes. The `host`
+   launcher takes its roots from the descriptor. The local placement rule
    (`microsandbox/placement.ts`, behind `microsandboxPlacement` and
    `microsandboxContext`) yields the same type: `agent/session-…` for a
    session-isolated session, and `agent/agent` or `agent/<host key>` for a `shared` or

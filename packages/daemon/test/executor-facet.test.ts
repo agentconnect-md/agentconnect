@@ -347,7 +347,7 @@ describe('executor facet', () => {
           host: { start: startShim },
           microsandbox: {
             ...vmLauncher,
-            seedHome: (home) => {
+            seedHome: async (home) => {
               launcherSeeded.push(home)
               return { env: { DEEPSEEK_API_KEY: secret.placeholder }, paths: [], secrets: [secret] }
             }

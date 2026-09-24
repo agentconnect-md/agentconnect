@@ -109,7 +109,12 @@ export function microsandboxLauncher(deps: {
   }
   return {
     // The guest sees placeholders where the facet's plain seed would copy values, so this seed replaces that one.
-    seedHome: (home, log) => seedHostedHome(home, deps.runtimes?.() ?? {}, log, deps.hostEnv),
+    seedHome: async (home, log) => {
+      // Ready and present first, as a start was: a first use adopts the image's runtime table, whose sign-ins this seed must include.
+      await deps.ready?.()
+      required()
+      return seedHostedHome(home, deps.runtimes?.() ?? {}, log, deps.hostEnv)
+    },
     start: async ({ environment }) => {
       // The first hosted VM may be this machine's first: it installs msb and prepares the image before any environment starts.
       await deps.ready?.()
