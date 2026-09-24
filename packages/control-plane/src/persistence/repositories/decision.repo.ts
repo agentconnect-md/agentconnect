@@ -14,7 +14,8 @@ import { canEdit, visibilityWhere } from '../../authorization/policy.js'
 import { BotId, IntegrationId, type OrgId } from '../../domain/ids.js'
 import { Prisma, type Decision } from '../../generated/prisma/client.js'
 import { DecisionInUse, OrgMembershipMissing, ResourceAudienceEmpty } from '../errors.js'
-import type { DecisionRepo, ViewCtx } from '../ports.js'
+import type { CodeHostRoutingScope, DecisionRepo, ViewCtx } from '../ports.js'
+import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
@@ -107,6 +108,7 @@ export class PgDecisionRepo implements DecisionRepo {
     decision: DecisionDefinition
     consumerIntegrationIds: IntegrationId[]
     consumerBotIds: BotId[]
+    consumerCodeHostRoutings: CodeHostRoutingScope[]
   } | null> {
     return withAmbientTx(this.db, async (tx) => {
       const audience = await lockResourceWriteMemberships(tx, {
@@ -179,10 +181,51 @@ export class PgDecisionRepo implements DecisionRepo {
           where: { botId: { in: reviewBots.map((r) => r.botId) } },
           data: { needsReview: true }
         })
+      // Code-host routings the same way; their Decision rides the host's AgentSpec.hookRoutings, so each host is bumped.
+      const codeHost = await tx.codeHostDecisionRouting.findMany({
+        where: { decisionId: id, orgId },
+        select: {
+          id: true,
+          repoId: true,
+          family: true,
+          enabled: true,
+          decisionId: true,
+          rules: true,
+          otherwise: true,
+          needsReview: true,
+          evaluationAgentId: true
+        }
+      })
+      const reviewCodeHost = codeHost.filter((r) => {
+        if (r.needsReview) return false
+        const config = SharedBotDecisionRouting.safeParse({
+          enabled: r.enabled,
+          decisionId: r.decisionId,
+          rules: r.rules,
+          otherwise: r.otherwise
+        })
+        if (!config.success || !previous.success) return true
+        return (
+          decisionRoutingIssues(draft.question, config.data).length > 0 ||
+          config.data.rules.some((rule) => decisionConditionNeedsReview(previous.data, draft.question, rule.when))
+        )
+      })
+      if (reviewCodeHost.length > 0)
+        await tx.codeHostDecisionRouting.updateMany({
+          where: { id: { in: reviewCodeHost.map((r) => r.id) } },
+          data: { needsReview: true }
+        })
+      await bumpAgentConfigRevisions(
+        tx,
+        codeHost.flatMap((r) => (r.evaluationAgentId ? [r.evaluationAgentId] : []))
+      )
       return {
         decision,
         consumerIntegrationIds: [...new Set(consumers.map((c) => c.integrationId))].map(IntegrationId),
-        consumerBotIds: routings.map((r) => BotId(r.botId))
+        consumerBotIds: routings.map((r) => BotId(r.botId)),
+        consumerCodeHostRoutings: codeHost.flatMap((r) =>
+          r.family === 'issues' || r.family === 'pull_request' ? [{ orgId, repoId: r.repoId, family: r.family }] : []
+        )
       }
     })
   }
@@ -212,7 +255,7 @@ export class PgDecisionRepo implements DecisionRepo {
       try {
         await tx.decision.deleteMany({ where: { id, orgId, ...visibilityWhere({ ...actor, role: membership.role }) } })
       } catch (err) {
-        // The channel gate and bot router FKs refuse a Decision a consumer still references.
+        // The channel gate, bot router, and code-host routing FKs refuse a Decision a consumer still references.
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') throw new DecisionInUse(id)
         throw err
       }

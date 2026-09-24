@@ -3,6 +3,7 @@ import {
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
+  OWNER_DEFAULT_DECISION_V1_FEATURE,
   type AttributedRoute,
   type IntegrationSpec
 } from '@agentconnect.md/protocol'
@@ -61,6 +62,16 @@ describe('encodeRelayRoutesForPeer', () => {
     })
     const frame = { routes, mutedChannels: [] }
     expect(encodeRelayRoutesForPeer(frame, [DECISION_TRIGGER_V1_FEATURE])).toBe(frame)
+  })
+
+  it('holds an ownerAsDefault decision route on a relay that cannot seat it as the default', () => {
+    const frame = { routes, mutedChannels: [] }
+    expect(encodeRelayRoutesForPeer(frame, [DECISION_TRIGGER_V1_FEATURE], { ownerAsDefault: true })).toEqual({
+      routes: [routes[1]],
+      mutedChannels: ['C1']
+    })
+    const capable = [DECISION_TRIGGER_V1_FEATURE, OWNER_DEFAULT_DECISION_V1_FEATURE]
+    expect(encodeRelayRoutesForPeer(frame, capable, { ownerAsDefault: true })).toBe(frame)
   })
 })
 

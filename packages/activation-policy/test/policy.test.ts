@@ -211,6 +211,27 @@ describe('arbitrateSharedBot decision ownership', () => {
     expect(arbitrateSharedBot(assignment, shared({ mentionedBots: ['UBOT'] }), new Map())).toEqual(target)
   })
 
+  it('seats an ownerAsDefault decision owner below keyword and continuity', () => {
+    const other = { agentId: 'other', daemonId: 'd2', integrationId: 'i2' }
+    const linear: SharedBotAssignmentFacts = {
+      ...assignment,
+      ownerAsDefault: true,
+      routes: [...assignment.routes, { ...other, match: { kind: 'keyword', value: 'other' } }],
+      members: [
+        { daemonId: 'd1', agentIds: ['gate'] },
+        { daemonId: 'd2', agentIds: ['other'] }
+      ]
+    }
+    const addressed = shared({ platform: 'linear', mentionedBots: ['UBOT'] })
+    expect(arbitrateSharedBot(linear, addressed, new Map())).toEqual(target)
+    expect(arbitrateSharedBot(linear, { ...addressed, text: 'other please' }, new Map())).toEqual(other)
+    // A session bound to another agent keeps its one writer.
+    const bound = new Map([['C1/S1', other]])
+    expect(arbitrateSharedBot(linear, { ...addressed, thread: 'S1' }, bound)).toEqual(other)
+    // An unaddressed message reaches no default seat.
+    expect(arbitrateSharedBot(linear, shared({ platform: 'linear' }), new Map())).toBeNull()
+  })
+
   it('does not route a verified agent author through the decision rung', () => {
     const peerAssignment: SharedBotAssignmentFacts = {
       ...assignment,

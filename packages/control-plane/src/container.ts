@@ -1,5 +1,7 @@
 import { PgDecisionRepo } from './persistence/repositories/decision.repo.js'
 import { PgBotDecisionRoutingRepo } from './persistence/repositories/bot-decision-routing.repo.js'
+import { PgCodeHostDecisionRoutingRepo } from './persistence/repositories/code-host-decision-routing.repo.js'
+import { HookRoutingService } from './hooks/hook-routing.service.js'
 import { PgAgentMemoryTransactionRepo } from './persistence/repositories/agent-memory-transaction.repo.js'
 import { AgentMemoryTransactionService } from './agent-memory/transaction.service.js'
 /**
@@ -453,6 +455,7 @@ export function buildContainer(
     botCredential: new PgBotCredentialWriter(prisma, secretCipher),
     decision: new PgDecisionRepo(prisma),
     botDecisionRouting: new PgBotDecisionRoutingRepo(prisma),
+    codeHostDecisionRouting: new PgCodeHostDecisionRoutingRepo(prisma),
     providerKey: new PgProviderKeyStore(prisma, secretCipher),
     agentSecret: new PgAgentSecretStore(prisma, secretCipher),
     agentConfig: new PgAgentConfigWriter(prisma, secretCipher),
@@ -661,7 +664,8 @@ export function buildContainer(
     // consumer neither the workspace nor the allowlist does.
     gitlabAppCfg?.baseUrl,
     repos.hook,
-    giteaCfg.baseUrl
+    giteaCfg.baseUrl,
+    { routings: repos.codeHostDecisionRouting, hooks: repos.hook }
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
@@ -813,7 +817,8 @@ export function buildContainer(
       connections: repos.giteaConnection,
       webhookSecrets: giteaWebhookSecretStore,
       host: giteaCfg.baseUrl
-    }
+    },
+    repos.codeHostDecisionRouting
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
@@ -854,6 +859,27 @@ export function buildContainer(
     // §17.3 projection gate: live advertised features; unknown daemon reads fail-closed.
     daemonFeatures: (daemonId) => connReg.get(daemonId)?.capabilities?.features
   })
+
+  // Code-host routing scopes (code-host-decisions.md §3.2): host choice, the scope's rules, and the hosts' specs.
+  const hookRouting = new HookRoutingService({
+    routings: repos.codeHostDecisionRouting,
+    hooks: repos.hook,
+    agents: repos.agent,
+    daemons: repos.daemon,
+    placement: placementResolver,
+    daemonFeatures: (daemonId) => connReg.get(daemonId)?.capabilities?.features,
+    hookService,
+    projectAgentSpec: async (orgId, agentId) => {
+      const agent = await repos.agent.get(orgId, agentId)
+      if (!agent) return
+      await agentDelivery.upsert(agent, (err, daemonId) => {
+        if (err instanceof NoConnection) http.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
+        else http.log.warn({ err, agentId, daemonId }, 'hook routing: host spec reconcile failed')
+      })
+    },
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
+  hookService.attachRouting(hookRouting)
 
   // The projections that BAKE IN the serving daemon — hook rules, HTTP-bot assignment, the
   // collaboration snapshot. A duty grant or release moves who serves an agent exactly as a
@@ -1745,6 +1771,7 @@ export function buildContainer(
       botCredential: repos.botCredential,
       decision: repos.decision,
       botDecisionRouting: repos.botDecisionRouting,
+      codeHostDecisionRouting: repos.codeHostDecisionRouting,
       providerKey: repos.providerKey,
       agentSecret: repos.agentSecret,
       agentConfig: repos.agentConfig,
@@ -1803,6 +1830,7 @@ export function buildContainer(
     agentMutations,
     sessionOwners: connReg,
     hooks: hookService,
+    hookRouting,
     ...(githubRunReporter ? { kickGithubRunReporter: () => githubRunReporter.kick() } : {}),
     recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     auth,
@@ -2256,7 +2284,14 @@ export function buildContainer(
     webchatRemoteMcp,
     launch: repos.launch,
     visibilityPush,
-    httpBotDaemonReady: (daemonId) => httpBot.daemonReady(daemonId),
+    httpBotDaemonReady: async (daemonId) => {
+      await Promise.all([
+        httpBot.daemonReady(daemonId),
+        hookRouting
+          .daemonReady(daemonId)
+          .catch((err: unknown) => http.log.warn({ err, daemonId }, 'hook routing: daemon-ready resync deferred'))
+      ])
+    },
     httpBotDaemonOffline: (daemonId) => httpBot.daemonOffline(daemonId),
     ...(sessionPullRequestFeedback ? { pullRequestFeedback: sessionPullRequestFeedback } : {}),
     events,

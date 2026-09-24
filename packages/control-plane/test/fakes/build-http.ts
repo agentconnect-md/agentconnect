@@ -111,6 +111,8 @@ import { RelayRegistry } from '../../src/ws/relay-registry.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { SessionUsageWriter } from '../../src/usage/writer.js'
 import { HookService } from '../../src/hooks/hook.service.js'
+import { HookRoutingService } from '../../src/hooks/hook-routing.service.js'
+import { PgCodeHostDecisionRoutingRepo } from '../../src/persistence/repositories/code-host-decision-routing.repo.js'
 import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
@@ -268,6 +270,7 @@ export function buildHttpApp(
 
   const daemonRepo = new PgDaemonRepo(prisma)
   const botDecisionRoutingRepo = new PgBotDecisionRoutingRepo(prisma)
+  const codeHostDecisionRoutingRepo = new PgCodeHostDecisionRoutingRepo(prisma)
   const daemonLifecycleOpRepo = new PgDaemonLifecycleOpRepo(prisma)
   const apiKeyRepo = new PgApiKeyRepo(prisma)
   const oauthRepo = new PgOAuthRepo(prisma)
@@ -381,7 +384,8 @@ export function buildHttpApp(
     agentRepoAuthRepo,
     depsOverrides?.gitlab?.api.baseUrl,
     hookRepo,
-    giteaSeam?.api.baseUrl
+    giteaSeam?.api.baseUrl,
+    { routings: codeHostDecisionRoutingRepo, hooks: hookRepo }
   )
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
@@ -457,8 +461,26 @@ export function buildHttpApp(
           webhookSecrets: new PgGiteaWebhookSecretStore(prisma, cipher),
           host: giteaSeam.api.baseUrl
         }
-      : undefined
+      : undefined,
+    codeHostDecisionRoutingRepo
   )
+  // Same scope reconciler as production; host choice reads the live connection's features.
+  const hookRouting = new HookRoutingService({
+    routings: codeHostDecisionRoutingRepo,
+    hooks: hookRepo,
+    agents: agentRepo,
+    daemons: daemonRepo,
+    placement: placementResolver,
+    // The liveness fake doubles as the capability read, as daemonConns does below.
+    daemonFeatures: (daemonId) => (liveness as HttpDeps['daemonConns']).get(daemonId)?.capabilities?.features,
+    hookService,
+    projectAgentSpec: async (orgId, agentId) => {
+      const agent = await agentRepo.get(orgId, agentId)
+      if (!agent) return
+      await (depsOverrides?.agentDelivery ?? agentDelivery).upsert(agent, () => {})
+    }
+  })
+  hookService.attachRouting(hookRouting)
 
   const deps: HttpDeps = {
     runtimeConfig: {},
@@ -510,6 +532,7 @@ export function buildHttpApp(
       botCredential: botCredentialWriter,
       decision: new PgDecisionRepo(prisma),
       botDecisionRouting: botDecisionRoutingRepo,
+      codeHostDecisionRouting: codeHostDecisionRoutingRepo,
       providerKey: new PgProviderKeyStore(prisma, cipher),
       agentSecret: agentSecretStore,
       agentConfig: new PgAgentConfigWriter(prisma, cipher),
@@ -585,6 +608,7 @@ export function buildHttpApp(
     // The installations repo feeds the github-kind compile — same graph as prod.
     // gitlab-kind compile sources appear exactly when the test wires a gitlab seam.
     hooks: hookService,
+    hookRouting,
     auth: new DaemonAuthService(
       codec,
       apiKeyRepo,

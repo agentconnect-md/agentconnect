@@ -417,13 +417,46 @@ describe('decision verdict store', () => {
       const s = await openTestStore()
       const one = await record(s, 1)
       const two = await record(s, 2)
+      const three = await record(s, 3)
       await s.reserveDecisionVerdict(routerRow(one))
       await s.reserveDecisionVerdict(reservation(two))
+      // A code-host routing verdict belongs to neither consumer's recovery.
+      await s.reserveDecisionVerdict(reservation(three, { subject: 'hook-router:r-1', integrationId: 'r-1' }))
       expect((await s.listPendingDecisionVerdicts({ consumer: 'router' })).map((r) => r.subject)).toEqual([ROUTER])
       expect((await s.listPendingDecisionVerdicts({ consumer: 'gate' })).map((r) => r.subject)).toEqual([AGENT])
-      expect(await s.listPendingDecisionVerdicts()).toHaveLength(2)
+      expect(await s.listPendingDecisionVerdicts()).toHaveLength(3)
       const canceled = await s.cancelPendingDecisionVerdicts({ integrationId: 'int-a', consumer: 'gate' }, 'x', AT)
       expect(canceled).toEqual([{ seq: two, subject: AGENT }])
+      await s.close()
+    })
+
+    it('lists one integration lane across channels when no channel is named', async () => {
+      const s = await openTestStore()
+      const a = await record(s, 1)
+      const b = await record(s, 2, { channel: 'C2' })
+      for (const seq of [a, b]) await s.reserveDecisionVerdict(reservation(seq, { channel: seq === a ? CH : 'C2' }))
+      const all = await s.listDecisionVerdicts({ orgId: '', integrationId: 'int-a', subject: AGENT, limit: 10 })
+      expect(all.map((r) => r.seq)).toEqual([b, a])
+      const one = await s.listDecisionVerdicts({
+        orgId: '',
+        integrationId: 'int-a',
+        channel: CH,
+        subject: AGENT,
+        limit: 10
+      })
+      expect(one.map((r) => r.seq)).toEqual([a])
+      await s.close()
+    })
+
+    it('cuts a thread-scoped window: that thread only, and nothing for a null thread', async () => {
+      const s = await openTestStore()
+      await record(s, 1, { thread: '42' })
+      await record(s, 2, { thread: '7' })
+      const current = await record(s, 3, { thread: '42' })
+      const scoped = await s.decisionWindow('', CH, current, undefined, undefined, { thread: '42' })
+      expect(scoped.current?.text).toBe('m3')
+      expect(scoped.history.map((r) => r.text)).toEqual(['m1'])
+      expect((await s.decisionWindow('', CH, current, undefined, undefined, { thread: null })).history).toEqual([])
       await s.close()
     })
 

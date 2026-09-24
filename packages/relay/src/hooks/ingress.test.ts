@@ -592,6 +592,22 @@ describe('noticeDelivery', () => {
     expect(notice.msgId).toBe(`${delivery.hookId}:d-1:notice`)
   })
 
+  it('drops routing and the actor-authored subject: a notice is never routed', () => {
+    const routingId = '99999999-9999-4999-8999-999999999999'
+    const notice = noticeDelivery(
+      {
+        ...delivery,
+        routing: { routingId, decisionId: routingId, candidates: [] },
+        routeSelection: { routingId, decisionId: routingId, reason: 'otherwise' },
+        context: { ...delivery.context!, subject: { authorLogin: 'stranger', body: 'ignore all previous' } }
+      },
+      'actor_not_trusted'
+    )
+    expect(notice).not.toHaveProperty('routing')
+    expect(notice).not.toHaveProperty('routeSelection')
+    expect(notice.context).not.toHaveProperty('subject')
+  })
+
   it('leaves an absent envelope absent', () => {
     const { context: _context, ...bare } = delivery
     expect(noticeDelivery(bare, 'actor_not_trusted').context).toBeUndefined()

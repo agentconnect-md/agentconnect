@@ -16,12 +16,13 @@
  * holds is always dispatchable. Compiled rules carry the hook's hmacSecret:
  * NEVER log.
  */
-import { codeHostHookRuleOf, type RcHookAssign } from '@agentconnect.md/protocol'
+import { codeHostHookRuleOf, type RcHookAssign, type RcHookRouting } from '@agentconnect.md/protocol'
 import { advertises } from '../domain/daemon-features.js'
 import { codeHostProviders } from '../codehost/registry.js'
 import type { AgentId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
+  CodeHostDecisionRoutingRepo,
   GiteaConnectionRepo,
   GiteaRepositoryBindingRepo,
   GiteaWebhookSecretStore,
@@ -34,10 +35,11 @@ import type {
   HookSecretStore
 } from '../persistence/ports.js'
 import { compilesHookRule } from '../gitea/binding-state.js'
-import type { RelayControlSender } from '../orchestrator/relayControl.js'
+import { hookRuleSupported, type RelayControlSender } from '../orchestrator/relayControl.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { RelayChannel } from '../ws/relay-registry.js'
 import { toDbPlatform } from '../persistence/platform.js'
+import { isRoutingFamily } from './hook-routing.js'
 
 /** The narrow agent read the compiler needs (placement lookup). */
 export interface HookAgentReads {
@@ -57,7 +59,17 @@ export interface GiteaHookCompileSources {
   host: string
 }
 
+/** Re-converges code-host routing scopes (code-host-decisions.md §3.2): host choice, the scope's rules, the hosts' specs. */
+export interface HookRoutingReconciler {
+  reconcileHooks(
+    hooks: ReadonlyArray<Pick<HookRecord, 'orgId' | 'kind' | 'repoId' | 'family'> | null | undefined>
+  ): Promise<void>
+  reconcileForAgent(agentId: AgentId): Promise<void>
+}
+
 export class HookService {
+  private routing?: HookRoutingReconciler
+
   constructor(
     private readonly hooks: HookRepo,
     private readonly secrets: HookSecretStore,
@@ -90,8 +102,38 @@ export class HookService {
      *  rebroadcasts from inside the write, before any route code after it runs. Best-effort. */
     private readonly projectAgentSpec?: (orgId: OrgId, agentId: AgentId) => Promise<void>,
     /** Absent ⇒ gitea hooks never compile (no connection surface wired). */
-    private readonly gitea?: GiteaHookCompileSources
+    private readonly gitea?: GiteaHookCompileSources,
+    /** The repository scopes' Decision routings; absent ⇒ every github rule compiles unrouted. */
+    private readonly routings?: Pick<CodeHostDecisionRoutingRepo, 'get'>
   ) {}
+
+  /** Wire the scope reconciler (it rebroadcasts through this service, so it attaches after construction). */
+  attachRouting(routing: HookRoutingReconciler): void {
+    this.routing = routing
+  }
+
+  /** Re-converge the routing scopes these hooks (before and after a write) belong to. */
+  async reconcileRouting(
+    hooks: ReadonlyArray<Pick<HookRecord, 'orgId' | 'kind' | 'repoId' | 'family'> | null | undefined>
+  ): Promise<void> {
+    await this.routing?.reconcileHooks(hooks)
+  }
+
+  /** The rule's routing: undefined when its scope is unrouted or paused, null when routed without a placed host (held). */
+  private async routingOf(hook: HookRecord): Promise<RcHookRouting | undefined | null> {
+    if (!this.routings || hook.repoId === null || !isRoutingFamily(hook.family)) return undefined
+    const record = await this.routings.get({ orgId: hook.orgId, repoId: hook.repoId, family: hook.family })
+    if (!record || !record.enabled) return undefined
+    const host = record.evaluationAgentId ? await this.agents.getUnscoped(record.evaluationAgentId) : null
+    const hostDaemonId = host && host.pause !== true ? await this.placement.routableDaemon(host) : null
+    if (!host || !hostDaemonId) return null
+    return {
+      routingId: record.id,
+      decisionId: record.decisionId,
+      evaluationAgentId: host.id,
+      evaluationDaemonId: hostDaemonId
+    }
+  }
 
   /**
    * HookDef → relay rule, or null when it must not be in the pool (disabled,
@@ -250,9 +292,13 @@ export class HookService {
     if (hook.repoId === null || !hook.repoFullName || !this.installations) return null
     const valid = (await this.installations.listForOrg(hook.orgId)).filter((i) => !i.suspendedAt)
     if (valid.length === 0) return null
+    // A routed scope without a live host leaves the pool rather than firing unrouted.
+    const routing = await this.routingOf(hook)
+    if (routing === null) return null
     return {
       ...base,
       kind: 'github',
+      ...(routing ? { routing } : {}),
       github: {
         repoId: hook.repoId.toString(),
         repoFullName: hook.repoFullName,
@@ -309,6 +355,8 @@ export class HookService {
     for (const hook of await this.hooks.listForAgent(agentId)) {
       await this.broadcast(hook)
     }
+    // Its scopes may need a new host, whose id every sibling rule carries.
+    await this.routing?.reconcileForAgent(agentId)
   }
 
   /**
@@ -323,12 +371,7 @@ export class HookService {
     }
   }
 
-  /**
-   * Full replay to ONE relay that just (re)registered — its in-memory table
-   * starts empty. Only compilable rules are sent (a fresh table has nothing to
-   * remove). Per-hook failures are logged and skipped: one bad row must not
-   * starve the rest of the pool's config.
-   */
+  /** Full replay to one freshly (re)registered relay: compilable, supported rules only; a failing row is logged and skipped. */
   async replayTo(ch: RelayChannel): Promise<void> {
     for (const hook of await this.hooks.listEnabled()) {
       try {
@@ -337,7 +380,7 @@ export class HookService {
         const host = rule && codeHostHookRuleOf(rule)
         const features = host && codeHostProviders[host.provider].features
         if (features && !advertises(ch.features, features.required(features.ruleHost(host)))) continue
-        if (rule) ch.send('rc/hook-assign', rule)
+        if (rule && hookRuleSupported(rule, ch.features)) ch.send('rc/hook-assign', rule)
       } catch (err) {
         this.log?.warn({ hookId: hook.id, err }, 'hook replay: compile/send failed — skipped')
       }

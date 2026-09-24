@@ -892,9 +892,6 @@ export function integrationRoutes(deps: HttpDeps) {
           const badRequest = (message: string, issues?: Array<{ path: Array<string | number>; message: string }>) =>
             reply.code(400).send({ error: 'Bad Request', statusCode: 400, message, ...(issues ? { issues } : {}) })
           if (existingChannel.kind === 'im') return badRequest('By decision applies only to group conversations')
-          // No channel-scoped candidate route exists where a row's owner compiles to the default rung.
-          if (manifestFor(bot.platform).ownerAsDefault)
-            return badRequest('By decision is not available for this platform')
           validatedDecision = await visibleDecision(deps, req, gate.decisionId)
           if (!validatedDecision)
             return reply.code(404).send({

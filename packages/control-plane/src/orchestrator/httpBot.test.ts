@@ -8,6 +8,7 @@ import {
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
+  OWNER_DEFAULT_DECISION_V1_FEATURE,
   type DecisionBundleDefinition,
   type IntegrationSpec,
   type RcBotAssign,
@@ -2169,21 +2170,74 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     const LINEAR_PLATFORMS = buildCpPlatformRegistry([
       { ...createSlackCpProvider({}), platformId: 'linear' } as CpPlatformProvider
     ])
-    it('mutes the row and leaves it out of conversationDefaults', async () => {
+    const DECISION = '99999999-9999-4999-8999-999999999998'
+    const definition: DecisionBundleDefinition = {
+      id: DECISION,
+      orgId: ORG,
+      name: 'Actionable',
+      providerId: 'typesafe',
+      model: 'jev-1.13.0',
+      question: { type: 'boolean', instructions: 'Is it actionable?', criteria: { true: 'Yes', false: 'No' } }
+    }
+    const gateRow = (enabled = true) =>
+      channel({
+        integrationId: INT_B,
+        channelId: 'T1',
+        agentId: BOB,
+        trigger: 'decision',
+        decisionBinding: { type: 'gate', decisionId: DECISION, when: { type: 'boolean', values: [true] } },
+        decisionDefinition: definition,
+        ...(enabled ? {} : { decisionNeedsReview: true })
+      })
+    beforeEach(() => {
+      decisionDefinitions = { [DECISION]: definition }
       botRow = bot({ platform: 'linear' } as Partial<BotRecord>)
-      integrations = [{ ...integration(INT_B, BOB), platform: 'linear' }]
-      channels = [
-        channel({
-          integrationId: INT_B,
-          channelId: 'T1',
-          agentId: BOB,
-          trigger: 'decision',
-          decisionBinding: { type: 'gate', decisionId: 'd1', when: { type: 'boolean', values: [true] } }
-        })
+      integrations = [
+        { ...integration(INT_A, ALICE), platform: 'linear' },
+        { ...integration(INT_B, BOB), platform: 'linear' }
       ]
+    })
+
+    it("compiles the owner's decision route instead of its default seat", async () => {
+      const modern = new FakeChannel('55555555-5555-4555-8555-555555555558', [
+        DECISION_TRIGGER_V1_FEATURE,
+        OWNER_DEFAULT_DECISION_V1_FEATURE
+      ])
+      relayReg.add(modern)
+      const older = new FakeChannel('55555555-5555-4555-8555-555555555559', [DECISION_TRIGGER_V1_FEATURE])
+      relayReg.add(older)
+      channels = [gateRow(), channel({ integrationId: INT_A, channelId: 'T2', agentId: ALICE, trigger: 'mention' })]
+      await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
+      const assign = modern.sends.filter((s) => s.type === 'rc/bot-assign').at(-1)?.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope !== undefined)).toEqual([
+        {
+          agentId: BOB,
+          daemonId: D2,
+          integrationId: INT_B,
+          scope: { channel: 'T1' },
+          match: { kind: 'decision' },
+          decisionId: DECISION
+        }
+      ])
+      expect(assign.conversationDefaults.map((d) => d.channel)).toEqual(['T2'])
+      expect(assign.mutedChannels).not.toContain('T1')
+      expect(assign.ownerAsDefault).toBe(true)
+      // A relay that would rank the route first gets none, and the team holds Off.
+      const held = older.sends.filter((s) => s.type === 'rc/bot-assign').at(-1)?.payload as RcBotAssign
+      expect(held.routes.some((r) => r.match.kind === 'decision')).toBe(false)
+      expect(held.mutedChannels).toContain('T1')
+      await makeOrch(LINEAR_PLATFORMS).syncRoutes(BOT)
+      const hot = older.sends.filter((s) => s.type === 'rc/routes').at(-1)?.payload as RcRoutes
+      expect(hot.routes.some((r) => r.match.kind === 'decision')).toBe(false)
+      expect(hot.mutedChannels).toContain('T1')
+    })
+
+    it('mutes a gate that needs review and leaves it out of conversationDefaults', async () => {
+      channels = [gateRow(false)]
       await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
       expect(assign.conversationDefaults).toEqual([])
+      expect(assign.routes.some((r) => r.scope !== undefined)).toBe(false)
       expect(assign.mutedChannels).toContain('T1')
     })
   })

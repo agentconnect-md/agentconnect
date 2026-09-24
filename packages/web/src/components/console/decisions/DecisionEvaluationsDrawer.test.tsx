@@ -11,6 +11,7 @@ import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
 import { DecisionsPrototypeProvider } from '@/lib/decisions/provider'
 import { ApiError } from '@/lib/api'
 import type { DecisionApi } from '@agentconnect.md/protocol/decision-api'
+import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -37,29 +38,43 @@ afterEach(async () => {
 
 const conversation = { integrationId: 'int-1', channelId: 'C1' }
 
-function tree(onClose: () => void, initialSeq?: number) {
+function tree(onClose: () => void, initialSeq?: number, source?: DecisionEvaluationSource) {
   return (
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
       <DecisionsPrototypeProvider>
-        <DecisionEvaluationsDrawer
-          conversation={conversation}
-          channelName="#help"
-          agentName="Support"
-          initialSeq={initialSeq}
-          onClose={onClose}
-        />
+        {source ? (
+          <DecisionEvaluationsDrawer
+            source={source}
+            channelName="acme/api · Issues"
+            initialSeq={initialSeq}
+            onClose={onClose}
+          />
+        ) : (
+          <DecisionEvaluationsDrawer
+            conversation={conversation}
+            channelName="#help"
+            agentName="Support"
+            initialSeq={initialSeq}
+            onClose={onClose}
+          />
+        )}
       </DecisionsPrototypeProvider>
     </SWRConfig>
   )
 }
 
-async function render(api: DecisionApi, onClose: () => void = () => {}, initialSeq?: number) {
+async function render(
+  api: DecisionApi,
+  onClose: () => void = () => {},
+  initialSeq?: number,
+  source?: DecisionEvaluationSource
+) {
   vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(api)
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
   await act(async () => {
-    root?.render(tree(onClose, initialSeq))
+    root?.render(tree(onClose, initialSeq, source))
   })
   await act(async () => {})
   await act(async () => {})
@@ -214,5 +229,46 @@ describe('DecisionEvaluationsDrawer', () => {
     await render(api)
     expect(drawer().textContent).toContain('Upgrade the daemon serving this conversation')
     expect(rows()).toHaveLength(0)
+  })
+
+  it('reads a code-host routing lane through the given source and words its states for a repository', async () => {
+    const api = decisionMock.createDecisionMockApi()
+    const scopeRef = { integrationId: 'github:1:issues', channelId: 'github:1:issues' }
+    const source: DecisionEvaluationSource = {
+      lane: 'code_host',
+      key: ['test', 'org-test', 'code_host', '1'],
+      list: vi.fn((page) => api.listEvaluations(scopeRef, page)),
+      get: vi.fn((seq) => api.getEvaluation(scopeRef, seq))
+    }
+    await render(api, () => {}, undefined, source)
+    expect(drawer().textContent).toContain('acme/api · Issues')
+    expect(source.list).toHaveBeenCalledWith({ limit: 20 })
+    expect(rows()).toHaveLength(6)
+    const seq = Number(rows()[0]!.dataset.seq)
+    await click(rows()[0])
+    expect(source.get).toHaveBeenCalledWith(seq)
+    expect(detail()!.textContent).toContain('Our invoice charged us twice this month.')
+    await act(async () => root?.unmount())
+    container?.remove()
+
+    const empty: DecisionEvaluationSource = {
+      ...source,
+      key: ['test', 'org-test', 'code_host', '2'],
+      list: async () => ({ items: [], nextCursor: null })
+    }
+    await render(api, () => {}, undefined, empty)
+    expect(drawer().textContent).toContain('judged for this repository appear here')
+    await act(async () => root?.unmount())
+    container?.remove()
+
+    const offline: DecisionEvaluationSource = {
+      ...source,
+      key: ['test', 'org-test', 'code_host', '3'],
+      list: async () => {
+        throw new ApiError('daemon offline', 503, 'DAEMON_OFFLINE')
+      }
+    }
+    await render(api, () => {}, undefined, offline)
+    expect(drawer().textContent).toContain("evaluates this repository's routing is not connected")
   })
 })

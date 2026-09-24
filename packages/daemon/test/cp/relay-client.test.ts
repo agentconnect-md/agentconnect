@@ -3,6 +3,7 @@ import {
   buildRelayDaemonFrame,
   DECISION_TRIGGER_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V1_FEATURE,
   RD_DECISION_ROUTE_V1,
   GITEA_V1_FEATURE,
   RD_HOOK_NOTICE_V1,
@@ -129,7 +130,8 @@ describe('RelayClient (daemon → one relay)', () => {
         GITEA_V1_FEATURE,
         RD_HOOK_NOTICE_V1,
         DECISION_TRIGGER_V1_FEATURE,
-        DECISION_ROUTING_V1_FEATURE
+        DECISION_ROUTING_V1_FEATURE,
+        HOOK_DECISION_ROUTING_V1_FEATURE
       ]
     })
     expect(client.state).toBe('READY')

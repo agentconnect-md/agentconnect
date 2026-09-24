@@ -343,4 +343,71 @@ describe('AgentSpecAssembler', () => {
     const spec = await specs.assemble(withIcon)
     expect(spec.iconUrl).toContain('https://cp.example.com')
   })
+
+  it('projects the routings the agent hosts, and omits the field without a routing source', async () => {
+    const decisionId = '44444444-4444-4444-8444-444444444444'
+    const definition = {
+      id: decisionId,
+      orgId: AGENT.orgId,
+      name: 'Kind',
+      providerId: 'typesafe',
+      model: 'jev-1.13.0',
+      question: { type: 'boolean' as const, instructions: 'Is this a bug?', criteria: { true: 'Yes', false: 'No' } }
+    }
+    const config = {
+      enabled: true,
+      decisionId,
+      rules: [],
+      otherwise: { type: 'default_agent' as const }
+    }
+    const routing = {
+      id: '55555555-5555-4555-8555-555555555555',
+      orgId: AGENT.orgId,
+      provider: 'github' as const,
+      repoId: 42n,
+      repoFullName: 'example-org/example-repo',
+      family: 'issues' as const,
+      enabled: true,
+      decisionId,
+      config,
+      needsReview: false,
+      evaluationAgentId: AGENT.id,
+      definition,
+      updatedAt: new Date(0)
+    }
+    const member = { id: 'hook-1', agentId: AGENT.id, kind: 'github', enabled: true, repoId: 42n, family: 'issues' }
+    const hosting = (hosted: (typeof routing)[]) =>
+      new AgentSpecAssembler(
+        storeWith({}),
+        {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        repoAuthWith([]),
+        undefined,
+        undefined,
+        undefined,
+        {
+          routings: { listForHost: async () => hosted },
+          hooks: { listForOrgKind: async () => [member] } as unknown as HookRepo
+        }
+      )
+    expect((await hosting([routing]).assemble(AGENT)).hookRoutings).toEqual([
+      {
+        routingId: routing.id,
+        provider: 'github',
+        repoId: '42',
+        repoFullName: 'example-org/example-repo',
+        family: 'issues',
+        config,
+        definition,
+        members: [{ agentId: AGENT.id, hookId: 'hook-1' }]
+      }
+    ])
+    // Nothing hosted still ships [], so losing the last routing replicates; the daemon digests it as absent.
+    expect((await hosting([]).assemble(AGENT)).hookRoutings).toEqual([])
+    expect(await new AgentSpecAssembler(storeWith({})).assemble(AGENT)).not.toHaveProperty('hookRoutings')
+  })
 })

@@ -195,11 +195,15 @@ describe('IntegrationChannelList By decision', () => {
 
   it.each([
     ['a direct conversation', [group({ kind: 'im', name: '@Alice', trigger: 'any' })], {}, 'Alice'],
-    ['a shared bot', [group()], { shareable: true, botId: 'bot-shared' }, 'general'],
-    ['a platform whose triggers omit it', [group()], { platform: 'linear' }, 'general']
+    ['a shared bot', [group()], { shareable: true, botId: 'bot-shared' }, 'general']
   ])('withholds By decision on %s', async (_, channels, props, name) => {
     await render(channels, props)
     expect(await openSettings(name)).not.toContain('By decision')
+  })
+
+  it("offers By decision on a shared bot whose platform gates each conversation's owner", async () => {
+    await render([group()], { platform: 'linear', shareable: true, botId: 'bot-shared' })
+    expect(await openSettings()).toContain('By decision')
   })
 
   it('renders a saved DTO gate as a row pill naming its decision and condition, with no banner when ready', async () => {

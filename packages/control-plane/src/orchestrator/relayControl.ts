@@ -19,10 +19,15 @@ import type {
   RcMemoryConnectionAssign,
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
-import { codeHostHookRuleOf } from '@agentconnect.md/protocol'
+import { HOOK_DECISION_ROUTING_V1_FEATURE, codeHostHookRuleOf } from '@agentconnect.md/protocol'
 import { advertises } from '../domain/daemon-features.js'
 import { codeHostProviders } from '../codehost/registry.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
+
+/** Whether a relay may hold this rule: a routed rule only where the relay routes (code-host-decisions.md §3.3). */
+export function hookRuleSupported(rule: Pick<RcHookAssign, 'routing'>, features: readonly string[] | undefined) {
+  return rule.routing === undefined || advertises(features, [HOOK_DECISION_ROUTING_V1_FEATURE])
+}
 
 export class RelayControlSender {
   constructor(private readonly relays: RelayRegistry) {}
@@ -37,15 +42,12 @@ export class RelayControlSender {
     this.broadcast((ch) => ch.send('rc/daemon-revoke', { daemonId }))
   }
 
-  /** Upsert one compiled hook rule on every connected relay (the frame is NEVER
-   *  logged — it carries the hook's hmacSecret). A gitlab rule goes only to
-   *  relays advertising the feature: the widened `kind` is frame-fatal on an
-   *  older relay's decoder (§17.3), so gating here IS the negotiation. A rule on a
-   *  self-managed host needs the §24.4 bit too — a relay without it would forward
-   *  metadata missing the fence host. */
+  /** Upsert one compiled rule pool-wide (never logged: it carries the hmacSecret), feature-gated per relay as the §17.3/§24.4 negotiation. */
   hookAssign(rule: RcHookAssign): void {
     const host = codeHostHookRuleOf(rule)
     this.broadcast((ch) => {
+      // A routed rule on a relay that cannot route would fire unrouted, so that relay drops any copy instead.
+      if (!hookRuleSupported(rule, ch.features)) return ch.send('rc/hook-remove', { hookId: rule.hookId })
       if (!host) return ch.send('rc/hook-assign', rule)
       const features = codeHostProviders[host.provider].features
       if (!advertises(ch.features, features.required(features.ruleHost(host)))) return

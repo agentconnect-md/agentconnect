@@ -156,7 +156,7 @@ import {
  * never message bodies; daemons construct any resulting prompt locally.
  */
 import { createHash } from 'node:crypto'
-import { daemonSupportsAgent, encodeSpecWorkspaceForPeer } from '../domain/daemon-features.js'
+import { daemonSupportsAgent, encodeAgentSpecForPeer } from '../domain/daemon-features.js'
 import { encodeIntegrationSpecForPeer } from '../domain/decision-trigger-features.js'
 import {
   MAX_ORGANIZATION_SUGGESTION_BODY_BYTES,
@@ -361,7 +361,7 @@ export class ControlSender {
       'agent/upsert',
       // Workspace dual-encoded per the connection (§8) — at the SENDER, so every
       // upsert caller (delivery fan-out, post-cleanup push) is covered alike.
-      { ...u, spec: encodeSpecWorkspaceForPeer(u.spec, c.capabilities?.features) },
+      { ...u, spec: encodeAgentSpecForPeer(u.spec, c.capabilities?.features) },
       { epoch: c.sessionEpoch, agentId: u.agentId },
       undefined,
       orgId
@@ -412,7 +412,7 @@ export class ControlSender {
           // re-derived per retry for the same reason the gate above is.
           {
             ...a,
-            spec: encodeSpecWorkspaceForPeer(a.spec, c.capabilities?.features),
+            spec: encodeAgentSpecForPeer(a.spec, c.capabilities?.features),
             integrations: a.integrations.map((i) => encodeIntegrationSpecForPeer(i, c.capabilities?.features))
           },
           { epoch: c.sessionEpoch, agentId: a.agentId },

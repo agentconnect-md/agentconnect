@@ -698,10 +698,10 @@ export interface RouterTargetUpdate {
   daemonId?: string | null
 }
 
-/** Which consumer's rows a pending-verdict query reads: gate subjects are agent ids, router subjects `router:<botId>`. */
+/** Which consumer's rows a pending-verdict query reads: gate subjects are agent ids, router subjects `router:<botId>`; `hook-router:` rows are neither. */
 export type DecisionConsumer = 'gate' | 'router'
 const ROUTER_SUBJECT_LIKE = "subject LIKE 'router:%'"
-const GATE_SUBJECT_LIKE = "subject NOT LIKE 'router:%'"
+const GATE_SUBJECT_LIKE = "subject NOT LIKE 'router:%' AND subject NOT LIKE 'hook-router:%'"
 
 /** A text row as a Decision state or a background block reads it. */
 export type ChannelTextRow = Pick<
@@ -5526,30 +5526,30 @@ export class LocalStore {
   async listDecisionVerdicts(filter: {
     orgId: string
     integrationId: string
-    channel: string
+    /** Absent reads every channel of the lane's integration, as a hook's lane does. */
+    channel?: string
     subject: string
     before?: number
     seq?: number
     limit: number
   }): Promise<Array<DecisionVerdictRow & { ts: string | null }>> {
-    const params: unknown[] = [
-      this.orgForRead(filter.subject, filter.orgId),
-      filter.channel,
-      filter.subject,
-      filter.integrationId
-    ]
+    const params: unknown[] = [this.orgForRead(filter.subject, filter.orgId), filter.subject, filter.integrationId]
     let bound = ''
+    if (filter.channel !== undefined) {
+      bound += ' AND v.channel = ?'
+      params.push(filter.channel)
+    }
     if (filter.seq !== undefined) {
-      bound = ' AND v.seq = ?'
+      bound += ' AND v.seq = ?'
       params.push(filter.seq)
     } else if (filter.before !== undefined) {
-      bound = ' AND v.seq < ?'
+      bound += ' AND v.seq < ?'
       params.push(filter.before)
     }
     const rows = (await this.db
       .prepare(
         `SELECT v.*, t.ts AS ts FROM decision_verdict v LEFT JOIN transcript t ON t.seq = v.seq
-          WHERE v.orgId = ? AND v.channel = ? AND v.subject = ? AND v.integrationId = ?${bound}
+          WHERE v.orgId = ? AND v.subject = ? AND v.integrationId = ?${bound}
           ORDER BY v.seq DESC LIMIT ?`
       )
       .all(...params, filter.limit + 1)) as Array<DecisionVerdictRow & { ts: string | null }>
@@ -5943,12 +5943,31 @@ export class LocalStore {
     channel: string,
     seq: number,
     limit = 100,
-    rootTsOf?: (thread: string) => string | undefined
+    rootTsOf?: (thread: string) => string | undefined,
+    // A thread-scoped cut (a code-host subject): history is that thread's rows only, and a null thread has none.
+    scope?: { thread: string | null }
   ): Promise<{ current: ChannelTextRow | undefined; history: ChannelTextRow[]; full: boolean; rootMissing: boolean }> {
     const columns = 'seq, thread, ts, sender, text, body, quoteJson, eventTimeUs, kind'
     const current = (await this.db
       .prepare(`SELECT ${columns} FROM transcript WHERE seq = ? AND orgId = ? AND channel = ? AND kind = 'text'`)
       .get(seq, orgId, channel)) as ChannelTextRow | undefined
+    if (scope) {
+      const threaded =
+        scope.thread === null
+          ? []
+          : ((await this.db
+              .prepare(
+                `SELECT ${columns} FROM transcript
+                  WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' AND seq < ? ORDER BY seq DESC LIMIT ?`
+              )
+              .all(orgId, channel, scope.thread, seq, limit + 1)) as ChannelTextRow[])
+      return {
+        current: current ? { ...current, seq: Number(current.seq) } : undefined,
+        history: threaded.slice(0, limit).map((row) => ({ ...row, seq: Number(row.seq) })),
+        full: threaded.length > limit,
+        rootMissing: false
+      }
+    }
     const rows = (await this.db
       .prepare(
         `SELECT ${columns} FROM transcript

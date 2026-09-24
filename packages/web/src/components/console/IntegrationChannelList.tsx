@@ -836,9 +836,11 @@ export function IntegrationChannelList({
     )
   }
   const decisionTriggers = gates.decisionTriggers(platform)
+  // A shared bot whose platform gates each conversation's owner keeps the per-row gate and has no router.
+  const ownGate = !shareable || channelListSemantics(platform).sharedDecision === 'conversation'
   // Beneath a row: the gate's status strip and rules modal while a draft or saved gate exists.
   const decisionStrip = (c: IntegrationChannelRow): ReactNode =>
-    shareable
+    !ownGate
       ? null
       : gates.strip({
           botId,
@@ -872,7 +874,7 @@ export function IntegrationChannelList({
             {label.hint && <span className="flex-none text-(--text-tertiary)">{label.hint}</span>}
           </span>
           <div className="ml-auto flex items-center gap-2 max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
-            {!shareable && gates.entry({ botId, platform, integrationId, row: c })}
+            {ownGate && gates.entry({ botId, platform, integrationId, row: c })}
             {def && (
               // The PATCH goes through THIS agent's integration: shared ownership is bot-scoped and fenced server-side.
               <DispatchPicker
@@ -882,7 +884,7 @@ export function IntegrationChannelList({
                 disabled={!integrationId}
                 labelled={decisionTriggers && !isDirectConversation(c.kind)}
                 routing={
-                  decisionsOffered && decisionTriggers && botId && !isDirectConversation(c.kind)
+                  decisionsOffered && decisionTriggers && botId && !ownGate && !isDirectConversation(c.kind)
                     ? {
                         name: c.decision?.name ?? null,
                         active: managedByRouting(c),
@@ -909,7 +911,7 @@ export function IntegrationChannelList({
               disabled={!integrationId || gates.busy(botId, c)}
               trigger={trigger}
               gateOwnsTrigger={
-                trigger === 'decision' && ((!!decisions && !shareable) || (shareable && managedByRouting(c)))
+                trigger === 'decision' && ((!!decisions && ownGate) || (shareable && managedByRouting(c)))
               }
               onTrigger={(next) => pickTrigger(c, next)}
               onSessionMode={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}

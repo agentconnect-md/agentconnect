@@ -549,6 +549,26 @@ describe('DecisionGate', () => {
     expect(h.calls).toHaveLength(1)
   })
 
+  it('admits a mention in a held session where every event is addressed by construction, and judges a new one', async () => {
+    const h = await harness({ participates: (msg) => msg.thread === 'S-held' })
+    const followUp = await h.post('C1', {
+      platform: 'linear',
+      thread: 'S-held',
+      trigger: 'mention',
+      mentionedBots: ['U_BOT']
+    })
+    expect(await h.candidate(followUp)).toEqual({ kind: 'admit' })
+    expect(await h.store.getDecisionVerdict(followUp.record.seq, AGENT)).toBeUndefined()
+    const fresh = await h.post('C1', {
+      platform: 'linear',
+      thread: 'S-new',
+      trigger: 'mention',
+      mentionedBots: ['U_BOT']
+    })
+    expect((await h.candidate(fresh)).kind).toBe('pending')
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+  })
+
   it('bounds active evaluations per provider and answers a full queue with capacity', async () => {
     const h = await harness()
     const posted: Awaited<ReturnType<typeof h.post>>[] = []

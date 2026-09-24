@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
   DECISION_TRIGGER_V1_FEATURE,
+  OWNER_DEFAULT_DECISION_V1_FEATURE,
   type DecisionDraft,
   type IntegrationUpsert,
   type IntegrationRemove,
@@ -103,7 +104,10 @@ function appWith(
   return { app, spy }
 }
 
-async function seedInstall(opts: { transport?: 'socket' | 'http'; agents?: number; daemons?: string[] } = {}) {
+async function seedInstall(
+  opts: { transport?: 'socket' | 'http'; agents?: number; daemons?: string[]; platform?: string } = {}
+) {
+  const platform = opts.platform ?? 'slack'
   for (const daemonId of new Set([DAEMON, ...(opts.daemons ?? [])])) {
     const exists = await prisma.daemon.findUnique({ where: { id: daemonId } })
     if (!exists) await seedDaemon(prisma, daemonId)
@@ -113,7 +117,7 @@ async function seedInstall(opts: { transport?: 'socket' | 'http'; agents?: numbe
     data: {
       id: botId,
       orgId: DEFAULT_ORG_ID,
-      platform: 'slack',
+      platform,
       name: `bot-${botId}`,
       ...(opts.transport === 'http' ? { transport: 'http' as const, shareable: true } : {})
     }
@@ -127,7 +131,7 @@ async function seedInstall(opts: { transport?: 'socket' | 'http'; agents?: numbe
     await seedAgent(prisma, agentId, { daemonId: opts.daemons?.[n] ?? DAEMON })
     const integrationId = randomUUID()
     await prisma.integration.create({
-      data: { id: integrationId, orgId: DEFAULT_ORG_ID, agentId, botId, platform: 'slack', name: 'b' }
+      data: { id: integrationId, orgId: DEFAULT_ORG_ID, agentId, botId, platform, name: 'b' }
     })
     installs.push({ agentId, integrationId })
   }
@@ -369,6 +373,36 @@ describe('PATCH /integrations/:id/channels/:channelId with By decision', () => {
     expect(cleared.statusCode).toBe(200)
     for (const row of await prisma.integrationChannel.findMany({ where: { channelId: 'C1' } }))
       expect(row).toMatchObject({ trigger: 'mention', decisionBinding: null })
+  })
+})
+
+describe('By decision on an owner-as-default platform', () => {
+  it("accepts a Linear team gate and compiles the owner's decision route instead of its default seat", async () => {
+    const { integrationId, installs, botId } = await seedInstall({ transport: 'http', agents: 2, platform: 'linear' })
+    const { app } = appWith()
+    const modern = new FakeRelay(randomUUID(), [DECISION_TRIGGER_V1_FEATURE, OWNER_DEFAULT_DECISION_V1_FEATURE])
+    app.relayReg.add(modern)
+    const decisionId = await createDecision(app)
+    const res = await patchChannel(app, integrationId, 'C1', gateOf(decisionId))
+    expect(res.statusCode, res.body).toBe(200)
+    await app.deps.httpBot.syncRoutes(botId)
+    const routes = modern.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+    expect(routes.routes.filter((r) => r.scope !== undefined)).toEqual([
+      expect.objectContaining({
+        agentId: installs[0]!.agentId,
+        scope: { channel: 'C1' },
+        match: { kind: 'decision' },
+        decisionId
+      })
+    ])
+    expect(routes.conversationDefaults.some((d) => d.channel === 'C1')).toBe(false)
+    expect(routes.mutedChannels).not.toContain('C1')
+
+    // A relay that cannot seat the route as the team default makes the gate unsupported.
+    app.relayReg.add(new FakeRelay(randomUUID(), [DECISION_TRIGGER_V1_FEATURE]))
+    const refused = await patchChannel(app, integrationId, 'C1', gateOf(decisionId))
+    expect(refused.statusCode, refused.body).toBe(409)
+    expect(refused.json().code).toBe('DECISION_UNSUPPORTED_CONSUMER')
   })
 })
 

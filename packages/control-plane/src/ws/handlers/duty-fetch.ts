@@ -5,7 +5,7 @@
 // for an agent this daemon currently holds an unexpired lease on.
 import { isFrame, type DutyAgentBundle } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
-import { encodeSpecWorkspaceForPeer } from '../../domain/daemon-features.js'
+import { encodeAgentSpecForPeer } from '../../domain/daemon-features.js'
 import { encodeIntegrationSpecForPeer } from '../../domain/decision-trigger-features.js'
 import type { DaemonWsDeps } from '../deps.js'
 import { frameOrgId } from './frame-org.js'
@@ -43,7 +43,7 @@ export const handleDutyFetch: Handler = async (frame, conn, deps) => {
   conn.replyTo(frame, 'duty/fetch/ok', {
     bundle: {
       ...bundle,
-      spec: encodeSpecWorkspaceForPeer(bundle.spec, features),
+      spec: encodeAgentSpecForPeer(bundle.spec, features),
       integrations: bundle.integrations.map((i) => encodeIntegrationSpecForPeer(i, features))
     }
   })

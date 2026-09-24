@@ -28,6 +28,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { transcriptChannelKey, type DecisionVerdictRow, type LocalStore } from '../store/local-store.js'
 import { routerSubject } from './router.js'
+import { hookRouterSubject } from '../github/hook-routing.js'
 
 /** Refused because this daemon does not serve the lane the frame names (answered as SCOPE_DENIED). */
 export class DecisionEvaluationScopeError extends Error {
@@ -45,7 +46,12 @@ export interface DecisionEvaluationReaderDeps {
     agentId: string,
     integrationId: string
   ): Promise<({ transportScope?: string; botId?: string } & DecisionEvaluationConversation) | undefined>
+  /** Whether this daemon serves the agent and hosts that code-host routing (code-host-decisions.md §7). */
+  servedHookRouting?(orgId: string, agentId: string, routingId: string): Promise<boolean>
 }
+
+/** A hook routing lane has no conversation namespace: its rows are the routing's own, across every thread. */
+const HOOK_ROUTING_CONVERSATION: DecisionEvaluationConversation = { platform: 'hook', tenantScope: null }
 
 type VerdictRow = DecisionVerdictRow & { ts: string | null }
 
@@ -95,6 +101,13 @@ function answerOf(row: DecisionVerdictRow): { answer: DecisionAnswer | null; mat
   }
 }
 
+// A hook routing verdict names how it chose (mention, thread, decision, otherwise), which a gate row never has.
+function hookRouteReasonOf(row: DecisionVerdictRow): string | null {
+  if (row.subject !== hookRouterSubject(row.integrationId)) return null
+  const reason = record(parseJson(row.answerJson))?.routeReason
+  return typeof reason === 'string' ? reason : null
+}
+
 function summaryRow(row: VerdictRow): DecisionEvaluationRecord {
   const { answer, matchedKeys } = answerOf(row)
   const input = record(parseJson(row.inputJson))
@@ -107,7 +120,7 @@ function summaryRow(row: VerdictRow): DecisionEvaluationRecord {
     messageId: clip(row.ts ?? (typeof currentId === 'string' ? currentId : null), 256),
     decisionId: row.decisionId,
     outcome: outcomeOf(row),
-    reason: clip(row.unavailableReason ?? row.cancelReason, 128),
+    reason: clip(row.unavailableReason ?? row.cancelReason ?? hookRouteReasonOf(row), 128),
     answer: answer ? summaryOf(answer) : null,
     matchedKeys,
     latencyMs: count(row.latencyMs),
@@ -344,7 +357,19 @@ function rawOf(
 export class DecisionEvaluationReader {
   constructor(private readonly deps: DecisionEvaluationReaderDeps) {}
 
-  private async lane(orgId: string, req: { agentId: string; integrationId: string; channel: string }) {
+  private async lane(
+    orgId: string,
+    req: { agentId: string; integrationId: string; channel: string; source?: 'hook_routing' }
+  ): Promise<{
+    lane: { orgId: string; integrationId: string; channel?: string; subject: string }
+    conversation: DecisionEvaluationConversation
+  }> {
+    if (req.source === 'hook_routing') {
+      if (!(await this.deps.servedHookRouting?.(orgId, req.agentId, req.integrationId)))
+        throw new DecisionEvaluationScopeError()
+      const lane = { orgId, integrationId: req.integrationId, subject: hookRouterSubject(req.integrationId) }
+      return { lane, conversation: { ...HOOK_ROUTING_CONVERSATION } }
+    }
     const served = await this.deps.servedIntegration(orgId, req.agentId, req.integrationId)
     if (!served) throw new DecisionEvaluationScopeError()
     const conversation: DecisionEvaluationConversation = {

@@ -341,6 +341,17 @@ export const HookContext = z.object({
   labels: z.array(z.string()).optional(),
   htmlUrl: z.string().optional(),
   bodyExcerpt: z.string().optional(), // ≤4 KiB
+  // The issue/PR itself, for a Decision to judge a comment against (code-host-decisions.md §5); body ≤4 KiB.
+  subject: z
+    .object({
+      authorLogin: z.string().optional(),
+      authorType: z.string().optional(),
+      authorAssociation: z.string().optional(),
+      state: z.string().optional(),
+      draft: z.boolean().optional(),
+      body: z.string().optional()
+    })
+    .optional(),
   // ── github deployment (no thread: the environment is the subject) ──
   environment: z.string().optional(), // 'production'
   ref: z.string().optional(), // the deployed ref, as GitHub names it

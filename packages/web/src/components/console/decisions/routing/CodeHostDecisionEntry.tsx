@@ -1,6 +1,6 @@
 'use client'
 
-// A watched repository's pull-request row control: its reviewer Decision's pill, or `+ Decision` (UI preview).
+// A watched repository's issues or pull-request row control: its routing Decision's pill, or `+ Decision`.
 
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
@@ -8,55 +8,100 @@ import { Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
-import { setCodeHostReviewDecision, useCodeHostReviewDecisions } from '@/lib/decisions/code-host-review-preview'
+import { useCodeHostRoutingActions } from '@/lib/decisions/code-host-routing'
+import type { CodeHostRoutingDto } from '@/lib/api'
 import { CodeHostDecisionModal } from './CodeHostDecisionModal'
 
 export function CodeHostDecisionEntry({
-  storeKey,
-  repo,
+  routing,
   agents,
-  blocked
+  blocked,
+  onOpenEvaluations
 }: {
-  storeKey: string
-  repo: string
+  /** The scope's routing read; null while the CP cannot serve it. */
+  routing: CodeHostRoutingDto | null | undefined
+  /** The scope's members as rule targets. */
   agents: RosterAgent[]
   /** The row runs on @-mention, which picks the agent directly, so no Decision can start here. */
   blocked: boolean
+  /** Opens the routing's Recent evaluations. */
+  onOpenEvaluations?: () => void
 }) {
   const t = useTranslations('Decisions.routing.codeHost')
+  const tDecisions = useTranslations('Decisions')
   const { myRole } = useOrgs()
   const canWrite = myRole !== 'viewer'
   const decisions = useOptionalDecisionsPrototype()
-  const saved = useCodeHostReviewDecisions().get(storeKey) ?? null
+  const { remove } = useCodeHostRoutingActions()
   const [open, setOpen] = useState(false)
-  if (!decisions) return null
+  const [stopping, setStopping] = useState(false)
+  const [stopError, setStopError] = useState<string | null>(null)
+  if (!decisions || !routing) return null
+  const family = routing.family
   const modal = open && (
-    <CodeHostDecisionModal storeKey={storeKey} repo={repo} agents={agents} onClose={() => setOpen(false)} />
+    <CodeHostDecisionModal
+      routing={routing}
+      agents={agents}
+      onClose={() => setOpen(false)}
+      {...(onOpenEvaluations ? { onOpenEvaluations } : {})}
+    />
   )
+  const saved = routing.config
   if (saved) {
     const name = decisions.decisions.find((entry) => entry.id === saved.decisionId)?.name ?? t('hidden')
+    const status = routing.status && routing.status !== 'enabled' ? routing.status : null
+    const stop = async () => {
+      setStopping(true)
+      setStopError(null)
+      try {
+        await remove(routing)
+      } catch (error) {
+        setStopError(t('stopError', { message: error instanceof Error ? error.message : String(error) }))
+      } finally {
+        setStopping(false)
+      }
+    }
     return (
       <>
-        <span className="inline-flex h-[26px] max-w-full flex-none items-center overflow-hidden rounded-md border border-(--border-default) bg-(--surface-card)">
+        <span
+          className={`inline-flex h-[26px] max-w-full flex-none items-center overflow-hidden rounded-md border bg-(--surface-card) ${
+            status ? 'border-(--amber-500)' : 'border-(--border-default)'
+          }`}
+        >
           <button
             type="button"
-            title={t('pillTitle', { name })}
+            title={
+              status
+                ? t('pillStatusTitle', { name, status: tDecisions(`binding.status.${status}`) })
+                : t('pillTitle', { name, family })
+            }
             aria-haspopup="dialog"
             onClick={() => setOpen(true)}
             className="inline-flex h-full min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-[7px] hover:bg-(--surface-hover)"
           >
-            <Icon name="split" size={12} className="flex-none text-(--brand)" />
+            {status ? (
+              <Icon
+                name={status === 'access_revoked' ? 'lock' : 'triangle-alert'}
+                size={12}
+                className="flex-none text-(--amber-500)"
+              />
+            ) : (
+              <Icon name="split" size={12} className="flex-none text-(--brand)" />
+            )}
             <span className="mono min-w-0 max-w-[160px] truncate text-[11px] text-(--text-primary)">{name}</span>
           </button>
           {canWrite && (
             <button
               type="button"
-              title={t('stop')}
-              aria-label={t('stop')}
-              onClick={() => setCodeHostReviewDecision(storeKey, null)}
-              className="flex h-full w-[22px] flex-none cursor-pointer items-center justify-center border-0 border-l border-(--border-subtle) bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+              title={stopError ?? t('stop', { family })}
+              aria-label={t('stop', { family })}
+              disabled={stopping}
+              onClick={() => void stop()}
+              className={`flex h-full w-[22px] flex-none cursor-pointer items-center justify-center border-0 border-l border-(--border-subtle) bg-transparent hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-wait ${
+                stopError ? 'text-(--status-error)' : 'text-(--text-tertiary)'
+              }`}
             >
-              <Icon name="x" size={11} />
+              <Icon name={stopError ? 'triangle-alert' : 'x'} size={11} />
             </button>
           )}
         </span>
@@ -69,7 +114,7 @@ export function CodeHostDecisionEntry({
     <>
       <button
         type="button"
-        title={blocked ? t('addBlocked') : t('addTitle')}
+        title={blocked ? t('addBlocked') : t('addTitle', { family })}
         aria-haspopup="dialog"
         disabled={blocked}
         onClick={() => setOpen(true)}

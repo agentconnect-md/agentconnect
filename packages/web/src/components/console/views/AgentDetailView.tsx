@@ -48,6 +48,7 @@ import {
   updateGiteaHook,
   updateGitlabHook,
   uploadAgentIcon,
+  type CodeHostRoutingDto,
   type GithubInstallationDto,
   type HookDto,
   type HookRunDto
@@ -64,12 +65,16 @@ import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentDecisionsCard } from '@/components/console/AgentDecisionsCard'
 import { CodeHostDecisionEntry } from '@/components/console/decisions/routing/CodeHostDecisionEntry'
+import { DecisionEvaluationsDrawer } from '@/components/console/decisions/DecisionEvaluationsDrawer'
 import {
-  codeHostReviewKey,
-  setCodeHostReviewDecision,
-  useCodeHostReviewDecisions
-} from '@/lib/decisions/code-host-review-preview'
-import type { RosterAgent } from '@/lib/decisions/routing-roster'
+  codeHostRouted,
+  codeHostScopeId,
+  routingTargets,
+  useCodeHostRoutingActions,
+  useCodeHostRoutings,
+  type CodeHostRoutingScope
+} from '@/lib/decisions/code-host-routing'
+import { codeHostRoutingEvaluations } from '@/lib/decisions/evaluation-source'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
@@ -271,9 +276,10 @@ function rowSettingsTitle(hook: HookDto): string {
 export default function AgentDetailView() {
   const t = useTranslations('Agents.detail')
   const tRouting = useTranslations('Decisions.routing')
-  const { decisions = [] } = useOptionalDecisionsPrototype() ?? {}
+  const decisionsPrototype = useOptionalDecisionsPrototype()
+  const decisions = useMemo(() => decisionsPrototype?.decisions ?? [], [decisionsPrototype])
   const permissionT = useTranslations('Common.permissionModes')
-  const { orgPath, activeOrg } = useOrgs()
+  const { orgPath, activeOrg, myRole } = useOrgs()
   const { me } = useProfile()
   const { id } = useParams<{ id: string }>()
   const params = useSearchParams()
@@ -342,6 +348,11 @@ export default function AgentDetailView() {
       : undefined)
   // Which webhook row has its recent-deliveries panel expanded (one at a time).
   const [hookRunsFor, setHookRunsFor] = useState<string | null>(null)
+  // The routed github scope whose Recent evaluations drawer is open, with its row's subtitle.
+  const [routingEvaluationsFor, setRoutingEvaluationsFor] = useState<{
+    routing: CodeHostRoutingDto
+    subtitle: string
+  } | null>(null)
   // Hooks are agent-scoped (no org-wide list). Keep a stable resource key so a
   // create/delete revalidation retains the last good rows while it refetches.
   const hooksKey = consoleKeys.agentHooks(activeOrg?.id, id)
@@ -364,19 +375,42 @@ export default function AgentDetailView() {
   const gitlabHooks = codeHostHooks.gitlab
   // One flat row per subscription still — the grouping is only the ORDER (a repo's rows adjacent) plus its add offer.
   const githubRows = orderedGithubHookRows(githubHooks)
-  // Pull-request reviewers By decision (UI preview): any visible agent can be picked, this one first.
-  const reviewDecisions = useCodeHostReviewDecisions()
-  const reviewKey = (h: HookDto) => codeHostReviewKey(activeOrg?.id, h.repoFullName ?? h.name)
-  const reviewerCandidates: RosterAgent[] = [...agents]
-    .sort((a, b) => Number(b.id === id) - Number(a.id === id))
-    .map((agent) => ({
-      id: agent.id,
-      name: agentLabel(agent),
-      available: agent.placementReady ?? agent.status === 'online',
-      icon: agent.icon ?? null,
-      runtime: agent.runtime || agent.model || ''
-    }))
-  const reviewedByDecision = (h: HookDto) => githubHookFamily(h) === 'pull_request' && reviewDecisions.has(reviewKey(h))
+  // Issues and pull-request rows carry their repository scope's decision routing (code-host-decisions.md §7).
+  const routingScopeOf = (h: HookDto): CodeHostRoutingScope | null => {
+    const family = githubHookFamily(h)
+    if (!h.repoId || (family !== 'issues' && family !== 'pull_request')) return null
+    return { repoId: h.repoId, family, repoFullName: h.repoFullName ?? h.name }
+  }
+  const routingScopes = githubHooks.flatMap((h) => routingScopeOf(h) ?? [])
+  // Mock mode has no CP membership, so its routings offer every visible agent.
+  const { routings } = useCodeHostRoutings(
+    routingScopes,
+    agents.map((agent) => ({ agentId: agent.id, hookId: `mock-${agent.id}`, name: agentLabel(agent) }))
+  )
+  const { remove: removeRouting } = useCodeHostRoutingActions()
+  const [routingError, setRoutingError] = useState<{ hookId: string; message: string } | null>(null)
+  const routingOf = (h: HookDto) => {
+    const scope = routingScopeOf(h)
+    return scope ? (routings[codeHostScopeId(scope)] ?? null) : null
+  }
+  const routedByDecision = (h: HookDto) => codeHostRouted(routingOf(h))
+  const openRoutingEvaluations = (h: HookDto) => {
+    const routing = routingOf(h)
+    if (routing) setRoutingEvaluationsFor({ routing, subtitle: `${routing.repoFullName} · ${ghRowPill(h)}` })
+  }
+  const stopRouting = async (h: HookDto) => {
+    const routing = routingOf(h)
+    if (!routing) return
+    setRoutingError(null)
+    try {
+      await removeRouting(routing)
+    } catch (error) {
+      setRoutingError({
+        hookId: h.id,
+        message: tRouting('codeHost.stopError', { message: error instanceof Error ? error.message : String(error) })
+      })
+    }
+  }
   const gitlabRows = orderedGitlabHookRows(gitlabHooks)
   const giteaHooks = codeHostHooks.gitea
   const giteaRows = orderedGiteaHookRows(giteaHooks)
@@ -2186,21 +2220,26 @@ export default function AgentDetailView() {
                               <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
                                 {ghRowPill(h)}
                               </span>
-                              {githubHookFamily(h) === 'pull_request' && (
+                              {routingOf(h) && (
                                 <CodeHostDecisionEntry
-                                  storeKey={reviewKey(h)}
-                                  repo={h.repoFullName ?? h.name}
-                                  agents={reviewerCandidates}
+                                  routing={routingOf(h)}
+                                  agents={routingTargets(
+                                    routingOf(h)!.members,
+                                    getAgent,
+                                    id,
+                                    tRouting('codeHost.hiddenAgent')
+                                  )}
                                   blocked={triggerModeOf(h) === 'mention'}
+                                  onOpenEvaluations={() => openRoutingEvaluations(h)}
                                 />
                               )}
                               {/* Trigger — the same ⚡ dropdown the IM channel rows carry, mention last. */}
                               <TriggerSelect
                                 className="w-[126px] flex-none"
                                 // Per family: the label cadence exists on issues alone, and a deployment reads its own copy.
-                                // A reviewer Decision owns who reviews, so a mention (which names the agent) is unavailable.
+                                // A routing Decision owns who takes the thread, so a mention (which names the agent) is unavailable.
                                 options={ghRowTriggerModes(h).map((mode) => {
-                                  const off = mode === 'mention' && reviewedByDecision(h)
+                                  const off = mode === 'mention' && routedByDecision(h)
                                   return {
                                     value: mode,
                                     label: GH_TRIGGER_PILL[mode],
@@ -2239,13 +2278,22 @@ export default function AgentDetailView() {
                                       label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
                                       onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
                                     },
-                                    ...(reviewedByDecision(h)
+                                    ...(routingOf(h)?.config && decisionsPrototype
                                       ? [
                                           {
-                                            icon: 'split' as const,
-                                            label: tRouting('codeHost.stopMenu'),
-                                            onClick: () => setCodeHostReviewDecision(reviewKey(h), null)
-                                          }
+                                            icon: 'list-checks' as const,
+                                            label: tRouting('recentEvaluations'),
+                                            onClick: () => openRoutingEvaluations(h)
+                                          },
+                                          ...(myRole !== 'viewer'
+                                            ? [
+                                                {
+                                                  icon: 'split' as const,
+                                                  label: tRouting('codeHost.stopMenu'),
+                                                  onClick: () => void stopRouting(h)
+                                                }
+                                              ]
+                                            : [])
                                         ]
                                       : [])
                                   ]}
@@ -2259,6 +2307,14 @@ export default function AgentDetailView() {
                                 </button>
                               </span>
                             </div>
+                            {routingError?.hookId === h.id && (
+                              <div
+                                role="alert"
+                                className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)"
+                              >
+                                {routingError.message}
+                              </div>
+                            )}
                             {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
                               <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
                                 {addFamilyError.message}
@@ -2809,6 +2865,18 @@ export default function AgentDetailView() {
       {/* One review/check settings surface, rendered as a bottom sheet on mobile
           and a centered dialog on desktop. The dense repository rows only open
           it; they do not duplicate policy controls. */}
+      {routingEvaluationsFor && decisionsPrototype && (
+        <DecisionEvaluationsDrawer
+          source={codeHostRoutingEvaluations(
+            decisionsPrototype.api,
+            decisionsPrototype.orgId,
+            routingEvaluationsFor.routing
+          )}
+          channelName={routingEvaluationsFor.subtitle}
+          onClose={() => setRoutingEvaluationsFor(null)}
+        />
+      )}
+
       {reviewSettingsDraft && reviewSettingsHook && (
         <div
           onClick={closeReviewSettings}

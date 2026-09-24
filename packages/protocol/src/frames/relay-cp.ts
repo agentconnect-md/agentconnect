@@ -405,6 +405,16 @@ export const RcGiteaHookRule = z.object({
 })
 export type RcGiteaHookRule = z.infer<typeof RcGiteaHookRule>
 
+/** A code-host rule's routing scope: one routing per organization, repository and subject family, hosted by one watching agent. */
+export const RcHookRouting = z.object({
+  routingId: z.string().uuid(),
+  decisionId: z.string().uuid(),
+  // The watching agent whose daemon evaluates, and that daemon, so every relay names the same host.
+  evaluationAgentId: z.string().uuid(),
+  evaluationDaemonId: z.string().uuid()
+})
+export type RcHookRouting = z.infer<typeof RcHookRouting>
+
 // C→R EVT — one enabled hook's compiled rule, broadcast to the WHOLE pool
 // (webhook-type ingress is pool-served, shared-bot-relay.md §5). Upsert
 // semantics: the CP re-sends the full frame on hook create/update/enable, on
@@ -425,6 +435,8 @@ export const RcHookAssign = z
     // payload carries the caller's message (design security boundary 1).
     sessionMode: z.enum(['perDelivery', 'perThread', 'perSubject', 'shared']),
     target: CronTarget.optional(), // output anchoring; absent ⇒ headless
+    // The repository scope's Decision routing this rule belongs to; its events go once to the evaluation host (code-host-decisions.md §4).
+    routing: RcHookRouting.optional(),
     // kind=webhook — required for that kind (enforced at the CP compile site)
     webhook: z
       .object({

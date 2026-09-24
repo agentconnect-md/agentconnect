@@ -5487,6 +5487,8 @@ export interface DecisionRepo {
     consumerIntegrationIds: IntegrationId[]
     /** Every bot whose router uses this Decision; incompatible routers are marked Needs review in the same tx. */
     consumerBotIds: BotId[]
+    /** Every code-host routing on this Decision; incompatible ones are marked Needs review and their hosts bumped in the same tx. */
+    consumerCodeHostRoutings: CodeHostRoutingScope[]
   } | null>
   /** Throws {@link DecisionInUse} while a conversation still references it. */
   delete(orgId: OrgId, id: string, actor: ViewCtx): Promise<void>
@@ -5533,6 +5535,58 @@ export interface BotDecisionRoutingRepo {
     actor: ViewCtx
   ): Promise<BotDecisionRoutingRecord>
   listUsages(orgId: OrgId, decisionIds?: readonly string[]): Promise<BotDecisionRoutingUsage[]>
+}
+
+/** One code-host routing scope (code-host-decisions.md §3.1). */
+export interface CodeHostRoutingScope {
+  orgId: OrgId
+  repoId: bigint
+  family: import('@agentconnect.md/protocol').CodeHostRoutingFamily
+}
+
+/** A stored code-host routing; `config` is null when the stored rules no longer parse (the scope then holds). */
+export interface CodeHostDecisionRoutingRecord extends CodeHostRoutingScope {
+  id: string
+  provider: 'github'
+  repoFullName: string
+  enabled: boolean
+  decisionId: string
+  config: import('@agentconnect.md/protocol').SharedBotDecisionRouting | null
+  needsReview: boolean
+  evaluationAgentId: AgentId | null
+  definition: import('@agentconnect.md/protocol').DecisionBundleDefinition | null
+  updatedAt: Date
+}
+
+/** One code-host routing referencing a Decision, with its members and targets (for permission-filtered usages). */
+export interface CodeHostDecisionRoutingUsage {
+  decisionId: string
+  routingId: string
+  repoId: bigint
+  repoFullName: string
+  family: import('@agentconnect.md/protocol').CodeHostRoutingFamily
+  agentIds: AgentId[]
+}
+
+export interface CodeHostDecisionRoutingRepo {
+  get(scope: CodeHostRoutingScope): Promise<CodeHostDecisionRoutingRecord | null>
+  /** Upsert the scope's config and clear Needs review; the host's revision is bumped in the same tx. */
+  save(
+    scope: CodeHostRoutingScope & { repoFullName: string },
+    config: import('@agentconnect.md/protocol').SharedBotDecisionRouting,
+    actorUserId: string | null
+  ): Promise<CodeHostDecisionRoutingRecord>
+  /** Delete the scope's routing, bumping its host; returns the removed row. */
+  delete(scope: CodeHostRoutingScope): Promise<CodeHostDecisionRoutingRecord | null>
+  /** Routings an agent hosts, for AgentSpec.hookRoutings. */
+  listForHost(agentId: AgentId): Promise<CodeHostDecisionRoutingRecord[]>
+  /** Move the host when it is still `expected`; bumps both agents' revisions in the same tx. */
+  setEvaluationAgent(id: string, expected: AgentId | null, next: AgentId | null): Promise<boolean>
+  /** Bump the host after a membership change no hook write recorded (members removed with their agent). */
+  touchHost(id: string): Promise<void>
+  /** Routed scopes with an enabled member hook whose agent is placed on this daemon. */
+  listScopesForDaemon(daemonId: DaemonId): Promise<CodeHostRoutingScope[]>
+  listUsages(orgId: OrgId, decisionIds?: readonly string[]): Promise<CodeHostDecisionRoutingUsage[]>
 }
 
 export type VisibilityResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource' | 'decision'

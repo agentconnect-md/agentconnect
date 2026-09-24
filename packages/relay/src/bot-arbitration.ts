@@ -393,12 +393,14 @@ export class BotArbitrationRouter {
 
   /** A channel-scoped `auto`/`decision` owner re-resolves every message on any pod, so it needs no durable thread binding. */
   channelAutoOwned(botId: string, channelId: string): boolean {
+    const a = this.bots.get(botId)
+    // An `ownerAsDefault` decision owner is a default seat below continuity, so its sessions stay bound.
     return (
-      this.bots
-        .get(botId)
-        ?.routes.some(
-          (r) => r.scope?.channel === channelId && (r.match.kind === 'auto' || r.match.kind === 'decision')
-        ) ?? false
+      a?.routes.some(
+        (r) =>
+          r.scope?.channel === channelId &&
+          (r.match.kind === 'auto' || (r.match.kind === 'decision' && a.ownerAsDefault !== true))
+      ) ?? false
     )
   }
 
@@ -792,9 +794,13 @@ export class BotArbitrationRouter {
     if (primary) add(primary, explicitIds.has(primary.agentId) ? 'mention' : 'implicit')
     for (const route of a.routes) {
       if (explicitIds.has(route.agentId)) add(target(route), 'mention')
+      // An `ownerAsDefault` decision owner joins only as the primary: a session there has one writer.
       const candidate =
         route.match.kind === 'auto' ||
-        (route.match.kind === 'decision' && verifiedAgentAuthor === undefined && !msg.sender.isBot)
+        (route.match.kind === 'decision' &&
+          a.ownerAsDefault !== true &&
+          verifiedAgentAuthor === undefined &&
+          !msg.sender.isBot)
       if (candidate && scopeMatches(route, msg)) add(target(route), 'implicit')
     }
     // The verified final carries exact resolved agent ids across provider

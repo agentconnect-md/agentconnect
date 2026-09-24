@@ -571,6 +571,8 @@ export interface WebChannelListSemantics {
   roster?: 'observed' | 'derived'
   /** Room-row triggers (absent ⇒ all); drop `any` without unaddressed traffic, and omitting `decision` withholds By decision. */
   triggers?: readonly ('off' | 'mention' | 'any' | 'decision')[]
+  /** Where a shared bot's By decision lives: `'router'` (absent) is the bot's router, `'conversation'` each row's own gate. */
+  sharedDecision?: 'router' | 'conversation'
   /** Session modes this platform's channel rows offer. Absent ⇒ both, which is every
    *  platform that has channels. A platform opts out by omitting one rather than core
    *  branching on a platform name. */

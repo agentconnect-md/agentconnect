@@ -603,6 +603,64 @@ describe('Linear team-as-channel arbitration (the per-conversation default rung)
     })
   })
 
+  describe('a By decision team, whose decision owner is the default seat', () => {
+    // The compile emits the owner's scoped decision route and no conversationDefaults entry for the team.
+    const decided = (): BotAssignment =>
+      linear({
+        routes: [
+          ...linear().routes,
+          {
+            agentId: ALICE,
+            daemonId: D1,
+            integrationId: 'iA',
+            scope: { channel: TEAM_A },
+            match: { kind: 'decision' },
+            decisionId: 'dec-1'
+          }
+        ],
+        conversationDefaults: [{ channel: TEAM_B, agentId: BOB, daemonId: D2, integrationId: 'iB' }]
+      })
+
+    it('routes a bare delegation to the decision owner and names its Decision', () => {
+      const router = new BotArbitrationRouter()
+      router.upsert(decided())
+      expect(router.route('bot-1', delegation('take a look'))).toEqual({
+        agentId: ALICE,
+        daemonId: D1,
+        integrationId: 'iA'
+      })
+      expect(router.decisionIdFor('bot-1', TEAM_A)).toBe('dec-1')
+    })
+
+    it('keeps keyword selection and a bound session above the decision owner', () => {
+      expect(arbitrate(decided(), delegation('bob please ship it'), empty())).toEqual({
+        agentId: BOB,
+        daemonId: D2,
+        integrationId: 'iB'
+      })
+      const affinity = new Map<string, RouteTarget>([
+        [`${TEAM_A}/agent-session-1`, { agentId: BOB, daemonId: D2, integrationId: 'iB' }]
+      ])
+      expect(arbitrate(decided(), delegation('a follow-up'), affinity)).toEqual({
+        agentId: BOB,
+        daemonId: D2,
+        integrationId: 'iB'
+      })
+    })
+
+    it('delivers to the one bound writer, never also to the decision owner, and keeps the session bound', () => {
+      const router = new BotArbitrationRouter()
+      router.upsert(decided())
+      const bob = { agentId: BOB, daemonId: D2, integrationId: 'iB' }
+      router.setAffinity('bot-1', `${TEAM_A}/agent-session-1`, bob)
+      const primary = router.route('bot-1', delegation('a follow-up'))
+      expect(router.conversationTargets('bot-1', delegation('a follow-up'), primary).map((t) => t.target)).toEqual([
+        bob
+      ])
+      expect(router.channelAutoOwned('bot-1', TEAM_A)).toBe(false)
+    })
+  })
+
   describe("a GATED member, whose grant is the team's default seat", () => {
     const gatedOwner = (over: Partial<BotAssignment> = {}): BotAssignment =>
       linear({

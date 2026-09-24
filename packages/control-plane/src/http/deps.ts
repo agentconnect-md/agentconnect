@@ -236,6 +236,8 @@ export interface HttpDeps {
     decision: import('../persistence/ports.js').DecisionRepo
     /** The shared-bot By decision routers (decisions.md §6.2). */
     botDecisionRouting: import('../persistence/ports.js').BotDecisionRoutingRepo
+    /** The repository-scope Decision routings (code-host-decisions.md §3.1). */
+    codeHostDecisionRouting: import('../persistence/ports.js').CodeHostDecisionRoutingRepo
     /** Org-level shared-skills sources (metadata only; content stays daemon-side). */
     skillSource: SkillSourceRepo
     /** Accepted organization Knowledge, managed-skill revisions, and pending suggestion metadata. */
@@ -388,6 +390,8 @@ export interface HttpDeps {
   /** Compiles hooks into relay rules and keeps the pool converged — hook CRUD
    *  and agent placement changes call through it (fire-and-forget). */
   hooks: HookService
+  /** Keeps each code-host routing scope's host, rules, and host specs converged. */
+  hookRouting: import('../hooks/hook-routing.service.js').HookRoutingService
   /** Best-effort latency kick for durable GitHub projection cleanup. */
   kickGithubRunReporter?: () => void
   /** Recompute an org's duty groups now that their inputs changed (integrations,

@@ -106,6 +106,8 @@ export interface PlatformManifest {
    *
    *  Fail-closed `false` keeps a platform on the ordinary ownership-route arm. */
   readonly ownerAsDefault: boolean
+  /** Whether every inbound event marks the bot as mentioned, so a mention is no fresh address: the decision gate admits one in a thread the agent participates in. */
+  readonly addressedByConstruction: boolean
 }
 
 /** The conservative arm of every axis — see the fail-closed note above. */
@@ -122,7 +124,9 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   // No platform but Slack lets a bot enter a conversation on its own.
   publicChannelJoin: false,
   // The arm every shipped platform takes: an owner is an ownership route, not a default.
-  ownerAsDefault: false
+  ownerAsDefault: false,
+  // A mention is an explicit address, judged even inside a thread the agent is in.
+  addressedByConstruction: false
 }
 
 /**
@@ -147,7 +151,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       leaveGranularity: 'conversation',
       multiAgentShareable: true,
       publicChannelJoin: true,
-      ownerAsDefault: false
+      ownerAsDefault: false,
+      addressedByConstruction: false
     }
   ],
   [
@@ -159,7 +164,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       leaveGranularity: 'conversation',
       multiAgentShareable: false,
       publicChannelJoin: false,
-      ownerAsDefault: false
+      ownerAsDefault: false,
+      addressedByConstruction: false
     }
   ],
   // A Discord bot is added to a GUILD, not to a channel — there is no
@@ -173,7 +179,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       leaveGranularity: 'space',
       multiAgentShareable: false,
       publicChannelJoin: false,
-      ownerAsDefault: false
+      ownerAsDefault: false,
+      addressedByConstruction: false
     }
   ],
   [
@@ -185,7 +192,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       leaveGranularity: 'conversation',
       multiAgentShareable: false,
       publicChannelJoin: false,
-      ownerAsDefault: false
+      ownerAsDefault: false,
+      addressedByConstruction: false
     }
   ],
   // A connected Linear workspace IS a shared bot: the deployment's one OAuth app
@@ -200,7 +208,9 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       multiAgentShareable: true,
       publicChannelJoin: false,
       // Every Linear event addresses the app, so a team row's owner is its dispatch default (§6.2).
-      ownerAsDefault: true
+      ownerAsDefault: true,
+      // A follow-up prompt in a session the agent already holds continues it rather than addressing anew.
+      addressedByConstruction: true
     }
   ]
 ])

@@ -35,6 +35,7 @@ import {
   GITLAB_INSTANCE_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
+  HOOK_DECISION_ROUTING_V1_FEATURE,
   RD_DECISION_ROUTE_V1,
   type RdRoute,
   type RdRouteAck,
@@ -74,7 +75,9 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   // The relay forwards By decision candidates only to daemons that list this.
   DECISION_TRIGGER_V1_FEATURE,
   // The relay sends trustedRouting / trustedRouteSelection only here; an older daemon would read them as plain deliveries.
-  DECISION_ROUTING_V1_FEATURE
+  DECISION_ROUTING_V1_FEATURE,
+  // The relay sends hook host copies (`routing`) and routed fires (`routeSelection`) only here.
+  HOOK_DECISION_ROUTING_V1_FEATURE
 ]
 
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'

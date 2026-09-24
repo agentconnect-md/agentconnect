@@ -21,6 +21,7 @@ import {
   redactGitUrlSecrets,
   type AgentAdditionalRepo,
   type AgentSkillEntry,
+  type HookRoutingProjection,
   type ManagedSkillEntry,
   type AgentSpec
 } from '@agentconnect.md/protocol'
@@ -28,6 +29,7 @@ import type {
   AgentRecord,
   AgentRepoAuthorizationRepo,
   AgentSecretStore,
+  CodeHostDecisionRoutingRepo,
   HookRepo,
   OrganizationEnvironmentResolver,
   OrganizationKnowledgeRepo,
@@ -37,6 +39,7 @@ import { AgentId } from '../domain/ids.js'
 import { gitlabManagedProjectPath } from '../domain/git-host.js'
 import { codeHostProviders } from '../codehost/registry.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
+import { hookRoutingProjection, routingMembers } from '../hooks/hook-routing.js'
 import { resolveAgentSkillEntries, type InvalidSkillSourceProjection } from './skillSource.js'
 import {
   emptyOrganizationEnvironmentValues,
@@ -82,21 +85,35 @@ export class AgentSpecAssembler {
     private readonly hooks?: Pick<HookRepo, 'listForAgent'>,
     // The deployment's Gitea instance base URL (gitea-integration.md §11): the same carriage as
     // GitLab's, set whenever ANY Gitea consumer rides the spec. Absent ⇒ Gitea is not wired.
-    private readonly giteaHost?: string
+    private readonly giteaHost?: string,
+    // The routings this agent hosts and the hooks that are their members (code-host-decisions.md §3.2); absent ⇒ no hookRoutings.
+    private readonly routingSources?: {
+      routings: Pick<CodeHostDecisionRoutingRepo, 'listForHost'>
+      hooks: Pick<HookRepo, 'listForOrgKind'>
+    }
   ) {}
 
   /** Fetch the agent's secret values + resolve its skills, then project the spec. */
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
-    const [secrets, skillEntries, managedSkillEntries, organization, additionalRepos, gitlabHook, giteaHook] =
-      await Promise.all([
-        this.secrets.get(a.orgId, a.id),
-        resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
-        this.managedSkillsOf(a),
-        this.organizationEnvironmentOf(a),
-        this.additionalReposOf(a),
-        this.gitlabHookOf(a),
-        this.giteaHookOf(a)
-      ])
+    const [
+      secrets,
+      skillEntries,
+      managedSkillEntries,
+      organization,
+      additionalRepos,
+      gitlabHook,
+      giteaHook,
+      hookRoutings
+    ] = await Promise.all([
+      this.secrets.get(a.orgId, a.id),
+      resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
+      this.managedSkillsOf(a),
+      this.organizationEnvironmentOf(a),
+      this.additionalReposOf(a),
+      this.gitlabHookOf(a),
+      this.giteaHookOf(a),
+      this.hookRoutingsOf(a)
+    ])
     return this.project(
       a,
       secrets,
@@ -105,8 +122,18 @@ export class AgentSpecAssembler {
       organization,
       additionalRepos,
       gitlabHook,
-      giteaHook
+      giteaHook,
+      hookRoutings
     )
+  }
+
+  /** The routings this agent hosts, always shipped so losing the last one replicates; the daemon digests [] as absent. */
+  async hookRoutingsOf(a: Pick<AgentRecord, 'id' | 'orgId'>): Promise<HookRoutingProjection[] | undefined> {
+    if (this.routingSources === undefined) return undefined
+    const hosted = await this.routingSources.routings.listForHost(AgentId(a.id))
+    if (hosted.length === 0) return []
+    const hooks = await this.routingSources.hooks.listForOrgKind(a.orgId, 'github')
+    return hosted.flatMap((record) => hookRoutingProjection(record, routingMembers(hooks, record)) ?? [])
   }
 
   /** Whether an enabled gitlab hook rides this agent — the one GitLab consumer no other
@@ -219,7 +246,8 @@ export class AgentSpecAssembler {
     organization: OrganizationEnvironmentValues = emptyOrganizationEnvironmentValues(),
     additionalRepos: AgentAdditionalRepo[] = [],
     gitlabHook = false,
-    giteaHook = false
+    giteaHook = false,
+    hookRoutings?: HookRoutingProjection[]
   ): AssembledAgentSpec {
     // Resolve by key across both sources BEFORE splitting into the two wire maps
     // (organization-secrets-and-variables.md §3.2), so the winner of a collision
@@ -235,7 +263,8 @@ export class AgentSpecAssembler {
       effective.env,
       additionalRepos,
       gitlabHost(this.gitlabHost, a.workspace, additionalRepos, gitlabHook),
-      giteaHost(this.giteaHost, a.workspace, additionalRepos, giteaHook)
+      giteaHost(this.giteaHost, a.workspace, additionalRepos, giteaHook),
+      hookRoutings
     )
   }
 }
@@ -308,7 +337,8 @@ export function agentRecordToSpec(
   // The §24.4 host carriage, already decided by {@link gitlabHost}.
   host?: string,
   // The Gitea instance carriage, already decided by {@link giteaHost}.
-  giteaInstance?: string
+  giteaInstance?: string,
+  hookRoutings?: HookRoutingProjection[]
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // The assembled spec always carries the host-neutral `git` arm; the per-peer
@@ -407,6 +437,7 @@ export function agentRecordToSpec(
     skills: skillEntries,
     decisionIds: a.decisionIds ?? [],
     modelSelection: a.modelSelection ?? null,
+    ...(hookRoutings !== undefined ? { hookRoutings } : {}),
     // Immutable centrally-managed bundle metadata. Content is fetched separately
     // in bounded chunks, keeping reconcile/upsert frames small.
     managedSkills: managedSkillEntries,

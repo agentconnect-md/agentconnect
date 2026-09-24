@@ -18,6 +18,7 @@
  */
 import {
   CODE_HOST_PROVIDERS,
+  HOOK_DECISION_ROUTING_V1_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   isSelfManagedGitlabHost,
   type AgentSpec
@@ -114,4 +115,16 @@ export function encodeSpecWorkspaceForPeer<S extends Pick<AgentSpec, 'workspace'
   // workspace on any host rides it exactly as it always did.
   const legacy: AgentSpec['workspace'] = hostArm ?? { mode: 'github', ...shared }
   return { ...spec, workspace: legacy }
+}
+
+/** Every per-peer AgentSpec encoding: hook routings only to a peer that hosts them, then the workspace arm (§8). */
+export function encodeAgentSpecForPeer<S extends Pick<AgentSpec, 'workspace' | 'hookRoutings'>>(
+  spec: S,
+  advertisedFeatures: readonly string[] | undefined
+): S {
+  if (spec.hookRoutings !== undefined && !advertises(advertisedFeatures, [HOOK_DECISION_ROUTING_V1_FEATURE])) {
+    const { hookRoutings: _stripped, ...rest } = spec
+    spec = rest as S
+  }
+  return encodeSpecWorkspaceForPeer(spec, advertisedFeatures)
 }

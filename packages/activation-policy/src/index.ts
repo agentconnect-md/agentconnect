@@ -618,12 +618,13 @@ export function arbitrateSharedBotResult(
   // By decision owns a human message, including an @mention, since the compile emits no scoped mention route there.
   const ownedDecision =
     verifiedAgentAuthor === undefined && !msg.sender.isBot ? scoped.find((r) => r.match.kind === 'decision') : undefined
-  if (ownedDecision) return hit(sharedBotTarget(ownedDecision))
+  // On an `ownerAsDefault` assignment the decision owner is the channel's default seat, below keyword and continuity.
+  if (ownedDecision && a.ownerAsDefault !== true) return hit(sharedBotTarget(ownedDecision))
 
-  // This channel's own default (linear-integration.md §6.2) — read here for the gate
-  // below, applied as a rung further down. On an `ownerAsDefault` platform it is also
-  // the only grant a gated agent can hold, the fact the scoped route carries on Slack.
-  const channelDefault = a.conversationDefaults?.find((d) => d.channel === msg.channel)
+  // This channel's own default seat (linear-integration.md §6.2), read here for the gate and applied at rung 4.
+  const channelDefault =
+    a.conversationDefaults?.find((d) => d.channel === msg.channel) ??
+    (ownedDecision ? { channel: msg.channel, ...sharedBotTarget(ownedDecision) } : undefined)
 
   // 2. Thread continuity: an un-mentioned follow-up in a thread the relay already
   //    routed continues to that agent, provided it is still a member — and, for a

@@ -60,7 +60,9 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     leave: 'none',
     roster: 'derived',
     // No `any`: every Linear event is addressed by construction (§6.1), so nothing would match it.
-    triggers: ['off', 'mention'],
+    triggers: ['off', 'mention', 'decision'],
+    // A team's owner is its default seat, so By decision gates that owner per team; there is no bot router.
+    sharedDecision: 'conversation',
     // A Linear row is a TEAM, and every issue in it is its own thread — appending would pool
     // the whole team into one session, which is not what this setting means anywhere else.
     sessionModes: ['createNew'],
