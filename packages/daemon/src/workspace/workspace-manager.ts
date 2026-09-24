@@ -2880,7 +2880,18 @@ export class WorkspaceManager {
     )
     // Recorded last, in the session's own directory, which goes where the session runs; the primary too, so only a session prepared before this has none and asks the agent's subtree.
     const sessionDir = this.sessionDir(agent, request.sessionKey)
-    if (cwdRoot || (await this.fsFor(agent.id, { sessionKey: request.sessionKey }).stat(sessionDir)) === 'dir') {
+    const fs = this.fsFor(agent.id, { sessionKey: request.sessionKey })
+    // A session that cloned nothing (a scratch primary, every row on demand) still owns the directory its on-demand clones land in.
+    if (!cwdRoot && hasOnDemandRows(agent) && this.onDemandRootsOf(agent).length > 0) {
+      if ((await fs.stat(sessionDir)) === 'missing') {
+        await fs.mkdir(sessionDir, 0o700).catch((err: unknown) => {
+          workspaceLog.warn(
+            `workspace: agent "${agent.id}" has no session directory for on-demand clones (${formatErr(err)})`
+          )
+        })
+      }
+    }
+    if (cwdRoot || (await fs.stat(sessionDir)) === 'dir') {
       await this.writeSessionCwdRecord(agent, request.sessionKey, sessionDir, cwdRoot?.subtreeName)
       // On-demand clones land where a checked-out root's would (decision 20), so they go with the directory.
       await this.prepareOnDemandCloneDir(agent, request.sessionKey, cwdRoot?.subtreeName, sessionDir)

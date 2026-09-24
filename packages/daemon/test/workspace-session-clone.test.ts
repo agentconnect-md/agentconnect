@@ -28,6 +28,7 @@ import { LocalGitRunner, type GitRunner, type GitLogEntry, type GitPullSummary }
 import { ALLOWED_GIT_SUBCOMMANDS, createExecHandler } from '../src/shim/exec-handler.js'
 import { ShimGitRunner, type GitExecPayload } from '../src/shim/git-exec.js'
 import type { ShimRequester } from '../src/shim/channels.js'
+import { buildWorkspaceRootsAppend } from '../src/session/turn/standing-context.js'
 import { sessionHomeIn } from '../src/workspace/session-layout.js'
 import { WorkspaceManager, type PrepareSessionWorkspaceRequest } from '../src/workspace/workspace-manager.js'
 import { MicrosandboxWorkspaceFs } from '../src/microsandbox/workspace-fs.js'
@@ -840,6 +841,35 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
       join(leafOf(agent), 'repos', 'acme', 'infra')
     )
     expect((await scope.location(agent.id))?.root).toBe(agent.workspace.path)
+  })
+
+  it('gives a scratch session with every row on demand its own directory to clone into, and the prompt names it', async () => {
+    const onDemand = { repoFullName: 'example-co/library', repoId: '43', materialize: 'on-demand' as const }
+    const agent = agentFixture({ mode: 'from-scratch', additionalRepos: [onDemand] })
+    serveAll(agent)
+    const installSkills = vi.fn(async () => [] as string[])
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined(), { installSkills })
+
+    // Nothing was cloned, yet the session owns its directory, its cwd record and an empty `repos/`.
+    expect(cwd).toBe(agent.workspace.path)
+    expect(gitRuns.some((run) => run.args.some((arg) => arg.includes('example-co/library')))).toBe(false)
+    const repos = join(leafOf(agent), 'repos')
+    expect(readdirSync(repos)).toEqual([])
+    expect(JSON.parse(readFileSync(join(leafOf(agent), '.session-cwd.json'), 'utf8'))).toEqual({ subtreeName: null })
+    const scope = { sessionKey: KEY, isolation: 'session' as const }
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([realpathSync(repos)])
+    const block = buildWorkspaceRootsAppend(
+      await workspaces.sessionAdditionalRoots(agent, scope),
+      await workspaces.sessionOnDemandClones(agent, scope)
+    )
+    expect(block).toContain(`When you need one, clone it into ${realpathSync(repos)} as <owner>/<repo>`)
+    expect(block).toContain('Authorized but not checked out: example-co/library.')
+
+    // A scratch session with nothing on demand is left as it was: no directory of its own.
+    const plain = agentFixture({ mode: 'from-scratch' })
+    await workspaces.prepareSessionWorkspace(plain, confined(), { installSkills })
+    expect(existsSync(join(workspaces.agentRootFor(plain), 'sessions'))).toBe(false)
   })
 
   it('grants a confined session its own directory alone as a workspace write root', async () => {

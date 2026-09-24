@@ -1185,6 +1185,26 @@ describe('secondary roots on the pod volume', () => {
     expect(existsSync('/daemon/agents/agent-cluster/clones')).toBe(false)
   })
 
+  it('makes a scratch session pod its own directory when every row is on demand, and hands its repos/ out', async () => {
+    const agent = clusterAgent({
+      mode: 'from-scratch',
+      additionalRepos: [{ repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'on-demand' }]
+    } as Partial<Agent['workspace']>)
+    const isolated = { sessionKey: 'sess-scratch', isolation: 'session' as const }
+
+    const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, isolated)
+
+    // Made on the session's pod, in its coordinates, with the cwd record and the clone directory inside.
+    expect(cwd).toBe(POD_ROOT)
+    expect(await pod.stat(sessionDirOf('sess-scratch'))).toBe('dir')
+    expect(JSON.parse((await pod.readFile(cwdRecordOf('sess-scratch')))!)).toEqual({ subtreeName: null })
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, isolated)).toEqual([
+      `${sessionDirOf('sess-scratch')}/repos`
+    ])
+    expect(calls.some((call) => call.args.some((arg) => arg.includes('shared-library')))).toBe(false)
+    expect(existsSync('/daemon/agents/agent-cluster/sessions')).toBe(false)
+  })
+
   it('clones an on-demand repository into a session pod only as its review’s exact cwd', async () => {
     const base = 'a'.repeat(40)
     const head = 'b'.repeat(40)
