@@ -3906,8 +3906,13 @@ export class Daemon {
       // Both are offered; the effective table above is what decides which of them a `prepare` may ask for.
       launchers: {
         host: hostLauncher(),
+        // A VM seeds its own HOME from the same admitted runtimes, with their credentials behind placeholders (§8).
         microsandbox: microsandboxLauncher({
           manager: () => this.microsandbox,
+          runtimes: () => {
+            this.refreshAdmittedRuntimes()
+            return this.runtimes
+          },
           ready: async () => void (await this.microsandboxReady())
         })
       },

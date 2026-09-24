@@ -19,6 +19,7 @@ import { CLAUDE_PROFILE_ENV, isClaudeRuntimeDef } from '../runtime-defs/claude-r
 import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from '../runtimes/read-roots.js'
+import { isRecognizedCredentialEnv } from '../microsandbox/secrets.js'
 
 export interface ComposedRuntimeLaunch {
   runtime: RuntimeDef
@@ -228,6 +229,10 @@ export function composeRuntimeLaunch(opts: {
   for (const [envVar, executable] of Object.entries(sandboxAccess?.hintExecutables ?? {})) {
     if (!launch.env[envVar]) launch.env[envVar] = executable
   }
+  // A placed launch carries no runtime credential from the definition either (§8).
+  const runtimeEnv = opts.executor
+    ? opts.runtime.env.filter(({ name }) => !isRecognizedCredentialEnv(opts.runtimeId, opts.runtime, name))
+    : opts.runtime.env
   const composed: RuntimeDef = {
     ...opts.runtime,
     command: sandboxAccess?.runtimeExecutable ?? opts.runtime.command,
@@ -236,8 +241,8 @@ export function composeRuntimeLaunch(opts: {
     // prepareRuntimeLaunch so omission cannot restore a disabled profile selector.
     env:
       opts.runInSandbox && isClaudeRuntimeDef(opts.runtime)
-        ? opts.runtime.env.filter(({ name }) => !CLAUDE_PROFILE_ENV.some((profileName) => profileName === name))
-        : [...opts.runtime.env]
+        ? runtimeEnv.filter(({ name }) => !CLAUDE_PROFILE_ENV.some((profileName) => profileName === name))
+        : [...runtimeEnv]
   }
 
   if (!protectedMemory) return { runtime: composed, launch }

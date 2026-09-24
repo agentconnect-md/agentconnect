@@ -27,6 +27,7 @@ import { sessionKeyDirName } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { DEFAULT_ORPHAN_GRACE_MS } from '../k8s/orphan-reconciler.js'
 import type { Logger } from '../log.js'
+import { ownCredentialEnv } from '../microsandbox/secrets.js'
 import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome } from '../runtimes/runtime-home.js'
 import { PIPE_KEY_BYTES, startPipeListener, type PipeListener, type PipeListenerOptions } from './executor-pipe.js'
@@ -149,6 +150,8 @@ export function seedSessionHome(
       credentials?.preparePrivateHome(home)
       // A holder cannot name these: they are paths on this machine, as a local launch's credential env is.
       Object.assign(seed.env, credentials?.env)
+      // The provider keys a holder strips, from this machine's own environment as a local launch here inherits them (§8).
+      Object.assign(seed.env, ownCredentialEnv(runtimeId, runtime, hostEnv))
       // Read after the HOME is prepared, which can move a sign-in to its shared place and add that place here.
       seed.paths.push(...(credentials?.writablePaths ?? []))
     } catch (error) {
@@ -372,7 +375,7 @@ class Facet implements ExecutorFacet {
       if (env.stopping) await env.stopping
       if (this.stopped) throw new Error('the executor facet is stopping')
       if (env.shim || env.generation !== generation) return
-      const seed = this.deps.seedHome(join(this.sessionsDir, env.leaf, 'home'))
+      const seed = launcher.seedsHome ? undefined : this.deps.seedHome(join(this.sessionsDir, env.leaf, 'home'))
       const shim = await launcher.start({
         daemonRoot: this.deps.daemonRoot,
         sessionLeaf: env.leaf,

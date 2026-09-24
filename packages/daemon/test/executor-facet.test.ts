@@ -325,6 +325,17 @@ describe('executor facet', () => {
       expect(vmStarts).toHaveLength(1)
     })
 
+    it('seeds nothing for a launcher that seeds its own HOME, as a VM protecting its credentials does (§8)', async () => {
+      const { facet } = await start({
+        launchers: { host: { start: startShim }, microsandbox: { ...vmLauncher, seedsHome: true } }
+      })
+      ready(await facet.prepare(req(1, { strategy: 'microsandbox' })))
+      expect(vmStarts).toEqual([LEAF])
+      // The plain seed would copy the raw sign-in files the VM's own seed projects behind placeholders.
+      expect(seeded).toEqual([])
+      expect(seeds).toEqual([undefined])
+    })
+
     it('says how the environment it prepared starts the runtime a launch names: this machine’s install, or its image’s', async () => {
       const installed = { command: '/usr/bin/node', args: ['/srv/agentconnect/runtimes/adapter/dist/index.js'] }
       const imaged = { command: 'codex-acp', args: [] }
@@ -924,6 +935,48 @@ describe('seedSessionHome', () => {
       } else {
         expect(seed).toEqual({ env: {}, paths: [] })
       }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  // session-executors.md §8: the holder strips these, and a local launch on this machine would inherit them.
+  it("fills in this machine's own provider keys for the runtimes it admits, and nothing else of its environment", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-xf-seed-'))
+    try {
+      const seed = seedSessionHome(
+        join(root, 'sessions', LEAF, 'home'),
+        { 'dsh-acp': { command: 'dsh-acp', args: [], env: [] } },
+        { warn: () => {} },
+        {
+          HOME: join(root, 'machine'),
+          DEEPSEEK_API_KEY: 'fixture-executor-key',
+          // Codex is not admitted here, and an unrelated variable is not a runtime credential.
+          OPENAI_API_KEY: 'fixture-unadmitted-key',
+          EXAMPLE_SERVICE_TOKEN: 'fixture-other'
+        }
+      )
+      expect(seed.env).toEqual({ DEEPSEEK_API_KEY: 'fixture-executor-key' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("takes a key from this machine's runtime definition over its process env, as a local launch does", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-xf-seed-'))
+    try {
+      const definition = { command: 'dsh-acp', args: [], env: [{ name: 'DEEPSEEK_API_KEY', value: 'fixture-def-key' }] }
+      const home = join(root, 'sessions', LEAF, 'home')
+      const machine = join(root, 'machine')
+      const only = seedSessionHome(home, { 'dsh-acp': definition }, { warn: () => {} }, { HOME: machine })
+      expect(only.env).toEqual({ DEEPSEEK_API_KEY: 'fixture-def-key' })
+      const both = seedSessionHome(
+        home,
+        { 'dsh-acp': definition },
+        { warn: () => {} },
+        { HOME: machine, DEEPSEEK_API_KEY: 'fixture-process-key' }
+      )
+      expect(both.env).toEqual({ DEEPSEEK_API_KEY: 'fixture-def-key' })
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -1081,9 +1081,20 @@ see the segment. TLS-PSK covers every byte above the handshake.
   `authRequired`. A VM strategy protects them by hostname-scoped placeholder
   substitution on its own host, as the local VM does, and it can because the values
   are local: a VM's secrets are fixed when it is created or started, before any spawn
-  request could carry one. Until the microsandbox launcher runs the preparers (§11), a
-  hosted VM mounts the executor's sign-in files and sees these values, the way `host`
-  exposes them to its process tree.
+  request could carry one. The microsandbox launcher seeds a hosted HOME through the
+  local VM's credential step for every runtime the machine admits: the VM starts with
+  those secrets, the HOME holds placeholders where the raw files were, and the shim
+  fills the placeholders and the proxy's CA in beneath the holder's environment. A
+  runtime whose credentials cannot be protected gets no sign-in, never a plain copy.
+  `host` still exposes the executor's credentials to its process tree. What a holder
+  strips is each preparer's own list: the runtime's variable for the key it protects
+  (`ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex, `DEEPSEEK_API_KEY` for
+  DeepSeek) and the variables it binds a key to. The executor fills the same variables
+  in from its own runtime definitions and environment, with a local launch's
+  precedence, through the
+  shim's seed beneath the holder's environment: `host` as values, and a VM behind the
+  placeholders its preparers set, or as values where they set none, as a local VM
+  receives an environment-only Claude or Codex key.
 - _Everything else_ configured on the agent — its environment and its secrets
   (`runtimeOverrides.secrets`) — travels with the launch and enters the runtime's
   environment as a plain value on every backend today, with output masking as its
@@ -1218,9 +1229,12 @@ differs locally goes, in four steps that each land alone:
    ([daemon-sandbox-backends.md](daemon-sandbox-backends.md) §3). The shim is in the
    guest, so its rename is the guest's, and the stale cached view that motivated the
    Python does not arise.
-2. **The credential preparers move into the launcher**, out of the local launch
-   composition (`microsandbox/launch.ts`), so a hosted VM gets placeholder
-   substitution for its executor's own credentials (§8) and a local one keeps it.
+2. **The credential preparers in the launcher — landed.** One credential step
+   (`microsandboxCredentialStep`) serves the local launch composition
+   (`microsandbox/launch.ts`) and the hosted-VM launcher, so a hosted VM gets
+   placeholder substitution for its executor's own credentials (§8) and a local one
+   keeps it. The local launch still calls the step itself until step 4 routes it through
+   the launcher.
 3. **The launcher takes an environment, not a leaf.** A `StrategyLauncher` today
    derives everything from `(daemonRoot, sessionLeaf)`: `hostedEnvironment` names the
    VM `executor/<leaf>` and mounts `<daemonRoot>/sessions/<leaf>`. It takes an
@@ -1310,7 +1324,7 @@ commits, including claim, sleep and orphan machinery this design does not need.
 About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
-**The 2026-09-24 revision** adds the following. S1, S2a and M1 have landed and the
+**The 2026-09-24 revision** adds the following. S1, S2a, M1 and M2 have landed and the
 rest have not started. Each lands alone; S1–S3 are one feature, S2 lands in three parts,
 and M1–M4 precede R1.
 

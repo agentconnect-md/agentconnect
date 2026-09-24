@@ -4,6 +4,7 @@ import { link, mkdir, readFile, readdir, readlink, rename, rm, stat, writeFile }
 import { dirname, join, posix } from 'node:path'
 import { promisify } from 'node:util'
 import type { ImageHandle, Sandbox, SandboxBuilder, SandboxHandle } from 'microsandbox'
+import type { SecretBuilder } from 'microsandbox/native'
 import { z } from 'zod'
 import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-driver.js'
 import type { SandboxMount } from '../config/config-schema.js'
@@ -487,16 +488,17 @@ export class MicrosandboxManager {
       )
       .quietLogs()
     for (const secret of secrets) {
-      builder.secret((entry) =>
+      // Typed here because the SDK types this callback `any`, which hid its 0.7 renames from the typecheck.
+      builder.secret((entry: SecretBuilder) =>
         [secret.host]
           .flat()
           .reduce(
-            (entry, host) => entry.allowHost(host),
+            (entry, host) => entry.allow(host),
             entry.env(secret.env).value(secret.readValue()).placeholder(secret.placeholder)
           )
-          .injectBasicAuth(false)
-          .injectQuery(false)
-          .injectBody(false)
+          .substituteInHeaders(true)
+          .substituteInQuery(false)
+          .substituteInBody(false)
       )
     }
     const overlays = overlayMounts(mounts)

@@ -104,6 +104,8 @@ export interface SessionSeed {
 
 /** How one strategy gives a session leaf an environment: everything above this is strategy-agnostic (§5). */
 export interface StrategyLauncher {
+  /** Seeds the session HOME itself, with protections the facet's plain seed lacks (a VM's placeholders, §8); the facet then seeds nothing. */
+  seedsHome?: boolean
   start(input: {
     daemonRoot: string
     sessionLeaf: string

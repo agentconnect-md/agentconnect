@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AcpRunner, ghWrapperPath, type ResolveCommand } from '../src/shim/acp-runner.js'
+import { SHIM_SEED_ENV } from '../src/shim/protocol.js'
 import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_GH_WRAPPER_DIR } from '../src/shim/sandbox-paths.js'
 
 // The sandbox spawns with what the daemon sent PLUS the pod's own filesystem basics. The daemon
@@ -128,6 +129,48 @@ describe('sandbox spawn environment', () => {
     await sent.close(1_000).catch(() => {})
   })
 
+  // session-executors.md §8: a hosted VM's executor names its placeholders and proxy trust; the holder's env still wins.
+  it("fills a hosted VM's seed in beneath the holder's env, reading string entries only", async () => {
+    const seen: Array<Record<string, string>> = []
+    const runnerOf = (seed: string) =>
+      new AcpRunner({
+        emit: () => {},
+        podEnv: { HOME: '/agent', PATH: '/usr/bin', [SHIM_SEED_ENV]: seed },
+        resolveCommand: ((command, env) => {
+          seen.push({ ...env })
+          return command
+        }) satisfies ResolveCommand,
+        log: { info: () => {}, warn: () => {} }
+      } as never)
+    const seed = {
+      DEEPSEEK_API_KEY: 'msb-secret-DEEPSEEK_API_KEY',
+      NODE_EXTRA_CA_CERTS: '/.msb/tls/ca.pem',
+      SSL_CERT_FILE: '/etc/ssl/certs/ca-certificates.crt',
+      NOT_A_STRING: 1
+    }
+    const hosted = runnerOf(JSON.stringify(seed))
+    await openOf(hosted)({
+      op: 'open',
+      command: 'true',
+      args: [],
+      env: { SSL_CERT_FILE: '/sent/by/holder', AC_AGENT_ID: 'a' }
+    }).catch(() => {})
+    expect(seen.at(-1)).toEqual({
+      HOME: '/agent',
+      PATH: '/usr/bin',
+      DEEPSEEK_API_KEY: 'msb-secret-DEEPSEEK_API_KEY',
+      NODE_EXTRA_CA_CERTS: '/.msb/tls/ca.pem',
+      SSL_CERT_FILE: '/sent/by/holder',
+      AC_AGENT_ID: 'a'
+    })
+    await hosted.close(1_000).catch(() => {})
+    // An unreadable seed adds nothing rather than failing the launch.
+    const broken = runnerOf('{not json')
+    await openOf(broken)({ op: 'open', command: 'true', args: [], env: {} }).catch(() => {})
+    expect(seen.at(-1)).toEqual({ HOME: '/agent', PATH: '/usr/bin' })
+    await broken.close(1_000).catch(() => {})
+  })
+
   // A local VM's shim is started by the daemon on the same machine: that launch environment is whole, and a pod's
   // fill-ins would change it — an inherited OpenAI key would become codex's login in place of the one the user has.
   it('adds nothing but resolved hints when the driving daemon sends the whole environment', async () => {
@@ -140,7 +183,9 @@ describe('sandbox spawn environment', () => {
         PATH: '/pod/bin',
         AC_CODEX_API_KEY: 'pod-key',
         AC_CODEX_BASE_URL: 'https://gateway.example.test/v1',
-        [SANDBOX_BROWSER_EXECUTABLE_ENV]: '/opt/baked'
+        [SANDBOX_BROWSER_EXECUTABLE_ENV]: '/opt/baked',
+        // A hosted seed is not this launch's either: a local VM's daemon composed the protected env itself.
+        [SHIM_SEED_ENV]: JSON.stringify({ NODE_EXTRA_CA_CERTS: '/seeded/ca.pem' })
       },
       // The profile is read off the requested name, so the runtime itself can be any executable that exists.
       resolveCommand: ((command, env) => {
