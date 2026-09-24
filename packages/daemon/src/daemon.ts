@@ -4153,8 +4153,15 @@ export class Daemon {
     // A verdict this daemon reached for a turn that never recorded it: the row exists by now.
     await this.flushSessionExecutorVerdict(sessionKey)
     if (plane.placementOf(sessionKey)) return
-    const recorded = await this.store.getSessionExecutor(sessionKey).catch(() => undefined)
+    // null: no verdict on the row; undefined: the store could not be read, which keeps what is cached.
+    const recorded = await this.store.getSessionExecutor(sessionKey).then(
+      (verdict) => verdict ?? null,
+      () => undefined
+    )
     if (recorded) this.sessionStrategies.set(sessionKey, await this.recordedBirthStrategy(agent, sessionKey, recorded))
+    // A key whose row was purged is born again, in the agent's strategy now rather than one cached from its earlier life (§5).
+    else if (recorded === null && !this.sessionExecutorVerdicts.has(sessionKey))
+      this.sessionStrategies.delete(sessionKey)
     if (recorded && 'stayedHomeReason' in recorded) return
     const ask = this.placementAsk(agent, sessionKey)
     if (recorded) {
@@ -20332,6 +20339,7 @@ export class Daemon {
         ) {
           removed += 1
           this.memoryWriteGrants.delete(rec.key)
+          this.sessionStrategies.delete(rec.key)
           this.expireAppCards({ sessionKey: rec.key })
           if (rec.acpSessionId)
             this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))

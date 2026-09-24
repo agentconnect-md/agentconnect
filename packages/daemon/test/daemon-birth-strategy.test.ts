@@ -215,6 +215,27 @@ describe('the birth strategy on the holder', () => {
     expect(await internal.store.getSessionExecutor(other)).toBeUndefined()
   })
 
+  it('gives a key born again after its row was purged the agent’s strategy now, not the one cached from before', async () => {
+    const root = scaffold({ execution: 'srt' })
+    const internal = await start(root)
+    const agent = internal.agents.get(AGENT)
+    const key = KEY('1700000000.000900')
+    await row(internal, key)
+    await internal.placeSessionOnExecutor(agent, key)
+    expect(internal.sessionStrategy(agent, key)).toBe('srt')
+
+    // Purged by anyone — retention here, a peer on a shared store — and then the same thread speaks again.
+    await internal.store.deleteSession(key, { reason: 'retention', at: 2 })
+    agent.execution = 'host'
+    await row(internal, key)
+    await internal.placeSessionOnExecutor(agent, key)
+    expect(internal.sessionStrategy(agent, key)).toBe('host')
+    expect(await internal.store.getSessionExecutor(key)).toEqual({
+      stayedHomeReason: 'not_on_group',
+      birthStrategy: 'host'
+    })
+  })
+
   it('fills a verdict recorded before strategies were once, with the agent’s migrated `execution`', async () => {
     // Not migrated by the Control Plane yet: `runInSandbox` is read as the migration reads it.
     const root = scaffold({ runInSandbox: true })
