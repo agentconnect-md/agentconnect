@@ -159,6 +159,7 @@ import {
   agentHostKey,
   hostKeyAgentId,
   hostKeyDirName,
+  sessionKeyDirName,
   hostKeyLabel,
   hostKeySessionKey,
   sessionHostKey,
@@ -5182,6 +5183,29 @@ export class Daemon {
     return [...this.pending.values()].some(
       (p) => p.plan.agentId === agentId && this.runsInAgentPod(agentId, p.plan.sessionKey)
     )
+  }
+
+  // Read local admission synchronously, including sessions whose host and durable row do not exist yet.
+  private sandboxInUseReason(subject: string): string | undefined {
+    const agentId = sandboxSubjectAgentId(subject)
+    const leaf = sandboxSubjectSessionLeaf(subject)
+    if (leaf === undefined) return this.agentPodInUse(agentId) ? 'agent pod in use' : undefined
+    const matches = (key: string): boolean => sessionKeyDirName(key) === leaf
+    for (const key of this.hostKeysForAgent(agentId)) {
+      if (hostKeyDirName(key) === leaf && (this.hosts.has(key) || this.hostStarts.has(key)))
+        return 'session host running or starting'
+    }
+    if (this.modelSessions.hasStartedHostForAgent(agentId, matches)) return 'session model host running'
+    const active = this.activeDispatchesByAgent.get(agentId)
+    for (const [key, done] of this.activeDispatchDoneByKey) {
+      if (active?.has(done) && matches(key)) return 'session dispatch in flight'
+    }
+    for (const key of this.inflight.keys()) {
+      if (matches(key)) return 'session admitted'
+    }
+    if ([...this.pending.values()].some((p) => p.plan.agentId === agentId && matches(p.plan.sessionKey)))
+      return 'session turn pending'
+    return undefined
   }
 
   /** The agent's key for `host` — scoped to the agent, since a test factory may hand one object to several agents. */
@@ -20687,17 +20711,10 @@ export class Daemon {
       )
     }
     // §7.2 ready→provisioned: reclaim a host with no recent activity of its own and no work in flight (a long turn stamps no activity, so the in-flight guards are load-bearing).
-    for (const [key] of [...this.hosts]) {
+    for (const [key, host] of [...this.hosts]) {
       const agentId = hostKeyAgentId(key)
       const sessionKey = hostKeySessionKey(key)
       const label = hostKeyLabel(key)
-      if (this.drainingAgents.has(agentId)) continue
-      // Any dispatch of the agent holds all its hosts: it prepares before `pending` exists, and a review's preparation is fenced on the shared host staying ready.
-      if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-      // A session-bound host is held by its own session's turn in flight; the shared host, as above, by any of the agent's.
-      const inFlight = (p: Pending): boolean =>
-        p.plan.agentId === agentId && (sessionKey === undefined || p.plan.sessionKey === sessionKey)
-      if ([...this.pending.values()].some(inFlight)) continue
       // The shared host's clock counts only the sessions routed to it and its own passes, never a session with a host of its own; a host gets a full window from its start, or it would go mid-startup.
       const activity =
         sessionKey === undefined
@@ -20705,6 +20722,15 @@ export class Daemon {
           : await this.store.sessionLastActivityTs(sessionKey)
       const last = Math.max(activity ?? 0, this.hostStartedAt.get(key) ?? 0, this.hostPasses.settledAt(key) ?? 0)
       if (now - last <= ttl) continue
+      // Read admission after the store round trip; only this session's work holds its host.
+      if (this.hosts.get(key) !== host || this.hostStopping.has(key) || this.drainingAgents.has(agentId)) continue
+      if (
+        sessionKey === undefined
+          ? (this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0 ||
+            [...this.pending.values()].some((p) => p.plan.agentId === agentId)
+          : this.sessionAdmitted(sessionKey, key)
+      )
+        continue
       // A pass of the daemon's own holds its host until it settles, read after the store round trip in the tick that stops it; one past the lifetime ceiling is taken as wedged.
       if (this.hostPasses.holds(key, now, maxLifetime)) {
         this.log.info(`idle: host "${label}" has an internal pass in flight — deferring reclaim`)
@@ -20741,46 +20767,54 @@ export class Daemon {
     if (this.executorPlane) await this.sweepIdleRemoteSessions(now, ttl, this.executorPlane)
     const plane = this.k8sPlane
     if (!plane) return
-    for (const { subject, agentId, since } of plane.launched()) {
-      // Suspend is the holder's decision (k8s-daemon-pool §4); an ex-holder must not touch its successor's pod.
-      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
-      // Work in a pod owns the decision above, or a runtime merely between turns loses its pod: the agent pod answers only to the work that runs IN it, a session pod to its own host (§11).
+    const launched = plane.launched()
+    this.log.debug(`idle: examining ${launched.length} held sandbox launch(es)`)
+    const sessionActivity = new Map<string, Map<string, number>>()
+    for (const { subject, agentId, since } of launched) {
+      const skip = (reason: string): void => this.log.debug(`idle: skipping sandbox "${subject}" — ${reason}`)
       const leaf = sandboxSubjectSessionLeaf(subject)
       let activity: number | null
       if (leaf === undefined) {
-        if (this.agentPodInUse(agentId)) continue
         // Its own sessions' activity, never an isolated session's, whose traffic this pod does not serve.
         activity = await this.store.agentSharedLastActivityTs(agentId)
       } else {
-        const hostKey = this.hostKeysForAgent(agentId).find((key) => hostKeyDirName(key) === leaf)
-        if (hostKey !== undefined && (this.hosts.has(hostKey) || this.hostStarts.has(hostKey))) continue
-        if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-        // A session pod taken over without its host is judged by the agent's activity — the wider window.
-        const sessionKey = hostKey === undefined ? undefined : hostKeySessionKey(hostKey)
-        if (
-          [...this.pending.values()].some(
-            (p) => p.plan.agentId === agentId && (sessionKey === undefined || p.plan.sessionKey === sessionKey)
+        let sessions = sessionActivity.get(agentId)
+        if (!sessions) {
+          sessions = new Map(
+            (await this.store.agentSessionActivity(agentId)).map(({ key, updatedAt }) => [
+              sessionKeyDirName(key),
+              updatedAt
+            ])
           )
-        )
-          continue
-        activity =
-          sessionKey === undefined
-            ? await this.store.agentLastActivityTs(agentId)
-            : await this.store.sessionLastActivityTs(sessionKey)
+          sessionActivity.set(agentId, sessions)
+        }
+        activity = sessions.get(leaf) ?? null
+      }
+      // Recheck duty and admission after reading the store, before asking the pod to suspend.
+      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) {
+        skip('duty held elsewhere')
+        continue
+      }
+      const inUse = this.sandboxInUseReason(subject)
+      if (inUse) {
+        skip(inUse)
+        continue
       }
       // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
       const last = Math.max(activity ?? 0, since)
       const quiet = now - last > ttl
       // A lease on THIS pod defers the suspend: an open page's dirty volume or armed watcher, or this daemon's own on a watcher it saw armed; each lapses within one TTL (§11).
       if (this.sandboxHolds.holds(subject)) {
-        if (quiet)
-          this.log.debug?.(`idle: holding the sandbox "${subject}" — ${this.sandboxHolds.reasons(subject).join(', ')}`)
+        skip(`held by ${this.sandboxHolds.reasons(subject).join(', ')}`)
         continue
       }
       // Inside the window only a pod that never came up goes, judged by the plane against the launch it reads: the agent's traffic says nothing about that pod, and it holds its node's resources while it waits.
       void (!quiet ? plane.suspendStalled(subject) : this.suspendUnlessWatching(plane, subject))
         .then((outcome) => {
-          if (outcome !== 'suspended') return
+          if (outcome !== 'suspended') {
+            skip(`${outcome}; idle ${Math.round((now - last) / 1000)}s, timeout ${Math.round(ttl / 1000)}s`)
+            return
+          }
           this.log.info(
             `idle: suspended the sandbox "${subject}" (${quiet ? `idle ${Math.round((now - last) / 1000)}s` : 'its pod never came up'}) — ` +
               `its workspace volume is kept and the next message resumes onto it`
@@ -20828,6 +20862,8 @@ export class Daemon {
     if (armed) this.sandboxHolds.renew(subject, AUTO_MERGE_HOLDER, ['auto-merge-armed'])
     // Re-read AFTER the round trip and in the tick that opens the lease's gate: an arm answered meanwhile renewed this hold, and one still in flight retains the pod.
     if (this.sandboxHolds.holds(subject)) return 'busy'
+    if (this.sandboxInUseReason(subject)) return 'busy'
+    if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(sandboxSubjectAgentId(subject))) return 'busy'
     return await plane.suspendIdle(subject)
   }
 
