@@ -245,6 +245,14 @@ describe('IntegrationChannelList shared-bot routing', () => {
     expect(
       document.body.querySelector<HTMLInputElement>('input[aria-label="Minimum probability for billing"]')?.value
     ).toBe('30')
+    const threshold = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="Minimum probability for billing"]'
+    )!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(threshold, '080')
+      threshold.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(threshold.value).toBe('80')
     expect(document.body.querySelector('button[aria-label="Target for billing"]')?.textContent).toContain('deploy-bot')
     expect(document.body.querySelector('button[aria-label="Target for sales"]')?.textContent).toContain('Use Otherwise')
     expect(dialog()?.textContent).toContain('also apply to C9')

@@ -350,7 +350,9 @@ export function RoutingRulesTable({
                       value={threshold === null ? '' : Math.round(threshold * 100)}
                       placeholder="—"
                       onChange={(event) => {
-                        const percent = Math.min(100, Math.max(0, Number(event.target.value) || 0))
+                        const percent = Math.min(100, Math.round(Math.max(0, Number(event.target.value) || 0)))
+                        // React skips rewriting a number input whose value is numerically equal, so "080" would stay.
+                        event.target.value = String(percent)
                         onRules((rules) =>
                           rules.map((entry, at) =>
                             at === index
