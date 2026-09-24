@@ -35,6 +35,7 @@ import {
   platName,
   preferredModelFor,
   rosterParticipantName,
+  runtimeDefaultModel,
   runtimeLabel,
   sessionChannelDisplay,
   sessionPlatform,
@@ -4641,6 +4642,9 @@ export default function SessionDetailView() {
     (beforeFirstTurn
       ? session.model || owner?.model || preferredModelFor(owningDaemon, agentRuntime)
       : (session.model ?? ''))
+  // A resolved runtime that reported no concrete model ran its own default; the picker names that entry.
+  const pgShownModel =
+    pgModel || (!runtimeUnresolved && runtimeDefaultModel(owningDaemon, agentRuntime) ? 'default' : '')
   const pgModels = session.availableModels ?? runtimeProfile?.models ?? []
   const pgModelOptions =
     pgModels.length > 0 && pgModel && !pgModels.includes(pgModel) ? [pgModel, ...pgModels] : pgModels
@@ -4725,12 +4729,16 @@ export default function SessionDetailView() {
         label: t('runtime'),
         value: runtimeLabel(focusedAgentRuntime, focusedRuntimeMeta?.name)
       })
-    if (focusedSession?.model ?? focusedAgent?.model)
+    const focusedModel = focusedSession?.model ?? focusedAgent?.model ?? ''
+    // No reported model on a known runtime means the runtime's own default ran.
+    const focusedCatalog = focusedDaemonId === owningDaemon?.daemonId ? owningDaemon : focusedDaemon
+    if (focusedAgentRuntime && (!focusedModel || focusedModel === 'default'))
       headerFacts.push({
         icon: 'box',
         label: t('model'),
-        value: modelLabel(focusedSession?.model ?? focusedAgent?.model ?? '')
+        value: runtimeDefaultModel(focusedCatalog, focusedAgentRuntime)?.name ?? t('defaultModel')
       })
+    else if (focusedModel) headerFacts.push({ icon: 'box', label: t('model'), value: modelLabel(focusedModel) })
   }
 
   // The popover's contents — one definition behind both triggers (desktop hover,
@@ -5907,7 +5915,7 @@ export default function SessionDetailView() {
                                 compact
                                 pending={runtimePending}
                                 ariaLabel={t('model')}
-                                value={{ runtime: agentRuntime, model: pgModel }}
+                                value={{ runtime: agentRuntime, model: pgShownModel }}
                                 source={pickerSource}
                                 runtimes={beforeFirstTurn ? undefined : [agentRuntime]}
                                 runInSandbox={owner?.runInSandbox}

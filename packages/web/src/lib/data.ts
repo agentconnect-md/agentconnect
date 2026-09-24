@@ -864,6 +864,14 @@ export function modelCapability(
   return catalog.models.find((m) => m.id === id)
 }
 
+/** The runtime's advertised `default` entry: what a session that reported no concrete model ran. */
+export function runtimeDefaultModel(
+  daemon: Pick<DaemonRow, 'runtimeModels'> | undefined,
+  runtime: string
+): RuntimeModelCapability | undefined {
+  return daemon?.runtimeModels.find((r) => r.runtime === runtime)?.modelCatalog?.models.find((m) => m.id === 'default')
+}
+
 /** Hover text for one model option: the runtime's own blurb, else its display name.
  *  The id stays the LABEL — it is what the agent stores and the runtime answers to —
  *  so the runtime's prose lives here instead (runtime-model-catalog.md §7). */

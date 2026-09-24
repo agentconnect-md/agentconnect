@@ -77,6 +77,8 @@ const session = {
   agentId: 'agent-1',
   agentName: 'Ops bot',
   daemon: 'daemon-1',
+  runtime: 'claude',
+  model: 'sonnet',
   steps: []
 } as unknown as Session
 
@@ -278,5 +280,46 @@ describe('where a session runs, in its Details', () => {
     await render()
 
     expect(text()).not.toContain('Runs on')
+  })
+})
+
+describe('which model ran it, in its Details', () => {
+  afterEach(() => {
+    session.model = 'sonnet'
+    daemons[0]!.runtimeModels = []
+  })
+
+  // The daemon records no model when the runtime reports its opaque `default`.
+  const reportNoModel = () => {
+    session.model = ''
+    wire.detail = detail({ model: null })
+  }
+
+  it('names the runtime default when the session reported no concrete model', async () => {
+    reportNoModel()
+    await render()
+
+    expect(text()).toContain('ModelDefault')
+  })
+
+  it('uses the runtime catalog name for its default entry', async () => {
+    daemons[0]!.runtimeModels = [
+      {
+        runtime: 'claude',
+        version: '1',
+        models: ['default', 'sonnet'],
+        modelCatalog: { models: [{ id: 'default', name: 'Default (recommended)' }], source: 'native', observedAt: '' }
+      }
+    ] as DaemonRow['runtimeModels']
+    reportNoModel()
+    await render()
+
+    expect(text()).toContain('ModelDefault (recommended)')
+  })
+
+  it('names a concrete model as reported', async () => {
+    await render()
+
+    expect(text()).toContain('Modelsonnet')
   })
 })
