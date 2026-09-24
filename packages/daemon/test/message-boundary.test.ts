@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentMessageId, AgentMessageRun } from '../src/messages/message-boundary.js'
+import { agentMessageId, AgentMessageRun, WorkBoundary } from '../src/messages/message-boundary.js'
 
 const chunk = (messageId?: string) => ({
   sessionUpdate: 'agent_message_chunk',
@@ -48,5 +48,21 @@ describe('AgentMessageRun', () => {
     run.opens(chunk('m1'))
     expect(run.opens(chunk('m2'))).toBe(true)
     expect(run.opens(chunk('m1'))).toBe(true)
+  })
+})
+
+describe('WorkBoundary', () => {
+  it('recognizes new tools even when their first event is an update, and ignores later output or status', () => {
+    const run = new WorkBoundary()
+    expect(run.opens({ sessionUpdate: 'tool_call', toolCallId: 'first' })).toBe(true)
+    expect(run.opens({ sessionUpdate: 'tool_call_update', toolCallId: 'first' })).toBe(false)
+    expect(run.opens({ sessionUpdate: 'tool_call_update', toolCallId: 'second' })).toBe(true)
+    expect(run.opens({ sessionUpdate: 'tool_call', toolCallId: 'second' })).toBe(false)
+    expect(run.opens({ sessionUpdate: 'tool_call_update', toolCallId: 'first', status: 'completed' })).toBe(false)
+    expect(run.opens({ sessionUpdate: 'tool_call' })).toBe(true)
+    expect(run.opens({ sessionUpdate: 'agent_thought_chunk' })).toBe(true)
+    expect(run.opens({ sessionUpdate: 'plan' })).toBe(true)
+    expect(run.opens(chunk())).toBe(false)
+    expect(run.opens({ sessionUpdate: 'usage_update' })).toBe(false)
   })
 })

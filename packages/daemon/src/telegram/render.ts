@@ -2,7 +2,7 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { splitIntoSections } from '../messages/split-sections.js'
 import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
-import { AgentMessageRun } from '../messages/message-boundary.js'
+import { AgentMessageRun, WorkBoundary } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 import { extractToolOutput } from '../session/tool-output.js'
@@ -181,6 +181,7 @@ export class TelegramConverger {
   private recordDirty = false
   // The runtime's own message identity, which is the only boundary a speak-only run offers.
   private readonly messages = new AgentMessageRun()
+  private readonly work = new WorkBoundary()
   /** Whether this turn has already SENT a body post — the message a turn-end
    *  `continue-hint` edit would land on when no body is left to flush. */
   private postedBody = false
@@ -408,12 +409,13 @@ export class TelegramConverger {
           rawOutput?: unknown
         }
         const label = this.toolLabel(u)
-        // minimal: close the segment (record + settle live message); activity = typing only.
-        if (this.mode === 'minimal') return [{ kind: 'typing' }, ...this.closeSegment()]
-        if (this.mode === 'none') return this.flush()
-        if (this.mode === 'low') return [...this.flush(), { kind: 'typing' }]
+        const closed = this.work.opens(update) ? (this.mode === 'minimal' ? this.closeSegment() : this.flush()) : []
+        // minimal: only new work closes the segment; activity remains typing only.
+        if (this.mode === 'minimal') return [{ kind: 'typing' }, ...closed]
+        if (this.mode === 'none') return closed
+        if (this.mode === 'low') return [...closed, { kind: 'typing' }]
         const actions: TelegramAction[] = [
-          ...this.flush(),
+          ...closed,
           { kind: 'typing' },
           { kind: 'progress', text: `🔨 ${htmlCode(label)}`, parseMode: 'HTML' }
         ]

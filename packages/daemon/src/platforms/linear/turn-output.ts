@@ -9,6 +9,7 @@
  * product is the live feed, so this surface emits as it goes.
  */
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import { WorkBoundary } from '../../messages/message-boundary.js'
 import { appendGithubMarkdownChrome, GithubReplyCollector } from '../../github/poster.js'
 import { renderAttributionMessage } from '../../messages/attribution.js'
 import { splitAtParagraphBoundary } from '../../messages/stream-boundary.js'
@@ -400,6 +401,7 @@ interface PendingAction {
  * deterministic under test on every platform.
  */
 export class LinearConverger {
+  private readonly work = new WorkBoundary()
   private readonly policy: LinearModePolicy
   private readonly collector = new GithubReplyCollector()
   // The collector reports a suppressed turn as "no final answer", which is indistinguishable
@@ -609,8 +611,8 @@ export class LinearConverger {
       if (terminal) this.openTools.delete(id)
       else this.openTools.add(id)
     }
-    // A tool boundary is a semantic boundary: whatever narration preceded it was progress.
-    const boundary = this.flushNarration(true)
+    // Only new work closes narration; updates to an existing tool can arrive mid-sentence.
+    const boundary = this.work.opens(u) ? this.flushNarration(true) : []
     // §15-1 is resolved live — Linear stacks every create, so an action is emitted ONCE, at
     // terminal status. A start-status call contributes nothing but its title and input.
     if (!terminal || !id || this.settledTools.has(id)) return boundary

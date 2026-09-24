@@ -160,9 +160,13 @@ a meaningless point.
 
 So a split driven by elapsed time may only happen at a paragraph break outside a fenced
 code block; text after the last such break stays buffered until more arrives, until the
-agent finishes the text block (a tool call, a plan, a thinking step), or until the turn
+agent finishes the text block (a new tool call, a plan, a thinking step), or until the turn
 ends. Splits the reader already expects — a completed text block before the agent starts
 working, or a body longer than the platform's per-message limit — are unaffected.
+
+Output and status updates for an already known tool, including background shell output,
+do not finish the current text block or postpone a pending text flush. A tool first seen
+through an update still starts a new work block.
 
 A Markdown reference can depend on a link definition near the end of the same text
 block. Once a paragraph contains a reference, a definition, or bracketed text that could

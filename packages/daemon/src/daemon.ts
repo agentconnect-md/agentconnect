@@ -200,6 +200,7 @@ import { monotonicTs } from './store/monotonic-ts.js'
 import { StoreRetentionSweeper, resolveStoreRetentionSettings } from './store/retention.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
 import { TerminalOutputFolder } from './session/terminal-output-folder.js'
+import { WorkBoundary } from './messages/message-boundary.js'
 import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { ADMIN_MCP_SERVER_NAME, RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
@@ -836,7 +837,6 @@ import {
   MAX_TURN_CONTEXT_REGENERATION_MS,
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
-  SEGMENT_BOUNDARY_UPDATES,
   SESSION_RETENTION_SWEEP_INTERVAL_MS
 } from './daemon/constants.js'
 import {
@@ -14110,6 +14110,7 @@ export class Daemon {
       conv,
       rec,
       termOut: new TerminalOutputFolder(),
+      workBoundary: new WorkBoundary(),
       chrome: {},
       reply: {
         text: '',
@@ -17119,9 +17120,9 @@ export class Daemon {
     })
   }
 
-  /** (Re)arm the ~2s idle-flush timer when body text is buffered (§9.1 text-buffer):
-   *  a long pure-text stream posts in steps instead of all at turn end. */
-  private armIdle(p: Pending): void {
+  /** Tool updates can start a flush timer but cannot postpone one already waiting for text. */
+  private armIdle(p: Pending, reset: boolean): void {
+    if (!reset && p.signals.idleTimer) return
     this.clearIdle(p)
     if (!p.conv.hasBuffered()) return
     p.signals.idleTimer = setTimeout(() => {
@@ -17717,15 +17718,11 @@ export class Daemon {
     if (p.webchat) webchatTurnOutput.emitWebchatUpdate(p.webchat, update, p.resolveFileLink)
     this.projectNativeIntegration(p, update)
     if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.plan.stageAnswer && isAnswerChunk)) {
-      // Segment commit: a boundary the live renderer flushes on delivers the staged text
-      // ahead of it, so "say → work → say more" reaches the channel as it happens (the
-      // renderer still applies its own mode semantics to the replayed chunks). Turn-end
-      // housekeeping (usage, titles) is NOT a boundary — the closing segment stays staged
-      // for the final context fence, which is what regeneration can still replace.
-      if (p.plan.stageAnswer && SEGMENT_BOUNDARY_UPDATES.has(String(update?.sessionUpdate)) && p.reply.attemptText)
-        this.commitStagedSegment(p)
+      const startsWork = p.workBoundary.opens(update)
+      // Only new work commits a staged segment; ongoing tool output leaves the closing tail regenerable.
+      if (p.plan.stageAnswer && startsWork && p.reply.attemptText) this.commitStagedSegment(p)
       for (const action of p.conv.onUpdate(update)) this.enqueueApply(p, action)
-      this.armIdle(p)
+      this.armIdle(p, isAnswerChunk || startsWork)
       this.armFeishuStream(p)
       this.armSlackStream(p)
     }

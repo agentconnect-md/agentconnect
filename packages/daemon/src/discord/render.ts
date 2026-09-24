@@ -2,7 +2,7 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
-import { AgentMessageRun } from '../messages/message-boundary.js'
+import { AgentMessageRun, WorkBoundary } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 import { extractToolOutput } from '../session/tool-output.js'
@@ -309,6 +309,7 @@ export class DiscordConverger {
   private recordDirty = false
   // The runtime's own message identity, which is the only boundary a speak-only run offers.
   private readonly messages = new AgentMessageRun()
+  private readonly work = new WorkBoundary()
 
   constructor(
     private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
@@ -495,12 +496,13 @@ export class DiscordConverger {
           rawOutput?: unknown
         }
         const label = this.toolLabel(u)
-        // minimal: close the segment (record + settle live message); activity = typing only.
-        if (this.mode === 'minimal') return [{ kind: 'typing' }, ...this.closeSegment()]
-        if (this.mode === 'none') return this.flush()
-        if (this.mode === 'low') return [...this.flush(), { kind: 'typing' }]
+        const closed = this.work.opens(update) ? (this.mode === 'minimal' ? this.closeSegment() : this.flush()) : []
+        // minimal: only new work closes the segment; activity remains typing only.
+        if (this.mode === 'minimal') return [{ kind: 'typing' }, ...closed]
+        if (this.mode === 'none') return closed
+        if (this.mode === 'low') return [...closed, { kind: 'typing' }]
         const actions: DiscordAction[] = [
-          ...this.flush(),
+          ...closed,
           { kind: 'typing' },
           { kind: 'progress', text: `🔨 ${mdCode(label)}` }
         ]

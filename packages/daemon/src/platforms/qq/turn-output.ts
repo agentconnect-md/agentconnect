@@ -1,6 +1,6 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { flattenUnsafeLinks, referenceBufferStart } from '../../messages/agent-links.js'
-import { AgentMessageRun } from '../../messages/message-boundary.js'
+import { AgentMessageRun, WorkBoundary } from '../../messages/message-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../../session/no-response.js'
 import { QQPrivateStream } from './private-stream.js'
 import type { QQReplyPort } from './sender.js'
@@ -10,7 +10,7 @@ import type { TurnAdmissionStatus, TurnOutputContext } from '../turn-output.js'
 import { QQReplyId } from './connection.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { ImageUploader } from '../../mcp/ops/context.js'
-import { QQStreamText, QQTextBoundaries } from './text.js'
+import { QQStreamText } from './text.js'
 
 export async function QQAcknowledgeAdmission(
   ctx: TurnOutputContext<NormalizedMessage>,
@@ -46,6 +46,7 @@ export type QQAction = {
 export class QQConverger {
   private sourceText = ''
   private readonly messages = new AgentMessageRun()
+  private readonly work = new WorkBoundary()
   private readonly completed: string[] = []
   private finalized = false
   private readonly group?: QQGroupOutput
@@ -59,7 +60,7 @@ export class QQConverger {
   onUpdate(update: SessionUpdate): QQAction[] {
     if (this.finalized) return []
     if (this.group) return this.group.onUpdate(update)
-    if (QQTextBoundaries.has(update.sessionUpdate)) {
+    if (this.work.opens(update)) {
       this.completeBlock()
       return this.preview()
     }

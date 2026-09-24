@@ -13,6 +13,7 @@ import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
 import type { ElicitTarget } from '../src/slack/render.js'
 import { Daemon } from '../src/daemon.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
+import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import {
@@ -357,7 +358,8 @@ function installPending(daemon: any): any {
     builtinSystemToolCallIds: new Set<string>(),
     conv: { onUpdate: () => [], hasBuffered: () => false },
     rec: { onUpdate: () => [] },
-    termOut: new TerminalOutputFolder()
+    termOut: new TerminalOutputFolder(),
+    workBoundary: new WorkBoundary()
   }
   daemon.pending.set(JSON.stringify(['agent-1', 's1']), pending)
   return pending

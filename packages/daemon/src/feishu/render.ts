@@ -1,6 +1,6 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import type { WireFeishuCardActionTarget } from '@agentconnect.md/protocol'
-import { AgentMessageRun } from '../messages/message-boundary.js'
+import { AgentMessageRun, WorkBoundary } from '../messages/message-boundary.js'
 import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
@@ -413,6 +413,7 @@ export class FeishuConverger {
   private recordDirty = false
   // The runtime's own message identity, which is the only boundary a speak-only run offers.
   private readonly messages = new AgentMessageRun()
+  private readonly work = new WorkBoundary()
 
   constructor(
     private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
@@ -595,15 +596,12 @@ export class FeishuConverger {
           rawOutput?: unknown
         }
         const label = this.toolLabel(u)
-        // minimal: close the transcript segment; activity remains generic.
-        if (this.mode === 'minimal') return [{ kind: 'typing' }, ...this.closeSegment()]
-        if (this.mode === 'none') return this.flush(true)
-        if (this.mode === 'low') return [...this.flush(true), { kind: 'typing' }]
-        const actions: FeishuAction[] = [
-          ...this.flush(true),
-          { kind: 'typing' },
-          { kind: 'progress', text: `🔨 ${label}` }
-        ]
+        const closed = this.work.opens(update) ? (this.mode === 'minimal' ? this.closeSegment() : this.flush(true)) : []
+        // minimal: only new work closes the transcript segment; activity remains generic.
+        if (this.mode === 'minimal') return [{ kind: 'typing' }, ...closed]
+        if (this.mode === 'none') return closed
+        if (this.mode === 'low') return [...closed, { kind: 'typing' }]
+        const actions: FeishuAction[] = [...closed, { kind: 'typing' }, { kind: 'progress', text: `🔨 ${label}` }]
         if (this.mode === 'high') actions.push(...this.drainToolOutput(u))
         return actions
       }
