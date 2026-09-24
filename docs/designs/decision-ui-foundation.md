@@ -7,24 +7,24 @@ Stage 2 shared-bot Routing screen described below.
 
 ## Available code
 
-| Module                                                             | Provides                                                                                                                                             |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@agentconnect.md/protocol/decision`                               | Zod question/draft/answer/condition/routing schemas, question-aware validation, pure matchers, and edit invalidation                                 |
-| `@agentconnect.md/protocol/decision-api`                           | Browser-safe API types, provider/model catalog and readiness, channel settings, routing scope, preview request/result, and errors                    |
-| `packages/web/src/lib/decisions/mock-api.ts`                       | Opt-in `createDecisionMockApi()` implementing `DecisionApi` with isolated in-memory saves                                                            |
-| `packages/web/src/lib/decisions/fixtures.ts`                       | Example Decisions, direct/shared bots, channels, provider options, canned evaluations, and repeated-mention context                                  |
-| `packages/web/src/lib/decisions/provider.tsx`                      | Organization-scoped live/mock APIs, shared Decision list, route-surviving binding drafts and inline-create handoff, and mock-only channel gates      |
-| `packages/web/src/lib/decisions/binding.ts`                        | Saved gate, readiness status, and save-error projections of the channel DTO and API errors                                                           |
-| `packages/web/src/lib/decisions/evaluations.ts`                    | Recent evaluations projections: answer text, outcome tone, reason keys, and latency                                                                  |
-| `packages/web/src/lib/decisions/usage-links.ts`                    | Console destinations for Decision usages                                                                                                             |
-| `packages/web/src/lib/decisions/routing-draft.ts`                  | The Routing draft, its validation, Score order and gaps, new rules, and the load/save reducer                                                        |
-| `packages/web/src/lib/decisions/routing-roster.ts`                 | `useRoutingRoster`: the shared bot, its agents and availability, and its conversations, from console or mock data                                    |
-| `packages/web/src/lib/decisions/routing-evaluations.ts`            | Routing Recent evaluations projections: outcome tones, target and matched-rule text                                                                  |
-| `packages/web/src/components/console/decisions/routing/`           | The Routing editor, Test routing, and routing Recent evaluations with their detail sheet                                                             |
-| `packages/web/src/components/console/views/BotRoutingView.tsx`     | A shared bot's Configuration → Routing page (`/integrations/bots/:botId/routing`)                                                                    |
-| `packages/web/src/components/console/decisions/`                   | The condition editor, the per-conversation `By decision` binding strip with gate Try and Recent evaluations, the usage list, and the flag-off notice |
-| `packages/web/src/components/console/views/DecisionsView.tsx`      | The Decisions list (`/decisions`)                                                                                                                    |
-| `packages/web/src/components/console/views/DecisionEditorView.tsx` | One decision's editor and example sandbox (`/decisions/new`, `/decisions/:id`)                                                                       |
+| Module                                                             | Provides                                                                                                                                        |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@agentconnect.md/protocol/decision`                               | Zod question/draft/answer/condition/routing schemas, question-aware validation, pure matchers, and edit invalidation                            |
+| `@agentconnect.md/protocol/decision-api`                           | Browser-safe API types, provider/model catalog and readiness, channel settings, routing scope, preview request/result, and errors               |
+| `packages/web/src/lib/decisions/mock-api.ts`                       | Opt-in `createDecisionMockApi()` implementing `DecisionApi` with isolated in-memory saves                                                       |
+| `packages/web/src/lib/decisions/fixtures.ts`                       | Example Decisions, direct/shared bots, channels, provider options, canned evaluations, and repeated-mention context                             |
+| `packages/web/src/lib/decisions/provider.tsx`                      | Organization-scoped live/mock APIs, shared Decision list, route-surviving binding drafts and inline-create handoff, and mock-only channel gates |
+| `packages/web/src/lib/decisions/binding.ts`                        | Saved gate, readiness status, and save-error projections of the channel DTO and API errors                                                      |
+| `packages/web/src/lib/decisions/evaluations.ts`                    | Recent evaluations projections: answer text, outcome tone, reason keys, and latency                                                             |
+| `packages/web/src/lib/decisions/usage-links.ts`                    | Console destinations for Decision usages                                                                                                        |
+| `packages/web/src/lib/decisions/routing-draft.ts`                  | The Routing draft, its validation, Score order and gaps, new rules, and the load/save reducer                                                   |
+| `packages/web/src/lib/decisions/routing-roster.ts`                 | `useRoutingRoster`: the shared bot, its agents and availability, and its conversations, from console or mock data                               |
+| `packages/web/src/lib/decisions/routing-evaluations.ts`            | Routing Recent evaluations projections: outcome tones, target and matched-rule text                                                             |
+| `packages/web/src/components/console/decisions/routing/`           | The Routing editor, Test routing, and routing Recent evaluations with their detail sheet                                                        |
+| `packages/web/src/components/console/views/BotRoutingView.tsx`     | A shared bot's Configuration → Routing page (`/integrations/bots/:botId/routing`)                                                               |
+| `packages/web/src/components/console/decisions/`                   | The condition editor, the per-conversation `By decision` binding strip with gate Try and Recent evaluations, and the usage list                 |
+| `packages/web/src/components/console/views/DecisionsView.tsx`      | The Decisions list (`/decisions`)                                                                                                               |
+| `packages/web/src/components/console/views/DecisionEditorView.tsx` | One decision's editor and example sandbox (`/decisions/new`, `/decisions/:id`)                                                                  |
 
 Import runtime schemas from `protocol/decision`; import API contracts from
 `protocol/decision-api` with `import type` so the browser never resolves its relative
@@ -146,8 +146,7 @@ existing Key Server/gateway contract; these fixtures exercise neither service.
 The live `DecisionApi` is `createDecisionApi(orgId)` in `lib/api.ts`. It captures the
 organization for every read and write and uses the normal authenticated HTTP client.
 The provider selects this API unless `NEXT_PUBLIC_MOCK` is explicitly enabled. A failed
-production request surfaces its error; it never installs mock data. The `decisions`
-feature flag controls the routes, the rail entry, and the By decision option. Live
+production request surfaces its error; it never installs mock data. Live
 bindings bypass `DecisionApi`: rows read `trigger`, `decisionBinding`, and the `decision`
 readiness view from the integration channel DTO, and save through
 `PATCH /integrations/:id/channels/:channelId` (`updateIntegrationChannel`).
@@ -235,8 +234,7 @@ state resets on an organization switch so a draft or deletion dialog cannot carr
 `/integrations/bots/:botId/routing` is a shared bot's Configuration → Routing page. It is
 entered from the bot's expanded row on Integrations (a Routing link with the routed
 channel count), from a Decision's shared-bot usage link, and from **Managed by [bot]
-routing** on a routed channel row. A bot that is not shared says so; a flag-off console
-shows the not-offered notice.
+routing** on a routed channel row. A bot that is not shared says so.
 
 - The header keeps the bot identity, its agents, the Integrations / bot / Configuration /
   Routing location, the saved status, and **Recent evaluations**. Banners cover Pending

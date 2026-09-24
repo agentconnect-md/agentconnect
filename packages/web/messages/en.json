@@ -4363,10 +4363,6 @@
       "titleUsages": "Review where this decision is used",
       "gateBody": "Conversations whose conditions no longer fit the new answers are marked Needs review and stay off until repaired: {names}"
     },
-    "notOffered": {
-      "title": "Decisions are not enabled",
-      "body": "This console has not turned on the Decisions surface. An administrator can enable it with the decisions feature flag."
-    },
     "providerModel": "Provider · model",
     "gateTry": {
       "senderLabel": "Sender of history message {index}",

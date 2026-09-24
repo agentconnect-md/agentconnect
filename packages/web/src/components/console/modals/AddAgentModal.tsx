@@ -1029,7 +1029,6 @@ export default function AddAgentModal({
               }}
               source={daemon}
               runtimes={runtimeIds}
-              enabled={featureFlagEnabled('decisions')}
               runInSandbox={effectiveRunInSandbox}
               onFallbackChange={(target) => {
                 if (target.runtime !== effectiveRuntime) setPermissionMode(permissionModeDefault(target.runtime))

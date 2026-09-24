@@ -1578,25 +1578,15 @@ Stage 2-specific evidence is not a release gate for Stage 1.
 ### 10.4 Rollout and remaining implementation work
 
 The current Console uses live organization-scoped CRUD and preview APIs whenever
-`NEXT_PUBLIC_MOCK` is off. The `decisions` feature flag controls visibility. Saving
+`NEXT_PUBLIC_MOCK` is off. Decisions have no install switch: every console offers
+Decision management, standalone preview, fixed-target By decision bindings, and
+shared-bot Routing with its configuration, Test routing, and Recent evaluations. Saving
 a definition needs no online daemon. The adapter catalog currently contains TypeSafe
 Jev's pinned model and aliases documented in [Models](https://docs.typesafe.ai/models);
 it is shipped with the adapter, not discovered using a secret or paid probe. Other
 provider connections may be saved in Infra but do not become Decision adapters.
 
-The `decisions` flag is a temporary prerelease gate. Helm exposes it through
-`features.decisions` (default `false`), which adds `decisions` to the Web runtime's
-`FEATURE_FLAGS`. Enabling it exposes Decision management, standalone preview,
-fixed-target By decision bindings, and shared-bot Routing: its configuration, Test
-routing, and Recent evaluations. What remains is Cloud evaluation on AC credits
-(C1) and removing the flag.
-
-Before the final Jev release:
-
-- Remove the `decisions` feature flag and its Console navigation, route, and data-loading
-  gates so Decision management is available by default.
-- Remove `features.decisions`, its chart-to-environment mapping, rollout overrides,
-  and flag-specific tests and documentation. Do not retain a permanent install switch.
+What remains is Cloud evaluation on AC credits (C1).
 
 `GET /decisions/providers` projects each visible daemon's `decision/catalog` response,
 its supported models, and BYOK/Cloud readiness. Configured BYOK takes priority over
@@ -1690,8 +1680,7 @@ turn, or a locally removed binding, cannot publish a late result.
 The tool returns evidence only. The calling agent chooses how to use the result;
 it grants no permission, applies no routing rule, and bypasses no approval. This
 consumer is available before live message triggers and does not advance shared-bot
-routing out of Stage 2. The temporary Console `decisions` flag also gates its
-attachment card and must be removed with the other gates at final release.
+routing out of Stage 2.
 Agent-level answer filtering is a separate future capability described below.
 
 ### 10.6. Agent runtime and model selection
@@ -1858,10 +1847,9 @@ and after asynchronous reads. This grants no MCP tool attachment or tool read.
 The session store saves the selected runtime/model and run settings in the existing
 Decision snapshot; no message content or provider credentials are added to CP storage.
 
-The temporary Console `decisions` flag gates By decision configuration and must be
-removed at final release. Acceptance covers cross-runtime startup, isolation between
-conversations, once-per-session evaluation, restart and fallback persistence, manual
-precedence, rule order, score intervals, bounded PR/MR context, and binding access.
+Acceptance covers cross-runtime startup, isolation between conversations,
+once-per-session evaluation, restart and fallback persistence, manual precedence, rule
+order, score intervals, bounded PR/MR context, and binding access.
 
 ## 11. Future possibilities
 

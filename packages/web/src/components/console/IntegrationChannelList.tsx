@@ -20,7 +20,6 @@ import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { gateStatus, managedByRouting, savedGateOf, type SavedGate } from '@/lib/decisions/binding'
 import { useOrgs } from '@/lib/org-context'
 import { botRoutingPath } from '@/lib/decisions/usage-links'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
 import type { WebChannelListMessage } from '@/components/console/platforms/contract'
@@ -746,7 +745,7 @@ export function IntegrationChannelList({
   const grouped = groupBySpace(channelRows)
   // Live rows read the gate from the channel DTO; explicit mock mode keeps its local prototype gates.
   const decisions = useOptionalDecisionsPrototype()
-  const decisionsOffered = featureFlagEnabled('decisions') && decisions !== null
+  const decisionsOffered = decisions !== null
   const mode = decisions?.api.mode
   const drafts = decisions?.bindingDrafts ?? {}
   // The store composes the identity (organization + bot + conversation); without it a bare channel id is only a map key.

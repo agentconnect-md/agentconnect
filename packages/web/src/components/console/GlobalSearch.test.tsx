@@ -114,14 +114,11 @@ function resultButton(route: string): HTMLButtonElement {
   return found
 }
 
-it('opens a visible decision from global search only when Decisions is enabled', () => {
+it('opens a visible decision from global search', () => {
   consoleData.decisions = [
     { id: 'request-type', name: 'Request type', model: 'jev-1.13.0', question: { type: 'choice' } }
   ]
   render()
-  type('request')
-  expect(host.textContent).not.toContain('Request type')
-  setFlags('decisions')
   type('choice')
   const result = [...host.querySelectorAll('button')].find((button) => button.textContent?.includes('Request type'))!
   expect(result.textContent).toContain('Choice · jev-1.13.0')

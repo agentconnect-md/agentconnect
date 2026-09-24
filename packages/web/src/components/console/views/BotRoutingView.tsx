@@ -9,11 +9,9 @@ import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
-import { DecisionsNotOffered } from '@/components/console/decisions/DecisionsNotOffered'
 import { DecisionRoutingEditor } from '@/components/console/decisions/routing/DecisionRoutingEditor'
 import { DecisionRoutingTry } from '@/components/console/decisions/routing/DecisionRoutingTry'
 import { DecisionRoutingEvaluationsPanel } from '@/components/console/decisions/routing/DecisionRoutingEvaluationsPanel'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
 import { errorParts } from '@/lib/decisions/binding'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
@@ -67,7 +65,6 @@ function Banner({ icon, tone, children }: { icon: string; tone: 'warning' | 'inf
 export default function BotRoutingView() {
   const params = useParams<{ botId?: string }>()
   const botId = decodeURIComponent(params?.botId ?? '')
-  if (!featureFlagEnabled('decisions')) return <DecisionsNotOffered />
   return <BotRouting botId={botId} />
 }
 

@@ -51,15 +51,10 @@ describe('navVisible', () => {
     for (const hrefs of tables()) expect(hrefs).toContain('/billing')
   })
 
-  // The mock-backed surface must be unreachable from the rail, the sheet, and search alike.
-  it('hides the Decisions surface everywhere until its flag is on', () => {
-    const tables = () => [offered(NAV_GROUPS.flat()), offered(MORE_ROWS), offered(SEARCH_PAGES)]
-
-    setFlags('billing,daemon-pool')
-    for (const hrefs of tables()) expect(hrefs).not.toContain('/decisions')
-
-    setFlags('decisions')
-    for (const hrefs of tables()) expect(hrefs).toContain('/decisions')
+  it('offers the Decisions surface everywhere with no flag set', () => {
+    setFlags('')
+    for (const hrefs of [offered(NAV_GROUPS.flat()), offered(MORE_ROWS), offered(SEARCH_PAGES)])
+      expect(hrefs).toContain('/decisions')
   })
 
   it('leaves the rest of the rail alone when a flag is off', () => {

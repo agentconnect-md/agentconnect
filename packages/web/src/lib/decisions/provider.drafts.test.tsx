@@ -10,7 +10,6 @@ import { DecisionsPrototypeProvider, useDecisionsPrototype, type DecisionBinding
 import type { DecisionDefinition } from '@agentconnect.md/protocol/decision'
 
 vi.mock('@/lib/data', async (original) => ({ ...(await original<object>()), MOCK_MODE: true }))
-vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => true }))
 const org = vi.hoisted(() => ({ id: 'org-a' }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: org.id } }) }))
 

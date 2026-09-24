@@ -12,7 +12,7 @@ import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
 import { ApiError, type ChannelDecisionView } from '@/lib/api'
 import type { IntegrationChannelRow } from '@/lib/data'
 
-const env = vi.hoisted(() => ({ mock: false, flag: true, role: 'owner' }))
+const env = vi.hoisted(() => ({ mock: false, role: 'owner' }))
 const evals = vi.hoisted(() => ({ listEvaluations: vi.fn() }))
 const data = vi.hoisted(() => ({
   setChannelTrigger: vi.fn(async () => undefined),
@@ -25,7 +25,6 @@ vi.mock('@/lib/data', async (original) => ({
     return env.mock
   }
 }))
-vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => env.flag }))
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/agents/agent-1',
@@ -92,7 +91,6 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 beforeEach(() => {
   env.mock = false
-  env.flag = true
   env.role = 'owner'
   evals.listEvaluations.mockReset().mockResolvedValue({ items: [], nextCursor: null })
   data.setChannelTrigger.mockReset().mockResolvedValue(undefined)
@@ -192,12 +190,6 @@ describe('IntegrationChannelList By decision', () => {
   ])('withholds By decision on %s', async (_, channels, props, name) => {
     await render(channels, props)
     expect(await openSettings(name)).not.toContain('By decision')
-  })
-
-  it('withholds By decision while the flag is off', async () => {
-    env.flag = false
-    await render([group()])
-    expect(await openSettings()).not.toContain('By decision')
   })
 
   it('renders a saved DTO gate collapsed, naming its decision, condition and target, with no banner when ready', async () => {

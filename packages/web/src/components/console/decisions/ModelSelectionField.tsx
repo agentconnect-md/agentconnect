@@ -46,8 +46,7 @@ export function ModelSelectionField({
   onFallbackChange,
   source,
   runtimes,
-  runInSandbox,
-  enabled = true
+  runInSandbox
 }: {
   agentId?: string
   value: AgentModelSelection | null
@@ -58,7 +57,6 @@ export function ModelSelectionField({
   source?: RuntimeModelSource
   runtimes: readonly string[]
   runInSandbox?: boolean
-  enabled?: boolean
 }) {
   const t = useTranslations('Agents.dialog.modelSelection')
   const { orgPath } = useOrgs()
@@ -123,7 +121,7 @@ export function ModelSelectionField({
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
         <h3 className="m-0 text-[14px] font-semibold">{t('title')}</h3>
-        {enabled && api && (
+        {api && (
           <div className="pillbar" role="group" aria-label={t('title')}>
             <button
               type="button"

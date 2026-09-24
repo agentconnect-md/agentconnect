@@ -40,8 +40,6 @@ export type FeatureFlagId =
   | 'git-url'
   /** The QQ integration's install entry points; a QQ bot the org already has keeps its Bots tab. */
   | 'qq'
-  /** Temporary Decisions rollout gate; remove it for the final Jev release. */
-  | 'decisions'
 
 function enabledIds(): ReadonlySet<string> {
   // The server must read the SAME value `PublicEnvScript` injects, in the same precedence, or a

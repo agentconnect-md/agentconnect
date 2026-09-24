@@ -19,7 +19,6 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams()
 }))
 vi.mock('@/lib/data', async (original) => ({ ...(await original<object>()), MOCK_MODE: true }))
-vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => true }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: role.current, orgPath: (path: string) => path })
 }))

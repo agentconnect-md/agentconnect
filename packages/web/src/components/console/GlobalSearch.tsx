@@ -254,7 +254,7 @@ export function GlobalSearch({
       }
     })
 
-    const decisionMatches = (featureFlagEnabled('decisions') ? (decisions ?? []) : []).filter(
+    const decisionMatches = (decisions ?? []).filter(
       (entry) => hit(entry.name) || hit(decisionT(`types.${entry.question.type}`))
     )
     const decisionItems: SearchItem[] = decisionMatches.slice(0, CAP).map((entry) => ({
