@@ -138,8 +138,18 @@ function gitmodulesFor(repoFullName: string): string {
   return `[submodule "${repoFullName}"]\n\tpath = vendor/${repoFullName.split('/')[1]}\n\turl = https://github.com/${repoFullName}.git\n`
 }
 
-/** One authorized row as the CP replicates it; `provider` absent means github. */
-type AdditionalRepoRow = { repoFullName: string; repoId: string; provider?: string }
+/** One authorized row as the CP replicates it; `provider` absent means github, `materialize` absent means always. */
+type AdditionalRepoRow = {
+  repoFullName: string
+  repoId: string
+  provider?: string
+  materialize?: 'always' | 'decision' | 'on-demand'
+}
+
+/** Where a worktree-tier or shared session clones what it was not handed (decision 20). */
+function clonesOf(agent: Agent, sessionKey: string): string {
+  return join(workspaces.agentRootFor(agent), 'clones', workspaces.sessionWorktreeId(sessionKey))
+}
 
 function agentFixture(
   additionalRepos: AdditionalRepoRow[],
@@ -767,17 +777,176 @@ describe('additionalWorkspaceDirectories with secondary roots', () => {
 })
 
 describe('sandbox write roots', () => {
-  it('grants the secondary parent to every sandboxed agent, scratch workspaces included', () => {
+  it('grants the secondary and on-demand clone parents to every sandboxed agent, scratch workspaces included', () => {
     const repo = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     const scratch = agentFixture([], { mode: 'from-scratch' })
 
-    // A row added under a long-lived host must already be inside the boundary, so the PARENT is
-    // granted rather than the roots that happen to exist right now.
+    // A row added or made on-demand under a long-lived host must already be inside the boundary, so the PARENTS are granted.
     expect(workspaces.trustedWorkspaceWriteRoots(repo)).toEqual([
       join(workspaces.agentRootFor(repo), 'worktrees'),
-      join(workspaces.agentRootFor(repo), 'repos')
+      join(workspaces.agentRootFor(repo), 'repos'),
+      join(workspaces.agentRootFor(repo), 'clones')
     ])
-    expect(workspaces.trustedWorkspaceWriteRoots(scratch)).toEqual([join(workspaces.agentRootFor(scratch), 'repos')])
+    expect(workspaces.trustedWorkspaceWriteRoots(scratch)).toEqual([
+      join(workspaces.agentRootFor(scratch), 'repos'),
+      join(workspaces.agentRootFor(scratch), 'clones')
+    ])
+  })
+})
+
+describe('materialization modes (decisions 13 and 20)', () => {
+  const ROWS: AdditionalRepoRow[] = [
+    { repoFullName: 'acme/infra', repoId: '42' },
+    { repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'on-demand' }
+  ]
+
+  it('checks out only the `always` rows and hands each session an empty directory to clone the rest into', async () => {
+    const agent = agentFixture(ROWS)
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    const home = workspaces.agentRootFor(agent)
+    const shared = { sessionKey: 'session-shared', isolation: 'shared' as const }
+    const isolated = { sessionKey: 'session-own', isolation: 'session' as const }
+
+    const sharedCwd = await workspaces.prepareSessionWorkspace(agent, shared)
+    restoreAuthorizedOrigins(agent)
+    const isolatedCwd = await workspaces.prepareSessionWorkspace(agent, isolated)
+
+    // Nothing of the on-demand row was cloned on either tier, nor its credential warmed.
+    expect(existsSync(join(home, 'repos', 'example-co'))).toBe(false)
+    expect(preWarms.filter((line) => line.includes('shared-library'))).toEqual([])
+    expect(readdirSync(clonesOf(agent, 'session-shared'))).toEqual([])
+    expect(readdirSync(clonesOf(agent, 'session-own'))).toEqual([])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, sharedCwd, shared)).toEqual([
+      realpathSync(join(home, 'repos', 'acme', 'infra', 'checkout')),
+      realpathSync(clonesOf(agent, 'session-shared'))
+    ])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, isolatedCwd, isolated)).toEqual([
+      realpathSync(join(home, 'repos', 'acme', 'infra', 'worktrees', workspaces.sessionWorktreeId('session-own'))),
+      realpathSync(clonesOf(agent, 'session-own'))
+    ])
+    // The standing context reads the same answer, with the host's own clone URL.
+    expect(await workspaces.sessionOnDemandClones(agent, isolated)).toEqual({
+      path: realpathSync(clonesOf(agent, 'session-own')),
+      repositories: [
+        { repoFullName: 'example-co/shared-library', cloneUrl: 'https://github.com/example-co/shared-library' }
+      ]
+    })
+  })
+
+  it('leaves an agent whose rows are all `always` as it was: no clone directory, the same hand-out', async () => {
+    const legacy = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    const explicit = {
+      ...legacy,
+      workspace: {
+        ...legacy.workspace,
+        additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42', materialize: 'always' }]
+      }
+    } as Agent
+    serveAll(legacy, { 'acme/infra': 'trunk' })
+    const request = { sessionKey: 'session-a', isolation: 'session' as const }
+
+    const cwd = await workspaces.prepareSessionWorkspace(explicit, request)
+
+    expect(existsSync(join(workspaces.agentRootFor(legacy), 'clones'))).toBe(false)
+    expect(await workspaces.sessionOnDemandClones(explicit, request)).toBeUndefined()
+    const handed = [
+      realpathSync(
+        join(
+          workspaces.agentRootFor(legacy),
+          'repos',
+          'acme',
+          'infra',
+          'worktrees',
+          workspaces.sessionWorktreeId('session-a')
+        )
+      )
+    ]
+    expect(await workspaces.additionalWorkspaceDirectories(explicit, cwd, request)).toEqual(handed)
+    expect(await workspaces.additionalWorkspaceDirectories(legacy, cwd, request)).toEqual(handed)
+  })
+
+  it('treats a `decision` row as on demand until the selector exists', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42', materialize: 'decision' }], {
+      mode: 'from-scratch'
+    })
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const request = { sessionKey: 'session-a', isolation: 'shared' as const }
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, request)
+
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'repos'))).toBe(false)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
+      realpathSync(clonesOf(agent, 'session-a'))
+    ])
+  })
+})
+
+describe('an on-demand clone directory is retired with its session (decision 20)', () => {
+  const agentOnDemand = () =>
+    agentFixture([{ repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'on-demand' }])
+
+  /** What the agent does with the directory it was handed: a clone of its own, at `<owner>/<repo>`. */
+  async function cloneInto(agent: Agent, sessionKey: string, isolation: 'shared' | 'session'): Promise<string> {
+    await workspaces.prepareSessionWorkspace(agent, { sessionKey, isolation })
+    restoreAuthorizedOrigins(agent)
+    git(clonesOf(agent, sessionKey), [
+      'clone',
+      '-q',
+      remotes.get('https://github.com/example-co/shared-library')!,
+      join('example-co', 'shared-library')
+    ])
+    return join(clonesOf(agent, sessionKey), 'example-co', 'shared-library')
+  }
+
+  it('removes clean, pushed clones with the session and keeps uncommitted work, local commits and stray files', async () => {
+    const agent = agentOnDemand()
+    serveAll(agent, { 'example-co/shared-library': 'main' })
+
+    await cloneInto(agent, 'session-clean', 'session')
+    expect(await workspaces.removeSessionWorktree(agent, 'session-clean')).toEqual({ outcome: 'removed' })
+    expect(existsSync(clonesOf(agent, 'session-clean'))).toBe(false)
+
+    const dirty = await cloneInto(agent, 'session-dirty', 'session')
+    writeFileSync(join(dirty, 'notes.txt'), 'unsaved\n')
+    // The primary's worktree went, which is what `partial` tells the caller.
+    expect(await workspaces.removeSessionWorktree(agent, 'session-dirty')).toEqual({
+      outcome: 'retained',
+      reason: 'dirty',
+      partial: true
+    })
+    expect(existsSync(join(dirty, 'notes.txt'))).toBe(true)
+
+    const committed = await cloneInto(agent, 'session-committed', 'session')
+    writeFileSync(join(committed, 'feature.txt'), 'work\n')
+    git(committed, ['add', '-A'])
+    git(committed, ['commit', '-q', '-m', 'local only'])
+    expect(await workspaces.removeOnDemandClones(agent, 'session-committed')).toEqual({
+      outcome: 'retained',
+      reason: 'unique-commits'
+    })
+
+    await cloneInto(agent, 'session-stray', 'session')
+    writeFileSync(join(clonesOf(agent, 'session-stray'), 'scratch.md'), 'kept\n')
+    expect(await workspaces.removeOnDemandClones(agent, 'session-stray')).toEqual({
+      outcome: 'retained',
+      reason: 'dirty'
+    })
+    expect(existsSync(join(clonesOf(agent, 'session-stray'), 'scratch.md'))).toBe(true)
+  })
+
+  it('judges a shared session’s directory too, and keeps it in scope once the rows stop naming one', async () => {
+    const agent = agentOnDemand()
+    serveAll(agent, { 'example-co/shared-library': 'main' })
+    await cloneInto(agent, 'session-shared', 'shared')
+    const none = { ...agent, workspace: { ...agent.workspace, additionalRepos: [] } } as Agent
+
+    // What the retention prefilter asks before it binds anything: the rows, else this disk.
+    expect(workspaces.mayOwnOnDemandClones(agent, 'session-never-opened')).toBe(true)
+    expect(workspaces.mayOwnOnDemandClones(none, 'session-shared')).toBe(true)
+    expect(workspaces.mayOwnOnDemandClones(none, 'session-never-opened')).toBe(false)
+    expect(await workspaces.removeOnDemandClones(none, 'session-shared')).toEqual({ outcome: 'removed' })
+    expect(existsSync(clonesOf(agent, 'session-shared'))).toBe(false)
+    expect(await workspaces.removeOnDemandClones(none, 'session-shared')).toEqual({ outcome: 'absent' })
   })
 })
 
@@ -1028,6 +1197,45 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     expect(await workspaces.additionalWorkspaceDirectories(agent, ordinaryCwd, ordinary)).toEqual([])
   })
 
+  it('checks an on-demand repository out for its own review alone, making no other on-demand row a reference', async () => {
+    const agent = agentFixture([
+      { repoFullName: 'acme/infra', repoId: '42', materialize: 'on-demand' },
+      { repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'on-demand' }
+    ])
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 41)
+    const scope = { sessionKey: 'session-on-demand', isolation: 'session' as const }
+
+    const cwd = await workspaces.prepareSessionWorkspace(
+      agent,
+      reviewRequest('session-on-demand', 'acme/infra', 41, pull)
+    )
+
+    // Decision 17: the reviewed repository is the exact cwd whatever its row says.
+    expect(cwd).toBe(realpathSync(worktreeOf(agent, 'acme/infra', 'session-on-demand')))
+    expect(git(cwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+    // The primary rides along; the other on-demand row is the session's to clone, never a reference.
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([
+      realpathSync(workspaces.sessionWorktreePath(agent, 'session-on-demand')),
+      realpathSync(clonesOf(agent, 'session-on-demand'))
+    ])
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co'))).toBe(false)
+    expect(
+      (await workspaces.sessionOnDemandClones(agent, scope))?.repositories.map((repo) => repo.repoFullName)
+    ).toEqual(['example-co/shared-library'])
+
+    // An ordinary session is handed neither: the reviewed checkout is that review's alone.
+    restoreAuthorizedOrigins(agent)
+    const ordinary = { sessionKey: 'session-plain', isolation: 'session' as const }
+    const plainCwd = await workspaces.prepareSessionWorkspace(agent, ordinary)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, plainCwd, ordinary)).toEqual([
+      realpathSync(clonesOf(agent, 'session-plain'))
+    ])
+    expect(
+      (await workspaces.sessionOnDemandClones(agent, ordinary))?.repositories.map((repo) => repo.repoFullName)
+    ).toEqual(['acme/infra', 'example-co/shared-library'])
+  })
+
   it('refuses a review of a repository this agent has no root for, leaving nothing behind', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     serveAll(agent, { 'acme/infra': 'trunk' })
@@ -1266,6 +1474,49 @@ describe('retire → sweep → remove (decision 12)', () => {
     expect((await workspaces.retiredSecondaryRoots(swapped)).map((root) => root.subtreeName)).toEqual([
       '_gitlab/4455667'
     ])
+  })
+
+  it('retires a root whose row leaves `always` in place, keeps it while held, and un-retires it on return', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+    restoreAuthorizedOrigins(agent)
+    const checkout = join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout')
+    const onDemand = reauthorized(agent, [{ repoFullName: 'acme/infra', repoId: '42', materialize: 'on-demand' }])
+
+    expect((await workspaces.retiredSecondaryRoots(onDemand)).map((root) => root.subtreeName)).toEqual(['acme/infra'])
+    // Out of the next session at once, which gets the directory to clone it into instead...
+    const next = { sessionKey: 'session-b', isolation: 'session' as const }
+    const nextCwd = await workspaces.prepareSessionWorkspace(onDemand, next)
+    expect(await workspaces.additionalWorkspaceDirectories(onDemand, nextCwd, next)).toEqual([
+      realpathSync(clonesOf(onDemand, 'session-b'))
+    ])
+    // ...and never removed while an earlier session's worktree still reads its clone.
+    const [retired] = await workspaces.retiredSecondaryRoots(onDemand)
+    expect(await workspaces.removeRetiredSecondaryRoot(onDemand, retired!)).toEqual({
+      outcome: 'retained',
+      reason: 'worktrees'
+    })
+    expect(existsSync(join(checkout, '.git'))).toBe(true)
+
+    // Back to `always`: the same checkout serves the next session, and nothing is cloned again.
+    restoreAuthorizedOrigins(agent)
+    expect(await workspaces.retiredSecondaryRoots(agent)).toEqual([])
+    const again = { sessionKey: 'session-c', isolation: 'session' as const }
+    const againCwd = await workspaces.prepareSessionWorkspace(agent, again)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, againCwd, again)).toEqual([
+      realpathSync(
+        join(
+          workspaces.agentRootFor(agent),
+          'repos',
+          'acme',
+          'infra',
+          'worktrees',
+          workspaces.sessionWorktreeId('session-c')
+        )
+      )
+    ])
+    expect(preWarms.filter((line) => line === 'clone github:42 acme/infra')).toHaveLength(2)
   })
 
   it('leaves a subtree with no attestation alone rather than retiring it', async () => {

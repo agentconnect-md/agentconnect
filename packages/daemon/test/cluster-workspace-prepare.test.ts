@@ -1058,7 +1058,7 @@ describe('secondary roots on the pod volume', () => {
   const SHARED = `${REPOS}/example-co/shared-library`
 
   function agentWithRoots(
-    rows: Array<{ repoFullName: string; repoId: string; provider?: string }> = [
+    rows: Array<{ repoFullName: string; repoId: string; provider?: string; materialize?: 'always' | 'on-demand' }> = [
       { repoFullName: 'acme/infra', repoId: '42' }
     ]
   ): Agent {
@@ -1155,6 +1155,84 @@ describe('secondary roots on the pod volume', () => {
     const library = clones.find((call) => call.args[1] === 'https://github.com/example-co/shared-library')
     expect(library!.args).toEqual(expect.arrayContaining(['--branch', 'release']))
     expect(calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'add')).toBe(false)
+  })
+
+  it('prepares only the `always` rows on the agent pod and a session pod, handing each session its clone directory', async () => {
+    const agent = agentWithRoots([
+      { repoFullName: 'acme/infra', repoId: '42' },
+      { repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'on-demand' }
+    ])
+    const shared = { sessionKey: 'sess-1', isolation: 'shared' as const }
+    const sharedClones = `${POD_ROOT}/clones/${workspaces.sessionWorktreeId('sess-1')}`
+
+    expect(await workspaces.prepareClusterWorkspace(agent, POD_ROOT, shared)).toBe(CHECKOUT)
+    expect(await pod.stat(sharedClones)).toBe('dir')
+    expect(await workspaces.additionalWorkspaceDirectories(agent, CHECKOUT, shared)).toEqual([
+      `${INFRA}/checkout`,
+      sharedClones
+    ])
+
+    checkoutExists = true
+    const isolated = { sessionKey: 'sess-2', isolation: 'session' as const, initiatedBy: 'alice' }
+    const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, isolated)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, isolated)).toEqual([
+      sessionCloneOf('sess-2', 'acme/infra'),
+      `${sessionDirOf('sess-2')}/repos`
+    ])
+    // Neither pod asked about, cloned or checked out the on-demand row, and nothing landed on this disk.
+    expect(calls.some((call) => call.args.some((arg) => arg.includes('shared-library')))).toBe(false)
+    expect(await pod.stat(SHARED)).toBe('missing')
+    expect(existsSync('/daemon/agents/agent-cluster/clones')).toBe(false)
+  })
+
+  it('clones an on-demand repository into a session pod only as its review’s exact cwd', async () => {
+    const base = 'a'.repeat(40)
+    const head = 'b'.repeat(40)
+    const id = workspaces.sessionWorktreeId('sess-review')
+    revs[`refs/agentconnect/reviews/${id}/base`] = base
+    revs[`refs/agentconnect/reviews/${id}/head`] = head
+    const agent = agentWithRoots([
+      { repoFullName: 'acme/infra', repoId: '42', materialize: 'on-demand' },
+      { repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'on-demand' }
+    ])
+    const resumed = { sessionKey: 'sess-review', isolation: 'session' as const }
+
+    const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, {
+      ...resumed,
+      reviewRepoFullName: 'acme/infra',
+      review: { pullNumber: 9, baseSha: base, headSha: head }
+    })
+
+    expect(cwd).toBe(sessionCloneOf('sess-review', 'acme/infra'))
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, resumed)).toEqual([
+      sessionCloneOf('sess-review'),
+      `${sessionDirOf('sess-review')}/repos`
+    ])
+    expect(
+      (await workspaces.sessionOnDemandClones(agent, resumed))?.repositories.map((repo) => repo.repoFullName)
+    ).toEqual(['example-co/shared-library'])
+    expect(calls.some((call) => call.args.some((arg) => arg.includes('shared-library')))).toBe(false)
+  })
+
+  it('judges a shared session’s clone directory on the agent pod, keeping one that holds work', async () => {
+    const agent = agentWithRoots([
+      { repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'on-demand' }
+    ])
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT, { sessionKey: 'sess-1', isolation: 'shared' })
+    const clone = `${POD_ROOT}/clones/${workspaces.sessionWorktreeId('sess-1')}/example-co/shared-library`
+    // What the agent's own clone leaves on the volume.
+    await pod.mkdir(`${clone}/.git`)
+    worktreeStatus = ' M notes.txt\n'
+
+    expect(await workspaces.hasOnDemandCloneDir(agent, 'sess-1')).toBe(true)
+    expect(await workspaces.removeOnDemandClones(agent, 'sess-1')).toEqual({ outcome: 'retained', reason: 'dirty' })
+    expect(await pod.stat(`${clone}/.git`)).toBe('dir')
+    // Judged by the pod's own Git, in the pod's coordinates.
+    expect(calls.some((call) => call.cwd === clone && call.args[0] === 'status')).toBe(true)
+
+    worktreeStatus = ''
+    expect(await workspaces.removeOnDemandClones(agent, 'sess-1')).toEqual({ outcome: 'removed' })
+    expect(await pod.stat(dirname(dirname(clone)))).toBe('missing')
   })
 
   it('withholds a root the primary already carries as a submodule, read off the volume', async () => {

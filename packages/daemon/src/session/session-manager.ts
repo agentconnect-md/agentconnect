@@ -633,6 +633,7 @@ export class SessionManager {
           // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
           // accessor, so the prompt names exactly the directories the session got.
           workspaceRoots: await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
+          onDemandClones: await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
           needsReplyToParent,
           memoryIndex,
           usesMeta,

@@ -117,7 +117,7 @@ function agentFixture(
   opts: {
     mode?: 'git-repo' | 'from-scratch'
     githubApp?: boolean
-    additionalRepos?: Array<{ repoFullName: string; repoId: string }>
+    additionalRepos?: Array<{ repoFullName: string; repoId: string; materialize?: 'always' | 'on-demand' }>
   } = {}
 ): Agent {
   const home = tempRoot('ac-session-clone-agent-')
@@ -846,17 +846,44 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     const agent = agentFixture()
     serveAll(agent)
     const home = workspaces.agentRootFor(agent)
-    expect(workspaces.trustedWorkspaceWriteRoots(agent, KEY)).toEqual([join(home, 'worktrees'), join(home, 'repos')])
+    const unconfined = [join(home, 'worktrees'), join(home, 'repos'), join(home, 'clones')]
+    expect(workspaces.trustedWorkspaceWriteRoots(agent, KEY)).toEqual(unconfined)
 
     await workspaces.prepareSessionWorkspace(agent, confined())
 
     expect(workspaces.trustedWorkspaceWriteRoots(agent, KEY)).toEqual([leafOf(agent)])
     // The agent's shared host, and a session without a directory of its own, keep the worktree tier's parents.
-    expect(workspaces.trustedWorkspaceWriteRoots(agent)).toEqual([join(home, 'worktrees'), join(home, 'repos')])
-    expect(workspaces.trustedWorkspaceWriteRoots(agent, 'slack:C1:other')).toEqual([
-      join(home, 'worktrees'),
-      join(home, 'repos')
+    expect(workspaces.trustedWorkspaceWriteRoots(agent)).toEqual(unconfined)
+    expect(workspaces.trustedWorkspaceWriteRoots(agent, 'slack:C1:other')).toEqual(unconfined)
+  })
+
+  it('clones only the `always` rows into a confined session, whose repos/ is where it clones the rest', async () => {
+    const agent = agentFixture({
+      additionalRepos: [
+        { repoFullName: 'acme/infra', repoId: '42' },
+        { repoFullName: 'example-co/library', repoId: '43', materialize: 'on-demand' }
+      ]
+    })
+    const served = serveAll(agent, { 'acme/infra': 'trunk' })
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+
+    const repos = join(leafOf(agent), 'repos')
+    expect(readdirSync(repos)).toEqual(['acme'])
+    expect(gitRuns.some((run) => run.args.some((arg) => arg.includes('example-co/library')))).toBe(false)
+    const scope = { sessionKey: KEY, isolation: 'session' as const }
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([
+      realpathSync(join(repos, 'acme', 'infra')),
+      realpathSync(repos)
     ])
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'clones'))).toBe(false)
+    // A clone the agent makes there is the session's, judged and removed with its directory like the daemon's own.
+    git(repos, ['clone', '-q', served['example-co/library']!.url, join('example-co', 'library')])
+    writeFileSync(join(repos, 'example-co', 'library', 'draft.md'), 'unsaved\n')
+    expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({ outcome: 'retained', reason: 'dirty' })
+    rmSync(join(repos, 'example-co', 'library', 'draft.md'))
+    expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({ outcome: 'removed' })
+    expect(existsSync(leafOf(agent))).toBe(false)
   })
 
   it('keeps the worktree tier for an unconfined request', async () => {
