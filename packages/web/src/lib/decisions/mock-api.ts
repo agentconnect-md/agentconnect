@@ -1,5 +1,5 @@
-import { runDecisionChain } from '@agentconnect.md/protocol'
 import {
+  runDecisionChain,
   ChannelDecisionGate,
   DecisionChannelSettings,
   DecisionDraft,

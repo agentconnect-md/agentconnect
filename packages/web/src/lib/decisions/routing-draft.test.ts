@@ -70,6 +70,23 @@ describe('routing draft', () => {
     expect(toSave(draft, ['C1', 'C2'])!.config.steps).toBeUndefined()
   })
 
+  it('reports each invalid condition once across the root and child rules', () => {
+    const draft = draftFromDetail(detail())
+    draft.rules[0]!.when = { type: 'choice', thresholds: { gone: 0.5 } }
+    draft.rules[0]!.action = { type: 'decision', nextStepId: 'follow' }
+    draft.steps = [
+      { id: 'follow', decisionId: 'd1', rules: [{ ...draft.rules[0]!, id: 'child', action: { type: 'skip' } }] }
+    ]
+    const issues = routingDraftIssues(draft, choice, {
+      savedChannelIds: [],
+      memberIds: members,
+      questions: new Map([['d1', choice]])
+    })
+    expect(issues).toHaveLength(2)
+    expect(issues[0]!.path.slice(0, 3)).toEqual(['rules', 0, 'when'])
+    expect(issues[1]!.path.slice(0, 5)).toEqual(['steps', 0, 'rules', 0, 'when'])
+  })
+
   it('resets to the latest saved state, dropping an edit and a failed attempt from another row', () => {
     const edited = run([
       { type: 'LOADED', detail: detail() },

@@ -133,42 +133,35 @@ export function routingDraftIssues(
   }
 ): RoutingIssue[] {
   const issues: RoutingIssue[] = []
-  if (!draft.decisionId || !question) issues.push({ path: ['decisionId'], code: 'decision_required' })
-  draft.rules.forEach((rule, index) => {
-    if (!rule.when) issues.push({ path: ['rules', index, 'when'], code: 'condition_required' })
-    if (rule.action.type === 'agent') {
-      if (!rule.action.agentId) issues.push({ path: ['rules', index, 'action'], code: 'target_required' })
-      else if (!context.memberIds.has(rule.action.agentId))
-        issues.push({ path: ['rules', index, 'action'], code: 'target_removed' })
-    }
-  })
-  if (question && draft.decisionId && draft.rules.every((rule) => rule.when)) {
-    const config = {
-      enabled: draft.enabled,
-      decisionId: draft.decisionId,
-      rules: draft.rules.map((rule) => ({ id: rule.id, when: rule.when!, action: { type: 'skip' as const } })),
-      otherwise: { type: draft.otherwise }
-    }
-    issues.push(
-      ...decisionRoutingIssues(question, config).map((issue) => ({ path: issue.path, message: issue.message }))
-    )
-  }
+  const config = draftConfig(draft)
+  const validateWholeChain = config !== null && question !== null && context.questions !== undefined
   const reached = reachableSteps<{ rules: RoutingDraftRule[] }>(draft, draft.steps ?? [], (step) =>
     step.rules.flatMap((rule) => (rule.action.type === 'decision' ? [rule.action.nextStepId] : []))
   )
-  for (const [index, step] of (draft.steps ?? []).entries()) {
-    if (!reached.some((entry) => entry.id === step.id)) continue
-    const next = context.questions?.get(step.decisionId)
-    if (!next) issues.push({ path: ['steps', index, 'decisionId'], code: 'decision_required' })
-    else
+  for (const [index, step] of [draft, ...(draft.steps ?? [])].entries()) {
+    if (index && !reached.some((entry) => entry === step)) continue
+    const path = index ? ['steps', index - 1] : []
+    const stepQuestion = index ? context.questions?.get(step.decisionId!) : question
+    if (!step.decisionId || !stepQuestion) issues.push({ path: [...path, 'decisionId'], code: 'decision_required' })
+    step.rules.forEach((rule, ruleIndex) => {
+      if (!rule.when) issues.push({ path: [...path, 'rules', ruleIndex, 'when'], code: 'condition_required' })
+      if (rule.action.type === 'agent') {
+        if (!rule.action.agentId)
+          issues.push({ path: [...path, 'rules', ruleIndex, 'action'], code: 'target_required' })
+        else if (!context.memberIds.has(rule.action.agentId))
+          issues.push({ path: [...path, 'rules', ruleIndex, 'action'], code: 'target_removed' })
+      }
+    })
+    if (!validateWholeChain && stepQuestion && step.decisionId && step.rules.every((rule) => rule.when))
       issues.push(
-        ...routingDraftIssues({ ...draft, ...step, steps: undefined, removals: {} }, next, {
-          savedChannelIds: [],
-          memberIds: context.memberIds
-        }).map((issue) => ({ ...issue, path: ['steps', index, ...issue.path] }))
+        ...decisionRoutingIssues(stepQuestion, {
+          enabled: draft.enabled,
+          decisionId: step.decisionId,
+          rules: step.rules.map((rule) => ({ id: rule.id, when: rule.when!, action: { type: 'skip' as const } })),
+          otherwise: { type: draft.otherwise }
+        }).map((issue) => ({ ...issue, path: [...path, ...issue.path] }))
       )
   }
-  const config = draftConfig(draft)
   if (config && question && context.questions)
     issues.push(...decisionRoutingIssues(question, config, context.questions))
   for (const channelId of context.savedChannelIds)

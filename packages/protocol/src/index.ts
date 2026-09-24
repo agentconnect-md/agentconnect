@@ -84,7 +84,6 @@ export * from './code-host.js'
 
 export * from './provider-key.js'
 export * from './decision.js'
-export * from './decision-chain.js'
 export * from './decision-api.js'
 
 // ── envelope + control extension ──

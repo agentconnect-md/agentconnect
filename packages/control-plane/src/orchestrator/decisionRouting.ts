@@ -77,11 +77,16 @@ export function routingConfigState(
   if (record.needsReview) issues.push({ path: [], message: 'The Decision changed; review the routing rules.' })
   if (definitions.some((d) => !supportsDecision(d)))
     issues.push({ path: ['decisionId'], message: 'The Decision model does not support this question type.' })
-  const rules = [record.config, ...(record.config.steps ?? [])].flatMap((step) => step.rules)
-  rules.forEach((rule, index) => {
-    if (rule.action.type === 'agent' && !memberAgentIds.has(rule.action.agentId))
-      issues.push({ path: ['rules', index, 'action'], message: 'Choose an agent connected to this bot.' })
-  })
+  for (const [index, step] of [record.config, ...(record.config.steps ?? [])].entries()) {
+    const path = index ? ['steps', index - 1] : []
+    step.rules.forEach((rule, ruleIndex) => {
+      if (rule.action.type === 'agent' && !memberAgentIds.has(rule.action.agentId))
+        issues.push({
+          path: [...path, 'rules', ruleIndex, 'action'],
+          message: 'Choose an agent connected to this bot.'
+        })
+    })
+  }
   if (issues.length > 0) return { executable: false, disabledReason: 'needs_review', issues }
   if (!record.config.enabled) return { executable: false, disabledReason: 'paused', issues: [] }
   return { executable: true, issues: [] }
