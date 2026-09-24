@@ -133,16 +133,21 @@ export class K8sDriver implements SpawnDriver {
 
   // Reuse or claim the subject's Sandbox after waiting out suspension and takeover.
   async ensureSandbox(subject: SandboxSubject, timer?: LaunchTimer): Promise<SandboxLaunch> {
-    const ensure = () => this.ensureSandboxInner(subject, timer)
+    const releasedAt = this.registry.releaseFence(subject)
+    const ensure = () => this.ensureSandboxInner(subject, timer, releasedAt)
     return this.sessionFor(subject)?.isAttached() ? await ensure() : await withStartupPhase('sandbox', ensure)
   }
 
-  private async ensureSandboxInner(subject: SandboxSubject, timer?: LaunchTimer): Promise<SandboxLaunch> {
+  private async ensureSandboxInner(
+    subject: SandboxSubject,
+    timer: LaunchTimer | undefined,
+    releasedAt: number
+  ): Promise<SandboxLaunch> {
     const suspending = this.lease.suspensionOf(subject)
     if (suspending) await suspending
     const adopting = this.registry.adoptInFlight(subject)
     if (adopting) await adopting
-    const releasedAt = this.registry.releaseFence(subject)
+    this.registry.assertStillServed(subject, releasedAt)
     const existing = this.registry.currentLaunch(subject)
     if (existing) {
       // A held operation must fail on its original pod rather than switch behind its lease.
@@ -153,7 +158,7 @@ export class K8sDriver implements SpawnDriver {
       if (suspending) {
         await suspending
         this.registry.assertStillServed(subject, releasedAt)
-        return await this.ensureSandboxInner(subject, timer)
+        return await this.ensureSandboxInner(subject, timer, releasedAt)
       }
       const current = this.registry.currentLaunch(subject)
       if (current) return current
@@ -360,13 +365,14 @@ export class K8sDriver implements SpawnDriver {
 
   // `ensureSandbox` without the ensure: the same suspension, takeover and release fences, then a READ of the claim the caller named — re-judged against the object AFTER that gap, so a claim that is gone or replaced refuses.
   private async resumeSandbox(subject: SandboxSubject, claimUid: string): Promise<SandboxLaunch> {
+    const releasedAt = this.registry.releaseFence(subject)
     const suspending = this.lease.suspensionOf(subject)
     if (suspending) await suspending
     const adopting = this.registry.adoptInFlight(subject)
     if (adopting) await adopting
+    this.registry.assertStillServed(subject, releasedAt)
     const existing = this.registry.currentLaunch(subject)
     if (existing) return existing
-    const releasedAt = this.registry.releaseFence(subject)
     const name = this.claimName(subject)
     const claim = await readIfPresent(() => this.deps.api.getClaim(name))
     if (claim?.metadata?.uid !== claimUid) {

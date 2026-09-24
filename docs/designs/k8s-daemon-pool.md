@@ -252,8 +252,11 @@ a successor's pod, and a rollout leaves no pod without a candidate to suspend it
 
 Failed takeover reads or admission stamps remain queued for retry on the idle
 sweep. Partial success keeps the launches already adopted. Losing the agent
-clears its retry and fences acquisitions still listing claims, stamping them, or
-allocating a launch generation, including sessions not yet recorded locally.
+clears its retry and fences acquisitions still waiting for a suspension or takeover,
+listing claims, stamping them, or allocating a launch generation, including sessions
+not yet recorded locally. Takeover deduplication is scoped to the current ownership
+fence: regaining an agent starts a new attempt without reusing the departed ownership's
+promise.
 
 A cached launch is checked against Kubernetes before an unheld acquisition reuses
 it. If its Sandbox is gone, the driver drops that exact launch and its channel,

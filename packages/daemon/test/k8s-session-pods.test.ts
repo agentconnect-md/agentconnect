@@ -307,6 +307,53 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(api.listClaims).toHaveBeenCalledWith(`${AC_LABEL_AGENT}=${AGENT},${AC_LABEL_SESSION}`)
   })
 
+  it('starts a new takeover after departure without reusing the old ownership promise', async () => {
+    const { api } = cluster()
+    const subject = sandboxSubjectFor(T1)
+    await member(api, podSide().connect).driver.ensureSandbox(subject)
+    const { driver } = member(api, podSide().connect)
+    let unblock!: () => void
+    const blocked = new Promise<void>((resolve) => (unblock = resolve))
+    const read = api.getClaim
+    vi.spyOn(api, 'getClaim').mockImplementationOnce(async (name) => {
+      await blocked
+      return read(name)
+    })
+    const oldAttempt = driver.adopt(subject)
+    driver.releaseAgentSandboxes(AGENT)
+    const newAttempt = driver.adopt(subject)
+    const launch = await newAttempt
+    expect(newAttempt).not.toBe(oldAttempt)
+    expect(launch).toBeDefined()
+    unblock()
+    await oldAttempt
+    expect(driver.currentLaunch(subject)).toBe(launch)
+  })
+
+  it.each(['ensure', 'resume'] as const)('refuses %s queued behind a takeover when the agent departs', async (kind) => {
+    const { api } = cluster()
+    const subject = sandboxSubjectFor(T1)
+    const launch = await member(api, podSide().connect).driver.ensureSandbox(subject)
+    const { driver, records } = member(api, podSide().connect)
+    let unblock!: () => void
+    const blocked = new Promise<void>((resolve) => (unblock = resolve))
+    const read = api.getClaim
+    vi.spyOn(api, 'getClaim').mockImplementationOnce(async (name) => {
+      await blocked
+      return read(name)
+    })
+    const takeover = driver.adopt(subject)
+    const acquisition =
+      kind === 'ensure' ? driver.ensureBoundChannel(subject) : driver.resumeBoundChannel(subject, launch.claimUid)
+    const refused = expect(acquisition).rejects.toThrow('left this member')
+    driver.releaseAgentSandboxes(AGENT)
+    unblock()
+    await takeover
+    await refused
+    expect(driver.launched()).toEqual([])
+    expect(records).toEqual([])
+  })
+
   it('reports partial takeover failure and adopts the remaining session on retry', async () => {
     const { api } = cluster()
     const first = member(api, podSide().connect)

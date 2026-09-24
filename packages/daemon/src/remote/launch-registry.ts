@@ -37,7 +37,7 @@ export interface LaunchRegistryDeps {
 export class LaunchRegistry<L extends Launch = Launch> {
   private readonly launches = new Map<string, L>()
   /** Takeover re-derivations in flight, per subject; a concurrent acquisition waits for the answer. */
-  private readonly adopting = new Map<string, Promise<L | undefined>>()
+  private readonly adopting = new Map<string, { releasedAt: number; run: Promise<L | undefined> }>()
   /** Bumped by `bumpRelease`; an acquisition in flight across a bump records nothing. */
   // Never cleaned, deliberately: a fence that forgot a departed subject would let a request issued
   // before its release record a launch after it. The entry is two numbers keyed by a subject.
@@ -111,22 +111,23 @@ export class LaunchRegistry<L extends Launch = Launch> {
 
   /** A takeover re-derivation in flight, or undefined — the same answer from the cluster. */
   adoptInFlight(subject: string): Promise<L | undefined> | undefined {
-    return this.adopting.get(subject)
+    const attempt = this.adopting.get(subject)
+    return attempt && this.stillServed(subject, attempt.releasedAt) ? attempt.run : undefined
   }
 
   /** Single-flight the takeover re-derivation, handing `derive` the fence snapshot to compare against. */
   adopt(subject: string, derive: (releasedAt: number) => Promise<L | undefined>): Promise<L | undefined> {
-    const inFlight = this.adopting.get(subject)
+    const inFlight = this.adoptInFlight(subject)
     if (inFlight) return inFlight
+    const releasedAt = this.releaseFence(subject)
     const run = (async (): Promise<L | undefined> => {
       const existing = this.launches.get(subject)
       if (existing) return existing
-      const releasedAt = this.releaseFence(subject)
       return await derive(releasedAt)
     })().finally(() => {
-      if (this.adopting.get(subject) === run) this.adopting.delete(subject)
+      if (this.adopting.get(subject)?.run === run) this.adopting.delete(subject)
     })
-    this.adopting.set(subject, run)
+    this.adopting.set(subject, { releasedAt, run })
     return run
   }
 }
