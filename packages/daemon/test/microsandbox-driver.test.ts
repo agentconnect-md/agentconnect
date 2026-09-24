@@ -6,6 +6,7 @@ import { runInNewContext } from 'node:vm'
 import { createHash } from 'node:crypto'
 import { decode, encode } from 'cborg'
 import type { ExecEvent, ModifyOptions } from 'microsandbox'
+import type { SecretBuilder } from 'microsandbox/native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   MicrosandboxManager,
@@ -311,23 +312,25 @@ function fakeSdk() {
                 data.placeholder = value
                 return entry
               },
-              allowHost(value: string) {
+              allow(value: string) {
                 data.host.push(value)
                 return entry
               },
-              injectBasicAuth(value: boolean) {
+              // Headers only: a key in a query string or body is never substituted.
+              substituteInHeaders(value: boolean) {
+                expect(value).toBe(true)
+                return entry
+              },
+              substituteInQuery(value: boolean) {
                 expect(value).toBe(false)
                 return entry
               },
-              injectQuery(value: boolean) {
-                expect(value).toBe(false)
-                return entry
-              },
-              injectBody(value: boolean) {
+              substituteInBody(value: boolean) {
                 expect(value).toBe(false)
                 return entry
               }
-            }
+              // The SDK's own names, so a rename fails the typecheck rather than a real VM.
+            } satisfies Partial<Record<keyof SecretBuilder, unknown>>
             configure(entry)
             secrets[name] = data
             return builder
