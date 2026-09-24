@@ -4,11 +4,12 @@ import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import type { MicrosandboxSecret } from '../microsandbox/secrets.js'
 import { hostShimUnavailableReason, startHostShim, type HostShim, type HostShimInput } from './host-shim.js'
+import { srtShimBoundary } from './srt-shim.js'
 
-/** The strategies the executor facet can prepare (session-executors.md §5); `srt` joins with R1 and `docker` later. */
-export type ExecutionStrategy = 'host' | 'microsandbox'
+/** The strategies the executor facet can prepare (session-executors.md §5); `docker` joins later. */
+export type ExecutionStrategy = 'host' | 'srt' | 'microsandbox'
 
-export const EXECUTION_STRATEGIES: readonly ExecutionStrategy[] = ['host', 'microsandbox']
+export const EXECUTION_STRATEGIES: readonly ExecutionStrategy[] = ['host', 'srt', 'microsandbox']
 
 /** The strategies this machine runs its own sessions in: the `sandbox` table's keys (§5). */
 export type SandboxStrategy = 'host' | 'srt' | 'microsandbox'
@@ -62,6 +63,7 @@ export function effectiveStrategies(input: {
   const hostShim = hostShimUnavailableReason(input.platform ?? process.platform)
   return {
     host: hostShim && input.table.host.available ? { available: false, reason: hostShim } : input.table.host,
+    srt: input.table.srt,
     microsandbox: input.table.microsandbox
   }
 }
@@ -150,23 +152,58 @@ export function hostLauncher(
   daemonRoot: string,
   start: (input: HostShimInput) => Promise<HostShim> = startHostShim
 ): StrategyLauncher {
+  return { start: ({ environment, log }) => startShim(start, { daemonRoot, environment, log }) }
+}
+
+/** The `srt` strategy (§5): the `host` launcher with SRT around the shim, whose policy this machine composes from the environment and its own paths. */
+export function srtLauncher(
+  daemonRoot: string,
+  deps: {
+    /** This machine's agents directory, hidden from every environment like the daemon root. */
+    agentsRoot?: string
+    /** The code the shim and its runtimes read: node and this machine's runtime installs. */
+    readRoots: () => string[]
+    hostEnv?: NodeJS.ProcessEnv
+  },
+  start: (input: HostShimInput) => Promise<HostShim> = startHostShim
+): StrategyLauncher {
   return {
-    start: async ({ environment, log }) => {
-      // A host shim shares this machine's filesystem, so the workspace root and the seed's pointers are all it needs.
-      const shim = await start({
+    start: ({ environment, log }) =>
+      startShim(start, {
         daemonRoot,
-        workspaceRoot: environment.workspaceRoot,
+        environment,
         log,
-        ...(environment.hosted ? { seedEnv: environment.hosted.env } : {})
+        boundary: srtShimBoundary({
+          daemonRoot,
+          ...(deps.agentsRoot ? { agentsRoot: deps.agentsRoot } : {}),
+          mounts: environment.mounts,
+          readRoots: deps.readRoots(),
+          ...(deps.hostEnv ? { hostEnv: deps.hostEnv } : {}),
+          log
+        })
       })
-      return {
-        connect: () => connect(shim.socketPath),
-        runtimeRoot: shim.runtimeRoot,
-        helperRoot: shim.helperRoot,
-        missingHelpers: shim.missingHelpers,
-        exited: shim.exited,
-        stop: () => shim.stop()
-      }
-    }
+  }
+}
+
+async function startShim(
+  start: (input: HostShimInput) => Promise<HostShim>,
+  input: { daemonRoot: string; environment: EnvironmentDescriptor; log: Logger; boundary?: HostShimInput['boundary'] }
+): Promise<SessionEnvironment> {
+  const { environment } = input
+  // A host shim shares this machine's filesystem, so the workspace root and the seed's pointers are all it needs.
+  const shim = await start({
+    daemonRoot: input.daemonRoot,
+    workspaceRoot: environment.workspaceRoot,
+    log: input.log,
+    ...(environment.hosted ? { seedEnv: environment.hosted.env } : {}),
+    ...(input.boundary ? { boundary: input.boundary } : {})
+  })
+  return {
+    connect: () => connect(shim.socketPath),
+    runtimeRoot: shim.runtimeRoot,
+    helperRoot: shim.helperRoot,
+    missingHelpers: shim.missingHelpers,
+    exited: shim.exited,
+    stop: () => shim.stop()
   }
 }

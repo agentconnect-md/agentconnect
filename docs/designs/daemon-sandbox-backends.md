@@ -129,9 +129,10 @@ the old optional-sandbox downgrade is gone, as is the downgrade of an
 `externalExecution` runtime, which now runs only under `host`. `srt` and
 `microsandbox` sessions run in one process, each resolving its runtime from its own
 catalog: the host install for `host` and `srt`, the image's runtimes for
-`microsandbox`. Executor placement asks for the agent's strategy by name, and an
-`srt` session stays on its holder with a `no_candidate` verdict until R1 gives the
-facet an `srt` launcher.
+`microsandbox`. Executor placement asks for the agent's strategy by name, and every
+strategy spreads: an `srt` session lands on a member whose facet offers `srt`
+([below](#the-srt-strategy-srt-around-the-shim)). This machine's own `srt` sessions
+still launch through the per-runtime SRT provider until R1b.
 
 The Control Plane half landed first. An agent stores `execution`, a strategy slug,
 beside `runInSandbox`, and the two are written together. The Control Plane checks a
@@ -1130,10 +1131,61 @@ variable, the Git config location and `AC_MCP_ENDPOINT` move with it; the defaul
 is the image's layout.
 
 `effectiveStrategies` (`execution/strategies.ts`) is the table the facet prepares
-from: `host` and `microsandbox` of the machine's own table
+from: `host`, `srt` and `microsandbox` of the machine's own table
 (`machineStrategies`), each available or unavailable with a reason, with `host` on
 Linux alone. The executor facet reports it at registration, beside the machine's own
 table for its own sessions ([Strategy table](#strategy-table-implemented-on-the-daemon)).
+
+### The srt strategy: SRT around the shim
+
+`srtLauncher` (`execution/strategies.ts`) is the host launcher with SRT around the
+shim's process ([session-executors.md](session-executors.md) §5), so every runtime,
+bridge and helper the shim starts is inside the boundary. `startHostShim` takes the
+boundary as an option; `srtShimBoundary` (`execution/srt-shim.ts`) wraps the shim's
+command once its runtime root exists.
+
+- **The policy is this machine's.** `srtShimPolicy` composes it from the
+  environment and this machine's own paths; a holder sends none. Writable: the
+  environment's directory, its `home`, the runtime root, SRT's temp root, and the
+  environment's writable mounts, which for a hosted session are its directory and
+  the shared sign-in its HOME points at. Hidden: the daemon root, the agents
+  directory, the host HOME, the temp roots, `/run` and every runtime's state
+  location, as for a local confined launch. Read-only carve-backs: the shim bundle
+  (the helper root), node, the daemon's runtime store whole — a runtime a `prepare`
+  installs after the start must be visible — and each admitted runtime's install. A
+  writable mount that would reopen a protected root refuses the start; a read root
+  that would reopen one is left out and logged.
+- **The VM's rule for `.git`.** The policy denies nothing under `.git`: the holder's
+  Git runs through the shim inside the boundary, as in a VM. The runtime's inner
+  profile keeps its own deny.
+- **The policy lives outside the boundary**, in `<runtimeRoot>.p` beside the runtime
+  root, which the sandbox cannot read or write. It goes with the runtime root, and
+  `sweepStaleHostShims` removes one whose runtime root no live shim owns.
+- **The shim's bundle hosts the provider.** The launch is
+  `node <shim entry> __sandbox-runtime <policy> <daemon pid> <environment> -- node <shim entry> --identity-stdin`,
+  so the executor's own installation is the one SRT runs from, and the identity
+  still arrives on stdin.
+- **No parent-death descriptor.** The provider hands bubblewrap stdio only, so the
+  launcher sets no `AC_SHIM_PARENT_FD`. The provider's owner watch ends the sandbox
+  when the daemon dies: bubblewrap's PID namespace takes the shim and every runtime
+  with it.
+- **A short temp root**, `<runtimeRoot>/t`, handed to the provider as SRT's TMPDIR.
+  SRT's multiplexer socket sits directly under TMPDIR, so the root stays within the
+  AF_UNIX budget; a daemon root too long for it is refused.
+- **SRT's proxy reaches the runtimes.** SRT isolates the network namespace and sets
+  `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` (and their lowercase
+  forms) for its bridge; the provider adds `NODE_USE_ENV_PROXY`. The ACP runner copies
+  them from its own environment over the launch's in both environment modes, but
+  only when SRT marked the shim (`SANDBOX_RUNTIME=1`): inside that namespace the
+  bridge is the only route out. Pods and VMs are unchanged.
+- **Stop reaches the shim.** SRT forwards no signal inward, so stop sends SIGTERM to
+  the shim itself — the process carrying the launch's mark and its socket — which ends
+  its runtimes before it exits; the group kill past the deadline and the marked sweep
+  remain behind it.
+
+The shim's socket is inside what the runtime can write, as in a pod or a VM: a
+runtime can reach and replace it. `test/srt-shim.test.ts` runs the real boundary in
+CI's **Sandbox (Linux)** job.
 
 ### Sharing a machine with its group
 
@@ -1168,7 +1220,9 @@ copied once, and files already in the session's `home` always win. The seed also
 carries this machine's own values of the provider-key variables a holder strips, for
 the runtimes it admits, from their definitions over its environment as a local launch
 here takes them; the shim fills the seed
-in beneath the holder's environment. A `microsandbox` environment seeds
+in beneath the holder's environment. An `srt` environment takes the same seed, and
+the shared sign-in it points at becomes one of the boundary's writable roots, so a
+token refresh still works. A `microsandbox` environment seeds
 its own `home` instead, through the local VM's credential step
 ([API key protection](#api-key-protection)): the VM starts with this machine's
 recognized keys as placeholder secrets, `home` holds the projected files with
@@ -1185,11 +1239,10 @@ agent's other environment and secrets come from the session's holder, over the
 encrypted pipe.
 
 **When the facet is on.** Only when `share` is true, the effective strategy table
-has an available entry, and the listener is bound. This version prepares the
-`host` strategy alone, so the facet is on only on Linux, and it reports
-`microsandbox` as unavailable to holders until it can prepare one. A machine that
-shares but can run no strategy, or cannot bind, starts with the facet dark and
-logs why.
+has an available entry, and the listener is bound. It prepares `host`, `srt` and
+`microsandbox`, each only where the table has it available; all three need Linux. A
+machine that shares but can run no strategy, or cannot bind, starts with the facet
+dark and logs why.
 
 **What it opens.** One TCP listener on every interface, on an ephemeral port that
 registration publishes as `capabilities.executor.endpoint`. Nothing fixes the port
@@ -1240,8 +1293,8 @@ durably before anything else happens) and returns in the `ready` reply:
 
 An environment is bound to the agent it was created for: a `prepare` that names
 another agent is refused, because the Control Plane vouched only for the agent the
-request names. `microsandbox` is `strategy_unavailable`, and a draining daemon
-answers `draining`.
+request names. A strategy the effective table does not have available is
+`strategy_unavailable`, and a draining daemon answers `draining`.
 
 **Idle stop.** An environment with no admitted pipe for sixty seconds — two of the
 holder dialer's capped reconnect delays, so a blip it is still retrying through is
@@ -1308,11 +1361,11 @@ Delivery is split into independently reviewable steps:
    agent's strategy choice ([above](#strategy-table-implemented-on-the-daemon)): the
    Control Plane half, then the daemon's table, probes, dispatch and refusal (S2a),
    then the birth strategy and mismatch refusal (S2b), target checks and the image's
-   model probe (S2c), and the console picker (S3); still designed are local VMs
-   launched through the in-process executor and `srt` as an SRT boundary around the
-   shim, local and remote
-   (session-executors.md §5, §11, §12). Local microsandbox Git and workspace files
-   already cross the shim instead of agentd exec.
+   model probe (S2c), the console picker (S3), local VMs launched through the
+   in-process executor (M4), and `srt` as an SRT boundary around the shim on an
+   executor (R1a); still designed is local `srt` through the in-process executor,
+   retiring the direct SRT launch (R1b; session-executors.md §5, §11, §12). Local
+   microsandbox Git and workspace files already cross the shim instead of agentd exec.
 
 Implementation status above does not establish successful end-to-end daemon
 execution. Pull requests that reach this path boot one real VM in CI

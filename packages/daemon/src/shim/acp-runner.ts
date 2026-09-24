@@ -34,6 +34,29 @@ export const SANDBOX_PROVIDER_ENV: Readonly<Record<'claude' | 'codex' | 'deepsee
 /** Filesystem and locale facts only the runtime's own machine knows: HOME above all, and where a host executor's HOME seed left the Claude sign-in. */
 const POD_BASE_ENV = ['HOME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ', 'CLAUDE_SECURESTORAGE_CONFIG_DIR'] as const
 
+/** What SRT sets for its proxy bridge (session-executors.md §5): inside its network namespace that bridge is the only route out. */
+export const SRT_PROXY_ENV = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+  'NODE_USE_ENV_PROXY'
+] as const
+
+/** A shim SRT wrapped hands its runtimes that route over whatever the launch named, which could only reach nothing; elsewhere nothing changes. */
+export function applySrtProxyEnv(env: Record<string, string>, podEnv: Record<string, string | undefined>): void {
+  // SRT marks every command it wraps with this.
+  if (podEnv.SANDBOX_RUNTIME !== '1') return
+  for (const name of SRT_PROXY_ENV) {
+    const value = podEnv[name]
+    if (value) env[name] = value
+  }
+}
+
 function podBaseEnv(podEnv: Record<string, string | undefined>): Record<string, string> {
   const env: Record<string, string> = {}
   for (const name of POD_BASE_ENV) {
@@ -200,6 +223,7 @@ export class AcpRunner {
     // A local VM's launch gets what a direct spawn of it got: the daemon's environment and its resolved hints, no pod fill-in.
     if (this.deps.completeEnv) {
       const env = { ...payload.env }
+      applySrtProxyEnv(env, this.deps.podEnv ?? {})
       this.fillHints(payload, env)
       return this.spawnChild(this.deps.resolveCommand?.(payload.command, env) ?? payload.command, payload, env)
     }
@@ -210,6 +234,7 @@ export class AcpRunner {
     // credentials from the SandboxTemplate, and those are forwarded deliberately by
     // sandboxProviderEnv, not in bulk.
     const env = { ...podBaseEnv(this.deps.podEnv ?? {}), ...seedEnv(this.deps.podEnv ?? {}), ...payload.env }
+    applySrtProxyEnv(env, this.deps.podEnv ?? {})
     // After the daemon's env, so an agent's `gh` reaches the image's per-repo wrapper even when a PATH travelled.
     const ghPath = ghWrapperPath(env.PATH)
     if (ghPath !== undefined) env.PATH = ghPath

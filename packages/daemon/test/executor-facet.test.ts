@@ -170,7 +170,7 @@ describe('executor facet', () => {
     const facet = await startExecutorFacet({
       daemonRoot: root,
       share: true,
-      strategies: () => ({ host: { available: true }, microsandbox: { available: true } }),
+      strategies: () => ({ host: { available: true }, srt: { available: true }, microsandbox: { available: true } }),
       capacity: () => 4,
       ownSessions: () => 0,
       draining: () => false,
@@ -183,7 +183,7 @@ describe('executor facet', () => {
       retentionMs: () => null,
       log,
       clock,
-      launchers: { host: { start: startShim }, microsandbox: vmLauncher },
+      launchers: { host: { start: startShim }, srt: { start: startShim }, microsandbox: vmLauncher },
       listen: { host: '127.0.0.1' },
       ...over
     })
@@ -252,6 +252,7 @@ describe('executor facet', () => {
       const { facet } = await start({
         strategies: () => ({
           host: { available: false, reason: 'the host strategy needs Linux' },
+          srt: { available: false, reason: 'bwrap is not on PATH' },
           microsandbox: { available: false, reason: 'microsandbox is not the configured sandbox backend' }
         })
       })
@@ -259,7 +260,7 @@ describe('executor facet', () => {
       expect(await facet.prepare(req(1))).toEqual({ status: 'refused', reason: 'facet_off' })
       // Every strategy's own reason, so an operator reads what to fix rather than "no strategy".
       expect(lines.join('\n')).toMatch(
-        /sandbox\.share is on but the facet stays off.*needs Linux.*not the configured sandbox backend/
+        /sandbox\.share is on but the facet stays off.*needs Linux.*bwrap is not on PATH.*not the configured sandbox backend/
       )
     })
 
@@ -269,7 +270,7 @@ describe('executor facet', () => {
       const facts = facet.facts()!
       expect(facts).toEqual({
         enabled: true,
-        strategies: { host: { available: true }, microsandbox: { available: true } },
+        strategies: { host: { available: true }, srt: { available: true }, microsandbox: { available: true } },
         endpoint: { host: '192.0.2.10', port: expect.any(Number) },
         capacity: 4
       })
@@ -468,6 +469,17 @@ describe('executor facet', () => {
       expect(record()).toMatchObject({ generation: 2, launchId: LAUNCH(6) })
     })
 
+    it('keeps an srt environment srt across a restart: it attaches in srt and refuses any other strategy (§5)', async () => {
+      const first = await start()
+      expect(ready(await first.facet.prepare(req(1, { strategy: 'srt' }))).generation).toBe(1)
+      expect(record()).toMatchObject({ strategy: 'srt' })
+      await first.facet.stop()
+      facets = []
+      const { facet } = await start()
+      expect(await facet.prepare(req(2))).toEqual({ status: 'refused', reason: 'strategy_mismatch' })
+      expect(ready(await facet.prepare(req(3, { strategy: 'srt' }))).generation).toBe(2)
+    })
+
     it.skipIf(process.platform !== 'linux')(
       'ends what a killed daemon left — its marked processes and its runtime roots — before it starts any shim',
       async () => {
@@ -537,7 +549,11 @@ describe('executor facet', () => {
       await facet.stop()
       facets = []
       const restarted = await start({
-        strategies: () => ({ host: { available: true }, microsandbox: { available: false, reason: 'no KVM here' } })
+        strategies: () => ({
+          host: { available: true },
+          srt: { available: true },
+          microsandbox: { available: false, reason: 'no KVM here' }
+        })
       })
       expect(await restarted.facet.prepare(req(5, { strategy: 'microsandbox' }))).toEqual({
         status: 'refused',
@@ -553,7 +569,11 @@ describe('executor facet', () => {
       let draining = false
       const { facet } = await start({
         draining: () => draining,
-        strategies: () => ({ host: { available: true }, microsandbox: { available: false, reason: 'no KVM here' } })
+        strategies: () => ({
+          host: { available: true },
+          srt: { available: true },
+          microsandbox: { available: false, reason: 'no KVM here' }
+        })
       })
       expect(await facet.prepare(req(1, { strategy: 'microsandbox' }))).toEqual({
         status: 'refused',
@@ -575,6 +595,7 @@ describe('executor facet', () => {
       })
       expect(facet.facts()?.strategies).toEqual({
         host: { available: true },
+        srt: { available: false, reason: 'the executor facet prepares no srt environments' },
         microsandbox: { available: false, reason: 'the executor facet prepares no microsandbox environments' }
       })
     })

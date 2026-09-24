@@ -35,7 +35,7 @@ function tempLeaf(hostKey: HostKey | undefined): string {
 export const AF_UNIX_PATH_MAX = 107
 
 /** The widest socket SRT composes under TMPDIR — a Linux pid at its 22-bit ceiling. */
-const WIDEST_SRT_SOCKET = 'srt-mux-4194304-0.sock'
+export const WIDEST_SRT_SOCKET = 'srt-mux-4194304-0.sock'
 
 /** Create one host's temp directory and return its canonical path. Short is not the same as bounded: a deep enough daemon root plus a long agent name still overflows `sun_path`, and it fails HERE naming the path and the limit, rather than as an opaque `listen EINVAL` three ACP start attempts deep. */
 export function prepareSandboxTempDir(

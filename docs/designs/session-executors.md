@@ -216,7 +216,7 @@ sandbox backends:
 | ---------------- | ---------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | `host`           | none                         | a Linux machine that runs Node                                | v1, first                                                                         |
 | `microsandbox`   | VM                           | Linux, KVM, msb + libkrunfw, the runtime image                | v1, second                                                                        |
-| `srt`            | process (bubblewrap)         | Linux, bwrap, socat, rg on PATH, unprivileged user namespaces | next: an SRT boundary around the shim (below)                                     |
+| `srt`            | process (bubblewrap)         | Linux, bwrap, socat, rg on PATH, unprivileged user namespaces | third: an SRT boundary around the shim (below); on executors, local next          |
 | `docker`         | container, optionally gVisor | docker or podman, the runtime image (already OCI)             | later                                                                             |
 | `host` off Linux | none                         | macOS or Windows                                              | later: a non-Linux read path and a second look at the socket's protection (below) |
 
@@ -486,6 +486,25 @@ the shim requires:
   and at worst take its own session's channel during a re-dial. That is the exposure
   a pod's loopback port and a VM's guest listener already have. Impersonating the
   shim to the holder needs the identity token, which exists only in the shim's memory.
+
+**Landed on executors (R1a).** `srtLauncher` wraps the shim with the provider from
+the shim's own bundle, and the three changes above are in: no `AC_SHIM_PARENT_FD`
+under the boundary; the ACP runner copies SRT's proxy variables (`HTTP_PROXY`,
+`HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, their lowercase forms and
+`NODE_USE_ENV_PROXY`) from its own environment over the launch's, only when SRT
+marked it; and the policy denies nothing under `.git`. SRT's temp root is
+`<runtimeRoot>/t`, short enough for its sockets, and the policy file sits beside the
+runtime root, outside everything the boundary can write. Stop sends SIGTERM to the
+shim itself, since SRT forwards no signal inward. The facet offers `srt` when its
+probe passes, and placement spreads `srt` sessions like the others.
+[daemon-sandbox-backends.md](daemon-sandbox-backends.md) has the policy.
+`test/srt-shim.test.ts` runs the real boundary in CI's **Sandbox (Linux)** job: a
+holder outside binds the shim; the daemon root and other sessions stay hidden and no
+write outside the session reaches the host; SRT's proxy reaches the runtime; the
+holder's `git config` and `git remote add` succeed; and killing the daemon ends the
+sandbox, runtimes included. The identity token arrives on stdin, so the shim's
+command line and environment never carry it. Whether a runtime inside the boundary
+can reach the token some other way is still an open check, not a measured result.
 
 Costs, from the same probe on built bundles with an echo runtime — relative, not
 absolute:
@@ -1257,8 +1276,9 @@ session and a spread one take the same path: the strategy's launcher prepares th
 environment and `RemoteShimDriver` drives the shim in it. Each strategy had two — the
 local microsandbox VM was keyed, driven and reached for Git differently from a hosted
 one, and a local `srt` session is a direct child with its own policy plumbing — and a
-fix to one did not reach the other. `microsandbox` now has one (step 4); `srt` still has
-two until R1.
+fix to one did not reach the other. `microsandbox` now has one (step 4); `srt` has its
+launcher on executors (R1a) and still has two paths until its local sessions move
+onto it (R1b).
 
 The local path reaches the launcher **in process**. It does not relay `prepare`
 through the Control Plane, open a pipe or run the TLS-PSK handshake: a local session
@@ -1328,8 +1348,10 @@ locally went, in four steps that each landed alone:
    executor path: a helper tunnel the shim cannot serve is logged by name and the VM
    still runs, where the bound mode refused the VM.
 
-**`srt` second**, on §5's launcher from its first version, local and remote at once.
-The local direct SRT launch retires with it — the provider around each runtime, the
+**`srt` second**, on §5's launcher, in two steps. The launcher, the executor's policy
+and the spread landed first (R1a), so a remote `srt` session already runs inside an
+SRT-wrapped shim. Then local sessions move onto it (R1b), and the local direct SRT
+launch retires with them — the provider around each runtime, the
 per-host settings and temp directories, the host-socket injection for MCP and
 credentials, the local Git runner for confined sessions — and one `srt` policy
 remains. It needs steps 3 and 4 first: a `shared` confined agent runs in an
@@ -1388,8 +1410,8 @@ About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
 **The 2026-09-24 revision** adds the following. S1, S2a, S2b, S2c, S3 and M1–M4 have
-landed and R1 has not started. Each lands alone; S1–S3 are one feature,
-S2 lands in three parts, and M1–M4 precede R1.
+landed, and so has R1a; R1b has not. Each lands alone; S1–S3 are one feature,
+S2 lands in three parts, M1–M4 precede R1, and R1 lands in two parts.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1402,7 +1424,8 @@ S2 lands in three parts, and M1–M4 precede R1.
 | M2  | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | M3  | The launcher takes an environment descriptor instead of a session leaf: hosted and local descriptors, identities unchanged, nothing migrated (§11 step 3).                                                                                                                                                                                                                                                                                                                                                                                               |
 | M4  | The in-process executor entry: local microsandbox launches through it, a local VM's shim starts exposed and `RemoteShimDriver` binds it, every `withShim` caller (Git, workspace files, skills) moves to the entry's `withEnvironment`, and the bound shim mode retires (§11 step 4).                                                                                                                                                                                                                                                                    |
-| R1  | The `srt` strategy (§5): the launcher, the three changes the probe found, the executor's policy; local `srt` launches through it and the direct SRT launch retires.                                                                                                                                                                                                                                                                                                                                                                                      |
+| R1a | The `srt` strategy on executors (§5): the launcher, the three changes the probe found, the executor's policy, and `srt` sessions spread.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| R1b | Local `srt` launches through the in-process entry, `shared` confined agents included, and the direct SRT launch retires (§11).                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ## 13. Open questions
 

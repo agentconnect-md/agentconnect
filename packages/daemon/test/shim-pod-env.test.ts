@@ -101,6 +101,45 @@ describe('sandbox spawn environment', () => {
     await runner.close(1_000).catch(() => {})
   })
 
+  // session-executors.md §5: inside SRT's network namespace its proxy bridge is the only route out, so its variables win in both env modes.
+  it("hands the runtime SRT's proxy environment over the launch's, and only a shim SRT wrapped", async () => {
+    const proxy = {
+      HTTP_PROXY: 'http://localhost:3128',
+      HTTPS_PROXY: 'http://localhost:3128',
+      https_proxy: 'http://localhost:3128',
+      ALL_PROXY: 'http://localhost:3128',
+      NO_PROXY: 'localhost,127.0.0.1',
+      NODE_USE_ENV_PROXY: '1'
+    }
+    const seen: Array<Record<string, string>> = []
+    const runnerOf = (podEnv: Record<string, string>, completeEnv = false) =>
+      new AcpRunner({
+        emit: () => {},
+        podEnv,
+        completeEnv,
+        resolveCommand: ((command, env) => {
+          seen.push({ ...env })
+          return command
+        }) satisfies ResolveCommand,
+        log: { info: () => {}, warn: () => {} }
+      } as never)
+    const sent = { HTTPS_PROXY: 'http://proxy.example.test:8080', PATH: '/usr/bin' }
+    for (const completeEnv of [false, true]) {
+      const wrapped = runnerOf({ HOME: '/agent', PATH: '/usr/bin', SANDBOX_RUNTIME: '1', ...proxy }, completeEnv)
+      await openOf(wrapped)({ op: 'open', command: 'true', args: [], env: sent }).catch(() => {})
+      expect(seen.at(-1)).toMatchObject(proxy)
+      // The marker itself stays where SRT set it.
+      expect(seen.at(-1)?.SANDBOX_RUNTIME).toBeUndefined()
+      await wrapped.close(1_000).catch(() => {})
+    }
+    // A pod or a VM with a proxy of its own is not SRT's: the launch's value stands and nothing is added.
+    const pod = runnerOf({ HOME: '/agent', PATH: '/usr/bin', ...proxy })
+    await openOf(pod)({ op: 'open', command: 'true', args: [], env: sent }).catch(() => {})
+    expect(seen.at(-1)?.HTTPS_PROXY).toBe('http://proxy.example.test:8080')
+    expect(seen.at(-1)?.HTTP_PROXY).toBeUndefined()
+    await pod.close(1_000).catch(() => {})
+  })
+
   // A host executor's HOME seed leaves the Claude sign-in where only that machine can name it (session-executors.md §8).
   it("fills in where this machine's HOME seed left the Claude sign-in, under whatever the daemon sent", async () => {
     const seen: Array<Record<string, string>> = []

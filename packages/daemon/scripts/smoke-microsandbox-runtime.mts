@@ -191,6 +191,7 @@ const facet = await startExecutorFacet({
   // The one strategy under test here; `host` has its own end-to-end case and needs no VM.
   strategies: () => ({
     host: { available: false, reason: 'not part of this smoke test' },
+    srt: { available: false, reason: 'not part of this smoke test' },
     microsandbox: { available: true }
   }),
   // A VM seeds its own HOME, with the machine's credentials behind placeholders, so the facet's plain seed below is not used for it.

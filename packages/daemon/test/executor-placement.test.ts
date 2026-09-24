@@ -119,22 +119,23 @@ describe('the birth predicate', () => {
     expect(strategyFor(ASK, candidate('d', { strategies: { microsandbox: { available: true } } }))).toBeUndefined()
   })
 
-  it('keeps an srt session on its holder, as no candidate before R1 can run it', () => {
+  it('places an srt session on a member whose facet offers srt, and keeps home a strategy no facet prepares', () => {
     const offersSrt = candidate('b', { strategies: { srt: { available: true } } })
     const answer: ExecutorCandidatesResult = { candidates: [offersSrt] }
-    for (const reachable of [answer, undefined]) {
-      expect(
-        placeSession({
-          ask: { ...ASK, strategy: 'srt' },
-          holderHostedSessions: 9,
-          holderCapacity: 32,
-          holderAuthenticates: true,
-          ...(reachable ? { answer: reachable } : {})
-        })
-      ).toEqual({ stayedHome: 'no_candidate' })
-    }
-    expect(strategySpreads('srt')).toBe(false)
-    expect(strategySpreads('host') && strategySpreads('microsandbox')).toBe(true)
+    const place = (strategy: string, reachable?: ExecutorCandidatesResult) =>
+      placeSession({
+        ask: { ...ASK, strategy },
+        holderHostedSessions: 9,
+        holderCapacity: 32,
+        holderAuthenticates: true,
+        ...(reachable ? { answer: reachable } : {})
+      })
+    expect(place('srt', answer)).toEqual({ spread: [{ daemonId: 'b', strategy: 'srt' }] })
+    expect(place('srt')).toEqual({ stayedHome: 'control_plane_unreachable' })
+    for (const reachable of [answer, undefined])
+      expect(place('docker', reachable)).toEqual({ stayedHome: 'no_candidate' })
+    expect(['host', 'srt', 'microsandbox'].every(strategySpreads)).toBe(true)
+    expect(strategySpreads('docker')).toBe(false)
   })
 })
 

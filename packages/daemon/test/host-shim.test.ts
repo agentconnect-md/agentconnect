@@ -409,14 +409,19 @@ describe('the table an executor reports to its group', () => {
   it('keeps host Linux-only and passes the rest through', () => {
     expect(effectiveStrategies({ platform: 'linux', table: AVAILABLE })).toEqual({
       host: { available: true },
+      srt: { available: true },
       microsandbox: { available: true }
     })
     const darwin = effectiveStrategies({ platform: 'darwin', table: AVAILABLE })
     expect(darwin.host).toEqual({ available: false, reason: expect.stringContaining('needs Linux') })
     // A withdrawn host keeps its own reason rather than the platform's.
-    const off = machineStrategies({ offered: { ...OFFERED, host: false }, unavailable: { microsandbox: 'no KVM' } })
+    const off = machineStrategies({
+      offered: { ...OFFERED, host: false },
+      unavailable: { srt: 'unsupported platform darwin', microsandbox: 'no KVM' }
+    })
     expect(effectiveStrategies({ platform: 'darwin', table: off })).toEqual({
       host: { available: false, reason: 'sandbox.host is off on this daemon' },
+      srt: { available: false, reason: 'unsupported platform darwin' },
       microsandbox: { available: false, reason: 'no KVM' }
     })
   })
