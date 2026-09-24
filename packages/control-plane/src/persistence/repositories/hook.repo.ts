@@ -2045,14 +2045,73 @@ export class PgHookRepo implements HookRepo {
   }
 
   async listRuns(orgId: OrgId, hookId: HookId, limit = 50): Promise<HookRunRecord[]> {
-    // Run rows carry their own `orgId`, so the fence rides this query rather
-    // than resting solely on the parent hook (org-scoped-data-layer.md §3.6).
+    // Scope by the run's own organization, not just the parent hook.
     const rows = await this.db.hookRun.findMany({
       where: { hookId, orgId },
       orderBy: { startedAt: 'desc' },
       take: limit
     })
-    return rows.map(toRunRecord)
+    // Older merge-cleanup reports omitted the session; hooks can share one PR session.
+    const missing = rows.flatMap((row) =>
+      row.status === 'success' &&
+      row.sessionId === null &&
+      row.event === 'pull_request:merged' &&
+      row.reason !== 'worktree_cleanup_no_session' &&
+      row.agentId !== null &&
+      row.dispatchDaemonId !== null &&
+      row.repoId !== null &&
+      row.pullNumber !== null
+        ? [
+            {
+              id: row.id,
+              agentId: row.agentId,
+              daemonId: row.dispatchDaemonId,
+              repoId: row.repoId,
+              thread: String(row.pullNumber),
+              startedAt: row.startedAt
+            }
+          ]
+        : []
+    )
+    if (missing.length === 0) return rows.map(toRunRecord)
+    const hook = await this.db.hookDef.findUnique({
+      where: { id: hookId },
+      select: { kind: true, agentId: true, repoId: true, githubSessionKey: true, repoFullName: true }
+    })
+    if (hook?.kind !== 'github') return rows.map(toRunRecord)
+    const channel = hook.githubSessionKey ?? hook.repoFullName
+    if (!channel) return rows.map(toRunRecord)
+    const eligible = missing
+      .filter((run) => run.agentId === hook.agentId && run.repoId === hook.repoId)
+      .map((run) => ({ ...run, channel }))
+    if (eligible.length === 0) return rows.map(toRunRecord)
+    const sessions = await this.db.sessionMeta.findMany({
+      where: {
+        orgId,
+        platform: 'hook',
+        OR: eligible.map(({ agentId, daemonId, channel, thread, startedAt }) => ({
+          agentId,
+          daemonId,
+          channel,
+          thread,
+          startedAt: { lte: startedAt }
+        }))
+      },
+      select: { id: true, agentId: true, daemonId: true, channel: true, thread: true, startedAt: true }
+    })
+    const related = new Map<string, string>()
+    for (const run of eligible) {
+      const matches = sessions.filter(
+        (session) =>
+          session.agentId === run.agentId &&
+          session.daemonId === run.daemonId &&
+          session.channel === run.channel &&
+          session.thread === run.thread &&
+          session.startedAt.getTime() <= run.startedAt.getTime()
+      )
+      if (matches.length === 1) related.set(run.id, matches[0]!.id)
+    }
+    return rows.map((row) => toRunRecord({ ...row, sessionId: row.sessionId ?? related.get(row.id) ?? null }))
   }
 
   async existingDeliveryKeys(deliveryKeys: string[]): Promise<Set<string>> {
