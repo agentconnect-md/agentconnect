@@ -3387,6 +3387,8 @@ describe('githubRuleVerdict (pure predicate)', () => {
     ['pull_request', 'pull_request:reopened'],
     ['pull_request', 'pull_request:ready_for_review'],
     ['pull_request', 'pull_request:converted_to_draft'],
+    ['pull_request', 'pull_request:auto_merge_enabled'],
+    ['pull_request', 'pull_request:auto_merge_disabled'],
     ['issue_comment', 'issue_comment:deleted'],
     ['pull_request_review_comment', 'pull_request_review_comment:deleted']
   ])('hard-vetoes silent %s action even for an explicit legacy subscription', (event, eventAction) => {
