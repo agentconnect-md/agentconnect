@@ -331,19 +331,20 @@ describe('GithubRunCoordinator', () => {
   })
 
   it.each([
-    ['agent session start failure', 'session_start_failed'],
-    ['provider quota exhaustion', HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED],
-    ['provider authentication required', HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED]
-  ])('projects and repairs %s as skipped', async (_label, reason) => {
+    ['successful turn without review', 'success', null],
+    ['agent session start failure', 'failed', 'session_start_failed'],
+    ['provider quota exhaustion', 'failed', HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED],
+    ['provider authentication required', 'failed', HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED]
+  ] as const)('projects and repairs %s as failure', async (_label, status, reason) => {
     const row = run({
-      status: 'failed',
+      status,
       completedAt: new Date(NOW + 1_000),
-      reason
+      ...(reason ? { reason } : {})
     })
     const hooks = {
       getRun: vi.fn(async () => row),
       listRunsNeedingReviewProjection: vi.fn(async () => [row]),
-      upsertReviewProjection: vi.fn(async () => projection({ desiredState: 'failure' })),
+      upsertReviewProjection: vi.fn(async () => projection({ desiredState: 'skipped' })),
       bindRunProjection: vi.fn(async () => true),
       setProjectionDesired: vi.fn(async () => true),
       upsertReviewSubject: vi.fn(async () => {})
@@ -358,7 +359,7 @@ describe('GithubRunCoordinator', () => {
     expect(hooks.setProjectionDesired).toHaveBeenLastCalledWith(
       expect.any(String),
       1n,
-      'skipped',
+      'failure',
       expect.any(Date),
       row.id
     )
@@ -368,13 +369,13 @@ describe('GithubRunCoordinator', () => {
     expect(hooks.setProjectionDesired).toHaveBeenLastCalledWith(
       expect.any(String),
       1n,
-      'skipped',
+      'failure',
       expect.any(Date),
       row.id
     )
   })
 
-  it('repairs definite pre-dispatch agent unavailability as skipped', async () => {
+  it('repairs definite pre-dispatch agent unavailability as failure', async () => {
     const row = run({
       status: 'failed',
       completedAt: new Date(NOW + 1_000),
@@ -396,7 +397,7 @@ describe('GithubRunCoordinator', () => {
 
     await coordinator.repair()
 
-    expect(hooks.setProjectionDesired).toHaveBeenCalledWith(expect.any(String), 1n, 'skipped', expect.any(Date), row.id)
+    expect(hooks.setProjectionDesired).toHaveBeenCalledWith(expect.any(String), 1n, 'failure', expect.any(Date), row.id)
   })
 
   it('keeps a failed formal-review effect authoritative over quota exhaustion', async () => {
@@ -1049,7 +1050,7 @@ describe('GithubRunReporter', () => {
 
   it('presents definite daemon unavailability as Agent unavailable', async () => {
     const p = projection({
-      desiredState: 'skipped',
+      desiredState: 'failure',
       observedState: null,
       checkRunId: '90071992547409931'
     })
@@ -1059,7 +1060,7 @@ describe('GithubRunReporter', () => {
         id: p.checkRunId,
         external_id: p.externalId,
         status: 'completed',
-        conclusion: 'skipped',
+        conclusion: 'failure',
         output: { summary: JSON.parse(String(init?.body)).output.summary }
       })
     })
@@ -1081,20 +1082,52 @@ describe('GithubRunReporter', () => {
       output: { title: string; summary: string }
     }
     expect(body).toMatchObject({
-      conclusion: 'skipped',
+      conclusion: 'failure',
       output: { title: 'Agent unavailable' }
     })
     expect(body.details_url).toBeUndefined()
-    expect(body.output.summary).toContain('Phase: skipped')
+    expect(body.output.summary).toContain('Phase: failure')
     expect(JSON.stringify(body)).not.toContain(HOOK_DELIVERY_REASON_DAEMON_OFFLINE)
     expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
-      expect.objectContaining({ checkRunId: p.checkRunId, observedState: 'skipped' })
+      expect.objectContaining({ checkRunId: p.checkRunId, observedState: 'failure' })
     )
+  })
+
+  it('blocks merge and names provider credit exhaustion while keeping Request review available', async () => {
+    const p = projection({ desiredState: 'failure', observedState: null, checkRunId: '90071992547409935' })
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes(`/commits/${p.headSha}/pulls?`)) return Response.json([associatedPull(p)])
+      return Response.json({
+        id: p.checkRunId,
+        external_id: p.externalId,
+        status: 'completed',
+        conclusion: 'failure',
+        output: { summary: JSON.parse(String(init?.body)).output.summary }
+      })
+    })
+    const { reporter } = worker(p, fetchImpl, {
+      getRunById: vi.fn(async () =>
+        run({ status: 'failed', completedAt: new Date(NOW), reason: HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED })
+      )
+    })
+
+    await reporter.tick()
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body)) as {
+      conclusion: string
+      actions: Array<{ identifier: string }>
+      output: { title: string }
+    }
+    expect(body.conclusion).toBe('failure')
+    expect(body.output.title).toBe('Review could not be completed: provider usage limit reached')
+    expect(body.actions).toEqual([
+      { label: 'Request review', description: 'Start AgentConnect review', identifier: 'request_review' }
+    ])
   })
 
   it('publishes a Request review action when an external PR is waiting for a maintainer', async () => {
     const p = projection({
-      desiredState: 'skipped',
+      desiredState: 'failure',
       observedState: null,
       checkRunId: '90071992547409931'
     })
@@ -1104,7 +1137,7 @@ describe('GithubRunReporter', () => {
         id: p.checkRunId,
         external_id: p.externalId,
         status: 'completed',
-        conclusion: 'skipped',
+        conclusion: 'failure',
         output: { summary: JSON.parse(String(init?.body)).output.summary }
       })
     })
@@ -1126,7 +1159,7 @@ describe('GithubRunReporter', () => {
       output: { title: string; summary: string }
     }
     expect(body).toMatchObject({
-      conclusion: 'skipped',
+      conclusion: 'failure',
       actions: [
         {
           label: 'Request review',
@@ -1149,7 +1182,7 @@ describe('GithubRunReporter', () => {
 
   it('names the mention handle in the title and summary when the App slug is configured', async () => {
     const p = projection({
-      desiredState: 'skipped',
+      desiredState: 'failure',
       observedState: null,
       checkRunId: '90071992547409932'
     })
@@ -1159,7 +1192,7 @@ describe('GithubRunReporter', () => {
         id: p.checkRunId,
         external_id: p.externalId,
         status: 'completed',
-        conclusion: 'skipped',
+        conclusion: 'failure',
         output: { summary: JSON.parse(String(init?.body)).output.summary }
       })
     })
@@ -1199,7 +1232,7 @@ describe('GithubRunReporter', () => {
     // The state the fence incidents produced: the turn crossed the start barrier, ran, and was
     // interrupted with no verdict. It must not read like the runtime failed on the change.
     const p = projection({
-      desiredState: 'skipped',
+      desiredState: 'failure',
       observedState: null,
       checkRunId: '90071992547409934'
     })
@@ -1209,7 +1242,7 @@ describe('GithubRunReporter', () => {
         id: p.checkRunId,
         external_id: p.externalId,
         status: 'completed',
-        conclusion: 'skipped',
+        conclusion: 'failure',
         output: { summary: JSON.parse(String(init?.body)).output.summary }
       })
     })
@@ -1238,7 +1271,7 @@ describe('GithubRunReporter', () => {
       actions: Array<{ identifier: string }>
       output: { title: string; summary: string }
     }
-    expect(body.conclusion).toBe('skipped')
+    expect(body.conclusion).toBe('failure')
     expect(body.output.title).toBe('Comment @example-app to retry the interrupted review')
     expect(body.output.summary).toContain('How to run this review again')
     expect(body.output.summary).toContain('nothing in this pull request has been judged')
@@ -1254,7 +1287,7 @@ describe('GithubRunReporter', () => {
   it('publishes the Request review action on the create itself', async () => {
     // The create is the only request for a Check that is already terminal, so
     // the button it publishes can never be stripped by a follow-up write.
-    const p = projection({ desiredState: 'skipped', observedState: null, checkRunId: null })
+    const p = projection({ desiredState: 'failure', observedState: null, checkRunId: null })
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.includes(`/commits/${p.headSha}/pulls?`)) return Response.json([associatedPull(p)])
       if (init?.method === 'POST') return Response.json({ id: '90071992547409933', external_id: p.externalId })
@@ -1276,15 +1309,15 @@ describe('GithubRunReporter', () => {
     expect(creates).toHaveLength(1)
     expect(JSON.parse(String(creates[0]![1]?.body))).toMatchObject({
       name: CHECK_NAME_FOR_TEST,
-      conclusion: 'skipped',
+      conclusion: 'failure',
       actions: [{ label: 'Request review', description: 'Start AgentConnect review', identifier: 'request_review' }]
     })
     expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0)
   })
 
-  it('retries before writing when skipped presentation metadata is temporarily unavailable', async () => {
+  it('retries before writing when incomplete-review presentation metadata is temporarily unavailable', async () => {
     const p = projection({
-      desiredState: 'skipped',
+      desiredState: 'failure',
       subjectSyncGeneration: 1n,
       subjectSyncErrorCode: null
     })

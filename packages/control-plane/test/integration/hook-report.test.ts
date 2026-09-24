@@ -891,7 +891,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       projectionEpoch: failed.projectionEpoch!,
       mode: 'check',
       gateMode: 'informational',
-      desiredState: 'skipped',
+      desiredState: 'failure',
       currentHookRunId: failed.id,
       nextAttemptAt: firedAt
     })
@@ -925,7 +925,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       })
     ).toBe(true)
     expect(
-      await repo().setProjectionDesired(projection.id, projection.generation, 'skipped', startedAt, failed.id)
+      await repo().setProjectionDesired(projection.id, projection.generation, 'failure', startedAt, failed.id)
     ).toBe(false)
 
     expect(
@@ -955,14 +955,14 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
           isDraft: false,
           baseChanged: false,
           publishedComment: { kind: 'issue_comment', commentId: '5199581711' },
-          projectionDesiredState: 'neutral',
+          projectionDesiredState: 'failure',
           projectionNextAttemptAt: new Date(firedAt.getTime() + 2_000)
         },
         new Date(firedAt.getTime() + 2_000)
       )
     ).toBe(true)
     expect(await repo().getReviewProjection(projection.id)).toMatchObject({
-      desiredState: 'neutral',
+      desiredState: 'failure',
       sealedThrough: projection.generation
     })
     expect(await repo().getRun(HookId(hookId), 'projection-before-recovery')).toMatchObject({

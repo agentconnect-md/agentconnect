@@ -18,21 +18,12 @@ export type ProjectionDesiredState =
   | 'failure'
   | 'timed_out'
 
-export type HookRuntimeProjectionState = 'neutral' | 'skipped'
-
-/**
- * Convert the daemon's operational turn outcome into the informational Check
- * projection. A failed agent run without a formal review verdict is not a code
- * review finding, so the HookRun remains failed for observability while the
- * informational Check completes as non-blocking.
- */
+/** A completed review turn without a formal verdict cannot pass a required Check. */
 export function hookRuntimeProjectionState(outcome: {
   status: 'running' | 'success' | 'failed'
   reason?: string | null
-}): HookRuntimeProjectionState | null {
-  if (outcome.status === 'success') return 'neutral'
-  if (outcome.status !== 'failed') return null
-  return 'skipped'
+}): 'failure' | null {
+  return outcome.status === 'running' ? null : 'failure'
 }
 
 function reviewDesiredState(run: HookRunRecord): ProjectionDesiredState | null {
@@ -58,32 +49,21 @@ export function authoritativeHookProjectionState(run: HookRunRecord): Projection
   return run.turnStartedAt ? 'in_progress' : run.preparingAt ? 'preparing' : 'queued'
 }
 
-/** Product-facing label for a skipped Check; internal topology stays in HookRun.reason.
- *
- * `output.title` is the only field of ours GitHub renders in the Conversation tab's check list, so
- * a title with a reachable entry point states it instead of only the condition — the Checks tab
- * carries the rest (`hookSkippedCheckGuidance`). Without a configured App slug there is no handle
- * to name, so those titles fall back to the condition alone. */
-export function hookSkippedCheckLabel(reason?: string | null, appSlug?: string): string | null {
+/** Give an incomplete review a useful title without exposing internal topology. */
+export function hookIncompleteCheckLabel(reason?: string | null, appSlug?: string): string | null {
   if (isRetryableHookDeliveryReason(reason)) return 'Agent unavailable'
   if (reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED)
     return appSlug ? `Comment @${appSlug} to start the review` : 'Review requires a maintainer request'
   if (reason === HOOK_REPORT_REASON_AGENT_HANDOVER)
     return appSlug ? `Comment @${appSlug} to retry the interrupted review` : 'Review was interrupted before it finished'
-  if (
-    !reason ||
-    reason === HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED ||
-    reason === HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
-  )
-    return null
+  if (reason === HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED)
+    return 'Review could not be completed: provider usage limit reached'
+  if (!reason || reason === HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED) return null
   return 'Review could not be completed'
 }
 
-/** Markdown section appended to a skipped Check's summary, for the skips a maintainer can act on.
- * GitHub renders `output.summary` only on the Checks tab — the same surface that renders the
- * `Request review` action — so the why and the second entry point belong here. Naming the mention
- * handle depends on a configured App slug; the button is always available. */
-export function hookSkippedCheckGuidance(reason?: string | null, appSlug?: string): string | null {
+/** Tell maintainers how to retry an incomplete review on the Check details page. */
+export function hookIncompleteCheckGuidance(reason?: string | null, appSlug?: string): string | null {
   const mention = appSlug ? `comment \`@${appSlug}\` on this pull request, or ` : ''
   if (reason === HOOK_REPORT_REASON_AGENT_HANDOVER) {
     return [

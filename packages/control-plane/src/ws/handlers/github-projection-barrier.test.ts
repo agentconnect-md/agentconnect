@@ -174,7 +174,7 @@ describe('GitHub projection request barriers', () => {
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'ack', { ok: true })
   })
 
-  it('keeps provider quota exhaustion operationally failed while projecting it as skipped', async () => {
+  it('keeps provider quota exhaustion operationally failed and blocks merge', async () => {
     const recordReport = vi.fn(async () => true)
     const afterReport = vi.fn(async () => {})
     const conn = fakeConn()
@@ -207,7 +207,7 @@ describe('GitHub projection request barriers', () => {
       expect.objectContaining({
         status: 'failed',
         reason: HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
-        projectionDesiredState: 'skipped'
+        projectionDesiredState: 'failure'
       }),
       new Date(1_700_000_000_000)
     )
@@ -215,7 +215,7 @@ describe('GitHub projection request barriers', () => {
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'ack', { ok: true })
   })
 
-  it('keeps provider authentication failures operationally failed while projecting them as skipped', async () => {
+  it('keeps provider authentication failures operationally failed and blocks merge', async () => {
     const recordReport = vi.fn(async () => true)
     const afterReport = vi.fn(async () => {})
     const conn = fakeConn()
@@ -248,7 +248,7 @@ describe('GitHub projection request barriers', () => {
       expect.objectContaining({
         status: 'failed',
         reason: HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
-        projectionDesiredState: 'skipped'
+        projectionDesiredState: 'failure'
       }),
       new Date(1_700_000_000_000)
     )
