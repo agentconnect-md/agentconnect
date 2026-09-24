@@ -1030,7 +1030,10 @@ export function buildHookTurnFacts(msg: RdMsgHook): CodehostTurnFacts | undefine
     ...(c.bodyExcerpt ? { body: c.bodyExcerpt } : {}),
     ...(c.truncated ? { truncated: true } : {})
   }
-  return normalize(host, (n, metadata) => n.turnFacts(c, metadata, msg.reviewPolicy, common))
+  const facts = normalize(host, (n, metadata) => n.turnFacts(c, metadata, msg.reviewPolicy, common))
+  const route = msg.routeSelection
+  if (!facts || !route?.scope || route.verdictSeq === undefined) return facts
+  return { ...facts, routing: { ...route.scope, decisionId: route.decisionId, verdictSeq: route.verdictSeq } }
 }
 
 /** Event actions that are a person writing a comment: the excerpt IS what they said. */

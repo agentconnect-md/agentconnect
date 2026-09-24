@@ -28,7 +28,7 @@ import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
-import { DecisionAnswer, DecisionQuestion } from '../decision.js'
+import { CodeHostRoutingFamily, DecisionAnswer, DecisionQuestion } from '../decision.js'
 import { DECISION_ROUTING_FORWARD_V1_FEATURE } from './decision.js'
 
 /**
@@ -666,6 +666,8 @@ export const HookRouteSelection = z.object({
   reason: z.enum(['decision', 'otherwise', 'unavailable']),
   // The host's verdict row, for Recent evaluations; absent on the relay's host-unavailable fallback.
   verdictSeq: z.number().int().nonnegative().optional(),
+  // The routed repository and family the relay stamps, so the fired session can link its verdict; absent from older relays.
+  scope: z.object({ repoId: z.string().min(1).max(32), family: CodeHostRoutingFamily }).optional(),
   question: DecisionQuestion.optional(),
   answer: DecisionAnswer.optional(),
   matchedKeys: z.array(z.string()).max(32).optional(),

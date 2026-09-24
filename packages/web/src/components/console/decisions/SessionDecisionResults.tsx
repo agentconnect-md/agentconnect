@@ -1,6 +1,6 @@
 'use client'
 
-// A session's By decision results in its message flow: one marker under each judged message, opening Recent evaluations.
+// A session's Decision results in its message flow: one marker under each judged or routed message, opening Recent evaluations.
 
 import { useMemo } from 'react'
 import { useTranslations } from 'next-intl'
@@ -10,7 +10,14 @@ import { useConsoleData } from '@/lib/data-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { answerText } from '@/lib/decisions/evaluations'
 import { evaluationsBySeq, sessionGateLane, type SessionGateLane } from '@/lib/decisions/session-evaluations'
-import type { DecisionEvaluationRecord } from '@agentconnect.md/protocol/decision'
+import { codeHostRoutingEvaluations, type DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
+import type { CodeHostRoutingKey } from '@/lib/api'
+import {
+  isCodeHostRoutingScope,
+  type CodeHostRoutingFamily,
+  type DecisionEvaluationRecord
+} from '@agentconnect.md/protocol/decision'
+import type { CodehostTurnFacts } from '@agentconnect.md/protocol/user-turn-body'
 import { OutcomeBadge } from './DecisionEvaluationDetail'
 
 const PAGE = 50
@@ -100,5 +107,55 @@ export function DecisionResultMarker({
         <Icon name="chevron-right" size={12} color="var(--text-tertiary)" className="flex-none" />
       </button>
     </div>
+  )
+}
+
+/** The repository routing lane a routed code-host turn's verdict lives in, or null for an unrouted turn. */
+export function codeHostTurnRouting(
+  facts: CodehostTurnFacts | undefined
+): { scope: CodeHostRoutingKey; seq: number } | null {
+  const routing = facts?.routing
+  if (!routing || !isCodeHostRoutingScope(facts.provider, routing.family)) return null
+  return {
+    scope: { provider: facts.provider, repoId: routing.repoId, family: routing.family as CodeHostRoutingFamily },
+    seq: routing.verdictSeq
+  }
+}
+
+/** A routed code-host turn's verdict under its message; renders nothing until that lane serves it. */
+export function CodeHostDecisionResult({
+  facts,
+  onOpen
+}: {
+  facts: CodehostTurnFacts
+  onOpen: (open: { source: DecisionEvaluationSource; seq: number; repoName?: string }) => void
+}) {
+  const decisions = useOptionalDecisionsPrototype()
+  const routing = codeHostTurnRouting(facts)
+  const { provider, repoId, family } = routing?.scope ?? {}
+  const seq = routing?.seq
+  const source = useMemo(
+    () =>
+      decisions && provider && repoId && family
+        ? codeHostRoutingEvaluations(decisions.api, decisions.orgId, { provider, repoId, family })
+        : null,
+    [decisions, provider, repoId, family]
+  )
+  const { data } = useSWR(
+    source && seq !== undefined ? ['session-code-host-evaluation', ...source.key, seq] : null,
+    () => source!.get(seq!),
+    {
+      revalidateOnFocus: false,
+      shouldRetryOnError: false,
+      refreshInterval: (latest) => (latest?.outcome === 'pending' ? PENDING_POLL_MS : 0)
+    }
+  )
+  if (!data || !source) return null
+  return (
+    <DecisionResultMarker
+      record={data}
+      decisionName={decisions?.decisions.find((d) => d.id === data.decisionId)?.name}
+      onOpen={() => onOpen({ source, seq: data.seq, repoName: facts.subject.repo })}
+    />
   )
 }

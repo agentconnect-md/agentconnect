@@ -45,7 +45,16 @@ export const CodehostTurnFacts = z.object({
   body: z.string().optional(),
   truncated: z.boolean().optional(),
   /** How this delivery is answered: a formal review generation, an inline review thread, or a plain reply. */
-  review: z.enum(['generation', 'inline', 'conversation']).optional()
+  review: z.enum(['generation', 'inline', 'conversation']).optional(),
+  /** The repository routing verdict that chose this agent, read back from that scope's Recent evaluations. */
+  routing: z
+    .object({
+      repoId: z.string(),
+      family: z.enum(['issues', 'pull_request', 'merge_request']),
+      decisionId: z.string(),
+      verdictSeq: z.number().int().nonnegative()
+    })
+    .optional()
 })
 export type CodehostTurnFacts = z.infer<typeof CodehostTurnFacts>
 

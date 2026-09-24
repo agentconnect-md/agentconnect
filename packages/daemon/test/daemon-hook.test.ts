@@ -4358,6 +4358,36 @@ describe('buildHookMessage', () => {
       expect(buildHookMessage(push, 'trace').standingContext).toBeUndefined()
     })
 
+    it('persists the routing verdict that chose a routed fire on its turn facts', () => {
+      const selection = {
+        routingId: '00000000-0000-4000-8000-000000000001',
+        decisionId: '00000000-0000-4000-8000-000000000002',
+        reason: 'decision' as const,
+        verdictSeq: 17
+      }
+      const routed = buildHookMessage(
+        ghFire({}, { routeSelection: { ...selection, scope: { repoId: '123', family: 'issues' } } }),
+        'trace'
+      )
+      expect(routed.turnBody?.codehost?.routing).toEqual({
+        repoId: '123',
+        family: 'issues',
+        decisionId: selection.decisionId,
+        verdictSeq: 17
+      })
+      // An older relay's selection names no scope, and the host-unavailable fallback has no verdict row.
+      expect(
+        buildHookMessage(ghFire({}, { routeSelection: selection }), 'trace').turnBody?.codehost?.routing
+      ).toBeUndefined()
+      const fallback = { ...selection, reason: 'unavailable' as const, verdictSeq: undefined }
+      expect(
+        buildHookMessage(
+          ghFire({}, { routeSelection: { ...fallback, scope: { repoId: '123', family: 'issues' } } }),
+          'trace'
+        ).turnBody?.codehost?.routing
+      ).toBeUndefined()
+    })
+
     it('carries the assembled prompt and the code-host facts on the turn body', async () => {
       const pr = {
         repoId: '123',
