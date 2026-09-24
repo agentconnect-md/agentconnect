@@ -50,10 +50,11 @@ function authenticates(candidate: ExecutorCandidate, runtime: string): boolean {
   return candidate.runtimes.some((profile) => profile.runtime === runtime && !profile.authRequired)
 }
 
-/** Whether one strategy's catalog starts the runtime with this model; a `cached` or absent list is permissive, as the activation check reads it (§5). */
+/** Whether one strategy's catalog starts the runtime with this model; a `cached`, empty or absent list is permissive, as the activation check reads it (§5). */
 export function catalogOffers(entry: RuntimeStrategyEntry | undefined, model: string | undefined): boolean {
   if (!entry?.available) return false
-  if (model === undefined || entry.models === undefined || entry.modelsSource === 'cached') return true
+  // An empty live list is a runtime without a model selector, which names no model to refuse.
+  if (model === undefined || !entry.models?.length || entry.modelsSource === 'cached') return true
   return entry.models.includes(model)
 }
 

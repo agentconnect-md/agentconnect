@@ -1828,8 +1828,8 @@ unavailable/incompatible target uses the configured fallback pair. A target is
 available when the serving daemon, or a group member the session could be placed
 on, runs that runtime with that model in the Agent's execution strategy, read from
 that strategy's own catalog ([session-executors.md](session-executors.md) §5); a
-model list no live probe has confirmed does not reject it. A Decision never
-chooses the strategy. A failure to start that fallback remains a visible startup
+model list that is empty or that no live probe has confirmed does not reject it. A
+Decision never chooses the strategy. A failure to start that fallback remains a visible startup
 error.
 
 **One configuration for the session.** The choice is resolved before executor placement,

@@ -386,11 +386,13 @@ describe('the strategy’s own catalog', () => {
       ...over
     })
 
-  it('reads a live list strictly, and a cached or absent one permissively, as the activation check does', () => {
+  it('reads a live list strictly, and a cached, empty or absent one permissively, as the activation check does', () => {
     expect(catalogOffers({ available: true, models: ['model-a'], modelsSource: 'probed' }, 'model-b')).toBe(false)
     expect(catalogOffers({ available: true, models: ['model-a'] }, 'model-b')).toBe(false)
     expect(catalogOffers({ available: true, models: ['model-a'], modelsSource: 'cached' }, 'model-b')).toBe(true)
     expect(catalogOffers({ available: true }, 'model-b')).toBe(true)
+    // A successful probe of a runtime with no model selector advertises none.
+    expect(catalogOffers({ available: true, models: [], modelsSource: 'probed' }, 'model-b')).toBe(true)
     expect(catalogOffers({ available: true, models: ['model-a'] }, undefined)).toBe(true)
     expect(catalogOffers({ available: false, unavailableReason: 'not in the image' }, undefined)).toBe(false)
     expect(catalogOffers(undefined, undefined)).toBe(false)
@@ -404,6 +406,7 @@ describe('the strategy’s own catalog', () => {
       false
     )
     expect(candidateEligible(vm, offering('d', { available: true }))).toBe(true)
+    expect(candidateEligible(vm, offering('g', { available: true, models: [], modelsSource: 'probed' }))).toBe(true)
     expect(candidateEligible(vm, offering('e', { available: true, models: ['model-b'], modelsSource: 'probed' }))).toBe(
       true
     )

@@ -413,8 +413,9 @@ without one. A recorded list reads as `cached` after a restart until that run's 
 such session confirms it. Only this machine's own VM sessions contribute: an
 environment it hosts for another member carries the holder's ACP stream, which the
 executor never reads. An entry with no probe yet has no model list and stays
-permissive, as a `cached` one already does in the activation check, and so does a
-member that reports no entries at all. `authRequired` stays per runtime, because the
+permissive, as a `cached` one already does in the activation check; so does an empty
+list, which a runtime without a model selector advertises, and a member that reports
+no entries at all. `authRequired` stays per runtime, because the
 sign-in is the machine's whichever install reads it. The Control Plane copies, for
 each candidate, the entries of the strategies its effective table offers, from the
 same snapshot it already reads for `authRequired`; the holder's own entries come from
