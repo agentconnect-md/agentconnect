@@ -175,15 +175,22 @@ async function openSettings(name = 'general') {
   return all('[role="menuitemradio"]').map((node) => node.textContent?.trim())
 }
 
+/** Open the row's + Decision entry, the one way into a new gate. */
+async function addDecision() {
+  await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+  await act(async () => {})
+}
+
 async function pick(label: string) {
   await click(all('[role="menuitemradio"]').find((node) => node.textContent?.trim() === label))
   await act(async () => {})
 }
 
 describe('IntegrationChannelList By decision', () => {
-  it('offers By decision on a single-owner group row only where the flag and platform allow it', async () => {
+  it('leaves By decision out of Respond to on a single-owner row, whose + Decision entry adds a gate', async () => {
     await render([group()])
-    expect(await openSettings()).toContain('By decision')
+    expect(all('button').some((node) => node.textContent?.trim() === 'Decision')).toBe(true)
+    expect(await openSettings()).not.toContain('By decision')
   })
 
   it.each([
@@ -201,6 +208,11 @@ describe('IntegrationChannelList By decision', () => {
     expect(pill()?.title).toContain(CHOICE_SUMMARY)
     expect(document.body.querySelector('[role="status"]')).toBeNull()
     expect(byText('Trigger when')).toBeUndefined()
+  })
+
+  it('offers + Decision on an Off row too, since the gate save sets its trigger', async () => {
+    await render([group({ trigger: 'off' })])
+    expect(all('button').some((node) => node.textContent?.trim() === 'Decision')).toBe(true)
   })
 
   it('offers + Decision on a plain row, opening the rules modal named for the channel and its agent', async () => {
@@ -338,8 +350,7 @@ describe('IntegrationChannelList By decision', () => {
       () => new Promise<undefined>((resolve) => (finish = () => resolve(undefined)))
     )
     await render([group()])
-    await openSettings()
-    await pick('By decision')
+    await addDecision()
     expect(byText('Support category')).toBeTruthy()
     expect(data.setChannelTrigger).not.toHaveBeenCalled()
     await click(byText('Save'))
@@ -362,8 +373,7 @@ describe('IntegrationChannelList By decision', () => {
       })
     )
     await render([group()])
-    await openSettings()
-    await pick('By decision')
+    await addDecision()
     await click(byText('Save'))
     expect(byText("The condition doesn't fit this decision. Fix the highlighted field and save again.")).toBeTruthy()
     expect(byText('Server rejects billing.')).toBeTruthy()
@@ -374,8 +384,7 @@ describe('IntegrationChannelList By decision', () => {
   it('says the decision is not available when it vanished', async () => {
     data.setChannelDecision.mockRejectedValue(new ApiError('decision not found', 404, 'DECISION_NOT_FOUND'))
     await render([group()])
-    await openSettings()
-    await pick('By decision')
+    await addDecision()
     await click(byText('Save'))
     expect(
       byText('Decision not available. It was deleted or is no longer shared with you — choose another.')
@@ -386,8 +395,7 @@ describe('IntegrationChannelList By decision', () => {
   it('explains an unsupported consumer and retries the identical gate', async () => {
     data.setChannelDecision.mockRejectedValueOnce(new ApiError('upgrade', 409, 'DECISION_UNSUPPORTED_CONSUMER'))
     await render([group()])
-    await openSettings()
-    await pick('By decision')
+    await addDecision()
     await click(byText('Save'))
     expect(
       byText("The daemon or relay serving this conversation doesn't support By decision yet. Upgrade it, then retry.")
@@ -400,8 +408,7 @@ describe('IntegrationChannelList By decision', () => {
 
   it('cancels a fresh pick without a PATCH and an edit back to the saved summary', async () => {
     await render([group()])
-    await openSettings()
-    await pick('By decision')
+    await addDecision()
     await click(byText('Cancel'))
     expect(byText('Trigger when')).toBeUndefined()
     expect(byText('Support category')).toBeUndefined()
@@ -433,8 +440,7 @@ describe('IntegrationChannelList By decision', () => {
   it('keeps mock mode on local prototype gates', async () => {
     env.mock = true
     await render([group()])
-    await openSettings()
-    await pick('By decision')
+    await addDecision()
     await click(byText('Save'))
     expect(pill()?.title).toContain(CHOICE_SUMMARY)
     expect(data.setChannelDecision).not.toHaveBeenCalled()

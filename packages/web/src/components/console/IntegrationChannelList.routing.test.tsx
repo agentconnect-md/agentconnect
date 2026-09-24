@@ -16,6 +16,7 @@ const routing = vi.hoisted(() => ({
   getRouting: vi.fn(),
   saveRouting: vi.fn(),
   refresh: vi.fn(),
+  setChannelTrigger: vi.fn(async () => undefined),
   integrations: [] as unknown[]
 }))
 
@@ -35,7 +36,7 @@ vi.mock('@/lib/data-context', () => {
   ]
   return {
     useConsoleData: () => ({
-      setChannelTrigger: vi.fn(),
+      setChannelTrigger: routing.setChannelTrigger,
       setChannelDecision: vi.fn(),
       setChannelSessionMode: vi.fn(),
       setChannelAgent: vi.fn(),
@@ -134,6 +135,7 @@ beforeEach(() => {
     .mockImplementation(async (_bot, body) => detail({ config: body.config, channelIds: body.channelIds }))
   routing.refresh.mockReset()
   routing.integrations = []
+  routing.setChannelTrigger.mockClear()
 })
 
 afterEach(async () => {
@@ -267,22 +269,61 @@ describe('IntegrationChannelList shared-bot routing', () => {
     expect(document.body.querySelector('button[aria-label="Target for Yes"]')?.textContent).toContain('Use Otherwise')
   })
 
-  it('blocks Save when the row is Off on another agent’s install, naming that agent', async () => {
-    routing.getRouting.mockResolvedValue(detail())
-    routing.integrations = [
-      { id: 'int-1', agentId: 'agent-1', botId: 'bot-shared', channels: [row()] },
-      { id: 'int-2', agentId: 'agent-2', botId: 'bot-shared', channels: [row({ trigger: 'off' })] }
-    ]
-    await render([row()])
+  const offInstalls = () => [
+    { id: 'int-1', agentId: 'agent-1', botId: 'bot-shared', channels: [row()] },
+    { id: 'int-2', agentId: 'agent-2', botId: 'bot-shared', channels: [row({ trigger: 'off' })] }
+  ]
+  const pickTarget = async () => {
+    await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
+    await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
+    await click(document.body.querySelector('button[aria-label="Target for billing"]'))
+    await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('review-bot')))
+  }
+  const openAdd = async () => {
     await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
     await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
-    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
-      'deploys is Off for review-bot. Turn it on there before routing it by decision.'
-    )
-    expect((all('button').find((node) => node.textContent?.trim() === 'Save') as HTMLButtonElement)?.disabled).toBe(
-      true
-    )
+  }
+  const saveButton = () => all('button').find((node) => node.textContent?.trim() === 'Save') as HTMLButtonElement
+
+  it('routes a row Off on another install as is, without turning it on or blocking Save', async () => {
+    routing.getRouting.mockResolvedValue(detail())
+    routing.integrations = offInstalls()
+    await render([row()])
+    await openAdd()
+    expect(dialog()?.textContent).not.toContain('is Off')
+    await pickTarget()
+    await click(saveButton())
+    expect(routing.setChannelTrigger).not.toHaveBeenCalled()
+    expect(routing.saveRouting).toHaveBeenCalledTimes(1)
   })
+
+  it.each(['the header ×', 'the scrim'])(
+    'drops an abandoned rules edit closed by %s before the next row opens',
+    async (how) => {
+      routing.getRouting.mockImplementation(async () => structuredClone(routed))
+      await render([
+        row({
+          trigger: 'decision',
+          decisionBinding: { type: 'shared_bot_routing' },
+          decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
+        }),
+        row({ channelId: 'C2', name: 'ops' })
+      ])
+      await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+      await click(all('button').find((node) => node.getAttribute('title') === 'Edit By decision rules'))
+      await click(document.body.querySelector('button[aria-label="Target for billing"]'))
+      await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('review-bot')))
+      if (how === 'the scrim') await click(document.body.querySelector('.scrim'))
+      else await click(dialog()?.querySelector('.modalhead button[aria-label="Cancel"]'))
+      expect(dialog()).toBeNull()
+      await click(all('button').filter((node) => node.title.startsWith('Default dispatch'))[0])
+      await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+      expect(dialog()?.getAttribute('aria-label')).toBe('ops · By decision rules')
+      expect(document.body.querySelector('button[aria-label="Target for billing"]')?.textContent).toContain(
+        'deploy-bot'
+      )
+    }
+  )
 
   it('opens each row on the saved routing, not an edit left from another row', async () => {
     routing.getRouting.mockResolvedValue(detail())
@@ -350,6 +391,29 @@ describe('IntegrationChannelList shared-bot routing', () => {
     expect(dialog()?.getAttribute('aria-label')).toBe('deploys · By decision rules')
     expect(document.body.querySelector('button[aria-label="Target for billing"]')?.textContent).toContain('review-bot')
     expect(window.location.search).toBe('')
+  })
+
+  it('checks no agent while routed, and picking one saves the row out of routing to that agent', async () => {
+    routing.getRouting.mockResolvedValue(routed)
+    await render([
+      row({
+        trigger: 'decision',
+        decisionBinding: { type: 'shared_bot_routing' },
+        decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
+      })
+    ])
+    await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+    expect(dialog()).toBeNull()
+    expect(document.body.textContent).toContain('Send every message to')
+    expect(all('button[aria-pressed="true"]')).toHaveLength(0)
+    await click(all('button[aria-pressed]').find((node) => node.textContent?.includes('review-bot')))
+    expect(routing.saveRouting).toHaveBeenCalledWith(
+      'bot-shared',
+      expect.objectContaining({
+        channelIds: ['C9'],
+        removals: [{ channelId: 'C1', settings: { trigger: 'mention' }, agentId: 'agent-2' }]
+      })
+    )
   })
 
   it('stops a routed row by saving the bot’s routing without it, handed back to @-mentions', async () => {

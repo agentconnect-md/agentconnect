@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import { Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 
@@ -10,6 +11,8 @@ export interface TriggerOption<T extends string> {
   hint: string
   /** Listed but not pickable here; its hint says why. */
   disabled?: boolean
+  /** Footer copy for the hovered or current choice; the footer shows only when options carry it. */
+  description?: string
 }
 
 /**
@@ -27,6 +30,7 @@ export function TriggerSelect<T extends string>({
   onChange,
   ariaLabel,
   hint,
+  heading,
   disabled = false,
   busy = false,
   className = ''
@@ -38,6 +42,8 @@ export function TriggerSelect<T extends string>({
   ariaLabel: string
   /** What ⚡ means on this surface, in this platform's nouns. */
   hint: string
+  /** Caps heading above the choices, such as "Run on". */
+  heading?: string
   /** Demo rows (no live integration) render the control inert. */
   disabled?: boolean
   /** A write is in flight: the control holds its reading and stops taking picks. */
@@ -47,6 +53,9 @@ export function TriggerSelect<T extends string>({
 }) {
   const current = options.find((o) => o.value === value)
   const inert = disabled || busy
+  const [hovered, setHovered] = useState<T | null>(null)
+  const explained = options.find((o) => o.value === (hovered ?? value)) ?? current
+  const explains = options.some((o) => o.description)
   return (
     <span className={`inline-flex items-center gap-[7px] ${className}`}>
       <span title={hint} className="flex-none leading-none">
@@ -55,8 +64,8 @@ export function TriggerSelect<T extends string>({
       <AnchoredFlyout
         ariaLabel={ariaLabel}
         align="start"
-        width={220}
-        estimatedHeight={10 + options.length * 34}
+        width={explains ? 240 : 220}
+        estimatedHeight={10 + options.length * 34 + (heading ? 26 : 0) + (explains ? 60 : 0)}
         triggerClassName="flex min-w-0 flex-1"
         trigger={({ open, menuId, toggle }) => (
           <button
@@ -82,6 +91,11 @@ export function TriggerSelect<T extends string>({
       >
         {({ close }) => (
           <>
+            {heading && (
+              <div className="px-[10px] pb-[5px] pt-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
+                {heading}
+              </div>
+            )}
             {options.map((o) => (
               <button
                 key={o.value}
@@ -89,7 +103,12 @@ export function TriggerSelect<T extends string>({
                 role="menuitemradio"
                 aria-checked={o.value === value}
                 aria-disabled={o.disabled ? true : undefined}
-                title={o.hint}
+                // The footer already explains a described choice, so a tooltip would repeat it.
+                title={o.description ? undefined : o.hint}
+                onMouseEnter={() => setHovered(o.value)}
+                onMouseLeave={() => setHovered(null)}
+                onFocus={() => setHovered(o.value)}
+                onBlur={() => setHovered(null)}
                 className={o.disabled ? 'fopt cursor-not-allowed text-(--text-tertiary) opacity-60' : 'fopt'}
                 // Every pick reaches the host, the displayed one included: a code-host row whose stored
                 // rule the menu cannot express normalizes by re-picking what it already shows. True
@@ -104,6 +123,11 @@ export function TriggerSelect<T extends string>({
                 {o.value === value && <Icon name="check" size={14} color="var(--brand)" className="flex-none" />}
               </button>
             ))}
+            {explains && explained?.description && (
+              <div className="mx-[-4px] mt-[5px] border-t border-(--border-subtle) px-[14px] py-[9px] text-left font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+                <span className="font-medium text-(--text-secondary)">{explained.label}</span> — {explained.description}
+              </div>
+            )}
           </>
         )}
       </AnchoredFlyout>

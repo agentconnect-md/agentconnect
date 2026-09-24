@@ -30,7 +30,8 @@ export interface DispatchRouting {
   active: boolean
   canStop: boolean
   onOpen: () => void
-  onStop: () => void
+  /** Leave routing for plain dispatch, handing the row to `agentId` when one was picked. */
+  onStop: (agentId?: string) => void
 }
 
 const MENU_WIDTH = 240
@@ -114,7 +115,10 @@ export function DefaultDispatchPicker({
   const routed = routing?.active === true
   const routingName = routing?.name ?? tDispatch('routingFallback')
   const pick = (id: string) => {
-    if (disabled || saving || id === active?.id) return
+    if (disabled || saving) return
+    // Under routing, picking an agent leaves the decision for plain dispatch to that agent.
+    if (routed) return routing!.onStop(id)
+    if (id === active?.id) return
     setSaving(true)
     onPick(id).finally(() => setSaving(false))
   }
@@ -164,8 +168,8 @@ export function DefaultDispatchPicker({
       >
         {({ close }) => (
           <>
-            {/* Under routing, a pick only moves the agent unmatched messages fall back to. */}
-            <div className={heading}>{routing && !routed ? tDispatch('sendTo') : t('label')}</div>
+            {/* A decision owns the row while routed, so no agent reads as chosen until one is picked. */}
+            <div className={heading}>{routing ? tDispatch('sendTo') : t('label')}</div>
             {options.map((o) => (
               <button
                 key={o.id}
@@ -184,7 +188,7 @@ export function DefaultDispatchPicker({
                 <Icon
                   name="check"
                   size={13}
-                  color={o.id === active?.id ? 'var(--brand)' : 'transparent'}
+                  color={o.id === active?.id && !routed ? 'var(--brand)' : 'transparent'}
                   className="flex-none"
                 />
               </button>

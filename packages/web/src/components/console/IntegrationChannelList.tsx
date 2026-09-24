@@ -62,7 +62,6 @@ function RowSettings({
   platform,
   disabled,
   trigger,
-  allowDecision,
   gateOwnsTrigger = false,
   onTrigger,
   onSessionMode
@@ -76,8 +75,6 @@ function RowSettings({
   disabled: boolean
   /** The row's effective choice, which is the memory trigger unless a gate overrides it. */
   trigger: RowTrigger
-  /** Whether `by decision` is offered here at all — the flag and a non-shared bot; the platform may still withhold it. */
-  allowDecision: boolean
   onTrigger: (trigger: RowTrigger) => void | Promise<void>
   onSessionMode: (mode: SessionMode) => Promise<void>
 }) {
@@ -109,9 +106,9 @@ function RowSettings({
           ] satisfies ChannelSettingsOption<RowTrigger>[]
         ).filter((o) =>
           // The room's vocabulary is the platform's: nothing matches "All messages" where no unaddressed traffic exists.
+          // + Decision is the row's way into a gate, so By decision is listed only to name a stored one.
           o.value === 'decision'
-            ? channel.trigger === 'decision' ||
-              (allowDecision && (!semantics.triggers || semantics.triggers.includes('decision')))
+            ? channel.trigger === 'decision'
             : !semantics.triggers || semantics.triggers.includes(o.value)
         )
   // A direct conversation is one continuous exchange already, so only a channel row chooses its session.
@@ -569,7 +566,10 @@ function DispatchPicker({
   }
   const claim = (id: string) => {
     close()
-    if (id === current.id || disabled || saving) return
+    if (disabled || saving) return
+    // Under routing, picking an agent leaves the decision for plain dispatch to that agent.
+    if (routing?.active) return routing.onStop(id)
+    if (id === current.id) return
     setSaving(true)
     Promise.resolve(onClaim(id)).finally(() => setSaving(false))
   }
@@ -625,16 +625,15 @@ function DispatchPicker({
               className="fixed z-[1100] w-max min-w-[200px] max-w-[260px] rounded-lg border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)"
               style={box.style}
             >
-              {/* Under routing, a pick only moves the agent unmatched messages fall back to. */}
               <div className={heading}>
-                {routing && !routed ? translate('dispatch.sendTo') : translate('defaultDispatch.label')}
+                {routing ? translate('dispatch.sendTo') : translate('defaultDispatch.label')}
               </div>
               {members.map((member) => (
                 <button
                   key={member.id}
                   onClick={() => claim(member.id)}
                   disabled={disabled || saving}
-                  aria-pressed={member.id === current.id}
+                  aria-pressed={member.id === current.id && !routed}
                   className={`flex w-full items-center gap-2 rounded-md border-0 bg-transparent px-[9px] py-[6px] text-left hover:bg-(--surface-hover) ${
                     disabled || saving ? 'cursor-default opacity-60' : 'cursor-pointer'
                   }`}
@@ -653,7 +652,7 @@ function DispatchPicker({
                   <Icon
                     name="check"
                     size={13}
-                    className={`flex-none ${member.id === current.id ? 'text-(--brand)' : 'text-transparent'}`}
+                    className={`flex-none ${member.id === current.id && !routed ? 'text-(--brand)' : 'text-transparent'}`}
                   />
                 </button>
               ))}
@@ -889,9 +888,9 @@ export function IntegrationChannelList({
                         active: managedByRouting(c),
                         canStop: !!integrationId,
                         onOpen: () => setRoutingRow({ botId, channelId: c.channelId, name: rowLabel(c) }),
-                        onStop: () =>
+                        onStop: (agentId?: string) =>
                           void act(async () => {
-                            await stopRouting(decisions!, botId, c.channelId)
+                            await stopRouting(decisions!, botId, c.channelId, agentId)
                             refresh()
                           })
                       }
@@ -909,8 +908,6 @@ export function IntegrationChannelList({
               platform={platform}
               disabled={!integrationId || gates.busy(botId, c)}
               trigger={trigger}
-              // A shared bot routes by its own rules (§3.2) from the dispatch menu, so it gets no per-channel gate.
-              allowDecision={decisionsOffered && !shareable}
               gateOwnsTrigger={
                 trigger === 'decision' && ((!!decisions && !shareable) || (shareable && managedByRouting(c)))
               }

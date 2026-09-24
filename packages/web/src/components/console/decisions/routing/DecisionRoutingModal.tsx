@@ -11,8 +11,6 @@ import useSWR from 'swr'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
-import { useConsoleData } from '@/lib/data-context'
-import { agentLabel } from '@/lib/data'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
 import {
@@ -33,11 +31,12 @@ import { DecisionRoutingEvaluationsDrawer } from './DecisionRoutingEvaluationsDr
 import { FieldIssue, Note, routingSaveError, saveErrorText } from './RoutingFields'
 import { RoutingRulesTable, fitsQuestion } from './RoutingRulesTable'
 
-/** Take one conversation out of a shared bot's routing, handing it back to @-mentions with its default agent kept. */
+/** Take one conversation out of a shared bot's routing, handing it back to @-mentions with its default agent, or `agentId`. */
 export async function stopRouting(
   store: Pick<ReturnType<typeof useDecisionsPrototype>, 'api' | 'dispatchRouting'>,
   botId: string,
-  channelId: string
+  channelId: string,
+  agentId?: string
 ): Promise<void> {
   const detail = await store.api.getRouting(botId)
   if (!detail.channelIds.includes(channelId)) return
@@ -46,7 +45,7 @@ export async function stopRouting(
     {
       ...draft,
       channelIds: draft.channelIds.filter((id) => id !== channelId),
-      removals: { [channelId]: { trigger: 'mention' } }
+      removals: { [channelId]: { trigger: 'mention', ...(agentId ? { agentId } : {}) } }
     },
     detail.channelIds
   )
@@ -97,7 +96,6 @@ export function DecisionRoutingModal({
   const { api, orgId, decisions, loading, reload, routingDrafts, routingKeyFor, dispatchRouting, beginInlineCreate } =
     useDecisionsPrototype()
   const roster = useRoutingRoster(botId)
-  const { integrations, getAgent } = useConsoleData()
   const state = routingDrafts[routingKeyFor(botId)] ?? INITIAL_ROUTING_STATE
   const dispatch = useCallback((event: RoutingEvent) => dispatchRouting(botId, event), [botId, dispatchRouting])
   const [helpOpen, setHelpOpen] = useState(false)
@@ -151,20 +149,7 @@ export function DecisionRoutingModal({
     : serverError?.kind === 'invalid'
       ? serverError.issues.map((issue) => ({ path: issue.path, message: issue.message }))
       : []
-  // The CP refuses to route a conversation any install has Off, so a new one is checked here instead of failing on Save.
-  const additions = (draft?.channelIds ?? []).filter((id) => !savedChannelIds.includes(id))
-  const agentName = (id: string) =>
-    roster.agents.find((agent) => agent.id === id)?.name ?? (getAgent(id) ? agentLabel(getAgent(id)!) : id)
-  const offRooms = additions.flatMap((id) => {
-    if (api.mode === 'mock')
-      return roster.channels.find((c) => c.channelId === id)?.trigger === 'off' ? [{ id, agents: [] as string[] }] : []
-    const agents = integrations
-      .filter((i) => i.botId === botId && i.channels.some((c) => c.channelId === id && c.trigger === 'off'))
-      .map((i) => (i.agentId ? agentName(i.agentId) : ''))
-      .filter(Boolean)
-    return agents.length ? [{ id, agents }] : []
-  })
-  const canSave = routingCanSave(state, localIssues, canWrite) && offRooms.length === 0
+  const canSave = routingCanSave(state, localIssues, canWrite)
   const disabled = !canWrite || busy
   // Inline Create decision returns here with the row named, so its modal reopens on the same draft.
   const returnParams = new URLSearchParams(search.toString())
@@ -267,20 +252,6 @@ export function DecisionRoutingModal({
           </Note>
         )}
         {!savedChannelIds.includes(channelId) && <Note icon="info">{tm('unsaved')}</Note>}
-        {offRooms.map((room) => (
-          <div
-            key={room.id}
-            role="alert"
-            className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
-          >
-            <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
-            <span>
-              {room.agents.length
-                ? tm('offIn', { channel: nameOf(room.id), agents: room.agents.join(', ') })
-                : tm('offBare', { channel: nameOf(room.id) })}
-            </span>
-          </div>
-        ))}
         {others.length > 0 && <Note icon="users">{tm('alsoApplies', { names: others.map(nameOf).join(', ') })}</Note>}
 
         <div className="fld">

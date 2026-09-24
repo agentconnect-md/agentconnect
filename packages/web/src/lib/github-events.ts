@@ -74,11 +74,10 @@ export const GH_TRIGGER_LABEL: Record<GhTriggerMode, string> = {
   every: 'any update',
   mention: '@-mention'
 }
-/** The agent-detail trigger bar's segment vocabulary — deliberately shorter than
- *  the labels above and shared with the IM bar, so the two bars read alike. */
+/** The agent-detail trigger menu's vocabulary, as the console design words it. */
 export const GH_TRIGGER_PILL: Record<GhTriggerMode, string> = {
-  first: 'create',
-  every: 'update',
+  first: 'Opened',
+  every: 'Any update',
   mention: '@-mention'
 }
 
@@ -108,6 +107,26 @@ export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string, fam
       // Not "only @agent": the App handle is the repository-wide broadcast, and
       // an authorized native App review request bypasses cadence/mention/label.
       return `Runs when @${agentName} or the GitHub App is mentioned, and on explicit App review requests.`
+  }
+}
+
+/** The trigger menu's footer copy: the design's short wording, held to what the relay's rule verdict fires on. */
+export function githubTriggerDescription(mode: GhTriggerMode, agentName: string, fam?: GhFamily): string {
+  if (fam !== 'pull_request' && fam !== 'issues') return githubTriggerTooltip(mode, agentName, fam)
+  const issue = fam === 'issues'
+  switch (mode) {
+    case 'first':
+      return issue
+        ? 'Runs when a new issue is filed, and on later @-mentions of the agent.'
+        : 'Runs when a PR is opened, and on later @-mentions of the agent.'
+    case 'every':
+      return issue
+        ? 'Runs when an issue is filed and on every comment. Edits, closes and reopens are ignored.'
+        : 'Runs when a PR is opened, on every push, and on every comment.'
+    case 'mention':
+      return issue
+        ? 'Runs when the agent or the GitHub App is @-mentioned on the issue.'
+        : 'Runs when the agent or the GitHub App is @-mentioned on the PR, or the App is asked to review.'
   }
 }
 

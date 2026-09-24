@@ -706,9 +706,9 @@ function BotsCard({
                                             canStop: canWrite,
                                             onOpen: () =>
                                               setRoutingRow({ botId: b.id, channelId: c.channelId, name: c.name }),
-                                            onStop: () => {
+                                            onStop: (agentId?: string) => {
                                               setRoutingErr(null)
-                                              stopRouting(decisions!, b.id, c.channelId)
+                                              stopRouting(decisions!, b.id, c.channelId, agentId)
                                                 .then(refresh)
                                                 .catch((cause: unknown) =>
                                                   setRoutingErr({

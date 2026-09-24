@@ -143,6 +143,7 @@ import { useSessionList } from '@/lib/use-session-list'
 import {
   GH_TRIGGER_MODES,
   GH_TRIGGER_PILL,
+  githubTriggerDescription,
   githubCommentFamilies,
   githubDefaultTriggerMode,
   githubFamilyCarriesReviews,
@@ -2206,9 +2207,13 @@ export default function AgentDetailView() {
                                     hint: off
                                       ? tRouting('codeHost.mentionOff')
                                       : githubTriggerTooltip(mode, da.name, githubHookFamily(h) ?? undefined),
+                                    description: off
+                                      ? tRouting('codeHost.mentionOff')
+                                      : githubTriggerDescription(mode, da.name, githubHookFamily(h) ?? undefined),
                                     disabled: off
                                   }
                                 })}
+                                heading={t('integrations.runOn')}
                                 value={triggerModeOf(h)}
                                 onChange={(mode) => void setHookCadence(h, mode)}
                                 ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${ghRowPill(h)}`}
