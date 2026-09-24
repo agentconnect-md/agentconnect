@@ -2,7 +2,7 @@
 
 import { Icon } from '@/components/ui'
 
-// The one Decision chip every By decision row carries: `split | +` until bound, then `split name | ×`.
+// The one Decision chip every By decision row carries: `split | +` until bound, then `split name ✎ | ×`.
 export function DecisionChip({
   name,
   label,
@@ -11,7 +11,8 @@ export function DecisionChip({
   disabled = false,
   warning,
   remove,
-  openProps
+  openProps,
+  fill = false
 }: {
   /** The bound Decision's name; null renders the empty pair. */
   name: string | null
@@ -26,6 +27,8 @@ export function DecisionChip({
   remove?: { label: string; title?: string; onClick(): void; busy?: boolean; failed?: boolean }
   /** `data-*` locators for the open control. */
   openProps?: Record<`data-${string}`, string>
+  /** Stretch a bound chip across its row, as in a menu. */
+  fill?: boolean
 }) {
   if (name === null) {
     return (
@@ -50,7 +53,7 @@ export function DecisionChip({
   }
   return (
     <span
-      className={`inline-flex h-[26px] max-w-full flex-none items-stretch overflow-hidden rounded-sm border ${
+      className={`inline-flex h-[26px] max-w-full items-stretch overflow-hidden rounded-sm border ${fill ? 'w-full' : 'flex-none'} ${
         warning ? 'border-(--amber-500) bg-(--surface-card)' : 'border-(--brand) bg-(--brand-soft)'
       } ${remove?.busy ? 'opacity-60' : ''}`}
     >
@@ -62,16 +65,19 @@ export function DecisionChip({
         disabled={disabled}
         onClick={onOpen}
         {...openProps}
-        className="inline-flex min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-[7px] disabled:cursor-default"
+        className={`inline-flex min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-[7px] disabled:cursor-default ${fill ? 'flex-1' : ''}`}
       >
         {warning ? (
           <Icon name={warning} size={13} className="flex-none text-(--amber-500)" />
         ) : (
           <Icon name="split" size={13} className="flex-none text-(--brand)" />
         )}
-        <span className="mono min-w-0 max-w-[200px] truncate text-[11px] font-medium text-(--text-primary)">
+        <span
+          className={`mono min-w-0 truncate text-left text-[11px] font-medium text-(--text-primary) ${fill ? 'flex-1' : 'max-w-[200px]'}`}
+        >
           {name}
         </span>
+        <Icon name="pencil" size={11} className="flex-none text-(--text-tertiary)" />
       </button>
       {remove && (
         <button

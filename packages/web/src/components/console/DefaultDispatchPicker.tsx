@@ -56,6 +56,7 @@ export function RoutingEntry({
   return (
     <DecisionChip
       name={name}
+      fill
       label={name === null ? t('add') : undefined}
       title={name === null ? t('addTitle') : t('editRouting')}
       onOpen={onOpen}
