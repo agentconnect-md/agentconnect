@@ -13103,6 +13103,7 @@ export class Daemon {
       ? Object.assign(webchat, {
           index: 0,
           replyText: '',
+          replySegments: [],
           heldText: '',
           heldTextOffset: 0,
           messageId: undefined,
@@ -14520,6 +14521,8 @@ export class Daemon {
         // into BOTH buffers (the stream is never staged), so clear both — and
         // reset the sentinel hold so the replacement gets its own check.
         p.webchat.replyText = ''
+        p.webchat.replySegments = []
+        delete p.webchat.segmentIndex
         p.webchat.heldText = ''
         p.webchat.heldTextOffset = 0
         delete p.webchat.messageId
@@ -14560,6 +14563,8 @@ export class Daemon {
           // fanned out. Close the browser turn explicitly — a bare return
           // would leave the stream open and the composer stuck busy.
           p.webchat.replyText = ''
+          p.webchat.replySegments = []
+          delete p.webchat.segmentIndex
           p.webchat.heldText = ''
           p.webchat.heldTextOffset = 0
           delete p.webchat.messageId
@@ -14663,16 +14668,46 @@ export class Daemon {
     this.clearSlackStream(p)
   }
 
-  /** Commit a webchat turn's reply: record it as a transcript row, fan it out as the canonical
-   *  conversation post, and close the browser stream unless a continuation defers that. */
+  /** Persist each reply segment and send its canonical post in the same order. */
+  private async publishWebchatReply(p: Pending, run: TurnRun, activatePeers: boolean): Promise<void> {
+    if (!p.webchat) return
+    const segments = p.webchat.replySegments.filter((segment) => segment.text.trim())
+    for (const [index, segment] of segments.entries()) {
+      const replyTs = await webchatTurnOutput.appendWebchatTextRow(
+        this.store,
+        p.plan.transcriptChannel,
+        run.plan.statusThread,
+        monotonicTs(),
+        {
+          postId: segment.postId,
+          sender: run.entry.agentId,
+          admission: { agentId: run.entry.agentId, sessionKey: run.plan.sessionKey },
+          text: segment.text
+        }
+      )
+      p.webchat.postSink?.({
+        conversationId: p.webchat.conversationId,
+        agentId: run.entry.agentId,
+        post: {
+          postId: segment.postId,
+          conversationId: p.webchat.conversationId,
+          author: {
+            kind: 'agent',
+            agentId: run.entry.agentId,
+            ...(activatePeers && index === segments.length - 1 ? { hopCount: run.plan.sourceHopCount } : {})
+          },
+          text: segment.text,
+          at: Number(replyTs)
+        },
+        ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
+      })
+    }
+  }
+
+  /** Commit the accepted webchat reply and close its browser stream. */
   private async commitWebchatReply(p: Pending, run: TurnRun, outcome: AnsweredTurn): Promise<void> {
     if (!p.webchat) return
-    const { plan, entry } = run
-    const { agentId } = entry
     const { stopReason, usage } = outcome
-    // Record the agent's reply as a transcript text row (sender = agentId), so a
-    // webchat session reads back with its reply like any Slack session does — the
-    // Slack path records this at its `post` boundary, which webchat never hits.
     const trimmedWebchatReply = p.webchat.replyText.trim()
     if (trimmedWebchatReply && isNoResponseBody(trimmedWebchatReply)) {
       // Silent decline (the conversation-wide activation was not for this
@@ -14680,53 +14715,16 @@ export class Daemon {
       // commit no canonical post or transcript reply row.
       p.webchat.heldText = ''
       p.webchat.heldTextOffset = 0
+      p.webchat.replySegments = []
+      delete p.webchat.segmentIndex
       delete p.webchat.messageId
       p.reply.text = ''
     } else if (trimmedWebchatReply) {
       // A real reply that never diverged from the sentinel prefix mid-stream
       // (shorter than the sentinel) is still held — release it before commit.
       webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
-      // A continuation turn records its reply at the platform post boundary instead
-      // (appending here would duplicate the row), and its roster is fixed at one.
-      if (!p.webchat.continuation && p.webchat.replyText.trim()) {
-        // Shares the strictly-monotonic clock with the inbound user message so a fast
-        // turn can't stamp both with the same ms and lose the reply to the unique index.
-        // The ts the row actually lands on (post-collision-bump) doubles as the reply
-        // post's canonical `at` (minted ONCE here, the origin) carried to every other
-        // participant's copy via rd/webchat-post.
-        const replyPostId = randomUUID()
-        const replyTs = await webchatTurnOutput.appendWebchatTextRow(
-          this.store,
-          p.plan.transcriptChannel,
-          plan.statusThread,
-          monotonicTs(),
-          {
-            postId: replyPostId,
-            sender: agentId,
-            admission: { agentId, sessionKey: plan.sessionKey },
-            text: p.webchat.replyText
-          }
-        )
-        // Fan the completed reply out as a canonical conversation post so the
-        // relay delivers it to the browser's message log and to the other
-        // participants' daemons as context (webchat-multi-agents.md §5.2).
-        // `hopCount` is this turn's own chain depth (§4.1: stamped on every body
-        // the author posts), which is what lets a receiving participant charge
-        // the ONE +1 continuation transition (§5.2a) — the same stamp the
-        // platform paths put on their outbound authorship metadata.
-        p.webchat.postSink?.({
-          conversationId: p.webchat.conversationId,
-          agentId,
-          post: {
-            postId: replyPostId,
-            conversationId: p.webchat.conversationId,
-            author: { kind: 'agent', agentId, hopCount: p.plan.sourceHopCount },
-            text: p.webchat.replyText,
-            at: Number(replyTs)
-          },
-          ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
-        })
-      }
+      p.reply.text = p.webchat.replyText
+      if (!p.webchat.continuation) await this.publishWebchatReply(p, run, true)
     }
     // Continuation defers `done` until the platform apply chain settles below —
     // the browser must not unlock its composer while the reply is still flushing.
@@ -14964,39 +14962,8 @@ export class Daemon {
         statusThread: plan.statusThread,
         sessionThread: plan.sessionThread
       })
-      if (p.webchat.replyText.trim() && !isNoResponseBody(p.webchat.replyText.trim())) {
-        const partialPostId = randomUUID()
-        const replyTs = await webchatTurnOutput.appendWebchatTextRow(
-          this.store,
-          p.plan.transcriptChannel,
-          plan.statusThread,
-          monotonicTs(),
-          {
-            postId: partialPostId,
-            sender: agentId,
-            admission: { agentId, sessionKey: plan.sessionKey },
-            text: p.webchat.replyText
-          }
-        )
-        // A partial reply is still conversation content the other participants
-        // should see — fan it out exactly like the success path. Deliberately
-        // WITHOUT the author hopCount stamp: a failed turn's fragment must not
-        // continue the conversation (§5.2a activates only on a committed reply
-        // carrying a usable depth), or a crash-looping agent would keep waking
-        // its peers with broken half-answers.
-        p.webchat.postSink?.({
-          conversationId: p.webchat.conversationId,
-          agentId,
-          post: {
-            postId: partialPostId,
-            conversationId: p.webchat.conversationId,
-            author: { kind: 'agent', agentId },
-            text: p.webchat.replyText,
-            at: Number(replyTs)
-          },
-          ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
-        })
-      }
+      if (p.webchat.replyText.trim() && !isNoResponseBody(p.webchat.replyText.trim()))
+        await this.publishWebchatReply(p, run, false)
     }
     if (!p.webchat || p.webchat.continuation) {
       // Some runtimes narrate their terminal error into the message stream just

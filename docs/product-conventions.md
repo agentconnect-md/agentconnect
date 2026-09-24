@@ -4,6 +4,12 @@ This document records user-facing product behavior that implementations must pre
 Architecture and protocol details belong in [`designs/`](designs/); this document is
 the source of truth for cross-cutting product conventions.
 
+## Webchat reply boundaries
+
+Each agent message shown as a separate block while streaming remains a separate block
+in conversation history. A transcript refresh replaces a live block only after its
+saved reply is available; saving a prompt alone must not hide an unfinished reply.
+
 ## User-facing language
 
 User-facing UI copy must describe concepts, actions, and outcomes that matter to the

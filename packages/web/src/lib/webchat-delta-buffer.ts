@@ -1,4 +1,4 @@
-export type WebchatTextDelta = { kind: 'message' | 'thinking'; text: string }
+export type WebchatTextDelta = { kind: 'message' | 'thinking'; text: string; segmentId?: string; postId?: string }
 
 export interface WebchatTextDeltaBatch {
   laneKey: string
@@ -64,7 +64,13 @@ export function createWebchatDeltaBuffer(
 
   const enqueue = (laneKey: string, sessionId: string, turnId: string, event: WebchatTextDelta): void => {
     const current = pending.get(laneKey)
-    if (current && current.sessionId === sessionId && current.turnId === turnId && current.event.kind === event.kind) {
+    if (
+      current &&
+      current.sessionId === sessionId &&
+      current.turnId === turnId &&
+      current.event.kind === event.kind &&
+      current.event.segmentId === event.segmentId
+    ) {
       current.event.text += event.text
       return
     }

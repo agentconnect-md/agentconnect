@@ -649,17 +649,12 @@ export interface Pending {
    * TODO(P4): move into the unified sessionKey QueueEntry/DispatchContext (§6.9 #367).
    */
   callMeta?: CallMeta
-  /**
-   * Present iff this is a webchat turn received over relay `rd/*`. When set,
-   * onAcpUpdate maps each SessionUpdate to a WebchatEvent and streams it through
-   * the relay reply sink instead of driving the Slack renderer. `index` is the per-turn monotonic
-   * assembly counter incremented on each emitted WebchatOutput payload. `replyText`
-   * accumulates the agent's message chunks so the finished reply is recorded to the
-   * transcript once (webchat has no Slack post boundary where text is otherwise saved).
-   */
+  /** Webchat streams ACP updates live and commits each completed reply segment at turn end. */
   webchat?: WebchatTurnContext & {
     index: number
     replyText: string
+    replySegments: { postId: string; text: string }[]
+    segmentIndex?: number
     heldText: string
     heldTextOffset?: number
     messageId?: string

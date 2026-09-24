@@ -361,9 +361,10 @@ Two independent fan-outs, both relay-carried, neither CP-touching:
    connected.** When the relay accepts a user turn, it sends the activation to
    each target's daemon and a **context frame** carrying the same post to every
    other participant's daemon. When an agent's turn completes, its daemon sends
-   the reply post to the relay, which fans it to the other participants'
-   daemons the same way. Delivery to a daemon rides the existing authenticated
-   `rd/*` socket, addressed by placement from the collaboration snapshot — the
+   each reply message as a separate post to the relay, which fans it to the
+   other participants' daemons the same way. Delivery to a daemon rides the
+   existing authenticated `rd/*` socket, addressed by placement from the
+   collaboration snapshot — the
    same routing shape as `rd/agentmsg`
    (`packages/relay/src/agent-msg-router.ts`).
 
@@ -409,10 +410,11 @@ author removed. Webchat now mirrors those semantics at the `context`-frame
 seam, keeping the relay's pre-addressed fan-out as the roster walk:
 
 - **Depth stamp.** The origin daemon stamps the authoring turn's chain depth
-  on the committed post (`WebchatPost.author.hopCount`, minted from the same
-  §4.1 source-depth the platform paths stamp on outbound authorship
-  metadata). Only the reply-commit boundary stamps it; a failed turn's
-  partial post carries none and therefore never continues the conversation.
+  on its final committed reply post (`WebchatPost.author.hopCount`, minted from
+  the same §4.1 source-depth the platform paths stamp on outbound authorship
+  metadata). Earlier reply posts provide context without waking peers again;
+  a failed turn's partial posts carry no depth and never continue the
+  conversation.
 - **Hop transition.** The receiving participant's daemon charges ONE `+1`
   against the same `MAX_AGENT_CALL_HOPS` budget an internal agent call
   spends, refuses at the cap, and records why (the refusal is logged with the
@@ -577,12 +579,12 @@ Two scope rules:
     partially streamed reply after a page refresh, instead of both being lost
     until the turn completes and persists. A cold-attached replay carries no
     local prompt step, so the console's turn-shaped live/persisted
-    reconciliation has nothing to anchor on — it takes the canonical reply
-    `postId` off the turn's `rd/webchat-post` instead (whichever of that frame
-    and the lane's `done` lands second stamps it onto the replayed steps), and
-    the ordinary exact-`postId` arm retires them when the transcript tail
-    persists the reply. Because that post is now a reconciliation anchor and not
-    just a record, a browser turn's reply post is fanned out to EVERY relay the
+    reconciliation has nothing to anchor on. Reply message events carry their
+    canonical `postId`, letting each streamed block retire when its saved row
+    arrives. For older daemons, the console takes a fallback `postId` from the
+    turn's `rd/webchat-post` once the frame and lane's `done` have both arrived.
+    Because that post is a reconciliation anchor and not just a record, a
+    browser turn's reply posts are fanned out to EVERY relay the
     daemon holds rather than back down the socket that admitted the turn — a
     reload may land on a different relay instance, and only the one owning the
     conversation acts on the post;
@@ -602,12 +604,12 @@ Two scope rules:
     ran on its old holder left its runtime there. Absent on a conversation with
     no session yet, and on an older relay, which is the pre-field behavior.
 - New daemon → relay frame `rd/webchat-post { conversationId, agentId, post }`
-  for a completed agent post, emitted at the same boundary that records
-  `replyText` today (`daemon.ts:10394-10404`). The relay (a) delivers it to
+  for each completed agent reply message, emitted after its transcript row is
+  saved at turn completion. The relay (a) delivers it to
   the browser sink if present and (b) fans `context` frames to the other
   participants' daemons.
-- `rd/chat` / `WebchatEvent` streaming is unchanged apart from `agentId`
-  attribution.
+- `rd/chat` / `WebchatEvent` streaming also carries an optional segment identity
+  and canonical `postId` for reply messages; older frames remain valid.
 
 ### 6.2 CP surfaces
 
