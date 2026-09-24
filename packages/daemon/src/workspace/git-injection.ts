@@ -308,25 +308,18 @@ export function workspaceGitLocalEnv(): Record<string, string> {
   }
 }
 
-/**
- * Reject checkout-owned routing and executable settings that remain effective
- * before daemon-run network or checkout operations. Unconditional includes are
- * expanded and their actual keys are audited instead of rejecting include.path
- * itself: a repository may legitimately include a shared hooksPath, and daemon
- * Git pins hooksPath/fsmonitor at command scope so neither can run — the model's
- * own git gets the same pins at global scope, which repo-local config outranks. Conditional
- * includes remain disallowed because their activation can change between the
- * primary checkout used for this audit and a later linked worktree. The
- * separate worktree config scope is also disallowed because `--local` cannot
- * audit `.git/config.worktree`, while later daemon Git operations still read it.
- */
-export async function assertSafeWorkspaceGitConfig(git: GitRunner): Promise<void> {
-  // A runner, not a cwd: the audit must read the config the guarded git will read, which for a
-  // cluster workspace is the sandbox's — auditing this disk would pass a check nothing performed.
+/** Whether checkout-owned config is free of routing and executable settings: includes are expanded and their keys audited (daemon Git pins hooksPath/fsmonitor itself), while `includeIf` and worktree config are refused because `--local` cannot see what they select later. */
+export async function workspaceGitConfigIsSafe(git: GitRunner): Promise<boolean> {
+  // A runner, not a cwd: the audit reads the config the guarded Git will, which for a cluster workspace is the sandbox's.
   const names = await git
     .withEnv(workspaceGitLocalEnv())
     .raw(['config', '--local', '--includes', '--name-only', '-z', '--list'])
-  if (names.split('\0').some((name) => UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG.test(name))) {
+  return !names.split('\0').some((name) => UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG.test(name))
+}
+
+/** Refuse a daemon-run network or checkout operation on a checkout whose config fails {@link workspaceGitConfigIsSafe}. */
+export async function assertSafeWorkspaceGitConfig(git: GitRunner): Promise<void> {
+  if (!(await workspaceGitConfigIsSafe(git))) {
     throw new Error('workspace Git configuration contains a disallowed network override or executable setting')
   }
 }
