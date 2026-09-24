@@ -234,6 +234,7 @@ The relay recognizes these subscription event families:
 - `push`
 - `deployment`
 - `deployment_status`
+- `release`
 
 Stored patterns use `family:action`, with `family:*` as a wildcard. Label
 filters require at least one current subject label to match.
@@ -248,6 +249,17 @@ either event requires the App's `deployments: read` permission and both event
 subscriptions; an App created before they were added must gain them by hand in
 its settings, because GitHub exposes no API for event subscriptions.
 
+`release` is its own subject family, matched by GitHub's action (`published`,
+`edited`, `unpublished`, …); a deletion never starts a turn. One publish arrives
+as up to three deliveries — `created` (unless it was a saved draft), `published`,
+and `released` or `prereleased` — and promoting a prerelease sends `released`
+beside `edited`, so `release:*` skips `created`, `released` and `prereleased`
+and one change is one turn; only an explicit pattern selects those three.
+`published` covers prereleases: the delivery carries the tag, target, and the
+prerelease and draft flags, and the agent decides what a prerelease deserves.
+The App already holds `contents` access and the Setup Server manifest has always
+subscribed to `release`.
+
 The matcher rejects bot-authored comments and review comments, plus unrelated bot
 events, to prevent self-reply loops and agent-to-agent mention loops. Revision-bearing
 PR events authored by the configured App are admitted as the lifecycle
@@ -257,6 +269,11 @@ workflow-approval path. Deployments are the other exception: GitHub Actions and
 deployment Apps author nearly all of them, and nothing posts back into a
 deployment, so the bot veto does not apply. Like a push, a deployment has no
 thread actor to authorize and is trusted on the installation gate alone.
+Releases are admitted from any bot except the configured App itself — release
+automation publishes most of them, while an agent editing its own release notes
+must not re-trigger itself; without a known App slug every bot release is
+vetoed. Publishing or editing a release needs write access, so a release is
+likewise trusted on the installation gate.
 
 Closed, deleted, and reopened issue or pull-request lifecycle events do not start
 turns. Ordinary issue/PR title and body edits are also silent. A PR edit carrying
@@ -391,7 +408,9 @@ split the conversation. A push keys on its ref and a deployment on its
 environment (`prefix#deployments/production`): every deployment to one
 environment continues one session, so the agent that watched the last release
 sees the next, and the daemon's worktrees stay bounded by environments rather
-than by deployments.
+than by deployments. Every release of a repository continues one session
+(`prefix#releases`) for the same reasons: no event ever retires a per-tag
+session, and the agent can compare a release with the one before it.
 
 The daemon maps this to its normal session identity and resumes the same ACP
 session on later matching events. No GitHub-specific session store exists.
@@ -674,7 +693,7 @@ The Prisma schema is authoritative. The main records are:
 ### One Row per Subject Family
 
 A code-host `HookDef` row covers exactly ONE subject family — `pull_request`,
-`issues`, `push` or `deployment` for GitHub, `merge_request`, `issues` or `push`
+`issues`, `push`, `deployment` or `release` for GitHub, `merge_request`, `issues` or `push`
 for GitLab — recorded in `family` and unique per `(agentId, kind, repoId, family)`. Watching a
 repository for both pull requests and issues is therefore two rows, each with its
 own cadence, label filter and `mentionOnly` gate: pull requests can fire on every
@@ -745,10 +764,13 @@ reporting are rejected.
 The agent detail Integrations card lists hooks alongside integrations. Generic
 hook creation reveals the capability URL and optional HMAC secret once. GitHub
 creation uses the App installation and repository picker and offers the pull
-request, issue and deployment subjects; a deployment row has two cadences —
+request, issue, deployment and release subjects; a deployment row has two cadences —
 `created` (`deployment:created`) and `any status` (`deployment:*` plus
 `deployment_status:*`) — and no label or mention gate, since nobody writes in a
-deployment. Finer state selection (`deployment_status:failure`) is API-only.
+deployment. A release row likewise has two cadences — `published`
+(`release:published`) and `any update` (`release:*`) — and no label or mention
+gate; stable-only selection (`release:released`) is API-only.
+Finer state selection (`deployment_status:failure`) is API-only.
 Recent runs show status, delivery key, duration, and a session deep link.
 
 ## Redelivery and Failure Semantics

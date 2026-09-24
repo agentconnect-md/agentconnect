@@ -3,19 +3,21 @@ import type { GithubCommentFamily, GithubHookFamily, HookCommentFamily } from '.
 /**
  * GitHub subscription event model shared by the Add-integration form and the
  * agent-detail pills. A stored row covers exactly ONE family (pull requests /
- * issues / deployments / commits) and carries its own TRIGGER MODE ("when"), so a
+ * issues / deployments / releases / commits) and carries its own TRIGGER MODE ("when"), so a
  * repository watched for both PRs and issues is two rows; the family is immutable,
  * and the row's stored `events` patterns plus its `mentionOnly` flag encode the mode:
  *
  *   opened   → `family:opened` for the regular cadence; the relay additionally accepts a later explicit
  *              @mention in the row's thread family (commits have no "first"
  *              — a push subscription is inherently per-push, so `push:*` rides
- *              along unchanged; a deployment's "first" is `deployment:created`)
+ *              along unchanged; a deployment's "first" is `deployment:created`,
+ *              a release's `release:published`)
  *   any update → `family:*` + `issue_comment:created` on a thread family, scoped
  *              to that family by `commentFamilies`. The relay ignores
  *              close/reopen and content edits; PR target-branch changes, other
  *              supported updates, and replies run. A deployment row adds
- *              `deployment_status:*` — every status GitHub posts against it.
+ *              `deployment_status:*` — every status GitHub posts against it;
+ *              a release row is `release:*` — every publish, edit and unpublish.
  *   @-mention → the same subscriptions as any update, with `mentionOnly: true` —
  *              an event fires ONLY when its text (issue/PR body, comment body,
  *              commit message) @-mentions the assigned agent or the App. The
@@ -48,6 +50,7 @@ const GH_ALL_FAMILIES: GhFamilyTile[] = [
   { fam: 'pull_request', pill: 'PRs', icon: 'git-pull-request', label: 'Pull requests' },
   { fam: 'issues', pill: 'Issues', icon: 'circle-dot', label: 'Issues' },
   { fam: 'deployment', pill: 'Deploys', icon: 'rocket', label: 'Deployments' },
+  { fam: 'release', pill: 'Releases', icon: 'tag', label: 'Releases' },
   { fam: 'push', pill: 'Commits', icon: 'git-commit-horizontal', label: 'Commits' }
 ]
 
@@ -81,9 +84,9 @@ export const GH_TRIGGER_PILL: Record<GhTriggerMode, string> = {
   mention: '@-mention'
 }
 
-/** Every thread family offers all three cadences; a deployment has no thread anyone writes in, so nobody @-mentions in one. */
+/** Every thread family offers all three cadences; a deployment or release has no thread anyone writes in, so nobody @-mentions in one. */
 export function githubFamilySupportsMode(fam: GhFamily, mode: GhTriggerMode): boolean {
-  return fam !== 'deployment' || mode !== 'mention'
+  return (fam !== 'deployment' && fam !== 'release') || mode !== 'mention'
 }
 
 /** The cadences one family offers, in display order. */
@@ -91,12 +94,17 @@ export function githubTriggerModes(fam: GhFamily): readonly GhTriggerMode[] {
   return GH_TRIGGER_MODES.filter((mode) => githubFamilySupportsMode(fam, mode))
 }
 
-/** Per-segment hover copy for the trigger bar. A deployment has no thread, so its two cadences read differently. */
+/** Per-segment hover copy for the trigger bar. A deployment or release has no thread, so its two cadences read differently. */
 export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string, fam?: GhFamily): string {
   if (fam === 'deployment') {
     return mode === 'first'
       ? 'Runs when a deployment is created.'
       : 'Runs when a deployment is created and on every status it reports (in progress, success, failure, …).'
+  }
+  if (fam === 'release') {
+    return mode === 'first'
+      ? 'Runs when a release or prerelease is published.'
+      : 'Runs when a release is published, edited or unpublished.'
   }
   switch (mode) {
     case 'first':
@@ -144,7 +152,7 @@ export function githubMentionUsage(agentName: string, teamOwner?: string | null)
 export const GH_DEFAULT_FAMILIES: readonly GhFamily[] = ['pull_request']
 
 /** The cadence a create surface opens a new subject on — a change proposal on every update, the rest
- *  on the opening (a deployment's every-status cadence fires once per state and is opted into). */
+ *  on the opening (a deployment's every-status cadence fires once per state and is opted into; a release opens on its publish). */
 export function githubDefaultTriggerMode(fam: GhFamily): GhTriggerMode {
   return fam === 'pull_request' ? 'every' : 'first'
 }
@@ -155,13 +163,15 @@ export const THREAD_COMMENT_EVENT = 'issue_comment:created'
 export const DEPLOYMENT_CREATED_EVENT = 'deployment:created'
 /** The status subscription that rides a deployment row's update mode — one delivery per state GitHub posts. */
 export const DEPLOYMENT_STATUS_EVENT = 'deployment_status:*'
+/** A release's opening: its publish, prereleases included. */
+export const RELEASE_PUBLISHED_EVENT = 'release:published'
 
 /** Narrow a stored cross-host comment scope to the GitHub families a github hook may carry. */
 export function githubCommentFamilies(families: readonly HookCommentFamily[]): GithubCommentFamily[] {
   return families.filter((family): family is GithubCommentFamily => family === 'issues' || family === 'pull_request')
 }
 
-/** A cadence a family cannot carry narrows to the opening, never widens — only a deployment's mention reaches this. */
+/** A cadence a family cannot carry narrows to the opening, never widens — only a deployment's or release's mention reaches this. */
 function effectiveMode(fam: GhFamily, mode: GhTriggerMode): GhTriggerMode {
   return githubFamilySupportsMode(fam, mode) ? mode : 'first'
 }
@@ -179,6 +189,7 @@ export function eventsForFamilies(fams: Iterable<GhFamily>, mode: GhTriggerMode)
     if (fam === 'deployment') {
       return own === 'first' ? [DEPLOYMENT_CREATED_EVENT] : [`${fam}:*`, DEPLOYMENT_STATUS_EVENT]
     }
+    if (fam === 'release') return own === 'first' ? [RELEASE_PUBLISHED_EVENT] : [`${fam}:*`]
     if (own !== 'first' || fam === 'push') return [`${fam}:*`]
     return [`${fam}:opened`]
   })
@@ -221,11 +232,12 @@ export function githubFamilySubscription(fam: GhFamily, mode: GhTriggerMode): Gi
   }
 }
 
-/** Recover the trigger mode: the mentionOnly flag wins, `:opened` (or a bare deployment opening) ⇒ opened,
+/** Recover the trigger mode: the mentionOnly flag wins, `:opened` (or a bare deployment or release opening) ⇒ opened,
  *  and anything else — the retired bare `issues:labeled` included — reads as the nearest cadence, any update. */
 export function triggerModeOf(h: { events: string[]; mentionOnly: boolean }): GhTriggerMode {
   if (h.mentionOnly) return 'mention'
-  if (h.events.length === 1 && h.events[0] === DEPLOYMENT_CREATED_EVENT) return 'first'
+  if (h.events.length === 1 && (h.events[0] === DEPLOYMENT_CREATED_EVENT || h.events[0] === RELEASE_PUBLISHED_EVENT))
+    return 'first'
   return h.events.some((e) => e.endsWith(':opened')) ? 'first' : 'every'
 }
 

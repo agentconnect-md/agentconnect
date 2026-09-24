@@ -564,6 +564,34 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       expect((dup.json() as { message: string }).message).toMatch(/already watches acme\/infra \(deployment\)/)
     })
 
+    it("POST accepts a release subscription beside the repository's other families", async () => {
+      const agentId = await githubAgent()
+      await seedRelay()
+      await seedInstallation()
+      const a = ghApp()
+
+      const body = ghBody(agentId, {
+        name: 'release-hook',
+        family: 'release',
+        events: ['release:published'],
+        commentFamilies: [],
+        labelFilter: []
+      })
+      const created = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: body })
+      expect(created.statusCode).toBe(200)
+      expect(created.json()).toMatchObject({ family: 'release', events: ['release:published'], commentFamilies: [] })
+      const dup = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: body })
+      expect(dup.statusCode).toBe(409)
+      expect((dup.json() as { message: string }).message).toMatch(/already watches acme\/infra \(release\)/)
+      // A release row carries no thread, so it takes no comment subscription.
+      const stray = await a.app.inject({
+        method: 'POST',
+        url: `${ORG}/hooks`,
+        payload: { ...body, name: 'stray', events: ['release:*', 'issue_comment:created'], commentFamilies: [] }
+      })
+      expect(stray.statusCode).toBe(400)
+    })
+
     it('the agents list carries hookKinds marks for enabled triggers', async () => {
       const agentId = await githubAgent()
       await seedRelay()

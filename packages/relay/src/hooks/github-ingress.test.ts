@@ -164,6 +164,26 @@ function deploymentStatusPayload(status: Record<string, unknown> = {}): Record<s
   })
 }
 
+/** A release published by release automation — the sender is the Actions bot, as it is for most releases. */
+function releasePayload(action = 'published', release: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    action,
+    installation: { id: INSTALLATION },
+    repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
+    sender: { login: 'github-actions[bot]', type: 'Bot' },
+    release: {
+      tag_name: 'v1.2.0',
+      target_commitish: 'main',
+      name: 'v1.2.0 — faster sync',
+      body: '## Changes\n- faster sync',
+      html_url: 'https://github.com/acme/infra/releases/tag/v1.2.0',
+      draft: false,
+      prerelease: false,
+      ...release
+    }
+  }
+}
+
 function rerequestPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     action: 'rerequested',
@@ -3033,6 +3053,66 @@ describe('github ingress', () => {
       expect(res.statusCode).toBe(202)
       await flush()
       expect(h.sent).toHaveLength(0)
+    })
+
+    it('a release fires on `release:published` in the repository’s one releases session — bot sender and all', async () => {
+      h.table.upsert(rule({}, { events: ['release:published'], appSlug: 'example-review-app' }))
+      const res = await post('release', releasePayload('published', { prerelease: true }))
+      expect(res.statusCode).toBe(202)
+      await flush()
+      expect(h.sent).toHaveLength(1)
+      const msg = h.sent[0]!
+      if (msg.source !== 'hook') throw new Error('expected hook member')
+      expect(msg.sessionKey).toBe('acme/infra#releases')
+      expect(msg.event).toBe('release:published')
+      expect(msg.github).toBeUndefined()
+      expect(msg.context).toMatchObject({
+        source: 'github',
+        event: 'release',
+        action: 'published',
+        repo: 'acme/infra',
+        title: 'v1.2.0 — faster sync',
+        senderLogin: 'github-actions[bot]',
+        release: { tag: 'v1.2.0', target: 'main', prerelease: true, draft: false },
+        htmlUrl: 'https://github.com/acme/infra/releases/tag/v1.2.0',
+        bodyExcerpt: '## Changes\n- faster sync'
+      })
+      // Publishing takes write access: trusted on the installation gate, no live authorization round-trip.
+      expect(h.authzRequests).toHaveLength(0)
+      expect(h.reports[0]?.event).toBe('release:published')
+    })
+
+    it('`release:*` is one turn per change; a restated action fires only on its explicit pattern', async () => {
+      h.table.upsert(rule({}, { events: ['release:*'], appSlug: 'example-review-app' }))
+      h.table.upsert(rule({ hookId: HOOK_B }, { events: ['release:released'], appSlug: 'example-review-app' }))
+      // One publish arrives as three deliveries, then an edit and a deletion.
+      for (const action of ['created', 'published', 'released', 'edited', 'deleted']) {
+        await post('release', releasePayload(action), { headers: { 'x-github-delivery': `rel-${action}` } })
+      }
+      await flush()
+      expect(h.sent.map((m) => m.msgId).sort()).toEqual(
+        [`${HOOK}:rel-published`, `${HOOK_B}:rel-released`, `${HOOK}:rel-edited`].sort()
+      )
+    })
+
+    it('this App’s own release is vetoed, and an unknown App fails closed on every bot release', async () => {
+      h.table.upsert(rule({}, { events: ['release:*'], appSlug: 'example-review-app' }))
+      h.table.upsert(rule({ hookId: HOOK_B }, { events: ['release:*'] }))
+      await post(
+        'release',
+        { ...releasePayload('edited'), sender: { login: 'example-review-app[bot]', type: 'Bot' } },
+        { headers: { 'x-github-delivery': 'rel-own' } }
+      )
+      await post('release', releasePayload('published'), { headers: { 'x-github-delivery': 'rel-bot' } })
+      await post(
+        'release',
+        { ...releasePayload('published'), sender: { login: 'alice', type: 'User' } },
+        { headers: { 'x-github-delivery': 'rel-human' } }
+      )
+      await flush()
+      expect(h.sent.map((m) => m.msgId).sort()).toEqual(
+        [`${HOOK}:rel-bot`, `${HOOK}:rel-human`, `${HOOK_B}:rel-human`].sort()
+      )
     })
 
     it('fan-out: two hooks on one repo each fire with their own msgId, same sessionKey', async () => {

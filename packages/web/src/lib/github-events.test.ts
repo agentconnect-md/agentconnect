@@ -15,8 +15,10 @@ import {
   githubHookFamily,
   githubHookNeedsNormalization,
   githubMentionUsage,
+  githubTriggerDescription,
   githubTriggerModes,
   githubTriggerTooltip,
+  RELEASE_PUBLISHED_EVENT,
   triggerModeOf,
   THREAD_COMMENT_EVENT
 } from './github-events'
@@ -51,6 +53,12 @@ describe('githubTriggerModes', () => {
     expect(githubTriggerTooltip('every', 'reviewer', 'deployment')).toContain('every status it reports')
     // The family-less form keeps reading as the thread copy.
     expect(githubTriggerTooltip('first', 'reviewer', 'issues')).toBe(githubTriggerTooltip('first', 'reviewer'))
+  })
+
+  it('offers a release the same two plain cadences, worded for a publish', () => {
+    expect(githubTriggerModes('release')).toEqual(['first', 'every'])
+    expect(githubTriggerTooltip('first', 'reviewer', 'release')).toBe('Runs when a release or prerelease is published.')
+    expect(githubTriggerDescription('every', 'reviewer', 'release')).toContain('edited or unpublished')
   })
 })
 
@@ -92,11 +100,11 @@ describe('GH_TRIGGER_PILL', () => {
 
 describe('GH_FAMILIES', () => {
   it('names each subject without promising signals its cadences do not carry', () => {
-    expect(GH_FAMILIES.map(({ label }) => label)).toEqual(['Pull requests', 'Issues', 'Deployments'])
+    expect(GH_FAMILIES.map(({ label }) => label)).toEqual(['Pull requests', 'Issues', 'Deployments', 'Releases'])
   })
 
   it('omits the commit (push) family — the subscription flow is held back for now', () => {
-    expect(GH_FAMILIES.map(({ fam }) => fam)).toEqual(['pull_request', 'issues', 'deployment'])
+    expect(GH_FAMILIES.map(({ fam }) => fam)).toEqual(['pull_request', 'issues', 'deployment', 'release'])
   })
 
   it('still labels a stored push row the console never offers', () => {
@@ -164,8 +172,20 @@ describe('githubFamilySubscription', () => {
     expect(githubFamilySubscription('deployment', 'mention')).toEqual(githubFamilySubscription('deployment', 'first'))
   })
 
+  it('compiles a release row to its publish or to every change, and reads each back as its cadence', () => {
+    const published = githubFamilySubscription('release', 'first')
+    expect(published).toEqual({ events: [RELEASE_PUBLISHED_EVENT], commentFamilies: [], mentionOnly: false })
+    const every = githubFamilySubscription('release', 'every')
+    expect(every).toEqual({ events: ['release:*'], commentFamilies: [], mentionOnly: false })
+    expect(githubFamilySubscription('release', 'mention')).toEqual(published)
+    expect(triggerModeOf(published)).toBe('first')
+    expect(triggerModeOf(every)).toBe('every')
+    expect(githubHookNeedsNormalization(published)).toBe(false)
+    expect(githubHookNeedsNormalization(every)).toBe(false)
+  })
+
   it('never emits a pattern from another family', () => {
-    for (const fam of ['pull_request', 'issues', 'push', 'deployment'] as const) {
+    for (const fam of ['pull_request', 'issues', 'push', 'deployment', 'release'] as const) {
       for (const mode of GH_TRIGGER_MODES) {
         const { events } = githubFamilySubscription(fam, mode)
         expect(

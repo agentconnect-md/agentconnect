@@ -28,7 +28,7 @@ export const CodehostTurnFacts = z.object({
   event: z.string(),
   action: z.string().optional(),
   subject: z.object({
-    kind: z.string().optional(), // issue | pull_request | merge_request | push | deployment
+    kind: z.string().optional(), // issue | pull_request | merge_request | push | deployment | release
     repo: z.string().optional(),
     number: z.number().int().optional(),
     title: z.string().optional(),

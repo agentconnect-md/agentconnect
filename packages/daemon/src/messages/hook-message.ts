@@ -163,6 +163,11 @@ function githubSessionTitle(context: HookContext, github: GithubHookMetadata | u
     const repo = github?.repoFullName ?? context.repo
     return clampSessionTitle(`Deployment ${repo ? `${repo} → ` : ''}${context.environment}`)
   }
+  // A release session is the repository's: every release there continues it.
+  if (context.event === 'release') {
+    const repo = github?.repoFullName ?? context.repo
+    return clampSessionTitle(repo ? `Releases ${repo}` : 'Releases')
+  }
 
   const subjectKind =
     github?.subjectKind ??
@@ -396,6 +401,10 @@ function buildGithubHookText(
     ...(c.environment ? [`Environment: ${c.environment}`] : []),
     ...(c.ref ? [`Ref: ${c.ref}`] : []),
     ...(c.sha ? [`Commit: ${c.sha}`] : []),
+    ...(c.release ? [`Tag: ${c.release.tag}`] : []),
+    ...(c.release?.target ? [`Target: ${c.release.target}`] : []),
+    ...(c.release?.prerelease !== undefined ? [`Prerelease: ${c.release.prerelease}`] : []),
+    ...(c.release?.draft !== undefined ? [`Draft: ${c.release.draft}`] : []),
     ...(c.htmlUrl ? [c.htmlUrl] : [])
   ].join('\n')
   // Ordinary replies use the display context's number. Inline replies instead
@@ -413,7 +422,11 @@ function buildGithubHookText(
       neutralizeDelimiters(c.bodyExcerpt),
       UNTRUSTED_CONTENT_END,
       ...(c.truncated
-        ? ['(body truncated — pull the full thread yourself, e.g. `gh issue view <number> --comments`)']
+        ? [
+            c.release
+              ? `(release notes truncated — read them in full with \`gh release view ${c.release.tag}\`)`
+              : '(body truncated — pull the full thread yourself, e.g. `gh issue view <number> --comments`)'
+          ]
         : [])
     ].join('\n') + tail
   )
@@ -679,12 +692,14 @@ function githubTurnFacts(
   const base = github?.baseSha
   // A deployment carries no trusted PR metadata; its commit is the deployed one.
   const head = github?.headSha ?? c.sha
-  const deployment = isGithubDeploymentDelivery(c)
+  const ownKind = isGithubDeploymentDelivery(c) ? 'deployment' : c.event === 'release' ? 'release' : undefined
+  // A release's ref is its tag.
+  const ref = c.ref ?? c.release?.tag
   return {
     provider: 'github',
     ...common,
     subject: {
-      ...(github?.subjectKind ? { kind: github.subjectKind } : deployment ? { kind: 'deployment' } : {}),
+      ...(github?.subjectKind ? { kind: github.subjectKind } : ownKind ? { kind: ownKind } : {}),
       ...(github?.repoFullName || c.repo ? { repo: github?.repoFullName ?? c.repo } : {}),
       ...((github?.pullNumber ?? c.number) !== undefined ? { number: github?.pullNumber ?? c.number } : {}),
       ...(c.title ? { title: c.title } : {}),
@@ -692,7 +707,7 @@ function githubTurnFacts(
     },
     ...(base || head ? { revision: { ...(base ? { base } : {}), ...(head ? { head } : {}) } } : {}),
     ...(github?.isDraft !== undefined ? { draft: github.isDraft } : {}),
-    ...(c.ref ? { ref: c.ref } : {}),
+    ...(ref ? { ref } : {}),
     ...(c.environment ? { environment: c.environment } : {}),
     ...(review ? { review } : {})
   }
@@ -780,7 +795,7 @@ function gitlabSubjectLabel(c: HookContext, gitlab: GitlabHookMetadata | undefin
   return target.kind === 'merge_request' ? `MR !${target.iid}` : `issue #${target.iid}`
 }
 
-/** The console line for a GitHub delivery whose shape is its own — a push or a deployment. */
+/** The console line for a GitHub delivery whose shape is its own — a push, a deployment or a release. */
 function githubEventLine(c: HookContext, subject: string, thread: string | undefined): string | undefined {
   if (c.event === 'push') {
     // A GitHub push has no subject; its affinity key is `<prefix>#refs/heads/main`, so the thread IS the ref unless a shared/perDelivery key named none.
@@ -791,6 +806,11 @@ function githubEventLine(c: HookContext, subject: string, thread: string | undef
     const where = c.environment ? `to ${c.environment}` : `of ${subject}`
     const state = c.action ? (DEPLOYMENT_STATE_VERBS[c.action] ?? c.action.replace(/_/g, ' ')) : 'updated'
     return `Deployment ${where} ${state}`
+  }
+  if (c.event === 'release' && c.release) {
+    // "Published release v1.2.0" — the tag names it; the title rides the prompt.
+    const verb = c.action ? (RELEASE_ACTION_VERBS[c.action] ?? c.action.replace(/_/g, ' ')) : 'Updated'
+    return `${verb} release ${c.release.tag}`
   }
   return undefined
 }
@@ -1040,6 +1060,16 @@ const ACTION_VERBS: Record<string, string> = {
   rerequested: 'Re-requested checks on',
   requested_action: 'Requested an action on',
   submitted: 'Reviewed'
+}
+
+/** `published` → `Published`: a release action as a person reads it. */
+const RELEASE_ACTION_VERBS: Record<string, string> = {
+  created: 'Created',
+  published: 'Published',
+  released: 'Released',
+  prereleased: 'Prereleased',
+  edited: 'Edited',
+  unpublished: 'Unpublished'
 }
 
 /** `success` → `succeeded`: a deployment state as a person reads it (the `deployment` event itself is `created`). */

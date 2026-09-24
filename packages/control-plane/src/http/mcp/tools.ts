@@ -947,7 +947,7 @@ export const MCP_TOOLS: McpToolDef[] = [
     // secret, and that capability-minting kind stays out of the catalog (§6.3).
     name: 'createGithubTrigger',
     description:
-      'Subscribe one GitHub repository to an agent — the trigger that starts a session when a pull request opens, an issue is filed, or a deployment reports. The repository must sit inside one of the organization’s App installations (listGithubInstallations). One trigger covers ONE subject `family`, so watching both pull requests and issues is two calls and a second trigger on the same family is a 409. Canonical event shapes: a family watched only from its opening is `["<family>:opened"]`; watched on every update it is `["<family>:*", "issue_comment:created"]` with `commentFamilies: ["<family>"]` (GitHub emits one issue_comment stream for both issue and PR threads, so a row that subscribes to it MUST scope it). Reviews and run reporting (`reviewPolicy`, `reportingMode`) exist on pull requests only and need the agent’s workspace repository at write access.',
+      'Subscribe one GitHub repository to an agent — the trigger that starts a session when a pull request opens, an issue is filed, a deployment reports, or a release is published. The repository must sit inside one of the organization’s App installations (listGithubInstallations). One trigger covers ONE subject `family`, so watching both pull requests and issues is two calls and a second trigger on the same family is a 409. Canonical event shapes: a pull_request or issues family watched only from its opening is `["<family>:opened"]`; watched on every update it is `["<family>:*", "issue_comment:created"]` with `commentFamilies: ["<family>"]` (GitHub emits one issue_comment stream for both issue and PR threads, so a row that subscribes to it MUST scope it). A release is `["release:published"]` (prereleases included) or `["release:*"]` for every publish, edit and unpublish; a deployment is `["deployment:created"]` or `["deployment:*", "deployment_status:*"]`; neither takes `commentFamilies`. Reviews and run reporting (`reviewPolicy`, `reportingMode`) exist on pull requests only and need the agent’s workspace repository at write access.',
     write: true,
     schema: z
       .object({
@@ -959,7 +959,7 @@ export const MCP_TOOLS: McpToolDef[] = [
           .regex(/^[^/\s]+\/[^/\s]+$/, 'expected "owner/repo"')
           .describe('The repository, as owner/repo (from listGithubRepositories)'),
         family: z
-          .enum(['pull_request', 'issues', 'push', 'deployment'])
+          .enum(['pull_request', 'issues', 'push', 'deployment', 'release'])
           .describe('The subject this trigger covers — immutable after creation'),
         events: GithubHookEvents.describe('`family:action` patterns, or `family:*`; every one must belong to `family`'),
         commentFamilies: z
