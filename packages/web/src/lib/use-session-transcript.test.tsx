@@ -66,21 +66,23 @@ const flush = () => act(async () => {})
 function Harness({
   busyRef,
   reconcile,
-  expose
+  expose,
+  conversation = false
 }: {
   busyRef: RefObject<boolean>
   reconcile: (id: string, persisted: SessionMessageDto[], agentId: string) => void
   expose: (refreshTail: () => Promise<void>) => void
+  conversation?: boolean
 }) {
   const { refreshTail } = useSessionTranscript({
     sid: 's1',
     aid: 'agent',
     wantTranscript: true,
     sessionPlatform: 'webchat',
-    conversationKey: null,
-    conversationSourceKey: '',
-    conversationMembers: null,
-    conversationRosterPlatform: undefined,
+    conversationKey: conversation ? 'c1' : null,
+    conversationSourceKey: conversation ? 's1' : '',
+    conversationMembers: conversation ? [{ sessionId: 's1', agentId: 'agent' }] : null,
+    conversationRosterPlatform: conversation ? 'webchat' : undefined,
     sessionBusyRef: busyRef,
     reconcileLiveSteps: reconcile
   })
@@ -127,5 +129,25 @@ describe('useSessionTranscript single-session tail', () => {
     fetchMock.mockResolvedValueOnce(page([row(3, 'agent', 'more')], 'c3'))
     await act(async () => refreshTail())
     expect(reconcile.mock.calls[1]?.[1].map((m: SessionMessageDto) => m.seq)).toEqual([3])
+  })
+})
+
+describe('useSessionTranscript conversation tail', () => {
+  it('reconciles saved history after a silent turn even when the tail has no new rows', async () => {
+    const busyRef = { current: true }
+    const reconcile = vi.fn()
+    let refreshTail: () => Promise<void> = () => Promise.resolve()
+    const saved = row(1, 'user', 'inspect')
+    fetchMock.mockResolvedValueOnce(page([saved], 'c1'))
+    await act(async () =>
+      root.render(<Harness busyRef={busyRef} reconcile={reconcile} expose={(fn) => (refreshTail = fn)} conversation />)
+    )
+    await flush()
+    expect(reconcile).not.toHaveBeenCalled()
+
+    busyRef.current = false
+    fetchMock.mockResolvedValueOnce(page([], 'c1'))
+    await act(async () => refreshTail())
+    expect(reconcile).toHaveBeenCalledWith('s1', [saved], 'agent', [saved])
   })
 })

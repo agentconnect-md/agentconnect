@@ -38,14 +38,14 @@ function promptKey(text: string, image?: SessionImage): string {
   return JSON.stringify([text, image?.name ?? null, image?.mimeType ?? null, image?.data ?? null])
 }
 
-/** Retire a live turn only after its reply posts have landed in the transcript. */
+/** Retire streamed work after its prompt and any reply posts are confirmed. */
 export function reconcilePersistedLiveSteps(
   live: SessionStep[],
   persisted: SessionMessageDto[],
   agentId: string,
   promptRows: SessionMessageDto[] = persisted
 ): SessionStep[] {
-  if (live.length === 0 || persisted.length === 0) return live
+  if (live.length === 0) return live
 
   const persistedPostIds = new Set(persisted.flatMap((m) => (m.postId ? [m.postId] : [])))
   const turns: Array<{ start: number; end: number; key: string; observedAtMs: number }> = []
@@ -100,9 +100,11 @@ export function reconcilePersistedLiveSteps(
       )
     const replyPersisted = (step: SessionStep): boolean =>
       !!step.hidden || (step.postId ? persistedPostIds.has(step.postId) : persistedReply(step.agentId ?? agentId))
-    const confirmed = replies.length > 0 && replies.every(replyPersisted)
+    const confirmed = replies.length > 0 ? replies.every(replyPersisted) : live[turn.start]!.turnComplete === true
     if (confirmed) {
-      for (let step = turn.start; step < turn.end; step++) removed.add(step)
+      for (let step = turn.start; step < turn.end; step++) {
+        if (replies.length > 0 || !live[step]!.standing) removed.add(step)
+      }
     } else {
       hidden.add(turn.start)
       for (let step = turn.start + 1; step < turn.end; step++) {
