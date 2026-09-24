@@ -106,6 +106,13 @@ export function DecisionRoutingEvaluationDetail({
       }
     }
   }
+  // Every frozen choice rule contributes its threshold to that option's bar, matched or not.
+  const ruleThresholds = new Map<string, number[]>()
+  for (const rule of snapshot?.routing.rules ?? []) {
+    if (rule.when.type !== 'choice') continue
+    for (const [key, threshold] of Object.entries(rule.when.thresholds))
+      ruleThresholds.set(key, [...(ruleThresholds.get(key) ?? []), threshold])
+  }
   const matchedRules = record ? matchedRuleNumbers(record, numbers) : []
 
   return (
@@ -169,6 +176,7 @@ export function DecisionRoutingEvaluationDetail({
           question={snapshot?.question ?? null}
           answer={detail?.fullAnswer ?? null}
           summary={record.answer}
+          {...(snapshot ? { ruleThresholds } : {})}
           matchedKeys={record.matchedKeys}
           matched={record.matchedRuleIds.length > 0 && !record.usedOtherwise}
           keyNotes={keyNotes}

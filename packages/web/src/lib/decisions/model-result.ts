@@ -8,13 +8,13 @@ export interface DistributionRow {
   /** The option's criterion text from the frozen question, when the snapshot kept it. */
   description: string | null
   probability: number
-  /** The option Jev answered with. */
+  /** The option Jev answered with; a continuous score has none. */
   chosen: boolean
-  /** The option that made the consumer act: a matched key, or the chosen option of a matched answer. */
+  /** The option that made the consumer act: a matched choice key, or the side of a matched Boolean answer. */
   triggers: boolean
-  /** A choice condition's threshold for this option, drawn as a tick on its bar. */
-  threshold: number | null
-  /** A score level inside the condition's interval. */
+  /** Every frozen threshold for this choice option (a gate has one; routing rules may add several), drawn as ticks. */
+  thresholds: number[]
+  /** A score level inside the frozen condition's interval. */
   inRange: boolean
 }
 
@@ -23,12 +23,14 @@ export function distributionRows(input: {
   question: DecisionQuestion | null
   answer: DecisionAnswer
   condition?: DecisionCondition | null
+  /** Choice thresholds per option from frozen routing rules, used instead of a gate condition. */
+  ruleThresholds?: ReadonlyMap<string, readonly number[]>
   matchedKeys: readonly string[]
   /** Whether the answer made the consumer act (a gate trigger or a matched routing rule). */
   matched: boolean
   words: { yes: string; no: string }
 }): DistributionRow[] {
-  const { question, answer, condition, matchedKeys, matched, words } = input
+  const { question, answer, condition, ruleThresholds, matchedKeys, matched, words } = input
   if (answer.type === 'boolean') {
     const criteria = question?.type === 'boolean' ? question.criteria : null
     return [true, false].map((value) => ({
@@ -38,14 +40,18 @@ export function distributionRows(input: {
       probability: value ? answer.probability : 1 - answer.probability,
       chosen: answer.value === value,
       triggers: matched && answer.value === value,
-      threshold: null,
+      thresholds: [],
       inRange: false
     }))
   }
   if (answer.type === 'choice') {
     const criteria = question?.type === 'choice' ? question.criteria : {}
     const keys = [...new Set([...Object.keys(criteria), ...Object.keys(answer.probabilities)])]
-    const thresholds = condition?.type === 'choice' ? condition.thresholds : {}
+    const gate = condition?.type === 'choice' ? condition.thresholds : {}
+    const thresholdsOf = (key: string): number[] => {
+      if (ruleThresholds) return [...new Set(ruleThresholds.get(key) ?? [])].sort((a, b) => a - b)
+      return gate[key] === undefined ? [] : [gate[key]]
+    }
     return keys.map((key) => ({
       key,
       label: key,
@@ -53,21 +59,21 @@ export function distributionRows(input: {
       probability: answer.probabilities[key] ?? 0,
       chosen: answer.value === key,
       triggers: matchedKeys.includes(key),
-      threshold: thresholds[key] ?? null,
+      thresholds: thresholdsOf(key),
       inRange: false
     }))
   }
+  // A score is continuous, so no level is the answer or the trigger; the summary line carries the value itself.
   const criteria = question?.type === 'score' ? question.criteria : []
-  const chosen = Math.round(answer.value)
   const last = answer.probabilities.length - 1
   return answer.probabilities.map((probability, level) => ({
     key: String(level),
     label: String(level),
     description: criteria[level] ?? null,
     probability,
-    chosen: level === chosen,
-    triggers: matched && level === chosen,
-    threshold: null,
+    chosen: false,
+    triggers: false,
+    thresholds: [],
     inRange:
       condition?.type === 'score' &&
       level >= condition.min &&

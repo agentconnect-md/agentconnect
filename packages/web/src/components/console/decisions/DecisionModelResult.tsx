@@ -34,13 +34,14 @@ function Bar({ row, note }: { row: DistributionRow; note?: string }) {
             className={`absolute inset-y-0 left-0 rounded-full ${row.chosen ? 'bg-(--brand)' : 'bg-(--border-strong)'}`}
             style={{ width: pct(row.probability) }}
           />
-          {row.threshold !== null && (
+          {row.thresholds.map((threshold) => (
             <span
+              key={threshold}
               className="absolute -top-[3px] h-[12px] w-[2px] -translate-x-1/2 rounded-full bg-(--text-secondary)"
-              style={{ left: pct(row.threshold) }}
-              title={t('threshold', { value: pct(row.threshold) })}
+              style={{ left: pct(threshold) }}
+              title={t('threshold', { value: pct(threshold) })}
             />
-          )}
+          ))}
         </span>
         <span className="mono w-[38px] flex-none text-right text-[11.5px] text-(--text-secondary)">
           {pct(row.probability)}
@@ -50,8 +51,10 @@ function Bar({ row, note }: { row: DistributionRow; note?: string }) {
             <span className="text-(--status-online)">{t('triggers')}</span>
           ) : row.inRange ? (
             <span className="text-(--text-tertiary)">{t('inRange')}</span>
-          ) : row.threshold !== null ? (
-            <span className="mono text-(--text-tertiary)">{t('threshold', { value: pct(row.threshold) })}</span>
+          ) : row.thresholds.length > 0 ? (
+            <span className="mono text-(--text-tertiary)">
+              {t('threshold', { value: row.thresholds.map(pct).join(', ') })}
+            </span>
           ) : null}
         </span>
       </div>
@@ -117,6 +120,7 @@ export function DecisionModelResult({
   answer,
   summary,
   condition,
+  ruleThresholds,
   matchedKeys,
   matched,
   keyNotes,
@@ -134,6 +138,7 @@ export function DecisionModelResult({
   answer: DecisionAnswer | null
   summary: DecisionAnswerSummary | null
   condition?: DecisionCondition | null
+  ruleThresholds?: ReadonlyMap<string, readonly number[]>
   matchedKeys: readonly string[]
   matched: boolean
   /** Extra text per option key, such as the routing rules it matched. */
@@ -152,7 +157,17 @@ export function DecisionModelResult({
   const t = useTranslations('Decisions.evaluations.model')
   const tDecisions = useTranslations('Decisions')
   const words = { yes: tDecisions('condition.yes'), no: tDecisions('condition.no') }
-  const rows = answer ? distributionRows({ question, answer, condition, matchedKeys, matched, words }) : []
+  const rows = answer
+    ? distributionRows({
+        question,
+        answer,
+        condition,
+        ...(ruleThresholds ? { ruleThresholds } : {}),
+        matchedKeys,
+        matched,
+        words
+      })
+    : []
   const answered = answerText(summary, words)
   const facts = [
     latencyText(latencyMs),

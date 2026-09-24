@@ -270,7 +270,7 @@ function BotRouting({ botId }: { botId: string }) {
           <span className={`badge flex-none ${STATUS_BADGE[status]}`}>{t(`status.${status}`)}</span>
           <span className="flex-1" />
           <Button variant="secondary" size="sm" onClick={() => setHistoryOpen(true)}>
-            <Icon name="history" size={14} />
+            <Icon name="rotate-ccw-clock" size={14} />
             {t('recentEvaluations')}
           </Button>
         </div>

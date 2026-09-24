@@ -125,6 +125,8 @@ describe('DecisionRoutingEvaluationsDrawer', () => {
     const bars = [...sheet.querySelectorAll('[data-testid="model-result"] li')]
     expect(bars[0]!.textContent).toContain('✓ triggers')
     expect(bars[0]!.textContent).toContain('Rule 1 → Billing')
+    expect(bars.map((bar) => bar.querySelectorAll('[title^="≥"]').length)).toEqual([1, 1, 1])
+    expect(bars[2]!.textContent).toContain('≥ 70%')
     expect(bars[1]!.textContent).toContain('Rule 2 → Technical')
     expect(bars[2]!.textContent).not.toContain('✓ triggers')
     expect(sheet.querySelector('[data-testid="model-result"] details pre')?.textContent).toContain('"type": "choice"')

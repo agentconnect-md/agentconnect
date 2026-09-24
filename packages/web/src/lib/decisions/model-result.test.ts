@@ -22,10 +22,10 @@ describe('Model result projections', () => {
       matched: true,
       words
     })
-    expect(rows.map((row) => [row.key, row.probability, row.chosen, row.triggers, row.threshold])).toEqual([
-      ['billing', 0.71, true, true, 0.5],
-      ['technical', 0.21, false, true, 0.2],
-      ['sales', 0.08, false, false, null]
+    expect(rows.map((row) => [row.key, row.probability, row.chosen, row.triggers, row.thresholds])).toEqual([
+      ['billing', 0.71, true, true, [0.5]],
+      ['technical', 0.21, false, true, [0.2]],
+      ['sales', 0.08, false, false, []]
     ])
     expect(rows[0]!.description).toBe('Payments')
   })
@@ -47,18 +47,45 @@ describe('Model result projections', () => {
     expect(miss[0]!.description).toBeNull()
   })
 
-  it('marks score levels inside the interval, including a closed top level', () => {
+  it('takes every frozen routing rule threshold per option instead of a gate condition', () => {
+    const rows = distributionRows({
+      question: null,
+      answer: { type: 'choice', value: 'billing', probabilities: { billing: 0.6, sales: 0.4 }, confidence: 0.6 },
+      condition: { type: 'choice', thresholds: { billing: 0.9 } },
+      ruleThresholds: new Map([
+        ['billing', [0.7, 0.3, 0.7]],
+        ['sales', [0.5]]
+      ]),
+      matchedKeys: ['billing'],
+      matched: true,
+      words
+    })
+    expect(rows.map((row) => [row.key, row.thresholds])).toEqual([
+      ['billing', [0.3, 0.7]],
+      ['sales', [0.5]]
+    ])
+  })
+
+  it('marks score levels inside the interval but never a rounded level as the answer or trigger', () => {
     const rows = distributionRows({
       question: { type: 'score', instructions: 'How upset?', criteria: ['Calm', 'Concerned', 'Upset', 'Angry'] },
-      answer: { type: 'score', value: 2.4, probabilities: [0.05, 0.15, 0.5, 0.3], confidence: 0.5 },
+      answer: { type: 'score', value: 1.5, probabilities: [0.05, 0.45, 0.4, 0.1], confidence: 0.45 },
+      condition: { type: 'score', min: 1, max: 1.6 },
+      matchedKeys: [],
+      matched: true,
+      words
+    })
+    expect(rows.map((row) => row.inRange)).toEqual([false, true, false, false])
+    expect(rows.some((row) => row.chosen || row.triggers)).toBe(false)
+    const top = distributionRows({
+      question: null,
+      answer: { type: 'score', value: 3, probabilities: [0, 0, 0.2, 0.8], confidence: 0.8 },
       condition: { type: 'score', min: 2, max: 3 },
       matchedKeys: [],
       matched: true,
       words
     })
-    expect(rows.map((row) => row.inRange)).toEqual([false, false, true, true])
-    expect(rows.map((row) => row.chosen)).toEqual([false, false, true, false])
-    expect(rows[2]!.triggers).toBe(true)
+    expect(top.map((row) => row.inRange)).toEqual([false, false, true, true])
   })
 
   it('names a resolved alias and indents raw JSON, leaving a malformed body as it arrived', () => {

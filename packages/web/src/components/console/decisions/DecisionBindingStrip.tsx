@@ -134,7 +134,7 @@ export function DecisionBindingStrip({
       aria-haspopup="dialog"
       onClick={() => setHistoryOpen(true)}
     >
-      <Icon name="history" size={12} />
+      <Icon name="rotate-ccw-clock" size={12} />
       {t('evaluations.toggle')}
     </button>
   )
