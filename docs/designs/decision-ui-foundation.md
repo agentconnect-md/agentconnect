@@ -246,7 +246,9 @@ Decision's shared-bot usage links to the bot's configuration.
   among, the saved status when it is not Ready, and read-only access. Opening it from a row
   puts that row in the draft's scope ("Save to apply By decision rules in this channel");
   the rules are the bot's own, so the modal names the other routed channels they apply to.
-- The form reads Decision (picker, type and model, View and edit, inline Create decision),
+- The form reads Routing enabled (pause or resume the bot's routing), Decision (picker, type
+  and model, View and edit, inline Create decision — its return URL names the row, which
+  reopens on the kept draft),
   the rules, and Otherwise, then How this works, Try a message, Save, Cancel, Recent
   evaluations, and Open bot configuration.
 - A Choice or Boolean question whose rules each name one distinct answer reads as an answer

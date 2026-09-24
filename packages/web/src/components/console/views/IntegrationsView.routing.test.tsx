@@ -56,6 +56,8 @@ vi.mock('@/components/console/decisions/channel-gates', () => ({
 }))
 vi.mock('@/components/console/decisions/routing/DecisionRoutingModal', () => ({
   stopRouting: mocks.stopRouting,
+  readRoutingResume: () => null,
+  clearRoutingResume: () => {},
   DecisionRoutingModal: ({ channelName }: { channelName: string }) => (
     <div role="dialog" aria-label={`${channelName} · By decision rules`} />
   )

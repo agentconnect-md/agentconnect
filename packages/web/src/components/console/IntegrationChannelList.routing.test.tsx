@@ -2,7 +2,7 @@
 
 // A shared bot's By decision routing from one conversation row: the dispatch menu opens its rules modal in place, saves the row into scope, and stops it.
 
-import { act } from 'react'
+import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -152,6 +152,23 @@ const row = (over: Partial<IntegrationChannelRow> = {}): IntegrationChannelRow =
   ...over
 })
 
+// Hides and re-shows the list under one provider, as leaving for Create decision and coming back does.
+let setShown: (shown: boolean) => void = () => {}
+function Harness({ channels }: { channels: IntegrationChannelRow[] }) {
+  const [shown, set] = useState(true)
+  setShown = set
+  return shown ? (
+    <IntegrationChannelList
+      integrationId="int-1"
+      channels={channels}
+      botId="bot-shared"
+      agentId="agent-1"
+      platform="slack"
+      shareable
+    />
+  ) : null
+}
+
 async function render(channels: IntegrationChannelRow[]) {
   container = document.createElement('div')
   document.body.append(container)
@@ -160,14 +177,7 @@ async function render(channels: IntegrationChannelRow[]) {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
         <DecisionsPrototypeProvider>
-          <IntegrationChannelList
-            integrationId="int-1"
-            channels={channels}
-            botId="bot-shared"
-            agentId="agent-1"
-            platform="slack"
-            shareable
-          />
+          <Harness channels={channels} />
         </DecisionsPrototypeProvider>
       </SWRConfig>
     )
@@ -304,6 +314,42 @@ describe('IntegrationChannelList shared-bot routing', () => {
     await click(all('button').find((node) => node.textContent?.trim() === 'Save'))
     expect(dialog()?.textContent).toContain("Couldn't save: Enable the channel before adding it to routing.")
     expect(all('button').find((node) => node.textContent?.trim() === 'Retry')).toBeUndefined()
+  })
+
+  it('resumes a paused bot from the modal, saving it enabled', async () => {
+    routing.getRouting.mockResolvedValue({ ...routed, config: { ...routed.config!, enabled: false } })
+    await render([
+      row({
+        trigger: 'decision',
+        decisionBinding: { type: 'shared_bot_routing' },
+        decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
+      })
+    ])
+    await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+    await click(all('button').find((node) => node.getAttribute('title') === 'Edit By decision rules'))
+    expect(dialog()?.textContent).toContain('Routing paused')
+    await click(document.body.querySelector('[aria-label="Routing enabled"]'))
+    await click(all('button').find((node) => node.textContent?.trim() === 'Save'))
+    expect(routing.saveRouting.mock.calls[0]![1].config.enabled).toBe(true)
+  })
+
+  it('reopens the row on its kept draft after an inline Create decision returns', async () => {
+    routing.getRouting.mockResolvedValue(detail())
+    await render([row()])
+    await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
+    await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+    await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
+    await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
+    await click(document.body.querySelector('button[aria-label="Target for billing"]'))
+    await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('review-bot')))
+    // Leaving for Create decision unmounts the page without closing the modal; the return URL names the row.
+    await act(async () => setShown(false))
+    window.history.replaceState(null, '', '/agents/agent-1?decisionRouting=bot-shared%7CC1')
+    await act(async () => setShown(true))
+    await flush()
+    expect(dialog()?.getAttribute('aria-label')).toBe('deploys · By decision rules')
+    expect(document.body.querySelector('button[aria-label="Target for billing"]')?.textContent).toContain('review-bot')
+    expect(window.location.search).toBe('')
   })
 
   it('stops a routed row by saving the bot’s routing without it, handed back to @-mentions', async () => {

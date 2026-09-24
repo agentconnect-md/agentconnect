@@ -16,7 +16,12 @@ import {
 import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
 import { useChannelGates } from '@/components/console/decisions/channel-gates'
 import { managedByRouting } from '@/lib/decisions/binding'
-import { DecisionRoutingModal, stopRouting } from '@/components/console/decisions/routing/DecisionRoutingModal'
+import {
+  DecisionRoutingModal,
+  clearRoutingResume,
+  readRoutingResume,
+  stopRouting
+} from '@/components/console/decisions/routing/DecisionRoutingModal'
 import { RoutingEntry, type DispatchRouting } from '@/components/console/DefaultDispatchPicker'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
@@ -722,7 +727,21 @@ export function IntegrationChannelList({
   } = useConsoleData()
   const ownerGuard = useOwnerChangeGuard()
   // The shared-bot row whose By decision rules modal is open.
-  const [routingRow, setRoutingRow] = useState<{ botId: string; channelId: string; name: string } | null>(null)
+  const [routingRow, setRoutingRow] = useState<{
+    botId: string
+    channelId: string
+    name: string
+    resume?: boolean
+  } | null>(null)
+  // An inline Create decision returns naming the row whose rules modal it left; that row's list reopens it on the kept draft.
+  useEffect(() => {
+    const resumed = readRoutingResume()
+    if (!resumed || !shareable || resumed.botId !== botId) return
+    const row = channels.find((c) => c.channelId === resumed.channelId)
+    if (!row) return
+    clearRoutingResume()
+    setRoutingRow({ botId: resumed.botId, channelId: row.channelId, name: rowLabel(row), resume: true })
+  }, [botId, shareable, channels])
   // A derived roster is the platform's own list — nothing is observed into it, and nothing is dropped from here.
   const derivedRoster = channelListSemantics(platform).roster === 'derived'
   // The agents that share this bot — the candidate per-conversation defaults.
@@ -952,6 +971,7 @@ export function IntegrationChannelList({
           botId={routingRow.botId}
           channelId={routingRow.channelId}
           channelName={routingRow.name}
+          resume={routingRow.resume}
           onClose={() => setRoutingRow(null)}
         />
       )}

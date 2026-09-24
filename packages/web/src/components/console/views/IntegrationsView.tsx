@@ -17,7 +17,12 @@ import { Button, Icon, Toggle } from '@/components/ui'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { useModal } from '@/components/console/ModalProvider'
 import { DefaultDispatchPicker } from '@/components/console/DefaultDispatchPicker'
-import { DecisionRoutingModal, stopRouting } from '@/components/console/decisions/routing/DecisionRoutingModal'
+import {
+  DecisionRoutingModal,
+  clearRoutingResume,
+  readRoutingResume,
+  stopRouting
+} from '@/components/console/decisions/routing/DecisionRoutingModal'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useChannelGates } from '@/components/console/decisions/channel-gates'
 import { useConsoleData } from '@/lib/data-context'
@@ -274,7 +279,23 @@ function BotsCard({
   const decisions = useOptionalDecisionsPrototype()
   const gates = useChannelGates()
   // The shared-bot conversation whose By decision rules modal is open, and a failed Stop to surface.
-  const [routingRow, setRoutingRow] = useState<{ botId: string; channelId: string; name: string } | null>(null)
+  const [routingRow, setRoutingRow] = useState<{
+    botId: string
+    channelId: string
+    name: string
+    resume?: boolean
+  } | null>(null)
+  // An inline Create decision returns naming the row whose rules modal it left; its bot expands and the modal reopens on the kept draft.
+  useEffect(() => {
+    const resumed = readRoutingResume()
+    if (!resumed) return
+    const bot = bots.find((entry) => entry.id === resumed.botId)
+    const row = bot ? botChannels(bot, integrations).find((c) => c.channelId === resumed.channelId) : undefined
+    if (!bot || !row) return
+    clearRoutingResume()
+    setOpenBotId(bot.id)
+    setRoutingRow({ botId: bot.id, channelId: row.channelId, name: row.name, resume: true })
+  }, [bots, integrations])
   const [routingErr, setRoutingErr] = useState<{ botId: string; msg: string } | null>(null)
   const tabs = visibleBotPlatformTabs(bots)
   const [platformTabKey, setPlatformTabKey] = useState<string>(tabs[0]?.key ?? '')
@@ -742,6 +763,7 @@ function BotsCard({
           botId={routingRow.botId}
           channelId={routingRow.channelId}
           channelName={routingRow.name}
+          resume={routingRow.resume}
           onClose={() => setRoutingRow(null)}
         />
       )}

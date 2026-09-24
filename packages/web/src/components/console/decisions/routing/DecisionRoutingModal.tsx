@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
-import { Button, Icon } from '@/components/ui'
+import { Button, Icon, Toggle } from '@/components/ui'
 import { LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
@@ -54,16 +54,37 @@ export async function stopRouting(
   store.dispatchRouting(botId, { type: 'SAVE_OK', detail: await store.api.saveRouting(botId, body) })
 }
 
+/** The search param an inline Create decision returns with, naming the row whose rules modal reopens. */
+const RESUME_PARAM = 'decisionRouting'
+
+/** The bot and conversation to reopen after an inline Create decision, if the URL carries one. */
+export function readRoutingResume(): { botId: string; channelId: string } | null {
+  if (typeof window === 'undefined') return null
+  const raw = new URLSearchParams(window.location.search).get(RESUME_PARAM)
+  const at = raw?.indexOf('|') ?? -1
+  return raw && at > 0 ? { botId: raw.slice(0, at), channelId: raw.slice(at + 1) } : null
+}
+
+/** Drop the resume param once its row reopened, so a reload does not reopen it again. */
+export function clearRoutingResume() {
+  const url = new URL(window.location.href)
+  url.searchParams.delete(RESUME_PARAM)
+  window.history.replaceState(window.history.state, '', url)
+}
+
 export function DecisionRoutingModal({
   botId,
   channelId,
   channelName,
+  resume = false,
   onClose
 }: {
   botId: string
   channelId: string
   /** The conversation as its row reads. */
   channelName: string
+  /** Reopened after an inline Create decision: keep the draft it returned to instead of starting from the saved routing. */
+  resume?: boolean
   onClose: () => void
 }) {
   const t = useTranslations('Decisions.routing')
@@ -92,7 +113,7 @@ export function DecisionRoutingModal({
     if (!data) return
     if (fresh) dispatch({ type: 'LOADED', detail: data })
     else {
-      dispatch({ type: 'RESET', detail: data })
+      dispatch(resume && state.draft ? { type: 'LOADED', detail: data } : { type: 'RESET', detail: data })
       setFresh(true)
     }
   }, [data, fresh, dispatch])
@@ -145,7 +166,10 @@ export function DecisionRoutingModal({
   })
   const canSave = routingCanSave(state, localIssues, canWrite) && offRooms.length === 0
   const disabled = !canWrite || busy
-  const returnTo = `${pathname}${search.toString() ? `?${search.toString()}` : ''}`
+  // Inline Create decision returns here with the row named, so its modal reopens on the same draft.
+  const returnParams = new URLSearchParams(search.toString())
+  returnParams.set(RESUME_PARAM, `${botId}|${channelId}`)
+  const returnTo = `${pathname}?${returnParams.toString()}`
   const botName = roster.bot?.name ?? botId
   const botSettings = orgPath(`/integrations?bot=${encodeURIComponent(botId)}`)
   const names = new Map(roster.channels.map((channel) => [channel.channelId, channel.name]))
@@ -214,10 +238,28 @@ export function DecisionRoutingModal({
       </div>
     )
   else {
-    const readiness = saved?.config ? saved.readiness.status : null
+    const paused = saved?.config?.enabled === false
+    const readiness = saved?.config && !paused ? saved.readiness.status : null
     body = (
       <div className="flex flex-col gap-3">
         {!canWrite && <Note icon="lock">{t('readOnly')}</Note>}
+        {/* The bot's whole routing pauses and resumes here; a paused one delivers nothing in its channels. */}
+        <div className="flex items-start gap-3 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[10px]">
+          <Toggle
+            checked={draft.enabled}
+            disabled={disabled}
+            ariaLabel={tm('enabled')}
+            onChange={(enabled) => dispatch({ type: 'EDIT', patch: { enabled } })}
+          />
+          <span className="flex min-w-0 flex-col gap-[2px]">
+            <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+              {draft.enabled ? tm('enabled') : tm('pausedLabel')}
+            </span>
+            <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+              {paused && !draft.enabled ? tm('pausedHint') : tm('pauseHint')}
+            </span>
+          </span>
+        </div>
         {readiness && readiness !== 'ready' && (
           <Note icon={readiness === 'daemon_offline' ? 'wifi-off' : 'triangle-alert'}>
             <b className="font-semibold text-(--text-secondary)">{t(`status.${readiness}`)}</b>
