@@ -1022,12 +1022,8 @@ export default function AgentDetailView() {
           </div>
           <div className="mt-[9px] flex flex-wrap items-center gap-x-4 gap-y-2">
             <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-              {decisionModel ?? (
-                <>
-                  <Icon name="cpu" size={14} color="var(--text-tertiary)" />
-                  {defaultModelText}
-                </>
-              )}
+              <Icon name="cpu" size={14} color="var(--text-tertiary)" />
+              {decisionModel ?? defaultModelText}
             </span>
             {owningDaemon ? (
               <Link className="lnk font-sans text-[12.5px] font-medium leading-normal" href={daemonHref}>
@@ -1153,12 +1149,8 @@ export default function AgentDetailView() {
           </div>
           <div className="mt-2 flex flex-wrap gap-x-[14px] gap-y-[6px]">
             <span className="inline-flex items-center gap-[6px] font-mono text-[12px] font-medium leading-normal whitespace-nowrap text-(--text-secondary)">
-              {decisionModel ?? (
-                <>
-                  <Icon name="cpu" size={14} color="var(--text-tertiary)" className="flex-none" />
-                  {defaultModelText}
-                </>
-              )}
+              <Icon name="cpu" size={14} color="var(--text-tertiary)" className="flex-none" />
+              {decisionModel ?? defaultModelText}
             </span>
             <span className="inline-flex items-center gap-[6px] font-mono text-[12px] font-medium leading-normal whitespace-nowrap text-(--text-secondary)">
               <Icon name={daemonIcon} size={14} color="var(--text-tertiary)" />
