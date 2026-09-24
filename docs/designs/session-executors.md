@@ -370,15 +370,22 @@ change is only the ask: a slug where the boolean was.
 **A Decision picks the runtime, never the strategy.** An agent's model selection
 ([decisions.md](decisions.md) §10.6) resolves the session's runtime, model and run
 settings before placement, and placement then looks for a machine that can run and
-authenticate that runtime. The strategy stays the agent's: it is a security boundary,
-and a model's judgment of the opening message does not choose one. Two reads change
-with this revision so that the order holds across machines:
+authenticate that runtime with that model in the agent's strategy. The strategy stays
+the agent's: it is a security boundary, and a model's judgment of the opening message
+does not choose one; a target only another strategy runs falls back. Two reads keep
+that order across machines:
 
 - **Whether a rule's target is usable** is judged against the machines the session
-  could land on, not the holder alone. The holder asks `executor/candidates` before
-  it evaluates, since placement needs the answer anyway, and the same answer serves
-  both: a runtime only another member offers is not mistaken for unavailable, and a
-  model the landing machine lacks is not accepted because the holder has it.
+  could land on, not the holder alone. For a birth that could be placed elsewhere —
+  session-isolated, on a group, in a strategy that spreads — the holder asks
+  `executor/candidates` before it evaluates, since placement needs the answer anyway,
+  and the same answer serves both, so a birth still costs one round trip. A target is
+  usable when the holder, or a candidate whose table offers the strategy and which
+  authenticates the runtime, runs it. A runtime only another member offers is
+  therefore not mistaken for unavailable. And a model the landing machine lacks is not
+  accepted because the holder has it: placement lands a session only on a member
+  whose catalog runs its runtime and model, and a holder whose own catalog does not
+  keeps the session only when no member does.
 - **The target's catalog is the strategy's.** A microsandbox environment runs the
   runtimes its image declares, not the ones installed on the host, so a rule naming a
   runtime the image lacks falls back instead of failing at startup.
@@ -396,15 +403,24 @@ So the catalog is **per strategy**. Each runtime profile in the snapshot carries
 entry per strategy the machine offers — available or unavailable with a reason, the
 advertised `models`, and their `modelsSource` — and each entry comes from the install
 that strategy starts: the host store's probe for `host` and `srt`, and for
-`microsandbox` a probe of the image's runtime, recorded against the image's identity
-the first time an environment of that image starts it, since the on-by-default probe
-boots no VM. An entry with no probe yet has no model list and stays permissive, as a
-`cached` one already does in the activation check. `authRequired` stays per runtime,
-because the sign-in is the machine's whichever install reads it. The Control Plane
-copies, for each candidate, the entries of the strategies its effective table offers,
-from the same snapshot it already reads for `authRequired`; the holder's own entries
-come from its local facts. The target check reads the entry for the session's
-strategy and nothing else.
+`microsandbox` a probe of the image's runtime, since the on-by-default probe boots no
+VM. That probe is the first session an environment of the image opens for the
+runtime: the model selector the runtime advertises there, in the guest and with the
+session's own credentials, is what a separate probe session would read. The list is
+recorded against the image's identity beside its runtime table
+(`microsandbox/image-models.json`), so another build behind the same tag starts
+without one. A recorded list reads as `cached` after a restart until that run's first
+such session confirms it. Only this machine's own VM sessions contribute: an
+environment it hosts for another member carries the holder's ACP stream, which the
+executor never reads. An entry with no probe yet has no model list and stays
+permissive, as a `cached` one already does in the activation check; so does an empty
+list, which a runtime without a model selector advertises, and a member that reports
+no entries at all. `authRequired` stays per runtime, because the
+sign-in is the machine's whichever install reads it. The Control Plane copies, for
+each candidate, the entries of the strategies its effective table offers, from the
+same snapshot it already reads for `authRequired`; the holder's own entries come from
+its local facts. The target check reads the entry for the session's strategy and
+nothing else.
 
 ### The `srt` strategy: SRT around the shim
 
@@ -1324,16 +1340,16 @@ commits, including claim, sleep and orphan machinery this design does not need.
 About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
-**The 2026-09-24 revision** adds the following. S1, S2a, M1 and M2 have landed and the
-rest have not started. Each lands alone; S1–S3 are one feature, S2 lands in three parts,
-and M1–M4 precede R1.
+**The 2026-09-24 revision** adds the following. S1, S2a, S2c, M1 and M2 have landed
+and the rest have not started. Each lands alone; S1–S3 are one feature, S2 lands in
+three parts, and M1–M4 precede R1.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | S1  | Protocol and CP: the agent's `execution` slug beside `runInSandbox`; the daemon's own effective strategy table at registration, in the executor report's shape, and its legacy backend for the migration; the one-time backfill; validation of `execution` against the placement's tables in place of the two sandbox conflicts; per-strategy runtime entries in `facts/daemon-runtimes` (availability, `models`, `modelsSource`) and those entries on each candidate runtime, the birth strategy in the CP's hint, and the `strategy_mismatch` refusal. |
 | S2a | Daemon: the `sandbox` strategy table with the legacy mapping and on-by-default probes, reported at registration and by the facet in place of S1's reading of the single backend; launch dispatch on the agent's strategy instead of `sandbox.backend`, `srt` and `microsandbox` side by side in one process with a runtime catalog per strategy; refusal instead of downgrade; per-strategy entries in `facts/daemon-runtimes` from the host probe; the placement ask by strategy slug, `srt` staying on its holder until R1.                            |
 | S2b | Daemon: the birth strategy in the session's verdict, its upgrade backfill, and the executor's `strategy_mismatch` refusal.                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| S2c | Daemon: the image runtime's model probe per image identity; model selection judging targets against the candidates and the strategy's catalog (§5).                                                                                                                                                                                                                                                                                                                                                                                                      |
+| S2c | Daemon: the image runtime's model probe per image identity; model selection judging targets against the candidates and the strategy's catalog, and placement landing a session only where its runtime and model run (§5).                                                                                                                                                                                                                                                                                                                                |
 | S3  | Console: the strategy picker per placement, boundary labels and unavailable reasons; the pool shows none.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | M1  | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | M2  | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
