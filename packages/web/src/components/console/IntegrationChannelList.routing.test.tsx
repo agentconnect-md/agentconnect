@@ -228,7 +228,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
     routing.getRouting.mockResolvedValue(detail())
     await render([row()])
     await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
-    await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+    await click(document.body.querySelector('button[aria-label="Add decision"]'))
     expect(dialog()?.textContent).toContain('Save to apply By decision rules in this channel.')
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
@@ -281,7 +281,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
   }
   const openAdd = async () => {
     await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
-    await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+    await click(document.body.querySelector('button[aria-label="Add decision"]'))
   }
   const saveButton = () => all('button').find((node) => node.textContent?.trim() === 'Save') as HTMLButtonElement
 
@@ -317,7 +317,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
       else await click(dialog()?.querySelector('.modalhead button[aria-label="Cancel"]'))
       expect(dialog()).toBeNull()
       await click(all('button').filter((node) => node.title.startsWith('Default dispatch'))[0])
-      await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+      await click(document.body.querySelector('button[aria-label="Add decision"]'))
       expect(dialog()?.getAttribute('aria-label')).toBe('ops · By decision rules')
       expect(document.body.querySelector('button[aria-label="Target for billing"]')?.textContent).toContain(
         'deploy-bot'
@@ -330,7 +330,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
     await render([row(), row({ channelId: 'C2', name: 'ops' })])
     const openFrom = async (index: number) => {
       await click(all('button').filter((node) => node.title.startsWith('Default dispatch'))[index])
-      await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+      await click(document.body.querySelector('button[aria-label="Add decision"]'))
     }
     await openFrom(0)
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
@@ -347,7 +347,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
     routing.saveRouting.mockRejectedValue(new ApiError('Enable the channel before adding it to routing.', 400))
     await render([row()])
     await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
-    await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+    await click(document.body.querySelector('button[aria-label="Add decision"]'))
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
     await click(document.body.querySelector('button[aria-label="Target for billing"]'))
@@ -378,7 +378,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
     routing.getRouting.mockResolvedValue(detail())
     await render([row()])
     await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
-    await click(all('button').find((node) => node.textContent?.trim() === 'Decision'))
+    await click(document.body.querySelector('button[aria-label="Add decision"]'))
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
     await click(document.body.querySelector('button[aria-label="Target for billing"]'))

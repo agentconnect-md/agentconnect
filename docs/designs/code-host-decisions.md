@@ -215,9 +215,9 @@ conversations; shared-bot routing stays refused.
   `GET /api/v1/decision-routing/github/:repoId/:family/evaluations[/:seq]`. The CP forwards
   `decision/evaluations` and `decision/evaluation` to the host daemon with `source: 'hook_routing'`
   and `integrationId = channel = routingId`.
-- The console's issue and pull-request rows carry the routing entry: a Decision pill (or
-  `+ Decision`) opening the rules modal — Decision picker, answer-to-agent table, Otherwise — with
-  the scope's members as targets. While a scope is routed, the row's trigger modes are locked and it
+- The console's issue and pull-request rows carry the routing entry: a Decision chip (empty, or
+  naming the Decision) opening the rules modal — Decision picker, answer-to-agent table,
+  Otherwise — with the scope's members as targets. While a scope is routed, the row's trigger modes are locked and it
   reads **Any update**, because the Decision judges every update.
 - A selected fire's run appears in the hook's run history as usual; a non-selected candidate has no
   run.

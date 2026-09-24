@@ -12,6 +12,7 @@ import { Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { AgentIconView } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
+import { DecisionChip } from './decisions/DecisionChip'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { useTranslations } from 'next-intl'
 
@@ -38,7 +39,7 @@ const MENU_WIDTH = 240
 const MENU_HEADER_HEIGHT = 34
 const MENU_ROW_HEIGHT = 34
 
-/** The bot's By decision routing for one row: the routed Decision to edit or stop, or `+ Decision` to route the row. */
+/** The bot's By decision routing for one row: the routed Decision's chip to edit or stop, or the empty chip to route the row. */
 export function RoutingEntry({
   name,
   canStop,
@@ -52,45 +53,14 @@ export function RoutingEntry({
 }) {
   const t = useTranslations('Integrations.channelList.dispatch')
   const { myRole } = useOrgs()
-  if (name !== null) {
-    return (
-      <span className="inline-flex h-7 max-w-full items-center overflow-hidden rounded-md border border-(--brand) bg-(--brand-soft)">
-        <button
-          type="button"
-          onClick={onOpen}
-          title={t('editRouting')}
-          aria-haspopup="dialog"
-          className="inline-flex h-full min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-2"
-        >
-          <Icon name="split" size={13} className="flex-none text-(--brand)" />
-          <span className="mono min-w-0 truncate text-[11.5px] text-(--text-primary)">{name}</span>
-          <Icon name="pencil" size={11} className="flex-none text-(--text-tertiary)" />
-        </button>
-        {canStop && myRole !== 'viewer' && (
-          <button
-            type="button"
-            onClick={onStop}
-            title={t('stop')}
-            aria-label={t('stop')}
-            className="flex h-full w-6 flex-none cursor-pointer items-center justify-center border-0 border-l border-(--border-subtle) bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-          >
-            <Icon name="x" size={12} />
-          </button>
-        )}
-      </span>
-    )
-  }
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      title={t('addTitle')}
-      aria-haspopup="dialog"
-      className="inline-flex h-7 cursor-pointer items-center gap-[5px] rounded-md border border-dashed border-(--border-strong) bg-transparent pl-[7px] pr-[9px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) hover:border-solid hover:border-(--brand) hover:bg-(--brand-soft) hover:text-(--brand-soft-text)"
-    >
-      <Icon name="plus" size={12} />
-      {t('add')}
-    </button>
+    <DecisionChip
+      name={name}
+      label={name === null ? t('add') : undefined}
+      title={name === null ? t('addTitle') : t('editRouting')}
+      onOpen={onOpen}
+      remove={canStop && myRole !== 'viewer' ? { label: t('stop'), onClick: onStop } : undefined}
+    />
   )
 }
 

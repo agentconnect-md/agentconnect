@@ -161,7 +161,7 @@ describe('a shared bot’s dispatch menu', () => {
     await click(buttons().find((b) => b.title === 'Default dispatch — a1'))
     expect(document.body.textContent).toContain('Send every message to')
     expect(document.body.textContent).toContain('Or pick by decision')
-    await click(buttons().find((b) => b.textContent?.trim() === 'Decision'))
+    await click(buttons().find((b) => b.getAttribute('aria-label') === 'Add decision'))
     expect(document.body.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('help · By decision rules')
   })
 
