@@ -1069,7 +1069,12 @@ describe('daemon --k8s mode', () => {
   })
 
   it('retries a failed takeover on the idle sweep and stops after success', async () => {
-    const adoptAgent = vi.fn().mockRejectedValueOnce(new Error('claim list unavailable')).mockResolvedValue(undefined)
+    const adoptAgent = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('claim list unavailable')
+      })
+      .mockResolvedValue(undefined)
     const instance = daemon({ root: root(), k8s: true, plane: { adoptAgent } })
     try {
       await instance.start()
