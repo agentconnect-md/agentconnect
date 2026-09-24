@@ -15,24 +15,19 @@ import { useDecisionsPrototype } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
 import {
   INITIAL_ROUTING_STATE,
-  newRule,
   draftFromDetail,
   routingCanSave,
   routingDraftIssues,
   ruleNumbers,
   toSave,
-  type RoutingDraftRule,
   type RoutingEvent,
   type RoutingIssue
 } from '@/lib/decisions/routing-draft'
 import { useRoutingRoster } from '@/lib/decisions/routing-roster'
-import { DECISION_CHAIN_MAX_STEPS } from '@agentconnect.md/protocol/decision'
-import { DecisionChainNav, RoutingChainContext, reachableSteps } from '../DecisionChainControls'
-import { DecisionPicker } from '../DecisionPicker'
+import { RoutingChainFields } from './RoutingChainFields'
 import { DecisionRoutingTry } from './DecisionRoutingTry'
 import { DecisionRoutingEvaluationsDrawer } from './DecisionRoutingEvaluationsDrawer'
-import { FieldIssue, Note, routingSaveError, saveErrorText } from './RoutingFields'
-import { RoutingRulesTable, fitsQuestion } from './RoutingRulesTable'
+import { Note, routingSaveError, saveErrorText } from './RoutingFields'
 
 /** Take one conversation out of a shared bot's routing, handing it back to @-mentions with its default agent, or `agentId`. */
 export async function stopRouting(
@@ -101,7 +96,6 @@ export function DecisionRoutingModal({
   const roster = useRoutingRoster(botId)
   const state = routingDrafts[routingKeyFor(botId)] ?? INITIAL_ROUTING_STATE
   const dispatch = useCallback((event: RoutingEvent) => dispatchRouting(botId, event), [botId, dispatchRouting])
-  const [stepPath, setStepPath] = useState<string[]>([])
   const [helpOpen, setHelpOpen] = useState(false)
   const [tryOpen, setTryOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -141,12 +135,8 @@ export function DecisionRoutingModal({
     return () => document.removeEventListener('keydown', onKey)
   }, [busy, historyOpen, close])
 
-  const activeId = stepPath.at(-1)
-  const activeStep = draft?.steps?.find((step) => step.id === activeId)
-  const currentStep = activeStep ?? draft
   const rootDecision = decisions.find((entry) => entry.id === draft?.decisionId) ?? null
-  const decision = decisions.find((entry) => entry.id === currentStep?.decisionId) ?? null
-  const question = decision?.question ?? null
+  const decision = rootDecision
   const memberIds = useMemo(() => new Set(roster.agents.map((agent) => agent.id)), [roster.agents])
   const saved = state.saved
   const savedChannelIds = saved?.channelIds ?? []
@@ -199,19 +189,6 @@ export function DecisionRoutingModal({
     serverError.kind !== 'refused' &&
     state.lastAttempt !== null
 
-  const edit = (patch: (rules: RoutingDraftRule[]) => RoutingDraftRule[]) =>
-    dispatch({
-      type: 'EDIT',
-      patch: (current) =>
-        activeStep
-          ? {
-              ...current,
-              steps: current.steps?.map((step) =>
-                step.id === activeStep.id ? { ...step, rules: patch(step.rules) } : step
-              )
-            }
-          : { ...current, rules: patch(current.rules) }
-    })
   const header = (
     <div className="modalhead">
       <Icon name="split" size={16} className="flex-none text-(--text-tertiary)" />
@@ -279,135 +256,21 @@ export function DecisionRoutingModal({
         {!savedChannelIds.includes(channelId) && <Note icon="info">{tm('unsaved')}</Note>}
         {others.length > 0 && <Note icon="users">{tm('alsoApplies', { names: others.map(nameOf).join(', ') })}</Note>}
 
-        {stepPath.length > 0 && (
-          <DecisionChainNav
-            path={[
-              { id: '', name: rootDecision?.name ?? tDecisions('chain.first') },
-              ...stepPath.map((id) => ({
-                id,
-                name:
-                  decisions.find((d) => d.id === draft.steps?.find((s) => s.id === id)?.decisionId)?.name ??
-                  tDecisions('chain.missing')
-              }))
-            ]}
-            onBack={(index) => setStepPath(stepPath.slice(0, index))}
-          />
-        )}
-        <div className="fld">
-          <span className="fldlbl">{t('decision.label')}</span>
-          <div className="flex flex-wrap items-center gap-[9px]">
-            <DecisionPicker
-              decisions={decisions}
-              value={currentStep?.decisionId ?? null}
-              placeholder={draft.decisionId ? t('decision.hidden') : t('decision.select')}
-              loading={loading}
-              disabled={disabled}
-              triggerClassName="block w-[280px] min-w-0 max-w-full max-desktop:w-full"
-              onSelect={(entry) => {
-                if (entry.id === currentStep?.decisionId) return
-                const next = decisions.find((item) => item.id === entry.id)
-                // A rule whose condition the new question cannot answer is dropped, so a type switch starts clean.
-                dispatch({
-                  type: 'EDIT',
-                  patch: (current) =>
-                    activeStep
-                      ? {
-                          ...current,
-                          steps: current.steps?.map((step) =>
-                            step.id === activeStep.id
-                              ? {
-                                  ...step,
-                                  decisionId: entry.id,
-                                  rules: next ? step.rules.filter((rule) => fitsQuestion(rule.when, next.question)) : []
-                                }
-                              : step
-                          )
-                        }
-                      : {
-                          ...current,
-                          decisionId: entry.id,
-                          rules: next ? current.rules.filter((rule) => fitsQuestion(rule.when, next.question)) : []
-                        }
-                })
-              }}
-              create={{
-                href: `${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`,
-                onClick: () => beginInlineCreate({ kind: 'routing', botId })
-              }}
-            />
-            {decision && (
-              <>
-                <Link
-                  href={orgPath(`/decisions/${encodeURIComponent(decision.id)}`)}
-                  className="lnk gap-[6px] text-[11.5px] font-medium"
-                >
-                  <Icon name="pencil" size={12} />
-                  {tDecisions('viewAndEdit')}
-                </Link>
-                <span className="mono text-[11px] text-(--text-tertiary)">
-                  {t('decision.summary', {
-                    type: tDecisions(`types.${decision.question.type}`),
-                    model: decision.model
-                  })}
-                </span>
-              </>
-            )}
-          </div>
-          {issues.some((issue) => issue.code === 'decision_required') && (
-            <FieldIssue>{t('decision.required')}</FieldIssue>
-          )}
-        </div>
-
-        {question && (
-          <RoutingChainContext.Provider
-            value={{
-              decisions,
-              steps: draft.steps ?? [],
-              canAdd:
-                reachableSteps<{ rules: RoutingDraftRule[] }>(draft, draft.steps ?? [], (step) =>
-                  step.rules.flatMap((rule) => (rule.action.type === 'decision' ? [rule.action.nextStepId] : []))
-                ).length <
-                DECISION_CHAIN_MAX_STEPS - 1,
-              open: (id) => setStepPath([...stepPath, id]),
-              add: (entry) => {
-                const id = crypto.randomUUID()
-                dispatch({
-                  type: 'EDIT',
-                  patch: (current) => ({
-                    ...current,
-                    steps: [
-                      ...(current.steps ?? []),
-                      { id, decisionId: entry.id, rules: [newRule(entry.question, [])] }
-                    ]
-                  })
-                })
-                setStepPath([...stepPath, id])
-                return id
-              }
-            }}
-          >
-            <RoutingRulesTable
-              question={question}
-              rules={currentStep?.rules ?? []}
-              otherwise={draft.otherwise}
-              agents={roster.agents}
-              issues={
-                activeStep
-                  ? issues
-                      .filter(
-                        (issue) => issue.path[0] === 'steps' && issue.path[1] === draft.steps?.indexOf(activeStep)
-                      )
-                      .map((issue) => ({ ...issue, path: issue.path.slice(2) }))
-                  : issues
-              }
-              disabled={disabled}
-              canWrite={canWrite}
-              onRules={edit}
-              onOtherwise={(otherwise) => dispatch({ type: 'EDIT', patch: { otherwise } })}
-              onRefresh={roster.refresh}
-            />
-          </RoutingChainContext.Provider>
-        )}
+        <RoutingChainFields
+          draft={draft}
+          edit={(patch) => dispatch({ type: 'EDIT', patch })}
+          decisions={decisions}
+          loading={loading}
+          agents={roster.agents}
+          issues={issues}
+          disabled={disabled}
+          canWrite={canWrite}
+          onRefresh={roster.refresh}
+          create={{
+            href: `${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`,
+            onClick: () => beginInlineCreate({ kind: 'routing', botId })
+          }}
+        />
 
         {decision && (
           <div className="flex flex-wrap items-center gap-[14px]">

@@ -2,7 +2,6 @@
 
 // A watched repository's issues or change requests By decision: which member agents each answer selects (code-host-decisions.md §7).
 
-import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
@@ -19,9 +18,8 @@ import {
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import { codeHostRoutingSubject, useCodeHostRoutingActions } from '@/lib/decisions/code-host-routing'
 import type { CodeHostRoutingDto } from '@/lib/api'
-import { DecisionPicker } from '../DecisionPicker'
+import { RoutingChainFields } from './RoutingChainFields'
 import { Note, routingSaveError, saveErrorText } from './RoutingFields'
-import { RoutingRulesTable, fitsQuestion } from './RoutingRulesTable'
 
 // A server issue may be rooted at the request body's `config`; the table reads config-relative paths.
 const configRelative = (path: Array<string | number>) => (path[0] === 'config' ? path.slice(1) : path)
@@ -63,7 +61,11 @@ export function CodeHostDecisionModal({
   const decision = draft.decisionId ? (decisions.find((entry) => entry.id === draft.decisionId) ?? null) : null
   const question = decision?.question ?? null
   const memberIds = useMemo(() => new Set(agents.map((agent) => agent.id)), [agents])
-  const localIssues = routingDraftIssues(draft, question, { savedChannelIds: [], memberIds })
+  const localIssues = routingDraftIssues(draft, question, {
+    savedChannelIds: [],
+    memberIds,
+    questions: new Map(decisions.map((d) => [d.id, d.question]))
+  })
   const serverError = saveError === null ? null : routingSaveError(saveError)
   const issues: RoutingIssue[] = localIssues.length
     ? localIssues
@@ -146,62 +148,19 @@ export function CodeHostDecisionModal({
               </span>
             </div>
           )}
-          <div className="fld">
-            <span className="fldlbl">{t('decision.label')}</span>
-            <div className="flex flex-wrap items-center gap-[9px]">
-              <DecisionPicker
-                decisions={decisions}
-                value={draft.decisionId}
-                placeholder={t('decision.select')}
-                loading={loading}
-                disabled={!canWrite || saving}
-                triggerClassName="block w-[280px] min-w-0 max-w-full max-desktop:w-full"
-                onSelect={(entry) => {
-                  if (entry.id === draft.decisionId) return
-                  // A rule the new question cannot answer is dropped, so a type switch starts clean.
-                  edit((current) => ({
-                    ...current,
-                    decisionId: entry.id,
-                    rules: current.rules.filter((rule) => fitsQuestion(rule.when, entry.question))
-                  }))
-                }}
-                create={{ href: orgPath('/decisions/new'), newTab: true }}
-              />
-              {decision && (
-                <>
-                  <Link
-                    href={orgPath(`/decisions/${encodeURIComponent(decision.id)}`)}
-                    className="lnk gap-[6px] text-[11.5px] font-medium"
-                  >
-                    <Icon name="pencil" size={12} />
-                    {tDecisions('viewAndEdit')}
-                  </Link>
-                  <span className="mono text-[11px] text-(--text-tertiary)">
-                    {t('decision.summary', {
-                      type: tDecisions(`types.${decision.question.type}`),
-                      model: decision.model
-                    })}
-                  </span>
-                </>
-              )}
-            </div>
-          </div>
-
-          {question && (
-            <RoutingRulesTable
-              question={question}
-              rules={draft.rules}
-              otherwise={draft.otherwise}
-              agents={agents}
-              issues={issues}
-              disabled={!canWrite || saving}
-              canWrite={canWrite}
-              otherwiseLabels={{ default: tc('everyAgent') }}
-              onRules={(patch) => edit((current) => ({ ...current, rules: patch(current.rules) }))}
-              onOtherwise={(otherwise) => edit((current) => ({ ...current, otherwise }))}
-              onRefresh={() => {}}
-            />
-          )}
+          <RoutingChainFields
+            draft={draft}
+            edit={edit}
+            decisions={decisions}
+            loading={loading}
+            agents={agents}
+            issues={issues}
+            disabled={!canWrite || saving}
+            canWrite={canWrite}
+            otherwiseLabels={{ default: tc('everyAgent') }}
+            onRefresh={() => {}}
+            create={{ href: orgPath('/decisions/new'), newTab: true }}
+          />
 
           {decision && (
             <button

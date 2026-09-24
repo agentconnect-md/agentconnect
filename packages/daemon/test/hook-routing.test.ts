@@ -161,6 +161,80 @@ async function harness() {
 }
 
 describe('hook router (host choice)', () => {
+  it('runs a reached child on the same snapshot and deadline, then records and replays the final targets', async () => {
+    const h = await harness()
+    const p = projection()
+    const child = {
+      ...p.definition,
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      question: { type: 'boolean' as const, instructions: 'Needs an expert?', criteria: { true: 'Yes', false: 'No' } }
+    }
+    p.config.rules[0]!.action = { type: 'decision', nextStepId: 'expert' }
+    p.config.steps = [
+      {
+        id: 'expert',
+        decisionId: child.id,
+        rules: [
+          { id: 'expert-yes', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: AGENT_B } }
+        ]
+      }
+    ]
+    p.definitions = [child]
+    h.evaluate.mockResolvedValueOnce(MATCH_BOTH).mockResolvedValueOnce({
+      status: 'answered',
+      answer: { type: 'boolean', value: true, probability: 0.9 },
+      model: child.model,
+      usage: { inputTokens: 10, outputTokens: 1 }
+    })
+    const event = await h.post('Route this issue', ALL, '42', p)
+    expect(h.agentsOf(await event.choose())).toEqual([HOOK_B, HOOK_C])
+    const [root, next] = h.evaluate.mock.calls.map(([input]) => input)
+    expect(next!.state).toBe(root!.state)
+    expect(next!.deadlineAt).toBe(root!.deadlineAt)
+    expect(next!.decision.question).toEqual(child.question)
+    const verdict = await h.store.getDecisionVerdict(event.record.seq, hookRouterSubject(ROUTING))
+    expect(verdict).toMatchObject({ inputTokens: 30, outputTokens: 2 })
+    expect(JSON.parse(verdict!.answerJson!).chain).toMatchObject([
+      { stepId: '', decisionId: DECISION },
+      { stepId: 'expert', decisionId: child.id }
+    ])
+    expect(h.agentsOf(await event.choose())).toEqual([HOOK_B, HOOK_C])
+    expect(h.evaluate).toHaveBeenCalledTimes(2)
+    await h.store.close()
+  })
+
+  it.each(['skip', 'unavailable', 'edit'] as const)(
+    'settles a child %s without losing the other matched branch or using stale rules',
+    async (mode) => {
+      const h = await harness()
+      const p = projection({ otherwise: { type: 'skip' } })
+      p.config.rules[0]!.action = { type: 'decision', nextStepId: 'child' }
+      p.config.steps = [
+        {
+          id: 'child',
+          decisionId: DECISION,
+          rules: [
+            {
+              id: 'child-rule',
+              when: { type: 'choice', thresholds: { other: 0.9 } },
+              action: { type: 'agent', agentId: AGENT_B }
+            }
+          ]
+        }
+      ]
+      h.evaluate.mockResolvedValueOnce(MATCH_BOTH).mockImplementationOnce(async () => {
+        if (mode === 'edit')
+          h.live.current = { ...p, config: { ...p.config, steps: [{ ...p.config.steps![0]!, rules: [] }] } }
+        return mode === 'unavailable' ? { status: 'unavailable', reason: 'provider' } : MATCH_BOTH
+      })
+      const event = await h.post('Route this update', ALL, '42', p)
+      expect(h.agentsOf(await event.choose())).toEqual(
+        mode === 'edit' ? 'config_changed' : mode === 'unavailable' ? [HOOK, HOOK_B, HOOK_C] : [HOOK_C]
+      )
+      await h.store.close()
+    }
+  )
+
   it('fires every agent a matching rule names, dropping a candidate no rule names', async () => {
     const h = await harness()
     const event = await h.post('Please fix this')

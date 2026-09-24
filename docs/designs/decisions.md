@@ -1866,8 +1866,8 @@ order, score intervals, bounded PR/MR context, and binding access.
 
 ### 10.7. Chained Decisions
 
-All three consumers can continue a result branch with another saved Decision:
-Agent runtime/model selection, shared-bot routing, and channel activation gates.
+Agent runtime/model selection, shared-bot routing, channel activation gates, and
+repository routing can continue a result branch with another saved Decision.
 The consumer owns the chain; a Decision remains a reusable question and evaluator.
 
 The first node keeps the existing configuration shape. Optional `steps` contain
@@ -1877,6 +1877,7 @@ additional nodes with unique `id` values and their own `decisionId` and conditio
 | --------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | Agent model selection | A rule uses `nextStepId` instead of a runtime/model target | Select the terminal runtime/model once and pin it to the session                                                          |
 | Shared-bot routing    | A rule action is `{ type: "decision", nextStepId }`        | Collect and deduplicate matched Agent targets; apply the shared Otherwise action at a reached node with no matching rules |
+| Repository routing    | A rule action is `{ type: "decision", nextStepId }`        | Collect matched Agents among the eligible hooks; Otherwise can select every candidate or nobody                           |
 | Channel gate          | `nextStepId` follows a match; `elseStepId` follows a miss  | A terminal match triggers the bound Agent; a terminal miss skips                                                          |
 
 Chains contain at most eight nodes, including the first Decision. All nodes must
@@ -1895,7 +1896,7 @@ pending verdicts include child configuration in their fingerprints. Peers withou
 `decision-chain-v1` cannot execute a chain; their conversations remain held.
 
 The editors let a rule choose another Decision, edit its conditions, and return
-along the path. Gate and routing Try use the same traversal as live execution.
+along the path. Gate and shared-bot routing Try use the same traversal as live execution.
 Recent evaluation details retain the reached steps and their answers with the
 existing transcript retention boundary. The model-selection sample remains
 explicitly simulated.

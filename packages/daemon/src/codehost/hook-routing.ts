@@ -2,7 +2,13 @@ import {
   DecisionAnswer,
   DecisionQuestion,
   HookRouteSelection,
+  runDecisionChain,
+  decisionChainUsage,
+  matchDecisionCondition,
   matchDecisionRouting,
+  type DecisionChainTrace,
+  type DecisionBundleDefinition,
+  type DecisionRoutingStep,
   type DecisionEvaluation,
   type HookRoutingProjection,
   type RdHookRouteCandidate,
@@ -39,6 +45,7 @@ export interface FrozenHookRoutingConfig {
   model: string
   question: DecisionQuestion
   routing: SharedBotDecisionRouting
+  definitions?: DecisionBundleDefinition[]
   fingerprint: string
   candidates: RdHookRouteCandidate[]
 }
@@ -46,6 +53,7 @@ export interface FrozenHookRoutingConfig {
 /** What the host verdict's answerJson keeps beside the raw provider bodies. */
 interface HookRouteAnswer {
   answer?: DecisionAnswer
+  chain?: DecisionChainTrace
   matchedKeys: string[]
   matchedRuleIds: string[]
   usedOtherwise: boolean
@@ -95,11 +103,15 @@ export function hookRoutingFingerprint(projection: HookRoutingProjection): strin
     model: projection.definition.model,
     question: projection.definition.question,
     rules: projection.config.rules,
-    otherwise: projection.config.otherwise
+    otherwise: projection.config.otherwise,
+    steps: projection.config.steps,
+    definitions: projection.definitions
+      ?.map(({ id, providerId, model, question }) => ({ id, providerId, model, question }))
+      .sort((a, b) => a.id.localeCompare(b.id))
   })
 }
 
-/** The evaluation host's choice for one routed code-host event: record first, then one Decision. */
+// The evaluation host records the event before running its Decision chain.
 export class HookRouter {
   private readonly inflight = new Map<string, Promise<HookRouteOutcome>>()
 
@@ -143,6 +155,7 @@ export class HookRouter {
       model: definition.model,
       question: definition.question,
       routing: projection.config,
+      ...(projection.definitions ? { definitions: projection.definitions } : {}),
       fingerprint: hookRoutingFingerprint(projection),
       candidates
     }
@@ -177,8 +190,14 @@ export class HookRouter {
     const store = this.host.store()
     const fence = this.host.ownerFence()
     let config = frozen
+    let trace: DecisionChainTrace = []
     const unavailable = (reason: string, raw?: { raw?: string; request?: string }) =>
-      this.finish(row, config, config.candidates, 'unavailable', { evaluated: true, unavailableReason: reason, ...raw })
+      this.finish(row, config, config.candidates, 'unavailable', {
+        evaluated: true,
+        unavailableReason: reason,
+        ...(config.routing.steps?.length ? { chain: trace, usage: decisionChainUsage(trace) } : {}),
+        ...raw
+      })
     let built: DecisionStateResult | undefined
     try {
       const window = await store.decisionWindow(row.orgId, row.channel, row.seq, undefined, undefined, { thread })
@@ -201,20 +220,57 @@ export class HookRouter {
     let raw: string | undefined
     let request: string | undefined
     let evaluation: DecisionEvaluation
+    const definitions = new Map(config.definitions?.map((d) => [d.id, d]))
+    const definitionOf = (id: string) => (id === config.decisionId ? config : definitions.get(id))
+    const answers = new Map<string, { question: DecisionQuestion; answer: DecisionAnswer }>()
     try {
-      evaluation = await this.host.evaluate({
-        agentId: row.agentId,
-        evaluationId: `${row.seq}:${row.subject}`,
-        decision: { providerId: config.providerId, model: config.model, question: config.question },
-        state: built.state,
+      const result = await runDecisionChain<DecisionRoutingStep>({
+        root: config.routing,
+        steps: config.routing.steps,
         deadlineAt: row.deadlineAt,
-        onRawRequest: (text) => {
-          request = text
+        now: () => this.host.now(),
+        evaluate: (step, index, signal) => {
+          const decision = definitionOf(step.decisionId)
+          if (!decision) return Promise.resolve({ status: 'unavailable', reason: 'unsupported_input' } as const)
+          return this.host.evaluate(
+            {
+              agentId: row.agentId,
+              evaluationId: `${row.seq}:${row.subject}:${index}`,
+              decision: { providerId: decision.providerId, model: decision.model, question: decision.question },
+              state: built.state,
+              deadlineAt: row.deadlineAt,
+              ...(index === 0
+                ? {
+                    onRawRequest: (text: string) => {
+                      request = text
+                    },
+                    onRawResponse: (text: string) => {
+                      raw = text
+                    }
+                  }
+                : {})
+            },
+            signal
+          )
         },
-        onRawResponse: (text) => {
-          raw = text
+        next: (step, result) => {
+          const question = definitionOf(step.decisionId)!.question
+          return step.rules.flatMap((rule) =>
+            rule.action.type === 'decision' && matchDecisionCondition(question, rule.when, result.answer).matched
+              ? [rule.action.nextStepId]
+              : []
+          )
         }
       })
+      evaluation = result.evaluation
+      trace = result.trace
+      for (const step of trace) {
+        if (step.stepId && step.evaluation.status === 'answered')
+          answers.set(step.stepId, {
+            question: definitionOf(step.decisionId)!.question,
+            answer: step.evaluation.answer
+          })
+      }
     } catch (err) {
       this.host.log.warn(`hook-router: evaluation failed: ${(err as Error).message}`)
       return await unavailable('provider', { raw, request })
@@ -226,14 +282,17 @@ export class HookRouter {
       !current.config.enabled ||
       current.definition.id !== config.decisionId ||
       current.definition.model !== config.model ||
-      canonicalJson(current.definition.question) !== canonicalJson(config.question)
+      current.definition.providerId !== config.providerId ||
+      canonicalJson(current.definition.question) !== canonicalJson(config.question) ||
+      (!!(config.routing.steps?.length || current.config.steps?.length) &&
+        hookRoutingFingerprint(current) !== config.fingerprint)
     if (decisionChanged) return await this.cancel(row, 'config_changed')
     // Rules or Otherwise edited during the call: the answer still fits the same question, so the current rules decide.
     if (hookRoutingFingerprint(current) !== config.fingerprint)
       config = { ...config, routing: current.config, fingerprint: hookRoutingFingerprint(current) }
     let match: ReturnType<typeof matchDecisionRouting>
     try {
-      match = matchDecisionRouting(config.question, config.routing, evaluation.answer)
+      match = matchDecisionRouting(config.question, config.routing, evaluation.answer, undefined, answers)
     } catch {
       return await unavailable('invalid_response', { raw, request })
     }
@@ -244,25 +303,20 @@ export class HookRouter {
       matchedRuleIds: match.matchedRuleIds,
       usedOtherwise: match.usedOtherwise,
       model: evaluation.model,
-      ...(evaluation.usage ? { usage: evaluation.usage } : {}),
+      usage: decisionChainUsage(trace),
+      ...(config.routing.steps?.length ? { chain: trace } : {}),
       raw,
       request
     }
-    // No rule matched: Otherwise is every candidate or nobody; a matched skip rule selects nobody.
-    if (match.usedOtherwise)
-      return await this.finish(
-        row,
-        config,
-        config.routing.otherwise.type === 'default_agent' ? config.candidates : [],
-        'otherwise',
-        answered
-      )
+    // An unmatched branch contributes every candidate only when Otherwise asks for them.
+    if (match.usedOtherwise && config.routing.otherwise.type === 'default_agent')
+      return await this.finish(row, config, config.candidates, 'otherwise', answered)
     const agents = new Set(match.agentIds)
     return await this.finish(
       row,
       config,
       config.candidates.filter((c) => agents.has(c.agentId)),
-      'decision',
+      match.usedOtherwise && match.agentIds.length === 0 ? 'otherwise' : 'decision',
       answered
     )
   }
@@ -277,6 +331,7 @@ export class HookRouter {
       evaluated: boolean
       unavailableReason?: string
       answer?: DecisionAnswer
+      chain?: DecisionChainTrace
       matchedKeys?: string[]
       matchedRuleIds?: string[]
       usedOtherwise?: boolean
@@ -292,6 +347,7 @@ export class HookRouter {
     const disposition = extra.unavailableReason !== undefined ? 'unavailable' : targets.length > 0 ? 'match' : 'skip'
     const answerJson: HookRouteAnswer & ReturnType<typeof rawAnswerFields> = {
       ...(extra.answer ? { answer: extra.answer } : {}),
+      ...(extra.chain ? { chain: extra.chain } : {}),
       matchedKeys: extra.matchedKeys ?? [],
       matchedRuleIds: extra.matchedRuleIds ?? [],
       usedOtherwise: extra.usedOtherwise ?? false,

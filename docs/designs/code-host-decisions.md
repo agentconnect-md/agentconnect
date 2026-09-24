@@ -20,7 +20,7 @@ take each new issue or PR from a typed judgment, the way a shared bot routes a n
   `pull_request` on GitHub, `issues` and `merge_request` on GitLab and Gitea, the names their hook
   rows store (`CODE_HOST_ROUTING_PROVIDER_FAMILIES`). It names a Decision, answer-to-agent rules, and **Otherwise** (every agent that
   would fire, or nobody).
-- An event is judged **once**, on one **evaluation host**, never once per agent. The host records
+- Each reached Decision is evaluated **once**, on one **evaluation host**, never once per agent. The host records
   it in its channel record, evaluates, and returns the selected hooks to the relay, which fires them
   through the ordinary hook path.
 - **The Decision rules the scope.** Every event is judged, including later updates of the same
@@ -53,8 +53,10 @@ Linear gains By decision on its team conversations through the existing chat gat
 The CP stores a `code_host_decision_routing` row per `(orgId, provider, repoId, family)`; `repoId`
 is the provider's numeric repository or project id, as its hook rows store it.
 Its config has the shared-bot routing shape (`SharedBotDecisionRouting`): `enabled`, `decisionId`,
-`rules[{ id, when, action: agent | skip }]`, and `otherwise: default_agent | skip`. For code-host
-routing `default_agent` means **every candidate**.
+`rules[{ id, when, action: agent | skip | decision }]`, `otherwise: default_agent | skip`, and
+optional `steps` for chained Decisions (decisions.md §10.7). A `decision` action names a
+`nextStepId`; the referenced step has its own `decisionId` and rules. For code-host routing
+`default_agent` means **every candidate**, including when a reached child has no matching rule.
 
 ```text
 GET    /api/v1/decision-routing/:provider/:repoId/:family
@@ -65,7 +67,7 @@ DELETE /api/v1/decision-routing/:provider/:repoId/:family
 The response carries the config (or `null`), its `status` (`enabled`, `needs_review`,
 `access_revoked`), and the **members**: the agents with an enabled hook of that provider on that
 repository and family, which are the only valid rule targets. Validation mirrors shared-bot routing: a visible,
-supported Decision; `decisionRoutingIssues` for the rules; targets must be members. A Decision edit
+supported Decision at every step; `decisionRoutingIssues` for the rules; all terminal targets must be members. A Decision edit
 that makes the rules incompatible marks the routing `needs_review`, as it flags a shared bot's
 routing; while it needs review, the routing holds its scope's events rather than firing them
 unrouted. A Decision used by a routing appears in **Used by**, named by the repository path and its
@@ -78,7 +80,7 @@ The CP picks one member as the **evaluation agent** — the placed member whose 
 earliest, then the earliest-created agent — and recomputes it when membership or placement changes.
 Every rule in the scope carries `RcHookAssign.routing = { routingId, decisionId, evaluationAgentId,
 evaluationDaemonId }`, so every relay names the same host. The host agent's `AgentSpec.hookRoutings`
-carries the scope's `HookRoutingProjection`: repository, family, config, Decision definition, and
+carries the scope's `HookRoutingProjection`: repository, family, config, every referenced Decision definition, and
 the members' `(agentId, hookId)`. The relay receives only ids; question text does not travel to it.
 
 ### 3.3 Compatibility
@@ -91,6 +93,8 @@ unrouted or reject a non-GitHub projection.
   the scope's rules instead of firing them unrouted.
 - The CP strips from an older daemon's spec the projections it cannot read, and does not choose it
   as host for those scopes.
+- Chains additionally require `decision-chain-v1` on the host daemon. Host selection prefers a
+  capable member; a connected older host receives no chained projection and holds the scope.
 - A relay whose host is offline, too old, or does not answer within its timeout fires every
   candidate, with `unavailable` evidence — the provider-failure fallback.
 
@@ -142,16 +146,19 @@ For a host copy the daemon:
    A record-only copy stops here.
 2. **Resolves** the routing from `hookRoutings`. A missing projection or a different `decisionId`
    answers `accepted: false` (pending sync) and the relay fires nothing.
-3. **Chooses** with **one** evaluation of the Decision against the thread state (§5.1) — for every
+3. **Chooses** by evaluating each reached Decision once against the same thread state (§5.1),
+   within one five-second deadline — for every
    event, whether or not it mentions an agent or an earlier event of the thread selected someone —
    matched against every rule with the shared-bot matcher: all matching rules' agents among the candidates, reason
    `decision`. A matching **Do not activate** rule contributes no agent and is not a veto; when
-   every match is a skip, nobody is selected. Only when **no** rule matches does Otherwise apply:
+   every match is a skip, nobody is selected. At each reached step, when **no** rule matches Otherwise applies:
    every candidate (reason `otherwise`) or nobody. `unavailable` → every candidate, reason
    `unavailable`.
+   Matched child branches contribute their terminal agents to the same deduplicated set.
+   A chain edited during evaluation cancels that verdict; a redelivery uses the saved disposition.
 4. **Persists** the verdict in `decision_verdict` with subject `hook-router:<routingId>`,
    `integrationId = routingId`, the frozen input and answer, and the selected targets in
-   `targetsJson`; the host's choice is final once written, and a redelivery of the same host copy
+   `targetsJson` and reached-step answers in `answerJson`; the host's choice is final once written, and a redelivery of the same host copy
    returns it without evaluating again.
 5. **Replies** `rd/ack` with `hookRoute.targets`.
 
@@ -234,7 +241,8 @@ conversations; shared-bot routing stays refused.
   and `integrationId = channel = routingId`.
 - The console's issue and pull-request rows carry the routing entry: a Decision chip (empty, or
   naming the Decision) opening the rules modal — Decision picker, answer-to-agent table,
-  Otherwise — with the scope's members as targets. While a scope is routed, the row's trigger modes are locked and it
+  branch continuation, Otherwise — with the scope's members as targets. While a scope is routed,
+  the row's trigger modes are locked and it
   reads **Any update**, because the Decision judges every update.
 - A selected fire's run appears in the hook's run history as usual; a non-selected candidate has no
   run.

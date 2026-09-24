@@ -362,6 +362,7 @@ export const HookRoutingProjection = z
     family: CodeHostRoutingFamily,
     config: SharedBotDecisionRouting,
     definition: DecisionBundleDefinition,
+    definitions: z.array(DecisionBundleDefinition).max(DECISION_CHAIN_MAX_STEPS).optional(),
     members: z.array(z.object({ agentId: z.string().uuid(), hookId: z.string().uuid() })).max(64)
   })
   .refine((projection) => isCodeHostRoutingScope(projection.provider, projection.family), {

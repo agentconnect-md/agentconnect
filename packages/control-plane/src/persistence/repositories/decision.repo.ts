@@ -4,7 +4,6 @@ import {
   DecisionQuestion,
   DecisionToolDefinition,
   decisionConditionNeedsReview,
-  decisionRoutingIssues,
   isCodeHostRoutingScope,
   SharedBotDecisionRouting,
   type CodeHostRoutingFamily,
@@ -201,7 +200,7 @@ export class PgDecisionRepo implements DecisionRepo {
         })
       // Code-host routings the same way; their Decision rides the host's AgentSpec.hookRoutings, so each host is bumped.
       const codeHost = await tx.codeHostDecisionRouting.findMany({
-        where: { decisionId: id, orgId },
+        where: { orgId, OR: [{ decisionId: id }, { steps: { array_contains: [{ decisionId: id }] } }] },
         select: {
           id: true,
           provider: true,
@@ -212,6 +211,7 @@ export class PgDecisionRepo implements DecisionRepo {
           rules: true,
           otherwise: true,
           needsReview: true,
+          steps: true,
           evaluationAgentId: true
         }
       })
@@ -221,13 +221,15 @@ export class PgDecisionRepo implements DecisionRepo {
           enabled: r.enabled,
           decisionId: r.decisionId,
           rules: r.rules,
-          otherwise: r.otherwise
+          otherwise: r.otherwise,
+          steps: r.steps
         })
         if (!config.success || !previous.success) return true
-        return (
-          decisionRoutingIssues(draft.question, config.data).length > 0 ||
-          config.data.rules.some((rule) => decisionConditionNeedsReview(previous.data, draft.question, rule.when))
-        )
+        return [config.data, ...(config.data.steps ?? [])]
+          .filter((step) => step.decisionId === id)
+          .some((step) =>
+            step.rules.some((rule) => decisionConditionNeedsReview(previous.data, draft.question, rule.when))
+          )
       })
       if (reviewCodeHost.length > 0)
         await tx.codeHostDecisionRouting.updateMany({
@@ -281,13 +283,14 @@ export class PgDecisionRepo implements DecisionRepo {
         })
       )
         throw new DecisionInUse(id)
-      const [gates, routers] = await Promise.all([
+      const [gates, routers, codeHost] = await Promise.all([
         tx.integrationChannel.count({
           where: { integration: { orgId }, decisionBinding: { path: ['steps'], array_contains: [{ decisionId: id }] } }
         }),
-        tx.botDecisionRouting.count({ where: { orgId, steps: { array_contains: [{ decisionId: id }] } } })
+        tx.botDecisionRouting.count({ where: { orgId, steps: { array_contains: [{ decisionId: id }] } } }),
+        tx.codeHostDecisionRouting.count({ where: { orgId, steps: { array_contains: [{ decisionId: id }] } } })
       ])
-      if (gates || routers) throw new DecisionInUse(id)
+      if (gates || routers || codeHost) throw new DecisionInUse(id)
       try {
         await tx.decision.deleteMany({ where: { id, orgId, ...visibilityWhere({ ...actor, role: membership.role }) } })
       } catch (err) {

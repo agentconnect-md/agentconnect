@@ -4054,6 +4054,7 @@ model CodeHostDecisionRouting {
   // Ordered SharedBotDecisionRouting rules and its Otherwise action, stored verbatim.
   rules             Json
   otherwise         Json
+  steps             Json      @default("[]")
   // A Decision edit invalidated a rule; only a routing save clears it, and the scope holds meanwhile.
   needsReview       Boolean   @default(false)
   // The member hosting evaluation (§3.2); persisted so its AgentSpec.hookRoutings moves only with a configRevision bump.

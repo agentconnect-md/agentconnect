@@ -130,8 +130,10 @@ export function encodeAgentSpecForPeer<S extends Pick<AgentSpec, 'workspace' | '
     const { hookRoutings: _stripped, ...rest } = spec
     spec = rest as S
   } else if (spec.hookRoutings !== undefined) {
-    const readable = spec.hookRoutings.filter((routing) =>
-      advertises(advertisedFeatures, codeHosts[routing.provider].routing.requiredFeatures)
+    const readable = spec.hookRoutings.filter(
+      (routing) =>
+        advertises(advertisedFeatures, codeHosts[routing.provider].routing.requiredFeatures) &&
+        (!routing.config.steps?.length || advertises(advertisedFeatures, [DECISION_CHAIN_V1_FEATURE]))
     )
     if (readable.length !== spec.hookRoutings.length) spec = { ...spec, hookRoutings: readable }
   }

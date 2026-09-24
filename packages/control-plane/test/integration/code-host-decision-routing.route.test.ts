@@ -266,6 +266,59 @@ async function routedWorld() {
 }
 
 describe('repository Decision routing — configuration', () => {
+  it('validates, projects and protects child Decisions, and holds the scope after an incompatible child edit', async () => {
+    const w = await routedWorld()
+    const childId = await createDecision(w.app, choiceDraft)
+    const config = {
+      ...w.config,
+      rules: [{ ...w.config.rules[0]!, action: { type: 'decision', nextStepId: 'triage' } }],
+      steps: [
+        {
+          id: 'triage',
+          decisionId: childId,
+          rules: [
+            {
+              id: 'child-rule',
+              when: { type: 'choice', thresholds: { bug: 0.5 } },
+              action: { type: 'agent', agentId: w.late }
+            }
+          ]
+        }
+      ]
+    }
+    const save = (value: unknown) => w.app.app.inject({ method: 'PUT', url: SCOPE, payload: { config: value } })
+    expect((await save({ ...config, steps: [{ ...config.steps[0], decisionId: randomUUID() }] })).statusCode).toBe(404)
+    expect(
+      (
+        await save({
+          ...config,
+          steps: [
+            {
+              ...config.steps[0],
+              rules: [{ ...config.steps[0]!.rules[0], action: { type: 'agent', agentId: randomUUID() } }]
+            }
+          ]
+        })
+      ).statusCode
+    ).toBe(400)
+    const saved = await save(config)
+    expect(saved.statusCode).toBe(200)
+    expect(saved.json()).toMatchObject({ status: 'enabled', config })
+    expect((await w.app.app.inject({ method: 'GET', url: SCOPE })).json()).toMatchObject({ config })
+    await vi.waitFor(() =>
+      expect(w.spy.lastSpec(w.early)?.hookRoutings?.[0]?.definitions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: childId })])
+      )
+    )
+    const refused = await w.app.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${childId}` })
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ usages: [expect.objectContaining({ kind: 'code_host_routing' })] })
+    const edited = await w.app.app.inject({ method: 'PATCH', url: `${ORG}/decisions/${childId}`, payload: boolDraft })
+    expect(edited.statusCode).toBe(200)
+    expect((await w.app.app.inject({ method: 'GET', url: SCOPE })).json()).toMatchObject({ status: 'needs_review' })
+    await vi.waitFor(() => expect(w.spy.lastSpec(w.early)?.hookRoutings?.[0]?.config.enabled).toBe(false))
+  })
+
   it('lists the members before any routing exists, and 404s a repository nobody watches', async () => {
     const world = await seedWorld()
     const { app } = appWith()

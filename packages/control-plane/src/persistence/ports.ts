@@ -5567,6 +5567,7 @@ export interface CodeHostDecisionRoutingRecord extends CodeHostRoutingScope {
   needsReview: boolean
   evaluationAgentId: AgentId | null
   definition: import('@agentconnect.md/protocol').DecisionBundleDefinition | null
+  definitions?: import('@agentconnect.md/protocol').DecisionBundleDefinition[]
   updatedAt: Date
 }
 
