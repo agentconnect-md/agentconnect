@@ -353,6 +353,92 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(claims.has(`agent-${AGENT}`)).toBe(false)
   })
 
+  it('forgets a missing sandbox during an idle suspend without deleting its claim', async () => {
+    const { api, claims, sandboxes } = cluster()
+    const { driver } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const launch = await driver.ensureSandbox(session)
+    sandboxes.delete(launch.sandboxName)
+
+    expect(await driver.suspendIfIdle(session)).toBe('absent')
+    expect(driver.currentLaunch(session)).toBeUndefined()
+    expect(await driver.suspendIfIdle(session)).toBe('absent')
+    expect(claims.has(sandboxClaimName(session))).toBe(true)
+  })
+
+  it('rechecks the claim and dispatches into its replacement after a cached sandbox returns 404', async () => {
+    const { api, claims, sandboxes } = cluster()
+    const pod = podSide()
+    const { driver, records } = member(api, pod.connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.launch(request(T1))
+    pod.exit(session)
+    await new Promise((resolve) => setImmediate(resolve))
+    const previous = driver.currentLaunch(session)!
+    const replacementName = 'sb-replacement'
+    const replacementUid = 'uid-replacement'
+    const priorSandbox = sandboxes.get(previous.sandboxName)!
+    sandboxes.delete(previous.sandboxName)
+    sandboxes.set(replacementName, {
+      ...priorSandbox,
+      metadata: { ...priorSandbox.metadata, name: replacementName, uid: replacementUid }
+    })
+    const claimName = sandboxClaimName(session)
+    const claim = claims.get(claimName)!
+    claims.set(claimName, { ...claim, status: { sandbox: { name: replacementName } } })
+
+    await driver.withSandbox(session, async () => {
+      await driver.ensureBoundChannel(session)
+      expect(await driver.suspendIfIdle(session)).toBe('busy')
+    })
+    await driver.launch(request(T1))
+
+    expect(driver.currentLaunch(session)?.sandboxName).toBe(replacementName)
+    expect(driver.currentLaunch(session)?.sandboxUid).toBe(replacementUid)
+    expect(driver.currentLaunch(session)?.claimUid).toBe(previous.claimUid)
+    expect(records.at(-1)?.sandboxUid).toBe(replacementUid)
+    expect(api.ensureClaim).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not reacquire a missing sandbox after the agent leaves during cache validation', async () => {
+    const { api } = cluster()
+    const { driver } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureSandbox(session)
+    let finishRead!: () => void
+    const blocked = new Promise<void>((resolve) => (finishRead = resolve))
+    api.getSandbox = async () => {
+      await blocked
+      throw new K8sApiError(404, 'NotFound', 'no sandbox')
+    }
+
+    const acquiring = driver.ensureSandbox(session)
+    driver.release(session)
+    finishRead()
+
+    await expect(acquiring).rejects.toThrow(/left this member/)
+    expect(driver.currentLaunch(session)).toBeUndefined()
+    expect(api.ensureClaim).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not mistake a missing warm pool for a missing sandbox', async () => {
+    const { api, sandboxes } = cluster()
+    const { driver } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureBoundChannel(session)
+    const launch = driver.currentLaunch(session)!
+    const sandbox = sandboxes.get(launch.sandboxName)!
+    sandboxes.set(launch.sandboxName, { ...sandbox, spec: { ...sandbox.spec, operatingMode: 'Suspended' } })
+    api.getWarmPool = async () => {
+      throw new K8sApiError(404, 'NotFound', 'no warm pool')
+    }
+
+    await expect(driver.ensureBoundChannel(session)).rejects.toThrow('no warm pool')
+
+    expect(driver.currentLaunch(session)).toBe(launch)
+    expect(driver.sessionFor(session)?.isAttached()).toBe(true)
+  })
+
   it('puts a resumed session pod that never comes up back to sleep, so it cannot keep its node full', async () => {
     // Left Running, a pod the scheduler cannot place keeps its CPU request, and every later wake on that node fails the same way.
     const { api, claims, sandboxes, modeWrites } = cluster()
