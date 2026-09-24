@@ -283,7 +283,7 @@ interface Conn {
 
 /** A reply event as it arrives from the relay (mirrors protocol WebchatEvent). */
 type WebchatEvent =
-  | { kind: 'message'; text: string }
+  | { kind: 'message'; text: string; segmentId?: string; postId?: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool_call'; toolCallId: string; title: string; status: string }
   | { kind: 'tool_update'; toolCallId: string; status: string; title?: string }
@@ -843,10 +843,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           ]
         }
         if (ev.kind === 'message') {
-          if (last && last.kind === 'done' && last.who === who) {
+          if (last && last.kind === 'done' && last.who === who && last.segmentId === ev.segmentId) {
             return replaceAt(laneIndex, { ...last, text: last.text + ev.text, observedAtMs })
           }
-          return [...steps, lane({ kind: 'done', text: ev.text })]
+          return [
+            ...steps,
+            lane({
+              kind: 'done',
+              text: ev.text,
+              ...(ev.segmentId ? { segmentId: ev.segmentId } : {}),
+              ...(ev.postId ? { postId: ev.postId } : {})
+            })
+          ]
         }
         if (ev.kind === 'thinking') {
           if (last && last.kind === 'plan' && last.who === who) {
@@ -2299,7 +2307,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgInput = useCallback((id: string) => pgDrafts.current[id] ?? '', [])
   const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
-  const getLiveSteps = useCallback((id: string) => wcSteps[id] ?? NO_STEPS, [wcSteps])
+  const getLiveSteps = useCallback((id: string) => (wcSteps[id] ?? NO_STEPS).filter((step) => !step.hidden), [wcSteps])
   const reconcileLiveSteps = useCallback(
     (id: string, persisted: SessionMessageDto[], agentId: string, promptRows?: SessionMessageDto[]): void => {
       setWcSteps((cur) => {

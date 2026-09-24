@@ -90,7 +90,13 @@ import {
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
-import { installMicrosandbox } from './microsandbox/install.js'
+import {
+  installMicrosandbox,
+  installedMicrosandbox,
+  microsandboxHostUnavailable,
+  openMicrosandbox
+} from './microsandbox/install.js'
+import { resolveMicrosandboxImage } from './release-image.js'
 import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
 import { microsandboxGitRunner } from './microsandbox/git.js'
@@ -158,7 +164,7 @@ import {
   sessionHostKey,
   type HostKey
 } from './acp/host-key.js'
-import { effectiveRunInSandbox, prepareRuntimeLaunch, privateRuntimeHomeFor } from './launch/prepare.js'
+import { prepareRuntimeLaunch, privateRuntimeHomeFor } from './launch/prepare.js'
 import {
   SessionManager,
   transcriptCoords,
@@ -439,9 +445,26 @@ import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.
 import type { ExecutionPlane, PlaneLaunch, PlaneScope } from './execution/plane.js'
 import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execution/executor-facet.js'
 import { ExecutorPlane, executorMcpBridge, type PlacedSession } from './execution/executor-plane.js'
-import { placeSession, type PlacementAsk, type PlacementChoice } from './execution/executor-placement.js'
+import {
+  placeSession,
+  strategySpreads,
+  type PlacementAsk,
+  type PlacementChoice
+} from './execution/executor-placement.js'
 import { HOSTED_PREFIX, microsandboxLauncher } from './execution/executor-vm.js'
-import { effectiveStrategies, hostLauncher, ownStrategies } from './execution/strategies.js'
+import {
+  agentStrategyOf,
+  assertSomeStrategyAvailable,
+  effectiveStrategies,
+  hostLauncher,
+  isSandboxStrategy,
+  machineStrategies,
+  SANDBOX_STRATEGIES,
+  StrategyUnavailableError,
+  strategyReason,
+  type SandboxStrategy,
+  type StrategyTable
+} from './execution/strategies.js'
 import {
   declaredRuntimeCatalog,
   loadK8sRuntimeTable,
@@ -703,7 +726,8 @@ import type {
   McpAppRpc,
   McpAppRpcResult,
   CodeHostProvider,
-  McpAppOutcome
+  McpAppOutcome,
+  RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { HostPasses } from './daemon/host-passes.js'
@@ -1405,9 +1429,7 @@ export class Daemon {
   /** All installed winners, including curated candidates still awaiting ACP admission. */
   private runtimeCatalog: ResolvedRuntimeCatalog = { entries: {}, runtimes: {} }
   private readonly curatedRuntimeAdmission: CuratedRuntimeAdmission
-  // Live Linux SRT/bwrap support, detected once at boot. undefined means optional
-  // per-agent requests are ineffective; security.requireSandbox refuses startup
-  // (including on unsupported macOS/Windows hosts).
+  // Live Linux SRT/bwrap support, detected once at boot; undefined makes the srt strategy unavailable (session-executors.md §5).
   private sandboxMechanism: SandboxMechanism | undefined
   // The same detection, with the provider's failure text kept for the startup
   // preflight log. undefined when this daemon never probes (--k8s, injected null).
@@ -1439,12 +1461,19 @@ export class Daemon {
   private k8sPlane?: K8sRuntimePlane
   private microsandbox?: MicrosandboxManager
   private microsandboxTable?: K8sRuntimeTable
+  // Why the microsandbox probe failed; absent ⇒ available, its msb and image prepared by the first use (session-executors.md §5).
   private microsandboxFailure?: string
+  // The first use's install and image preparation, shared by every caller that needs the VM table.
+  private microsandboxReadiness?: Promise<MicrosandboxManager>
+  // Why `sandbox.mounts` cannot be honored by a strategy, which makes that strategy unavailable rather than the daemon.
+  private mountFailures: Partial<Record<'srt' | 'microsandbox', string>> = {}
   private readonly localSkillAuthorities = new Map<
     string,
     Promise<{ groupId: string; term: string; daemonId: string }>
   >()
   private microsandboxCatalog?: ResolvedRuntimeCatalog
+  // What discovery resolved, kept so the image's table can be projected onto it when the first VM use reads it (§5).
+  private resolvedRuntimeCatalog?: ResolvedRuntimeCatalog
   private localRuntimeCatalog?: ResolvedRuntimeCatalog
   // The resolved catalog the probed table is projected onto; it supplies command/args, which the
   // table never does — the table only says which ids this image provides.
@@ -1685,6 +1714,8 @@ export class Daemon {
       archiveStore?: Pick<ArchiveStore, 'ensure'>
       /** Test seam: null simulates a host without Linux SRT/bwrap. */
       sandboxMechanism?: SandboxMechanism | null
+      /** Test seam for the microsandbox host check (Linux, a usable /dev/kvm): why this host cannot run a VM, or undefined. */
+      microsandboxHost?: () => string | undefined
       /** `--k8s`: runtimes live in sandbox pods, not on this host. Disables runtime
        *  probing, host executable discovery (the image declares its runtimes instead),
        *  the SRT mechanism, and the self-installing upgrade path. */
@@ -2262,11 +2293,12 @@ export class Daemon {
       configPath: this.opts.configPath,
       overrides: this.opts.overrides,
       optional: !!this.opts.agentName,
-      autoCreate: true
+      autoCreate: true,
+      warn: (message) => this.log.warn(`config: ${message}`)
     })
     this.cfg = cfg
-    // Validate operator mounts before startup can create any runtime hosts.
-    cfg.sandbox.mounts = normalizeSandboxMounts(cfg.sandbox.mounts, process.env, cfg.sandbox.backend)
+    // Validate operator mounts before startup can create any runtime hosts; a strategy that cannot honor them is unavailable.
+    cfg.sandbox.mounts = this.normalizeStrategyMounts(cfg)
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     // §24.4: an excluded origin is named at SPEC admission. All this knows is the operator list —
     // whether a spec names an instance of its own, which stays cloneable either way, is per-agent.
@@ -2278,39 +2310,112 @@ export class Daemon {
     return { root, cfg }
   }
 
-  /** Phase 3 — report the host sandbox mechanism and refuse a boot that cannot honor requireSandbox. */
-  private async sandboxPreflight(cfg: Config, root: string): Promise<void> {
-    if (cfg.sandbox.backend === 'microsandbox') {
-      if (this.k8s) throw new Error('sandbox.backend=microsandbox cannot be combined with --k8s')
-      this.wirePlaneResolver(this.microsandboxPlane)
+  /** Each sandboxing strategy's mounts, normalized in its own coordinates; one both honor serves both, since SRT reads only the sources. */
+  private normalizeStrategyMounts(cfg: Config): Config['sandbox']['mounts'] {
+    const normalized: Partial<Record<'srt' | 'microsandbox', Config['sandbox']['mounts']>> = {}
+    this.mountFailures = {}
+    for (const strategy of ['srt', 'microsandbox'] as const) {
+      if (cfg.sandbox[strategy] === false) continue
       try {
-        this.microsandbox = await installMicrosandbox({
-          root,
-          config: cfg.sandbox.microsandbox,
-          sockets: { mcp: mcpSocketPath(root), gitcred: gitcredSocketPath(root) },
-          log: this.log,
-          nextShimGeneration: (subject) => this.store.nextSandboxGeneration(subject)
-        })
-        this.microsandboxTable = await this.microsandbox.prepare()
-        this.log.info('sandbox: microsandbox image and VM startup verified')
+        normalized[strategy] = normalizeSandboxMounts(cfg.sandbox.mounts, process.env, strategy)
       } catch (error) {
-        await this.microsandbox?.stopAll().catch((stopError: unknown) => this.log.warn(formatErr(stopError)))
-        this.microsandbox = undefined
-        this.microsandboxFailure = formatErr(error)
-        if (cfg.security.requireSandbox) throw new Error(`microsandbox startup refused: ${formatErr(error)}`)
-        this.log.warn(`microsandbox unavailable: ${formatErr(error)}; requested VM launches will be refused`)
+        this.mountFailures[strategy] = boundedDiagnostic(formatErr(error))
+        this.log.warn(`sandbox: ${strategy} cannot honor sandbox.mounts — ${formatErr(error)}`)
+      }
+    }
+    return normalized.microsandbox ?? normalized.srt ?? []
+  }
+
+  /** Phase 3 — probe every strategy the table offers (session-executors.md §5) and refuse a boot with none available. */
+  private async sandboxPreflight(cfg: Config, root: string): Promise<void> {
+    if (this.k8s) {
+      if (cfg.sandbox.backend === 'microsandbox') {
+        throw new Error('sandbox.backend=microsandbox cannot be combined with --k8s')
+      }
+      if (!cfg.sandbox.host) {
+        throw new Error(
+          'daemon startup refused: sandbox.host: false is not supported with --k8s — a k8s runtime is isolated by its own pod, not by a strategy of this daemon'
+        )
       }
       return
     }
-    this.logSandboxPreflight()
-    if (cfg.security.requireSandbox && !this.sandboxMechanism) {
-      throw new Error(
-        this.k8s
-          ? 'daemon startup refused: security.requireSandbox is not supported with --k8s — a k8s runtime is isolated by its own pod, not by the in-process SRT mechanism'
-          : 'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
-      )
+    // A withdrawn srt confines nothing, not even a probe.
+    if (cfg.sandbox.srt) this.logSandboxPreflight()
+    else this.sandboxMechanism = undefined
+    if (cfg.sandbox.microsandbox !== false) await this.probeMicrosandbox(cfg, root)
+    else this.microsandboxFailure = 'sandbox.microsandbox is off on this daemon'
+    if (!this.microsandbox) await this.warnMicrosandboxLeftovers(root)
+    const table = this.strategyTable()
+    const summary = SANDBOX_STRATEGIES.map(
+      (strategy) => `${strategy} ${table[strategy].available ? 'available' : 'unavailable'}`
+    ).join(', ')
+    this.log.info(`sandbox: strategies ${summary}`)
+    assertSomeStrategyAvailable(table)
+  }
+
+  /** The cheap, side-effect-free microsandbox probe: KVM here, and a pinned msb with its libkrunfw when one is installed; it installs and pulls nothing (§5). */
+  private async probeMicrosandbox(cfg: Config, root: string): Promise<void> {
+    const failed = (reason: string, level: 'info' | 'warn' = 'warn'): void => {
+      this.microsandboxFailure = reason
+      this.log[level](`sandbox: microsandbox unavailable — ${reason}`)
     }
-    // Another backend never constructs the manager that collects microsandbox state, so leftovers are only reported (#2282).
+    const host = (this.opts.microsandboxHost ?? microsandboxHostUnavailable)()
+    if (host) return failed(host, process.platform === 'linux' ? 'warn' : 'info')
+    try {
+      // A source build without an image cannot run a VM, so it says so now rather than at a session.
+      resolveMicrosandboxImage(cfg.sandbox.microsandbox === false ? undefined : cfg.sandbox.microsandbox.image)
+      const tree = installedMicrosandbox(root)
+      // Nothing installed means this machine never ran a VM; the first session installs msb and prepares the image.
+      if (tree) {
+        this.microsandbox = await openMicrosandbox(tree, this.microsandboxInstallOptions(cfg, root))
+        // State collection runs whenever the strategy is on, not only once a session used it this run.
+        await this.microsandbox.recover()
+        await this.microsandbox.collectImages()
+        this.microsandboxTable = await this.microsandbox.cachedTable()
+      }
+      this.wirePlaneResolver(this.microsandboxPlane)
+    } catch (error) {
+      await this.microsandbox?.stopAll().catch((stopError: unknown) => this.log.warn(formatErr(stopError)))
+      this.microsandbox = undefined
+      failed(error instanceof Error ? error.message : formatErr(error))
+    }
+  }
+
+  private microsandboxInstallOptions(cfg: Config, root: string): Parameters<typeof openMicrosandbox>[1] {
+    return {
+      root,
+      config: cfg.sandbox.microsandbox === false ? undefined : cfg.sandbox.microsandbox,
+      sockets: { mcp: mcpSocketPath(root), gitcred: gitcredSocketPath(root) },
+      log: this.log,
+      nextShimGeneration: (subject) => this.store.nextSandboxGeneration(subject)
+    }
+  }
+
+  /** The first use of the VM strategy: install msb when this machine never did, then prepare the image and adopt its runtime table (§5). */
+  private microsandboxReady(): Promise<MicrosandboxManager> {
+    if (this.microsandboxFailure) {
+      return Promise.reject(new Error(`microsandbox unavailable: ${this.microsandboxFailure}`))
+    }
+    // An image this run already read, at startup from its record or at an earlier first use.
+    if (this.microsandbox && this.microsandboxCatalog) return Promise.resolve(this.microsandbox)
+    if (!this.microsandboxReadiness) {
+      const readiness = (async () => {
+        this.microsandbox ??= await installMicrosandbox(this.microsandboxInstallOptions(this.cfg, this.root))
+        await this.microsandbox.recover()
+        this.adoptMicrosandboxTable(await this.microsandbox.prepare())
+        return this.microsandbox
+      })()
+      this.microsandboxReadiness = readiness
+      // A failed install or pull fails the session that asked; the next one tries again.
+      readiness.catch(() => {
+        if (this.microsandboxReadiness === readiness) this.microsandboxReadiness = undefined
+      })
+    }
+    return this.microsandboxReadiness
+  }
+
+  /** microsandbox state this run cannot use is reported, never collected: the strategy may become available again (#2282). */
+  private async warnMicrosandboxLeftovers(root: string): Promise<void> {
     const leftover = join(root, 'microsandbox')
     const environments = await readdir(join(leftover, 'bindings')).then(
       (files) => files.filter((file) => file.endsWith('.json')).length,
@@ -2318,7 +2423,7 @@ export class Daemon {
     )
     if (environments > 0) {
       this.log.warn(
-        `sandbox: microsandbox state from an earlier backend remains under ${leftover} (${environments} environment(s)), kept in case the backend is switched back; to reclaim the space, switch sandbox.backend back to microsandbox so retention retires its VMs, or, once sure, stop the daemon and remove that directory`
+        `sandbox: microsandbox state from an earlier run remains under ${leftover} (${environments} environment(s)), kept because microsandbox is unavailable now (${this.microsandboxFailure ?? 'not probed'}); to reclaim the space, make microsandbox available again so retention retires its VMs, or, once sure, stop the daemon and remove that directory`
       )
     }
   }
@@ -2731,6 +2836,7 @@ export class Daemon {
       neededRuntimes: discoveredAgents.map((a) => a.runtime),
       mode: 'cache-first'
     })
+    this.resolvedRuntimeCatalog = resolvedCatalog
     // Stored logins keep missing binaries visible; installed runtimes also remain visible without a login.
     const credentialEntries = this.k8s
       ? {}
@@ -2759,12 +2865,10 @@ export class Daemon {
     )
     this.localRuntimeCatalog = this.k8s ? undefined : storedCatalog
     const { runtimes: installed, entries: installedEntries } = storedCatalog
-    const reportedEntries = { ...credentialEntries, ...installedEntries }
-    if (this.microsandboxTable) {
-      const declared = declaredRuntimeCatalog(resolvedCatalog, this.microsandboxTable)
-      this.microsandboxCatalog = declared.catalog
-      Object.assign(reportedEntries, declared.catalog.entries)
-    }
+    // Strategies run side by side (§5): a host install keeps its entry, and the image fills only what this host lacks.
+    if (this.microsandboxTable)
+      this.microsandboxCatalog = declaredRuntimeCatalog(resolvedCatalog, this.microsandboxTable).catalog
+    const reportedEntries = { ...credentialEntries, ...this.microsandboxCatalog?.entries, ...installedEntries }
     this.runtimeCatalog = {
       entries: reportedEntries,
       runtimes: Object.fromEntries(Object.entries(reportedEntries).map(([id, entry]) => [id, entry.runtime]))
@@ -2778,6 +2882,24 @@ export class Daemon {
     if (skipped.length) {
       this.log.info(`runtimes without an installation or stored credentials (skipped): ${skipped.join(', ')}`)
     }
+  }
+
+  /** The image's runtime table, first read by the first VM use of this run (§5): its runtimes join the catalog where this host has none. */
+  private adoptMicrosandboxTable(table: K8sRuntimeTable): void {
+    if (this.microsandboxTable === table && this.microsandboxCatalog) return
+    this.microsandboxTable = table
+    // Before discovery the catalog is not resolved yet; discovery projects the table itself.
+    if (!this.resolvedRuntimeCatalog) return
+    this.microsandboxCatalog = declaredRuntimeCatalog(this.resolvedRuntimeCatalog, table).catalog
+    for (const [id, entry] of Object.entries(this.microsandboxCatalog.entries)) {
+      if (this.localRuntimeCatalog?.entries[id]) continue
+      this.runtimeCatalog.entries[id] = entry
+      this.runtimeCatalog.runtimes[id] = entry.runtime
+    }
+    this.refreshAdmittedRuntimes()
+    this.runtimeFacts.setInstalled({ ...this.runtimeCatalog.entries, ...this.localRuntimeCatalog?.entries })
+    this.runtimeFacts.emitFacts()
+    this.cpClient?.updateCapabilities?.()
   }
 
   // Sources whose launch spec the daemon itself supplies. Explicit `user` config is the operator's
@@ -3790,7 +3912,8 @@ export class Daemon {
           runtimes: () => {
             this.refreshAdmittedRuntimes()
             return this.runtimes
-          }
+          },
+          ready: async () => void (await this.microsandboxReady())
         })
       },
       capacity: () => this.cfg.limits.maxConcurrentSessions,
@@ -3804,6 +3927,7 @@ export class Daemon {
       // What a local agent here would start, so a holder never names a path in its own store (§8): a VM its image's adapter, a host process this machine's install.
       runtimeLaunch: async (runtimeId, strategy) => {
         if (strategy === 'host') await this.ensureRuntimeInstalled(runtimeId, this.localRuntimeCatalog !== undefined)
+        else await this.microsandboxReady()
         const catalog =
           strategy === 'microsandbox' ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
         const runtime = catalog?.entries[runtimeId]?.runtime
@@ -3916,7 +4040,7 @@ export class Daemon {
   private placementAsk(agent: LoadedAgent, sessionKey: string): PlacementAsk {
     return {
       isolation: this.sessionIsolation.get(sessionKey),
-      runInSandbox: this.agentRunsInSandbox(agent),
+      strategy: this.agentStrategy(agent),
       runtime: agent.runtime,
       // The only memory condition left: a binding the Control Plane's boot-time flip has not reached yet (§7).
       memoryDaemonHomed: memoryKindOf(agent) === 'managed' && memoryHomeOf(agent) === 'daemon'
@@ -3926,11 +4050,6 @@ export class Daemon {
   /** Whether this machine authenticates the runtime, read from the same `authRequired` its own `facts/daemon-runtimes` reports (§8). */
   private holderAuthenticates(runtime: string): boolean {
     return this.runtimeFacts.profileFor(runtime).authRequired !== true
-  }
-
-  /** The strategy v1's ask names: `runInSandbox` true asks for a sandboxing one, false for `host` (§5). */
-  private askedStrategy(ask: PlacementAsk): string {
-    return ask.runInSandbox ? 'microsandbox' : 'host'
   }
 
   /**
@@ -3955,7 +4074,7 @@ export class Daemon {
         agentId: agent.id,
         sessionKey,
         executorDaemonId: recorded.executorDaemonId,
-        strategy: this.askedStrategy(ask)
+        strategy: ask.strategy
       })
       return
     }
@@ -3963,7 +4082,8 @@ export class Daemon {
     if (!this.cpClient) return
     if (ask.isolation !== 'session') return await this.recordSessionExecutor(sessionKey, 'shared_session')
     if (!this.cpClient.memberSet()) return await this.recordSessionExecutor(sessionKey, 'not_on_group')
-    const answer = await this.executorCandidates(agent.id, sessionKey)
+    // A strategy that does not spread yet stays home without asking.
+    const answer = strategySpreads(ask.strategy) ? await this.executorCandidates(agent.id, sessionKey) : undefined
     const placement = placeSession({
       ask,
       holderHostedSessions: await this.hostedSessionCount(sessionKey),
@@ -4612,12 +4732,13 @@ export class Daemon {
       executableCommands,
       moduleEntries: [cliEntry, ...nodeExecArgvModuleEntries()],
       paths,
-      readRoots: this.cfg.sandbox.backend === 'srt' ? this.cfg.sandbox.mounts.map((mount) => mount.source) : []
+      // Called for srt launches alone, which read every mount at its host path.
+      readRoots: this.cfg.sandbox.mounts.map((mount) => mount.source)
     })
   }
 
   private usesMicrosandbox(agent: Agent): boolean {
-    return this.cfg.sandbox.backend === 'microsandbox' && this.agentRunsInSandbox(agent)
+    return !this.k8s && this.agentStrategy(agent) === 'microsandbox'
   }
 
   private microsandboxPlacement(
@@ -4645,9 +4766,13 @@ export class Daemon {
     environment: MicrosandboxEnvironment
     launch: ReturnType<typeof prepareMicrosandboxLaunch>
   } {
-    if (!this.microsandbox)
-      throw new Error(`microsandbox unavailable: ${this.microsandboxFailure ?? 'not initialized'}`)
-    const runtimeEntry = this.microsandboxCatalog?.entries[agent.runtime]
+    if (this.microsandboxFailure) throw new Error(`microsandbox unavailable: ${this.microsandboxFailure}`)
+    if (!this.microsandbox || !this.microsandboxCatalog) {
+      // Kicked off here too, so a read that arrives before this run's first launch succeeds on its retry.
+      void this.microsandboxReady().catch(() => {})
+      throw new Error('the microsandbox image is not prepared yet; its first session prepares it')
+    }
+    const runtimeEntry = this.microsandboxCatalog.entries[agent.runtime]
     const runtime = runtimeEntry?.runtime
     if (!runtime) throw new Error(`runtime "${agent.runtime}" is not provided by the microsandbox image`)
     const placement = this.microsandboxPlacement(agent, cwd, key)
@@ -4909,25 +5034,9 @@ export class Daemon {
     return agent ? resolveMemoryHomePorts(agent, this.memoryHomeDeps()) : undefined
   }
 
-  /** The one daemon-owned workspace preparation contract used by ordinary
-   * sessions and by the cold-host lifecycle gate below. Keeping the managed
-   * cache, trusted installer state, and runtime CLI identity together prevents
-   * a non-session warmup from spawning with a weaker preparation path. */
+  /** Whether the agent's strategy is a sandboxing one; skills follow it too (#36), and one this machine cannot run refuses rather than runs unconfined (§5). */
   private agentRunsInSandbox(agent: Agent): boolean {
-    if (this.cfg.sandbox.backend === 'microsandbox') {
-      return this.cfg.security.requireSandbox || agent.runInSandbox
-    }
-    // Sandbox-optional principle (#36): skills follow the agent's OWN sandbox
-    // decision, never a forced fleet-wide requirement. Only the explicit operator
-    // `security.requireSandbox` still forces confinement; a trusted/unsandboxed
-    // agent runs (and installs/uses skills) unsandboxed, and the daemon never
-    // fails closed on a host with no OS sandbox.
-    return effectiveRunInSandbox(
-      this.cfg.security.requireSandbox,
-      agent.runInSandbox,
-      this.sandboxMechanism,
-      this.runtimes[agent.runtime]
-    )
+    return !this.k8s && this.agentStrategy(agent) !== 'host'
   }
 
   // What each session's row says its isolation is, as the requests that reached this member reported it — the one fact host keying needs without a store round trip.
@@ -5242,6 +5351,8 @@ export class Daemon {
       })
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
+    // The first VM use of this run installs msb and prepares the image (§5); an unavailable microsandbox is refused at launch.
+    if (this.usesMicrosandbox(agent) && !this.microsandboxFailure) await this.microsandboxReady()
     if (!request && this.microsandbox && this.usesMicrosandbox(agent)) {
       const loaded = this.agents.get(agent.id)
       if (loaded)
@@ -5557,7 +5668,8 @@ export class Daemon {
     // Cluster workspaces materialize on the pod's volume at session time.
     if (this.k8sPlane) return
     await this.workspaces.prefetchWorkspace(agent)
-    if (this.microsandbox && this.usesMicrosandbox(agent)) {
+    // Before this run read the image, a retained VM waits for its next launch to be compared with it.
+    if (this.microsandbox && this.microsandboxCatalog && this.usesMicrosandbox(agent)) {
       const loaded = this.agents.get(agent.id)
       if (loaded)
         await this.microsandbox.refreshEnvironment(this.microsandboxContext(loaded, agent.workspace.path).environment)
@@ -5756,9 +5868,8 @@ export class Daemon {
     const launchCwd = cwd ?? agent.workspace.path
     const built = this.buildAcpHost(agent, cfg, {
       hostKey: key,
-      runInSandbox: this.agentRunsInSandbox(agent),
+      strategy: this.agentStrategy(agent),
       cwd: launchCwd,
-      warnOnSandboxDowngrade: true,
       ...(sessionGitDirs ? { sessionGitDirs } : {})
     })
     this.hosts.set(key, built.host)
@@ -5777,10 +5888,7 @@ export class Daemon {
    * confined — a sandboxed runtime is denied provider credentials (HOME + the
    * runtime-state dirs are denyRead) — no matter the agent's own sandbox
    * preference. The warm agent host keeps its normal launch; the dream never
-   * reuses it. `opts.runInSandbox` and `opts.cwd` are the only launch inputs
-   * that differ between the two callers; the warm path passes
-   * `warnOnSandboxDowngrade` so a requested-but-unavailable sandbox still logs,
-   * while the dream path fails closed upstream in {@link buildDreamHost}.
+   * reuses it. A strategy this machine cannot run refuses either (§5).
    */
   private buildAcpHost(
     agent: LoadedAgent,
@@ -5788,9 +5896,9 @@ export class Daemon {
     opts: {
       /** Names the host being built; its sandbox policy directory and terminal reap are keyed by it. */
       hostKey: HostKey
-      runInSandbox: boolean
+      /** The agent's strategy (session-executors.md §5); refused here when this machine cannot run it. */
+      strategy: string
       cwd: string
-      warnOnSandboxDowngrade?: boolean
       excludeAgentToolCredentials?: boolean
       modelCredential?: { target: ModelProviderTarget; credential: ModelCredential }
       /** A session whose clones are off this disk: their `.git`, as the filesystem holding them answered. */
@@ -5803,10 +5911,17 @@ export class Daemon {
   } {
     const agentId = agent.id
     const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(opts.hostKey, sid, u)
-    const micro = opts.runInSandbox && this.cfg.sandbox.backend === 'microsandbox'
-    const catalog = micro ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
+    // A session placed on another machine runs inside that machine's strategy, so this one's own VM composes none of it (§7).
+    const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
+    const micro = !this.k8s && opts.strategy === 'microsandbox' && !remoteSession
+    // Each local strategy launches the install it starts: the image's runtimes in a VM, this host's otherwise.
+    const local = micro ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
+    // A placed session's command is its executor's install (§8), so a runtime only that machine has starts from the resolved definition.
+    const executorOnly = remoteSession !== undefined && !local?.entries[agent.runtime]
+    const catalog = executorOnly ? this.resolvedRuntimeCatalog : local
     const runtimeEntry = catalog?.entries[agent.runtime]
-    if (runtimeEntry?.source === 'curated') {
+    // Curated admission is a probe of the install that starts; an executor-only runtime is admitted by the machine that has it.
+    if (runtimeEntry?.source === 'curated' && !executorOnly) {
       this.curatedRuntimeAdmission.assertLaunch(runtimeEntry.aliasOf ?? agent.runtime, runtimeEntry.source)
     }
     // The hostFactory seam must obey the same static external-memory admission
@@ -5829,12 +5944,11 @@ export class Daemon {
     if (this.opts.hostFactory) {
       return { host: this.opts.hostFactory(agent, onUpdate), configFileState }
     }
+    // A placed session's executor checked its strategy at prepare; one here must be a strategy this table can run.
+    if (!remoteSession) this.assertStrategyRunnable(agent, opts.strategy)
     const runtime = catalog?.runtimes[agent.runtime]
     if (!runtime) throw new Error(this.runtimeUnavailableMessage(agent.runtime))
-    // A session placed on another machine runs inside that machine's strategy, so this one's own VM composes none of it (§7).
-    const remoteSession = this.placedSession(hostKeySessionKey(opts.hostKey))
-    const microPlacement =
-      micro && !remoteSession ? this.microsandboxPlacement(agent, opts.cwd, opts.hostKey) : undefined
+    const microPlacement = micro ? this.microsandboxPlacement(agent, opts.cwd, opts.hostKey) : undefined
     // Its HOME is the one its executor seeded, on the root that machine's shim reported; without it a launch would name this disk (§7, §8).
     const remoteHome = remoteSession && this.executorPlane?.homeFor(remoteSession.subject)
     // The roots its `prepare` named, where the session gitconfig and config files land in that machine's environment (§5).
@@ -5881,14 +5995,7 @@ export class Daemon {
     // Keep this channel LAST so runtimeOverrides cannot replace either policy.
     const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
     // This machine wraps nothing around a placed session: the executor's strategy is its boundary.
-    const runInSandbox = opts.runInSandbox && !remoteSession
-    if (agent.runInSandbox && !opts.runInSandbox && opts.warnOnSandboxDowngrade) {
-      this.log.warn(
-        runtime.externalExecution
-          ? `acp: agent "${agentId}" requested Run in sandbox but runtime "${agent.runtime}" executes in an external machine-local service — running without it`
-          : `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
-      )
-    }
+    const runInSandbox = !this.k8s && opts.strategy !== 'host' && !remoteSession
     // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11), or its executor's.
     const memoryAgent =
       memoryKindOf(agent) === 'native' && (runInSandbox || remoteHome)
@@ -6000,14 +6107,7 @@ export class Daemon {
         : undefined
     if (launchFilesRoot !== undefined) configFileState = undefined
     let launchConfigFiles: { dir: string; files: SpawnFile[] } | undefined
-    // OS sandbox decision (issue #312). security.requireSandbox forces every agent
-    // on; otherwise the per-agent preference is effective only when this host has a
-    // mechanism. The writable set is derived from the TRUSTED agent dir
-    // (agent.dir — the daemon's filesystem-scan result), NOT from the mutable
-    // workspace.path in agent.json: the agent-dir ROOT (which holds agent.json)
-    // stays read-only, so a confined runtime can't rewrite the config that controls
-    // sandboxing and escape on respawn. An un-sandboxable layout (SandboxError)
-    // always refuses — never runs unconfined behind an effective on toggle.
+    // Writable roots come from the trusted agent dir, never agent.json's workspace.path, and an un-sandboxable layout (SandboxError) refuses rather than runs unconfined.
     let launch: ReturnType<typeof prepareRuntimeLaunch>
     let launchRuntime = runtime
     try {
@@ -6100,7 +6200,9 @@ export class Daemon {
       const reopened = launch.gitMetadataWriteRoots.length > 0 ? launch.gitMetadataWriteRoots.join(', ') : 'none'
       const boundary = remoteSession
         ? `on daemon ${remoteSession.executorDaemonId} (${remoteSession.strategy}, ${launchDef === runtime ? 'adapter as defined here' : 'its own adapter install'})`
-        : `sandbox ${runInSandbox ? 'on' : 'off'}`
+        : this.k8s
+          ? 'in its sandbox pod'
+          : `strategy ${opts.strategy}`
       this.log.info(
         `acp: agent "${agentId}" host launch — ${boundary}, cwd ${opts.cwd}, git metadata reopened: ${reopened}`
       )
@@ -6210,37 +6312,62 @@ export class Daemon {
     return platformIds()
   }
 
-  /** Why a configured sandbox cannot be used right now — the text the console shows instead of "no sandbox here". */
+  /** Why no sandboxing strategy can run here — what the console shows beside "Run in sandbox" until its strategy picker lands. */
   private sandboxUnavailableReason(): string | undefined {
-    if (this.cfg.sandbox.backend !== 'microsandbox' || this.microsandbox) return undefined
+    const table = this.strategyTable()
+    if (table.srt.available || table.microsandbox.available || this.k8s) return undefined
+    const offered = (['srt', 'microsandbox'] as const).filter((strategy) => this.strategyOffered(strategy))
+    if (!offered.length) return undefined
     // Bounded before publishing: the log keeps the whole failure, while an over-long optional diagnostic would fail the register schema and strand the daemon.
-    return boundedDiagnostic(this.microsandboxFailure ?? '') || 'microsandbox is not initialized'
+    return boundedDiagnostic(offered.map((strategy) => `${strategy}: ${strategyReason(table[strategy])}`).join('; '))
   }
 
-  /** What this machine can execute a session with right now, over the same probe `sandboxUnavailable` reports. */
+  private strategyOffered(strategy: SandboxStrategy): boolean {
+    return strategy === 'microsandbox' ? this.cfg.sandbox.microsandbox !== false : this.cfg.sandbox[strategy]
+  }
+
+  /** This machine's effective table (session-executors.md §5): what its own sessions can run in, each unavailable entry with its probe's reason. */
+  strategyTable(): StrategyTable {
+    const pod = 'a k8s runtime is isolated by its own pod'
+    const srt = this.sandboxMechanism
+      ? this.mountFailures.srt
+      : boundedDiagnostic(this.sandboxProbe?.reason ?? '') || 'this host has no supported SRT mechanism'
+    const microsandbox = this.microsandboxFailure
+      ? boundedDiagnostic(this.microsandboxFailure)
+      : this.mountFailures.microsandbox
+    return machineStrategies({
+      offered: {
+        host: this.strategyOffered('host'),
+        srt: this.strategyOffered('srt'),
+        microsandbox: this.strategyOffered('microsandbox')
+      },
+      unavailable: { srt: this.k8s ? pod : srt, microsandbox: this.k8s ? pod : microsandbox }
+    })
+  }
+
+  /** What the executor facet offers other members: this table, with `host` Linux-only. */
   executionStrategies(): ReturnType<typeof effectiveStrategies> {
-    return effectiveStrategies({
-      microsandbox: {
-        configured: this.cfg.sandbox.backend === 'microsandbox',
-        unavailable: this.sandboxUnavailableReason()
-      }
-    })
+    return effectiveStrategies({ table: this.strategyTable() })
   }
 
-  /** This machine's own table (session-executors.md §5), reported at registration beside its legacy `sandbox.backend`. */
-  ownExecutionStrategies(): ReturnType<typeof ownStrategies> {
-    const backend = this.cfg.sandbox.backend
-    const srt = this.k8s ? 'a k8s runtime is isolated by its own pod' : this.sandboxProbe?.reason
-    return ownStrategies({
-      backend,
-      requireSandbox: this.cfg.security.requireSandbox,
-      unavailable:
-        backend === 'microsandbox'
-          ? this.sandboxUnavailableReason()
-          : this.sandboxMechanism
-            ? undefined
-            : boundedDiagnostic(srt ?? '') || 'this host has no supported SRT mechanism'
-    })
+  /** The strategy an agent's sessions run in (§5), read the same way the Control Plane migrates `runInSandbox`. */
+  private agentStrategy(agent: Agent): string {
+    return agentStrategyOf(agent, this.cfg.sandbox.backend)
+  }
+
+  /** Why this machine cannot start a session in `strategy` now; undefined ⇒ it can. Nothing runs it in a weaker boundary instead (§5). */
+  private strategyRefusal(strategy: string): string | undefined {
+    // A pool session's boundary is its pod, whatever the agent names.
+    if (this.k8s) return undefined
+    if (!isSandboxStrategy(strategy)) return `this daemon has no "${strategy}" execution strategy`
+    const entry = this.strategyTable()[strategy]
+    return entry.available ? undefined : entry.reason
+  }
+
+  /** Refuse, with the probe's reason, a session this machine cannot run in its agent's strategy. */
+  private assertStrategyRunnable(agent: Agent, strategy = this.agentStrategy(agent)): void {
+    const refusal = this.strategyRefusal(strategy)
+    if (refusal) throw new StrategyUnavailableError(agent.id, strategy, refusal)
   }
 
   private registrationFeatures(): string[] {
@@ -6279,9 +6406,9 @@ export class Daemon {
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
-      // A failed microsandbox still HAS a sandbox: it refuses each launch rather than running it unconfined, and `sandboxUnavailable` says why.
-      ...(this.cfg.sandbox.backend === 'microsandbox' || this.sandboxMechanism ? ['sandbox'] : []),
-      ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
+      // Only a machine that can confine claims it; one that cannot refuses a sandboxed session, and `sandboxUnavailable` says why.
+      ...(this.strategyTable().srt.available || this.strategyTable().microsandbox.available ? ['sandbox'] : []),
+      ...(!this.k8s && !this.cfg.sandbox.host ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
       MEMORY_ENTRIES_V1_FEATURE,
       MEMORY_ENTRIES_SEARCH_V1_FEATURE,
@@ -6396,9 +6523,8 @@ export class Daemon {
         : undefined
       const { host, configFileState } = this.buildAcpHost(agent, this.cfg, {
         hostKey,
-        runInSandbox: this.agentRunsInSandbox(agent),
+        strategy: this.agentStrategy(agent),
         cwd,
-        warnOnSandboxDowngrade: true,
         ...(sessionGitDirs ? { sessionGitDirs } : {}),
         modelCredential: {
           target: entry.target,
@@ -7057,18 +7183,9 @@ export class Daemon {
   /**
    * Build + start a DEDICATED, one-off host for a single dream (task #36 A2).
    *
-   * Dreams are supported in every environment — with OR without a sandbox — and
-   * NEVER fail closed on a missing sandbox mechanism (owner principle: any
-   * feature must run with or without a sandbox; trusted agents may run
-   * unsandboxed). The dedicated host follows the agent's own effective sandbox
-   * decision (`agentRunsInSandbox`): when the agent runs sandboxed the dream is
-   * confined too — best-effort isolation of the attacker-controlled transcript,
-   * since a sandboxed runtime is denied the HOST's credentials (HOME +
-   * runtime-state dirs are denyRead) and, on Claude, the inner sandbox also
-   * denies the agent's own provider credential to the model's bash. When the
-   * agent runs unsandboxed (trusted, or no mechanism available) the dream runs
-   * unsandboxed too; the residual credential exposure there is a tracked P2 (as
-   * with the Codex provider-credential gap), not a gate on dreaming.
+   * The dedicated host runs in the agent's own strategy (§5): a sandboxed agent's
+   * dream is confined too, an unsandboxed agent's is not (a tracked P2), and a
+   * strategy this machine cannot run refuses the dream as it refuses a session.
    */
   private async buildDreamHost(
     agent: LoadedAgent,
@@ -7078,7 +7195,7 @@ export class Daemon {
   ): Promise<AcpHost> {
     const { host } = this.buildAcpHost(agent, this.cfg, {
       hostKey,
-      runInSandbox: this.agentRunsInSandbox(agent),
+      strategy: this.agentStrategy(agent),
       cwd,
       // A dream needs only its materialized inputs, never the agent's tool
       // credentials — keep github-app/gh/`*_DATA` secrets out of the
@@ -13113,6 +13230,7 @@ export class Daemon {
       ? Object.assign(webchat, {
           index: 0,
           replyText: '',
+          replySegments: [],
           heldText: '',
           heldTextOffset: 0,
           messageId: undefined,
@@ -14530,6 +14648,8 @@ export class Daemon {
         // into BOTH buffers (the stream is never staged), so clear both — and
         // reset the sentinel hold so the replacement gets its own check.
         p.webchat.replyText = ''
+        p.webchat.replySegments = []
+        delete p.webchat.segmentIndex
         p.webchat.heldText = ''
         p.webchat.heldTextOffset = 0
         delete p.webchat.messageId
@@ -14570,6 +14690,8 @@ export class Daemon {
           // fanned out. Close the browser turn explicitly — a bare return
           // would leave the stream open and the composer stuck busy.
           p.webchat.replyText = ''
+          p.webchat.replySegments = []
+          delete p.webchat.segmentIndex
           p.webchat.heldText = ''
           p.webchat.heldTextOffset = 0
           delete p.webchat.messageId
@@ -14673,16 +14795,46 @@ export class Daemon {
     this.clearSlackStream(p)
   }
 
-  /** Commit a webchat turn's reply: record it as a transcript row, fan it out as the canonical
-   *  conversation post, and close the browser stream unless a continuation defers that. */
+  /** Persist each reply segment and send its canonical post in the same order. */
+  private async publishWebchatReply(p: Pending, run: TurnRun, activatePeers: boolean): Promise<void> {
+    if (!p.webchat) return
+    const segments = p.webchat.replySegments.filter((segment) => segment.text.trim())
+    for (const [index, segment] of segments.entries()) {
+      const replyTs = await webchatTurnOutput.appendWebchatTextRow(
+        this.store,
+        p.plan.transcriptChannel,
+        run.plan.statusThread,
+        monotonicTs(),
+        {
+          postId: segment.postId,
+          sender: run.entry.agentId,
+          admission: { agentId: run.entry.agentId, sessionKey: run.plan.sessionKey },
+          text: segment.text
+        }
+      )
+      p.webchat.postSink?.({
+        conversationId: p.webchat.conversationId,
+        agentId: run.entry.agentId,
+        post: {
+          postId: segment.postId,
+          conversationId: p.webchat.conversationId,
+          author: {
+            kind: 'agent',
+            agentId: run.entry.agentId,
+            ...(activatePeers && index === segments.length - 1 ? { hopCount: run.plan.sourceHopCount } : {})
+          },
+          text: segment.text,
+          at: Number(replyTs)
+        },
+        ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
+      })
+    }
+  }
+
+  /** Commit the accepted webchat reply and close its browser stream. */
   private async commitWebchatReply(p: Pending, run: TurnRun, outcome: AnsweredTurn): Promise<void> {
     if (!p.webchat) return
-    const { plan, entry } = run
-    const { agentId } = entry
     const { stopReason, usage } = outcome
-    // Record the agent's reply as a transcript text row (sender = agentId), so a
-    // webchat session reads back with its reply like any Slack session does — the
-    // Slack path records this at its `post` boundary, which webchat never hits.
     const trimmedWebchatReply = p.webchat.replyText.trim()
     if (trimmedWebchatReply && isNoResponseBody(trimmedWebchatReply)) {
       // Silent decline (the conversation-wide activation was not for this
@@ -14690,53 +14842,16 @@ export class Daemon {
       // commit no canonical post or transcript reply row.
       p.webchat.heldText = ''
       p.webchat.heldTextOffset = 0
+      p.webchat.replySegments = []
+      delete p.webchat.segmentIndex
       delete p.webchat.messageId
       p.reply.text = ''
     } else if (trimmedWebchatReply) {
       // A real reply that never diverged from the sentinel prefix mid-stream
       // (shorter than the sentinel) is still held — release it before commit.
       webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
-      // A continuation turn records its reply at the platform post boundary instead
-      // (appending here would duplicate the row), and its roster is fixed at one.
-      if (!p.webchat.continuation && p.webchat.replyText.trim()) {
-        // Shares the strictly-monotonic clock with the inbound user message so a fast
-        // turn can't stamp both with the same ms and lose the reply to the unique index.
-        // The ts the row actually lands on (post-collision-bump) doubles as the reply
-        // post's canonical `at` (minted ONCE here, the origin) carried to every other
-        // participant's copy via rd/webchat-post.
-        const replyPostId = randomUUID()
-        const replyTs = await webchatTurnOutput.appendWebchatTextRow(
-          this.store,
-          p.plan.transcriptChannel,
-          plan.statusThread,
-          monotonicTs(),
-          {
-            postId: replyPostId,
-            sender: agentId,
-            admission: { agentId, sessionKey: plan.sessionKey },
-            text: p.webchat.replyText
-          }
-        )
-        // Fan the completed reply out as a canonical conversation post so the
-        // relay delivers it to the browser's message log and to the other
-        // participants' daemons as context (webchat-multi-agents.md §5.2).
-        // `hopCount` is this turn's own chain depth (§4.1: stamped on every body
-        // the author posts), which is what lets a receiving participant charge
-        // the ONE +1 continuation transition (§5.2a) — the same stamp the
-        // platform paths put on their outbound authorship metadata.
-        p.webchat.postSink?.({
-          conversationId: p.webchat.conversationId,
-          agentId,
-          post: {
-            postId: replyPostId,
-            conversationId: p.webchat.conversationId,
-            author: { kind: 'agent', agentId, hopCount: p.plan.sourceHopCount },
-            text: p.webchat.replyText,
-            at: Number(replyTs)
-          },
-          ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
-        })
-      }
+      p.reply.text = p.webchat.replyText
+      if (!p.webchat.continuation) await this.publishWebchatReply(p, run, true)
     }
     // Continuation defers `done` until the platform apply chain settles below —
     // the browser must not unlock its composer while the reply is still flushing.
@@ -14974,39 +15089,8 @@ export class Daemon {
         statusThread: plan.statusThread,
         sessionThread: plan.sessionThread
       })
-      if (p.webchat.replyText.trim() && !isNoResponseBody(p.webchat.replyText.trim())) {
-        const partialPostId = randomUUID()
-        const replyTs = await webchatTurnOutput.appendWebchatTextRow(
-          this.store,
-          p.plan.transcriptChannel,
-          plan.statusThread,
-          monotonicTs(),
-          {
-            postId: partialPostId,
-            sender: agentId,
-            admission: { agentId, sessionKey: plan.sessionKey },
-            text: p.webchat.replyText
-          }
-        )
-        // A partial reply is still conversation content the other participants
-        // should see — fan it out exactly like the success path. Deliberately
-        // WITHOUT the author hopCount stamp: a failed turn's fragment must not
-        // continue the conversation (§5.2a activates only on a committed reply
-        // carrying a usable depth), or a crash-looping agent would keep waking
-        // its peers with broken half-answers.
-        p.webchat.postSink?.({
-          conversationId: p.webchat.conversationId,
-          agentId,
-          post: {
-            postId: partialPostId,
-            conversationId: p.webchat.conversationId,
-            author: { kind: 'agent', agentId },
-            text: p.webchat.replyText,
-            at: Number(replyTs)
-          },
-          ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
-        })
-      }
+      if (p.webchat.replyText.trim() && !isNoResponseBody(p.webchat.replyText.trim()))
+        await this.publishWebchatReply(p, run, false)
     }
     if (!p.webchat || p.webchat.continuation) {
       // Some runtimes narrate their terminal error into the message stream just
@@ -21753,6 +21837,7 @@ export class Daemon {
       workspaces: () => this.workspaces,
       runtimes: () => this.runtimes,
       keyServer: () => this.modelSessions.keyServer,
+      usesMicrosandbox: (agent) => this.usesMicrosandbox(agent),
       gitCreds: () => this.gitCreds,
       gitCredServer: () => this.gitCredServer,
       quiesceAgentWorkspaceAuthority: (agentId) => this.quiesceAgentWorkspaceAuthority(agentId),
@@ -21824,8 +21909,9 @@ export class Daemon {
       registrationPlatforms: () => this.registrationPlatforms(),
       registrationFeatures: () => this.registrationFeatures(),
       sandboxUnavailable: () => this.sandboxUnavailableReason(),
-      ownStrategies: () => this.ownExecutionStrategies(),
-      sandboxBackend: () => this.cfg.sandbox.backend,
+      ownStrategies: () => this.strategyTable(),
+      // Only for the Control Plane's one-time `runInSandbox` migration: the retiring key, or its old default.
+      sandboxBackend: () => this.cfg.sandbox.backend ?? 'srt',
       executorFacet: () => this.executorFacet,
       admittedRuntimeIds: () => this.admittedRuntimeIds(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),
@@ -22346,14 +22432,16 @@ export class Daemon {
       hostAvailable: (runtimeId) => (this.k8s ? undefined : !!this.localRuntimeCatalog?.entries[runtimeId]),
       credentialsConfigured: (runtimeId) =>
         this.k8s ? undefined : runtimeCredentialsConfigured(runtimeId, this.runtimeCatalog.entries[runtimeId]?.runtime),
+      // The legacy single-environment reading, kept for a console without the strategy picker: the VM's only where the file still selects it.
       unavailableReason: (runtimeId) =>
-        this.microsandboxTable
+        this.cfg.sandbox.backend === 'microsandbox' && this.microsandboxTable
           ? !this.microsandboxCatalog?.entries[runtimeId]
             ? 'image-binary-missing'
             : undefined
           : !this.k8s && !this.localRuntimeCatalog?.entries[runtimeId]
             ? 'host-binary-missing'
             : undefined,
+      strategyEntries: (runtimeId, probed) => (this.k8s ? undefined : this.runtimeStrategyEntries(runtimeId, probed)),
       admittedRuntimes: () => this.runtimes,
       refreshAdmitted: () => this.refreshAdmittedRuntimes(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),
@@ -22364,8 +22452,8 @@ export class Daemon {
       noteCatalogProbe: (input) => void this.modelCatalogSvc?.noteProbe(input),
       localizeRuntime: async (runtimeId) => {
         await this.ensureRuntimeInstalled(runtimeId, this.localRuntimeCatalog !== undefined)
-        // Keep host launch commands current without replacing the image's executable.
-        if (this.localRuntimeCatalog && !this.microsandboxCatalog?.entries[runtimeId]) {
+        // Keep host launch commands current; a VM launch reads the image's own catalog.
+        if (this.localRuntimeCatalog) {
           const entry = this.localRuntimeCatalog.entries[runtimeId]
           if (entry) {
             this.runtimeCatalog.entries[runtimeId] = entry
@@ -22378,13 +22466,44 @@ export class Daemon {
         fakeHosts: this.opts.hostFactory !== undefined,
         ...(this.opts.probeRuntimes ? { probe: this.opts.probeRuntimes } : {}),
         ...(this.sandboxMechanism ? { sandboxMechanism: this.sandboxMechanism } : {}),
-        // Required VM isolation applies to sessions; host metadata probes use SRT when available.
-        requireSandbox: this.cfg.sandbox.backend === 'srt' && this.cfg.security.requireSandbox,
+        // A machine that offers no host confines its probes in SRT when it can; a VM-only one probes on the host.
+        requireSandbox: !this.k8s && !this.cfg.sandbox.host && this.strategyTable().srt.available,
         daemonRoot: this.root,
         agentsRoot: this.cfg.agentsDir,
         isolateAccountApps: this.cfg.security.isolateAccountApps
       })
     }
+  }
+
+  /** One runtime under each offered strategy (§5): host and srt start the host install and share its probe; a VM's models wait for its image's own probe. */
+  private runtimeStrategyEntries(
+    runtimeId: string,
+    probed: { models?: string[]; modelsSource?: 'cached' | 'probed' }
+  ): RuntimeStrategyEntries {
+    const table = this.strategyTable()
+    const entries: RuntimeStrategyEntries = {}
+    for (const strategy of SANDBOX_STRATEGIES) {
+      if (!this.strategyOffered(strategy)) continue
+      const machine = table[strategy]
+      if (!machine.available) {
+        entries[strategy] = { available: false, unavailableReason: machine.reason }
+      } else if (strategy === 'microsandbox') {
+        // An image not read yet stays permissive; one that was read answers for itself.
+        entries[strategy] =
+          this.microsandboxCatalog && !this.microsandboxCatalog.entries[runtimeId]
+            ? { available: false, unavailableReason: 'the microsandbox image does not provide this runtime' }
+            : { available: true }
+      } else if (!this.localRuntimeCatalog?.entries[runtimeId]) {
+        entries[strategy] = { available: false, unavailableReason: 'this runtime is not installed on this host' }
+      } else {
+        entries[strategy] = {
+          available: true,
+          ...(probed.models ? { models: probed.models } : {}),
+          ...(probed.modelsSource ? { modelsSource: probed.modelsSource } : {})
+        }
+      }
+    }
+    return entries
   }
 
   /**

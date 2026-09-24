@@ -256,8 +256,10 @@ no root for a secondary repository on a cluster agent.
 
 ## Materialization modes and on-demand repositories
 
-> **Status:** proposed. Decisions 13–20 extend the design above; nothing in
-> them is implemented yet.
+> **Status:** in progress. Decisions 13–20 extend the design above. The
+> protocol and control-plane half of change-map step 1 has landed (the
+> `materialize` column, its REST surface and its projection, `always` and
+> `on-demand` only); the daemon, the console, and decisions 14–20 have not.
 
 Decision 1 scales with the number of rows. An organization with a few hundred
 repositories that authorizes them all — or that holds an installation grant
@@ -338,7 +340,11 @@ turn's path, in the same class as `gitcred/request` and the model-selection
    `additionalRepos` entry; `always` and `on-demand` first. The daemon prepares
    only `always` rows, adds the on-demand directory rule and its sweep, extends
    the standing context, and carves the new directory into the OS-sandbox
-   boundary.
+   boundary. _Landed:_ the protocol and control-plane half — the column
+   (default `always`), `materialize` on `POST`/`PATCH` repository grants and on
+   each projected entry, a config-revision bump on change, and `decision`
+   refused with 400 until step 3. _Pending:_ the daemon honoring the field and
+   the console surface.
 2. **Installation grants** — [agent-multi-repo-authorization.md](agent-multi-repo-authorization.md)
    decision 10, independently mergeable; `on-demand` only until step 3.
 3. **`decision`** — the evaluator pair on the agent, the roster request and

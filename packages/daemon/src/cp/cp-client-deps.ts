@@ -98,9 +98,9 @@ export interface CpClientConnectionHost {
 export interface CpClientRegistrationHost {
   registrationPlatforms(): string[]
   registrationFeatures(): string[]
-  /** Set only when a configured sandbox is unusable; the CP keeps the `sandbox` capability either way. */
+  /** Why no offered sandboxing strategy can run here; unset while one can (session-executors.md §5). */
   sandboxUnavailable(): string | undefined
-  /** The machine's own strategy table and its retiring `sandbox.backend`, which the CP migrates `runInSandbox` from (session-executors.md §5). */
+  /** The machine's effective strategy table, and the retiring `sandbox.backend` the CP migrates `runInSandbox` from (session-executors.md §5). */
   ownStrategies(): ExecutorStrategyTable
   sandboxBackend(): string
   /** The executor facet (session-executors.md §6); while it is dark it reports nothing, and then nothing new is sent. */

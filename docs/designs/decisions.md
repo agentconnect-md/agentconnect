@@ -1897,7 +1897,10 @@ pending verdicts include child configuration in their fingerprints. Peers withou
 `decision-chain-v1` cannot execute a chain; their conversations remain held.
 
 The editors let a rule choose another Decision, edit its conditions, and return
-along the path. Gate and shared-bot routing Try use the same traversal as live execution.
+along the path. Inside a later Decision, Save keeps its edits and returns one level,
+and Cancel discards them and returns one level. Only at the first Decision do they
+save or close the editor. The path's links return with edits kept.
+Gate and shared-bot routing Try use the same traversal as live execution.
 Recent evaluation details retain the reached steps and their answers with the
 existing transcript retention boundary. The model-selection sample remains
 explicitly simulated.

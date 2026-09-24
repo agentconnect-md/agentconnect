@@ -206,9 +206,13 @@ export const AgentSchema = z.object({
   // off — the daemon seeds each integration's channel baseline silently, so only
   // channels joined AFTER the baseline (never a restart/re-list) trigger an intro.
   introduceOnJoin: z.boolean().default(false),
-  // Request an OS sandbox for this agent (issue #312). Daemon policy may force it
-  // on; an unavailable optional sandbox is ineffective. New agents default off.
+  // The legacy sandbox request, read only while `execution` is absent (session-executors.md §5).
   runInSandbox: z.boolean().default(false),
+  // The strategy this agent's sessions run in (§5); absent ⇒ the Control Plane has not migrated it, and `runInSandbox` decides.
+  execution: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{0,31}$/)
+    .optional(),
   // Org built-in preset marker (preset-agents.md §3.1), replicated from the CP via
   // AgentSpec.builtin. Gates preset-only behavior locally — including attaching
   // `agentconnect-admin` when the CP supplies a webchat entitlement. Never set by
@@ -253,13 +257,15 @@ export const AgentSchema = z.object({
     // repository/project id as a decimal string, so a rename cannot orphan an entry,
     // and `provider` qualifies it — the hosts number theirs independently
     // (gitlab-com-integration.md §8.1). Absent ⇒ github, what every entry a
-    // pre-GitLab control plane replicated means.
+    // pre-GitLab control plane replicated means. `materialize` (decision 13) is kept
+    // as replicated so a re-read never strips it; absent ⇒ always. Nothing reads it yet.
     additionalRepos: z
       .array(
         z.object({
           repoFullName: z.string(),
           repoId: z.string(),
-          provider: z.string().min(1).default('github')
+          provider: z.string().min(1).default('github'),
+          materialize: z.enum(['always', 'decision', 'on-demand']).default('always')
         })
       )
       .default([]),

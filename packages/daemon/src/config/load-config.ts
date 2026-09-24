@@ -44,8 +44,34 @@ function writeConfigFile(file: string, raw: unknown): void {
   protectConfigFile(file, true)
 }
 
+/** Map the retiring single-backend keys onto the strategy table once (session-executors.md §5), returning what to warn about. */
+export function mapLegacySandbox(cfg: Config): string[] {
+  const warnings: string[] = []
+  if (cfg.sandbox.backend !== undefined) {
+    warnings.push(
+      `sandbox.backend is retired and read as the default strategy table: every strategy is offered and each agent names the one its sessions run in; remove "backend: ${cfg.sandbox.backend}"`
+    )
+  }
+  if (cfg.security.requireSandbox !== undefined) {
+    if (cfg.security.requireSandbox) cfg.sandbox.host = false
+    warnings.push(
+      `security.requireSandbox is retired and read as sandbox.host: ${cfg.security.requireSandbox ? 'false' : 'true'}; set sandbox.host instead`
+    )
+    delete cfg.security.requireSandbox
+  }
+  return warnings
+}
+
 export function loadConfig(
-  opts: { root?: string; configPath?: string; overrides?: FlatOverrides; optional?: boolean; autoCreate?: boolean } = {}
+  opts: {
+    root?: string
+    configPath?: string
+    overrides?: FlatOverrides
+    optional?: boolean
+    autoCreate?: boolean
+    /** Where the retiring keys' one-time mapping is reported; unset ⇒ silent. */
+    warn?: (message: string) => void
+  } = {}
 ): Config {
   const root = resolveRoot(opts.root)
   const file = opts.configPath ?? configPath(root)
@@ -67,12 +93,14 @@ export function loadConfig(
     throw new Error(`config not found: ${file} (create it, pass --config, or run \`agentconnect login\`)`)
   }
   const cfg = ConfigSchema.parse(raw) // throws on invalid
+  for (const warning of mapLegacySandbox(cfg)) opts.warn?.(warning)
 
   const o = opts.overrides ?? {}
   if (o.daemonId) cfg.daemonId = o.daemonId
   if (o.logLevel) cfg.logging.level = o.logLevel
   if (o.maxAgents !== undefined) cfg.limits.maxAgents = o.maxAgents
-  if (o.requireSandbox) cfg.security.requireSandbox = true
+  // `--require-sandbox`: this machine refuses unsandboxed sessions.
+  if (o.requireSandbox) cfg.sandbox.host = false
   if (o.apiUrl) cfg.controlPlane.url = o.apiUrl
   if (o.apiKey) cfg.controlPlane.key = o.apiKey
   // Passing --api-url/--api-key implies "connect to the CP" (it defaults off),

@@ -195,7 +195,12 @@ export class AgentSpecAssembler {
   async additionalReposOf(a: Pick<AgentRecord, 'id'>): Promise<AgentAdditionalRepo[]> {
     const rows = (await this.agentRepoAuth?.listForAgent(a.id)) ?? []
     return rows
-      .map((row) => ({ repoFullName: row.repoFullName, repoId: row.repoId.toString(), provider: row.provider }))
+      .map((row) => ({
+        repoFullName: row.repoFullName,
+        repoId: row.repoId.toString(),
+        provider: row.provider,
+        materialize: row.materialize
+      }))
       .sort((x, y) => cmp(x.provider, y.provider) || cmp(x.repoFullName, y.repoFullName))
   }
 

@@ -30,6 +30,7 @@ import {
   GitCloneUrlError,
   CODE_HOST_PROVIDERS,
   HOOK_KINDS,
+  RepoMaterialization,
   RepoSubdirError,
   SessionImageAttachment,
   SessionStayedHomeReason,
@@ -2281,6 +2282,9 @@ export const GithubOwnerRepoParam = z.object({ id: z.string(), owner: z.string()
 /** Access tier of one grant: `comment` = contents:read + issues/PR:write (the
  *  hook write-back shape); `read`/`write` are uniform across capabilities. */
 export const RepoAccessDto = z.enum(['read', 'comment', 'write'])
+/** How a session stands in the repository (multi-repository-workspaces.md decision 13): `always` clones it as a
+ *  secondary root, `decision` offers it to the per-session selector, `on-demand` grants credentials only. */
+export const RepoMaterializationDto = RepoMaterialization
 
 /** One explicit repository grant on an agent (the Repositories card). */
 export const AgentRepoAuthDto = z.object({
@@ -2290,6 +2294,7 @@ export const AgentRepoAuthDto = z.object({
   repoId: z.string(), // rename-proof numeric repository/project id
   repoFullName: z.string(), // owner/repo as GitHub cases it, or the GitLab project path (refreshed on rename)
   access: RepoAccessDto,
+  materialize: RepoMaterializationDto,
   createdBy: z.string().nullable(), // app_user id (member directory resolves display)
   createdAt: z.string() // ISO-8601
 })
@@ -2309,13 +2314,15 @@ export const CreateAgentRepoAuthBody = z.union([
   z.strictObject({
     provider: z.literal('gitlab'),
     projectId: z.string().regex(/^[1-9]\d*$/),
-    access: RepoAccessDto.default('read')
+    access: RepoAccessDto.default('read'),
+    materialize: RepoMaterializationDto.default('always')
   }),
   // A managed Gitea repository by its numeric id (gitea-integration.md §5); the tier is a local clamp only.
   z.strictObject({
     provider: z.literal('gitea'),
     repoId: z.string().regex(/^[1-9]\d*$/),
-    access: RepoAccessDto.default('read')
+    access: RepoAccessDto.default('read'),
+    materialize: RepoMaterializationDto.default('always')
   }),
   z.strictObject({
     provider: z.literal('github').default('github'),
@@ -2323,12 +2330,15 @@ export const CreateAgentRepoAuthBody = z.union([
       .string()
       .trim()
       .regex(/^[^/\s]+\/[^/\s]+$/, 'expected "owner/repo"'),
-    access: RepoAccessDto.default('read')
+    access: RepoAccessDto.default('read'),
+    materialize: RepoMaterializationDto.default('always')
   })
 ])
 
-/** `PATCH /agents/:agentId/repos/:repoAuthId` — raise an existing grant's tier. */
-export const UpdateAgentRepoAuthBody = z.strictObject({ access: RepoAccessDto })
+/** `PATCH /agents/:agentId/repos/:repoAuthId` — raise an existing grant's tier and/or change how it materializes. */
+export const UpdateAgentRepoAuthBody = z
+  .strictObject({ access: RepoAccessDto.optional(), materialize: RepoMaterializationDto.optional() })
+  .refine((b) => b.access !== undefined || b.materialize !== undefined, { message: 'nothing to update' })
 
 export const AgentRepoAuthParam = z.object({ agentId: z.string(), repoAuthId: z.string() })
 

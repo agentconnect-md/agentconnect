@@ -528,7 +528,7 @@ describe('daemon --k8s mode', () => {
       root: root({ declared: { runtimes: [{ id: 'claude' }] }, requireSandbox: true }),
       k8s: true
     })
-    await expect(k8sDaemon.start()).rejects.toThrow(/requireSandbox is not supported with --k8s/)
+    await expect(k8sDaemon.start()).rejects.toThrow(/sandbox\.host: false is not supported with --k8s/)
   })
 
   it('suspends the pod of an agent that has gone quiet, and leaves a busy one alone', async () => {

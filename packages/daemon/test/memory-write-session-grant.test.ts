@@ -61,6 +61,7 @@ function world(excluded = true) {
       sink,
       index: 0,
       replyText: '',
+      replySegments: [],
       heldText: '',
       messageEmitted: false
     }

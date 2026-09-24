@@ -1,14 +1,14 @@
 'use client'
 
 import Link from 'next/link'
-import { useState, type ComponentProps } from 'react'
+import { type ComponentProps } from 'react'
 import { useTranslations } from 'next-intl'
 import { DECISION_CHAIN_MAX_STEPS, type DecisionDefinition } from '@agentconnect.md/protocol/decision'
 import { Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { newRule, type RoutingDraft, type RoutingDraftRule, type RoutingIssue } from '@/lib/decisions/routing-draft'
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
-import { DecisionChainNav, RoutingChainContext, reachableSteps } from '../DecisionChainControls'
+import { DecisionChainNav, RoutingChainContext, reachableSteps, useDecisionChainPath } from '../DecisionChainControls'
 import { DecisionPicker } from '../DecisionPicker'
 import { FieldIssue } from './RoutingFields'
 import { RoutingRulesTable, fitsQuestion } from './RoutingRulesTable'
@@ -42,7 +42,7 @@ export function RoutingChainFields({
   const t = useTranslations('Decisions.routing')
   const td = useTranslations('Decisions')
   const { orgPath } = useOrgs()
-  const [path, setPath] = useState<string[]>([])
+  const { path, enter, to } = useDecisionChainPath(draft, (entry) => edit(() => entry))
   const active = draft.steps?.find((step) => step.id === path.at(-1))
   const step = active ?? draft
   const decision = decisions.find((d) => d.id === step.decisionId)
@@ -68,7 +68,7 @@ export function RoutingChainFields({
                 td('chain.missing')
             }))
           ]}
-          onBack={(index) => setPath(path.slice(0, index))}
+          onBack={to}
         />
       )}
       <div className="fld">
@@ -119,14 +119,14 @@ export function RoutingChainFields({
                 s.rules.flatMap((rule) => (rule.action.type === 'decision' ? [rule.action.nextStepId] : []))
               ).length <
               DECISION_CHAIN_MAX_STEPS - 1,
-            open: (id) => setPath([...path, id]),
+            open: enter,
             add: (entry) => {
               const id = crypto.randomUUID()
               edit((current) => ({
                 ...current,
                 steps: [...(current.steps ?? []), { id, decisionId: entry.id, rules: [newRule(entry.question, [])] }]
               }))
-              setPath([...path, id])
+              enter(id)
               return id
             }
           }}

@@ -1,6 +1,7 @@
 # Daemon Sandbox Backends
 
-**Status: Partially implemented.** SRT remains the default. The opt-in Linux
+**Status: Partially implemented.** Every strategy is offered by default and made
+available by its startup probe; each agent names the one its sessions run in. The Linux
 microsandbox backend implements release image defaults and explicit overrides,
 resource configuration, guest execution, host mounts, retained-disk stop/start,
 and Docker/Compose tooling that agents can start inside each VM when needed.
@@ -21,28 +22,30 @@ Control Plane does not carry ACP or provider request traffic.
 
 ## 1. Configuration and ownership
 
-The daemon-owned `sandbox` object in `~/.agentconnect/config.json` defaults to
-`{ "backend": "srt", "env": {}, "mounts": [], "share": false }`. The minimal
-configuration is:
+The daemon-owned `sandbox` object in `~/.agentconnect/config.json` is a table of
+execution strategies ([session-executors.md](session-executors.md) §5) plus the
+settings they share. Its default is every strategy on:
 
 ```json
 {
   "sandbox": {
-    "backend": "srt"
+    "host": true,
+    "srt": true,
+    "microsandbox": true,
+    "env": {},
+    "mounts": [],
+    "share": false
   }
 }
 ```
 
 Release builds include the shared runtime image reference. This example uses
-that default:
+that default, withdraws unsandboxed sessions, and sizes the VMs:
 
 ```json
 {
-  "security": {
-    "requireSandbox": true
-  },
   "sandbox": {
-    "backend": "microsandbox",
+    "host": false,
     "env": {
       "PNPM_CONFIG_STORE_DIR": "/cache/pnpm"
     },
@@ -66,64 +69,71 @@ The resource values shown are the defaults, not measured minimums or capacity
 recommendations. All three are positive integers bounded by the SDK's supported
 numeric ranges. Source/development builds have no release image default and
 require an explicit `sandbox.microsandbox.image`, such
-as `registry.example.com/agentconnect/runtime-sandbox-full:build-tag`. An explicit image
+as `registry.example.com/agentconnect/runtime-sandbox-full:build-tag`; without one
+the microsandbox strategy is unavailable with that reason. An explicit image
 also overrides the release default. Networking is fixed backend behavior; the
 strict VM configuration has no network modes, port mappings, or outbound-proxy
 settings.
 
 | Setting                        | Meaning and delivery status                                                                                                                                                                                                                                                                                                                 |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox.backend`              | Implemented: `srt` is the default; `microsandbox` selects the Linux VM implementation for sandboxed launches. Retiring: replaced by the strategy table below.                                                                                                                                                                               |
+| `sandbox.host`                 | Implemented: default `true`. The unconfined direct child for this machine's own sessions, available on every platform. `false` refuses every unsandboxed session.                                                                                                                                                                           |
+| `sandbox.srt`                  | Implemented: default `true`. Available when the live SRT/bwrap probe passes and `sandbox.mounts` suits it. `false` withdraws it, and no probe or session uses SRT.                                                                                                                                                                          |
+| `sandbox.microsandbox`         | Implemented: default `true`, or an object of the VM parameters below. Available on Linux with a usable `/dev/kvm`, an image reference, and an intact msb and libkrunfw once installed. `false` withdraws it.                                                                                                                                |
+| `sandbox.backend`              | Retired: read once at startup with a warning as the default table. Reported only while present, so the Control Plane can migrate `runInSandbox`. `none` stays rejected.                                                                                                                                                                     |
+| `security.requireSandbox`      | Retired: read once at startup with a warning; `true` is `sandbox.host: false`, as is `--require-sandbox`.                                                                                                                                                                                                                                   |
 | `sandbox.env`                  | Environment defaults for sandboxed session runtimes, default `{}`; shared by SRT and microsandbox. Runtime and agent variables override them; daemon-enforced private paths and security settings remain authoritative.                                                                                                                     |
-| `security.requireSandbox`      | Existing behavior: require sandboxed execution for every agent, using the selected backend. Retiring: `host: false` in the strategy table.                                                                                                                                                                                                  |
-| Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents. Retiring: the agent's `execution` names a strategy.                                                                                                                                        |
+| Agent `execution`              | Implemented: the strategy an agent's sessions run in. An agent the Control Plane has not migrated yet is read from `runInSandbox`: `false` is `host`, `true` the retired backend or `srt`. The console's **Run in sandbox** stays until the strategy picker lands.                                                                          |
 | `sandbox.microsandbox.image`   | Implemented: optional, non-empty OCI override. Release builds default to their bundled shared-image reference; development builds require an explicit image. No Kubernetes image lookup is used.                                                                                                                                            |
 | `cpus`, `memoryMiB`, `diskGiB` | Per-VM CPU allocation, memory limit, and capacity of each writable disk; defaults are `2`, `2048`, and `10`. New VMs have a root upper disk and a Docker data disk, plus one disk when overlay mounts are configured, each capped by `diskGiB`. All are sparse; host capacity planning remains the operator's responsibility.               |
 | `sandbox.mounts`               | Operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `mode` (`readonly` by default, or `writable` / `overlay`). SRT requires equal normalized host paths; microsandbox accepts absolute guest targets and `~/` relative to the session HOME. Workspace, HOME, and runtime state remain automatically provisioned. |
 | `sandbox.share`                | Implemented: default `false`. `true` lets this machine host isolated sessions for the other members of its daemon group, under this machine's runtime sign-in, and opens one TLS-PSK port for them. Read at start; `config/push` cannot set it. See [Sharing a machine with its group](#sharing-a-machine-with-its-group).                  |
 
-### Strategy table (partly implemented)
+### Strategy table (implemented on the daemon)
 
 One daemon runs several backends side by side, and an agent chooses which one its
-sessions use ([session-executors.md](session-executors.md) §5). `sandbox.backend` becomes
-a table of strategies, all on by default, each made available or unavailable by its
-startup probe:
+sessions use ([session-executors.md](session-executors.md) §5). `true` takes a
+strategy's defaults and `false` withdraws it; `sandbox.env` and `sandbox.mounts`
+apply to every sandboxing strategy. Configured is what a machine offers, and each
+startup probe decides whether an offered strategy is available or records why not.
 
-```json
-{
-  "sandbox": {
-    "host": true,
-    "srt": true,
-    "microsandbox": { "cpus": 2, "memoryMiB": 2048, "diskGiB": 10 }
-  }
-}
-```
+Every probe is cheap and has no side effects. `srt` is the existing live SRT
+probe. `microsandbox` opens `/dev/kvm`, resolves the image reference, and, when the
+daemon's runtime store already holds the pinned msb, checks that msb and its
+libkrunfw are there. It installs nothing, pulls no image and boots no VM: the
+first session that uses the strategy installs msb when needed, prepares the image
+and reads its runtime table. A mount layout a strategy cannot honor, such as an
+`overlay` mount or a renamed target for SRT, makes that strategy unavailable with
+the validation error rather than refusing startup. A table with no available
+entry refuses startup, which keeps the old fail-closed behavior.
 
-`true` takes a strategy's defaults and `false` withdraws it; `sandbox.env` and
-`sandbox.mounts` apply to every sandboxing strategy. The microsandbox probe pulls no
-image, so enabling it by default costs nothing until a session uses it, and its state
-collection runs whenever it is enabled. A file that still sets `backend` or
-`security.requireSandbox` is mapped once with a warning: either backend gives the
-default table, `requireSandbox: true` is `host: false`, and a table with no available
-entry refuses startup. The agent's **Run in sandbox** becomes a strategy picker,
-`runInSandbox` migrates to `host` or to the backend its daemon reports, and an
-unavailable strategy refuses a session rather than downgrading it.
+The effective table is reported at registration (`capabilities.strategies`), and the
+executor facet reports the same table with `host` limited to Linux. Each runtime in
+`facts/daemon-runtimes` carries one entry per offered strategy (`strategies`):
+availability with a reason, and for `host` and `srt` the models and `modelsSource`
+of the host probe. A `microsandbox` entry names a runtime the image lacks once the
+image has been read, and carries no models until the image probe of S2c.
 
-The Control Plane half is in place. An agent stores `execution`, a strategy slug, beside
-`runInSandbox`, and the two are written together. The Control Plane checks a new value
-against the strategies where the agent is placed — the daemon's table, or for a group
-those at least one ready member offers — and refuses one it cannot run with 409 and the
-reason. That check replaces the two sandbox conflicts. Each daemon reports its own table at
-registration (`capabilities.strategies`) beside its legacy `sandbox.backend`
-(`capabilities.sandboxBackend`). Until the table above replaces the single backend,
-`ownStrategies` (`execution/strategies.ts`) reads that backend as a table. `host` is
-available on every platform unless `security.requireSandbox` is set, and the configured
-backend is available only when its probe passed. The migration runs once. An unsandboxed
-agent became `host`, and a sandboxed agent with no placement became `srt`. A placed,
-sandboxed agent takes its daemon's reported backend at that daemon's next registration,
-`srt` unless it is `microsandbox`. Until then its `execution` stays empty, and the daemon
-keeps reading `runInSandbox`. The table configuration, the probes and launch dispatch on
-`execution` are still designed.
+A session launches in its agent's strategy. One whose strategy is unavailable here
+is refused with the probe's reason, and nothing falls back to a weaker boundary;
+the old optional-sandbox downgrade is gone, as is the downgrade of an
+`externalExecution` runtime, which now runs only under `host`. `srt` and
+`microsandbox` sessions run in one process, each resolving its runtime from its own
+catalog: the host install for `host` and `srt`, the image's runtimes for
+`microsandbox`. Executor placement asks for the agent's strategy by name, and an
+`srt` session stays on its holder with a `no_candidate` verdict until R1 gives the
+facet an `srt` launcher.
+
+The Control Plane half landed first. An agent stores `execution`, a strategy slug,
+beside `runInSandbox`, and the two are written together. The Control Plane checks a
+new value against the strategies where the agent is placed, the daemon's table or
+for a group those at least one ready member offers, and refuses one it cannot run
+with 409 and the reason. The migration runs once: an unsandboxed agent became
+`host`, a sandboxed agent with no placement became `srt`, and a placed, sandboxed
+agent takes its daemon's reported backend at that daemon's next registration.
+Still designed: the birth strategy in the session's verdict and the executor's
+mismatch refusal (S2b), model selection against the strategy's catalog and the
+image's model probe (S2c), and the console's strategy picker (S3).
 
 ### Shared mounts and manual conversion
 
@@ -166,12 +176,11 @@ is supported by microsandbox, where `target` is an absolute guest path.
 The shared configuration list is kept outside the
 `sandbox.microsandbox` object.
 
-For example, SRT uses the same common configuration shape:
+For example, an SRT-friendly mapping uses the same common configuration shape:
 
 ```json
 {
   "sandbox": {
-    "backend": "srt",
     "env": {
       "PNPM_CONFIG_STORE_DIR": "/srv/agent-cache/pnpm"
     },
@@ -229,7 +238,6 @@ For example, mount a shared pnpm store under the session's XDG data directory:
 ```json
 {
   "sandbox": {
-    "backend": "microsandbox",
     "env": {
       "PNPM_CONFIG_STORE_DIR": "${HOME}/.local/share/pnpm/store"
     },
@@ -275,21 +283,27 @@ composition point. Do not add speculative backend branches throughout ACP.
 
 ### VM availability and configuration changes
 
-The current microsandbox integration supports Linux with usable KVM. Startup
-installs the pinned `microsandbox@0.7.2` package through the daemon's RuntimeStore,
-preserving its native platform package, and gives it a daemon-owned state home.
-It collects the cached images it no longer needs, prepares the image, boots a
-temporary VM, validates the runtime table, and checks stop/start before admitting
-VM launches. Checking `/dev/kvm` alone would not establish availability. With `requireSandbox=true`, an unavailable backend
-refuses startup. Otherwise the daemon can still serve unsandboxed agents, but a
-requested microsandbox launch fails explicitly, with no fallback to SRT or a host
-process. Existing optional-SRT fallback semantics are unchanged. The standalone
-`chat` command currently refuses microsandbox configuration; use daemon sessions.
+The current microsandbox integration supports Linux with usable KVM. The startup
+probe is the cheap one of the [strategy table](#strategy-table-implemented-on-the-daemon):
+it opens `/dev/kvm` and, when the runtime store already holds the pinned
+`microsandbox@0.7.2` package, checks its msb and libkrunfw, then recovers the
+state an earlier run left and collects the cached images no binding needs. The
+first session that uses the strategy installs the package through the daemon's
+RuntimeStore when needed, preserving its native platform package, prepares the
+image, boots a temporary VM, validates the runtime table, and checks stop/start.
+The table it read is recorded against the image's platform identity under the
+state directory, so a restart on an image the cache still holds boots no
+preparation VM; an image not read yet in this run fails a Console read of a
+retained VM once, and starts its preparation. A failed install or pull fails the
+session that asked and is retried by the next. A session in the strategy while it
+is unavailable is refused, with no fallback to SRT or a host process. The
+standalone `chat` command refuses an agent that runs in microsandbox; use daemon
+sessions.
 The upstream SDK requires its derived Unix socket paths to fit Linux's 108-byte
 limit, so an unusually long daemon root can fail preflight.
 
 This implementation adds no new backend for Linux hosts without usable KVM. They can
-keep SRT, including fail-closed startup with `security.requireSandbox=true`. The
+keep SRT, including fail-closed startup with `sandbox.host: false`. The
 new VM boundary requires bare metal or a VM exposing nested virtualization;
 Podman/runsc with systrap remains a future no-KVM option, not a hidden fallback.
 
@@ -345,10 +359,12 @@ by nothing a lookup finds. When a create collides and lookup confirms that no VM
 holds the name, the daemon repeats it as a replacing create, for the preparation
 VM and session VMs alike; a name a recorded VM holds is never replaced.
 
-Collection runs only on the microsandbox backend. A daemon switched to another
-backend keeps its microsandbox state, including stopped VMs and their disks, in
-case the backend is switched back, and logs a startup warning with the number of
-retained environments and how to reclaim the space.
+Collection runs whenever the microsandbox strategy is available, not only once a
+session used it. A daemon on which it is withdrawn or unavailable keeps its
+microsandbox state, including stopped VMs and their disks, in case it becomes
+available again, and logs a startup warning with the number of retained
+environments, why the strategy is out, and how to reclaim the space. An upgrade
+pre-pulls the next release's image only on a machine that has pulled one before.
 
 The ACP runtime, its two helper endpoints, daemon-run Git, workspace filesystem
 operations and skill publication use the same persistent Node shim and WebSocket
@@ -387,9 +403,9 @@ the paged skill receipt protocol and require duty admission before serving
 activation or explicit launch prepares a sandbox workspace.
 
 Kubernetes mode retains `K8sDriver`, its resource configuration, and image rollout.
-An explicitly configured local microsandbox backend
-with `--k8s` is rejected as conflicting configuration; an omitted/default local
-backend has no effect on pool execution. Sharing an image does not mean nesting
+A retired `sandbox.backend: "microsandbox"` or a `sandbox.host: false` with `--k8s` is
+rejected as conflicting configuration; the default table has no effect on pool
+execution, which probes no local strategy. Sharing an image does not mean nesting
 microsandbox inside every pool pod.
 
 ### Runtime discovery
@@ -410,8 +426,8 @@ Host and Sandbox apply the same display rule using their own binary availability
 
 The daemon probes host installations to learn their models and capabilities.
 These metadata probes use host SRT when available and otherwise run on the host;
-they do not submit a model turn. With microsandbox selected, `requireSandbox`
-continues to require VM isolation for agent sessions, without requiring host SRT.
+they do not submit a model turn. A machine that offers no `host` and has SRT confines
+them in it; a VM-only machine probes on the host, which requires no host SRT.
 The image table supplies the guest command and binary version. A candidate missing
 from that table remains visible with **Binary not installed in image** when it has
 a stored login. An installed image runtime without a stored login remains visible
@@ -1089,11 +1105,11 @@ workspace root, the identity token, the missing helpers, an exit promise and
 variable, the Git config location and `AC_MCP_ENDPOINT` move with it; the default
 is the image's layout.
 
-`effectiveStrategies` (`execution/strategies.ts`) is the effective strategy
-table: `host` and `microsandbox`, each available or unavailable with a reason.
-`microsandbox` reads the probe behind `sandboxUnavailable`. The executor facet
-reports its own reading of the table at registration, beside the machine's own table
-for its own sessions ([Strategy table](#strategy-table-partly-implemented)).
+`effectiveStrategies` (`execution/strategies.ts`) is the table the facet prepares
+from: `host` and `microsandbox` of the machine's own table
+(`machineStrategies`), each available or unavailable with a reason, with `host` on
+Linux alone. The executor facet reports it at registration, beside the machine's own
+table for its own sessions ([Strategy table](#strategy-table-implemented-on-the-daemon)).
 
 ### Sharing a machine with its group
 
@@ -1264,12 +1280,14 @@ Delivery is split into independently reviewable steps:
 5. **Pending — performance measurement:** run real projects at increasing session
    counts. Change the default only after compatibility and resource measurements
    support it.
-6. **Designed — strategy table and convergence:** the strategy table and the agent's
-   strategy choice ([above](#strategy-table-partly-implemented)), whose Control Plane
-   half has landed; local VMs launched through the in-process executor; `srt` as an SRT
-   boundary around the shim, local and remote (session-executors.md §5, §11, §12).
-   Local microsandbox Git and workspace files already cross the shim instead of agentd
-   exec.
+6. **Partly implemented — strategy table and convergence:** the strategy table and the
+   agent's strategy choice ([above](#strategy-table-implemented-on-the-daemon)): the
+   Control Plane half, then the daemon's table, probes, dispatch and refusal (S2a);
+   still designed are the birth strategy and mismatch refusal, the image's model probe,
+   the console picker, local VMs launched through the in-process executor, and `srt` as
+   an SRT boundary around the shim, local and remote (session-executors.md §5, §11,
+   §12). Local microsandbox Git and workspace files already cross the shim instead of
+   agentd exec.
 
 Implementation status above does not establish successful end-to-end daemon
 execution. Pull requests that reach this path boot one real VM in CI
@@ -1283,7 +1301,7 @@ evidence, with the following acceptance checks:
 
 | Area                       | Required evidence                                                                                                                                                                                                                                                           |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Existing behavior          | Default SRT, required/optional sandbox policy, and Kubernetes execution remain usable. No-KVM behavior is explicit.                                                                                                                                                         |
+| Existing behavior          | The default table, a table without `host`, refusal of an unavailable strategy, and Kubernetes execution remain usable. No-KVM behavior is explicit.                                                                                                                         |
 | Mounts                     | SRT accepts equal normalized paths and rejects remapping; read-only is the default and writable mounts reach native tools. Verify nested/duplicate entries, VM guest targets and mount flags, package-cache access, and host-data preservation on retirement.               |
 | Image and complete session | Explicit image preparation, ACP initialize/new/load, output, cancellation, cleanup, and a real native-tool turn succeed. Verify the release image default, explicit overrides, and metadata-free development builds.                                                        |
 | Docker                     | Compose and Testcontainers work, including DNS, random ports, bind mounts, build cache, and cleanup helpers. Two sessions use the same internal ports.                                                                                                                      |

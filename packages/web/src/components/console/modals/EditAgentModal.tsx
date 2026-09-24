@@ -32,6 +32,7 @@ import { Button, Icon, Toggle } from '@/components/ui'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { useModal } from '@/components/console/ModalProvider'
 import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
+import { DecisionChainHost, useDecisionChainHost } from '@/components/console/decisions/DecisionChainControls'
 import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 import { editAgentCapabilitySource, editAgentDaemonChoices, preselectPlacementReset } from './edit-agent-daemon-choice'
 import { storedModelAfterPick } from './fallback-model'
@@ -190,6 +191,7 @@ export default function EditAgentModal({
   const [sandboxUnavailable, setSandboxUnavailable] = useState(agent.sandboxUnavailable ?? null)
   const [repairPlacement, setRepairPlacement] = useState(false)
   const [saving, setSaving] = useState(false)
+  const chain = useDecisionChainHost()
   const [err, setErr] = useState<string | null>(null)
   const fetched = useRef(false)
 
@@ -809,31 +811,33 @@ export default function EditAgentModal({
             </section>
 
             <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
-              <ModelSelectionField
-                agentId={agent.id}
-                value={modelSelection}
-                onChange={setModelSelection}
-                onValidityChange={setModelSelectionValid}
-                fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
-                source={daemon}
-                runtimes={runtimeOptions}
-                runInSandbox={effectiveRunInSandbox}
-                onFallbackChange={(target) => {
-                  if (target.runtime !== runtime) onRuntimeChange(target.runtime)
-                  setModel((stored) => storedModelAfterPick(target, runtime, selectedModel, stored))
-                  setEffort(
-                    (current) =>
-                      target.effort ??
-                      resolveEffortForModel(
-                        target.runtime,
-                        modelCapability(daemon, target.runtime, target.model),
-                        current
-                      )
-                  )
-                  if (target.permissionMode !== undefined) setPermissionMode(target.permissionMode)
-                  if (target.fastMode !== undefined) setFastMode(target.fastMode)
-                }}
-              />
+              <DecisionChainHost value={chain.host}>
+                <ModelSelectionField
+                  agentId={agent.id}
+                  value={modelSelection}
+                  onChange={setModelSelection}
+                  onValidityChange={setModelSelectionValid}
+                  fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
+                  source={daemon}
+                  runtimes={runtimeOptions}
+                  runInSandbox={effectiveRunInSandbox}
+                  onFallbackChange={(target) => {
+                    if (target.runtime !== runtime) onRuntimeChange(target.runtime)
+                    setModel((stored) => storedModelAfterPick(target, runtime, selectedModel, stored))
+                    setEffort(
+                      (current) =>
+                        target.effort ??
+                        resolveEffortForModel(
+                          target.runtime,
+                          modelCapability(daemon, target.runtime, target.model),
+                          current
+                        )
+                    )
+                    if (target.permissionMode !== undefined) setPermissionMode(target.permissionMode)
+                    if (target.fastMode !== undefined) setFastMode(target.fastMode)
+                  }}
+                />
+              </DecisionChainHost>
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
                 <RuntimeChatField checked={allowRuntimeChangesInChat} onChange={setAllowRuntimeChangesInChat} />
                 <SandboxField
@@ -976,13 +980,17 @@ export default function EditAgentModal({
       )}
       <div className="modalfoot">
         <div className="flex-1" />
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="ghost" onClick={() => chain.leave(false) || onClose()}>
           {t('cancel')}
         </Button>
         <Button
           variant={forceMove ? 'danger' : 'primary'}
-          disabled={saving || !loaded || sourceBlocksSafeMove || (validateModelSelection && !modelSelectionValid)}
-          onClick={() => void save()}
+          disabled={
+            chain.depth
+              ? saving
+              : saving || !loaded || sourceBlocksSafeMove || (validateModelSelection && !modelSelectionValid)
+          }
+          onClick={() => chain.leave(true) || void save()}
         >
           <Icon name={forceMove ? 'triangle-alert' : 'check'} size={15} />
           {saving

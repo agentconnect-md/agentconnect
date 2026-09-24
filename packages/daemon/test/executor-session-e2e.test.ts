@@ -17,7 +17,12 @@ import { ExecutorPlane } from '../src/execution/executor-plane.js'
 import type { PlacementChoice } from '../src/execution/executor-placement.js'
 import { hostShimEnv } from '../src/execution/host-shim.js'
 import type { PlaneLaunch } from '../src/execution/plane.js'
-import { effectiveStrategies, type SessionSeed, type StrategyLauncher } from '../src/execution/strategies.js'
+import {
+  effectiveStrategies,
+  machineStrategies,
+  type SessionSeed,
+  type StrategyLauncher
+} from '../src/execution/strategies.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
 import { ShimClient } from '../src/shim/client.js'
@@ -162,7 +167,9 @@ describe('a session on another machine of the group', () => {
       share: true,
       ...(runtimeLaunch ? { runtimeLaunch } : {}),
       strategies: () => ({
-        ...effectiveStrategies({ microsandbox: { configured: false } }),
+        ...effectiveStrategies({
+          table: machineStrategies({ offered: { host: true, srt: true, microsandbox: false }, unavailable: {} })
+        }),
         host: { available: true }
       }),
       capacity: () => 4,

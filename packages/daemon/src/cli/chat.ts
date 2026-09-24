@@ -10,7 +10,7 @@ import { memoryKindOf, memoryProviderFor } from '../memory/provider.js'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
 import { configureWorkspaceGitOrigins } from '../workspace/git-origin-policy.js'
 import { AcpHost } from '../acp/acp-host.js'
-import { effectiveRunInSandbox } from '../launch/prepare.js'
+import { agentStrategyOf } from '../execution/strategies.js'
 import { detectSandbox } from '../acp/sandbox.js'
 import { agentHostKey } from '../acp/host-key.js'
 import { resolveRoot } from '../paths.js'
@@ -61,15 +61,24 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     optional: true,
     overrides: { agentsDir: opts.agentsDir }
   })
-  if (cfg.sandbox.backend === 'microsandbox') {
-    throw new Error('chat does not support microsandbox yet; use a daemon session with this sandbox backend')
-  }
   configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
-  // Validate operator mounts before selecting or probing a runtime.
-  const mounts = normalizeSandboxMounts(cfg.sandbox.mounts)
+  const agent = selectAgent(cfg.agentsDir!, opts.agentName)
+  // The agent's own strategy, refused rather than run in a weaker one (session-executors.md §5); a VM needs the daemon.
+  const strategy = agentStrategyOf(agent, cfg.sandbox.backend)
+  if (strategy === 'microsandbox') {
+    throw new Error('chat does not support microsandbox yet; use a daemon session for an agent that runs in it')
+  }
+  if (strategy !== 'host' && strategy !== 'srt') throw new Error(`chat cannot run the ${strategy} strategy`)
+  if (strategy === 'host' && !cfg.sandbox.host) throw new Error('sandbox.host is off on this daemon')
+  const runInSandbox = strategy === 'srt'
+  // Validate operator mounts before probing a runtime; only an srt launch reads them.
+  const mounts = runInSandbox ? normalizeSandboxMounts(cfg.sandbox.mounts) : []
   const operatorReadRoots = mounts.map((mount) => mount.source)
   const operatorWriteRoots = mounts.filter((mount) => mount.mode === 'writable').map((mount) => mount.source)
-  const agent = selectAgent(cfg.agentsDir!, opts.agentName)
+  const sandboxMechanism = cfg.sandbox.srt ? detectSandbox() : undefined
+  if (runInSandbox && !sandboxMechanism) {
+    throw new Error(cfg.sandbox.srt ? 'this host has no supported SRT mechanism' : 'sandbox.srt is off on this daemon')
+  }
   await persistSkillSandboxRequirement(root)
 
   const catalog = opts.resolveCatalog
@@ -101,12 +110,6 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
       )
     : selected
 
-  const sandboxMechanism = detectSandbox()
-  // Sandbox-optional principle (#36): the single-shot host follows the agent's OWN
-  // sandbox decision (and the explicit operator requireSandbox), never a forced
-  // skill-authority requirement — so chat runs on hosts with or without an OS
-  // sandbox instead of failing closed.
-  const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, sandboxMechanism, runtime)
   if (entry?.source === 'curated') {
     const admission = new CuratedRuntimeAdmission()
     const probe = opts.probeRuntimes ?? probeAllRuntimes
@@ -116,7 +119,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
         curated: true,
         hostFactory: defaultProbeHostFactory({ isolateAccountApps: cfg.security.isolateAccountApps }),
         runInSandbox,
-        requireSandbox: cfg.security.requireSandbox,
+        requireSandbox: runInSandbox,
         daemonRoot: root,
         agentsRoot: cfg.agentsDir,
         sandboxMechanism,

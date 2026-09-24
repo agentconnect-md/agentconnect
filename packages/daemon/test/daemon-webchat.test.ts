@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { emitWebchatUpdate, flushHeldWebchatText, type WebchatTurnOutput } from '../src/webchat/turn-output.js'
-import type { WebchatOutput, WebchatDone, RdChatEvent, RdMsgWebchat } from '@agentconnect.md/protocol'
+import type { WebchatOutput, WebchatDone, RdChatEvent, RdMsgWebchat, RdWebchatPost } from '@agentconnect.md/protocol'
 import { WAIT } from './wait-support.js'
 
 // A webchat conversation/agent target. agentId is a real UUID because the protocol
@@ -167,6 +167,7 @@ describe('Webchat workspace file links', () => {
       turnId: 'turn-1',
       index: 0,
       replyText: '',
+      replySegments: [],
       heldText: '',
       messageEmitted: false,
       sink: { output: (event) => events.push(event), done: () => {} }
@@ -205,14 +206,14 @@ describe('Webchat workspace file links', () => {
       const { wc, events, message } = live()
       emitWebchatUpdate(wc, text('[report](/workspace/report.md)'), resolveFileLink)
       emitWebchatUpdate(wc, boundary, resolveFileLink)
-      expect(events[0]?.event).toEqual({ kind: 'message', text: `[report](<${fileUrl}>)` })
+      expect(events[0]?.event).toMatchObject({ kind: 'message', text: `[report](<${fileUrl}>)` })
       expect(message()).toBe(wc.replyText)
       expect(events.map((o) => o.index)).toEqual([0, 1])
     }
   )
 
-  it('keeps definitions scoped to named messages and preserves existing message concatenation', () => {
-    const { wc, message } = live()
+  it('keeps definitions and post identities scoped to named messages', () => {
+    const { wc, events, message } = live()
     emitWebchatUpdate(
       wc,
       { ...text('[report][file]\n\n[file]: /workspace/report.md'), messageId: 'a' },
@@ -222,7 +223,10 @@ describe('Webchat workspace file links', () => {
     expect(message()).toBe(`[report](<${fileUrl}>)\n\nthen`)
     flushHeldWebchatText(wc, resolveFileLink)
     expect(message()).toBe(`[report](<${fileUrl}>)\n\nthen [file]`)
-    expect(wc.replyText).toBe(message())
+    expect(wc.replyText).toBe(`[report](<${fileUrl}>)\n\nthen [file]`)
+    expect(wc.replySegments.map((segment) => segment.text)).toEqual([`[report](<${fileUrl}>)\n\n`, 'then [file]'])
+    const posts = events.flatMap((o) => (o.event?.kind === 'message' ? [o.event.postId] : []))
+    expect(new Set(posts).size).toBe(2)
   })
 
   it.each([
@@ -291,7 +295,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     // Every chunk carries the conversation + turn and a per-turn monotonic index.
     expect(cp.outputs.every((o) => o.conversationId === CONV && o.turnId === turnId)).toBe(true)
     expect(cp.outputs.map((o) => o.index)).toEqual([...cp.outputs.keys()])
-    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toEqual([
+    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toMatchObject([
       { kind: 'thinking', text: 'let me think' },
       { kind: 'tool_call', toolCallId: 't1', title: 'Read file.ts', status: 'pending' },
       { kind: 'tool_update', toolCallId: 't1', status: 'completed' },
@@ -388,7 +392,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
     // The notice leads the stream, and the reply's indices continue from it rather than
     // restarting at 0 — a duplicate index is silently dropped by the browser's cursor.
-    expect(cp.outputs.filter((o) => o.event).map((o) => o.event)).toEqual([
+    expect(cp.outputs.filter((o) => o.event).map((o) => o.event)).toMatchObject([
       { kind: 'notice', text: '⏳ Preparing workspace…' },
       { kind: 'notice', text: '⏳ Starting sandbox…' },
       { kind: 'notice', text: '⏳ Preparing workspace…' },
@@ -466,7 +470,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await (daemon as any).dispatch(AGENT_ID, msg, undefined, { conversationId: CONV, turnId, sink: cp.sink })
 
     // The reply + interstitial events stream regardless of `none` …
-    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toEqual([
+    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toMatchObject([
       { kind: 'thinking', text: 'thinking' },
       { kind: 'tool_call', toolCallId: 't1', title: 'Read file.ts', status: 'pending' },
       { kind: 'message', text: 'here is the answer' }
@@ -517,7 +521,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await (daemon as any).dispatch(AGENT_ID, msg, undefined, { conversationId: CONV, turnId, sink: cp.sink })
 
     // Only the non-empty title reaches the live client; the reply follows.
-    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toEqual([
+    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toMatchObject([
       { kind: 'session_info', title: 'Roll back the deploy' },
       { kind: 'message', text: 'done' }
     ])
@@ -595,7 +599,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
     expect(
       cp.outputs.filter((output) => output.event && output.event.kind !== 'notice').map((output) => output.event)
-    ).toEqual([
+    ).toMatchObject([
       { kind: 'session_info', title: 'Inspect startup state' },
       { kind: 'message', text: 'done' }
     ])
@@ -1384,7 +1388,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
     expect(attempt).toBe(2) // one failed start, one that stuck
     // Clean completion — the reply streamed and the turn closed with NO error field.
-    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toEqual([
+    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toMatchObject([
       { kind: 'message', text: 'recovered reply' }
     ])
     expect(cp.dones).toEqual([{ conversationId: CONV, turnId, stopReason: 'end_turn' }])
@@ -1546,6 +1550,54 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     }[]
     const botText = rows.filter((r) => r.sender === AGENT_ID && r.kind === 'text').map((r) => r.text)
     expect(botText).toContain('the reply')
+    await daemon.stop()
+  })
+
+  it('commits separate ACP replies as separate posts with the same identities shown live', async () => {
+    const { factory } = streamingHost([
+      { ...text('First update.'), messageId: 'first' },
+      toolCall('t1', 'Read file.ts', 'completed'),
+      { ...text('Second update.'), messageId: 'second' }
+    ])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+    const posts: RdWebchatPost[] = []
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const msgId = `webchat:${CONV}`
+    await (daemon as any).dispatch(
+      AGENT_ID,
+      {
+        msgId,
+        traceId: turnId,
+        source: 'user',
+        platform: 'webchat',
+        channel: CONV,
+        sender: { id: 'alice', isBot: false },
+        text: 'ask',
+        mentionedBots: [],
+        isDm: true,
+        trigger: 'dm'
+      },
+      undefined,
+      { conversationId: CONV, turnId, sink: cp.sink, postSink: (post: RdWebchatPost) => posts.push(post) }
+    )
+
+    const rows = (await (daemon as any).store.threadTranscript(CONV, msgId)) as {
+      sender: string
+      kind: string
+      text: string
+      postId?: string
+    }[]
+    const replies = rows.filter((row) => row.sender === AGENT_ID && row.kind === 'text')
+    const live = cp.outputs.flatMap((output) => (output.event?.kind === 'message' ? [output.event] : []))
+    expect(replies.map((row) => row.text)).toEqual(['First update.', 'Second update.'])
+    expect(posts.map((post) => post.post.text)).toEqual(replies.map((row) => row.text))
+    expect(live.map((event) => event.postId)).toEqual(replies.map((row) => row.postId))
+    expect(posts.map((post) => post.post.postId)).toEqual(replies.map((row) => row.postId))
+    expect(posts[0]!.post.author).not.toHaveProperty('hopCount')
+    expect(posts[1]!.post.author).toHaveProperty('hopCount')
     await daemon.stop()
   })
 

@@ -1,6 +1,8 @@
 'use client'
 
+import type { ReactNode } from 'react'
 import { Icon } from '@/components/ui'
+import { useHoverCard } from '@/components/ui/HoverCard'
 
 // The one Decision chip every By decision row carries: `split | +` until bound, then `split name ✎ | ×`.
 export function DecisionChip({
@@ -12,7 +14,8 @@ export function DecisionChip({
   warning,
   remove,
   openProps,
-  fill = false
+  fill = false,
+  hover
 }: {
   /** The bound Decision's name; null renders the empty pair. */
   name: string | null
@@ -25,11 +28,14 @@ export function DecisionChip({
   warning?: 'lock' | 'triangle-alert'
   /** The × segment of a bound chip; omit where the viewer cannot stop it. */
   remove?: { label: string; title?: string; onClick(): void; busy?: boolean; failed?: boolean }
-  /** `data-*` locators for the open control. */
-  openProps?: Record<`data-${string}`, string>
+  /** `data-*` locators and `aria-*` state for the open control, such as a menu trigger's. */
+  openProps?: Record<`data-${string}` | `aria-${string}`, string | boolean | undefined>
   /** Stretch a bound chip across its row, as in a menu. */
   fill?: boolean
+  /** A bound chip's hover card content. */
+  hover?: ReactNode
 }) {
+  const card = useHoverCard()
   if (name === null) {
     return (
       <button
@@ -63,7 +69,11 @@ export function DecisionChip({
         title={title}
         aria-haspopup="dialog"
         disabled={disabled}
-        onClick={onOpen}
+        {...(hover ? card.triggerProps : {})}
+        onClick={() => {
+          card.hide()
+          onOpen()
+        }}
         {...openProps}
         className={`inline-flex min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent px-[7px] disabled:cursor-default ${fill ? 'flex-1' : ''}`}
       >
@@ -93,6 +103,7 @@ export function DecisionChip({
           <Icon name={remove.failed ? 'triangle-alert' : 'x'} size={11} />
         </button>
       )}
+      {hover && card.card(hover)}
     </span>
   )
 }

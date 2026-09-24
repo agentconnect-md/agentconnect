@@ -23,6 +23,13 @@ describe('WebchatOutput — event / status framing', () => {
     expect(r.success).toBe(true)
   })
 
+  it('preserves optional reply segment and post identities', () => {
+    const event = { kind: 'message', text: 'hi', segmentId: CONV, postId: TURN }
+    const parsed = WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 0, event })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.event).toEqual(event)
+  })
+
   it('accepts a plan snapshot, priority and all', () => {
     const r = WebchatOutput.safeParse({
       conversationId: CONV,

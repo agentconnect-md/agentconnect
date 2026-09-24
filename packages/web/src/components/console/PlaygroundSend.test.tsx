@@ -1324,6 +1324,28 @@ describe('mid-turn steering', () => {
     socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
   const feed = (socket: SteerSocket, message: unknown) => socket.onmessage?.({ data: JSON.stringify(message) })
 
+  it('keeps consecutive reply messages separate even without a tool event between them', async () => {
+    const { socket, turnId } = await openSteerableStream()
+    const first = '11111111-1111-4111-8111-111111111111'
+    const second = '22222222-2222-4222-8222-222222222222'
+    act(() => {
+      for (const [index, text, postId] of [
+        [1, 'First ', first],
+        [2, 'message', first],
+        [3, 'Second', second]
+      ] as const)
+        feed(socket, {
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index, event: { kind: 'message', text, segmentId: postId, postId } }
+        })
+      feed(socket, { type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 3 } })
+    })
+    expect(getLiveSteps('s1').filter((step) => step.kind === 'done')).toMatchObject([
+      { text: 'First message', postId: first },
+      { text: 'Second', postId: second }
+    ])
+  })
+
   it('restores two refused steers in their send order, ahead of a later queued message', async () => {
     const { socket } = await openSteerableStream()
     await act(async () => {

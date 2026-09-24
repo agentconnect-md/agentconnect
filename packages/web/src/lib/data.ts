@@ -1162,6 +1162,10 @@ export type ElicitAnswerValue = string | string[] | number | Record<string, stri
 export interface SessionStep {
   kind: LaneKind
   who?: string
+  /** Keep a confirmed live prompt as a reconciliation anchor without showing it twice. */
+  hidden?: boolean
+  /** One streamed message segment; consecutive ACP messages never share this id. */
+  segmentId?: string
   /** Stable identity of the turn this step belongs to — the wire/user turnId for a live webchat
    *  turn, or a minted id for a standalone step (a locally-pushed warning is its own trivial
    *  turn). Guaranteed present: `stampStep` mints one when a producer omits it, so consumers

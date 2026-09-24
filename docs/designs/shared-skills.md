@@ -743,10 +743,10 @@ The implemented surface follows `McpServersCard`:
   host is an operator-trusted same-user principal; integrity against that host is
   not an isolation guarantee. Shared skills therefore do not implicitly require
   every ACP host, runtime probe, model enumerator, direct CLI chat, or raw ACP
-  evaluation to use the Linux SRT/bwrap sandbox. Per-agent **Run in sandbox** and
-  explicit daemon-wide `security.requireSandbox` policy remain the operator's
-  isolation controls. The skills CLI and other narrowly untrusted helpers retain
-  their own audited isolation cells.
+  evaluation to use the Linux SRT/bwrap sandbox. The agent's execution strategy
+  and the daemon's strategy table (`sandbox.host: false` withdraws unsandboxed
+  sessions) remain the operator's isolation controls. The skills CLI and other
+  narrowly untrusted helpers retain their own audited isolation cells.
 - **Separate-root deployment constraint:** separate daemon roots do not share
   the SQLite workspace-authority database or active-agent roster. Operators must
   not place another daemon root or another daemon's `agentsDir` inside an

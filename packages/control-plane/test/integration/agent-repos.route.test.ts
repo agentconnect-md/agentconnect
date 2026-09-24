@@ -16,6 +16,9 @@
  *    oracle); viewer-role callers get 403 on writes;
  *  - `PATCH` upgrades a grant in place and rejects a downgrade; `DELETE`: 204
  *    then an empty list; a foreign or unknown row id reads 404;
+ *  - `materialize` (multi-repository-workspaces.md decision 13): `always` by
+ *    default, chosen on POST, changed on PATCH with a config-revision bump and
+ *    a re-projected spec; `decision` is refused until the selector ships;
  *  - github hooks may watch only workspace ∪ authorized repos: 409 before the
  *    grant, 200 after; the workspace repo needs no row; grandfathered rows
  *    keep working for non-binding edits but a repo CHANGE re-enters the gate.
@@ -923,6 +926,178 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const downgrade = await patch(a, agentId, created.id, { access: 'comment' })
     expect(downgrade.statusCode).toBe(409)
     expect((downgrade.json() as { message: string }).message).toMatch(/revoke and reauthorize/)
+  })
+
+  it('materialize defaults to `always`, is chosen on POST, and rides the spec beside each entry', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+
+    const dflt = await post(a, agentId, { repoFullName: 'acme/tools' })
+    expect(dflt.statusCode).toBe(200)
+    expect(dflt.json()).toMatchObject({ repoFullName: 'acme/tools', access: 'read', materialize: 'always' })
+
+    const onDemand = await post(a, agentId, {
+      repoFullName: 'acme/legacy',
+      access: 'comment',
+      materialize: 'on-demand'
+    })
+    expect(onDemand.statusCode).toBe(200)
+    expect(onDemand.json()).toMatchObject({ repoFullName: 'acme/legacy', access: 'comment', materialize: 'on-demand' })
+    // The Prisma member is `on_demand`; its `@map` keeps the column on the wire spelling.
+    const stored = await prisma.agentRepoAuthorization.findUniqueOrThrow({
+      where: { id: (onDemand.json() as { id: string }).id }
+    })
+    expect(stored.materialize).toBe('on_demand')
+
+    // A row written without the column — every grant the migration backfilled — lists as `always`.
+    await prisma.agentRepoAuthorization.create({
+      data: { agentId, provider: 'github', repoId: 555n, repoFullName: 'acme/extra', access: 'read' }
+    })
+    const rows = (await list(a, agentId)).json() as Array<{ repoFullName: string; materialize: string }>
+    expect(rows.map((r) => [r.repoFullName, r.materialize])).toEqual([
+      ['acme/tools', 'always'],
+      ['acme/legacy', 'on-demand'],
+      ['acme/extra', 'always']
+    ])
+
+    // The projection carries the choice beside each entry, in the projection's own order.
+    expect(spy.upserts).toHaveLength(2)
+    expect(spy.upserts[1]!.spec.workspace).toMatchObject({
+      additionalRepos: [
+        { repoFullName: 'acme/legacy', repoId: '999', provider: 'github', materialize: 'on-demand' },
+        { repoFullName: 'acme/tools', repoId: '111', provider: 'github', materialize: 'always' }
+      ]
+    })
+
+    await vi.waitFor(async () => {
+      const audits = await prisma.auditEvent.findMany({ where: { kind: 'agent_repo_change', agentId } })
+      expect(audits.map((e) => (e.details as { materialize: string }).materialize).sort()).toEqual([
+        'always',
+        'on-demand'
+      ])
+    })
+  })
+
+  it('PATCH materialize re-projects the spec at an advanced revision and audits; an access-only change does neither', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+    const revision = async () => (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).configRevision
+
+    const created = (await post(a, agentId, { repoFullName: 'acme/tools', access: 'read' })).json() as { id: string }
+    expect(spy.upserts).toHaveLength(1)
+    const afterCreate = await revision()
+
+    // Access alone: the tier is not on the spec, so no revision bump and no re-push.
+    const accessOnly = await patch(a, agentId, created.id, { access: 'comment' })
+    expect(accessOnly.statusCode).toBe(200)
+    expect(accessOnly.json()).toMatchObject({ id: created.id, access: 'comment', materialize: 'always' })
+    expect(await revision()).toBe(afterCreate)
+    expect(spy.upserts).toHaveLength(1)
+
+    // Materialize alone: projected content changed, so the revision advances in the same write.
+    const materializeOnly = await patch(a, agentId, created.id, { materialize: 'on-demand' })
+    expect(materializeOnly.statusCode).toBe(200)
+    expect(materializeOnly.json()).toMatchObject({ id: created.id, access: 'comment', materialize: 'on-demand' })
+    expect(await revision()).toBe(afterCreate + 1n)
+    expect(spy.upserts).toHaveLength(2)
+    expect(spy.upserts[1]!.spec.workspace).toMatchObject({
+      additionalRepos: [{ repoFullName: 'acme/tools', repoId: '111', materialize: 'on-demand' }]
+    })
+    expect(BigInt(spy.upserts[1]!.spec.configRevision!)).toBeGreaterThan(BigInt(spy.upserts[0]!.spec.configRevision!))
+
+    // The same value again is a no-op: no bump, no push.
+    expect((await patch(a, agentId, created.id, { materialize: 'on-demand' })).statusCode).toBe(200)
+    expect(await revision()).toBe(afterCreate + 1n)
+    expect(spy.upserts).toHaveLength(2)
+
+    // Both at once: the tier rises and the row returns to `always`.
+    const both = await patch(a, agentId, created.id, { access: 'write', materialize: 'always' })
+    expect(both.statusCode).toBe(200)
+    expect(both.json()).toMatchObject({ id: created.id, access: 'write', materialize: 'always' })
+    expect(await revision()).toBe(afterCreate + 2n)
+    expect(spy.upserts).toHaveLength(3)
+    expect(spy.upserts[2]!.spec.workspace).toMatchObject({
+      additionalRepos: [{ repoFullName: 'acme/tools', materialize: 'always' }]
+    })
+
+    // An empty body has nothing to update.
+    expect((await patch(a, agentId, created.id, {})).statusCode).toBe(400)
+
+    await vi.waitFor(async () => {
+      const audits = await prisma.auditEvent.findMany({ where: { kind: 'agent_repo_change', agentId } })
+      const changes = audits
+        .map((e) => e.details as { previousMaterialize?: string; materialize?: string; repoFullName: string })
+        .filter((d) => d.previousMaterialize !== undefined)
+        .sort((x, y) => x.previousMaterialize!.localeCompare(y.previousMaterialize!))
+      expect(changes).toEqual([
+        {
+          repoAuthId: created.id,
+          provider: 'github',
+          repoFullName: 'acme/tools',
+          previousMaterialize: 'always',
+          materialize: 'on-demand'
+        },
+        {
+          repoAuthId: created.id,
+          provider: 'github',
+          repoFullName: 'acme/tools',
+          previousMaterialize: 'on-demand',
+          materialize: 'always'
+        }
+      ])
+    })
+  })
+
+  it('a denied tier leaves materialize untouched when both are sent', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const a = app({
+      githubUserAuthz: {
+        assertAccess: async (_u: string, _i: unknown, _o: string, _r: string, need: 'read' | 'write') => {
+          if (need === 'write')
+            throw new UserAuthzDeniedError('you do not have write access to acme/tools', 'USER_NO_ACCESS')
+          return { permission: 'read', repoPrivate: true, canRead: true, canWrite: false, identityRequired: false }
+        }
+      } as never
+    })
+
+    const created = (await post(a, agentId, { repoFullName: 'acme/tools', access: 'read' })).json() as { id: string }
+    const denied = await patch(a, agentId, created.id, { access: 'write', materialize: 'on-demand' })
+    expect(denied.statusCode).toBe(403)
+    expect(await prisma.agentRepoAuthorization.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+      access: 'read',
+      materialize: 'always'
+    })
+  })
+
+  it('`decision` is refused on POST and PATCH until the selector ships', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const a = app()
+
+    const refusedCreate = await post(a, agentId, { repoFullName: 'acme/tools', materialize: 'decision' })
+    expect(refusedCreate.statusCode).toBe(400)
+    expect((refusedCreate.json() as { message: string }).message).toMatch(/not available yet/)
+    expect(await prisma.agentRepoAuthorization.count()).toBe(0)
+
+    const created = (await post(a, agentId, { repoFullName: 'acme/tools', access: 'read' })).json() as { id: string }
+    const refusedPatch = await patch(a, agentId, created.id, { materialize: 'decision' })
+    expect(refusedPatch.statusCode).toBe(400)
+    expect((refusedPatch.json() as { message: string }).message).toMatch(/not available yet/)
+    // Refused before the tier is considered: neither field moved.
+    expect((await patch(a, agentId, created.id, { access: 'write', materialize: 'decision' })).statusCode).toBe(400)
+    expect(await prisma.agentRepoAuthorization.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+      access: 'read',
+      materialize: 'always'
+    })
   })
 
   it('identity assertion (when wired): read/comment tiers need read, write needs write; denial reads 403 + code', async () => {

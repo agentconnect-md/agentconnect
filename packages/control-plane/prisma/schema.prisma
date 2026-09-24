@@ -995,6 +995,13 @@ enum RepoAccess {
   write // all write — secondary working repo
 }
 
+/// How a session stands in one authorized repository (multi-repository-workspaces.md decision 13).
+enum RepoMaterialization {
+  always // cloned as a secondary root on every session
+  decision // a candidate for the per-session selector
+  on_demand @map("on-demand") // credentials only; the agent clones during the turn
+}
+
 /// Explicit grant of one code-host repository to an agent (issue #457,
 /// agent-multi-repo-authorization.md; gitlab-com-integration.md §8.3). Anchored on
 /// the agent, NOT on hooks — creating a hook must never silently widen
@@ -1014,6 +1021,7 @@ model AgentRepoAuthorization {
   repoId BigInt // numeric repository/project id — the match key
   repoFullName String // "owner/repo" or "group/subgroup/project" — display + case-insensitive fast-path; refreshed on rename detection
   access RepoAccess
+  materialize RepoMaterialization @default(always) // projected beside the entry; a change re-projects the spec
   createdByUserId String? // audit: who authorized (the identity-assertion subject)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 

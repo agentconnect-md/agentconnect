@@ -104,6 +104,8 @@ export function microsandboxLauncher(deps: {
   runtimes?: () => Record<string, RuntimeDef>
   /** Test seam: this machine's environment, which the preparers read. */
   hostEnv?: NodeJS.ProcessEnv
+  /** Prepares the image on its first use, since the startup probe pulls none (session-executors.md §5). */
+  ready?: () => Promise<void>
 }): StrategyLauncher {
   const required = (): MicrosandboxManager => {
     const manager = deps.manager()
@@ -113,6 +115,8 @@ export function microsandboxLauncher(deps: {
   return {
     seedsHome: true,
     start: async ({ daemonRoot, sessionLeaf, log }) => {
+      // The first hosted VM may be this machine's first: it installs msb and prepares the image before any environment starts.
+      await deps.ready?.()
       const manager = required()
       const directory = join(daemonRoot, SESSIONS_DIR, sessionLeaf)
       // The mount source must exist before the VM starts.
