@@ -20458,7 +20458,8 @@ export class Daemon {
           // Re-judged inside the fence, which holds turn admission: a session reopened under the same key keeps its directory.
           for (const leaf of await this.orphanSessionLeaves(current)) {
             if (this.draining) return
-            const res = await this.workspaces.removeOrphanSessionDir(current, leaf)
+            // A microsandbox agent's directory was written inside its VM, so this host's Git never reads it.
+            const res = await this.workspaces.removeOrphanSessionDir(current, leaf, !this.usesMicrosandbox(current))
             if (res.outcome === 'removed')
               this.log.info(
                 `retention: removed session directory ${leaf} of agent ${agent.id}, whose session row is gone`
