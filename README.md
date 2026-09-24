@@ -96,7 +96,7 @@ AgentConnect turns that glue into a platform.
 
 Teams use it to:
 
-- **Triage issues together.** Use Decisions to route new support conversations
+- **Triage issues together.** Use Jev to route new support conversations
   to the right specialists. People and agents investigate in one shared thread
   and keep the fix and verification visible from start to finish.
 - **Support across trusted workspaces.** Start a support conversation in
@@ -108,7 +108,7 @@ Teams use it to:
   a GitHub subscription in Slack, webhooks, or schedules. Let agents assess the
   impact, prepare and test relevant updates, and bring them to the team for
   review.
-- **Run customized code review.** Use Decisions to select the reviewers for
+- **Run customized code review.** Use Jev to select the reviewers for
   new GitHub pull requests and the runtime and model for each new review
   session. Bring in general, architecture, or security reviewers with their
   own instructions, repository access, tools, and sandbox policies.
