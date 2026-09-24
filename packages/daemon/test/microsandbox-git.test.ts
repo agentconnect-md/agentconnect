@@ -1,11 +1,14 @@
-import { execFile, execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import type { MicrosandboxEnvironment, MicrosandboxManager } from '../src/microsandbox/driver.js'
 import { microsandboxGitRunner } from '../src/microsandbox/git.js'
-import type { MicrosandboxExecute } from '../src/microsandbox/exec.js'
-import { GitExecError } from '../src/workspace/command-git-runner.js'
+import type { MicrosandboxShim } from '../src/microsandbox/shim.js'
+import type { ShimRequester } from '../src/shim/channels.js'
+import { createExecHandler } from '../src/shim/exec-handler.js'
+import { GitExecError, type GitExecPayload } from '../src/shim/git-exec.js'
 import { GitTransportError } from '../src/workspace/git-runner.js'
 
 const roots: string[] = []
@@ -21,98 +24,104 @@ function repository(): string {
   return root
 }
 
-const executeLocally: MicrosandboxExecute = async (command, args, options) => {
-  expect(command).toBe('/bin/sh')
-  return await new Promise((resolve, reject) => {
-    execFile(
-      command,
-      args,
-      {
-        encoding: 'utf8',
-        cwd: options?.cwd,
-        env: options?.env,
-        timeout: options?.timeoutMs,
-        signal: options?.abort,
-        maxBuffer: options?.maxBytes
-      },
-      (error, stdout, stderr) => {
-        if (error && typeof error.code !== 'number') return reject(error)
-        resolve({ exitCode: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })
-      }
-    )
-  })
+const environment = (root: string): MicrosandboxEnvironment => ({
+  id: 'agent/session-000000000000000000000000',
+  mounts: [],
+  workspaceRoot: root
+})
+
+// The VM's shim, served by the exec handler that ships in it.
+function vm(root: string, seen: { capability: string; payload: GitExecPayload; abort?: AbortSignal }[] = []) {
+  const handle = createExecHandler({ workspaceRoot: root, log: { info: () => {}, warn: () => {} } })
+  const session: ShimRequester = {
+    request: async (capability, payload, options) => {
+      seen.push({ capability, payload: payload as GitExecPayload, abort: options?.abort })
+      return handle(capability, payload, options?.abort)
+    }
+  }
+  const manager: Pick<MicrosandboxManager, 'withShim'> = {
+    withShim: async (target, work) => {
+      expect(target.workspaceRoot).toBe(root)
+      return work({ session } as unknown as MicrosandboxShim)
+    }
+  }
+  return manager
 }
 
-describe.skipIf(process.platform === 'win32')('microsandbox native Git', () => {
-  it('executes Git with mapped replacement environment, status parsing, and bounded reads', async () => {
+describe.skipIf(process.platform === 'win32')('microsandbox Git over the VM shim', () => {
+  it('runs on the exec channel with the launch guest paths over a caller replacement env', async () => {
     const root = repository()
+    const seen: Parameters<typeof vm>[1] = []
     const abort = new AbortController()
-    const sourceEnv = { HOME: '/home/agent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
-    const env = { ...sourceEnv, HOME: root }
+    const launchEnv = {
+      HOME: join(root, '.home'),
+      PATH: process.env.PATH!,
+      XDG_CONFIG_HOME: join(root, '.config'),
+      AC_GITCRED_SOCKET: '/run/agentconnect/gitcred.sock',
+      LAUNCH_ONLY: '1'
+    }
     const runner = microsandboxGitRunner({
-      execute: async (command, args, options) => {
-        expect(options?.env).toEqual(env)
-        expect(options?.inheritEnv).toBe(false)
-        expect(options?.abort).toBe(abort.signal)
-        expect(options?.timeoutMs).toBe(120_000)
-        return executeLocally(command, args, options)
-      },
-      workspaceRoot: root,
+      manager: vm(root, seen),
+      environment: environment(root),
       cwd: root,
-      abort: abort.signal,
-      env: { INITIAL_ENV_MUST_NOT_SURVIVE: '1' },
-      mapEnv: (received) => {
-        expect(received).toEqual(sourceEnv)
-        return { ...received, HOME: root }
-      }
-    }).withEnv(sourceEnv)
-    const status = await runner.status()
-    expect(status.current).toBe('main')
-    expect(status.clean).toBe(false)
-    expect(status.files).toEqual([{ path: 'file with spaces.txt', index: '?', working_dir: '?' }])
-    const bounded = await runner.readBounded(['status', '--short'], 2)
-    expect(bounded.out.byteLength).toBe(2)
-    expect(bounded.overflow).toBe(true)
-  })
-
-  it('enforces argv and guest path boundaries without interpreting paths as shell source', async () => {
-    const root = repository()
-    const runner = microsandboxGitRunner({ execute: executeLocally, workspaceRoot: root, cwd: root })
-    await expect(runner.raw(['status', '-c', 'core.pager=unsafe'])).rejects.toThrow('argument -c is refused')
-    await expect(runner.raw(['clone', '--shared', root, '../escaped'])).rejects.toThrow('path escapes')
-    await expect(runner.raw(['clone', '--shared', root, '../escaped'])).rejects.toBeInstanceOf(GitTransportError)
-    const outside = repository()
-    mkdirSync(`${root}\n`)
-    roots.push(`${root}\n`)
-    await expect(
-      microsandboxGitRunner({ execute: executeLocally, workspaceRoot: `${root}\n`, cwd: root }).status()
-    ).rejects.toThrow('cwd escapes')
-    symlinkSync(outside, join(root, 'escape'))
-    await expect(
-      microsandboxGitRunner({ execute: executeLocally, workspaceRoot: root, cwd: join(root, 'escape') }).status()
-    ).rejects.toThrow('cwd escapes')
-    const target = join(root, 'spaces;$(touch marker)')
-    await runner.clone(root, target)
-    const nested = join(root, 'nested')
-    mkdirSync(nested)
-    await microsandboxGitRunner({ execute: executeLocally, workspaceRoot: root, cwd: nested }).clone(root, '../sibling')
-    await expect(runner.raw(['rev-parse', '--verify', 'missing'])).rejects.toBeInstanceOf(GitExecError)
-  })
-
-  it('reports stream overflow and distinguishes VM failures from Git exit codes', async () => {
-    const root = repository()
-    const runner = microsandboxGitRunner({
-      workspaceRoot: root,
-      execute: async () => ({ exitCode: 0, stdout: 'x'.repeat(65_537), stderr: '' })
+      env: launchEnv,
+      abort: abort.signal
     })
-    expect(await runner.readBounded(['status', '--short'], 2)).toEqual({ out: Buffer.alloc(0), overflow: true })
-    await expect(
-      microsandboxGitRunner({
-        workspaceRoot: root,
-        execute: async () => {
-          throw new Error('VM stopped')
+    expect((await runner.status()).current).toBe('main')
+    expect(seen.at(-1)).toMatchObject({
+      capability: 'exec',
+      payload: { cwd: root, env: launchEnv },
+      abort: abort.signal
+    })
+    const caller = {
+      HOME: '/host/home',
+      PATH: '/host/bin',
+      XDG_CONFIG_HOME: '/host/config',
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: '/dev/null'
+    }
+    const status = await runner.withEnv(caller).status()
+    expect(status.files).toEqual([{ path: 'file with spaces.txt', index: '?', working_dir: '?' }])
+    expect(seen.at(-1)!.payload.env).toEqual({
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      HOME: launchEnv.HOME,
+      PATH: launchEnv.PATH,
+      XDG_CONFIG_HOME: launchEnv.XDG_CONFIG_HOME,
+      AC_GITCRED_SOCKET: launchEnv.AC_GITCRED_SOCKET
+    })
+  })
+
+  it('keeps the shim output limit a bounded overflow', async () => {
+    const root = repository()
+    const env = { PATH: process.env.PATH!, GIT_CONFIG_GLOBAL: '/dev/null' }
+    const identity = ['-c', 'user.name=T', '-c', 'user.email=t@example.test']
+    execFileSync('git', [...identity, 'commit', '--allow-empty', '-q', '-m', 'x'.repeat(70_000)], { cwd: root })
+    const runner = microsandboxGitRunner({ manager: vm(root), environment: environment(root), cwd: root, env })
+    expect(await runner.readBounded(['log', '--max-count=1', '--format=%B'], 16)).toEqual({
+      out: Buffer.alloc(0),
+      overflow: true
+    })
+  })
+
+  it('reports a VM it could not reach as transport, and the shim answers as they came', async () => {
+    const root = repository()
+    const env = { PATH: process.env.PATH! }
+    const unreachable = microsandboxGitRunner({
+      manager: {
+        withShim: async () => {
+          throw new Error('microsandbox environment agent/session-000000000000000000000000 is stopping')
         }
-      }).status()
-    ).rejects.toBeInstanceOf(GitTransportError)
+      },
+      environment: environment(root),
+      cwd: root,
+      env
+    })
+    await expect(unreachable.status()).rejects.toBeInstanceOf(GitTransportError)
+    const runner = microsandboxGitRunner({ manager: vm(root), environment: environment(root), cwd: root, env })
+    const escape = runner.raw(['clone', '--shared', root, '../escaped'])
+    await expect(escape).rejects.toThrow('path escapes the workspace root')
+    await expect(escape).rejects.not.toBeInstanceOf(GitTransportError)
+    await expect(runner.raw(['rev-parse', '--verify', 'missing'])).rejects.toBeInstanceOf(GitExecError)
   })
 })

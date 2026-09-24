@@ -339,7 +339,7 @@ export async function startMicrosandboxShim(input: {
         subject,
         sandboxUid: sandbox.id,
         generation,
-        grants: ['acp', 'tunnel', 'read', 'skills', 'skills-wide', 'skills-receipts'],
+        grants: ['acp', 'exec', 'tunnel', 'read', 'skills', 'skills-wide', 'skills-receipts'],
         podName: subject
       },
       TIMEOUT_MS

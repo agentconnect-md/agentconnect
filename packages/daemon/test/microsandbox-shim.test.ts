@@ -263,7 +263,7 @@ describe('microsandbox shim', () => {
     const granted = (['acp', 'tunnel', 'read', 'skills', 'exec', 'materialize', 'automerge', 'probe'] as const).filter(
       (capability) => shim.session.hasCapability(capability)
     )
-    expect(granted).toEqual(['acp', 'tunnel', 'read', 'skills'])
+    expect(granted).toEqual(['acp', 'tunnel', 'read', 'skills', 'exec'])
   })
 
   // A hosted session's shim (session-executors.md §6): its holder is on another machine, and this one binds nothing.

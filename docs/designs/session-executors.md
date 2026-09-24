@@ -156,7 +156,10 @@ mode rather than a local one and a remote one
 
 - **ACP.** The driver starts the runtime **through the VM's shim**, with the same
   `createRemoteRuntime` a pool member uses against a pod. agentd's exec channel
-  carries the shim itself and daemon-run Git, and no runtime.
+  carries the shim itself and no runtime.
+- **Git and workspace files.** Daemon-run Git crosses the shim's `exec` channel
+  with the pool's `ShimGitRunner`, and workspace mutations cross its file channel,
+  so a rename is the guest's own.
 - **The tunnels.** The VM's `gitcred` and `mcp` endpoints are served by the shim's
   `TunnelHost` under the `tunnel` grant and proxied to the driving daemon's own
   sockets, and the guest helper endpoints — the git-credential socket variable and
@@ -200,9 +203,9 @@ Two things fall out. Lifecycle — create, start, stop, destroy, image pull — 
 local-backend call and must run on the executor, which is what the executor facet
 is for. And a guest's shim WebSocket survives a byte-forwarding hop unmodified,
 which is all the executor's pipe (§6) is. The per-exec cost in the table is not one
-the remote path pays: the daemon opens a fresh `AgentClient` per exec for the Git it
-runs through agentd, but a holder's Git rides the shim's exec channel inside the one
-WebSocket, as on the pool, and the executor holds one agentd stream per pipe.
+the shim path pays: daemon-run Git, local or remote, rides the shim's exec channel
+inside the one WebSocket, as on the pool, and the executor holds one agentd stream
+per pipe.
 
 ## 5. Execution strategies and capabilities
 
@@ -1198,10 +1201,10 @@ Git, workspace files and tunnels, the credential preparers, lifecycle.
 (§4), and a VM already carries a shim, so converging costs no memory. What still
 differs locally goes, in four steps that each land alone:
 
-1. **Git and workspace files over the shim.** Locally they run over agentd exec — a
-   shell wrapper around Git (`microsandbox/git.ts`) and a guest Python for renames
-   ([daemon-sandbox-backends.md](daemon-sandbox-backends.md) §3). They move to the
-   shim's exec and fs channels, which the pool and executors use. The shim is in the
+1. **Git and workspace files over the shim — landed.** Locally they ran over agentd
+   exec, a shell wrapper around Git and a guest Python for renames. They now cross
+   the shim's exec and fs channels, which the pool and executors use
+   ([daemon-sandbox-backends.md](daemon-sandbox-backends.md) §3). The shim is in the
    guest, so its rename is the guest's, and the stale cached view that motivated the
    Python does not arise.
 2. **The credential preparers move into the launcher**, out of the local launch
@@ -1273,8 +1276,8 @@ commits, including claim, sleep and orphan machinery this design does not need.
 About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
-**The 2026-09-24 revision** adds the following, none started. Each lands alone; S1–S3
-are one feature, and M1–M4 precede R1.
+**The 2026-09-24 revision** adds the following. M1 has landed and the rest have not
+started. Each lands alone; S1–S3 are one feature, and M1–M4 precede R1.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
