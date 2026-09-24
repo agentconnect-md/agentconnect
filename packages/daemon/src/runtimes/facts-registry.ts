@@ -3,7 +3,8 @@ import type {
   FactsMcpServer,
   FactsRuntimeProfile,
   McpTransportCapabilities,
-  RuntimeModelCatalog
+  RuntimeModelCatalog,
+  RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import type { Logger } from '../log.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -47,7 +48,7 @@ export interface RuntimeProbeLaunchContext {
   fakeHosts: boolean
   probe?: (runtimes: Record<string, RuntimeDef>, opts: ProbeOptions) => Promise<RuntimeProbeResult[]>
   sandboxMechanism?: SandboxMechanism
-  /** Operator policy: an externalExecution runtime is then refused, not downgraded. */
+  /** This machine offers no `host` and srt can run: an externalExecution runtime is then refused, not downgraded. */
   requireSandbox?: boolean
   daemonRoot: string
   agentsRoot: string | undefined
@@ -67,6 +68,11 @@ export interface RuntimeFactsHost {
   hostAvailable(runtimeId: string): boolean | undefined
   credentialsConfigured(runtimeId: string): boolean | undefined
   unavailableReason(runtimeId: string): FactsRuntimeProfile['unavailableReason']
+  /** The runtime under each strategy the machine offers (session-executors.md §5); `probed` is the host install's probe, which host and srt share. */
+  strategyEntries?(
+    runtimeId: string,
+    probed: { models?: string[]; modelsSource?: 'cached' | 'probed' }
+  ): RuntimeStrategyEntries | undefined
   admittedRuntimes(): Record<string, RuntimeDef>
   refreshAdmitted(): void
   reportedRuntimeIds(): string[]
@@ -178,6 +184,10 @@ export class RuntimeFactsRegistry {
     const hostAvailable = this.host.hostAvailable(id)
     const credentialsConfigured = this.host.credentialsConfigured(id)
     const hostVersion = hostAvailable === false ? '' : this.probedVersions.get(id) || this.versions[id] || ''
+    const strategies = this.host.strategyEntries?.(id, {
+      models: this.models.get(id),
+      modelsSource: this.modelsSource.get(id)
+    })
     return {
       runtime: id,
       version: this.host.imageVersion(id) || hostVersion,
@@ -193,6 +203,7 @@ export class RuntimeFactsRegistry {
       // Retain cached capabilities even when a failed probe empties the advertised models.
       modelCatalog: this.modelCatalog(id),
       ...(this.host.unavailableReason(id) ? { unavailableReason: this.host.unavailableReason(id) } : {}),
+      ...(strategies ? { strategies } : {}),
       ...(credentialsConfigured === false || this.authRequired.has(id) || this.authRequiredLive.has(id)
         ? { authRequired: true }
         : {})
@@ -378,12 +389,7 @@ export class RuntimeFactsRegistry {
     // With a hostFactory (unit tests use fake in-memory hosts) we don't spawn real
     // subprocesses unless a probe seam is injected.
     if (launch.fakeHosts && !launch.probe) return
-    // Runtime probes are ACP children under the same UID. Sandbox-optional
-    // principle (#36): probe sandboxed when a mechanism exists (launchFor below
-    // sets runInSandbox from the sandbox mechanism), but still probe UNSANDBOXED
-    // when none is available — otherwise curated runtimes are never admitted and
-    // their agents cannot run on a no-sandbox host. The explicit operator
-    // `security.requireSandbox` already refused boot without a mechanism.
+    // Probes run sandboxed where a mechanism exists and unsandboxed otherwise (#36), or curated runtimes would never be admitted on a host without one.
     if (this.probing) {
       if (includeOrdinary) this.ordinaryProbePending = true
       else this.curatedProbePending = true

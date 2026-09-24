@@ -206,9 +206,13 @@ export const AgentSchema = z.object({
   // off — the daemon seeds each integration's channel baseline silently, so only
   // channels joined AFTER the baseline (never a restart/re-list) trigger an intro.
   introduceOnJoin: z.boolean().default(false),
-  // Request an OS sandbox for this agent (issue #312). Daemon policy may force it
-  // on; an unavailable optional sandbox is ineffective. New agents default off.
+  // The legacy sandbox request, read only while `execution` is absent (session-executors.md §5).
   runInSandbox: z.boolean().default(false),
+  // The strategy this agent's sessions run in (§5); absent ⇒ the Control Plane has not migrated it, and `runInSandbox` decides.
+  execution: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{0,31}$/)
+    .optional(),
   // Org built-in preset marker (preset-agents.md §3.1), replicated from the CP via
   // AgentSpec.builtin. Gates preset-only behavior locally — including attaching
   // `agentconnect-admin` when the CP supplies a webchat entitlement. Never set by

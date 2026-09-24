@@ -934,6 +934,28 @@ describe('an on-demand clone directory is retired with its session (decision 20)
     expect(existsSync(join(clonesOf(agent, 'session-stray'), 'scratch.md'))).toBe(true)
   })
 
+  it.skipIf(process.platform === 'win32')(
+    'keeps an on-demand clone whose config could run a command, without running it',
+    async () => {
+      const agent = agentOnDemand()
+      serveAll(agent, { 'example-co/shared-library': 'main' })
+      const clone = await cloneInto(agent, 'session-unsafe', 'session')
+      const markerDir = mkdtempSync(join(tmpdir(), 'ac-on-demand-marker-'))
+      roots.push(markerDir)
+      const marker = join(markerDir, 'ran')
+      git(clone, ['config', 'filter.probe.clean', `touch '${marker}' && cat`])
+      mkdirSync(join(clone, '.git', 'info'), { recursive: true })
+      writeFileSync(join(clone, '.git', 'info', 'attributes'), '* filter=probe\n')
+
+      expect(await workspaces.removeOnDemandClones(agent, 'session-unsafe')).toEqual({
+        outcome: 'retained',
+        reason: 'unsafe-config'
+      })
+      expect(existsSync(marker)).toBe(false)
+      expect(existsSync(clone)).toBe(true)
+    }
+  )
+
   it('judges a shared session’s directory too, and keeps it in scope once the rows stop naming one', async () => {
     const agent = agentOnDemand()
     serveAll(agent, { 'example-co/shared-library': 'main' })

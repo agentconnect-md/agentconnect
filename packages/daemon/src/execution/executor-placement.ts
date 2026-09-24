@@ -5,8 +5,8 @@ import type { ExecutorCandidate, ExecutorCandidatesResult, SessionStayedHomeReas
 export interface PlacementAsk {
   /** The session's own `workspaceIsolation`: only a `session`-isolated one can be placed elsewhere (§2). */
   isolation: 'shared' | 'session' | undefined
-  /** The agent's ask, the `runInSandbox` boolean of v1: true ⇒ a sandboxing strategy, false ⇒ `host` (§5). */
-  runInSandbox: boolean
+  /** The agent's strategy slug (§5); a candidate must offer exactly it, never a stronger or weaker boundary. */
+  strategy: string
   /** The runtime this session runs; a candidate that cannot authenticate it is not one (§8). */
   runtime: string
   /** A managed-memory binding the Control Plane's boot-time flip has not reached yet; the predicate has no other memory condition (§7). */
@@ -25,14 +25,17 @@ export type Placement = { spread: PlacementChoice[] } | { stayedHome: SessionSta
 /** How long the CP must have gone without hearing from an executor before its environment counts as lost (§7, §13). */
 export const EXECUTOR_LOSS_GRACE_MS = 10 * 60_000
 
-/** The strategy a candidate offers for this ask: `host` when the agent asked for no sandbox, else the first sandboxing strategy its effective table has (§5). */
+/** The strategies a holder drives on another machine; `srt` stays on its holder until R1 gives the facet an srt launcher (§12). */
+const SPREADING_STRATEGIES: ReadonlySet<string> = new Set(['host', 'microsandbox'])
+
+/** Whether a session of this strategy may be placed on another member at all. */
+export function strategySpreads(strategy: string): boolean {
+  return SPREADING_STRATEGIES.has(strategy)
+}
+
+/** The strategy a candidate offers for this ask: the agent's own, when its effective table has it available (§5). */
 export function strategyFor(ask: PlacementAsk, candidate: ExecutorCandidate): string | undefined {
-  const available = (name: string): boolean => candidate.strategies[name]?.available === true
-  if (!ask.runInSandbox) return available('host') ? 'host' : undefined
-  // Sorted rather than table order, so two holders reading the same facts ask for the same thing.
-  return Object.keys(candidate.strategies)
-    .filter((name) => name !== 'host' && available(name))
-    .sort()[0]
+  return candidate.strategies[ask.strategy]?.available === true ? ask.strategy : undefined
 }
 
 /** Whether the candidate can authenticate the session's runtime — the `authRequired` its `facts/daemon-runtimes` already reports (§8). */
@@ -79,6 +82,8 @@ export function placeSession(input: {
   const { ask, answer, replacing } = input
   if (ask.isolation !== 'session') return { stayedHome: 'shared_session' }
   if (ask.memoryDaemonHomed) return { stayedHome: 'memory_daemon_homed' }
+  // No member can run it elsewhere yet, so no candidate is the honest verdict, whatever the CP would answer.
+  if (!strategySpreads(ask.strategy)) return { stayedHome: 'no_candidate' }
   if (!answer) return { stayedHome: 'control_plane_unreachable' }
   const holder: Fill = { hosted: input.holderHostedSessions, capacity: Math.max(0, input.holderCapacity) }
   const eligible: Array<{ fill: Fill; choice: PlacementChoice }> = []

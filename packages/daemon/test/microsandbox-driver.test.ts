@@ -6,6 +6,7 @@ import { runInNewContext } from 'node:vm'
 import { createHash } from 'node:crypto'
 import { decode, encode } from 'cborg'
 import type { ExecEvent, ModifyOptions } from 'microsandbox'
+import type { SecretBuilder } from 'microsandbox/native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   MicrosandboxManager,
@@ -311,23 +312,25 @@ function fakeSdk() {
                 data.placeholder = value
                 return entry
               },
-              allowHost(value: string) {
+              allow(value: string) {
                 data.host.push(value)
                 return entry
               },
-              injectBasicAuth(value: boolean) {
+              // Headers only: a key in a query string or body is never substituted.
+              substituteInHeaders(value: boolean) {
+                expect(value).toBe(true)
+                return entry
+              },
+              substituteInQuery(value: boolean) {
                 expect(value).toBe(false)
                 return entry
               },
-              injectQuery(value: boolean) {
-                expect(value).toBe(false)
-                return entry
-              },
-              injectBody(value: boolean) {
+              substituteInBody(value: boolean) {
                 expect(value).toBe(false)
                 return entry
               }
-            }
+              // The SDK's own names, so a rename fails the typecheck rather than a real VM.
+            } satisfies Partial<Record<keyof SecretBuilder, unknown>>
             configure(entry)
             secrets[name] = data
             return builder
@@ -935,6 +938,62 @@ describe('microsandbox process and VM ownership', () => {
     created[0]!.spec.image = 'changed-outside-daemon'
     await expect(resumed.driverFor(environment).launch(request)).rejects.toThrow('changed persisted configuration')
     await manager.discard(environment.id)
+  })
+
+  it('fences an earlier daemon’s running VM at startup without pulling or booting anything (session-executors.md §5)', async () => {
+    const { manager, options, environment, request, created, imageCache } = await fixture()
+    const runtime = await manager.driverFor(environment).launch(request)
+    // The daemon died with its VM still running; the next one recovers its state and prepares no image.
+    const pulls = join(options.root, 'pulls')
+    const restarted = new MicrosandboxManager({
+      ...options,
+      msbCommand: {
+        command: process.execPath,
+        args: ['-e', `require('node:fs').appendFileSync(${JSON.stringify(pulls)}, 'x')`]
+      }
+    })
+    await restarted.recover()
+    await restarted.collectImages()
+    expect(created).toHaveLength(1)
+    expect(created[0]!.status).toBe('stopped')
+    await expect(readFile(pulls, 'utf8')).rejects.toThrow()
+    expect(imageCache.remove).not.toHaveBeenCalled()
+    await runtime.stop(0)
+    await manager.discard(environment.id)
+  })
+
+  it('records the runtime table its first preparation read, for as long as the cache holds that image', async () => {
+    const { options, imageDigests } = await fixture()
+    const table = {
+      runtimes: [{ id: 'test' }],
+      mcpBridge: { command: '/image/node', args: [SANDBOX_MCP_BRIDGE_ENTRY] }
+    }
+    // Nothing read yet: no record, so the first session prepares.
+    expect(await new MicrosandboxManager(options).cachedTable()).toBeUndefined()
+    await expect(new MicrosandboxManager(options).prepare()).resolves.toEqual(table)
+    const restarted = new MicrosandboxManager(options)
+    expect(await restarted.cachedTable()).toEqual(table)
+    // The recorded table is the preparation: no probe VM boots for it.
+    await expect(restarted.prepare()).resolves.toEqual(table)
+    // A tag that moved, or another configured image, is prepared again.
+    imageDigests.set('test-image', 'sha256:moved')
+    expect(await new MicrosandboxManager(options).cachedTable()).toBeUndefined()
+    const other = { ...options, config: { ...options.config, image: 'next-image' } }
+    expect(await new MicrosandboxManager(other).cachedTable()).toBeUndefined()
+  })
+
+  it('tries a failed preparation again at the next use', async () => {
+    const { options } = await fixture()
+    let fail = true
+    const manager = new MicrosandboxManager({
+      ...options,
+      kvmPreflight: () => {
+        if (fail) throw new Error('microsandbox requires KVM')
+      }
+    })
+    await expect(manager.prepare()).rejects.toThrow('microsandbox requires KVM')
+    fail = false
+    await expect(manager.prepare()).resolves.toBeDefined()
   })
 
   it('reuses an alias with the same platform digest and refreshes a changed image without ACP', async () => {

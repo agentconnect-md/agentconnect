@@ -339,7 +339,7 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   if (rule.kind !== 'github' || !rule.github) return 'no-match'
   // Deletions are never new work (issue deletion is cleanup), even under a legacy wildcard.
   if (ctx.eventAction === `${ctx.event}:deleted`) return 'no-match'
-  // Lifecycle/content edits are silent; a signed target-branch change is revision-bearing despite action `edited`.
+  // Lifecycle changes and content edits are silent; a signed target-branch edit still changes the revision.
   if (
     (ctx.event === 'issues' &&
       (ctx.eventAction === 'issues:closed' ||
@@ -350,7 +350,9 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
         ctx.eventAction === 'pull_request:reopened' ||
         (ctx.eventAction === 'pull_request:edited' && !isGithubPullRequestRevision(ctx)) ||
         ctx.eventAction === 'pull_request:ready_for_review' ||
-        ctx.eventAction === 'pull_request:converted_to_draft'))
+        ctx.eventAction === 'pull_request:converted_to_draft' ||
+        ctx.eventAction === 'pull_request:auto_merge_enabled' ||
+        ctx.eventAction === 'pull_request:auto_merge_disabled'))
   )
     return 'no-match'
   // Decision 10: bots are vetoed except this App's same-repository PR revisions, deployments, which cannot loop, and other bots' releases.

@@ -13,7 +13,7 @@ import { startExecutorFacet, type ExecutorFacet, type ExecutorFacetDeps } from '
 import { PIPE_TLS } from '../src/execution/executor-pipe.js'
 import { executorMount } from '../src/execution/executor-plane.js'
 import { startHostShim } from '../src/execution/host-shim.js'
-import { effectiveStrategies, hostLauncher } from '../src/execution/strategies.js'
+import { effectiveStrategies, hostLauncher, machineStrategies } from '../src/execution/strategies.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimSession } from '../src/shim/session.js'
@@ -146,7 +146,10 @@ describe('executor facet, end to end', () => {
   const facetDeps = (daemonRoot: string, over: Partial<ExecutorFacetDeps> = {}): ExecutorFacetDeps => ({
     daemonRoot,
     share: true,
-    strategies: () => effectiveStrategies({ microsandbox: { configured: false } }),
+    strategies: () =>
+      effectiveStrategies({
+        table: machineStrategies({ offered: { host: true, srt: true, microsandbox: false }, unavailable: {} })
+      }),
     capacity: () => 4,
     ownSessions: () => 0,
     draining: () => false,

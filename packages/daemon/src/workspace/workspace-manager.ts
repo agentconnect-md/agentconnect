@@ -45,6 +45,7 @@ import {
   gitFor,
   preWarmGitCred,
   pullWorkspaceRef,
+  workspaceGitConfigIsSafe,
   workspaceGitEnvBase,
   workspaceGitLocalEnv,
   workspaceGitRemoteTarget,
@@ -200,7 +201,7 @@ export interface RetiredWorkspaceRoot extends SecondarySubtree {
 export type RetiredRootRemoval =
   | { outcome: 'removed' }
   /** The subtree holds work (or a live session's worktree) the daemon must not discard. */
-  | { outcome: 'retained'; reason: 'worktrees' | 'dirty' | 'unique-commits' }
+  | { outcome: 'retained'; reason: 'worktrees' | 'dirty' | 'unique-commits' | 'unsafe-config' }
   | { outcome: 'failed'; error: string }
 
 /** How one session addresses the agent's roots: the isolation, the key that names its worktrees, and
@@ -271,10 +272,37 @@ const SESSION_BRANCH_DRAWS = 5
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
 /** The ref every review fetch writes and verifies, so probing this ONE answers "is this a daemon-owned review snapshot" without listing the ref root. */
 const reviewHeadRefFor = (id: string): string => `refs/agentconnect/reviews/${id}/head`
+/** Gitlinks nested deeper than this are no layout anyone checks out, so retention refuses to judge past them. */
+const MAX_NESTED_REPOSITORY_DEPTH = 8
 
 /** Git this daemon runs on its own disk, with no plane between. */
 function hostGitRunner(cwd?: string, abort?: AbortSignal): GitRunner {
   return new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
+}
+
+/** Whether retention may run `status` in `cwd`: no repository it reads carries a command-running setting — the checkout's own, and on this host every populated gitlink's, since `status` runs a child Git in each. */
+async function retentionGitConfigSafe(git: GitRunner, cwd: string, depth = 0): Promise<boolean> {
+  if (!(await workspaceGitConfigIsSafe(git))) return false
+  // A plane's Git runs inside the session's own environment, where a nested repository reaches nothing the runtime cannot.
+  if (!(git instanceof LocalGitRunner)) return true
+  const index = await git.withEnv(workspaceGitLocalEnv()).raw(['ls-files', '--stage', '-z'])
+  for (const entry of index.split('\0')) {
+    // `<mode> <object> <stage>\t<path>`, where mode 160000 is a gitlink; `status` enters it only when populated.
+    if (!entry.startsWith('160000 ')) continue
+    const nested = join(cwd, entry.slice(entry.indexOf('\t') + 1))
+    if (!existsSync(join(nested, '.git'))) continue
+    if (depth >= MAX_NESTED_REPOSITORY_DEPTH) return false
+    if (!(await retentionGitConfigSafe(hostGitRunner(nested), nested, depth + 1))) return false
+  }
+  return true
+}
+
+/** Keep a tree retention will not run Git in, logged without echoing the config that stopped it. */
+function unsafeRetention(agentId: string, path: string): { outcome: 'retained'; reason: 'unsafe-config' } {
+  workspaceLog.warn(
+    `workspace: keeping ${path} of agent "${agentId}" uninspected — its Git configuration could run a command`
+  )
+  return { outcome: 'retained', reason: 'unsafe-config' }
 }
 
 // Instance state, not module state: a process can hold more than one daemon (the test suite routinely does), and a k8s daemon and a local one place every scope differently.
@@ -1712,6 +1740,7 @@ export class WorkspaceManager {
       (snapshot ??= (await git.raw(['show-ref', '--verify', reviewHeadRefFor(id)]).catch(() => '')).trim() !== '')
     let status: string
     try {
+      if (!(await retentionGitConfigSafe(git, clone))) return unsafeRetention(agent.id, clone)
       status = await git.raw(['status', '--porcelain'])
     } catch (err) {
       // A sandbox leaves empty mountpoints (`.git`, `.agents`, `.codex`) where it protected a clone that is not there: git cannot read it, and no file means no work (#2246).
@@ -1787,6 +1816,7 @@ export class WorkspaceManager {
       }
       if ((await fs.stat(join(root.path, '.git'))) !== 'missing') {
         const git = this.runnerFor(agent.id, root.path).withEnv(workspaceGitLocalEnv())
+        if (!(await retentionGitConfigSafe(git, root.path))) return unsafeRetention(agent.id, root.path)
         if ((await git.raw(['status', '--porcelain'])).trim() !== '') return { outcome: 'retained', reason: 'dirty' }
         // EVERY local ref, not just HEAD: this removes the object store itself, so a side branch, a
         // local tag or a stash entry is work the checked-out branch cannot speak for. Only this
@@ -1894,6 +1924,8 @@ export class WorkspaceManager {
               .raw(['show-ref', '--verify', reviewHeadRefFor(id)])
               .catch(() => '')
           ).trim() !== '')
+      // Its `.git` link file is the runtime's to rewrite, so the config audited is the one this worktree's Git resolves, not the root's.
+      if (!(await retentionGitConfigSafe(worktreeGit, cwd))) return unsafeRetention(agent.id, cwd)
       if ((await worktreeGit.raw(['status', '--porcelain'])).trim() !== '' && !(await isReviewSnapshot())) {
         return { outcome: 'retained', reason: 'dirty' }
       }
@@ -3573,7 +3605,7 @@ export type SessionWorktreeRemoval = (
   | { outcome: 'removed' }
   | { outcome: 'absent' }
   /** The worktree holds work the daemon must not discard — the caller keeps the session. */
-  | { outcome: 'retained'; reason: 'dirty' | 'unique-commits' }
+  | { outcome: 'retained'; reason: 'dirty' | 'unique-commits' | 'unsafe-config' }
   | { outcome: 'failed'; error: string }
 ) & {
   /** Another root's worktree DID go even though the aggregate keeps the session, so a warm runtime

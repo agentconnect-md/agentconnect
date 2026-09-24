@@ -23,6 +23,7 @@ function hostSpawnSig(a: Agent): string {
   return JSON.stringify({
     runtime: a.runtime,
     runInSandbox: a.runInSandbox,
+    execution: a.execution,
     model: a.runtimeOverrides?.model,
     description: a.description,
     reasoningEffort: a.reasoningEffort,

@@ -104,26 +104,58 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     )
 
     await expect(
-      new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: null }).start()
-    ).rejects.toThrow(/daemon startup refused.*requireSandbox.*no supported Linux SRT\/bwrap/)
-  })
-
-  it.each(['readonly', 'writable'])('refuses daemon startup for a missing mount (mode=%s)', async (mode) => {
-    const root = scaffold()
-    const source = join(root, 'no-such-mount')
-    writeFileSync(
-      join(root, 'config.json'),
-      JSON.stringify({
-        version: 1,
-        controlPlane: { enabled: false },
-        sandbox: { mounts: [{ source, target: source, mode }] }
-      })
+      new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root,
+        sandboxMechanism: null,
+        microsandboxHost: () => 'no KVM on this host'
+      }).start()
+    ).rejects.toThrow(
+      /daemon startup refused: no execution strategy can run on this machine \(host: sandbox\.host is off/
     )
-
-    await expect(
-      new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: null }).start()
-    ).rejects.toThrow(/sandbox\.mounts source does not exist/)
   })
+
+  it.each(['readonly', 'writable'])(
+    'makes a missing mount unavailable to every sandbox, and refuses a start left with nothing (mode=%s)',
+    async (mode) => {
+      const root = scaffold()
+      const source = join(root, 'no-such-mount')
+      const configure = (sandbox: Record<string, unknown>) =>
+        writeFileSync(
+          join(root, 'config.json'),
+          JSON.stringify({
+            version: 1,
+            controlPlane: { enabled: false },
+            sandbox: { mounts: [{ source, target: source, mode }], ...sandbox }
+          })
+        )
+      const probed = () =>
+        new Daemon({
+          slackAppFactory: fakeSlackAppFactory(),
+          root,
+          sandboxMechanism: 'bwrap',
+          microsandboxHost: () => undefined
+        })
+
+      configure({ microsandbox: { image: 'registry.example.test/runtime:test' } })
+      const daemon = probed()
+      await daemon.start()
+      try {
+        const table = (daemon as any).strategyTable()
+        expect(table.host).toEqual({ available: true })
+        for (const strategy of ['srt', 'microsandbox']) {
+          expect(table[strategy]).toEqual({
+            available: false,
+            reason: expect.stringMatching(/sandbox\.mounts source does not exist/)
+          })
+        }
+      } finally {
+        await daemon.stop()
+      }
+      configure({ host: false, microsandbox: { image: 'registry.example.test/runtime:test' } })
+      await expect(probed().start()).rejects.toThrow(/sandbox\.mounts source does not exist/)
+    }
+  )
 
   it('does not force the skill sandbox or fail closed when the host has no sandbox mechanism (#36)', async () => {
     const root = scaffold()
@@ -214,7 +246,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       }
       const scratch = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
         hostKey: agentHostKey(agent.id),
-        runInSandbox: true,
+        strategy: 'srt',
         cwd
       }).host
       expect((scratch as any).opts.env[GITCRED_CAPABILITY_ENV]).toEqual(expect.any(String))
@@ -223,7 +255,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       agent.workspace = { mode: 'from-scratch', path: cwd, gitBranch: 'main', pullOnNewSession: true, skills: [] }
       const plain = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
         hostKey: agentHostKey(agent.id),
-        runInSandbox: true,
+        strategy: 'srt',
         cwd
       }).host
       expect((plain as any).opts.env[GITCRED_CAPABILITY_ENV]).toBeUndefined()
@@ -259,7 +291,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       // A normal (non-dream) host still carries the agent's configured secret…
       const normal = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
         hostKey: agentHostKey(agent.id),
-        runInSandbox: true,
+        strategy: 'srt',
         cwd
       }).host
       expect((normal as any).opts.env.API_KEY).toBe('super-secret')
@@ -267,7 +299,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       // tools could otherwise read the secret straight from the environment.
       const dreamHost = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
         hostKey: agentHostKey(agent.id),
-        runInSandbox: true,
+        strategy: 'srt',
         cwd,
         excludeAgentToolCredentials: true
       }).host
@@ -330,7 +362,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       }
       const host = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
         hostKey: agentHostKey(agent.id),
-        runInSandbox: true,
+        strategy: 'srt',
         cwd: agent.workspace.path
       }).host
       // The value does reach the child env — it is the read GRANT that must not be derived from it.

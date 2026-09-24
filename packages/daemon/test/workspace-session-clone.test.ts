@@ -9,10 +9,11 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '../src/agents/agent-schema.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
@@ -1077,6 +1078,135 @@ describe('retiring a confined session', () => {
     expect(git(agent.workspace.path, ['worktree', 'list']).split('\n')).toHaveLength(1)
     expect(git(agent.workspace.path, ['branch', '--list', 'dev/*'])).toBe('')
   })
+})
+
+// A tree the runtime wrote can carry config that turns daemon Git into a command outside its sandbox; retention audits it before `status` reads the tree.
+describe('retention audits a tree’s own Git config before it inspects the tree', () => {
+  const INFRA = { repoFullName: 'acme/infra', repoId: '42' }
+
+  /** A clean filter that leaves `marker` behind whenever Git runs it, bound to every path by `repo`'s own config and `info/attributes`, so nothing tracked changes. */
+  function plantFilter(repo: string, marker: string): void {
+    git(repo, ['config', 'filter.probe.clean', `touch '${marker}' && cat`])
+    const attributes = resolve(repo, git(repo, ['rev-parse', '--git-path', 'info/attributes']))
+    mkdirSync(dirname(attributes), { recursive: true })
+    writeFileSync(attributes, '* filter=probe\n')
+  }
+
+  /** Prove the plant is live under the daemon's own local policy — `status` in `statusIn` rehashes `file` through it — then re-arm it for the call under test. */
+  function expectFilterRuns(statusIn: string, file: string, marker: string): void {
+    const at = (year: number) => new Date(Date.UTC(year, 0, 1))
+    utimesSync(file, at(2001), at(2001))
+    git(statusIn, ['status', '--porcelain'])
+    expect(existsSync(marker)).toBe(true)
+    rmSync(marker)
+    utimesSync(file, at(2002), at(2002))
+  }
+
+  const markerIn = () => join(tempRoot('ac-session-clone-marker-'), 'ran')
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps a session clone whose config could run a command, and never runs status there',
+    async () => {
+      const agent = agentFixture()
+      serveAll(agent)
+      const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+      const marker = markerIn()
+      plantFilter(cwd, marker)
+      expectFilterRuns(cwd, join(cwd, 'README.md'), marker)
+      gitRuns.length = 0
+
+      expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({
+        outcome: 'retained',
+        reason: 'unsafe-config'
+      })
+      expect(gitRuns.map(({ args }) => args[0])).not.toContain('status')
+      expect(existsSync(marker)).toBe(false)
+      expect(existsSync(cwd)).toBe(true)
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'audits a populated gitlink too when this host’s own Git judges the clone',
+    async () => {
+      const agent = agentFixture()
+      serveAll(agent)
+      const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+      const nested = join(cwd, 'vendor', 'lib')
+      mkdirSync(nested, { recursive: true })
+      git(nested, ['init', '-q', '.'])
+      writeFileSync(join(nested, 'lib.txt'), 'lib\n')
+      git(nested, ['add', '-A'])
+      git(nested, ['commit', '-q', '-m', 'lib'])
+      git(cwd, ['-c', 'advice.addEmbeddedRepo=false', 'add', 'vendor/lib'])
+      git(cwd, ['commit', '-q', '-m', 'vendor lib'])
+      // No plane: the daemon's own Git judges the clone, as it does for a local runtime.
+      workspaces.setPlaneResolver(undefined)
+      // A nested repository with nothing unsafe in it leaves the clone to the usual verdict.
+      expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({
+        outcome: 'retained',
+        reason: 'unique-commits'
+      })
+
+      const marker = markerIn()
+      plantFilter(nested, marker)
+      // The clone's own config stays clean; `status` would reach the filter through the child it runs in the gitlink.
+      expectFilterRuns(cwd, join(nested, 'lib.txt'), marker)
+
+      expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({
+        outcome: 'retained',
+        reason: 'unsafe-config'
+      })
+      expect(existsSync(marker)).toBe(false)
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps a legacy worktree whose `.git` link now names a repository of the runtime’s own',
+    async () => {
+      const agent = agentFixture()
+      serveAll(agent)
+      const worktree = await workspaces.prepareSessionWorkspace(agent, unconfined())
+      expect(statSync(join(worktree, '.git')).isFile()).toBe(true)
+      // What a runtime can do from inside the worktree: replace the link with one to a repository whose config it wrote.
+      rmSync(join(worktree, '.git'))
+      git(worktree, ['init', '-q', `--separate-git-dir=${join(tempRoot('ac-session-clone-gitdir-'), 'own.git')}`, '.'])
+      git(worktree, ['add', 'README.md'])
+      git(worktree, ['commit', '-q', '-m', 'own'])
+      const marker = markerIn()
+      plantFilter(worktree, marker)
+      expectFilterRuns(worktree, join(worktree, 'README.md'), marker)
+      workspaces.setPlaneResolver(undefined)
+
+      expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({
+        outcome: 'retained',
+        reason: 'unsafe-config'
+      })
+      expect(existsSync(marker)).toBe(false)
+      expect(existsSync(worktree)).toBe(true)
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps a retired root whose checkout config could run a command',
+    async () => {
+      const agent = agentFixture({ additionalRepos: [INFRA] })
+      serveAll(agent)
+      await workspaces.prepareWorkspace(agent)
+      const after = { ...agent, workspace: { ...agent.workspace, additionalRepos: [] } } as Agent
+      const [retired] = await workspaces.retiredSecondaryRoots(after)
+      const marker = markerIn()
+      plantFilter(retired!.path, marker)
+      expectFilterRuns(retired!.path, join(retired!.path, 'README.md'), marker)
+      workspaces.setPlaneResolver(undefined)
+
+      expect(await workspaces.removeRetiredSecondaryRoot(after, retired!)).toEqual({
+        outcome: 'retained',
+        reason: 'unsafe-config'
+      })
+      expect(existsSync(marker)).toBe(false)
+      expect(existsSync(retired!.subtree)).toBe(true)
+    }
+  )
 })
 
 // Which root holds a confined session's cwd is the session's own fact: recorded in its directory, read there by every turn, and gone with it (k8s-daemon-pool.md §4).

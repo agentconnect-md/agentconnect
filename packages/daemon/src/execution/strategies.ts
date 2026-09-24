@@ -3,48 +3,80 @@ import type { Duplex } from 'node:stream'
 import type { Logger } from '../log.js'
 import { hostShimUnavailableReason, startHostShim, type HostShim, type HostShimInput } from './host-shim.js'
 
-/** The v1 execution strategies of session-executors.md §5; `srt` and `docker` come later. */
+/** The strategies the executor facet can prepare (session-executors.md §5); `srt` joins with R1 and `docker` later. */
 export type ExecutionStrategy = 'host' | 'microsandbox'
 
 export const EXECUTION_STRATEGIES: readonly ExecutionStrategy[] = ['host', 'microsandbox']
 
+/** The strategies this machine runs its own sessions in: the `sandbox` table's keys (§5). */
+export type SandboxStrategy = 'host' | 'srt' | 'microsandbox'
+
+export const SANDBOX_STRATEGIES: readonly SandboxStrategy[] = ['host', 'srt', 'microsandbox']
+
 export type StrategyAvailability = { available: true } | { available: false; reason: string }
 
-/** The EFFECTIVE table: what this machine can run now, each entry with the reason it cannot. The executor facet reports its own reading of it at registration. */
+export type StrategyTable = Record<SandboxStrategy, StrategyAvailability>
+
+/** The strategy an agent's sessions run in (§5): its `execution`, or for one the Control Plane has not migrated, `runInSandbox` read as the migration will read it. */
+export function agentStrategyOf(
+  agent: { execution?: string; runInSandbox?: boolean },
+  legacyBackend: 'srt' | 'microsandbox' | undefined
+): string {
+  if (agent.execution) return agent.execution
+  return agent.runInSandbox ? (legacyBackend ?? 'srt') : 'host'
+}
+
+/** Whether a slug names one of this machine's strategies. */
+export function isSandboxStrategy(name: string | undefined): name is SandboxStrategy {
+  return SANDBOX_STRATEGIES.includes(name as SandboxStrategy)
+}
+
+/** The machine's own EFFECTIVE table (§5): configured is what it offers, and a probe's reason is why an offered sandbox cannot run; `host` is the direct child, available on every platform. */
+export function machineStrategies(input: {
+  offered: Record<SandboxStrategy, boolean>
+  /** Why a probe failed; absent ⇒ it passed. */
+  unavailable: Partial<Record<Exclude<SandboxStrategy, 'host'>, string>>
+}): StrategyTable {
+  const entry = (strategy: SandboxStrategy): StrategyAvailability => {
+    if (!input.offered[strategy]) return { available: false, reason: `sandbox.${strategy} is off on this daemon` }
+    const reason = strategy === 'host' ? undefined : input.unavailable[strategy]
+    return reason ? { available: false, reason } : { available: true }
+  }
+  return { host: entry('host'), srt: entry('srt'), microsandbox: entry('microsandbox') }
+}
+
+/** Refuse a start whose table has nothing available, which keeps today's fail-closed rule (§5). */
+export function assertSomeStrategyAvailable(table: StrategyTable): void {
+  if (SANDBOX_STRATEGIES.some((strategy) => table[strategy].available)) return
+  const why = SANDBOX_STRATEGIES.map((strategy) => `${strategy}: ${strategyReason(table[strategy])}`).join('; ')
+  throw new Error(`daemon startup refused: no execution strategy can run on this machine (${why})`)
+}
+
+/** The table the executor facet reports to other members (§5): the machine's own, with `host` Linux-only. */
 export function effectiveStrategies(input: {
   platform?: NodeJS.Platform
-  /** The existing sandbox probe: whether microsandbox is the configured backend, and why it is down when it is. */
-  microsandbox: { configured: boolean; unavailable?: string }
+  table: StrategyTable
 }): Record<ExecutionStrategy, StrategyAvailability> {
-  const host = hostShimUnavailableReason(input.platform ?? process.platform)
-  const microsandbox = !input.microsandbox.configured
-    ? 'microsandbox is not the configured sandbox backend'
-    : input.microsandbox.unavailable
+  const hostShim = hostShimUnavailableReason(input.platform ?? process.platform)
   return {
-    host: host ? { available: false, reason: host } : { available: true },
-    microsandbox: microsandbox ? { available: false, reason: microsandbox } : { available: true }
+    host: hostShim && input.table.host.available ? { available: false, reason: hostShim } : input.table.host,
+    microsandbox: input.table.microsandbox
   }
 }
 
-/** The machine's own table (§5) under the single `sandbox.backend` it still reads: `host` is the direct child on every platform unless a sandbox is required, and the backend only when its probe passed. */
-export function ownStrategies(input: {
-  backend: 'srt' | 'microsandbox'
-  requireSandbox: boolean
-  /** Why the configured backend cannot run a session; absent when its probe passed. */
-  unavailable?: string
-}): Record<'host' | 'srt' | 'microsandbox', StrategyAvailability> {
-  const entry = (strategy: 'srt' | 'microsandbox'): StrategyAvailability =>
-    input.backend !== strategy
-      ? { available: false, reason: `${strategy} is not the configured sandbox backend` }
-      : input.unavailable
-        ? { available: false, reason: input.unavailable }
-        : { available: true }
-  return {
-    host: input.requireSandbox
-      ? { available: false, reason: 'security.requireSandbox is set on this daemon' }
-      : { available: true },
-    srt: entry('srt'),
-    microsandbox: entry('microsandbox')
+export function strategyReason(entry: StrategyAvailability): string {
+  return entry.available ? 'available' : entry.reason
+}
+
+/** A session whose strategy this machine cannot run: refused with the probe's reason, never started in a weaker boundary (§5). */
+export class StrategyUnavailableError extends Error {
+  constructor(
+    readonly agentId: string,
+    readonly strategy: string,
+    readonly reason: string
+  ) {
+    super(`agent "${agentId}" runs its sessions in the ${strategy} strategy, which this daemon cannot run: ${reason}`)
+    this.name = 'StrategyUnavailableError'
   }
 }
 
@@ -72,6 +104,8 @@ export interface SessionSeed {
 
 /** How one strategy gives a session leaf an environment: everything above this is strategy-agnostic (§5). */
 export interface StrategyLauncher {
+  /** Seeds the session HOME itself, with protections the facet's plain seed lacks (a VM's placeholders, §8); the facet then seeds nothing. */
+  seedsHome?: boolean
   start(input: {
     daemonRoot: string
     sessionLeaf: string

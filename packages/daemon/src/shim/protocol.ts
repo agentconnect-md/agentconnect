@@ -38,6 +38,9 @@ export const SHIM_LISTEN_SOCKET_ENV = 'AC_SHIM_SOCKET'
 /** `1` when the driving daemon is on this machine and sends each runtime's whole environment, so the shim adds no pod fill-in. */
 export const SHIM_COMPLETE_ENV_FLAG = 'AC_SHIM_COMPLETE_ENV'
 
+/** A hosted session's seed as a JSON object: what its executor points each runtime at, filled in beneath the holder's env (session-executors.md §8). */
+export const SHIM_SEED_ENV = 'AC_SHIM_SEED_ENV'
+
 /** A host launcher's per-shim mark, copied into every runtime's environment so a dead shim's descendants can still be found. */
 export const SHIM_RUNTIME_MARK_ENV = 'AC_SHIM_RUNTIME_MARK'
 

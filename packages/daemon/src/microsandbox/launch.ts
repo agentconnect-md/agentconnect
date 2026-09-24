@@ -20,14 +20,12 @@ import {
   normalizeSandboxMounts,
   protectedSandboxRoots
 } from '../runtimes/read-roots.js'
-import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
-import { prepareRuntimeHome, runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
+import { sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
+import { runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
 import { SANDBOX_TUNNEL_PATHS } from '../shim/sandbox-paths.js'
-import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
 import { OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT } from './overlay.js'
-import { prepareMicrosandboxCredentials, type MicrosandboxSecret } from './secrets.js'
-import { replaceEnvironmentSecrets } from './secret-values.js'
+import { microsandboxCredentialStep, type MicrosandboxSecret } from './secrets.js'
 
 const IMAGE_PATH = '/opt/agentconnect/pathbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 const HOST_IPC_ENV = [
@@ -114,27 +112,9 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   )
   for (const path of [...writable, ...configDirs]) mkdirSync(path, { recursive: true, mode: 0o700 })
 
-  const protectedCredentials = prepareMicrosandboxCredentials(opts.runtimeId, opts.runtime, hostEnv, opts.explicitEnv)
-  const credentials =
-    protectedCredentials?.shareNativeCredentials === false
-      ? undefined
-      : prepareSharedRuntimeCredentials({ runtimeId: opts.runtimeId, runtime: opts.runtime, hostEnv })
-  if (
-    protectedCredentials?.secrets.length &&
-    [...TLS_TRUST_ENV, ...(protectedCredentials.tlsTrustEnv ?? []), 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'].some(
-      (name) => (opts.explicitEnv?.[name] ?? hostEnv[name])?.trim()
-    )
-  ) {
-    throw new Error(
-      'Runtime launch refused: microsandbox credential protection does not yet support custom TLS trust bundles; use SRT for this configuration'
-    )
-  }
-  runtimeHome = prepareRuntimeHome(opts.runtimeId, scopeDir, hostEnv, runtimeHome, [
-    ...(credentials?.seedExclusions ?? []),
-    ...(protectedCredentials?.seedExclusions ?? [])
-  ])
-  protectedCredentials?.preparePrivateHome(runtimeHome)
-  credentials?.preparePrivateHome(runtimeHome)
+  const credentialStep = microsandboxCredentialStep(opts.runtimeId, opts.runtime, hostEnv, opts.explicitEnv)
+  const { protectedCredentials, credentials } = credentialStep
+  runtimeHome = credentialStep.seedHome(scopeDir, runtimeHome)
   writable.push(...(credentials?.writablePaths ?? []))
   const readRoots = (opts.trustedRuntimeReadRoots ?? []).filter((path) => {
     if (!existsSync(path)) return false
@@ -200,16 +180,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   }
 
   const env = { ...runtimeHomeEnvironment(opts.runtimeId, runtimeHome, opts.explicitEnv, hostEnv), ...credentials?.env }
-  if (protectedCredentials) {
-    replaceEnvironmentSecrets(env, protectedCredentials.replacements)
-    for (const secret of protectedCredentials.secrets) {
-      env[secret.env] = secret.placeholder
-    }
-    if (protectedCredentials.secrets.length) {
-      env.NODE_EXTRA_CA_CERTS = '/.msb/tls/ca.pem'
-      env.SSL_CERT_FILE = env.REQUESTS_CA_BUNDLE = env.CURL_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt'
-    }
-  }
+  credentialStep.protectEnv(env)
   for (const name of HOST_IPC_ENV) delete env[name]
   // Drop ambient Docker client settings, but keep explicit guest config, including materialized registry config.
   for (const name of [

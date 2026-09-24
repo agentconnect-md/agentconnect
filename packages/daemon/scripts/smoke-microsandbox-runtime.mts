@@ -2,7 +2,7 @@
 // Usage: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-microsandbox-runtime.mts <image> [transfer-MiB]
 // It reads the guest socket paths from the launch environment rather than assuming the shim's.
 import assert from 'node:assert/strict'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -159,13 +159,25 @@ const HOSTED_RUNTIME = [
   "const fs = require('fs')",
   'const signIn = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR',
   "const signedIn = Boolean(signIn) && fs.existsSync(signIn + '/.credentials.json')",
-  'fs.writeFileSync(process.env.AC_TEST_REPORT, JSON.stringify({ env: process.env, signedIn }))',
+  "const caPresent = fs.existsSync(process.env.NODE_EXTRA_CA_CERTS || '/nonexistent')",
+  'fs.writeFileSync(process.env.AC_TEST_REPORT, JSON.stringify({ env: process.env, signedIn, caPresent }))',
   'process.stdin.pipe(process.stdout)'
 ].join('; ')
-// This machine's own Claude sign-in, which the facet seeds the session HOME from; the VM must be given it (§8).
+// This machine's own Claude sign-in and API key, which the launcher seeds the session HOME from; the VM gets the key only as a placeholder (§8).
 const machineHome = join(root, 'machine')
+const MACHINE_KEY = 'fixture-smoke-executor-claude-key'
+const MACHINE_RUNTIMES = { 'claude-acp': { command: 'claude-agent-acp', args: [], env: [] } }
 await mkdir(join(machineHome, '.claude'), { recursive: true, mode: 0o700 })
 await writeFile(join(machineHome, '.claude', '.credentials.json'), '{"claudeAiOauth":{}}\n', { mode: 0o600 })
+await writeFile(join(machineHome, '.claude.json'), `${JSON.stringify({ primaryApiKey: MACHINE_KEY })}\n`, {
+  mode: 0o600
+})
+/** Every regular file under a directory, as text: what a guest mounting it could read. */
+const filesUnder = (directory: string): string[] =>
+  readdirSync(directory, { recursive: true, encoding: 'utf8' })
+    .map((path) => join(directory, path))
+    .filter((path) => lstatSync(path).isFile())
+    .map((path) => readFileSync(path, 'utf8'))
 const facet = await startExecutorFacet({
   daemonRoot: root,
   share: true,
@@ -174,15 +186,19 @@ const facet = await startExecutorFacet({
     host: { available: false, reason: 'not part of this smoke test' },
     microsandbox: { available: true }
   }),
-  launchers: { microsandbox: microsandboxLauncher({ manager: () => manager }) },
+  // A VM seeds its own HOME, with the machine's credentials behind placeholders, so the facet's plain seed below is not used for it.
+  launchers: {
+    microsandbox: microsandboxLauncher({
+      manager: () => manager,
+      runtimes: () => MACHINE_RUNTIMES,
+      hostEnv: { HOME: machineHome }
+    })
+  },
   capacity: () => 2,
   ownSessions: () => 0,
   draining: () => false,
   endpointHost: () => '127.0.0.1',
-  seedHome: (home) =>
-    seedSessionHome(home, { 'claude-acp': { command: 'claude-agent-acp', args: [], env: [] } }, console, {
-      HOME: machineHome
-    }),
+  seedHome: (home) => seedSessionHome(home, MACHINE_RUNTIMES, console, { HOME: machineHome }),
   agentsExist: async (ids: string[]) => new Set(ids),
   retentionMs: () => null,
   log: makeLogger('info'),
@@ -396,7 +412,8 @@ try {
     hostKey: HOST_KEY,
     runInSandbox: false,
     runtimeEnv: {},
-    agentEnv: { AC_AGENT_ID: AGENT, AC_TEST_REPORT: hostedReport },
+    // The runtime's provider key configured on the agent is stripped: the executor's own is the one the session uses (§8).
+    agentEnv: { AC_AGENT_ID: AGENT, AC_TEST_REPORT: hostedReport, ANTHROPIC_API_KEY: 'fixture-smoke-holder-key' },
     hostEnv: holderEnv,
     stateSourceEnv: holderEnv,
     executor: { home }
@@ -419,6 +436,7 @@ try {
   const inGuest = JSON.parse(await readFile(hostedReport, 'utf8')) as {
     env: Record<string, string | undefined>
     signedIn: boolean
+    caPresent: boolean
   }
   const seen = inGuest.env
   assert.equal(seen.AC_AGENT_ID, AGENT, 'the launch environment did not reach the runtime')
@@ -428,6 +446,15 @@ try {
   // The executor's own sign-in: its shim fills the pointer in, and the VM was given the directory it names (§8).
   assert.equal(seen.CLAUDE_SECURESTORAGE_CONFIG_DIR, realpathSync(join(machineHome, '.claude')))
   assert.ok(inGuest.signedIn, "the executor's sign-in is not reachable in the guest")
+  // The executor's API key reached the VM as a placeholder with the proxy's CA; its value is nowhere the guest can read (§8).
+  assert.equal(seen.AC_CLAUDE_API_KEY, 'msb-secret-AC_CLAUDE_API_KEY')
+  assert.equal(seen.NODE_EXTRA_CA_CERTS, '/.msb/tls/ca.pem')
+  assert.ok(inGuest.caPresent, "the proxy's CA is not in the guest")
+  assert.ok(!JSON.stringify(seen).includes(MACHINE_KEY), "the executor's API key reached the guest environment")
+  assert.ok(!filesUnder(hostedDir).some((text) => text.includes(MACHINE_KEY)), "the executor's API key is in the mount")
+  assert.ok(filesUnder(hostedDir).some((text) => text.includes('msb-secret-AC_CLAUDE_API_KEY')))
+  // And the holder's own provider key did not travel.
+  assert.equal(seen.ANTHROPIC_API_KEY, undefined)
   // Nothing of the holder's environment; the PATH is the guest's own fill-in, which a complete-env shim would not make (§6).
   assert.equal(seen.HOLDER_ONLY, undefined)
   assert.deepEqual(

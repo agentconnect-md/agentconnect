@@ -275,14 +275,14 @@ disposable test environment.
 
 The operator has three independent controls:
 
-| Control                                                                         | Trust consequence                                                                                                                                                                               |
-| ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Restrict [daemon visibility](resource-visibility.md) to selected people         | Limits which organization members can discover, select, or manage the daemon as a placement target; selecting only the operator makes it private to them. It does not create process isolation. |
-| Enable **Run in sandbox** on an agent                                           | Treats that agent as untrusted relative to the host and confines its runtime when the daemon supports the sandbox.                                                                              |
-| Start the daemon with `--require-sandbox` or set `security.requireSandbox=true` | Requires every agent on that daemon to run sandboxed and fails closed when the host cannot enforce it.                                                                                          |
+| Control                                                                  | Trust consequence                                                                                                                                                                               |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Restrict [daemon visibility](resource-visibility.md) to selected people  | Limits which organization members can discover, select, or manage the daemon as a placement target; selecting only the operator makes it private to them. It does not create process isolation. |
+| Give an agent a sandboxing strategy (`srt` or `microsandbox`)            | Treats that agent as untrusted relative to the host and confines its runtime; a daemon that cannot run the strategy refuses the session rather than running it unconfined.                      |
+| Set `sandbox.host: false` (or start the daemon with `--require-sandbox`) | Refuses every unsandboxed session on that daemon and fails closed at startup when no sandboxing strategy is available.                                                                          |
 
 A host without a supported sandbox remains usable for operator-trusted agents unless
-the operator explicitly enabled the daemon-wide requirement. The daemon and console
+the operator withdrew `host` from its strategy table. The daemon and console
 must report the missing capability clearly; they must never describe an unsandboxed
 runtime as confined.
 

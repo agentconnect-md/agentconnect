@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { loadConfig } from './config/load-config.js'
 import { gitcredSocketPath } from './cp/gitcred-server.js'
@@ -8,7 +10,8 @@ import { mcpSocketPath, resolveRoot } from './paths.js'
 const { values } = parseArgs({ options: { root: { type: 'string' }, config: { type: 'string' } } })
 const root = resolveRoot(values.root)
 const config = loadConfig({ root, configPath: values.config, optional: true })
-if (config.sandbox.backend === 'microsandbox') {
+// Only a machine whose sessions have used the image pre-pulls the next one; an unused default strategy pulls nothing (session-executors.md §5).
+if (config.sandbox.microsandbox !== false && existsSync(join(root, 'microsandbox', 'pulled-image'))) {
   const manager = await installMicrosandbox({
     root,
     config: config.sandbox.microsandbox,
