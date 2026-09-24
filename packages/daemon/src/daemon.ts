@@ -441,7 +441,7 @@ import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execu
 import { ExecutorPlane, executorMcpBridge, type PlacedSession } from './execution/executor-plane.js'
 import { placeSession, type PlacementAsk, type PlacementChoice } from './execution/executor-placement.js'
 import { HOSTED_PREFIX, microsandboxLauncher } from './execution/executor-vm.js'
-import { effectiveStrategies, hostLauncher } from './execution/strategies.js'
+import { effectiveStrategies, hostLauncher, ownStrategies } from './execution/strategies.js'
 import {
   declaredRuntimeCatalog,
   loadK8sRuntimeTable,
@@ -6214,6 +6214,22 @@ export class Daemon {
         configured: this.cfg.sandbox.backend === 'microsandbox',
         unavailable: this.sandboxUnavailableReason()
       }
+    })
+  }
+
+  /** This machine's own table (session-executors.md §5), reported at registration beside its legacy `sandbox.backend`. */
+  ownExecutionStrategies(): ReturnType<typeof ownStrategies> {
+    const backend = this.cfg.sandbox.backend
+    const srt = this.k8s ? 'a k8s runtime is isolated by its own pod' : this.sandboxProbe?.reason
+    return ownStrategies({
+      backend,
+      requireSandbox: this.cfg.security.requireSandbox,
+      unavailable:
+        backend === 'microsandbox'
+          ? this.sandboxUnavailableReason()
+          : this.sandboxMechanism
+            ? undefined
+            : boundedDiagnostic(srt ?? '') || 'this host has no supported SRT mechanism'
     })
   }
 
@@ -21798,6 +21814,8 @@ export class Daemon {
       registrationPlatforms: () => this.registrationPlatforms(),
       registrationFeatures: () => this.registrationFeatures(),
       sandboxUnavailable: () => this.sandboxUnavailableReason(),
+      ownStrategies: () => this.ownExecutionStrategies(),
+      sandboxBackend: () => this.cfg.sandbox.backend,
       executorFacet: () => this.executorFacet,
       admittedRuntimeIds: () => this.admittedRuntimeIds(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),

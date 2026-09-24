@@ -722,6 +722,7 @@ model RuntimeProfile {
   modelsSource          String? // provenance of models[]: 'cached' | 'probed'; null ⇒ older daemon (probed semantics)
   authRequired          Boolean    @default(false) // no stored login, or a probe/live turn requires authentication
   unavailableReason     String? // host-binary-missing or image-binary-missing; null means no installation warning
+  strategies            Json?      @db.JsonB // wire RuntimeStrategyEntries verbatim (session-executors.md §5); null ⇒ an older daemon
   observedAt            DateTime   @default(now()) @db.Timestamptz(6)
 
   daemon Daemon @relation(fields: [daemonId], references: [id], onDelete: Cascade)
@@ -880,6 +881,8 @@ model Agent {
   allowedTargetAgentIds String[]           @default([]) // agent.id set used when outboundPolicy='selected'
   introduceOnJoin       Boolean            @default(false) // #536: self-introduce to peers on a genuine channel join
   runInSandbox          Boolean            @default(false) // #642: request an OS sandbox; daemon policy may force it on
+  // The strategy slug sessions run in (session-executors.md §5), kept in step with runInSandbox; null ⇒ a sandboxed agent whose daemon has not yet reported its backend.
+  execution             String?
   // Monotonic revision of the fully resolved AgentSpec (organization-secrets-and-
   // variables.md §5). NOT environment-specific: every durable mutation that can
   // change a CP-owned field assembled into the spec bumps it through the same
@@ -1331,6 +1334,7 @@ model SessionExecutorHint {
   agentId          String   @db.Uuid
   sessionKey       String // canonical `sessionKeyStr` form
   executorDaemonId String?  @db.Uuid // null: a newer report said the session stayed with its holder
+  strategy         String? // the birth strategy a relayed prepare named (§5); a report never carries one, so it keeps it
   observedAt       DateTime @db.Timestamptz(6) // CP clock for a prepare, the report's own `ts` for a report
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)

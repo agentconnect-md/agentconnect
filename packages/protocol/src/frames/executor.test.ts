@@ -9,8 +9,9 @@ import {
   ExecutorReleaseResult,
   SessionStayedHomeReason
 } from './executor.js'
+import { AgentSpec } from './agent.js'
 import { RegisterReq } from './register.js'
-import { EventSession, Heartbeat } from './telemetry.js'
+import { EventSession, FactsRuntimeProfile, Heartbeat } from './telemetry.js'
 import { buildEnvelope, decodeCpEnvelope, decodeEnvelope, encode, type FrameType } from '../index.js'
 
 const AGENT = '22222222-2222-4222-8222-222222222222'
@@ -95,6 +96,56 @@ describe('executor facts on registration', () => {
   })
 })
 
+describe('the machine’s own strategy table on registration', () => {
+  const OWN = {
+    host: { available: true },
+    srt: { available: false, reason: 'srt is not the configured sandbox backend' },
+    microsandbox: { available: true }
+  } as const
+
+  it('rides register and capabilities/update beside the legacy backend, whether or not the facet is on', () => {
+    const capabilities = { ...REGISTER.capabilities, strategies: OWN, sandboxBackend: 'microsandbox' }
+    expect(roundTrip('register', { ...REGISTER, capabilities })).toMatchObject({ capabilities })
+    expect(roundTrip('capabilities/update', { capabilities })).toEqual({ capabilities })
+  })
+
+  it('takes the executor report’s shape, so an unavailable entry must say why and a slug stays a slug', () => {
+    const capabilities = (extra: object) => ({ ...REGISTER, capabilities: { ...REGISTER.capabilities, ...extra } })
+    expect(RegisterReq.safeParse(capabilities({ strategies: { host: { available: false } } })).success).toBe(false)
+    expect(RegisterReq.safeParse(capabilities({ sandboxBackend: 'Micro Sandbox' })).success).toBe(false)
+    expect(RegisterReq.safeParse(capabilities({ strategies: { docker: { available: true } } })).success).toBe(true)
+  })
+})
+
+describe('the agent’s execution strategy', () => {
+  const SPEC = { name: 'agent-1', runtime: 'claude' }
+
+  it('rides the spec beside runInSandbox as a slug, and absent means not yet migrated', () => {
+    expect(AgentSpec.parse({ ...SPEC, runInSandbox: true, execution: 'microsandbox' })).toMatchObject({
+      runInSandbox: true,
+      execution: 'microsandbox'
+    })
+    expect(AgentSpec.parse(SPEC).execution).toBeUndefined()
+    expect(AgentSpec.safeParse({ ...SPEC, execution: 'Host' }).success).toBe(false)
+  })
+})
+
+describe('per-strategy runtime entries', () => {
+  const PROFILE = { runtime: 'codex', version: '1.0.0', models: ['m-1'], acpSupport: 'full', toolCalling: true }
+
+  it('ride each runtime of facts/daemon-runtimes, one per offered strategy, with its own models and provenance', () => {
+    const strategies = {
+      host: { available: true, models: ['m-1'], modelsSource: 'probed' },
+      microsandbox: { available: false, unavailableReason: 'the image has no codex binary' },
+      srt: { available: true }
+    }
+    const snapshot = { runtimes: [{ ...PROFILE, authRequired: false, strategies }], mcpServers: [] }
+    expect(roundTrip('facts/daemon-runtimes', snapshot)).toEqual(snapshot)
+    expect(FactsRuntimeProfile.parse(PROFILE).strategies).toBeUndefined()
+    expect(FactsRuntimeProfile.safeParse({ ...PROFILE, strategies: { host: { models: [] } } }).success).toBe(false)
+  })
+})
+
 describe('hostedSessions on the heartbeat', () => {
   it('round-trips beside activeSessions, which keeps its meaning', () => {
     expect(roundTrip('heartbeat', { ...HEARTBEAT, hostedSessions: 5 })).toMatchObject({
@@ -162,6 +213,17 @@ describe('executor/candidates', () => {
     )
   })
 
+  it('the hint carries the strategy the session was born with, as a slug', () => {
+    const hinted = {
+      candidates: [],
+      reason: 'no_member_shares',
+      currentExecutorDaemonId: EXECUTOR,
+      birthStrategy: 'srt'
+    }
+    expect(roundTrip('executor/candidates/result', hinted)).toEqual(hinted)
+    expect(ExecutorCandidatesResult.safeParse({ ...hinted, birthStrategy: 'Not A Slug' }).success).toBe(false)
+  })
+
   it('the answer carries each candidate’s facts through the codec', () => {
     const payload: ExecutorCandidatesResult = {
       candidates: [
@@ -173,7 +235,11 @@ describe('executor/candidates', () => {
           hostedSessions: 3,
           runtimes: [
             { runtime: 'claude', authRequired: false },
-            { runtime: 'codex', authRequired: true }
+            {
+              runtime: 'codex',
+              authRequired: true,
+              strategies: { host: { available: true, models: ['m-1'], modelsSource: 'cached' } }
+            }
           ]
         }
       ]
@@ -250,6 +316,7 @@ describe('executor/prepare', () => {
       { status: 'full', liveCount: 32 },
       { status: 'full' },
       { status: 'refused', reason: 'launch_retired' },
+      { status: 'refused', reason: 'strategy_mismatch' },
       { status: 'offline', lastSeenAt: '2026-09-21T00:00:00.000Z' },
       { status: 'offline', lastSeenAt: null }
     ]

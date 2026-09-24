@@ -92,6 +92,8 @@ function fakeDeps(over: {
   memberIds?: string[]
   lastSeenAt?: Date | null
   executorForKey?: string | null
+  birthStrategy?: string
+  runtimeProfiles?: unknown[]
   /** Held by the FIRST reader of the member set, so one asker can sit in its lookups while another runs past it. */
   slowSetRead?: Promise<void>
 }) {
@@ -99,7 +101,9 @@ function fakeDeps(over: {
   let setReads = 0
   const log = vi.fn()
   const recordHostedSessions = vi.fn(async () => undefined)
-  const executorForKey = vi.fn(async () => over.executorForKey ?? null)
+  const executorForKey = vi.fn(async () =>
+    over.executorForKey ? { executorDaemonId: over.executorForKey, strategy: over.birthStrategy ?? null } : null
+  )
   const recordExecutorObservation = vi.fn(async () => undefined)
   const deps = {
     log: { error: log },
@@ -126,7 +130,7 @@ function fakeDeps(over: {
       getAvailable: async () => ({
         hostedSessions: 3,
         lastSeenAt: over.lastSeenAt ?? null,
-        runtimeProfiles: [{ runtime: 'codex', authRequired: true }]
+        runtimeProfiles: over.runtimeProfiles ?? [{ runtime: 'codex', authRequired: true }]
       }),
       recordHostedSessions
     }
@@ -166,6 +170,25 @@ describe('handleExecutorCandidates', () => {
     ])
   })
 
+  it('carries each runtime’s entries for the strategies the candidate offers, and nothing a member did not report', async () => {
+    const vm = { available: true, models: ['m-image'], modelsSource: 'probed' }
+    const host = { available: true, models: ['m-host'], modelsSource: 'cached' }
+    const conn = fakeConn()
+    const { deps } = fakeDeps({
+      members: [member(HOLDER), member(EXECUTOR, { executor: FACTS })],
+      runtimeProfiles: [
+        { runtime: 'codex', authRequired: false, strategies: { host, microsandbox: vm } },
+        { runtime: 'claude', authRequired: true, strategies: null }
+      ]
+    })
+    await handleExecutorCandidates(frame('executor/candidates', { agentId: AGENT }), conn, deps)
+    // FACTS offers `host` alone, so the image's catalog is not this candidate's to advertise.
+    expect((replied(conn)[0] as { candidates: { runtimes: unknown }[] }).candidates[0]!.runtimes).toEqual([
+      { runtime: 'codex', authRequired: false, strategies: { host } },
+      { runtime: 'claude', authRequired: true }
+    ])
+  })
+
   it('answers empty with the first gate that closed', async () => {
     const cases = [
       [{ holds: () => false }, 'not_holder'],
@@ -198,6 +221,18 @@ describe('handleExecutorCandidates', () => {
       channel: 'C1',
       thread: '1700000000.000100'
     })
+
+    // The strategy the session was born with rides the hint, so a successor resumes in it rather than the agent's current one.
+    const born = fakeConn()
+    const withStrategy = fakeDeps({
+      members: [member(HOLDER)],
+      executorForKey: EXECUTOR,
+      birthStrategy: 'microsandbox'
+    })
+    await handleExecutorCandidates(frame('executor/candidates', ask), born, withStrategy.deps)
+    expect(replied(born)).toEqual([
+      { candidates: [], reason: 'no_member_shares', currentExecutorDaemonId: EXECUTOR, birthStrategy: 'microsandbox' }
+    ])
 
     const unknown = fakeConn()
     await handleExecutorCandidates(
@@ -399,6 +434,7 @@ describe('handleExecutorPrepare', () => {
           agentId: AGENT,
           key: { platform: 'slack', channel: 'C1', thread: '1700000000.000100' },
           executorDaemonId: EXECUTOR,
+          strategy: 'host',
           at: new Date(NOW),
           source: 'prepare'
         }

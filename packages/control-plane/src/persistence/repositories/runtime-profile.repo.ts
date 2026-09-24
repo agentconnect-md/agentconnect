@@ -31,6 +31,7 @@ function toRecord(p: RuntimeProfile): RuntimeProfileRecord {
     modelsSource: (p.modelsSource as RuntimeProfileRecord['modelsSource']) ?? null,
     authRequired: p.authRequired,
     unavailableReason: p.unavailableReason as RuntimeProfileRecord['unavailableReason'],
+    strategies: (p.strategies as RuntimeProfileRecord['strategies']) ?? null,
     observedAt: p.observedAt
   }
 }
@@ -68,6 +69,7 @@ export class PgRuntimeProfileRepo implements RuntimeProfileRepo {
         modelsSource: f.modelsSource ?? null,
         authRequired: f.authRequired ?? false,
         unavailableReason: f.unavailableReason ?? null,
+        strategies: f.strategies ?? Prisma.DbNull,
         observedAt: at
       },
       update: {
@@ -88,6 +90,8 @@ export class PgRuntimeProfileRepo implements RuntimeProfileRepo {
         // Absent ⇒ no login warning — clear rather than keep a stale flag.
         authRequired: f.authRequired ?? false,
         unavailableReason: f.unavailableReason ?? null,
+        // Absent ⇒ an older daemon: clear rather than keep a catalog it no longer vouches for.
+        strategies: f.strategies ?? Prisma.DbNull,
         observedAt: at
       }
     })

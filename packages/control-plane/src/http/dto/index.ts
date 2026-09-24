@@ -33,6 +33,7 @@ import {
   RepoSubdirError,
   SessionImageAttachment,
   SessionStayedHomeReason,
+  ExecutorStrategyName,
   MAX_WORKSPACE_COMMIT_MESSAGE,
   MAX_WORKSPACE_EDIT_BYTES,
   MAX_WORKSPACE_LOG_COMMITS,
@@ -688,6 +689,8 @@ export const CreateAgentBody = z.object({
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
   runInSandbox: z.boolean().optional(), // #642: request an OS sandbox (absent ⇒ default false)
+  // The strategy sessions run in (session-executors.md §5), checked against the placement's tables; runInSandbox follows it, and a request naming both must agree.
+  execution: ExecutorStrategyName.optional(),
   env: AgentEnvBody.optional(),
   secrets: AgentSecretsCreateBody.optional(), // write-only secret env vars (values never returned)
   // Names of daemon-configured MCP servers to attach at session/new; the daemon
@@ -743,6 +746,7 @@ export const UpdateAgentBody = z
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
     runInSandbox: z.boolean().optional(), // #642: request an OS sandbox for this agent
+    execution: ExecutorStrategyName.optional(), // the strategy sessions run in; runInSandbox follows it
     // Same-repository capability widening only. Workspace identity/conversion
     // stays on the dedicated cold action, and downgrades are deliberately not
     // exposed here because enabled review hooks may depend on write access.
@@ -898,6 +902,8 @@ export const AgentDto = z.object({
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
   runInSandbox: z.boolean(), // #642: persisted per-agent sandbox preference (default false)
+  // The strategy sessions run in; null ⇒ sandboxed on a daemon that has not yet reported which sandbox it runs.
+  execution: ExecutorStrategyName.nullable(),
   // #642: whether the placed daemon can enforce the preference. false ⇒ the
   // console renders Run in sandbox unavailable and the effective value is false.
   sandboxSupported: z.boolean(),

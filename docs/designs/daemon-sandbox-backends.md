@@ -82,7 +82,7 @@ settings.
 | `sandbox.mounts`               | Operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `mode` (`readonly` by default, or `writable` / `overlay`). SRT requires equal normalized host paths; microsandbox accepts absolute guest targets and `~/` relative to the session HOME. Workspace, HOME, and runtime state remain automatically provisioned. |
 | `sandbox.share`                | Implemented: default `false`. `true` lets this machine host isolated sessions for the other members of its daemon group, under this machine's runtime sign-in, and opens one TLS-PSK port for them. Read at start; `config/push` cannot set it. See [Sharing a machine with its group](#sharing-a-machine-with-its-group).                  |
 
-### Strategy table (designed, not implemented)
+### Strategy table (partly implemented)
 
 One daemon runs several backends side by side, and an agent chooses which one its
 sessions use ([session-executors.md](session-executors.md) §5). `sandbox.backend` becomes
@@ -108,6 +108,22 @@ default table, `requireSandbox: true` is `host: false`, and a table with no avai
 entry refuses startup. The agent's **Run in sandbox** becomes a strategy picker,
 `runInSandbox` migrates to `host` or to the backend its daemon reports, and an
 unavailable strategy refuses a session rather than downgrading it.
+
+The Control Plane half is in place. An agent stores `execution`, a strategy slug, beside
+`runInSandbox`, and the two are written together. The Control Plane checks a new value
+against the strategies where the agent is placed — the daemon's table, or for a group
+those at least one ready member offers — and refuses one it cannot run with 409 and the
+reason. That check replaces the two sandbox conflicts. Each daemon reports its own table at
+registration (`capabilities.strategies`) beside its legacy `sandbox.backend`
+(`capabilities.sandboxBackend`). Until the table above replaces the single backend,
+`ownStrategies` (`execution/strategies.ts`) reads that backend as a table. `host` is
+available on every platform unless `security.requireSandbox` is set, and the configured
+backend is available only when its probe passed. The migration runs once. An unsandboxed
+agent became `host`, and a sandboxed agent with no placement became `srt`. A placed,
+sandboxed agent takes its daemon's reported backend at that daemon's next registration,
+`srt` unless it is `microsandbox`. Until then its `execution` stays empty, and the daemon
+keeps reading `runInSandbox`. The table configuration, the probes and launch dispatch on
+`execution` are still designed.
 
 ### Shared mounts and manual conversion
 
@@ -1066,7 +1082,8 @@ is the image's layout.
 `effectiveStrategies` (`execution/strategies.ts`) is the effective strategy
 table: `host` and `microsandbox`, each available or unavailable with a reason.
 `microsandbox` reads the probe behind `sandboxUnavailable`. The executor facet
-reports its own reading of the table at registration.
+reports its own reading of the table at registration, beside the machine's own table
+for its own sessions ([Strategy table](#strategy-table-partly-implemented)).
 
 ### Sharing a machine with its group
 
@@ -1227,10 +1244,11 @@ Delivery is split into independently reviewable steps:
    counts. Change the default only after compatibility and resource measurements
    support it.
 6. **Designed — strategy table and convergence:** the strategy table and the agent's
-   strategy choice ([above](#strategy-table-designed-not-implemented)); local VMs
-   launched through the in-process executor; `srt` as an SRT boundary around the
-   shim, local and remote (session-executors.md §5, §11, §12). Local microsandbox Git
-   and workspace files already cross the shim instead of agentd exec.
+   strategy choice ([above](#strategy-table-partly-implemented)), whose Control Plane
+   half has landed; local VMs launched through the in-process executor; `srt` as an SRT
+   boundary around the shim, local and remote (session-executors.md §5, §11, §12).
+   Local microsandbox Git and workspace files already cross the shim instead of agentd
+   exec.
 
 Implementation status above does not establish successful end-to-end daemon
 execution. Pull requests that reach this path boot one real VM in CI

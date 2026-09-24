@@ -96,6 +96,7 @@ function agent(daemonId: string | null): AgentRecord {
     allowedTargetAgentIds: [],
     introduceOnJoin: false,
     runInSandbox: false,
+    execution: 'host',
     lastModifiedAt: MODIFIED_AT,
     lastModifiedBy: null,
     configRevision: 0n

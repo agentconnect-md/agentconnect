@@ -8,7 +8,7 @@ import { McpServerSpec } from './mcpserver.js'
 import { MemoryConnectionSpec } from './memory-connection.js'
 import { CollabRoutesSnapshot } from './collab.js'
 import { GitCommitIdentity } from './gitcred.js'
-import { ExecutorFacts } from './executor.js'
+import { ExecutorFacts, ExecutorStrategyName, ExecutorStrategyTable } from './executor.js'
 
 /**
  * Capability upload + the reconcile snapshot — protocol §3.3.
@@ -36,7 +36,11 @@ export const RegisterReq = z.object({
     // Why a configured sandbox is unusable right now; `features` keeps `sandbox`, since such a daemon refuses a launch rather than running it unconfined.
     sandboxUnavailable: z.string().max(2000).optional(),
     // Session-executor facts (session-executors.md §6); absent for a daemon that reports none, and stripped by a CP that predates them.
-    executor: ExecutorFacts.optional()
+    executor: ExecutorFacts.optional(),
+    // The machine's own effective strategy table (§5), in the executor report's shape: what its own sessions can run in, and what an agent's `execution` is checked against.
+    strategies: ExecutorStrategyTable.optional(),
+    // The retiring `sandbox.backend`, reported while the daemon still reads one so the CP can migrate `runInSandbox` once (§5).
+    sandboxBackend: ExecutorStrategyName.optional()
   }),
   maxAgents: z.number().int(), // concurrency ceiling for placement (C3)
   localState: z.object({

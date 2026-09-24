@@ -488,8 +488,8 @@ way to close such a gap, and it is the one that costs something permanent:
 ### The tier a session is born in (decided 2026-09-03)
 
 A tier is a property of **one session**, decided when it is created and kept for its whole
-life. Changing an agent's `runInSandbox` or `workspaceIsolation` therefore reaches only
-sessions created afterwards. Every side asks one question — the ACP host key, the pod a host
+life. Changing an agent's `execution` (with the `runInSandbox` it keeps in step) or
+`workspaceIsolation` therefore reaches only sessions created afterwards. Every side asks one question — the ACP host key, the pod a host
 launches into, workspace preparation, the launch's HOME and sandbox grants, the console
 reads, and retirement — so no half of the daemon can start serving a live session somewhere
 the others do not address.

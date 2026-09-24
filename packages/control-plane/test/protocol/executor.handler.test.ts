@@ -78,7 +78,7 @@ async function memberSet(spreadSessions = true): Promise<string> {
 async function member(
   h: WsHarness,
   daemonId: string,
-  opts: { setId?: string; executor?: ExecutorFacts; features?: string[] } = {}
+  opts: { setId?: string; executor?: ExecutorFacts; features?: string[]; capabilities?: Record<string, unknown> } = {}
 ): Promise<InMemoryDaemonStub> {
   const token = await h.mintToken(daemonId)
   // Before auth: `auth/ok` announces the set, and a membership that changes mid-handshake closes the socket.
@@ -93,7 +93,8 @@ async function member(
       runtimes: ['claude'],
       acp: true,
       features: opts.features ?? [SESSION_EXECUTORS_V1_FEATURE],
-      ...(opts.executor ? { executor: opts.executor } : {})
+      ...(opts.executor ? { executor: opts.executor } : {}),
+      ...opts.capabilities
     },
     maxAgents: 8,
     localState: { assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }
@@ -176,6 +177,76 @@ describe('executor facts — what registration and the heartbeat persist (real P
   })
 })
 
+describe('the machine’s own strategy table and the execution migration (real Postgres)', () => {
+  const OWN = {
+    host: { available: true },
+    srt: { available: false, reason: 'srt is not the configured sandbox backend' },
+    microsandbox: { available: true }
+  }
+
+  const agentRow = (id: string) =>
+    prisma.agent.findUniqueOrThrow({
+      where: { id },
+      select: { execution: true, runInSandbox: true, configRevision: true }
+    })
+
+  it('stores the table and the legacy backend, and migrates the sandboxed agents placed on the daemon or its set once', async () => {
+    const h = buildWsHarness(prisma)
+    const setId = await memberSet()
+    const pinned = randomUUID()
+    const onSet = randomUUID()
+    const chosen = randomUUID()
+    const elsewhere = randomUUID()
+    await prisma.daemon.create({ data: { id: EXECUTOR, orgId: DEFAULT_ORG_ID, status: 'provisioned' } })
+    await seedAgent(prisma, pinned, { daemonId: EXECUTOR })
+    await seedAgent(prisma, onSet, { setId })
+    await seedAgent(prisma, chosen, { setId })
+    await seedAgent(prisma, elsewhere, {})
+    // What the migration leaves for a placed, sandboxed agent; `chosen` already names its strategy.
+    await prisma.agent.updateMany({
+      where: { id: { in: [pinned, onSet, elsewhere] } },
+      data: { runInSandbox: true, execution: null }
+    })
+    await prisma.agent.update({ where: { id: chosen }, data: { runInSandbox: true, execution: 'srt' } })
+    const before = await agentRow(pinned)
+
+    const stub = await member(h, EXECUTOR, { setId, capabilities: { strategies: OWN, sandboxBackend: 'microsandbox' } })
+    const stored = (await prisma.daemon.findUniqueOrThrow({ where: { id: EXECUTOR } })).capabilities
+    expect(stored).toMatchObject({ strategies: OWN, sandboxBackend: 'microsandbox' })
+    expect((await h.deps.registry.getUnscoped(EXECUTOR as never))?.capabilities).toMatchObject({
+      strategies: OWN,
+      sandboxBackend: 'microsandbox'
+    })
+
+    expect(await agentRow(pinned)).toEqual({
+      execution: 'microsandbox',
+      runInSandbox: true,
+      configRevision: before.configRevision + 1n
+    })
+    expect((await agentRow(onSet)).execution).toBe('microsandbox')
+    expect((await agentRow(chosen)).execution).toBe('srt')
+    expect((await agentRow(elsewhere)).execution).toBeNull()
+    // The snapshot the daemon converges to already carries it.
+    const snapshot = stub.lastSent('register/ok')!.payload as { agents: { agentId: string; execution?: string }[] }
+    expect(snapshot.agents.find((a) => a.agentId === pinned)?.execution).toBe('microsandbox')
+
+    // Once: a later registration naming another backend changes nothing already migrated.
+    const again = await agentRow(pinned)
+    await member(h, EXECUTOR, { capabilities: { sandboxBackend: 'srt' } })
+    expect(await agentRow(pinned)).toEqual(again)
+  })
+
+  it('a daemon that reports no backend migrates nothing', async () => {
+    const h = buildWsHarness(prisma)
+    const agent = randomUUID()
+    await prisma.daemon.create({ data: { id: EXECUTOR, orgId: DEFAULT_ORG_ID, status: 'provisioned' } })
+    await seedAgent(prisma, agent, { daemonId: EXECUTOR })
+    await prisma.agent.update({ where: { id: agent }, data: { runInSandbox: true, execution: null } })
+    await member(h, EXECUTOR, { features: [] })
+    expect((await agentRow(agent)).execution).toBeNull()
+  })
+})
+
 describe('executor/candidates — facts the duty holder pulls (real Postgres)', () => {
   it('answers the connected members whose facet is on, with runtime sign-in joined, and never the asker', async () => {
     const h = buildWsHarness(prisma)
@@ -208,7 +279,18 @@ describe('executor/candidates — facts the duty holder pulls (real Postgres)', 
     executor.inject('facts/daemon-runtimes', {
       runtimes: [
         { runtime: 'claude', version: '1', models: [], acpSupport: 'full', toolCalling: true },
-        { runtime: 'codex', version: '1', models: [], acpSupport: 'full', toolCalling: true, authRequired: true }
+        {
+          runtime: 'codex',
+          version: '1',
+          models: [],
+          acpSupport: 'full',
+          toolCalling: true,
+          authRequired: true,
+          strategies: {
+            host: { available: true, models: ['m-host'], modelsSource: 'probed' },
+            microsandbox: { available: true, models: ['m-image'], modelsSource: 'probed' }
+          }
+        }
       ],
       seq: 1
     })
@@ -224,10 +306,17 @@ describe('executor/candidates — facts the duty holder pulls (real Postgres)', 
       capacity: 32,
       hostedSessions: 3
     })
+    // Per strategy the member offers: its table has microsandbox unavailable, so only the host catalog is advertised.
     expect([...answer.candidates[0]!.runtimes].sort((a, b) => a.runtime.localeCompare(b.runtime))).toEqual([
       { runtime: 'claude', authRequired: false },
-      { runtime: 'codex', authRequired: true }
+      {
+        runtime: 'codex',
+        authRequired: true,
+        strategies: { host: { available: true, models: ['m-host'], modelsSource: 'probed' } }
+      }
     ])
+    const stored = await prisma.runtimeProfile.findFirstOrThrow({ where: { daemonId: EXECUTOR, runtime: 'codex' } })
+    expect(stored.strategies).toMatchObject({ microsandbox: { models: ['m-image'] } })
   })
 
   it('refuses an asker that does not hold the agent’s duty', async () => {
@@ -353,9 +442,15 @@ describe('executor/candidates — facts the duty holder pulls (real Postgres)', 
       await prisma.dutyGroup.update({ where: { id: GROUP }, data: { holder: THIRD } })
 
       expect(await hintFor(successor)).toBe(EXECUTOR)
-      // Ids and a stamp: the key the executor minted is nowhere in what the CP kept.
+      // The strategy the prepare named rides the hint, so the successor resumes in it.
+      const answer = await ask<ExecutorCandidatesResult>(successor, 'executor/candidates', {
+        agentId: AGENT,
+        sessionKey: SESSION_KEY
+      })
+      expect(answer.birthStrategy).toBe('host')
+      // Ids, a strategy and a stamp: the key the executor minted is nowhere in what the CP kept.
       const rows = await prisma.sessionExecutorHint.findMany()
-      expect(rows.map((r) => [r.sessionKey, r.executorDaemonId])).toEqual([[SESSION_KEY, EXECUTOR]])
+      expect(rows.map((r) => [r.sessionKey, r.executorDaemonId, r.strategy])).toEqual([[SESSION_KEY, EXECUTOR, 'host']])
       expect(dump(rows)).not.toContain(PSK)
     })
 
@@ -369,9 +464,10 @@ describe('executor/candidates — facts the duty holder pulls (real Postgres)', 
       await report(holder, session, new Date(preparedAt - 60_000), { executorDaemonId: OTHER })
       expect(await hintFor(holder)).toBe(EXECUTOR)
 
-      // A report written after the prepare is the holder's own word, and it wins.
+      // A report written after the prepare is the holder's own word, and it wins; it carries no strategy, so the birth one stays.
       await report(holder, session, new Date(preparedAt + 60_000), { executorDaemonId: OTHER })
       expect(await hintFor(holder)).toBe(OTHER)
+      expect((await prisma.sessionExecutorHint.findFirstOrThrow()).strategy).toBe('host')
 
       // A prepare answered before that report cannot take the hint back...
       h.clock.advance(30_000)

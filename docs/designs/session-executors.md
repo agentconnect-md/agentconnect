@@ -326,7 +326,12 @@ on this daemon").
 Existing agents migrate once: `runInSandbox: false` becomes `host`; `true` becomes
 the backend the agent's daemon last reported at registration, `srt` unless it runs
 `microsandbox`; an agent with no daemon becomes `srt`. Registration reports the legacy
-backend for exactly this purpose while a daemon still reads one.
+backend for exactly this purpose while a daemon still reads one (`sandboxBackend`,
+beside the machine's own table in `strategies`). A daemon that predates the report
+names no backend, so a placed, sandboxed agent keeps no strategy until that daemon's
+first registration with a report. Until then the spec carries none and the daemon reads
+`runInSandbox`. Every write of `execution` advances the agent's `configRevision`, since
+the field rides the spec.
 
 **No silent downgrade.** A session whose strategy is unavailable where it would run is
 refused with the probe's reason; it never falls back to a weaker boundary. A session
@@ -504,11 +509,13 @@ the machines talk to each other.
 1. **`executor/candidates {agentId, sessionKey?}`** — holder → CP, at session birth
    or when a successor picks the session up. The CP answers the connected members of
    the agent's set whose executor facet is on, each with its effective strategy
-   table, endpoint, capacity, `hostedSessions` and the runtimes it can authenticate.
+   table, endpoint, capacity, `hostedSessions` and the runtimes it can authenticate,
+   each with its entries for the strategies that table offers (§5).
    An empty answer carries its reason: the group's switch is off (§10), or no member
    shares. When `sessionKey` is named and the CP's hint for that (agent, session
-   key) names an executor, the answer also carries `currentExecutorDaemonId` and the
-   strategy the session was born with (§5) — a **hint**, not an instruction (§7).
+   key) names an executor, the answer also carries `currentExecutorDaemonId` and, as
+   `birthStrategy`, the strategy the session was born with (§5) — a **hint**, not an
+   instruction (§7).
    These are **facts, never a choice**: the CP ranks nothing and recommends nothing, and
    placement stays the holder's.
 2. **`executor/prepare {agentId, sessionKey, executorDaemonId, launchId, strategy, runtime, resources, image}`**
@@ -1276,8 +1283,8 @@ commits, including claim, sleep and orphan machinery this design does not need.
 About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
-**The 2026-09-24 revision** adds the following. M1 has landed and the rest have not
-started. Each lands alone; S1–S3 are one feature, and M1–M4 precede R1.
+**The 2026-09-24 revision** adds the following. S1 and M1 have landed and the rest
+have not started. Each lands alone; S1–S3 are one feature, and M1–M4 precede R1.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

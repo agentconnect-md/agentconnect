@@ -123,6 +123,62 @@ describe('the sandbox a daemon reports', () => {
   })
 })
 
+describe('the strategy table a daemon reports for its own sessions', () => {
+  async function ownTable(mutate: (daemon: Record<string, any>) => void): Promise<Record<string, unknown>> {
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn(async () => {}) }) as never
+    })
+    await daemon.start()
+    const anyDaemon = daemon as never as Record<string, any>
+    mutate(anyDaemon)
+    const table = anyDaemon.ownExecutionStrategies()
+    await daemon.stop().catch(() => {})
+    return table
+  }
+
+  it('names a failed microsandbox with the same reason sandboxUnavailable carries, and fits the register frame', async () => {
+    const table = await ownTable((daemon) => {
+      daemon.cfg.sandbox.backend = 'microsandbox'
+      daemon.cfg.security.requireSandbox = true
+      daemon.microsandbox = undefined
+      daemon.microsandboxFailure = 'cannot open /dev/kvm'
+    })
+    expect(table).toEqual({
+      host: { available: false, reason: 'security.requireSandbox is set on this daemon' },
+      srt: { available: false, reason: 'srt is not the configured sandbox backend' },
+      microsandbox: { available: false, reason: 'cannot open /dev/kvm' }
+    })
+    const decoded = RegisterReq.safeParse({
+      host: 'example-host',
+      capabilities: {
+        platforms: [],
+        runtimes: [],
+        acp: true,
+        features: [],
+        strategies: table,
+        sandboxBackend: 'microsandbox'
+      },
+      maxAgents: 1,
+      localState: { assignments: [], crons: [], leases: [] }
+    })
+    expect(decoded.success).toBe(true)
+  })
+
+  it('offers srt only when this host has a mechanism, with the probe’s reason when it has none', async () => {
+    const withMechanism = await ownTable((daemon) => {
+      daemon.sandboxMechanism = 'bwrap'
+    })
+    expect(withMechanism.srt).toEqual({ available: true })
+    expect(withMechanism.host).toEqual({ available: true })
+    const without = await ownTable((daemon) => {
+      daemon.sandboxMechanism = undefined
+      daemon.sandboxProbe = { mechanism: undefined, reason: 'bwrap is not on PATH' }
+    })
+    expect(without.srt).toEqual({ available: false, reason: 'bwrap is not on PATH' })
+  })
+})
+
 describe('microsandbox state left by an earlier backend', () => {
   async function startupWarnings(bindings?: string[], root = scaffold()): Promise<string[]> {
     if (bindings) {

@@ -19,7 +19,8 @@ import type {
   SessionPullRequestFeedback,
   SessionPullRequestFeedbackResult,
   TaskList,
-  TaskListReq
+  TaskListReq,
+  ExecutorStrategyTable
 } from '@agentconnect.md/protocol'
 import { POD_TEMPLATE_HASH_ENV } from '@agentconnect.md/protocol'
 import { ClientTransport, systemClock } from '@agentconnect.md/connection'
@@ -99,6 +100,9 @@ export interface CpClientRegistrationHost {
   registrationFeatures(): string[]
   /** Set only when a configured sandbox is unusable; the CP keeps the `sandbox` capability either way. */
   sandboxUnavailable(): string | undefined
+  /** The machine's own strategy table and its retiring `sandbox.backend`, which the CP migrates `runInSandbox` from (session-executors.md §5). */
+  ownStrategies(): ExecutorStrategyTable
+  sandboxBackend(): string
   /** The executor facet (session-executors.md §6); while it is dark it reports nothing, and then nothing new is sent. */
   executorFacet(): ExecutorFacet | undefined
   admittedRuntimeIds(): string[]
@@ -273,7 +277,9 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         acp: true,
         features: host.registrationFeatures(),
         ...(sandboxUnavailable ? { sandboxUnavailable } : {}),
-        ...(executor ? { executor } : {})
+        ...(executor ? { executor } : {}),
+        strategies: host.ownStrategies(),
+        sandboxBackend: host.sandboxBackend()
       }
     },
     // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on
