@@ -684,7 +684,10 @@ describe('a target judged where the session could land (session-executors.md §5
     })
     expect(selected).toMatchObject({ runtime: 'alternative', model: 'model-capable' })
     expect(prepareAt).not.toHaveBeenCalled()
-    expect(internal.sessionExecutorVerdicts.get(key)).toBe('no_candidate')
+    expect(internal.sessionExecutorVerdicts.get(key)).toEqual({
+      stayedHomeReason: 'no_candidate',
+      birthStrategy: 'host'
+    })
   })
 
   it.each([

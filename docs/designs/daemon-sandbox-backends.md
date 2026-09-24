@@ -135,14 +135,14 @@ for a group those at least one ready member offers, and refuses one it cannot ru
 with 409 and the reason. The migration runs once: an unsandboxed agent became
 `host`, a sandboxed agent with no placement became `srt`, and a placed, sandboxed
 agent takes its daemon's reported backend at that daemon's next registration.
+A session keeps the strategy it was born with: its holder records it with the birth
+verdict, and an executor refuses a `prepare` in another strategy for an environment
+it already holds (S2b).
 Model selection judges a rule's target against the machines the session could land
 on, in the strategy's own catalog, and placement lands a session only where its
 runtime and model run (S2c). The console's strategy picker (S3) offers the same
 tables: the daemon read model carries each machine's own table, and an agent carries
 its placement's.
-A session keeps the strategy it was born with: its holder records it with the birth
-verdict, and an executor refuses a `prepare` in another strategy for an environment
-it already holds (S2b).
 
 ### Shared mounts and manual conversion
 
@@ -1292,9 +1292,10 @@ Delivery is split into independently reviewable steps:
 6. **Partly implemented — strategy table and convergence:** the strategy table and the
    agent's strategy choice ([above](#strategy-table-implemented-on-the-daemon)): the
    Control Plane half, then the daemon's table, probes, dispatch and refusal (S2a),
-   then the birth strategy and mismatch refusal (S2b); still designed are the image's
-   model probe, the console picker, local VMs launched through the in-process
-   executor, and `srt` as an SRT boundary around the shim, local and remote
+   then the birth strategy and mismatch refusal (S2b), target checks and the image's
+   model probe (S2c), and the console picker (S3); still designed are local VMs
+   launched through the in-process executor and `srt` as an SRT boundary around the
+   shim, local and remote
    (session-executors.md §5, §11, §12). Local microsandbox Git and workspace files
    already cross the shim instead of agentd exec.
 

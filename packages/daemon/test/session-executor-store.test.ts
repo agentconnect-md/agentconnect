@@ -226,15 +226,15 @@ describe('LocalStore session executor', () => {
   })
 
   it.skipIf(usingPostgresStore())(
-    'adds the birth strategy to a v27 store, leaving its verdicts without one',
+    'adds the birth strategy to a v28 store, leaving its verdicts without one',
     async () => {
-      const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v27-')), 'local.sqlite')
+      const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v28b-')), 'local.sqlite')
       await (await LocalStore.open(path)).close()
       const old = new DatabaseSync(path)
       old.exec('ALTER TABLE sessions DROP COLUMN birthStrategy')
       old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt, executorDaemonId)
       VALUES ('k1', 'bot-a', 'slack', 'C1', 'T1', 'acp-1', 'idle', 100, '${EXECUTOR}')`)
-      old.exec('PRAGMA user_version = 27')
+      old.exec('PRAGMA user_version = 28')
       old.close()
 
       const upgraded = await LocalStore.open(path)

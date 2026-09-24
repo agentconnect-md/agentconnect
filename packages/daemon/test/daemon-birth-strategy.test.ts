@@ -215,6 +215,39 @@ describe('the birth strategy on the holder', () => {
     expect(await internal.store.getSessionExecutor(other)).toBeUndefined()
   })
 
+  it("judges a Decision's target in the hinted birth strategy's catalog, as placement will", async () => {
+    const internal = await start(scaffold({ execution: 'microsandbox', memory: { provider: 'none' } }))
+    vi.spyOn(internal, 'holderOffers').mockReturnValue(false)
+    const agent = internal.agents.get(AGENT)
+    const key = KEY('1700000000.001000')
+    internal.sessionIsolation.set(key, 'session')
+    const answer = (birthStrategy?: string): ExecutorCandidatesResult => ({
+      candidates: [
+        {
+          daemonId: EXECUTOR,
+          endpoint: { host: '192.0.2.10', port: 7100 },
+          strategies: { host: { available: true }, microsandbox: { available: true } },
+          runtimes: [
+            {
+              runtime: 'claude',
+              authRequired: false,
+              strategies: {
+                host: { available: true, models: ['model-host'], modelsSource: 'probed' },
+                microsandbox: { available: true, models: ['model-image'], modelsSource: 'probed' }
+              }
+            }
+          ]
+        }
+      ],
+      currentExecutorDaemonId: EXECUTOR,
+      ...(birthStrategy ? { birthStrategy } : {})
+    })
+    const target = { runtime: 'claude', model: 'model-host' }
+    expect(internal.sessionRuntimeSupported(agent, key, target, answer('host'))).toBe(true)
+    // Without the hint the agent's strategy decides, and its image does not run that model.
+    expect(internal.sessionRuntimeSupported(agent, key, target, answer())).toBe(false)
+  })
+
   it('gives a key born again after its row was purged the agent’s strategy now, not the one cached from before', async () => {
     const root = scaffold({ execution: 'srt' })
     const internal = await start(root)
