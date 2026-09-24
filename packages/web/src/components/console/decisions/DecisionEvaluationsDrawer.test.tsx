@@ -37,7 +37,7 @@ afterEach(async () => {
 
 const conversation = { integrationId: 'int-1', channelId: 'C1' }
 
-function tree(onClose: () => void) {
+function tree(onClose: () => void, initialSeq?: number) {
   return (
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
       <DecisionsPrototypeProvider>
@@ -45,6 +45,7 @@ function tree(onClose: () => void) {
           conversation={conversation}
           channelName="#help"
           agentName="Support"
+          initialSeq={initialSeq}
           onClose={onClose}
         />
       </DecisionsPrototypeProvider>
@@ -52,13 +53,13 @@ function tree(onClose: () => void) {
   )
 }
 
-async function render(api: DecisionApi, onClose: () => void = () => {}) {
+async function render(api: DecisionApi, onClose: () => void = () => {}, initialSeq?: number) {
   vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(api)
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
   await act(async () => {
-    root?.render(tree(onClose))
+    root?.render(tree(onClose, initialSeq))
   })
   await act(async () => {})
   await act(async () => {})
@@ -119,6 +120,17 @@ describe('DecisionEvaluationsDrawer', () => {
     expect(onClose).not.toHaveBeenCalled()
     await escape()
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens straight on the evaluation a session marker names, and Back lands on the list', async () => {
+    const api = decisionMock.createDecisionMockApi()
+    const [, second] = (await api.listEvaluations(conversation)).items
+    await render(api, () => {}, second!.seq)
+    expect(detail()).toBeTruthy()
+    expect(detail()!.textContent).toContain('Skipped')
+    await escape()
+    expect(detail()).toBeNull()
+    expect(rows()).toHaveLength(6)
   })
 
   it('loads the next page by cursor', async () => {

@@ -28,12 +28,15 @@ export function DecisionEvaluationsDrawer({
   conversation,
   channelName,
   agentName,
+  initialSeq,
   onClose
 }: {
   conversation: DecisionConversationRef
   /** The conversation as its row reads, for the drawer's subtitle. */
   channelName?: string
   agentName?: string
+  /** Opens straight on this evaluation's detail; Back still lands on the list. */
+  initialSeq?: number
   onClose: () => void
 }) {
   const t = useTranslations('Decisions')
@@ -56,7 +59,7 @@ export function DecisionEvaluationsDrawer({
   } | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [moreError, setMoreError] = useState<string | null>(null)
-  const [open, setOpen] = useState<number | null>(null)
+  const [open, setOpen] = useState<number | null>(initialSeq ?? null)
   // The row that opened a detail gets keyboard focus back on the way back to the list.
   const opener = useRef<number | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
