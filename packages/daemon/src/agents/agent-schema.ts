@@ -252,13 +252,7 @@ export const AgentSchema = z.object({
       .string()
       .regex(/^[1-9]\d*$/)
       .optional(),
-    // The agent's additional-repository allowlist, replicated from the CP
-    // (multi-repository-workspaces.md decision 2). `repoId` is the host's numeric
-    // repository/project id as a decimal string, so a rename cannot orphan an entry,
-    // and `provider` qualifies it — the hosts number theirs independently
-    // (gitlab-com-integration.md §8.1). Absent ⇒ github, what every entry a
-    // pre-GitLab control plane replicated means. `materialize` (decision 13) is kept
-    // as replicated so a re-read never strips it; absent ⇒ always. Nothing reads it yet.
+    // The CP-replicated allowlist (multi-repository-workspaces.md decisions 2, 13): rename-proof `repoId` qualified by `provider` (absent ⇒ github), and `materialize` (absent ⇒ always, the only rows checked out).
     additionalRepos: z
       .array(
         z.object({

@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { MEMORY_FORMAT_GUIDANCE } from '../../memory/frontmatter.js'
 import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
 import { NO_RESPONSE_RULE } from '../no-response.js'
@@ -43,6 +44,15 @@ export function encodeMemoryBoundaryBody(content: string): string {
  * the tool-native pointer var the daemon points at the materialized file. */
 export type StandingContextFileSecret = { sourceVar: string; pointerVar: string }
 
+/** Where a session clones the authorized repositories it was not handed, and which those are, sorted by name. */
+export type OnDemandCloneContext = {
+  path: string
+  repositories: readonly { repoFullName: string; cloneUrl: string }[]
+}
+
+/** The most not-checked-out repositories the standing context names; the rest are counted. */
+export const MAX_ON_DEMAND_NAMES = 100
+
 /** Everything the standing context is derived from. Every field is already resolved by
  * the caller — this input carries no lookups, no host, and no live message object. */
 export type StandingContextInput = {
@@ -66,6 +76,8 @@ export type StandingContextInput = {
   fileSecrets: readonly StandingContextFileSecret[]
   /** The workspace roots this session is handed as additional directories, beside its own cwd. */
   workspaceRoots?: readonly { path: string; repoFullName: string; branch: string }[]
+  /** The directory it clones the authorized repositories it was not handed into, and which those are (decision 20). */
+  onDemandClones?: OnDemandCloneContext
   needsReplyToParent: boolean
   /** The agent memory INDEX, already read and trimmed; '' for native/absent memory. */
   memoryIndex: string
@@ -79,7 +91,7 @@ export type StandingContextInput = {
 export type StandingContext = {
   memoryAppend: string
   agentMeta: string
-  /** The additional repositories block; '' when the session has no secondary root. */
+  /** The additional repositories block; '' when the session has no secondary root and nothing to clone on demand. */
   workspaceRootsAppend: string
   /** The platform module's standing block; '' when the delivery carried none. */
   platformAppend: string
@@ -196,20 +208,41 @@ function buildAgentMeta(input: StandingContextInput): string {
   ].join('\n')
 }
 
-// The session's additional workspace roots (multi-repository-workspaces.md decision 10). Standing
-// like the meta block: the set is fixed for the session, and the model must not mistake a root's
-// default branch for anything the current task is pinned to — the cwd may be a reviewed secondary
-// root, which puts the PRIMARY on this list instead.
+// The session's additional roots (multi-repository-workspaces.md decision 10), then what it may clone on demand (decision 20); standing, since both are fixed for the session.
 export function buildWorkspaceRootsAppend(
-  roots: readonly { path: string; repoFullName: string; branch: string }[] | undefined
+  roots: readonly { path: string; repoFullName: string; branch: string }[] | undefined,
+  onDemand?: OnDemandCloneContext
 ): string {
-  if (!roots?.length) return ''
+  const listed = roots?.length
+    ? [
+        'Additional repositories checked out for this session (each at its default branch, for reference ' +
+          'only; the working directory is none of them):',
+        ...roots.map((root) => `- ${root.path} — ${root.repoFullName} (${root.branch})`)
+      ]
+    : []
+  const clonable = onDemand?.repositories.length ? onDemandLines(onDemand) : []
+  if (!listed.length && !clonable.length) return ''
+  return ['# Additional repositories', ...listed, ...(listed.length && clonable.length ? [''] : []), ...clonable].join(
+    '\n'
+  )
+}
+
+function onDemandLines({ path, repositories }: OnDemandCloneContext): string[] {
+  const [first] = repositories
+  const names = repositories.slice(0, MAX_ON_DEMAND_NAMES).map((repo) => repo.repoFullName)
+  const more = repositories.length - names.length
   return [
-    '# Additional repositories',
-    'Additional repositories checked out for this session (each at its default branch, for reference ' +
-      'only; the working directory is none of them):',
-    ...roots.map((root) => `- ${root.path} — ${root.repoFullName} (${root.branch})`)
-  ].join('\n')
+    `Authorized but not checked out: ${names.join(', ')}${more > 0 ? ` and ${more} more` : ''}.`,
+    `When you need one, clone it into ${path} as <owner>/<repo>, e.g. ` +
+      `\`git clone ${first!.cloneUrl} ${onDemandCloneTarget(path, first!.repoFullName)}\`.`,
+    'Credentials for these repositories are automatic.'
+  ]
+}
+
+/** `<dir>/<owner>/<repo>`, the depth retirement judges a clone at; a nested GitLab path keeps its top group and its own name. */
+function onDemandCloneTarget(dir: string, repoFullName: string): string {
+  const segments = repoFullName.split('/')
+  return join(dir, segments[0]!, segments.at(-1)!)
 }
 
 // Standing guidance for agent↔agent collaboration. `sendMessage` can wake a peer, reach
@@ -289,7 +322,7 @@ export function buildParentReplyAppend(
 export function buildStandingContext(input: StandingContextInput): StandingContext {
   const memoryAppend = buildMemoryAppend(input.memoryIndex)
   const agentMeta = buildAgentMeta(input)
-  const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots)
+  const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
   const collabAppend = COLLAB_APPEND

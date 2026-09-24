@@ -1,5 +1,10 @@
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildStandingContext, buildWorkspaceRootsAppend } from '../src/session/turn/standing-context.js'
+import {
+  buildStandingContext,
+  buildWorkspaceRootsAppend,
+  MAX_ON_DEMAND_NAMES
+} from '../src/session/turn/standing-context.js'
 
 const BASE = {
   agentName: 'bot-multi',
@@ -42,6 +47,65 @@ describe('buildWorkspaceRootsAppend', () => {
   })
 })
 
+describe('buildWorkspaceRootsAppend with on-demand repositories (decision 20)', () => {
+  const dir = join('/srv', 'agents', 'bot-multi', 'clones', 'a1b2c3')
+  const ON_DEMAND = {
+    path: dir,
+    repositories: [
+      { repoFullName: 'example-co/api', cloneUrl: 'https://github.com/example-co/api' },
+      {
+        repoFullName: 'example-group/sub/example-project',
+        cloneUrl: 'https://gitlab.com/example-group/sub/example-project.git'
+      }
+    ]
+  }
+
+  it('names the clone directory, one clone with the host’s own URL, the automatic credentials and the names, after the roots', () => {
+    expect(buildWorkspaceRootsAppend(ROOTS, ON_DEMAND)).toBe(
+      [
+        buildWorkspaceRootsAppend(ROOTS),
+        '',
+        'Authorized but not checked out: example-co/api, example-group/sub/example-project.',
+        `When you need one, clone it into ${dir} as <owner>/<repo>, e.g. ` +
+          `\`git clone https://github.com/example-co/api ${join(dir, 'example-co', 'api')}\`.`,
+        'Credentials for these repositories are automatic.'
+      ].join('\n')
+    )
+  })
+
+  it('keeps its own heading when nothing is checked out, and a nested GitLab path at two levels', () => {
+    const gitlabFirst = { path: dir, repositories: [...ON_DEMAND.repositories].reverse() }
+
+    const block = buildWorkspaceRootsAppend([], gitlabFirst)
+
+    expect(block.split('\n')[0]).toBe('# Additional repositories')
+    expect(block).not.toContain('checked out for this session')
+    expect(block).toContain(
+      `\`git clone https://gitlab.com/example-group/sub/example-project.git ${join(dir, 'example-group', 'example-project')}\``
+    )
+  })
+
+  it('names at most 100 repositories and counts the rest', () => {
+    const repositories = Array.from({ length: 103 }, (_, index) => ({
+      repoFullName: `example-org/repo-${String(index).padStart(3, '0')}`,
+      cloneUrl: `https://github.com/example-org/repo-${String(index).padStart(3, '0')}`
+    }))
+
+    const names = buildWorkspaceRootsAppend(undefined, { path: dir, repositories })
+      .split('\n')
+      .find((line) => line.startsWith('Authorized but not checked out: '))!
+
+    expect(names).toContain('example-org/repo-099 and 3 more.')
+    expect(names).not.toContain('example-org/repo-100')
+    expect(names.split(', ')).toHaveLength(MAX_ON_DEMAND_NAMES)
+  })
+
+  it('says nothing more when every repository is checked out', () => {
+    expect(buildWorkspaceRootsAppend(ROOTS, { path: dir, repositories: [] })).toBe(buildWorkspaceRootsAppend(ROOTS))
+    expect(buildWorkspaceRootsAppend(undefined, undefined)).toBe('')
+  })
+})
+
 describe('buildStandingContext with workspace roots', () => {
   it('re-asserts the roots on resume, right after the agent meta block', () => {
     const context = buildStandingContext({ ...BASE, workspaceRoots: ROOTS })
@@ -55,6 +119,20 @@ describe('buildStandingContext with workspace roots', () => {
 
   it('leaves the context byte-identical when there is no root to name', () => {
     expect(buildStandingContext({ ...BASE, workspaceRoots: [] })).toEqual(buildStandingContext(BASE))
+  })
+
+  it('re-asserts the on-demand block on resume, and leaves an agent with none byte-identical', () => {
+    const onDemandClones = {
+      path: '/srv/agents/bot-multi/clones/a1b2c3',
+      repositories: [{ repoFullName: 'example-co/api', cloneUrl: 'https://github.com/example-co/api' }]
+    }
+    const context = buildStandingContext({ ...BASE, workspaceRoots: ROOTS, onDemandClones })
+
+    expect(context.workspaceRootsAppend).toBe(buildWorkspaceRootsAppend(ROOTS, onDemandClones))
+    expect(context.resumeSystemContext).toContain('Authorized but not checked out: example-co/api.')
+    expect(buildStandingContext({ ...BASE, workspaceRoots: ROOTS, onDemandClones: undefined })).toEqual(
+      buildStandingContext({ ...BASE, workspaceRoots: ROOTS })
+    )
   })
 })
 

@@ -19,6 +19,8 @@ export const GITEA_ROOTS_DIR = '_gitea'
 export const RESERVED_SECONDARY_ROOT_DIRS: ReadonlySet<string> = new Set([GITLAB_ROOTS_DIR, GITEA_ROOTS_DIR])
 /** Every root's per-session worktrees hang off this leaf of it — the agent root for the primary, the subtree for a secondary. */
 export const WORKTREES_DIR = 'worktrees'
+/** A worktree-tier or shared session clones the repositories it was not handed into its own `clones/<id>` (decision 20). */
+export const ON_DEMAND_CLONES_DIR = 'clones'
 /** What a secondary root's subtree records about the checkout beside it. */
 export const SECONDARY_MATERIALIZATION_FILE = '.materialization.json'
 
@@ -42,6 +44,11 @@ export function primaryCheckoutIn(agentRoot: string): string {
 /** `<agentRoot>/repos` — the parent every secondary root's subtree hangs off. */
 export function secondaryRootsDirIn(agentRoot: string): string {
   return join(agentRoot, SECONDARY_ROOTS_DIR)
+}
+
+/** `<agentRoot>/clones` — the parent of every session's on-demand clone directory. */
+export function onDemandClonesDirIn(agentRoot: string): string {
+  return join(agentRoot, ON_DEMAND_CLONES_DIR)
 }
 
 /** The subtree name a GitLab project's root hangs at — its numeric id, which a rename cannot change. */
