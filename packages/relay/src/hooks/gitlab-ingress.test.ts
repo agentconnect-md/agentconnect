@@ -9,6 +9,7 @@ import {
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  RD_CODEHOST_RELEASE_V1,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
   type RcRunReport,
@@ -150,6 +151,7 @@ interface Harness {
   offline: boolean
   gitlabSupported: boolean
   gitlabInstanceSupported: boolean
+  releaseSupported: boolean
   /** The routing host's answer to a host copy; the default selects every candidate as Otherwise. */
   routeAck: (msg: RdMsgHook) => RdAck | Promise<RdAck>
   routingSupported: boolean
@@ -170,6 +172,7 @@ function makeHarness(): Harness {
     offline: false,
     gitlabSupported: true,
     gitlabInstanceSupported: true,
+    releaseSupported: true,
     routingSupported: true,
     routingV2Supported: true,
     routeAck: (msg) => ({
@@ -194,6 +197,7 @@ function makeHarness(): Harness {
           supports: (capability: string) => {
             if (capability === GITLAB_COM_V1_FEATURE) return h.gitlabSupported === true
             if (capability === GITLAB_INSTANCE_V1_FEATURE) return h.gitlabInstanceSupported === true
+            if (capability === RD_CODEHOST_RELEASE_V1) return h.releaseSupported === true
             if (capability === HOOK_DECISION_ROUTING_V1_FEATURE) return h.routingSupported === true
             if (capability === HOOK_DECISION_ROUTING_V2_FEATURE) return h.routingV2Supported === true
             return true
@@ -420,6 +424,49 @@ describe('gitlab ingress', () => {
     expect(msg.hookId).toBe(HOOK)
     expect(msg.sessionKey).toBe(`gitlab:${PROJECT}:push:refs/heads/main`)
     expect(msg.gitlab?.target).toEqual({ kind: 'push', ref: 'refs/heads/main' })
+  })
+
+  // GitLab's Release Hook carries its action at the top level and names no actor.
+  const release = (action: string) => ({
+    object_kind: 'release',
+    action,
+    tag: 'v1.2.0',
+    name: 'v1.2.0 — faster sync',
+    description: '## Changes\n- faster sync',
+    url: 'https://gitlab.example.test/example-group/example-project/-/releases/v1.2.0',
+    project: { id: PROJECT, path_with_namespace: 'example-group/example-project' }
+  })
+
+  it('a release is relay-trusted in the project’s one releases session: create publishes, update edits', async () => {
+    h.table.upsert(rule({}, { events: ['release:*'] }))
+    h.table.upsert(rule({ hookId: HOOK_B }, { events: ['release:published'] }))
+    for (const action of ['create', 'update', 'delete']) {
+      expect((await post(h, release(action), { 'webhook-id': `msg_${action}` })).statusCode).toBe(202)
+    }
+    await flush()
+    expect(h.authzRequests).toHaveLength(0)
+    expect(h.sent.map((m) => `${(m as RdMsgHook).hookId}:${(m as RdMsgHook).event}`).sort()).toEqual(
+      [`${HOOK}:release:published`, `${HOOK_B}:release:published`, `${HOOK}:release:edited`].sort()
+    )
+    const msg = h.sent[0] as RdMsgHook
+    expect(msg.sessionKey).toBe(`gitlab:${PROJECT}:releases`)
+    expect(msg.gitlab?.target).toEqual({ kind: 'release', tag: 'v1.2.0' })
+    expect(msg.context).toMatchObject({
+      event: 'release',
+      title: 'v1.2.0 — faster sync',
+      htmlUrl: 'https://gitlab.example.test/example-group/example-project/-/releases/v1.2.0',
+      bodyExcerpt: '## Changes\n- faster sync',
+      release: { tag: 'v1.2.0' }
+    })
+  })
+
+  it('refuses a release target to a daemon that cannot decode it', async () => {
+    h.releaseSupported = false
+    h.table.upsert(rule({}, { events: ['release:published'] }))
+    expect((await post(h, release('create'))).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(0)
+    expect(h.reports).toEqual([expect.objectContaining({ status: 'failed', reason: 'rejected:unsupported' })])
   })
 
   it('merged MRs and closed issues fan out as maintenance cleanup, bypassing the actor gate', async () => {

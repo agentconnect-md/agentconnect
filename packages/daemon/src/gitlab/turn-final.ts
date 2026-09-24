@@ -26,10 +26,10 @@ export interface GitlabTurnFinalHost {
   log: { warn: (message: string) => void }
 }
 
-/** §14.1 rides the same pipe as GitHub: `repo` is the numeric project id and `number` the subject IID; pushes have no thread and stay silent. */
+/** §14.1 rides the same pipe as GitHub: `repo` is the numeric project id and `number` the subject IID; pushes and releases have no thread and stay silent. */
 function replyTarget(msg: CodeHostReplySource): CodeHostReplyTarget | undefined {
   const gitlab = msg.gitlab
-  if (!gitlab || gitlab.target.kind === 'push') return undefined
+  if (!gitlab || gitlab.target.kind === 'push' || gitlab.target.kind === 'release') return undefined
   return {
     hookId: msg.hookId,
     provider: 'gitlab',

@@ -38,6 +38,7 @@ describe('unionGiteaWebhookEvents', () => {
 
   it('subscribes a push-only hook to push alone, and unions across hooks in a stable order', () => {
     expect(unionGiteaWebhookEvents([hook({ events: ['push:*'] })], REPO)).toEqual(['push'])
+    expect(unionGiteaWebhookEvents([hook({ events: ['release:published'] })], REPO)).toEqual(['release'])
     const union = unionGiteaWebhookEvents(
       [hook({ events: ['push:*'] }), hook({ events: ['merge_request:*'] }), hook()],
       REPO

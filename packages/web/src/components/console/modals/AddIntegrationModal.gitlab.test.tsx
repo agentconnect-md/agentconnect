@@ -419,14 +419,15 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     expect(help.join(' ')).not.toContain('CODEOWNERS')
   })
 
-  it('offers exactly the two subjects GitHub offers, and never emits a push event', async () => {
+  it('offers issues, merge requests and releases, and never emits a push event', async () => {
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
 
-    expect(document.querySelectorAll('[data-gitlab-family]')).toHaveLength(2)
+    expect(document.querySelectorAll('[data-gitlab-family]')).toHaveLength(3)
     expect(family('issues')).not.toBeNull()
     expect(family('merge_request')).not.toBeNull()
+    expect(family('release')).not.toBeNull()
     expect(family('push')).toBeNull()
 
     // Selecting everything reachable still compiles no push event; the exact

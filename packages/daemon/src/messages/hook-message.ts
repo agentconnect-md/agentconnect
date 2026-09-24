@@ -33,7 +33,9 @@ import {
   type CodehostTurnFacts,
   type GithubHookMetadata,
   type GiteaHookMetadata,
+  type GiteaHookTarget,
   type GitlabHookMetadata,
+  type GitlabHookTarget,
   type HookContext,
   type RdMsgHook,
   type UserTurnBody
@@ -91,9 +93,17 @@ function splitSessionKey(msg: RdMsgHook, host: HookProviderCase | undefined): { 
   return { channel: msg.sessionKey }
 }
 
+/** A push or a release: nothing numbered to answer, so no reply, no standing rules and no review. */
+function isThreadless<T extends GitlabHookTarget | GiteaHookTarget>(
+  target: T
+): target is Extract<T, { kind: 'push' | 'release' }> {
+  return target.kind === 'push' || target.kind === 'release'
+}
+
 /** The §12.3 provider-qualified thread value, recomputed from trusted metadata. */
 export function gitlabSessionThread(gitlab: GitlabHookMetadata): string {
   const target = gitlab.target
+  if (target.kind === 'release') return `gitlab:${gitlab.projectId}:releases`
   return target.kind === 'push'
     ? `gitlab:${gitlab.projectId}:push:${target.ref}`
     : `gitlab:${gitlab.projectId}:${target.kind}:${target.iid}`
@@ -107,29 +117,31 @@ export function gitlabSessionThread(gitlab: GitlabHookMetadata): string {
  */
 export function giteaSessionThread(gitea: GiteaHookMetadata): string {
   const target = gitea.target
+  if (target.kind === 'release') return `gitea:${gitea.repoId}:releases`
   return target.kind === 'push'
     ? `gitea:${gitea.repoId}:push:${target.ref}`
     : `gitea:${gitea.repoId}:${target.kind}:${target.index}`
 }
 
-/** `PR #42` / `issue #7` / the pushed ref — the subject as a person would say it. */
+/** `PR #42` / `issue #7` / the pushed ref / `release v1.2.0` — the subject as a person would say it. */
 function giteaSubjectLabel(gitea: GiteaHookMetadata | undefined): string {
   const target = gitea?.target
   if (!target) return 'Gitea'
   if (target.kind === 'push') return target.ref
+  if (target.kind === 'release') return `release ${target.tag}`
   return target.kind === 'pull' ? `PR #${target.index}` : `issue #${target.index}`
 }
 
 /** `example-org/example-repo#12` — Gitea's native reference syntax, the same for an issue and a pull request. */
 function giteaSubjectRef(gitea: GiteaHookMetadata): string {
   const target = gitea.target
-  return target.kind === 'push' ? gitea.repoPath : `${gitea.repoPath}#${target.index}`
+  return isThreadless(target) ? gitea.repoPath : `${gitea.repoPath}#${target.index}`
 }
 
 /** The subject's own page on its instance, built from trusted metadata rather than the delivery's link. */
 function giteaThreadUrl(gitea: GiteaHookMetadata): string | undefined {
   const target = gitea.target
-  if (target.kind === 'push') return undefined
+  if (isThreadless(target)) return undefined
   const base = (gitea.host ?? GITEA_DEFAULT_BASE_URL).replace(/\/+$/, '')
   return `${base}/${gitea.repoPath}/${target.kind === 'pull' ? 'pulls' : 'issues'}/${target.index}`
 }
@@ -184,6 +196,8 @@ function githubSessionTitle(context: HookContext, github: GithubHookMetadata | u
 /** Initial console title from the signed GitLab envelope. */
 function gitlabSessionTitle(context: HookContext, gitlab: GitlabHookMetadata | undefined): string | undefined {
   if (!gitlab) return undefined
+  // A release session is the project's: every release there continues it.
+  if (gitlab.target.kind === 'release') return clampSessionTitle(`Releases ${gitlab.projectPath}`)
   const label = gitlab.target.kind === 'merge_request' ? 'MR' : gitlab.target.kind === 'issue' ? 'Issue' : 'Push'
   const prefix = `${label} ${gitlabSubjectRef(context, gitlab)}`
   const detail = context.title?.replace(/\s+/g, ' ').trim()
@@ -193,6 +207,7 @@ function gitlabSessionTitle(context: HookContext, gitlab: GitlabHookMetadata | u
 /** Initial console title from the signed Gitea envelope. */
 function giteaSessionTitle(context: HookContext, gitea: GiteaHookMetadata | undefined): string | undefined {
   if (!gitea) return undefined
+  if (gitea.target.kind === 'release') return clampSessionTitle(`Releases ${gitea.repoPath}`)
   const label = gitea.target.kind === 'pull' ? 'PR' : gitea.target.kind === 'issue' ? 'Issue' : 'Push'
   const prefix = `${label} ${giteaSubjectRef(gitea)}`
   const detail = context.title?.replace(/\s+/g, ' ').trim()
@@ -381,6 +396,16 @@ function githubReplyHint(
   )
 }
 
+/** `Tag:` from the trusted identity; the target and the prerelease/draft flags when the host has them. */
+function releaseHeaderLines(tag: string, c: HookContext): string[] {
+  return [
+    `Tag: ${tag}`,
+    ...(c.release?.target ? [`Target: ${c.release.target}`] : []),
+    ...(c.release?.prerelease !== undefined ? [`Prerelease: ${c.release.prerelease}`] : []),
+    ...(c.release?.draft !== undefined ? [`Draft: ${c.release.draft}`] : [])
+  ]
+}
+
 /** The github-kind turn text: a trusted metadata header + the FENCED excerpt.
  *  The title rides the header (relay-sanitized to one capped line) — it is
  *  still attacker-authored, so keep it quoted and short, never instructional
@@ -401,10 +426,7 @@ function buildGithubHookText(
     ...(c.environment ? [`Environment: ${c.environment}`] : []),
     ...(c.ref ? [`Ref: ${c.ref}`] : []),
     ...(c.sha ? [`Commit: ${c.sha}`] : []),
-    ...(c.release ? [`Tag: ${c.release.tag}`] : []),
-    ...(c.release?.target ? [`Target: ${c.release.target}`] : []),
-    ...(c.release?.prerelease !== undefined ? [`Prerelease: ${c.release.prerelease}`] : []),
-    ...(c.release?.draft !== undefined ? [`Draft: ${c.release.draft}`] : []),
+    ...(c.release ? releaseHeaderLines(c.release.tag, c) : []),
     ...(c.htmlUrl ? [c.htmlUrl] : [])
   ].join('\n')
   // Ordinary replies use the display context's number. Inline replies instead
@@ -481,9 +503,9 @@ function gitlabStandingContext(): string {
   ].join('\n')
 }
 
-/** The per-turn line for a GitLab issue/MR subject (§14.1); a push has no thread to answer. */
+/** The per-turn line for a GitLab issue/MR subject (§14.1); a push or release has no thread to answer. */
 function gitlabReplyHint(c: HookContext, gitlab: GitlabHookMetadata, reviewPolicy: RdMsgHook['reviewPolicy']): string {
-  if (gitlab.target.kind === 'push') return ''
+  if (isThreadless(gitlab.target)) return ''
   const where = gitlabSubjectRef(c, gitlab)
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
   if (gitlabOpensReviewGeneration(event, gitlab, reviewPolicy)) {
@@ -512,6 +534,7 @@ function buildGitlabHookText(
     ...(target.kind === 'merge_request' && target.headSha ? [`Head SHA: ${target.headSha}`] : []),
     ...(target.kind === 'merge_request' && target.isDraft !== undefined ? [`Draft: ${target.isDraft}`] : []),
     ...(target.kind === 'push' ? [`Ref: ${target.ref}`] : []),
+    ...(target.kind === 'release' ? releaseHeaderLines(target.tag, c) : []),
     ...(c.htmlUrl ? [c.htmlUrl] : [])
   ].join('\n')
   if (!c.bodyExcerpt) return head + tail
@@ -570,9 +593,9 @@ function giteaStandingContext(): string {
   ].join('\n')
 }
 
-/** The per-turn line for a Gitea issue or pull-request subject (§10.1); a push has no thread to answer. */
+/** The per-turn line for a Gitea issue or pull-request subject (§10.1); a push or release has no thread to answer. */
 function giteaReplyHint(c: HookContext, gitea: GiteaHookMetadata, reviewPolicy: RdMsgHook['reviewPolicy']): string {
-  if (gitea.target.kind === 'push') return ''
+  if (isThreadless(gitea.target)) return ''
   const where = giteaSubjectRef(gitea)
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
   if (giteaOpensReviewGeneration(event, gitea, reviewPolicy)) {
@@ -658,6 +681,7 @@ function buildGiteaHookText(
     ...(target.kind === 'pull' && target.headSha ? [`Head SHA: ${target.headSha}`] : []),
     ...(target.kind === 'pull' && target.isDraft !== undefined ? [`Draft: ${target.isDraft}`] : []),
     ...(target.kind === 'push' ? [`Ref: ${target.ref}`] : []),
+    ...(target.kind === 'release' ? releaseHeaderLines(target.tag, c) : []),
     ...(c.htmlUrl ? [c.htmlUrl] : [])
   ].join('\n')
   const review = supplement?.giteaReview
@@ -723,7 +747,7 @@ function gitlabTurnFacts(
   const target = gitlab.target
   const review = gitlabOpensReviewGeneration(common.event, gitlab, reviewPolicy)
     ? 'generation'
-    : target.kind === 'push'
+    : isThreadless(target)
       ? undefined
       : 'conversation'
   return {
@@ -732,13 +756,13 @@ function gitlabTurnFacts(
     subject: {
       kind: target.kind,
       repo: gitlab.projectPath,
-      ...(target.kind !== 'push' ? { number: target.iid } : {}),
+      ...(!isThreadless(target) ? { number: target.iid } : {}),
       ...(c.title ? { title: c.title } : {}),
       ...(c.htmlUrl ? { url: c.htmlUrl } : {})
     },
     ...(target.kind === 'merge_request' && target.headSha ? { revision: { head: target.headSha } } : {}),
     ...(target.kind === 'merge_request' && target.isDraft !== undefined ? { draft: target.isDraft } : {}),
-    ...(target.kind === 'push' ? { ref: target.ref } : {}),
+    ...(target.kind === 'push' ? { ref: target.ref } : target.kind === 'release' ? { ref: target.tag } : {}),
     ...(review ? { review } : {})
   }
 }
@@ -753,7 +777,7 @@ function giteaTurnFacts(
   const target = gitea.target
   const review = giteaOpensReviewGeneration(common.event, gitea, reviewPolicy)
     ? 'generation'
-    : target.kind === 'push'
+    : isThreadless(target)
       ? undefined
       : 'conversation'
   return {
@@ -763,7 +787,7 @@ function giteaTurnFacts(
       // The console's subject vocabulary: a Gitea pull request is a pull request there.
       kind: target.kind === 'pull' ? 'pull_request' : target.kind,
       repo: gitea.repoPath,
-      ...(target.kind !== 'push' ? { number: target.index } : {}),
+      ...(!isThreadless(target) ? { number: target.index } : {}),
       ...(c.title ? { title: c.title } : {}),
       ...(c.htmlUrl ? { url: c.htmlUrl } : {})
     },
@@ -776,7 +800,7 @@ function giteaTurnFacts(
         }
       : {}),
     ...(target.kind === 'pull' && target.isDraft !== undefined ? { draft: target.isDraft } : {}),
-    ...(target.kind === 'push' ? { ref: target.ref } : {}),
+    ...(target.kind === 'push' ? { ref: target.ref } : target.kind === 'release' ? { ref: target.tag } : {}),
     ...(review ? { review } : {})
   }
 }
@@ -787,11 +811,12 @@ function numberedSubjectLabel(c: HookContext, kind: string | undefined, number: 
   return kind === 'pull_request' ? `PR #${number}` : kind === 'issue' ? `issue #${number}` : `#${number}`
 }
 
-/** `MR !77` / `issue #42` / the pushed ref — GitLab's subject as a person would say it. */
+/** `MR !77` / `issue #42` / the pushed ref / `release v1.2.0` — GitLab's subject as a person would say it. */
 function gitlabSubjectLabel(c: HookContext, gitlab: GitlabHookMetadata | undefined): string {
   if (!gitlab) return numberedSubjectLabel(c, undefined, c.number)
   const target = gitlab.target
   if (target.kind === 'push') return target.ref
+  if (target.kind === 'release') return `release ${target.tag}`
   return target.kind === 'merge_request' ? `MR !${target.iid}` : `issue #${target.iid}`
 }
 
@@ -807,12 +832,14 @@ function githubEventLine(c: HookContext, subject: string, thread: string | undef
     const state = c.action ? (DEPLOYMENT_STATE_VERBS[c.action] ?? c.action.replace(/_/g, ' ')) : 'updated'
     return `Deployment ${where} ${state}`
   }
-  if (c.event === 'release' && c.release) {
-    // "Published release v1.2.0" — the tag names it; the title rides the prompt.
-    const verb = c.action ? (RELEASE_ACTION_VERBS[c.action] ?? c.action.replace(/_/g, ' ')) : 'Updated'
-    return `${verb} release ${c.release.tag}`
-  }
+  if (c.event === 'release' && c.release) return releaseEventLine(c, `release ${c.release.tag}`)
   return undefined
+}
+
+/** "Published release v1.2.0" — the tag names it; the title rides the prompt. */
+function releaseEventLine(c: HookContext, subject: string): string {
+  const verb = c.action ? (RELEASE_ACTION_VERBS[c.action] ?? c.action.replace(/_/g, ' ')) : 'Updated'
+  return `${verb} ${subject}`
 }
 
 /** `event — subject — title`, the first line of a hook-origin anchor. */
@@ -917,16 +944,21 @@ const HOOK_NORMALIZERS: { readonly [P in CodeHostProvider]: HookNormalizer<P> } 
   gitlab: {
     decisionSubject: (c, gitlab) => {
       const t = gitlab?.target
-      if (!t || t.kind === 'push') return targetDecisionSubject(c, undefined, undefined, undefined, gitlab?.projectPath)
+      if (!t || isThreadless(t)) return targetDecisionSubject(c, undefined, undefined, undefined, gitlab?.projectPath)
       const draft = t.kind === 'merge_request' ? t.isDraft : undefined
       return targetDecisionSubject(c, t.kind, t.iid, draft, gitlab.projectPath)
     },
     sessionThread: (gitlab) => (gitlab ? gitlabSessionThread(gitlab) : undefined),
     sessionTitle: gitlabSessionTitle,
-    standingContext: (_c, gitlab) => (gitlab && gitlab.target.kind !== 'push' ? gitlabStandingContext() : undefined),
+    standingContext: (_c, gitlab) => (gitlab && !isThreadless(gitlab.target) ? gitlabStandingContext() : undefined),
     turnFacts: gitlabTurnFacts,
     subjectLabel: gitlabSubjectLabel,
-    eventLine: (_c, gitlab, subject) => (gitlab?.target.kind === 'push' ? `Pushed ${subject}` : undefined),
+    eventLine: (c, gitlab, subject) =>
+      gitlab?.target.kind === 'push'
+        ? `Pushed ${subject}`
+        : gitlab?.target.kind === 'release'
+          ? releaseEventLine(c, subject)
+          : undefined,
     text: (c, gitlab, reviewPolicy) => (gitlab ? buildGitlabHookText(c, gitlab, reviewPolicy) : undefined),
     anchorLine: (c, gitlab) =>
       gitlab
@@ -937,16 +969,21 @@ const HOOK_NORMALIZERS: { readonly [P in CodeHostProvider]: HookNormalizer<P> } 
   gitea: {
     decisionSubject: (c, gitea) => {
       const t = gitea?.target
-      if (!t || t.kind === 'push') return targetDecisionSubject(c, undefined, undefined, undefined, gitea?.repoPath)
+      if (!t || isThreadless(t)) return targetDecisionSubject(c, undefined, undefined, undefined, gitea?.repoPath)
       if (t.kind === 'issue') return targetDecisionSubject(c, 'issue', t.index, undefined, gitea.repoPath)
       return targetDecisionSubject(c, 'pull_request', t.index, t.isDraft, gitea.repoPath)
     },
     sessionThread: (gitea) => (gitea ? giteaSessionThread(gitea) : undefined),
     sessionTitle: giteaSessionTitle,
-    standingContext: (_c, gitea) => (gitea && gitea.target.kind !== 'push' ? giteaStandingContext() : undefined),
+    standingContext: (_c, gitea) => (gitea && !isThreadless(gitea.target) ? giteaStandingContext() : undefined),
     turnFacts: giteaTurnFacts,
     subjectLabel: (_c, gitea) => giteaSubjectLabel(gitea),
-    eventLine: (_c, gitea, subject) => (gitea?.target.kind === 'push' ? `Pushed ${subject}` : undefined),
+    eventLine: (c, gitea, subject) =>
+      gitea?.target.kind === 'push'
+        ? `Pushed ${subject}`
+        : gitea?.target.kind === 'release'
+          ? releaseEventLine(c, subject)
+          : undefined,
     text: (c, gitea, reviewPolicy, supplement) =>
       gitea ? buildGiteaHookText(c, gitea, reviewPolicy, supplement) : undefined,
     anchorLine: (c, gitea) =>

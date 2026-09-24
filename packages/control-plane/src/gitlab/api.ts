@@ -769,6 +769,7 @@ export interface GitlabWebhookEvents {
   issues_events: boolean
   merge_requests_events: boolean
   note_events: boolean
+  releases_events: boolean
 }
 
 export async function gitlabCreateWebhook(

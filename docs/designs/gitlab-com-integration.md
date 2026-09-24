@@ -903,6 +903,16 @@ Stored code-host patterns remain provider-neutral. The GitLab adapter maps:
 | merge-request conversation comment | Note Hook with a merge-request subject |
 | merge-request diff comment         | Note Hook with a diff-note position    |
 | `push:*`                           | Push Hook                              |
+| `release:published` / `:edited`    | Release Hook `create` / `update`       |
+
+A Release Hook carries its action and facts at the top level and names no
+actor, so a release is relay-trusted like a push — creating one already takes
+Developer access and a protected-tag check — and no bound-account veto can
+apply to it. For the same reason the Console offers a release only its publish
+(`release:published`): an any-update row would re-fire on the service
+account's own edit of the notes, and `release:*` stays API-only. A deletion is
+never a turn. The managed webhook subscribes `releases_events` only while a
+release row exists.
 
 The Console keeps the same cadence:
 
@@ -994,7 +1004,14 @@ GitLab hooks always use `perThread`. A rename-stable key is derived from:
 ```text
 issue or merge request: gitlab:<numeric-project-id>:<issue-or-merge-request>:<iid>
 push:                   gitlab:<numeric-project-id>:push:<ref>
+release:                gitlab:<numeric-project-id>:releases
 ```
+
+Every release of a project continues one session, as on GitHub: no event
+retires a per-tag session, and the agent can compare a release with the one
+before it. The trusted target is `{ kind: 'release', tag }`; an older daemon
+cannot decode that member, so the relay sends one only to a daemon advertising
+`codehost-release-v1`.
 
 Issue and merge-request events require a positive numeric IID and the exact
 subject discriminator. Standalone push events instead require the non-empty

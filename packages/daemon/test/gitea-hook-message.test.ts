@@ -153,6 +153,38 @@ describe('gitea hook normalization (§8)', () => {
     })
   })
 
+  it('a release is the repository’s one releases session: no reply, its tag and flags on the header', () => {
+    const release = fire({
+      sessionKey: `gitea:${REPO}:releases`,
+      event: 'release:edited',
+      gitea: { repoId: REPO, repoPath: PATH, target: { kind: 'release', tag: 'v1.2.0' } },
+      context: {
+        source: 'gitea',
+        event: 'release',
+        action: 'edited',
+        title: 'v1.2.0 — faster sync',
+        htmlUrl: `https://gitea.com/${PATH}/releases/tag/v1.2.0`,
+        bodyExcerpt: 'faster sync',
+        release: { tag: 'v1.2.0', target: 'main', prerelease: true, draft: false },
+        truncated: false
+      }
+    })
+    expect(giteaSessionThread(release.gitea!)).toBe(`gitea:${REPO}:releases`)
+    const text = buildHookText(release)
+    expect(text).toContain(`Gitea release:edited — ${PATH} "v1.2.0 — faster sync"`)
+    for (const line of ['Tag: v1.2.0', 'Target: main', 'Prerelease: true', 'Draft: false']) expect(text).toContain(line)
+    expect(text).not.toContain('The daemon owns the reply')
+    const normalized = buildHookMessage(release, 't')
+    expect(normalized).toMatchObject({
+      text: 'Edited release v1.2.0',
+      initialSessionTitle: `Releases ${PATH}`,
+      threadUrl: `https://gitea.com/${PATH}/releases/tag/v1.2.0`
+    })
+    expect(normalized.standingContext).toBeUndefined()
+    expect(normalized.turnBody?.codehost).toMatchObject({ subject: { kind: 'release', repo: PATH }, ref: 'v1.2.0' })
+    expect(normalized.turnBody?.codehost?.review).toBeUndefined()
+  })
+
   it('carries the assembled prompt and the Gitea facts on the turn body, a pull request as a pull request', () => {
     const issue = buildHookMessage(fire(), 't')
     expect(issue.turnBody?.prompt).toBe(buildHookText(fire()))

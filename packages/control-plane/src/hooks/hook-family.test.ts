@@ -59,6 +59,8 @@ describe('hook family — pattern classification', () => {
     expect(eventPatternFitsFamily('gitlab', 'deployment', 'deployment_status:*')).toBe(false)
     expect(eventPatternFitsFamily('github', 'release', 'release:*')).toBe(true)
     expect(eventPatternFitsFamily('github', 'release', 'issue_comment:created')).toBe(false)
+    expect(eventPatternFitsFamily('gitlab', 'release', 'release:published')).toBe(true)
+    expect(eventPatternFitsFamily('gitea', 'release', 'release:*')).toBe(true)
   })
 
   it('knows which families can carry reviews, and which patterns ride the shared subscription', () => {

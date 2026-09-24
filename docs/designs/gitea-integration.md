@@ -309,6 +309,7 @@ of the enabled hooks on the repository:
 | `merge_request:*`          | `pull_request`, `pull_request_sync`, `pull_request_label`, `pull_request_review_request`, `pull_request_review` |
 | pull-request comment       | `issue_comment`, `pull_request_comment`, `pull_request_review`                                                  |
 | `push:*`                   | `push`                                                                                                          |
+| `release:*`                | `release`                                                                                                       |
 
 Comment events are over-subscribed for the same reason GitLab over-subscribes
 `note`: a per-thread session opened by an issue or pull-request trigger
@@ -384,6 +385,7 @@ signing key inline.
 | `issues:labeled` / `merge_request:labeled` | `issue_label` / `pull_request_label` `label_updated` — admitted only for a row whose label filter is non-empty                        |
 | maintenance cleanup family                 | `pull_request` `closed` with `merged: true`; `issues` `closed`                                                                        |
 | `push:*`                                   | `push`                                                                                                                                |
+| `release:published` / `release:edited`     | `release` `published` / `updated`; `deleted` is never a turn                                                                          |
 
 Edited-comment noise, draft toggles, and assignment events are vetoed exactly
 as in §12; Gitea delivers assignment and milestone churn under its own
@@ -402,7 +404,7 @@ The normalized event names are GitLab's, so a stored pattern stays
 provider-neutral: `issues:opened`, `issues:labeled`, `merge_request:opened`,
 `merge_request:labeled`, `merge_request:synchronize`,
 `merge_request:review_requested`, `note:created`,
-`push`, and the maintenance pair `issues:closed` / `merge_request:merged`. A
+`push`, `release:published`, `release:edited`, and the maintenance pair `issues:closed` / `merge_request:merged`. A
 review submission is the one delivery GitLab has no counterpart for, and its
 verdict is the only thing the relay can carry into the correlation below, so it
 normalizes to `review:commented`, `review:approved`, or
@@ -499,7 +501,15 @@ subject discriminator is still required:
 ```text
 issue or pull request: gitea:<numeric-repository-id>:<issue|pull>:<index>
 push:                  gitea:<numeric-repository-id>:push:<ref>
+release:               gitea:<numeric-repository-id>:releases
 ```
+
+A release is relay-trusted like a push, since publishing one takes write
+access, and the bot's own release never re-triggers: unlike GitLab's, a Gitea
+release names its `sender`. The delivery carries the tag, target and
+prerelease/draft flags, and the Console offers `published` and any update
+(`release:*`). An older daemon cannot decode the `release` target, so the relay
+sends one only to a daemon advertising `codehost-release-v1`.
 
 `transportScope = gitea:<numeric-repository-id>`. Turn admission — head lanes,
 supersession, comment batching on one pull request — is the provider-neutral

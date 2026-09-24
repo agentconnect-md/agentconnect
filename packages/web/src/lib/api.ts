@@ -4063,7 +4063,7 @@ export type GitlabCommentFamily = 'issues' | 'merge_request'
 /** The subject family ONE code-host row covers: a row is `(agent, repo, family)`,
  *  each with its own cadence and mention gate, and the family is immutable. */
 export type GithubHookFamily = 'pull_request' | 'issues' | 'push' | 'deployment' | 'release'
-export type GitlabHookFamily = 'merge_request' | 'issues' | 'push'
+export type GitlabHookFamily = 'merge_request' | 'issues' | 'push' | 'release'
 /** Gitea rows speak the GitLab family vocabulary (gitea-integration.md §8): a pull request
  *  is stored as the `merge_request` family, and the relay maps its event types onto it. */
 export type GiteaHookFamily = GitlabHookFamily

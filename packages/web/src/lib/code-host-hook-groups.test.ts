@@ -102,11 +102,11 @@ describe('orderedGithubHookRows', () => {
 })
 
 describe('orderedGitlabHookRows', () => {
-  it('leads with merge requests and offers the missing subject', () => {
+  it('leads with merge requests and offers the missing subjects', () => {
     const rows = orderedGitlabHookRows([
       hook({ id: 'a', kind: 'gitlab', repoId: '7', repoFullName: 'group/proj', family: 'issues', events: ['issues:*'] })
     ])
-    expect(rows[0]!.addFamilies).toEqual(['merge_request'])
+    expect(rows[0]!.addFamilies).toEqual(['merge_request', 'release'])
     const both = orderedGitlabHookRows([
       hook({
         id: 'a',
@@ -123,9 +123,17 @@ describe('orderedGitlabHookRows', () => {
         repoFullName: 'group/proj',
         family: 'merge_request',
         events: ['merge_request:*']
+      }),
+      hook({
+        id: 'c',
+        kind: 'gitlab',
+        repoId: '7',
+        repoFullName: 'group/proj',
+        family: 'release',
+        events: ['release:published']
       })
     ])
-    expect(both.map((row) => row.family)).toEqual(['merge_request', 'issues'])
+    expect(both.map((row) => row.family)).toEqual(['merge_request', 'issues', 'release'])
     expect(both.flatMap((row) => row.addFamilies)).toEqual([])
   })
 })

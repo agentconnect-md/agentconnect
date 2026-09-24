@@ -143,6 +143,44 @@ describe('gitlab hook normalization (§12.3)', () => {
     expect(buildHookMessage(push, 't').standingContext).toBeUndefined()
   })
 
+  it('a release is the project’s one releases session: no reply, its tag on the header and the turn body', () => {
+    const release = fire({
+      sessionKey: `gitlab:${PROJECT}:releases`,
+      event: 'release:published',
+      gitlab: {
+        projectId: PROJECT,
+        projectPath: 'example-group/example-project',
+        target: { kind: 'release', tag: 'v1.2.0' }
+      },
+      context: {
+        source: 'gitlab',
+        event: 'release',
+        action: 'published',
+        title: 'v1.2.0 — faster sync',
+        htmlUrl: 'https://gitlab.example.test/example-group/example-project/-/releases/v1.2.0',
+        bodyExcerpt: 'faster sync',
+        release: { tag: 'v1.2.0' },
+        truncated: false
+      }
+    })
+    expect(gitlabSessionThread(release.gitlab!)).toBe(`gitlab:${PROJECT}:releases`)
+    const text = buildHookText(release)
+    expect(text).toContain('GitLab release:published — example-group/example-project "v1.2.0 — faster sync"')
+    expect(text).toContain('Tag: v1.2.0')
+    expect(text).not.toContain('Prerelease:')
+    expect(text).not.toContain('the daemon posts your final back')
+    const normalized = buildHookMessage(release, 't')
+    expect(normalized).toMatchObject({
+      text: 'Published release v1.2.0',
+      initialSessionTitle: 'Releases example-group/example-project',
+      threadUrl: 'https://gitlab.example.test/example-group/example-project/-/releases/v1.2.0'
+    })
+    expect(normalized.standingContext).toBeUndefined()
+    expect(normalized.turnBody?.codehost).toMatchObject({ subject: { kind: 'release' }, ref: 'v1.2.0' })
+    expect(normalized.turnBody?.codehost?.review).toBeUndefined()
+    expect(normalized.turnBody?.codehost?.subject.number).toBeUndefined()
+  })
+
   it('carries the assembled prompt and the GitLab facts on the turn body', () => {
     const issue = buildHookMessage(fire(), 't')
     expect(issue.turnBody?.prompt).toBe(buildHookText(fire()))

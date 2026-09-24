@@ -43,7 +43,8 @@ const EVENTS: GitlabWebhookEvents = {
   push_events: true,
   issues_events: true,
   merge_requests_events: true,
-  note_events: false
+  note_events: false,
+  releases_events: false
 }
 
 /** The account this agent must hold in the project's top-level group (§7.2). */

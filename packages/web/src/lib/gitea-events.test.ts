@@ -15,6 +15,7 @@ import {
   giteaHookNeedsNormalization,
   giteaMentionUsage,
   giteaTriggerModeOf,
+  giteaTriggerModes,
   giteaTriggerTooltip
 } from './gitea-events'
 
@@ -52,8 +53,8 @@ describe('GT_TRIGGER_LABEL', () => {
 })
 
 describe('GT_FAMILIES', () => {
-  it('offers the same two subjects the other hosts do — pushes stay held back', () => {
-    expect(GT_FAMILIES.map((entry) => entry.fam)).toEqual(['issues', 'merge_request'])
+  it('offers issues, pull requests and releases — pushes stay held back', () => {
+    expect(GT_FAMILIES.map((entry) => entry.fam)).toEqual(['issues', 'merge_request', 'release'])
     // A pull request is the merge_request FAMILY on the wire, and a PR in the console's words.
     expect(giteaFamilyTile('merge_request')?.pill).toBe('PRs')
     expect(giteaFamilyTile('merge_request')?.label).toBe('Pull requests')
@@ -67,6 +68,22 @@ describe('GT_FAMILIES', () => {
     expect(giteaFamilyCarriesReviews('merge_request')).toBe(true)
     expect(giteaFamilyCarriesReviews('issues')).toBe(false)
     expect(giteaFamilyCarriesReviews('push')).toBe(false)
+  })
+})
+
+describe('the release family', () => {
+  it('offers its publish and every change, never the mention gate or a comment family', () => {
+    expect(giteaTriggerModes('release')).toEqual(['first', 'every'])
+    expect(giteaTriggerTooltip('first', 'reviewer', 'release')).toBe('Runs when a release or prerelease is published.')
+    const published = giteaFamilySubscription('release', 'first')
+    expect(published).toEqual({ events: ['release:published'], commentFamilies: [], mentionOnly: false })
+    const every = giteaFamilySubscription('release', 'every')
+    expect(every).toEqual({ events: ['release:*'], commentFamilies: [], mentionOnly: false })
+    expect(giteaFamilySubscription('release', 'mention')).toEqual(published)
+    expect(giteaTriggerModeOf(published)).toBe('first')
+    expect(giteaTriggerModeOf(every)).toBe('every')
+    expect(giteaHookNeedsNormalization(published)).toBe(false)
+    expect(giteaHookNeedsNormalization(every)).toBe(false)
   })
 })
 

@@ -16,7 +16,8 @@ export const GITEA_WEBHOOK_EVENTS = [
   'pull_request_review_request',
   'pull_request_comment',
   'pull_request_review',
-  'push'
+  'push',
+  'release'
 ] as const
 export type GiteaWebhookEvent = (typeof GITEA_WEBHOOK_EVENTS)[number]
 
@@ -50,6 +51,7 @@ export function unionGiteaWebhookEvents(
       if (pattern.startsWith('issues:')) for (const event of ISSUE_EVENTS) events.add(event)
       else if (pattern.startsWith('merge_request:')) for (const event of MERGE_REQUEST_EVENTS) events.add(event)
       else if (pattern.startsWith('push:')) events.add('push')
+      else if (pattern.startsWith('release:')) events.add('release')
     }
     for (const family of hook.commentFamilies) {
       if (family === 'issues') events.add('issue_comment')
