@@ -29,6 +29,7 @@ import type { GithubCommentAttributionSource } from '../github/poster.js'
 import type { GitlabPublishFailure } from '../gitlab/poster.js'
 import type { HookPromptSupplement } from '../messages/hook-message.js'
 import { replyTargetProvider, type CodeHostReplyTarget } from './reply-target.js'
+import type { PullRequestContext } from './pull-context.js'
 
 /** The one end-of-turn poster both providers implement — the published surface's `poster` slot. */
 export interface CodeHostFinalPoster {
@@ -85,12 +86,12 @@ export interface CodeHostTurnFinal<P extends CodeHostProvider = CodeHostProvider
   finalPoster(target: CodeHostReplyTarget, deps: CodeHostFinalPosterDeps): CodeHostFinalPoster
   /** Host content this delivery's prompt needs fetched first (gitea-integration.md §8); absent for a host whose deliveries are complete on the wire. */
   promptSupplement?(msg: RdMsgHook, deps: CodeHostPromptSupplementDeps): Promise<HookPromptSupplement | undefined>
-  pullRequestDescription(
+  pullRequestContext(
     source: CodeHostReplySource,
     agentId: string,
     host: CodeHostTurnFinalHost,
     signal: AbortSignal
-  ): Promise<string | undefined>
+  ): Promise<PullRequestContext | undefined>
   /** True when this provider's poster names WHY its one comment is absent (§14.1); GitHub's reports none. */
   readonly reportsAbsentOutput: boolean
 }
@@ -105,15 +106,15 @@ const TURN_FINALS: { readonly [P in CodeHostProvider]: CodeHostTurnFinal<P> } = 
 /** Every registered member, in provider order — the order a member that claims its own delivery resolves in. */
 const TURN_FINAL_MEMBERS: readonly CodeHostTurnFinal[] = Object.values(TURN_FINALS)
 
-export async function codeHostPullRequestDescription(
+export async function codeHostPullRequestContext(
   source: CodeHostReplySource,
   agentId: string,
   host: CodeHostTurnFinalHost,
   signal: AbortSignal
-): Promise<string | undefined> {
+): Promise<PullRequestContext | undefined> {
   for (const member of TURN_FINAL_MEMBERS) {
-    const description = await member.pullRequestDescription(source, agentId, host, signal)
-    if (description !== undefined) return description
+    const context = await member.pullRequestContext(source, agentId, host, signal)
+    if (context !== undefined) return context
   }
   return undefined
 }

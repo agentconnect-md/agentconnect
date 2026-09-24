@@ -62,7 +62,7 @@ import { replyTargetProvider, type CodeHostReplyTarget } from '../codehost/reply
 import {
   codeHostHostFence,
   codeHostPromptSupplement,
-  codeHostPullRequestDescription,
+  codeHostPullRequestContext,
   codeHostReplyTarget,
   codeHostThreadWorktreeCleanup,
   turnFinalFor,
@@ -71,6 +71,7 @@ import {
   type CodeHostTurnFinalHost
 } from '../codehost/turn-final.js'
 import { GithubReviewClient, type GithubReviewEffect } from './review.js'
+import type { PullRequestContext } from '../codehost/pull-context.js'
 
 /** Dispatch options this seam needs; a subset of the daemon's own. */
 export interface GithubHookDispatchOptions {
@@ -1049,8 +1050,8 @@ export class GithubReviewOrchestrator {
     })
   }
 
-  pullRequestDescription(hook: HookDispatchContext, signal: AbortSignal): Promise<string | undefined> {
-    return codeHostPullRequestDescription(hook, hook.agentId, this.turnFinalHost, signal)
+  pullRequestContext(hook: HookDispatchContext, signal: AbortSignal): Promise<PullRequestContext | undefined> {
+    return codeHostPullRequestContext(hook, hook.agentId, this.turnFinalHost, signal)
   }
 
   /** Build the per-turn final-answer selector and the owning host's poster, tokened via that

@@ -520,6 +520,7 @@ import {
   agentWithRuntime,
   configuredRuntimeAgent,
   modelSelectionState,
+  pullRequestModelSelectionState,
   pinnedDecisionModel
 } from './decisions/model-selection.js'
 import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost } from './key-server/session-hosts.js'
@@ -13574,11 +13575,11 @@ export class Daemon {
           }),
         state: async (decision) => {
           if (entry.hookContext) {
-            const description = await this.githubReviews.pullRequestDescription(
+            const context = await this.githubReviews.pullRequestContext(
               entry.hookContext,
               AbortSignal.any([entry.initAbort.signal, AbortSignal.timeout(5_000)])
             )
-            return description === undefined ? undefined : modelSelectionState('pull_request', description)
+            return context === undefined ? undefined : pullRequestModelSelectionState(context, decision)
           }
           const msg = entry.msg
           if (msg.source !== 'user') return undefined
