@@ -440,7 +440,7 @@ them in it; a VM-only machine probes on the host, which requires no host SRT.
 The image table supplies the guest command and binary version. A candidate missing
 from that table remains visible with **Binary not installed in image** when it has
 a stored login. An installed image runtime without a stored login remains visible
-in the Sandbox view with **Login required**.
+on the VM tab with **Login required**.
 
 Stored credentials indicate configuration, not current validity. Successful model
 enumeration does not establish a login or clear the absence of stored credentials.

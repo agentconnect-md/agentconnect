@@ -32,7 +32,7 @@ import {
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import { agentStrategyValue } from '@/lib/execution-strategy'
-import { useStrategyLabel } from '@/components/console/ExecutionStrategyField'
+import { useStrategyNames } from '@/components/console/ExecutionStrategyField'
 import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import {
   createGithubHook,
@@ -275,7 +275,7 @@ export default function AgentDetailView() {
   const decisions = useMemo(() => decisionsPrototype?.decisions ?? [], [decisionsPrototype])
   const permissionT = useTranslations('Common.permissionModes')
   const strategyT = useTranslations('Common.executionStrategy')
-  const strategyLabel = useStrategyLabel()
+  const strategyNames = useStrategyNames()
   const { orgPath, activeOrg, myRole } = useOrgs()
   const { me } = useProfile()
   const { id } = useParams<{ id: string }>()
@@ -1482,8 +1482,11 @@ export default function AgentDetailView() {
                     <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
                       {strategyT('label')}
                     </span>
-                    <span className="badge bg-(--surface-active) text-(--text-secondary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
-                      {strategyLabel(agentStrategyValue(da))}
+                    <span
+                      className="badge bg-(--surface-active) text-(--text-secondary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]"
+                      title={strategyNames.detail(agentStrategyValue(da))}
+                    >
+                      {strategyNames.name(agentStrategyValue(da))}
                     </span>
                   </div>
                 )}

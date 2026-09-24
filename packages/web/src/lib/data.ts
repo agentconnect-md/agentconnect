@@ -2277,6 +2277,14 @@ export interface DaemonCaps {
 /** An effective strategy table, keyed by strategy slug, with the reason a strategy cannot run here. */
 export type StrategyTable = Record<string, { available: true } | { available: false; reason: string }>
 
+/** One runtime under one strategy (session-executors.md §5); absent `models` ⇒ not probed there yet. */
+export interface RuntimeStrategyEntry {
+  available: boolean
+  unavailableReason?: string
+  models?: string[]
+  modelsSource?: 'cached' | 'probed'
+}
+
 /** A sharing daemon's effective strategy table and session ceiling. No address: an executor's is topology, never configured or shown. */
 export interface DaemonExecutor {
   enabled: boolean
@@ -2369,6 +2377,8 @@ export interface DaemonRow {
     hostVersion?: string | null
     hostAvailable?: boolean | null
     credentialsConfigured?: boolean | null
+    /** The runtime under each strategy the daemon offers; null/absent ⇒ a daemon that predates the entries. */
+    strategies?: Record<string, RuntimeStrategyEntry> | null
   }[]
   /** Daemon-configured MCP servers (name + transport, facts/daemon-runtimes). */
   mcpServers: McpServerInfo[]

@@ -1,5 +1,5 @@
 // The agent's execution strategy in the console (session-executors.md §5): what a placement offers, the picker's rows, and the request that names one.
-import type { Agent, DaemonCaps, StrategyTable } from '@/lib/data'
+import type { Agent, DaemonCaps, DaemonRow, StrategyTable } from '@/lib/data'
 
 /** The unsandboxed strategy, protocol's `HOST_STRATEGY`; the console value-imports no protocol module that is not a leaf. */
 export const HOST_STRATEGY = 'host'
@@ -21,6 +21,33 @@ export function strategyBoundary(slug: string): StrategyBoundary | undefined {
 
 /** A daemon that predates the table has "a sandbox" of unknown kind; this value is never a slug, so it is sent as `runInSandbox`. */
 export const LEGACY_SANDBOX = ':sandbox'
+
+/** The process-level strategy the console calls "Sandbox"; a strategy made default later takes the name, and this one shows its own. */
+export const DEFAULT_SANDBOX_STRATEGY = 'srt'
+
+/** The strategies the console names and describes, in the order it lists them; any other slug shows as itself. */
+const KNOWN = ['host', 'srt', 'microsandbox', 'docker'] as const
+export type KnownStrategy = (typeof KNOWN)[number]
+
+export function isKnownStrategy(value: string): value is KnownStrategy {
+  return (KNOWN as readonly string[]).includes(value)
+}
+
+/** A strategy's display-name key: `sandbox` for the default one and a legacy daemon's, its own for another known one, none for an unknown slug. */
+export function strategyNameKey(
+  value: string,
+  defaultSandbox: string = DEFAULT_SANDBOX_STRATEGY
+): 'sandbox' | KnownStrategy | undefined {
+  if (value === defaultSandbox || value === LEGACY_SANDBOX) return 'sandbox'
+  return isKnownStrategy(value) ? value : undefined
+}
+
+const rank = (slug: string) => (isKnownStrategy(slug) ? KNOWN.indexOf(slug) : KNOWN.length)
+
+/** Strategies weakest boundary first, unknown ones last by slug. */
+export function sortStrategies(slugs: readonly string[]): string[] {
+  return [...slugs].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+}
 
 /** The sandbox fields of a placement that reports no table. */
 export interface LegacySandbox {
@@ -85,9 +112,6 @@ export interface StrategyOption {
   refusal?: 'sandboxRequired' | 'notOffered'
 }
 
-const ORDER = ['host', 'srt', 'microsandbox', 'docker']
-const rank = (slug: string) => (ORDER.includes(slug) ? ORDER.indexOf(slug) : ORDER.length)
-
 /** The picker's rows, weakest boundary first; the current choice stays listed even where the placement no longer offers it. */
 export function strategyOptions(placement: PlacementStrategies, current?: string): StrategyOption[] {
   if (placement.kind === 'pool') return []
@@ -99,14 +123,10 @@ export function strategyOptions(placement: PlacementStrategies, current?: string
 }
 
 function tableOptions(table: StrategyTable): StrategyOption[] {
-  return Object.keys(table)
-    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
-    .map((slug) => {
-      const entry = table[slug]!
-      return entry.available
-        ? { value: slug, available: true }
-        : { value: slug, available: false, reason: entry.reason }
-    })
+  return sortStrategies(Object.keys(table)).map((slug) => {
+    const entry = table[slug]!
+    return entry.available ? { value: slug, available: true } : { value: slug, available: false, reason: entry.reason }
+  })
 }
 
 function legacyOptions(sandbox: LegacySandbox): StrategyOption[] {
@@ -140,6 +160,32 @@ export function isSandboxStrategy(value: string): boolean {
 /** Whether a picker value starts the image's runtime install, so its image-binary warning applies; `host` and `srt` start the host's. */
 export function strategyUsesImage(value: string): boolean {
   return value === 'microsandbox' || value === LEGACY_SANDBOX
+}
+
+type RuntimeFacts = DaemonRow['runtimeModels'][number]
+
+/** Each runtime as `value` starts it: its entry for that strategy, else an older daemon's host or image reading; a missing one stays listed unless it has no saved login. */
+export function strategyRuntimeModels(runtimes: readonly RuntimeFacts[], value: string): RuntimeFacts[] {
+  const image = strategyUsesImage(value)
+  return runtimes.flatMap((rt) => {
+    const entry = rt.strategies?.[value]
+    const missing = entry ? !entry.available : image ? !!rt.unavailableReason : rt.hostAvailable === false
+    if (missing && rt.credentialsConfigured === false) return []
+    return [
+      {
+        ...rt,
+        version: missing ? '' : image ? rt.version : (rt.hostVersion ?? rt.version),
+        models: entry ? (entry.models ?? []) : rt.models,
+        unavailableReason: !missing
+          ? null
+          : !image
+            ? ('host-binary-missing' as const)
+            : entry
+              ? ('image-binary-missing' as const)
+              : rt.unavailableReason
+      }
+    ]
+  })
 }
 
 /** The request field naming `value`: the slug where the placement reports a table, the legacy boolean where it does not, nothing on the pool. */

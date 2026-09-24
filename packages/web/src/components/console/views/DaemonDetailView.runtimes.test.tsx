@@ -2,9 +2,9 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { DaemonRow } from '@/lib/data'
+import type { Agent, DaemonRow } from '@/lib/data'
 
-const mocks = vi.hoisted(() => ({ mobile: false, daemon: null as DaemonRow | null }))
+const mocks = vi.hoisted(() => ({ mobile: false, daemon: null as DaemonRow | null, agents: [] as Agent[] }))
 vi.mock('next/navigation', () => ({ useParams: () => ({ id: 'd1' }), useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/example${path}` }) }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
@@ -15,12 +15,13 @@ vi.mock('@/lib/acp-registry', () => ({
   acpRuntime: (_registry: unknown, id: string) => (id === 'opencode' ? { name: 'OpenCode' } : undefined)
 }))
 vi.mock('@/lib/data-context', () => ({
-  useConsoleData: () => ({ daemons: [mocks.daemon], agents: [], memberSets: [], members: [] })
+  useConsoleData: () => ({ daemons: [mocks.daemon], agents: mocks.agents, memberSets: [], members: [] })
 }))
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
 vi.mock('@/components/console/FleetDetail', async (original) => ({
   ...(await original<typeof import('@/components/console/FleetDetail')>()),
-  FleetUsageCard: () => null
+  FleetUsageCard: () => null,
+  FleetAgentsCard: () => null
 }))
 
 import DaemonDetailView from './DaemonDetailView'
@@ -31,6 +32,7 @@ let host: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  mocks.agents = []
   mocks.daemon = {
     daemonId: 'd1',
     name: 'Example daemon',
@@ -106,8 +108,11 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
   })
 
   it.each(['required', 'pool'])('shows only sandbox when policy is %s', async (policy) => {
-    if (policy === 'pool') mocks.daemon!.pool = true
-    else mocks.daemon!.caps.features.push('sandbox-required')
+    if (policy === 'pool') {
+      mocks.daemon!.pool = true
+      // The pod is a pool agent's boundary, so the pool keeps one view even beside a table.
+      mocks.daemon!.caps.strategies = { host: { available: true }, microsandbox: { available: true } }
+    } else mocks.daemon!.caps.features.push('sandbox-required')
     mocks.daemon!.runtimeModels.push({
       runtime: 'opencode',
       version: '1',
@@ -123,7 +128,7 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
     expect(host.textContent).not.toContain('v2.0.0')
     expect(host.textContent).toContain('Binary not installed in image')
     expect(host.textContent?.includes('OpenCode')).toBe(policy === 'pool')
-    expect(host.textContent?.includes('Show runtimes in sandbox but not on host')).toBe(policy !== 'pool')
+    expect(host.textContent?.includes('Show runtimes not on host')).toBe(policy !== 'pool')
   })
 
   it('explains an unavailable sandbox while keeping host runtimes visible', async () => {
@@ -208,9 +213,9 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
       await choose('Sandbox')
       expect(host.textContent).not.toContain('OpenCode')
       expect(host.textContent).not.toContain('Login required')
-      expect(host.textContent).toContain('Expand below to see runtimes installed only in the sandbox.')
+      expect(host.textContent).toContain('Expand below to see runtimes not installed on host.')
       const disclosure = Array.from(host.querySelectorAll('button')).find((button) =>
-        button.textContent?.includes('Show runtimes in sandbox but not on host (1)')
+        button.textContent?.includes('Show runtimes not on host (1)')
       )!
       expect(disclosure.getAttribute('aria-expanded')).toBe('false')
       await act(async () => disclosure.click())
@@ -224,4 +229,93 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
       expect(mocks.daemon!.runtimeModels[0]!.credentialsConfigured).toBe(credentialsConfigured)
     }
   )
+})
+
+const KVM = 'microsandbox needs a usable /dev/kvm'
+const agent = (id: string, execution: string) =>
+  ({
+    id,
+    name: id,
+    daemon: 'd1',
+    runtime: 'claude',
+    model: 'example-model',
+    execution,
+    runInSandbox: execution !== 'host',
+    status: 'online'
+  }) as unknown as Agent
+const expand = async (label: string) => {
+  const button = Array.from(host.querySelectorAll('button[aria-expanded]')).find((b) =>
+    b.textContent?.includes(label)
+  ) as HTMLButtonElement
+  await act(async () => button.click())
+}
+
+describe.each([false, true])('one runtime tab per strategy in the daemon’s table (mobile: %s)', (mobile) => {
+  beforeEach(() => {
+    mocks.mobile = mobile
+    mocks.daemon!.caps.strategies = {
+      microsandbox: { available: false, reason: KVM },
+      srt: { available: true },
+      host: { available: true }
+    }
+    mocks.daemon!.runtimeModels = [
+      {
+        runtime: 'claude',
+        version: '9.0.0',
+        hostVersion: '2.0.0',
+        models: ['host-model'],
+        strategies: {
+          host: { available: true, models: ['host-model'] },
+          srt: { available: true, models: ['srt-model', 'srt-model-2'], modelsSource: 'cached' },
+          microsandbox: { available: false, unavailableReason: KVM }
+        }
+      },
+      {
+        runtime: 'codex',
+        version: '3.0.0',
+        hostVersion: '3.0.0',
+        models: [],
+        credentialsConfigured: false,
+        authRequired: true,
+        strategies: {
+          host: { available: true },
+          srt: { available: false, unavailableReason: 'this runtime is not installed on this host' },
+          microsandbox: { available: false, unavailableReason: KVM }
+        }
+      }
+    ]
+    mocks.agents = [agent('a1', 'host'), agent('a2', 'srt'), agent('a3', 'srt')]
+  })
+
+  it('names each tab plainly in a stable order, with its technology and boundary in the tooltip', async () => {
+    await render()
+    const tabs = Array.from(control()!.querySelectorAll('button'))
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Host', 'Sandbox', 'VM'])
+    expect(tabs.map((tab) => tab.getAttribute('title'))).toEqual([
+      'No isolation boundary: sessions run directly on the machine.',
+      'SRT: process isolation with bubblewrap, on Linux.',
+      'microsandbox: one microVM per session. Needs KVM.'
+    ])
+    expect(control()?.querySelector('[aria-pressed="true"]')?.textContent).toBe('Host')
+  })
+
+  it('lists the runtimes a strategy starts, with their models there and the agents that run in it', async () => {
+    await render()
+    expect(host.textContent).toContain('v2.0.0 · 1 agent1 model')
+    expect(host.textContent).toContain('Codex')
+    await choose('Sandbox')
+    expect(host.textContent).toContain('v2.0.0 · 2 agents2 models')
+    expect(host.textContent).not.toContain('Codex')
+    await expand('Claude')
+    expect(host.textContent).toContain('srt-model-2')
+  })
+
+  it('shows an unavailable strategy’s probe reason instead of runtimes', async () => {
+    await render()
+    await choose('VM')
+    expect(host.textContent).toContain(`VM is unavailable on this daemon. ${KVM}`)
+    expect(host.textContent).not.toContain('v2.0.0')
+    await choose('Host')
+    expect(host.textContent).toContain('v2.0.0')
+  })
 })

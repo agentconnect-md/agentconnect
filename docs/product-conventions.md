@@ -1355,32 +1355,46 @@ This is defense in depth against casual extraction, not a claim that software ca
 hide a bearer token from a host administrator who can inspect or modify the daemon
 and its child processes.
 
+## Execution strategy names
+
+The console names an execution strategy plainly: `host` is **Host**, the default
+process-level sandbox (`srt` today) is **Sandbox**, and `microsandbox` is **VM**. The
+generic **Sandbox** belongs to whichever process-level strategy is the default; every
+other strategy shows its own name, so `srt` reads **SRT** once another strategy
+becomes the default, and a strategy the console does not know shows its slug. The
+technology and boundary behind a name (bubblewrap process isolation, one microVM per
+session, no boundary) go in its tooltip, never in the label or in helper text.
+
 ## Sandbox availability and feature support
 
-The daemon's **Runtimes** section defaults to **Host** and offers a **Host / Sandbox**
-view switch when sandboxing is optional. A daemon that requires sandboxing, including
-a managed pool member, shows only the sandbox view. The switch changes only the
-displayed runtime facts; it does not change an agent's execution setting. Image-only
-installation warnings belong to the sandbox view, while the host view retains the
-host's runtime version and login result. A missing image binary must not mark the
-host runtime unavailable. Self-hosted models and capabilities continue to use the
-existing host probe; this switch does not add another probe sweep.
+The daemon's **Runtimes** section has one tab per execution strategy in the daemon's
+strategy table, in a fixed order (**Host**, **Sandbox**, **VM**, then any other), and
+defaults to **Host**. A tab lists the runtimes that strategy can start, with the models
+they advertise there, and counts the agents whose execution strategy it is; a strategy
+the daemon cannot run shows its probe's reason instead of runtimes. A daemon that
+predates the table keeps a **Host / Sandbox** switch when sandboxing is optional, and a
+daemon that requires sandboxing, including a managed pool member, shows only the
+sandbox view. Switching tabs changes only the displayed runtime facts; it does not
+change an agent's execution setting. Image-only installation warnings belong to a tab
+that starts the image (**VM**, or a legacy daemon's **Sandbox**), while the other tabs
+show the host's runtime version and login result. A missing image binary must not mark
+the host runtime unavailable. The tabs add no probe sweep.
 
-Installation and login are independent. Each view shows an installed runtime even
+Installation and login are independent. Each tab shows an installed runtime even
 without a stored login, with **Login required** in that case. A stored login, or
 provider credentials Claude Code accepts without that login (an API key, auth
 token, or OAuth token in host env or `settings.json` env), or `GEMINI_API_KEY` in
 the daemon environment for Gemini CLI, keeps a missing runtime visible with **Binary not installed on host** or **Binary not installed in image**,
-according to the selected view. Only a runtime with neither an installation in that
-environment nor credentials is hidden. Missing binaries take precedence over login
-warnings. Enumerating models does not prove that the runtime is signed in; expired
-credentials remain visible and may require login. A custom provider base URL
-without a secret is not credentials.
+according to the install the selected tab starts. Only a runtime with neither an
+installation in that environment nor credentials is hidden. Missing binaries take
+precedence over login warnings. Enumerating models does not prove that the runtime is
+signed in; expired credentials remain visible and may require login. A custom provider
+base URL without a secret is not credentials.
 Runtime pickers group choices displaying **Login required** at the end, preserving
 the order within each group. These choices remain selectable.
 
-On self-hosted daemons, the sandbox view initially folds away runtimes installed in
-the image but not on the host. A **Show runtimes in sandbox but not on host** control
+On self-hosted daemons, a tab that starts the image initially folds away runtimes
+installed in the image but not on the host. A **Show runtimes not on host** control
 reveals them with their existing login status. This is presentation only; discovery
 and runtime selection keep the full inventory. Managed pools show their full image
 inventory directly.

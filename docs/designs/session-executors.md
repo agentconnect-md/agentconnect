@@ -320,8 +320,9 @@ platform; the reading an executor reports to other members keeps `host` Linux-on
 slug. The user picks what sessions actually run in, instead of a boolean whose meaning
 depended on the machine. The console offers the strategies available where the agent
 is placed — a daemon's table, or for a group those at least one serving member offers —
-each labeled with its boundary (none, process, VM, container), and shows an
-unavailable one disabled with its probe's reason. It reads each machine's own table
+each by its plain name (**Host**, **Sandbox** for the default process-level strategy,
+**VM**) with its technology and boundary in a tooltip, and shows an unavailable one
+disabled with its probe's reason. It reads each machine's own table
 from the daemon read model and, for the agent's saved placement, the table the agent
 carries; a daemon that predates the table keeps a "Sandbox" choice sent as the legacy
 boolean. A `shared` session runs on its holder, so for it the holder's table decides.
@@ -1225,11 +1226,14 @@ has the question of sessions already placed). Either consent alone would let one
 party volunteer the other.
 
 The console adds no new kind of row, and no per-daemon executor readout: the hosted
-count, the capacity and the strategy table are reported for placement, not for
-display (#2232 took them off the daemon card). A group has one switch, "spread
+count, the capacity and the executor's strategy table are reported for placement, not
+for display (#2232 took them off the daemon card). A group has one switch, "spread
 sessions across the group", default off. A session's detail shows
 which daemon executes it, or why it stayed on its holder (§7). The agent's strategy
-picker (§5) replaces "Run in sandbox". A group's runtime list names the members that
+picker (§5) replaces "Run in sandbox". A daemon's runtime list has one tab per
+strategy in the machine's own table, named as the picker names it, each listing the
+runtimes that strategy starts with their models there, or the probe's reason when the
+machine cannot run it. A group's runtime list names the members that
 need a runtime login, since those are the machines whose sign-in a session would
 lack (#2397).
 
@@ -1370,7 +1374,7 @@ S2 lands in three parts, and M1–M4 precede R1.
 | S2a | Daemon: the `sandbox` strategy table with the legacy mapping and on-by-default probes, reported at registration and by the facet in place of S1's reading of the single backend; launch dispatch on the agent's strategy instead of `sandbox.backend`, `srt` and `microsandbox` side by side in one process with a runtime catalog per strategy; refusal instead of downgrade; per-strategy entries in `facts/daemon-runtimes` from the host probe; the placement ask by strategy slug, `srt` staying on its holder until R1.                            |
 | S2b | Daemon: the birth strategy in the session's verdict, its upgrade backfill, and the executor's `strategy_mismatch` refusal.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | S2c | Daemon: the image runtime's model probe per image identity; model selection judging targets against the candidates and the strategy's catalog, and placement landing a session only where its runtime and model run (§5).                                                                                                                                                                                                                                                                                                                                |
-| S3  | Console: the strategy picker per placement, boundary labels and unavailable reasons; the pool shows none.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| S3  | Console: the strategy picker per placement, plain names with the boundary in a tooltip, and unavailable reasons; the daemon's runtime list per strategy; the pool shows none.                                                                                                                                                                                                                                                                                                                                                                            |
 | M1  | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | M2  | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | M3  | The launcher takes an environment descriptor instead of a session leaf: hosted and local descriptors, identities unchanged, nothing migrated (§11 step 3).                                                                                                                                                                                                                                                                                                                                                                                               |

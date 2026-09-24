@@ -19,14 +19,19 @@
     },
     "executionStrategy": {
       "label": "执行策略",
-      "option": "{strategy} · {boundary}",
-      "boundary": {
-        "none": "无隔离",
-        "process": "进程",
-        "vm": "虚拟机",
-        "container": "容器"
+      "name": {
+        "host": "主机",
+        "sandbox": "沙箱",
+        "srt": "SRT",
+        "microsandbox": "虚拟机",
+        "docker": "Docker"
       },
-      "sandbox": "沙箱",
+      "detail": {
+        "host": "无隔离边界：会话直接在机器上运行。",
+        "srt": "SRT：在 Linux 上用 bubblewrap 做进程隔离。",
+        "microsandbox": "microsandbox：每个会话一个 microVM，需要 KVM。",
+        "docker": "Docker：容器隔离。"
+      },
       "unavailable": "不可用",
       "noneAvailable": "没有可用的执行策略",
       "refusal": {
@@ -3493,16 +3498,14 @@
         "search": "搜索 Daemon"
       },
       "runtimeEmpty": {
-        "sandboxReason": "此 Daemon 的沙箱不可用。{reason}",
-        "sandboxUnavailable": "此 Daemon 的沙箱不可用。",
-        "expandSandbox": "展开下方以查看仅安装在沙箱中的 Runtime。",
+        "strategyReason": "此 Daemon 的{strategy}不可用。{reason}",
+        "strategyUnavailable": "此 Daemon 的{strategy}不可用。",
+        "expandHostMissing": "展开下方以查看主机上未安装的 Runtime。",
         "noRuntimes": "此 Daemon 未报告任何 Runtime。",
         "hide": "收起",
         "show": "展开",
-        "sandboxOnly": "个仅在沙箱中、主机上没有的 Runtime（{count}）"
+        "hostMissing": "主机上没有的 Runtime（{count}）"
       },
-      "sandbox": "沙箱",
-      "host": "主机",
       "runtimeEnvironment": "Runtime 环境",
       "neverConnected": "从未连接",
       "lastSeenAgo": "上次在线于 {value} 前",

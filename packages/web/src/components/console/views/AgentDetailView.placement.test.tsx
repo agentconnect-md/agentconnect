@@ -213,11 +213,12 @@ describe('AgentDetailView, model row by placement', () => {
 })
 
 describe('AgentDetailView, execution strategy row by placement', () => {
-  it('names a machine agent’s strategy with its boundary', async () => {
+  it('names a machine agent’s strategy plainly, its technology and boundary in the tooltip', async () => {
     mocks.agent = agentOn({ daemon: 'd1', placementKind: 'daemon', setId: null, execution: 'microsandbox' })
     mocks.daemons = [daemon({})]
     const text = await render()
-    expect(text).toContain('Execution strategymicrosandbox · VM')
+    expect(text).toContain('Execution strategyVM')
+    expect(host!.querySelector('[title^="microsandbox"]')?.textContent).toBe('VM')
   })
 
   it('names a group agent’s strategy, and the legacy sandbox while its backend is unreported', async () => {

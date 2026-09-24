@@ -24,6 +24,7 @@ import type {
   SessionImage,
   Workspace,
   PlacementKindValue,
+  RuntimeStrategyEntry,
   StrategyTable
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
@@ -1139,6 +1140,8 @@ export interface RuntimeProfileDto {
   hostVersion?: string | null
   hostAvailable?: boolean | null
   credentialsConfigured?: boolean | null
+  // The runtime under each strategy the daemon offers; null/absent ⇒ a daemon that predates the entries.
+  strategies?: Record<string, RuntimeStrategyEntry> | null
 }
 
 // One daemon-configured MCP server (name + transport), reported in the
@@ -2294,7 +2297,8 @@ export function withDaemonCapability(row: DaemonRow, cap: DaemonCapabilityDto | 
       mcpCapabilities: p.mcpCapabilities ?? null,
       modelCatalog: p.modelCatalog ?? null,
       authRequired: p.authRequired ?? false,
-      unavailableReason: p.unavailableReason ?? null
+      unavailableReason: p.unavailableReason ?? null,
+      strategies: p.strategies ?? null
     })),
     mcpServers: cap.mcpServers
   }
@@ -2349,7 +2353,8 @@ export function daemonFromDto(
       mcpCapabilities: p.mcpCapabilities ?? null,
       modelCatalog: p.modelCatalog ?? null,
       authRequired: p.authRequired ?? false,
-      unavailableReason: p.unavailableReason ?? null
+      unavailableReason: p.unavailableReason ?? null,
+      strategies: p.strategies ?? null
     })),
     mcpServers: d.mcpServers ?? [],
     activeSessions: String(d.activeSessions),

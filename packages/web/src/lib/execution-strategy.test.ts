@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import type { DaemonCaps, StrategyTable } from '@/lib/data'
+import type { DaemonCaps, DaemonRow, StrategyTable } from '@/lib/data'
 import {
   agentStrategies,
   agentStrategyValue,
   daemonStrategies,
+  DEFAULT_SANDBOX_STRATEGY,
   defaultStrategy,
   executionAsk,
   groupStrategies,
   LEGACY_SANDBOX,
+  sortStrategies,
+  strategyNameKey,
   strategyOptions,
+  strategyRuntimeModels,
   strategyUsesImage
 } from './execution-strategy'
 
@@ -127,5 +131,95 @@ describe('the choice and its request', () => {
     expect(agentStrategyValue({ execution: 'microsandbox', runInSandbox: true })).toBe('microsandbox')
     expect(agentStrategyValue({ execution: null, runInSandbox: true })).toBe(LEGACY_SANDBOX)
     expect(agentStrategyValue({ runInSandbox: false })).toBe('host')
+  })
+})
+
+describe('what the console calls a strategy', () => {
+  it('calls the default process sandbox and a legacy daemon’s sandbox “Sandbox”, and every other known one by its own name', () => {
+    expect(DEFAULT_SANDBOX_STRATEGY).toBe('srt')
+    expect(strategyNameKey('host')).toBe('host')
+    expect(strategyNameKey('srt')).toBe('sandbox')
+    expect(strategyNameKey(LEGACY_SANDBOX)).toBe('sandbox')
+    expect(strategyNameKey('microsandbox')).toBe('microsandbox')
+    expect(strategyNameKey('docker')).toBe('docker')
+  })
+
+  it('moves “Sandbox” to whichever strategy is the default, and srt keeps its own name', () => {
+    expect(strategyNameKey('docker', 'docker')).toBe('sandbox')
+    expect(strategyNameKey('srt', 'docker')).toBe('srt')
+  })
+
+  it('has no name for a slug it does not know, which shows as itself', () => {
+    expect(strategyNameKey('firecracker')).toBeUndefined()
+  })
+
+  it('orders host, the sandbox and the VM first, then any other by slug', () => {
+    expect(sortStrategies(['zeta', 'microsandbox', 'alpha', 'srt', 'host'])).toEqual([
+      'host',
+      'srt',
+      'microsandbox',
+      'alpha',
+      'zeta'
+    ])
+  })
+})
+
+describe('the runtimes one strategy starts', () => {
+  type Runtime = DaemonRow['runtimeModels'][number]
+  const claude: Runtime = {
+    runtime: 'claude',
+    version: '9.0.0',
+    hostVersion: '2.0.0',
+    models: ['host-model'],
+    strategies: {
+      host: { available: true, models: ['host-model'], modelsSource: 'probed' },
+      srt: { available: true, models: ['host-model'], modelsSource: 'cached' },
+      microsandbox: { available: true }
+    }
+  }
+  const codex: Runtime = {
+    runtime: 'codex',
+    version: '3.0.0',
+    hostVersion: '3.0.0',
+    models: [],
+    credentialsConfigured: true,
+    strategies: {
+      host: { available: true, models: ['codex-model'] },
+      srt: { available: true, models: ['codex-model'] },
+      microsandbox: { available: false, unavailableReason: 'the image does not provide this runtime' }
+    }
+  }
+
+  it('reads each runtime’s entry for the strategy: its models there, and the install that strategy starts', () => {
+    expect(strategyRuntimeModels([claude, codex], 'srt').map((rt) => [rt.runtime, rt.version, rt.models])).toEqual([
+      ['claude', '2.0.0', ['host-model']],
+      ['codex', '3.0.0', ['codex-model']]
+    ])
+  })
+
+  it('shows a VM entry whose models are not probed yet as an empty list, the image’s version beside it', () => {
+    const [vm] = strategyRuntimeModels([claude], 'microsandbox')
+    expect(vm).toMatchObject({ runtime: 'claude', version: '9.0.0', models: [], unavailableReason: null })
+  })
+
+  it('keeps a runtime the strategy cannot start listed while it may hold a login, and drops it once it has none', () => {
+    expect(strategyRuntimeModels([codex], 'microsandbox')).toMatchObject([
+      { runtime: 'codex', version: '', models: [], unavailableReason: 'image-binary-missing' }
+    ])
+    // The VM entry speaks for the image, whatever the runtime-level reading says about the host.
+    expect(
+      strategyRuntimeModels([{ ...codex, unavailableReason: 'host-binary-missing' }], 'microsandbox')
+    ).toMatchObject([{ unavailableReason: 'image-binary-missing' }])
+    const hostless: Runtime = { ...codex, strategies: { host: { available: false }, srt: { available: false } } }
+    expect(strategyRuntimeModels([hostless], 'srt')).toMatchObject([{ unavailableReason: 'host-binary-missing' }])
+    expect(strategyRuntimeModels([{ ...codex, credentialsConfigured: false }], 'microsandbox')).toEqual([])
+  })
+
+  it('reads a daemon that predates the entries as the host or image install', () => {
+    const legacy: Runtime = { ...claude, strategies: null, unavailableReason: 'image-binary-missing' }
+    expect(strategyRuntimeModels([legacy], 'host')).toMatchObject([{ version: '2.0.0', unavailableReason: null }])
+    expect(strategyRuntimeModels([legacy], LEGACY_SANDBOX)).toMatchObject([
+      { version: '', models: ['host-model'], unavailableReason: 'image-binary-missing' }
+    ])
   })
 })
