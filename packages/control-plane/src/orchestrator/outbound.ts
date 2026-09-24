@@ -357,6 +357,8 @@ export class ControlSender {
   /** Push an edited agent spec and wait until the daemon's live reconcile applies it. */
   async agentUpsert(daemonId: string, u: AgentUpsert, orgId?: string): Promise<void> {
     const c = this.must(daemonId)
+    if (!daemonSupportsAgent(u.spec, c.capabilities?.features))
+      throw new Error(`daemon ${daemonId} lacks a feature required by agent ${u.agentId}'s spec`)
     const ack = await c.conn.request<Ack>(
       'agent/upsert',
       // Workspace dual-encoded per the connection (§8) — at the SENDER, so every

@@ -1,4 +1,5 @@
 import {
+  runDecisionChain,
   ChannelDecisionGate,
   DecisionChannelSettings,
   DecisionDraft,
@@ -6,6 +7,14 @@ import {
   DecisionPreviewSample,
   SharedBotDecisionRouting,
   decisionConditionIssues,
+  decisionGateIssues,
+  decisionChainIds,
+  nextGateStep,
+  type DecisionGateStep,
+  type DecisionRoutingStep,
+  type DecisionChainTrace,
+  type DecisionQuestion,
+  type DecisionAnswer,
   decisionConditionNeedsReview,
   decisionRoutingIssues,
   matchDecisionCondition,
@@ -155,12 +164,12 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       if (
         settings.trigger === 'decision' &&
         settings.decisionBinding.type === 'gate' &&
-        settings.decisionBinding.decisionId === id
+        decisionChainIds(settings.decisionBinding).includes(id)
       )
         result.push({ kind: 'gate', id: channel.id, label: channel.name })
     }
     for (const routing of routings.values()) {
-      if (routing.config.decisionId === id)
+      if (decisionChainIds(routing.config).includes(id))
         result.push({ kind: 'shared_bot_routing', id: routing.botId, label: get(bots, routing.botId).name })
     }
     return result
@@ -172,9 +181,15 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
     draft: DecisionDraft
   ): DecisionValidationIssue[] {
     const bot = get(bots, botId)
-    const issues = decisionRoutingIssues(draft.question, config)
+    for (const id of decisionChainIds(config)) get(definitions, id)
+    const issues = decisionRoutingIssues(
+      draft.question,
+      config,
+      new Map([...definitions].map(([id, d]) => [id, d.question]))
+    )
     if (!bot.shared) issues.push({ path: ['botId'], message: 'Routing requires a shared bot.' })
-    config.rules.forEach((rule, index) => {
+    const rules = [config, ...(config.steps ?? [])].flatMap((step) => step.rules)
+    rules.forEach((rule, index) => {
       if (
         rule.action.type === 'agent' &&
         !bot.agents.some((agent) => rule.action.type === 'agent' && agent.id === rule.action.agentId)
@@ -272,18 +287,20 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
         if (
           settings.trigger === 'decision' &&
           settings.decisionBinding.type === 'gate' &&
-          settings.decisionBinding.decisionId === id &&
-          decisionConditionNeedsReview(previous.question, draft.question, settings.decisionBinding.when)
+          [settings.decisionBinding, ...(settings.decisionBinding.steps ?? [])].some(
+            (step) =>
+              step.decisionId === id && decisionConditionNeedsReview(previous.question, draft.question, step.when)
+          )
         )
           channel.readiness = { status: 'needs_review' }
       }
       for (const saved of routings.values()) {
         if (
-          saved.config.decisionId === id &&
-          (decisionRoutingIssues(draft.question, saved.config).length ||
-            saved.config.rules.some((rule) =>
-              decisionConditionNeedsReview(previous.question, draft.question, rule.when)
-            ))
+          [saved.config, ...(saved.config.steps ?? [])].some(
+            (step) =>
+              step.decisionId === id &&
+              step.rules.some((rule) => decisionConditionNeedsReview(previous.question, draft.question, rule.when))
+          )
         )
           saved.readiness = { status: 'needs_review' }
       }
@@ -319,7 +336,9 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
           conflict('Edit shared-bot routing and channel scope together.')
         const binding = settings.decisionBinding
         const definition = get(definitions, binding.decisionId)
-        invalid(decisionConditionIssues(definition.question, binding.when))
+        invalid(
+          decisionGateIssues(definition.question, binding, new Map([...definitions].map(([id, d]) => [id, d.question])))
+        )
       }
       channels.set(id, { ...channel, settings, readiness: { status: 'ready' } })
       return channelView(id)
@@ -489,7 +508,9 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       const state = parse(DecisionPreviewSample, input.state)
       const definition = definitions.get(binding.decisionId)
       if (!definition) throw new DecisionMockApiError(404, { error: 'not_found', message: 'Decision not found.' })
-      invalid(decisionConditionIssues(definition.question, binding.when))
+      invalid(
+        decisionGateIssues(definition.question, binding, new Map([...definitions].map(([id, d]) => [id, d.question])))
+      )
       const channel = channels.get(ref.channelId)
       const bot = channel ? bots.get(channel.botId) : seed.bots[0]
       const agentId = channel?.agentId ?? bot?.defaultAgentId ?? ''
@@ -513,28 +534,28 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
           consumer: consumer('not_applied', { notAppliedReason: 'needs_review' })
         }
       if (options.scenario === 'daemon_offline') throw offline()
-      const evaluation = await evaluateDraft(definition, { ...state })
-      if (evaluation.status !== 'answered')
-        return copy({ mode: 'mock', readiness: { status: 'ready' }, evaluation, consumer: consumer('unavailable') })
-      try {
-        const match = matchDecisionCondition(definition.question, binding.when, evaluation.answer)
-        return copy({
-          mode: 'mock',
-          readiness: { status: 'ready' },
-          evaluation,
-          consumer: consumer(match.matched ? 'trigger' : 'skip', {
-            matched: match.matched,
-            matchedKeys: match.matchedKeys
-          })
-        })
-      } catch {
-        return {
-          mode: 'mock',
-          readiness: { status: 'ready' },
-          evaluation: { status: 'unavailable', reason: 'invalid_response' },
-          consumer: consumer('unavailable')
+      let match = { matched: false, matchedKeys: [] as string[] }
+      const { evaluation, trace } = await runDecisionChain<DecisionGateStep>({
+        root: binding,
+        steps: binding.steps,
+        deadlineAt: performance.timeOrigin + performance.now() + 5000,
+        evaluate: (step) => evaluateDraft(get(definitions, step.decisionId), { ...state }),
+        next: (step, evaluation) => {
+          const result = nextGateStep(get(definitions, step.decisionId).question, step, evaluation.answer)
+          match = result
+          return result.nextStepId ? [result.nextStepId] : []
         }
-      }
+      })
+      return copy({
+        mode: 'mock',
+        readiness: { status: 'ready' },
+        evaluation,
+        ...(binding.steps?.length ? { chain: trace } : {}),
+        consumer: consumer(
+          evaluation.status === 'unavailable' ? 'unavailable' : match.matched ? 'trigger' : 'skip',
+          match
+        )
+      })
     },
     async listEvaluations(_ref, page = {}) {
       if (options.scenario === 'daemon_offline') throw offline()
@@ -574,7 +595,9 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
           code: 'DECISION_NOT_FOUND',
           message: 'Decision not found.'
         })
-      invalid(decisionRoutingIssues(definition.question, config))
+      invalid(
+        decisionRoutingIssues(definition.question, config, new Map([...definitions].map(([id, d]) => [id, d.question])))
+      )
       const channel = get(channels, input.channelId)
       if (channel.botId !== botId || channel.kind !== 'channel')
         invalid([{ path: ['channelId'], message: 'Select a group channel of this bot.' }])
@@ -608,7 +631,8 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
             : !config.enabled
               ? 'paused'
               : (options.scenario === 'needs_review' || saved?.readiness.status === 'needs_review') &&
-                  JSON.stringify(saved?.config) === JSON.stringify(config)
+                  !!saved &&
+                  JSON.stringify(SharedBotDecisionRouting.parse(saved.config)) === JSON.stringify(config)
                 ? 'needs_review'
                 : null
       const readiness: DecisionReadiness = { status: options.scenario === 'pending_sync' ? 'pending_sync' : 'ready' }
@@ -627,13 +651,34 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       }))
       const candidates = bot.agents.map((agent) => ({ agentId: agent.id, daemonId: bot.daemonId }))
       let evaluation: DecisionEvaluation | null = null
+      let chain: DecisionChainTrace | undefined
+      const answers = new Map<string, { question: DecisionQuestion; answer: DecisionAnswer }>()
       if (partitionRoutingConstraint(constraint).evaluate) {
         if (options.scenario === 'daemon_offline') throw offline()
-        const status = providerReadiness(definition, bot.daemonId).status
-        evaluation =
-          status === 'ready' || status === 'pending_sync'
-            ? await evaluateDraft(definition, { ...sample })
-            : { status: 'unavailable', reason: 'credentials' }
+        const result = await runDecisionChain<DecisionRoutingStep>({
+          root: config,
+          steps: config.steps,
+          deadlineAt: performance.timeOrigin + performance.now() + 5000,
+          evaluate: async (step) => {
+            const d = get(definitions, step.decisionId)
+            const status = providerReadiness(d, bot.daemonId).status
+            return status === 'ready' || status === 'pending_sync'
+              ? evaluateDraft(d, { ...sample })
+              : { status: 'unavailable', reason: 'credentials' }
+          },
+          next: (step, result) => {
+            const question = get(definitions, step.decisionId).question
+            const id = config.steps?.find((s) => s === step)?.id
+            if (id) answers.set(id, { question, answer: result.answer })
+            return step.rules.flatMap((rule) =>
+              rule.action.type === 'decision' && matchDecisionCondition(question, rule.when, result.answer).matched
+                ? [rule.action.nextStepId]
+                : []
+            )
+          }
+        })
+        evaluation = result.evaluation
+        if (config.steps?.length) chain = result.trace
       }
       const settled = settleRoutingPreview({
         question: definition.question,
@@ -641,12 +686,14 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
         answer: evaluation === null ? undefined : evaluation.status === 'answered' ? evaluation.answer : 'unavailable',
         constraint,
         ...(defaultAgentId ? { defaultAgentId } : {}),
-        candidates
+        candidates,
+        chain: answers
       })
       const unavailableReason = settled.reason ?? (evaluation?.status === 'unavailable' ? evaluation.reason : undefined)
       return copy({
         mode: 'mock' as const,
         readiness,
+        ...(chain ? { chain } : {}),
         evaluation: settled.reason ? { status: 'unavailable' as const, reason: settled.reason } : evaluation,
         consumer: {
           ...consumer,

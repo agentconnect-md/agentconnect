@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import {
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
+  DECISION_CHAIN_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   type DecisionDraft,
   type IntegrationRemove,
@@ -746,5 +747,39 @@ describe('the channel PATCH on a routed conversation', () => {
     expect(mention.statusCode, mention.body).toBe(200)
     for (const row of await rowsOf('C1')) expect(row).toMatchObject({ trigger: 'mention', decisionBinding: null })
     expect((await get(app, botId)).json().channelIds).toEqual([])
+  })
+})
+
+describe('chained shared-bot routing', () => {
+  it('persists child rules, projects all definitions, and keeps child references in use', async () => {
+    const { botId, a, b } = await seedBot()
+    const { app, spy } = appWith({ daemon: [...ROUTING, DECISION_CHAIN_V1_FEATURE] })
+    const root = await createDecision(app)
+    const child = await createDecision(app)
+    const config: SharedBotDecisionRouting = {
+      enabled: true,
+      decisionId: root,
+      rules: [
+        { id: 'root', when: { type: 'boolean', values: [true] }, action: { type: 'decision', nextStepId: 'assign' } }
+      ],
+      steps: [
+        {
+          id: 'assign',
+          decisionId: child,
+          rules: [
+            { id: 'child', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: b.agentId } }
+          ]
+        }
+      ],
+      otherwise: { type: 'skip' }
+    }
+    const response = await put(app, botId, { config, channelIds: ['C1'], removals: [] })
+    expect(response.statusCode, response.body).toBe(200)
+    expect(response.json().config).toEqual(config)
+    expect(spy.upserts.some(({ u }) => u.core.decisions?.definitions.some((d) => d.id === child))).toBe(true)
+    expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${child}` })).statusCode).toBe(409)
+    const changed = await app.app.inject({ method: 'PATCH', url: `${ORG}/decisions/${child}`, payload: scoreDraft })
+    expect(changed.statusCode, changed.body).toBe(200)
+    expect((await prisma.botDecisionRouting.findUnique({ where: { botId } }))?.needsReview).toBe(true)
   })
 })

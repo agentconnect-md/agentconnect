@@ -7,7 +7,6 @@ import {
   DecisionEvaluationRecordDetail,
   DecisionEvaluationRecordPage,
   SharedBotDecisionRouting,
-  decisionRoutingIssues,
   isCodeHostRoutingScope,
   supportsDecision,
   type DecisionValidationIssue
@@ -17,7 +16,7 @@ import { canEdit, canView } from '../../authorization/policy.js'
 import { ProtocolError } from '../../domain/errors.js'
 import { OrgId } from '../../domain/ids.js'
 import { Prisma } from '../../generated/prisma/client.js'
-import { routingMembers, hookRoutingStatus } from '../../hooks/hook-routing.js'
+import { routingMembers, hookRoutingStatus, hookRoutingIssues } from '../../hooks/hook-routing.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import type {
   AgentRecord,
@@ -26,7 +25,8 @@ import type {
   HookRecord
 } from '../../persistence/ports.js'
 import { ConnectionClosed } from '../../ws/registry.js'
-import { visibleDecision } from '../decision-access.js'
+import { visibleDecisionChain } from '../decision-access.js'
+import { DecisionBindingDenied } from '../../persistence/decision-binding-fence.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
@@ -212,16 +212,23 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
             )
         if (!editable(req, view)) return reply.code(403).send(forbidden('cannot edit every agent watching this scope'))
         const { config } = req.body
-        const decision = await visibleDecision(deps, req, config.decisionId)
+        const definitions = await visibleDecisionChain(deps, req, config)
+        const decision = definitions?.get(config.decisionId)
         if (!decision) return reply.code(404).send(notFound('decision not found', 'DECISION_NOT_FOUND'))
-        if (!supportsDecision(decision))
+        if ([...definitions!.values()].some((d) => !supportsDecision(d)))
           return reply.code(400).send(badRequest('Unsupported Decision provider, model, or question type.'))
-        const issues = decisionRoutingIssues(decision.question, config)
         const members = new Set(view.members.map((m) => m.agent.id as string))
-        config.rules.forEach((rule, index) => {
-          if (rule.action.type === 'agent' && !members.has(rule.action.agentId))
-            issues.push({ path: ['rules', index, 'action'], message: 'Choose an agent that watches this repository.' })
-        })
+        const issues = hookRoutingIssues(
+          {
+            orgId: view.scope.orgId,
+            decisionId: config.decisionId,
+            config,
+            needsReview: false,
+            definition: decision,
+            definitions: [...definitions!.values()]
+          },
+          members
+        )
         if (issues.length > 0) return reply.code(400).send(badRequest('The routing configuration is invalid.', issues))
         // An older relay drops a routed scope's rules, so turning routing on there would silence the scope.
         const turningOn = config.enabled && !view.record?.enabled
@@ -240,7 +247,10 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
           )
         } catch (err) {
           // The Decision was deleted between validation and the write (FK RESTRICT).
-          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003')
+          if (
+            err instanceof DecisionBindingDenied ||
+            (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003')
+          )
             return reply.code(404).send(notFound('decision not found', 'DECISION_NOT_FOUND'))
           throw err
         }

@@ -2,11 +2,13 @@
 
 // One gate evaluation inside the Recent evaluations drawer: frozen snapshot, model result, raw JSON and context (§9.4, §9.5).
 
+import { DecisionChainResults } from './DecisionChainResults'
 import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { errorParts } from '@/lib/decisions/binding'
 import { answerText, cancelReasonKey, latencyText, OUTCOME_BADGE, outcomeTone } from '@/lib/decisions/evaluations'
 import { modelLine } from '@/lib/decisions/model-result'
+import { matchDecisionCondition } from '@agentconnect.md/protocol/decision'
 import type {
   DecisionEvaluationOutcome,
   DecisionEvaluationRecord,
@@ -58,6 +60,10 @@ export function DecisionEvaluationDetail({
   const detail = data ?? null
   const expired = record?.detailsExpired === true
   const snapshot = detail?.snapshot ?? null
+  const rootMatch =
+    snapshot && detail?.fullAnswer
+      ? matchDecisionCondition(snapshot.question, snapshot.condition, detail.fullAnswer)
+      : null
 
   return (
     <div className="flex flex-col gap-[14px] px-[18px] py-4" data-testid="evaluation-detail">
@@ -98,14 +104,18 @@ export function DecisionEvaluationDetail({
           <Row label={t('evaluations.columns.latency')} value={latencyText(record.latencyMs) ?? '—'} />
         </Facts>
       )}
+      <DecisionChainResults
+        chain={detail?.chain}
+        names={detail?.chain?.map((step) => ({ id: step.decisionId, name: decisionName(step.decisionId) }))}
+      />
       {record && (
         <DecisionModelResult
           question={snapshot?.question ?? null}
           answer={detail?.fullAnswer ?? null}
           summary={record.answer}
           condition={snapshot?.condition ?? null}
-          matchedKeys={record.matchedKeys}
-          matched={record.outcome === 'triggered'}
+          matchedKeys={rootMatch?.matchedKeys ?? record.matchedKeys}
+          matched={rootMatch?.matched ?? record.outcome === 'triggered'}
           requestedModel={record.requestedModel}
           actualModel={record.actualModel}
           latencyMs={record.latencyMs}

@@ -14,6 +14,7 @@ import {
   type RdRouteBackfillRow,
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
+  DECISION_CHAIN_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
@@ -6247,6 +6248,7 @@ export class Daemon {
       HOOK_DECISION_ROUTING_V2_FEATURE,
       DECISION_TOOLS_V1_FEATURE,
       DECISION_MODEL_SELECTION_V1_FEATURE,
+      DECISION_CHAIN_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
@@ -13611,7 +13613,11 @@ export class Daemon {
     let target: DecisionRuntimeTarget | undefined
     const manualModel =
       manual?.model ?? (agent.allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined)
-    if (!manualModel && client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE)) {
+    if (
+      !manualModel &&
+      client?.supportsServerFeature(DECISION_MODEL_SELECTION_V1_FEATURE) &&
+      (!selection.steps?.length || client.supportsServerFeature(DECISION_CHAIN_V1_FEATURE))
+    ) {
       target = await evaluateSessionModel({
         agentId: agent.id,
         selection,
@@ -13621,10 +13627,10 @@ export class Daemon {
         current: () =>
           this.cpCollab.orgForAgent(agent.id) === orgId &&
           modelSelectionConfiguration(this.agents.get(agent.id)) === configuration,
-        decision: () =>
+        decision: (decisionId) =>
           client.decisionGet({
             requesterAgentId: agent.id,
-            decisionId: selection.decisionId,
+            decisionId,
             purpose: 'model_selection'
           }),
         state: async (decision) => {

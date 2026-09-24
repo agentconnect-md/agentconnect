@@ -11,6 +11,7 @@ import {
 import { codeHostProviders } from '../codehost/registry.js'
 import { AgentId, HookId, OrgId } from '../domain/ids.js'
 import type { CodeHostDecisionRoutingRecord, HookRecord } from '../persistence/ports.js'
+import { encodeAgentSpecForPeer } from '../domain/daemon-features.js'
 
 const ORG = OrgId('org-example')
 const DECISION = '44444444-4444-4444-8444-444444444444'
@@ -134,6 +135,23 @@ describe('the providers’ Any update cadence (code-host-decisions.md §4)', () 
 
 describe('hookRoutingStatus', () => {
   const members = new Set<string>([A, B])
+  it('holds invalid child targets and omits chains from a legacy host without dropping its single-step routes', () => {
+    const chained: SharedBotDecisionRouting = {
+      ...config,
+      rules: [{ ...config.rules[0]!, action: { type: 'decision', nextStepId: 'child' } }],
+      steps: [{ id: 'child', decisionId: DECISION, rules: [{ ...config.rules[0]!, id: 'child-rule' }] }]
+    }
+    expect(hookRoutingStatus(record({ config: chained }), new Set([B]))).toBe('needs_review')
+    const single = hookRoutingProjection(record(), [])!
+    const chain = hookRoutingProjection(record({ config: chained }), [{ id: HookId('h1'), agentId: A }])!
+    const spec = { hookRoutings: [single, chain] }
+    expect(encodeAgentSpecForPeer(spec, ['hook-decision-routing-v1']).hookRoutings).toEqual([single])
+    expect(encodeAgentSpecForPeer(spec, ['hook-decision-routing-v1', 'decision-chain-v1']).hookRoutings).toEqual([
+      single,
+      chain
+    ])
+  })
+
   it('is enabled for a valid routing, needs_review for a flagged or invalid one, access_revoked without its Decision', () => {
     expect(hookRoutingStatus(record(), members)).toBe('enabled')
     expect(hookRoutingStatus(record({ needsReview: true }), members)).toBe('needs_review')
@@ -204,6 +222,16 @@ describe('chooseEvaluationAgent', () => {
   it('never picks an older daemon while a supporting one is placed', () => {
     expect(
       chooseEvaluationAgent(null, [c('a', { daemonCreatedAt: 1, features: [] }), c('b', { daemonCreatedAt: 2 })])
+    ).toBe('b')
+  })
+
+  it('moves a chain to a host that understands child steps', () => {
+    expect(
+      chooseEvaluationAgent(
+        'a',
+        [c('a'), c('b', { features: [...FEATURE, 'decision-chain-v1'] })],
+        [...FEATURE, 'decision-chain-v1']
+      )
     ).toBe('b')
   })
 

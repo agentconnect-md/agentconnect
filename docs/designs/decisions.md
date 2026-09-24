@@ -1750,8 +1750,8 @@ The picker uses the existing model catalog to show supported settings. A deliber
 model change resolves effort using the model's offered levels and default, and
 turns Fast mode off when the new model does not offer it. Changing runtime selects
 its own approval vocabulary and default. Merely receiving an updated catalog does not edit the draft.
-`modelSelection: null` removes the binding. Each rule needs a runtime and one of
-its advertised models. The fallback model is required while a binding exists.
+`modelSelection: null` removes the binding. Each rule selects a runtime and one of
+its advertised models, or continues with another Decision. The fallback model is required while a binding exists.
 Launch-time model configuration is supported because selection precedes host start.
 Live model switching continues to follow the runtime's `modelSwitching` capability.
 
@@ -1864,6 +1864,43 @@ Acceptance covers cross-runtime startup, isolation between conversations,
 once-per-session evaluation, restart and fallback persistence, manual precedence, rule
 order, score intervals, bounded PR/MR context, and binding access.
 
+### 10.7. Chained Decisions
+
+Agent runtime/model selection, shared-bot routing, channel activation gates, and
+repository routing can continue a result branch with another saved Decision.
+The consumer owns the chain; a Decision remains a reusable question and evaluator.
+
+The first node keeps the existing configuration shape. Optional `steps` contain
+additional nodes with unique `id` values and their own `decisionId` and conditions.
+
+| Consumer              | Continuation                                               | Terminal behavior                                                                                                         |
+| --------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Agent model selection | A rule uses `nextStepId` instead of a runtime/model target | Select the terminal runtime/model once and pin it to the session                                                          |
+| Shared-bot routing    | A rule action is `{ type: "decision", nextStepId }`        | Collect and deduplicate matched Agent targets; apply the shared Otherwise action at a reached node with no matching rules |
+| Repository routing    | A rule action is `{ type: "decision", nextStepId }`        | Collect matched Agents among the eligible hooks; Otherwise can select every candidate or nobody                           |
+| Channel gate          | `nextStepId` follows a match; `elseStepId` follows a miss  | A terminal match triggers the bound Agent; a terminal miss skips                                                          |
+
+Chains contain at most eight nodes, including the first Decision. All nodes must
+be reachable, references must exist, and cycles are rejected. Routing has at most
+32 uniquely identified rules across the chain. Only reached nodes are evaluated;
+each node runs at most once. Every evaluation uses the same bounded input snapshot,
+and the entire chain shares the consumer's five-second evaluation deadline.
+A missing or unavailable reached Decision follows that consumer's existing failure
+behavior: model fallback, gate continuation, or routing fallback. Continuing
+participants retain their existing routing guarantees.
+
+Saving authorizes every referenced Decision. Usage lists and deletion protection
+include nested references; changing a child's question revalidates its consumers.
+Gate/router bundles deliver all definitions to the daemon ahead of ingress, and
+pending verdicts include child configuration in their fingerprints. Peers without
+`decision-chain-v1` cannot execute a chain; their conversations remain held.
+
+The editors let a rule choose another Decision, edit its conditions, and return
+along the path. Gate and shared-bot routing Try use the same traversal as live execution.
+Recent evaluation details retain the reached steps and their answers with the
+existing transcript retention boundary. The model-selection sample remains
+explicitly simulated.
+
 ## 11. Future possibilities
 
 These are exploratory uses of the same Decision resource, outside Stage 1 and
@@ -1899,8 +1936,6 @@ for routine response, routing, and session choices. Directions to explore includ
   This does not change the established-thread continuity specified for Stage 2.
 - **Built-in templates:** provide editable starting points for common judgments
   that users can apply without creating a Decision from scratch.
-- **Decision composition:** explore successive judgments, such as checking for
-  spam before selecting recipients, without specifying a workflow engine here.
 
 AI-assisted authoring produces saved configuration. Runtime Auto would make choices
 for incoming messages using the candidates and context available at that time;

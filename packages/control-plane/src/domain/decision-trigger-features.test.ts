@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DECISION_CHAIN_V1_FEATURE,
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
@@ -32,6 +33,22 @@ const spec: IntegrationSpec = {
 }
 
 describe('encodeIntegrationSpecForPeer', () => {
+  it('holds chained gates on old peers while preserving single Decisions', () => {
+    const chained = structuredClone(spec)
+    chained.core.decisions!.bindings[0]!.consumer = {
+      ...gate,
+      nextStepId: 'next',
+      steps: [{ id: 'next', decisionId: 'd2', when: gate.when }]
+    }
+    const encoded = encodeIntegrationSpecForPeer(chained, [DECISION_TRIGGER_V1_FEATURE])
+    expect(encoded.core.mutedChannels).toContain('C1')
+    expect(encoded.core.bindRules).toEqual([{ match: { kind: 'mention' } }])
+    expect(encoded.core.decisions!.bindings.map((binding) => binding.channel)).toEqual(['C2'])
+    expect(encodeIntegrationSpecForPeer(chained, [DECISION_TRIGGER_V1_FEATURE, DECISION_CHAIN_V1_FEATURE])).toBe(
+      chained
+    )
+  })
+
   it('is the identity for a daemon that advertises decision-trigger-v1', () => {
     expect(encodeIntegrationSpecForPeer(spec, [DECISION_TRIGGER_V1_FEATURE])).toBe(spec)
   })

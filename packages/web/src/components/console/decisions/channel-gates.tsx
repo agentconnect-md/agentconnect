@@ -31,7 +31,9 @@ export function useChannelGates() {
   const savedGate = (botId: string | undefined, c: IntegrationChannelRow): SavedGate | null => {
     if (mode !== 'mock') return savedGateOf(c)
     const gate = mockGate(botId, c)
-    return gate ? { decisionId: gate.decisionId, when: gate.when } : null
+    if (!gate) return null
+    const { channelName: _name, needsReview: _review, ...binding } = gate
+    return binding
   }
   const rowTrigger = (botId: string | undefined, c: IntegrationChannelRow): GateTrigger =>
     (offered && drafts[bindingKey(botId, c)]) || mockGate(botId, c) ? 'decision' : c.trigger
@@ -131,8 +133,7 @@ export function useChannelGates() {
           mode === 'mock'
             ? Promise.resolve(
                 decisions.setGate(key, {
-                  decisionId: next.decisionId,
-                  when: next.when,
+                  ...next,
                   channelName: labelOf(row),
                   needsReview: false
                 })

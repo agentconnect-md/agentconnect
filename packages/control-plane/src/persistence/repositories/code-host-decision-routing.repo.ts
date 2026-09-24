@@ -3,6 +3,7 @@ import {
   CODE_HOST_ROUTING_PROVIDERS,
   DecisionBundleDefinition,
   SharedBotDecisionRouting,
+  decisionChainIds,
   decisionRoutingAgentIds,
   isCodeHostRoutingScope,
   type CodeHostRoutingFamily,
@@ -17,6 +18,7 @@ import type {
   CodeHostRoutingScope
 } from '../ports.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { enterDecisionBindingFence } from '../decision-binding-fence.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 
 type Tx = Prisma.TransactionClient
@@ -47,7 +49,8 @@ function toRecord(row: CodeHostDecisionRouting & { decision?: Decision | null })
     enabled: row.enabled,
     decisionId: row.decisionId,
     rules: row.rules,
-    otherwise: row.otherwise
+    otherwise: row.otherwise,
+    ...(Array.isArray(row.steps) && row.steps.length ? { steps: row.steps } : {})
   })
   return {
     id: row.id,
@@ -74,6 +77,18 @@ const scopeWhere = (scope: CodeHostRoutingScope) => ({
     family: scope.family
   }
 })
+
+async function routingRecord(
+  db: PrismaLike,
+  row: Parameters<typeof toRecord>[0]
+): Promise<CodeHostDecisionRoutingRecord | null> {
+  const record = toRecord(row)
+  if (!record?.config?.steps?.length) return record
+  const definitions = await db.decision.findMany({
+    where: { orgId: row.orgId, id: { in: decisionChainIds(record.config) } }
+  })
+  return { ...record, definitions: definitions.flatMap((d) => definitionOf(d) ?? []) }
+}
 
 /** Bump the hosts of these scopes' routings: a member hook write changes what their AgentSpec.hookRoutings carries. */
 export async function bumpCodeHostRoutingHosts(
@@ -112,7 +127,7 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
       where: scopeWhere(scope),
       include: { decision: true }
     })
-    return row ? toRecord(row) : null
+    return row ? routingRecord(this.db, row) : null
   }
 
   async save(
@@ -121,12 +136,20 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
     actorUserId: string | null
   ): Promise<CodeHostDecisionRoutingRecord> {
     return withAmbientTx(this.db, async (tx) => {
+      const authorize = await enterDecisionBindingFence(
+        tx,
+        scope.orgId,
+        decisionChainIds(config),
+        actorUserId ?? undefined
+      )
+      authorize([])
       const data = {
         repoFullName: scope.repoFullName,
         enabled: config.enabled,
         decisionId: config.decisionId,
         rules: config.rules as unknown as Prisma.InputJsonValue,
         otherwise: config.otherwise as unknown as Prisma.InputJsonValue,
+        steps: (config.steps ?? []) as unknown as Prisma.InputJsonValue,
         needsReview: false,
         updatedByUserId: actorUserId
       }
@@ -144,7 +167,7 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
         include: { decision: true }
       })
       if (saved.evaluationAgentId) await bumpAgentConfigRevisions(tx, [saved.evaluationAgentId])
-      const record = toRecord(saved)
+      const record = await routingRecord(tx, saved)
       if (!record) throw new Error(`code-host routing ${saved.id} did not persist`)
       return record
     })
@@ -156,7 +179,7 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
       if (!row) return null
       await tx.codeHostDecisionRouting.delete({ where: { id: row.id } })
       if (row.evaluationAgentId) await bumpAgentConfigRevisions(tx, [row.evaluationAgentId])
-      return toRecord(row)
+      return routingRecord(tx, row)
     })
   }
 
@@ -166,7 +189,8 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
       include: { decision: true },
       orderBy: { id: 'asc' }
     })
-    return rows.flatMap((row) => toRecord(row) ?? [])
+    const records = await Promise.all(rows.map((row) => routingRecord(this.db, row)))
+    return records.filter((record): record is CodeHostDecisionRoutingRecord => record !== null)
   }
 
   async setEvaluationAgent(id: string, expected: AgentId | null, next: AgentId | null): Promise<boolean> {
@@ -222,7 +246,7 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
   async listUsages(orgId: OrgId, decisionIds?: readonly string[]): Promise<CodeHostDecisionRoutingUsage[]> {
     if (decisionIds?.length === 0) return []
     const stored = await this.db.codeHostDecisionRouting.findMany({
-      where: { orgId, ...(decisionIds ? { decisionId: { in: [...decisionIds] } } : {}) },
+      where: { orgId },
       select: {
         id: true,
         decisionId: true,
@@ -230,7 +254,8 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
         repoId: true,
         repoFullName: true,
         family: true,
-        rules: true
+        rules: true,
+        steps: true
       },
       orderBy: [{ repoFullName: 'asc' }, { family: 'asc' }]
     })
@@ -245,21 +270,25 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
       },
       select: { agentId: true, kind: true, repoId: true, family: true }
     })
-    return rows.map((row) => {
+    return rows.flatMap((row) => {
       const rules = SharedBotDecisionRouting.shape.rules.safeParse(row.rules)
-      const targets = rules.success ? decisionRoutingAgentIds({ rules: rules.data }) : []
+      const steps = SharedBotDecisionRouting.shape.steps.safeParse(row.steps)
+      const chain = { decisionId: row.decisionId, ...(steps.success && steps.data ? { steps: steps.data } : {}) }
+      const targets = rules.success ? decisionRoutingAgentIds({ rules: rules.data, steps: chain.steps }) : []
       const members = hooks
         .filter((h) => h.kind === row.provider && h.repoId === row.repoId && h.family === row.family)
         .flatMap((h) => (h.agentId ? [h.agentId] : []))
-      return {
-        decisionId: row.decisionId,
-        routingId: row.id,
-        provider: row.provider,
-        repoId: row.repoId,
-        repoFullName: row.repoFullName,
-        family: row.family,
-        agentIds: [...new Set([...members, ...targets])].map(AgentId)
-      }
+      return decisionChainIds(chain)
+        .filter((id) => !decisionIds || decisionIds.includes(id))
+        .map((id) => ({
+          decisionId: id,
+          routingId: row.id,
+          provider: row.provider,
+          repoId: row.repoId,
+          repoFullName: row.repoFullName,
+          family: row.family,
+          agentIds: [...new Set([...members, ...targets])].map(AgentId)
+        }))
     })
   }
 }

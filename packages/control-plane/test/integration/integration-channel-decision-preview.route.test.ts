@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
+  DECISION_CHAIN_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   type DecisionDraft,
@@ -18,7 +19,7 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd3d3d3d3-dddd-4ddd-8ddd-dddddddddddd'
-const FEATURES = [DECISION_TRIGGER_V1_FEATURE, DECISION_PREVIEW_V1_FEATURE]
+const FEATURES = [DECISION_TRIGGER_V1_FEATURE, DECISION_PREVIEW_V1_FEATURE, DECISION_CHAIN_V1_FEATURE]
 
 const boolDraft: DecisionDraft = {
   name: 'Needs help',
@@ -166,6 +167,36 @@ describe('POST /integrations/:id/channels/:channelId/decision-preview', () => {
       trigger: 'mention',
       decisionBinding: null
     })
+  })
+
+  it('follows the matched branch using one snapshot and reports the terminal gate', async () => {
+    const { integrationId } = await seedInstall()
+    const { app, spy } = appWith()
+    const decisionId = await createDecision(app)
+    const childId = await createDecision(app, { ...boolDraft, name: 'Follow-up' })
+    spy.next = async (req) => ({
+      evaluation:
+        req.decision.name === 'Follow-up'
+          ? ({ ...yes, answer: { type: 'boolean', value: false, probability: 0.1 } } as DecisionEvaluation)
+          : yes
+    })
+    const res = await preview(app, integrationId, 'C1', {
+      ...gate(decisionId),
+      decisionBinding: {
+        type: 'gate',
+        decisionId,
+        when: { type: 'boolean', values: [true] },
+        nextStepId: 'follow',
+        steps: [{ id: 'follow', decisionId: childId, when: { type: 'boolean', values: [true] } }]
+      }
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json().consumer).toMatchObject({ outcome: 'skip', matched: false })
+    expect(res.json().chain.map((step: { decisionId: string }) => step.decisionId)).toEqual([decisionId, childId])
+    expect(spy.previews).toHaveLength(2)
+    expect(spy.previews[1]!.req.state).toEqual(spy.previews[0]!.req.state)
+    expect(spy.previews.every(({ req }) => req.budgetMs! > 0 && req.budgetMs! <= 5000)).toBe(true)
+    expect(await prisma.sessionMeta.count()).toBe(0)
   })
 
   it('answers Would skip with matched keys from the draft condition, and unavailable is never a skip', async () => {

@@ -1856,7 +1856,7 @@ export const UpdateIntegrationChannelBody = z
   .object({
     trigger: z.enum(['off', 'mention', 'any', 'decision']).optional(),
     // The complete By decision gate; required with, and only with, trigger 'decision'.
-    decisionBinding: ChannelDecisionGate.extend({ decisionId: z.string().uuid() }).optional(),
+    decisionBinding: ChannelDecisionGate.safeExtend({ decisionId: z.string().uuid() }).optional(),
     sessionMode: z.enum(['createNew', 'append']).optional(),
     agentId: z.string().min(1).optional()
   })

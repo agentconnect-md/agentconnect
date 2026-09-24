@@ -1,6 +1,6 @@
 // Pure projections of a conversation's By decision state and of the errors its save can meet.
 
-import type { DecisionCondition, DecisionValidationIssue } from '@agentconnect.md/protocol/decision'
+import type { ChannelDecisionGate, DecisionValidationIssue } from '@agentconnect.md/protocol/decision'
 import type { DecisionUsage } from '@agentconnect.md/protocol/decision-api'
 import { ApiError, type ChannelDecisionView } from '@/lib/api'
 import type { IntegrationChannelRow } from '@/lib/data'
@@ -10,10 +10,7 @@ import { DecisionMockApiError } from './mock-api'
 export type GateStatus = 'ready' | 'pending_sync' | 'needs_review' | 'daemon_offline' | 'unsupported' | 'access_revoked'
 
 /** A conversation's saved fixed-target gate. */
-export interface SavedGate {
-  decisionId: string
-  when: DecisionCondition
-}
+export type SavedGate = Omit<ChannelDecisionGate, 'type'>
 
 /** Why a binding save failed, in the terms the strip renders. */
 export type BindingSaveError =
@@ -28,7 +25,8 @@ export type BindingSaveError =
 export function savedGateOf(row: Pick<IntegrationChannelRow, 'trigger' | 'decisionBinding'>): SavedGate | null {
   const binding = row.decisionBinding
   if (row.trigger !== 'decision' || binding?.type !== 'gate') return null
-  return { decisionId: binding.decisionId, when: binding.when }
+  const { type: _type, ...gate } = binding
+  return gate
 }
 
 /** Whether a shared bot's routing, not this row, decides who answers here. */

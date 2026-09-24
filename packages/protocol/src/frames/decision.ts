@@ -18,6 +18,7 @@ export const DECISION_ROUTING_V1_FEATURE = 'decision-routing-v1'
 export const DECISION_ROUTING_FORWARD_V1_FEATURE = 'decision-routing-forward-v1'
 export const DECISION_TOOLS_V1_FEATURE = 'decision-tools-v1'
 export const DECISION_MODEL_SELECTION_V1_FEATURE = 'decision-model-selection-v1'
+export const DECISION_CHAIN_V1_FEATURE = 'decision-chain-v1'
 // The peer answers decision/evaluations and decision/evaluation from its decision_verdict rows.
 export const DECISION_EVALUATIONS_V1_FEATURE = 'decision-evaluations-v1'
 // The peer answers decision/routing-evaluations and decision/routing-evaluation from its router verdicts.
@@ -96,7 +97,8 @@ export const DecisionPreviewRequest = z
     agentId: z.string().uuid(),
     evaluationId: z.string().uuid(),
     decision: DecisionDraft,
-    state: z.record(z.string(), z.unknown())
+    state: z.record(z.string(), z.unknown()),
+    budgetMs: z.number().int().min(1).max(5000).optional()
   })
   .refine((input) => new TextEncoder().encode(JSON.stringify(input)).byteLength <= 32 * 1024, {
     message: 'The preview must fit within 32 KiB.'

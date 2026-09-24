@@ -5166,6 +5166,7 @@ export interface IntegrationChannelRecord {
   decisionNeedsReview: boolean
   /** The bound gate Decision's executable definition, joined on read; null without a gate. */
   decisionDefinition: import('@agentconnect.md/protocol').DecisionBundleDefinition | null
+  decisionDefinitions?: import('@agentconnect.md/protocol').DecisionBundleDefinition[]
   /** The bot's router joined on read (botShared = http + shareable); null when the bot has none. Optional for older fixtures. */
   decisionRouting?: ChannelDecisionRoutingRef | null
   /** The 1:1 DM counterpart's platform member id (§14.8); null on rooms and on rows
@@ -5512,6 +5513,7 @@ export interface BotDecisionRoutingRecord {
   needsReview: boolean
   updatedAt: Date
   definition: import('@agentconnect.md/protocol').DecisionBundleDefinition | null
+  definitions?: import('@agentconnect.md/protocol').DecisionBundleDefinition[]
 }
 
 /** One scope removal: the replacement trigger, and optionally the install whose agent becomes the owner. */
@@ -5565,6 +5567,7 @@ export interface CodeHostDecisionRoutingRecord extends CodeHostRoutingScope {
   needsReview: boolean
   evaluationAgentId: AgentId | null
   definition: import('@agentconnect.md/protocol').DecisionBundleDefinition | null
+  definitions?: import('@agentconnect.md/protocol').DecisionBundleDefinition[]
   updatedAt: Date
 }
 

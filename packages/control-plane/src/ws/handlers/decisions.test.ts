@@ -58,6 +58,36 @@ function setup() {
 }
 
 describe('Decision configuration reads for agent tools', () => {
+  it('authorizes a downstream Decision only while it remains in the model-selection chain', async () => {
+    const { agent, getForAgent, conn, run } = setup()
+    const next = { ...decision, id: '44444444-4444-4444-8444-444444444444' }
+    const bound = {
+      id: agentId,
+      orgId,
+      daemonId,
+      decisionIds: [],
+      modelSelection: {
+        decisionId: decision.id,
+        rules: [{ when: { type: 'boolean' as const, values: [true] }, nextStepId: 'next' }],
+        steps: [
+          {
+            id: 'next',
+            decisionId: next.id,
+            rules: [{ when: { type: 'boolean' as const, values: [true] }, runtime: 'claude', model: 'model-a' }]
+          }
+        ]
+      }
+    }
+    agent.mockResolvedValue(bound)
+    getForAgent.mockResolvedValue(next)
+    await run('decision/get', { decisionId: next.id })
+    expect(getForAgent).not.toHaveBeenCalled()
+    await run('decision/get', { decisionId: next.id, purpose: 'model_selection' })
+    expect(conn.replyTo).toHaveBeenLastCalledWith(expect.anything(), 'decision/get/result', { decision: next })
+    agent.mockResolvedValue({ ...bound, modelSelection: undefined }).mockResolvedValueOnce(bound)
+    await run('decision/get', { decisionId: next.id, purpose: 'model_selection' })
+    expect(conn.replyTo).toHaveBeenLastCalledWith(expect.anything(), 'decision/get/result', { decision: null })
+  })
   it('separates the model-selection grant from MCP attachments and rechecks revocation', async () => {
     const { agent, getForAgent, conn, run } = setup()
     const bound = {

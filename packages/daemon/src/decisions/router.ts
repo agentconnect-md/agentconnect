@@ -1,5 +1,11 @@
 import {
   isRetryableRouteAck,
+  runDecisionChain,
+  decisionChainUsage,
+  type DecisionRoutingStep,
+  matchDecisionCondition,
+  type DecisionBundleDefinition,
+  type DecisionChainEvaluation,
   partitionRoutingConstraint,
   resolveRoutingTargets,
   type DecisionBundle,
@@ -79,6 +85,7 @@ export interface RouterTarget {
 
 /** The frozen, credential-free routing configuration a router verdict carries. */
 export interface FrozenRouterConfig {
+  definitions?: DecisionBundleDefinition[]
   botId: string
   channel: string
   decisionId: string
@@ -195,6 +202,7 @@ interface PendingReport {
 }
 
 interface RouterAnswer {
+  chain?: DecisionChainEvaluation[]
   answer?: unknown
   matchedRuleIds?: string[]
   matchedKeys?: string[]
@@ -299,6 +307,7 @@ export class DecisionRouter {
       botId: c.botId,
       channel: c.rawChannel,
       decisionId: c.routing.definition.id,
+      ...(c.routing.definitions ? { definitions: c.routing.definitions } : {}),
       providerId: c.routing.definition.providerId,
       model: c.routing.definition.model,
       question: c.routing.definition.question,
@@ -636,26 +645,45 @@ export class DecisionRouter {
         return
       let raw: string | undefined
       let request: string | undefined
-      const evaluation = await this.host.evaluate(
-        {
-          agentId: row.agentId,
-          evaluationId: `${row.seq}:${row.subject}`,
-          decision: { providerId: config.providerId, model: config.model, question: config.question },
-          state: built.state,
-          deadlineAt: row.deadlineAt,
-          onRawRequest: (text) => {
-            request = text
-          },
-          onRawResponse: (text) => {
-            raw = text
-          }
-        },
-        signal
-      )
+      const definitions = new Map((config.definitions ?? []).map((definition) => [definition.id, definition]))
+      const definitionOf = (id: string) => (id === config.decisionId ? config : definitions.get(id)!)
+      const { evaluation, trace } = await runDecisionChain<DecisionRoutingStep>({
+        root: config.routing,
+        steps: config.routing.steps,
+        deadlineAt: row.deadlineAt,
+        now: () => this.host.now(),
+        signal,
+        evaluate: (step, index, signal) =>
+          this.host.evaluate(
+            {
+              agentId: row.agentId,
+              evaluationId: `${row.seq}:${row.subject}:${index}`,
+              decision: definitionOf(step.decisionId),
+              state: built.state,
+              deadlineAt: row.deadlineAt,
+              onRawRequest: (text) => {
+                if (index === 0) request = text
+              },
+              onRawResponse: (text) => {
+                if (index === 0) raw = text
+              }
+            },
+            signal
+          ),
+        next: (step, result) =>
+          step.rules.flatMap((rule) =>
+            rule.action.type === 'decision' &&
+            matchDecisionCondition(definitionOf(step.decisionId).question, rule.when, result.answer).matched
+              ? [rule.action.nextStepId]
+              : []
+          )
+      })
       signal.throwIfAborted()
       if (evaluation.status === 'unavailable') {
         await this.settle(key, row, config, delivery, constraint, 'unavailable', {
           reason: evaluation.reason,
+          usage: decisionChainUsage(trace),
+          chain: trace,
           raw,
           request
         })
@@ -663,7 +691,8 @@ export class DecisionRouter {
       }
       await this.settle(key, row, config, delivery, constraint, evaluation.answer, {
         model: evaluation.model,
-        usage: evaluation.usage,
+        usage: decisionChainUsage(trace),
+        chain: trace,
         raw,
         request
       })
@@ -753,6 +782,7 @@ export class DecisionRouter {
       model?: string
       usage?: { inputTokens: number; outputTokens: number }
       answerJson?: RouterAnswer
+      chain?: DecisionChainEvaluation[]
       recovered?: boolean
       /** The provider's response body text, kept with the answer until retention strips it. */
       raw?: string
@@ -769,7 +799,15 @@ export class DecisionRouter {
         answer: answer === 'none' ? undefined : answer,
         constraint,
         ...(config.defaultAgentId ? { defaultAgentId: config.defaultAgentId } : {}),
-        candidates: delivery.candidates
+        candidates: delivery.candidates,
+        chain: new Map(
+          extra.chain?.flatMap((entry) => {
+            const definition = config.definitions?.find((definition) => definition.id === entry.decisionId)
+            return entry.stepId && definition && entry.evaluation.status === 'answered'
+              ? [[entry.stepId, { question: definition.question, answer: entry.evaluation.answer }] as const]
+              : []
+          })
+        )
       })
     } catch {
       reason = 'invalid_response'
@@ -807,6 +845,7 @@ export class DecisionRouter {
     const match = resolved.match
     const answerJson: RouterAnswer = extra.answerJson ?? {
       ...(answer !== 'unavailable' && answer !== 'none' ? { answer } : {}),
+      ...(config.routing.steps?.length && extra.chain ? { chain: extra.chain } : {}),
       matchedRuleIds: match?.matchedRuleIds ?? [],
       matchedKeys: match?.matchedKeys ?? [],
       usedOtherwise: match?.usedOtherwise ?? false,

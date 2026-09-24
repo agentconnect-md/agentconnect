@@ -109,6 +109,17 @@ describe('routingConfigState', () => {
     expect(routingConfigState(null, members, true).executable).toBe(false)
     expect(routingConfigState(record({ definition: null }), members, true).disabledReason).toBe('access_revoked')
   })
+
+  it('locates a removed target in its child step', () => {
+    const chained = {
+      ...config,
+      rules: [{ ...config.rules[0]!, action: { type: 'decision' as const, nextStepId: 'follow' } }],
+      steps: [{ id: 'follow', decisionId: definition.id, rules: [config.rules[1]!] }]
+    }
+    expect(routingConfigState(record({ config: chained }), new Set([ALICE]), true).issues).toEqual([
+      { path: ['steps', 0, 'rules', 0, 'action'], message: 'Choose an agent connected to this bot.' }
+    ])
+  })
 })
 
 describe('planRoutedConversations', () => {

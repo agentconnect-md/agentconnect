@@ -1,7 +1,9 @@
 import {
   selectDecisionTarget,
   DecisionRuntimeTarget,
-  type AgentModelSelection,
+  AgentModelSelection,
+  runDecisionChain,
+  type DecisionModelStep,
   type DecisionEvaluation,
   type DecisionGetReply,
   type DecisionToolDefinition
@@ -111,7 +113,7 @@ export interface SessionModelSelectionInput {
   supported(target: DecisionRuntimeTarget): boolean
   signal: AbortSignal
   current(): boolean
-  decision(): Promise<DecisionGetReply>
+  decision(id: string): Promise<DecisionGetReply>
   state(decision: DecisionToolDefinition): Promise<Record<string, unknown> | undefined>
   evaluate(input: DecisionEvaluationInput, signal: AbortSignal): Promise<DecisionEvaluation>
   evaluationId: string
@@ -127,22 +129,47 @@ export async function evaluateSessionModel(
   }
   if (!current()) return undefined
   try {
-    const { decision } = await input.decision()
-    if (!current() || !decision || decision.id !== input.selection.decisionId) return undefined
+    const selection = AgentModelSelection.parse(input.selection)
+    const { decision } = await input.decision(selection.decisionId)
+    if (!current() || !decision || decision.id !== selection.decisionId) return undefined
     const state = await input.state(decision)
     if (!current() || state === undefined) return undefined
-    const result = await input.evaluate(
-      {
-        agentId: input.agentId,
-        evaluationId: input.evaluationId,
-        decision,
-        state
+    const deadlineAt = performance.timeOrigin + performance.now() + 5_000
+    const definitions = new Map([[decision.id, decision]])
+    let selected: DecisionRuntimeTarget | undefined
+    const result = await runDecisionChain<DecisionModelStep>({
+      root: selection,
+      steps: selection.steps,
+      deadlineAt,
+      signal: input.signal,
+      evaluate: async (step, index, signal) => {
+        const definition = definitions.get(step.decisionId) ?? (await input.decision(step.decisionId)).decision
+        signal.throwIfAborted()
+        if (!current() || definition?.id !== step.decisionId)
+          return { status: 'unavailable', reason: 'invalid_response' }
+        definitions.set(definition.id, definition)
+        return input.evaluate(
+          {
+            agentId: input.agentId,
+            evaluationId: index === 0 ? input.evaluationId : `${input.evaluationId.slice(0, 120)}:${index}`,
+            decision: definition,
+            state,
+            deadlineAt
+          },
+          signal
+        )
       },
-      input.signal
-    )
-    if (!current() || result.status !== 'answered') return undefined
-    const target = selectDecisionTarget(decision.question, input.selection, result.answer)
-    return target && input.supported(target) ? target : undefined
+      next: (step, result) => {
+        if (!current()) throw new Error('Model selection changed.')
+        const target = selectDecisionTarget(definitions.get(step.decisionId)!.question, step, result.answer)
+        if (target && 'nextStepId' in target) return [target.nextStepId]
+        selected = target
+        return []
+      }
+    })
+    return current() && result.evaluation.status === 'answered' && selected && input.supported(selected)
+      ? selected
+      : undefined
   } catch {
     input.signal.throwIfAborted()
     return undefined

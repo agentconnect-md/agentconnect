@@ -1,6 +1,9 @@
 import {
   manifestFor,
-  matchDecisionCondition,
+  nextGateStep,
+  runDecisionChain,
+  decisionChainUsage,
+  type DecisionGateStep,
   type DecisionBundle,
   type DecisionEvaluation,
   type RdMsgIm
@@ -457,48 +460,63 @@ export class DecisionGate {
       if (!(await store.beginDecisionEvaluation(row.seq, row.subject, fence, JSON.stringify(built.state)))) return
       let raw: string | undefined
       let request: string | undefined
-      const evaluation = await this.host.evaluate(
-        {
-          agentId: c.agentId,
-          evaluationId: `${row.seq}:${c.agentId}`,
-          decision: { providerId: config.providerId, model: config.model, question: config.question },
-          state: built.state,
-          deadlineAt: row.deadlineAt,
-          onRawRequest: (text) => {
-            request = text
-          },
-          onRawResponse: (text) => {
-            raw = text
-          }
-        },
-        signal
-      )
+      const definitions = new Map((config.definitions ?? []).map((definition) => [definition.id, definition]))
+      const definitionOf = (id: string) => (id === config.decisionId ? config : definitions.get(id)!)
+      let match = { matched: false, matchedKeys: [] as string[] }
+      const { evaluation, trace } = await runDecisionChain<DecisionGateStep>({
+        root: config.binding.consumer,
+        steps: config.binding.consumer.steps,
+        deadlineAt: row.deadlineAt,
+        now: () => this.host.now(),
+        signal,
+        evaluate: (step, index, signal) =>
+          this.host.evaluate(
+            {
+              agentId: c.agentId,
+              evaluationId: `${row.seq}:${c.agentId}:${index}`,
+              decision: definitionOf(step.decisionId),
+              state: built.state,
+              deadlineAt: row.deadlineAt,
+              onRawRequest: (text) => {
+                if (index === 0) request = text
+              },
+              onRawResponse: (text) => {
+                if (index === 0) raw = text
+              }
+            },
+            signal
+          ),
+        next: (step, result) => {
+          const next = nextGateStep(definitionOf(step.decisionId).question, step, result.answer)
+          match = next
+          return next.nextStepId ? [next.nextStepId] : []
+        }
+      })
       signal.throwIfAborted()
-      const rawOnly =
-        raw === undefined && request === undefined ? {} : { answerJson: JSON.stringify(rawAnswerFields(raw, request)) }
+      const chain = config.binding.consumer.steps?.length ? { chain: trace } : {}
       if (evaluation.status === 'unavailable') {
-        await settle('unavailable', { reason: evaluation.reason, ...rawOnly })
-        return
-      }
-      let match: { matched: boolean; matchedKeys: string[] }
-      try {
-        match = matchDecisionCondition(config.question, config.condition, evaluation.answer)
-      } catch {
-        await settle('unavailable', { reason: 'invalid_response', ...rawOnly })
+        await settle('unavailable', {
+          reason: evaluation.reason,
+          usage: decisionChainUsage(trace),
+          answerJson: JSON.stringify({ ...chain, ...rawAnswerFields(raw, request) })
+        })
         return
       }
       await settle(match.matched ? 'match' : 'skip', {
         answerJson: JSON.stringify({
           answer: evaluation.answer,
+          ...chain,
           matchedKeys: match.matchedKeys,
           ...rawAnswerFields(raw, request)
         }),
         model: evaluation.model,
-        usage: evaluation.usage
+        usage: decisionChainUsage(trace)
       })
     } catch (err) {
       const reason = task.cancelReason
       if (reason === 'shutdown' || reason === 'ownership') return
+      // The bulk cancellation owns stop/cancel settlement and its affected-row count.
+      if (reason === 'stop' || reason === 'cancel') return
       if (reason) {
         if (await store.finishDecisionVerdict(row.seq, row.subject, null, 'canceled', reason, this.host.now()))
           this.finished(key, 'canceled', reason)

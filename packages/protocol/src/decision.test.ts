@@ -5,6 +5,8 @@ import {
   DecisionBundleDefinition,
   AgentModelSelection,
   decisionModelSelectionIssues,
+  modelSelectionDecisionIds,
+  modelSelectionTargets,
   selectDecisionTarget,
   DecisionDraft,
   DecisionEvaluationRecord,
@@ -103,6 +105,41 @@ describe('Decision model selection', () => {
     ranges.rules[0]!.when = { type: 'score', min: 0, max: 1 }
     expect(selectDecisionTarget(score, ranges, scoreAnswer(2))).toEqual({ runtime: 'claude', model: 'model-b' })
     expect(() => selectDecisionTarget(score, selection, scoreAnswer(2))).toThrow()
+  })
+
+  it('chains winning rules and validates the complete graph and each referenced question', () => {
+    const childId = '44444444-4444-4444-8444-444444444444'
+    const chained: AgentModelSelection = {
+      ...selection,
+      rules: [{ when: selection.rules[0]!.when, nextStepId: 'complexity' }, selection.rules[1]!],
+      steps: [
+        {
+          id: 'complexity',
+          decisionId: childId,
+          rules: [{ when: { type: 'score', min: 0, max: 3 }, runtime: 'codex', model: 'model-c' }]
+        }
+      ]
+    }
+    expect(AgentModelSelection.parse(chained)).toEqual(chained)
+    expect(selectDecisionTarget(choice, chained, answer)).toEqual({ nextStepId: 'complexity' })
+    expect(modelSelectionDecisionIds(chained)).toEqual([selection.decisionId, childId])
+    expect(modelSelectionTargets(chained)).toEqual([
+      { runtime: 'claude', model: 'model-b' },
+      { runtime: 'codex', model: 'model-c' }
+    ])
+    expect(decisionModelSelectionIssues(choice, chained, new Map([[childId, score]]))).toEqual([])
+    expect(decisionModelSelectionIssues(choice, chained, new Map([[childId, choice]]))).toEqual([
+      expect.objectContaining({ path: ['steps', 0, 'rules', 0, 'when', 'type'] })
+    ])
+    const child = chained.steps![0]!
+    for (const invalid of [
+      { ...chained, steps: [] },
+      { ...chained, steps: [child, child] },
+      { ...chained, steps: [child, { ...child, id: 'unused' }] },
+      { ...chained, steps: [{ ...child, rules: [{ when: child.rules[0]!.when, nextStepId: child.id }] }] },
+      { ...chained, steps: Array.from({ length: 8 }, (_, index) => ({ ...child, id: String(index) })) }
+    ])
+      expect(AgentModelSelection.safeParse(invalid).success).toBe(false)
   })
 })
 const routing: SharedBotDecisionRouting = {

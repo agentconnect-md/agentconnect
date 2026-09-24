@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
+  DECISION_CHAIN_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   OWNER_DEFAULT_DECISION_V1_FEATURE,
   type DecisionDraft,
@@ -568,5 +569,40 @@ describe('Decision usage, edits, and deletion with channel gates', () => {
     ).toMatchObject({
       decision: { enabled: true }
     })
+  })
+})
+
+describe('chained conversation gates', () => {
+  it('saves all nodes, projects their definitions, fences deletion, and invalidates a changed child', async () => {
+    const { integrationId } = await seedInstall()
+    const { app, spy } = appWith([DECISION_TRIGGER_V1_FEATURE, DECISION_CHAIN_V1_FEATURE])
+    const root = await createDecision(app)
+    const child = await createDecision(app, scoreDraft)
+    const binding = {
+      type: 'gate',
+      decisionId: root,
+      when: { type: 'boolean', values: [true] },
+      nextStepId: 'urgency',
+      steps: [{ id: 'urgency', decisionId: child, when: { type: 'score', min: 1, max: 3 } }]
+    }
+    const response = await patchChannel(app, integrationId, 'C1', { trigger: 'decision', decisionBinding: binding })
+    expect(response.statusCode, response.body).toBe(200)
+    expect(response.json().decisionBinding).toEqual(binding)
+    expect(
+      spy.upserts
+        .at(-1)
+        ?.u.core.decisions?.definitions.map((d) => d.id)
+        .sort()
+    ).toEqual([root, child].sort())
+    expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${child}` })).statusCode).toBe(409)
+    const changed = await app.app.inject({ method: 'PATCH', url: `${ORG}/decisions/${child}`, payload: boolDraft })
+    expect(changed.statusCode, changed.body).toBe(200)
+    expect(
+      (
+        await prisma.integrationChannel.findUnique({
+          where: { integrationId_channelId: { integrationId, channelId: 'C1' } }
+        })
+      )?.decisionNeedsReview
+    ).toBe(true)
   })
 })

@@ -7,6 +7,8 @@ import {
   matchDecisionCondition,
   type AgentModelSelection,
   type DecisionAnswer,
+  type DecisionDefinition,
+  type DecisionModelStep,
   type DecisionQuestion,
   type DecisionRuntimeTarget
 } from '@agentconnect.md/protocol/decision'
@@ -49,12 +51,14 @@ export function sampleAnswer(question: DecisionQuestion, sample: number): Decisi
 export function RuntimeSelectionSample({
   question,
   selection,
+  decisions = [],
   fallback,
   source,
   valid
 }: {
   question: DecisionQuestion
   selection: AgentModelSelection
+  decisions?: readonly Pick<DecisionDefinition, 'id' | 'name' | 'question'>[]
   fallback: DecisionRuntimeTarget
   source?: RuntimeModelSource
   valid: boolean
@@ -62,7 +66,34 @@ export function RuntimeSelectionSample({
   const t = useTranslations('Agents.dialog.modelSelection.sample')
   const [sample, setSample] = useState<0 | 1 | 2 | 3 | 4>(0)
   const answer = sampleAnswer(question, sample)
-  const selected = valid && answer ? selectDecisionTarget(question, selection, answer) : undefined
+  let selected: DecisionRuntimeTarget | undefined
+  const evaluatedSteps: Array<{ name: string; matched: boolean }> = []
+  if (valid && answer) {
+    let step: DecisionModelStep = selection
+    let currentQuestion = question
+    const visited = new Set<string>()
+    while (true) {
+      const result = sampleAnswer(currentQuestion, sample)
+      const target = result ? selectDecisionTarget(currentQuestion, step, result) : undefined
+      if (!target) break
+      if ('runtime' in target) {
+        selected = target
+        break
+      }
+      if (visited.has(target.nextStepId)) break
+      visited.add(target.nextStepId)
+      const next = selection.steps?.find((entry) => entry.id === target.nextStepId)
+      const definition = decisions.find((entry) => entry.id === next?.decisionId)
+      if (!next || !definition) break
+      const nextAnswer = sampleAnswer(definition.question, sample)
+      evaluatedSteps.push({
+        name: definition.name,
+        matched: !!nextAnswer && !!selectDecisionTarget(definition.question, next, nextAnswer)
+      })
+      step = next
+      currentQuestion = definition.question
+    }
+  }
   const target = selected ?? fallback
   const matches =
     valid && answer
@@ -79,6 +110,7 @@ export function RuntimeSelectionSample({
           .sort((a, b) => b.probability - a.probability)
       : []
   const winner = matches[0]
+  const winningRule = winner ? selection.rules[winner.index] : undefined
   const winningCondition = winner ? selection.rules[winner.index]!.when : undefined
   const condition =
     winningCondition?.type === 'choice' && answer?.type === 'choice'
@@ -100,13 +132,27 @@ export function RuntimeSelectionSample({
   const steps = [
     {
       title: t('rules'),
-      active: !!selected,
+      active: !!winner,
       detail: !valid
         ? t('invalid')
         : winner
-          ? t('matched', { index: winner.index + 1, condition, runtime: runtimeLabel(target.runtime), model })
+          ? winningRule && 'nextStepId' in winningRule
+            ? t('branchMatched', {
+                index: winner.index + 1,
+                condition,
+                decision:
+                  decisions.find(
+                    (d) => d.id === selection.steps?.find((step) => step.id === winningRule.nextStepId)?.decisionId
+                  )?.name ?? 'Decision'
+              })
+            : t('matched', { index: winner.index + 1, condition, runtime: runtimeLabel(target.runtime), model })
           : t('noMatch')
     },
+    ...evaluatedSteps.map((step) => ({
+      title: step.name,
+      active: step.matched,
+      detail: step.matched ? t('continued') : t('noMatch')
+    })),
     { title: t('fallback'), active: !selected, detail: selected ? t('notNeeded') : t('fallbackUsed') }
   ]
   return (
@@ -192,7 +238,7 @@ export function RuntimeSelectionSample({
         <div className="flex flex-col gap-[6px]">
           {steps.map((step, index) => (
             <div
-              key={step.title}
+              key={index}
               aria-current={step.active ? 'step' : undefined}
               className={`grid grid-cols-[20px_minmax(0,1fr)] items-center gap-[9px] rounded-sm border px-[10px] py-[7px] ${step.active ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle)'}`}
             >

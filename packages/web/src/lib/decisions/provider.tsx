@@ -7,6 +7,7 @@ import useSWR from 'swr'
 import {
   decisionConditionIssues,
   decisionConditionNeedsReview,
+  type ChannelDecisionGate,
   type DecisionCondition,
   type DecisionDefinition,
   type DecisionQuestion,
@@ -21,7 +22,7 @@ import type { BindingSaveError } from './binding'
 import { INITIAL_ROUTING_STATE, routingReducer, type RoutingEditorState, type RoutingEvent } from './routing-draft'
 
 /** A Stage 1 fixed-target gate: one conversation, one decision, one trigger condition. */
-export interface DecisionGateBinding {
+export interface DecisionGateBinding extends Pick<ChannelDecisionGate, 'steps' | 'nextStepId' | 'elseStepId'> {
   decisionId: string
   when: DecisionCondition
   /** The room's name as the console prints it, so a usage list can name it without console data. */
@@ -31,7 +32,7 @@ export interface DecisionGateBinding {
 }
 
 /** An unsaved By decision edit for one conversation; it outlives the strip so inline Create can return to it. */
-export interface DecisionBindingDraft {
+export interface DecisionBindingDraft extends Pick<ChannelDecisionGate, 'steps' | 'nextStepId' | 'elseStepId'> {
   decisionId: string | null
   when: DecisionCondition | null
   phase: 'editing' | 'saving' | 'error'
@@ -46,7 +47,7 @@ type DraftUpdate =
   DecisionBindingDraft | null | ((current: DecisionBindingDraft | undefined) => DecisionBindingDraft | null)
 
 /** Where an inline Create decision returns: a conversation's binding draft, or a bot's routing draft. */
-export type InlineCreateTarget = { kind: 'binding'; key: string } | { kind: 'routing'; botId: string }
+export type InlineCreateTarget = { kind: 'binding'; key: string } | { kind: 'routing'; botId: string; stepId?: string }
 
 /** The stored form: the store stamps the organization, so a caller cannot misfile it. */
 type StoredGate = DecisionGateBinding & { orgId: string }
@@ -145,8 +146,9 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
           Object.entries(current).map(([key, binding]) => [
             key,
             binding.orgId === orgId &&
-            binding.decisionId === decisionId &&
-            decisionConditionNeedsReview(previous, next, binding.when)
+            [binding, ...(binding.steps ?? [])].some(
+              (step) => step.decisionId === decisionId && decisionConditionNeedsReview(previous, next, step.when)
+            )
               ? { ...binding, needsReview: true }
               : binding
           ])
@@ -183,7 +185,11 @@ export function DecisionsPrototypeProvider({ children }: { children: ReactNode }
     (decision: DecisionDefinition) => {
       if (!pendingCreate) return
       if (pendingCreate.kind === 'routing')
-        dispatchRouting(pendingCreate.botId, { type: 'SELECT_DECISION', decisionId: decision.id })
+        dispatchRouting(pendingCreate.botId, {
+          type: 'SELECT_DECISION',
+          decisionId: decision.id,
+          ...(pendingCreate.stepId ? { stepId: pendingCreate.stepId } : {})
+        })
       else {
         const key = pendingCreate.key
         setBindingDrafts((current) => ({
@@ -295,7 +301,10 @@ export function gateUsagesIn(
   decisionId: string
 ): DecisionGateUsage[] {
   return Object.entries(gates)
-    .filter(([, binding]) => binding.orgId === orgId && binding.decisionId === decisionId)
+    .filter(
+      ([, binding]) =>
+        binding.orgId === orgId && [binding, ...(binding.steps ?? [])].some((step) => step.decisionId === decisionId)
+    )
     .map(([key, binding]) => ({
       channelId: key,
       channelName: binding.channelName,

@@ -167,6 +167,38 @@ const settle = async (): Promise<void> => {
 }
 
 describe('DecisionGate', () => {
+  it('follows the matched gate branch with one frozen input and stops at the child verdict', async () => {
+    const h = await harness()
+    const chained = bundle()
+    const root = chained.bindings[0]!.consumer
+    if (root.type !== 'gate') throw new Error('Expected gate')
+    root.nextStepId = 'confirm'
+    root.steps = [{ id: 'confirm', decisionId: 'd-2', when: { type: 'boolean', values: [true] } }]
+    chained.definitions.push({
+      ...chained.definitions[0]!,
+      id: 'd-2',
+      question: { type: 'boolean', instructions: 'Is execution safe?', criteria: { true: 'Ready', false: 'Wait' } }
+    })
+    h.state.applied = chained
+    const posted = await h.post()
+    await h.candidate(posted)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    h.calls[0]!.resolve(yes)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(2), WAIT)
+    expect(h.calls[1]!.input.state).toBe(h.calls[0]!.input.state)
+    expect(h.calls[1]!.input.deadlineAt).toBe(h.calls[0]!.input.deadlineAt)
+    expect(h.calls[1]!.input.decision.question.instructions).toBe('Is execution safe?')
+    h.calls[1]!.resolve(no)
+    await h.gate.idle()
+    const verdict = await h.store.getDecisionVerdict(posted.record.seq, AGENT)
+    expect(verdict?.state).toBe('skipped')
+    expect(JSON.parse(verdict!.answerJson!).chain.map((step: { decisionId: string }) => step.decisionId)).toEqual([
+      'd-1',
+      'd-2'
+    ])
+    expect(h.releases).toHaveLength(0)
+  })
+
   it('(b) releases a faster later verdict only after the earlier one is admission-ACKed', async () => {
     const h = await harness()
     const a = await h.post()

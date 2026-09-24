@@ -5,6 +5,7 @@ import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
 import {
   AgentMemoryBinding,
+  modelSelectionDecisionIds,
   type AgentModelSelection,
   isCodeHostProvider,
   redactGitUrlSecrets,
@@ -397,7 +398,7 @@ export class PgAgentRepo implements AgentRepo {
       const authorizeDecisions = await enterDecisionBindingFence(
         tx,
         input.orgId,
-        [...(input.decisionIds ?? []), ...(input.modelSelection ? [input.modelSelection.decisionId] : [])],
+        [...(input.decisionIds ?? []), ...modelSelectionDecisionIds(input.modelSelection)],
         input.createdByUserId
       )
       authorizeDecisions([])
@@ -560,7 +561,7 @@ export class PgAgentRepo implements AgentRepo {
     const authorizeDecisions = await enterDecisionBindingFence(
       tx,
       orgId,
-      [...(patch.decisionIds ?? []), ...(patch.modelSelection ? [patch.modelSelection.decisionId] : [])],
+      [...(patch.decisionIds ?? []), ...modelSelectionDecisionIds(patch.modelSelection)],
       patch.lastModifiedByUserId
     )
     // model/reasoningEffort/env live in the runtimeOverrides JSON — merge key by
@@ -618,8 +619,8 @@ export class PgAgentRepo implements AgentRepo {
       opts?.skillSources?.authorize(cur?.skills ?? [], visibleSourceNames!)
       authorizeDecisions(cur?.decisionIds ?? [], patch.decisionIds ?? [])
       authorizeDecisions(
-        cur?.modelSelection ? [cur.modelSelection.decisionId] : [],
-        patch.modelSelection ? [patch.modelSelection.decisionId] : []
+        modelSelectionDecisionIds(cur?.modelSelection),
+        modelSelectionDecisionIds(patch.modelSelection)
       )
       if (patch.modelSelection !== undefined || patch.model !== undefined) {
         await validateModelSelection(

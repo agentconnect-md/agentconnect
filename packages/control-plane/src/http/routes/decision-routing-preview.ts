@@ -4,6 +4,13 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import {
   DECISION_PREVIEW_V1_FEATURE,
+  DECISION_CHAIN_V1_FEATURE,
+  DecisionChainTrace,
+  runDecisionChain,
+  matchDecisionCondition,
+  type DecisionRoutingStep,
+  type DecisionAnswer,
+  type DecisionQuestion,
   DecisionEvaluation,
   DecisionPreviewRequest,
   DecisionPreviewSample,
@@ -20,7 +27,7 @@ import { canView } from '../../authorization/policy.js'
 import { routingNotApplied, routingSampleState } from '../../domain/decision-routing-preview.js'
 import { AgentId, BotId } from '../../domain/ids.js'
 import type { AgentRecord } from '../../persistence/ports.js'
-import { gateConsumer, visibleDecision } from '../decision-access.js'
+import { gateConsumer, visibleDecisionChain } from '../decision-access.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
@@ -58,6 +65,7 @@ const RoutingPreviewDto = z.object({
   mode: z.literal('live'),
   readiness: z.object({ status: z.enum(['ready', 'pending_sync', 'needs_review', 'unsupported']) }),
   evaluation: DecisionEvaluation.nullable(),
+  chain: DecisionChainTrace.optional(),
   consumer: z.object({
     type: z.literal('shared_bot_routing'),
     outcome: z.enum(['activate', 'continue', 'skip', 'unavailable', 'not_applied']),
@@ -162,11 +170,16 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
         if (conversation.length === 0) return reply.code(404).send(notFound('channel not found'))
         if (conversation.some((row) => row.kind === 'im'))
           return reply.code(400).send(badRequest('By decision applies only to group conversations'))
-        const decision = await visibleDecision(deps, req, config.decisionId)
+        const definitions = await visibleDecisionChain(deps, req, config)
+        const decision = definitions?.get(config.decisionId)
         if (!decision) return reply.code(404).send(notFound('decision not found', 'DECISION_NOT_FOUND'))
-        if (!supportsDecision(decision))
+        if ([...definitions!.values()].some((d) => !supportsDecision(d)))
           return reply.code(400).send(badRequest('Unsupported Decision provider, model, or question type.'))
-        const issues = decisionRoutingIssues(decision.question, config)
+        const issues = decisionRoutingIssues(
+          decision.question,
+          config,
+          new Map([...definitions!].map(([id, d]) => [id, d.question]))
+        )
         if (issues.length > 0) return reply.code(400).send(badRequest('The routing configuration is invalid.', issues))
         const recipients = situation.type === 'new' ? [] : situation.agentIds
         if (recipients.some((id) => !members.has(id)))
@@ -258,6 +271,8 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
                 daemonId: candidates.find((c) => c.agentId === agentId)?.daemonId ?? null,
                 via: situation.type === 'mention' ? 'mention' : 'implicit'
               }))
+        const answers = new Map<string, { question: DecisionQuestion; answer: DecisionAnswer }>()
+        let chain: DecisionChainTrace | undefined
         const settle = (answer: Parameters<typeof settleRoutingPreview>[0]['answer']) =>
           settleRoutingPreview({
             question: decision.question,
@@ -265,11 +280,13 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
             answer,
             constraint,
             ...(defaultAgentId ? { defaultAgentId } : {}),
-            candidates
+            candidates,
+            chain: answers
           })
         const result = (settled: ReturnType<typeof settle>, evaluation: DecisionEvaluation | null): RoutingPreview => ({
           mode: 'live',
           readiness,
+          ...(chain ? { chain } : {}),
           evaluation:
             settled.reason === 'invalid_response' ? { status: 'unavailable', reason: 'invalid_response' } : evaluation,
           consumer: {
@@ -303,6 +320,8 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
         if (!hostId || !readyConn(hostId)) return reply.code(503).send(unavailable(OFFLINE, 'DAEMON_OFFLINE'))
         if (!readyConn(hostId)?.capabilities?.features.includes(DECISION_PREVIEW_V1_FEATURE))
           return notApplied('unsupported', 'Upgrade the evaluation host daemon to preview decisions.')
+        if (config.steps?.length && !readyConn(hostId)?.capabilities?.features.includes(DECISION_CHAIN_V1_FEATURE))
+          return notApplied('unsupported', 'Upgrade the evaluation host daemon to use Decision chains.')
         const executor = (await routingHostMembers(deps, req, bot, hostId, defaultAgentId)).find((m) =>
           members.has(m.agent.id)
         )
@@ -326,10 +345,10 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
           const viewer = { ...ctxOf(req), role }
           const [fresh, stillVisible, current] = await Promise.all([
             deps.repos.bot.get(orgId, bot.id),
-            deps.repos.decision.get(orgId, decision.id),
+            Promise.all([...definitions!.keys()].map((id) => deps.repos.decision.get(orgId, id))),
             deps.repos.agent.get(orgId, AgentId(executor.agent.id))
           ])
-          if (!fresh || !stillVisible || !canView(stillVisible, viewer) || !current || !canView(current, viewer))
+          if (!fresh || stillVisible.some((d) => !d || !canView(d, viewer)) || !current || !canView(current, viewer))
             return false
           if (!fresh.agentIds.includes(current.id)) return false
           return (await deps.placementResolver.servingDaemons(current)).includes(hostId)
@@ -337,7 +356,39 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
         if (!(await authorized())) return reply.code(404).send(notFound('bot not found'))
         let evaluation: DecisionEvaluation
         try {
-          evaluation = (await deps.control.decisionPreview(hostId, orgId, parsed.data)).evaluation
+          const deadlineAt = performance.timeOrigin + performance.now() + 5000
+          const result = await runDecisionChain<DecisionRoutingStep>({
+            root: config,
+            steps: config.steps,
+            deadlineAt,
+            evaluate: async (step) => {
+              if (!(await authorized())) return { status: 'unavailable', reason: 'credentials' }
+              const d = definitions!.get(step.decisionId)!
+              const request = DecisionPreviewRequest.safeParse({
+                ...parsed.data,
+                evaluationId: randomUUID(),
+                decision: { name: d.name, providerId: d.providerId, model: d.model, question: d.question },
+                ...(config.steps?.length
+                  ? { budgetMs: Math.max(1, Math.floor(deadlineAt - (performance.timeOrigin + performance.now()))) }
+                  : {})
+              })
+              return request.success
+                ? (await deps.control.decisionPreview(hostId, orgId, request.data)).evaluation
+                : { status: 'unavailable', reason: 'unsupported_input' }
+            },
+            next: (step, result) => {
+              const question = definitions!.get(step.decisionId)!.question
+              const id = config.steps?.find((s) => s === step)?.id
+              if (id) answers.set(id, { question, answer: result.answer })
+              return step.rules.flatMap((rule) =>
+                rule.action.type === 'decision' && matchDecisionCondition(question, rule.when, result.answer).matched
+                  ? [rule.action.nextStepId]
+                  : []
+              )
+            }
+          })
+          evaluation = result.evaluation
+          if (config.steps?.length) chain = result.trace
         } catch (err) {
           req.log.warn({ daemonId: hostId, error: (err as Error).name }, 'routing preview could not reach the host')
           return reply.code(503).send(unavailable('Routing preview is unavailable. Try again.'))

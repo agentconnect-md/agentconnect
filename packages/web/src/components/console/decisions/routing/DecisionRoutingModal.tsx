@@ -20,16 +20,14 @@ import {
   routingDraftIssues,
   ruleNumbers,
   toSave,
-  type RoutingDraftRule,
   type RoutingEvent,
   type RoutingIssue
 } from '@/lib/decisions/routing-draft'
 import { useRoutingRoster } from '@/lib/decisions/routing-roster'
-import { DecisionPicker } from '../DecisionPicker'
+import { RoutingChainFields } from './RoutingChainFields'
 import { DecisionRoutingTry } from './DecisionRoutingTry'
 import { DecisionRoutingEvaluationsDrawer } from './DecisionRoutingEvaluationsDrawer'
-import { FieldIssue, Note, routingSaveError, saveErrorText } from './RoutingFields'
-import { RoutingRulesTable, fitsQuestion } from './RoutingRulesTable'
+import { Note, routingSaveError, saveErrorText } from './RoutingFields'
 
 /** Take one conversation out of a shared bot's routing, handing it back to @-mentions with its default agent, or `agentId`. */
 export async function stopRouting(
@@ -137,12 +135,18 @@ export function DecisionRoutingModal({
     return () => document.removeEventListener('keydown', onKey)
   }, [busy, historyOpen, close])
 
-  const decision = draft?.decisionId ? (decisions.find((entry) => entry.id === draft.decisionId) ?? null) : null
-  const question = decision?.question ?? null
+  const rootDecision = decisions.find((entry) => entry.id === draft?.decisionId) ?? null
+  const decision = rootDecision
   const memberIds = useMemo(() => new Set(roster.agents.map((agent) => agent.id)), [roster.agents])
   const saved = state.saved
   const savedChannelIds = saved?.channelIds ?? []
-  const localIssues = draft ? routingDraftIssues(draft, question, { savedChannelIds, memberIds }) : []
+  const localIssues = draft
+    ? routingDraftIssues(draft, rootDecision?.question ?? null, {
+        savedChannelIds,
+        memberIds,
+        questions: new Map(decisions.map((d) => [d.id, d.question]))
+      })
+    : []
   const serverError = state.phase === 'save_error' ? routingSaveError(state.error) : null
   const issues: RoutingIssue[] = localIssues.length
     ? localIssues
@@ -185,8 +189,6 @@ export function DecisionRoutingModal({
     serverError.kind !== 'refused' &&
     state.lastAttempt !== null
 
-  const edit = (patch: (rules: RoutingDraftRule[]) => RoutingDraftRule[]) =>
-    dispatch({ type: 'EDIT', patch: (current) => ({ ...current, rules: patch(current.rules) }) })
   const header = (
     <div className="modalhead">
       <Icon name="split" size={16} className="flex-none text-(--text-tertiary)" />
@@ -254,71 +256,21 @@ export function DecisionRoutingModal({
         {!savedChannelIds.includes(channelId) && <Note icon="info">{tm('unsaved')}</Note>}
         {others.length > 0 && <Note icon="users">{tm('alsoApplies', { names: others.map(nameOf).join(', ') })}</Note>}
 
-        <div className="fld">
-          <span className="fldlbl">{t('decision.label')}</span>
-          <div className="flex flex-wrap items-center gap-[9px]">
-            <DecisionPicker
-              decisions={decisions}
-              value={draft.decisionId}
-              placeholder={draft.decisionId ? t('decision.hidden') : t('decision.select')}
-              loading={loading}
-              disabled={disabled}
-              triggerClassName="block w-[280px] min-w-0 max-w-full max-desktop:w-full"
-              onSelect={(entry) => {
-                if (entry.id === draft.decisionId) return
-                const next = decisions.find((item) => item.id === entry.id)
-                // A rule whose condition the new question cannot answer is dropped, so a type switch starts clean.
-                dispatch({
-                  type: 'EDIT',
-                  patch: (current) => ({
-                    ...current,
-                    decisionId: entry.id,
-                    rules: next ? current.rules.filter((rule) => fitsQuestion(rule.when, next.question)) : []
-                  })
-                })
-              }}
-              create={{
-                href: `${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`,
-                onClick: () => beginInlineCreate({ kind: 'routing', botId })
-              }}
-            />
-            {decision && (
-              <>
-                <Link
-                  href={orgPath(`/decisions/${encodeURIComponent(decision.id)}`)}
-                  className="lnk gap-[6px] text-[11.5px] font-medium"
-                >
-                  <Icon name="pencil" size={12} />
-                  {tDecisions('viewAndEdit')}
-                </Link>
-                <span className="mono text-[11px] text-(--text-tertiary)">
-                  {t('decision.summary', {
-                    type: tDecisions(`types.${decision.question.type}`),
-                    model: decision.model
-                  })}
-                </span>
-              </>
-            )}
-          </div>
-          {issues.some((issue) => issue.code === 'decision_required') && (
-            <FieldIssue>{t('decision.required')}</FieldIssue>
-          )}
-        </div>
-
-        {question && (
-          <RoutingRulesTable
-            question={question}
-            rules={draft.rules}
-            otherwise={draft.otherwise}
-            agents={roster.agents}
-            issues={issues}
-            disabled={disabled}
-            canWrite={canWrite}
-            onRules={edit}
-            onOtherwise={(otherwise) => dispatch({ type: 'EDIT', patch: { otherwise } })}
-            onRefresh={roster.refresh}
-          />
-        )}
+        <RoutingChainFields
+          draft={draft}
+          edit={(patch) => dispatch({ type: 'EDIT', patch })}
+          decisions={decisions}
+          loading={loading}
+          agents={roster.agents}
+          issues={issues}
+          disabled={disabled}
+          canWrite={canWrite}
+          onRefresh={roster.refresh}
+          create={(stepId) => ({
+            href: `${orgPath('/decisions/new')}?returnTo=${encodeURIComponent(returnTo)}`,
+            onClick: () => beginInlineCreate({ kind: 'routing', botId, ...(stepId ? { stepId } : {}) })
+          })}
+        />
 
         {decision && (
           <div className="flex flex-wrap items-center gap-[14px]">
@@ -351,8 +303,8 @@ export function DecisionRoutingModal({
             <Note icon="clock">{t('notes.history')}</Note>
           </div>
         )}
-        {decision && canWrite && tryOpen && (
-          <DecisionRoutingTry botId={botId} draft={draft} decision={decision} roster={roster} open={tryOpen} />
+        {rootDecision && canWrite && tryOpen && (
+          <DecisionRoutingTry botId={botId} draft={draft} decision={rootDecision!} roster={roster} open={tryOpen} />
         )}
 
         {serverError && (

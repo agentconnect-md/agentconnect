@@ -7,7 +7,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DecisionApi, DecisionRoutingDetail, DecisionSummary } from '@agentconnect.md/protocol/decision-api'
-import { DecisionsPrototypeProvider } from '@/lib/decisions/provider'
+import { DecisionsPrototypeProvider, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
 import type { IntegrationChannelRow } from '@/lib/data'
 import { ApiError } from '@/lib/api'
@@ -156,7 +156,9 @@ const row = (over: Partial<IntegrationChannelRow> = {}): IntegrationChannelRow =
 
 // Hides and re-shows the list under one provider, as leaving for Create decision and coming back does.
 let setShown: (shown: boolean) => void = () => {}
+let decisionStore: ReturnType<typeof useDecisionsPrototype>
 function Harness({ channels }: { channels: IntegrationChannelRow[] }) {
+  decisionStore = useDecisionsPrototype()
   const [shown, set] = useState(true)
   setShown = set
   return shown ? (
@@ -202,6 +204,30 @@ async function click(node: Element | undefined | null) {
 const dialog = () => document.body.querySelector<HTMLElement>('[role="dialog"]')
 
 describe('IntegrationChannelList shared-bot routing', () => {
+  it('returns a newly created Decision to its child branch without replacing the root', async () => {
+    routing.getRouting.mockResolvedValue(detail())
+    await render([row()])
+    await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
+    await click(document.body.querySelector('button[aria-label="Add decision"]'))
+    await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
+    await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
+    await click(document.body.querySelector('button[aria-label="Continue with a Decision"]'))
+    await click(all('[role="menuitem"]').find((node) => node.textContent?.includes('Support category')))
+    await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Support category')))
+    await click(all('a').find((node) => node.textContent?.includes('Add decision')))
+    await act(async () => setShown(false))
+    await act(async () => decisionStore.completeInlineCreate(seed.decisions.find((d) => d.id === 'needs-response')!))
+    window.history.replaceState(null, '', '/agents/agent-1?decisionRouting=bot-shared%7CC1')
+    await act(async () => setShown(true))
+    await flush()
+    const draft = decisionStore.routingDrafts[decisionStore.routingKeyFor('bot-shared')]!.draft!
+    expect(draft.decisionId).toBe('support-category')
+    expect(draft.steps?.[0]?.decisionId).toBe('needs-response')
+    expect(draft.rules[0]?.action).toEqual({ type: 'decision', nextStepId: draft.steps![0]!.id })
+    expect(dialog()?.querySelector('button[aria-haspopup="menu"]')?.textContent).toContain('Support category')
+    expect(dialog()?.textContent).toContain('Needs a response')
+  })
+
   it('opens a routed row’s rules in place, one answer per row, naming the bot and its agents', async () => {
     routing.getRouting.mockResolvedValue(routed)
     await render([

@@ -9,6 +9,7 @@ import {
   DecisionDraft,
   DecisionEvaluation,
   DecisionPreviewRequest,
+  modelSelectionDecisionIds,
   supportsDecision,
   type DecisionDefinition
 } from '@agentconnect.md/protocol'
@@ -174,16 +175,12 @@ export function decisionRoutes(deps: HttpDeps) {
       new Set(usages.map((u) => `${u.botId}\u0000${u.channelId}`)).size
     const agentReferences = (agents: readonly AgentRecord[]) =>
       agents.flatMap((agent) => [
-        ...(agent.modelSelection
-          ? [
-              {
-                decisionId: agent.modelSelection.decisionId,
-                kind: 'model_selection' as const,
-                id: agent.id,
-                label: agent.displayName ?? agent.name
-              }
-            ]
-          : []),
+        ...modelSelectionDecisionIds(agent.modelSelection).map((decisionId) => ({
+          decisionId,
+          kind: 'model_selection' as const,
+          id: agent.id,
+          label: agent.displayName ?? agent.name
+        })),
         ...(agent.decisionIds ?? []).map((decisionId) => ({
           decisionId,
           kind: 'agent_tool' as const,
