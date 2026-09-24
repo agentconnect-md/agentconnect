@@ -277,7 +277,7 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
       expect(buildSpy).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'bot-a' }),
         expect.anything(),
-        expect.objectContaining({ runInSandbox: false, cwd: join(root, 'in') })
+        expect.objectContaining({ strategy: 'host', cwd: join(root, 'in') })
       )
       expect(stopped).toBe(1)
       expect(inner.hosts.has('bot-a')).toBe(false)
@@ -309,7 +309,7 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
       expect(buildSpy).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'bot-a' }),
         expect.anything(),
-        expect.objectContaining({ runInSandbox: true, cwd: join(root, 'in') })
+        expect.objectContaining({ strategy: 'srt', cwd: join(root, 'in') })
       )
       // One-off: stopped after the extraction, and never memoized as the warm host.
       expect(stopped).toBe(1)

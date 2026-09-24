@@ -134,6 +134,8 @@ export interface ConfigApplyRuntimeHost {
   workspaces(): WorkspaceManager
   runtimes(): Record<string, RuntimeDef>
   keyServer(): KeyServerClient | undefined
+  /** Whether this agent's sessions run in this machine's microsandbox strategy (session-executors.md §5). */
+  usesMicrosandbox(agent: Agent): boolean
   gitCreds(): GitCredentialCache | undefined
   gitCredServer(): GitCredServer | undefined
   quiesceAgentWorkspaceAuthority(agentId: string): Promise<void>
@@ -710,11 +712,7 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
         try {
           if (!host.servesAgent(agentId)) throw new Error('execution duty was revoked during activation')
           // VM activation prepares the workspace; ACP initialization belongs to the first wake.
-          if (
-            host.keyServer() ||
-            (host.cfg().sandbox.backend === 'microsandbox' &&
-              (host.cfg().security.requireSandbox || agent.runInSandbox))
-          )
+          if (host.keyServer() || host.usesMicrosandbox(agent))
             await host.prepareAgentWorkspace(agent, undefined, undefined, true)
           else await host.ensureHostAsync(agentId, { allowAgentDrain: true })
         } catch (err) {
