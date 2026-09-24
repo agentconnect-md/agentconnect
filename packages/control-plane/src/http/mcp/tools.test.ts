@@ -584,6 +584,10 @@ describe('MCP write tools — bodies and upsert semantics', () => {
     expect(schema.safeParse({ ...ARGS.createGithubTrigger, kind: 'webhook' }).success).toBe(false)
     expect(schema.safeParse({ ...ARGS.createGithubTrigger, hmac: true }).success).toBe(false)
     expect(schema.safeParse({ ...ARGS.createGithubTrigger, repoFullName: 'acme' }).success).toBe(false)
+    // A release never opens: the description must name the events GitHub actually sends for one.
+    const { description } = findTool('createGithubTrigger')!
+    expect(description).toContain('["release:published"]')
+    expect(description).toContain('["release:*"]')
   })
 
   it('upsertCron PUTs to the given cron id, and mints a UUID when creating', async () => {

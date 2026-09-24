@@ -11,10 +11,10 @@
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
 
 /** Every subject family the code hosts between them subscribe to. */
-export type HookFamily = 'issues' | 'pull_request' | 'merge_request' | 'push' | 'deployment'
+export type HookFamily = 'issues' | 'pull_request' | 'merge_request' | 'push' | 'deployment' | 'release'
 
 /** The families a row of each kind may declare. */
-export const GITHUB_FAMILIES = ['pull_request', 'issues', 'push', 'deployment'] as const
+export const GITHUB_FAMILIES = ['pull_request', 'issues', 'push', 'deployment', 'release'] as const
 export const GITLAB_FAMILIES = ['merge_request', 'issues', 'push'] as const
 
 /** Reviews and run reporting exist only on a change-proposal subject. */
@@ -36,6 +36,7 @@ export function familyOfEventPattern(pattern: string): HookFamily | null {
     case 'merge_request':
     case 'push':
     case 'deployment':
+    case 'release':
       return prefix
     case 'pull_request_review_comment':
       return 'pull_request'

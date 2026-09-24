@@ -694,9 +694,10 @@ existing conversation lock. Adding/removing a sibling preserves still-used histo
 and the bot-owned routing configuration.
 
 In Stage 2, the shared-bot Save operation writes the complete routing record and
-scope changes in one transaction. Additions explicitly select By decision on already-enabled
-channels. Removals supply their replacement trigger/default-agent settings, using
-existing validation. Off channels cannot be enabled by a routing save. A channel
+scope changes in one transaction. Additions explicitly select By decision on every sibling row;
+adding an Off channel enables it, under the owner-edit permission a trigger PATCH needs.
+Removals supply their replacement trigger/default-agent settings, using existing
+validation. A channel
 cannot have both a gate and a router; changing consumers replaces the whole binding.
 Preserve existing thread affinity when any of these settings change.
 
@@ -1577,7 +1578,7 @@ under test. Prefer these focused scenarios over tests mirroring every helper.
 | Score intervals and Otherwise | Reject overlapping intervals; a shared endpoint belongs only to the upper interval; include the rubric maximum; row order cannot change the result; gaps use Otherwise                 |
 | Boolean mapping               | Each value belongs to at most one rule; an unmatched value uses Otherwise                                                                                                              |
 | Target boundaries             | Only authorized connected agents are selectable; unavailable/removed targets never silently reroute; matched actions and provider failure preserve explicit/thread constraints         |
-| Scope and saves               | Routing/scope save together; Off stays Off; scope removal requires replacement settings; Cancel/reopen restore saved values; failed-save Retry preserves drafts                        |
+| Scope and saves               | Routing/scope save together; adding Off enables it; scope removal requires replacement settings; Cancel/reopen restore saved values; failed-save Retry preserves drafts                |
 | Cross-daemon selection        | Evaluate once; crash/retry retains every target and its disposition; never readmit successful siblings; a rejected target does not suppress other targets or invoke Otherwise          |
 | Thread ownership and usage    | One owner plus every admitted participant survives restart; network completion order does not select the owner; provider usage is counted once and target turns separately             |
 | Completed UI flow             | Integrations entry, probability thresholds, non-overlapping Score intervals, preview, readiness/recovery, evaluation snapshots, and ≤768px rule cards all work                         |
@@ -1945,14 +1946,15 @@ None is required to complete Stage 1 or Stage 2.
 
 ### Other possible consumers
 
-| Possible consumer                  | Potential judgment                                                                                                                                                         |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Webhooks and code-host events      | Whether an event contains an actionable request, repeated feedback, or ordinary discussion; GitHub hooks are specified in [code-host-decisions.md](code-host-decisions.md) |
-| Memory distillation                | Whether a completed conversation contains durable information worth extracting                                                                                             |
-| Scheduled tasks and monitoring     | Whether a result represents a meaningful change worth notifying the user about                                                                                             |
-| Organization knowledge suggestions | Whether an insight is useful to one agent or worth proposing for broader team reuse                                                                                        |
-| Final-answer context refresh       | Whether newly arrived conversation changes materially affect a pending answer                                                                                              |
-| Tool-approval assistance           | Whether a proposed operation raises concerns about risk or alignment with the user's task                                                                                  |
+| Possible consumer                  | Potential judgment                                                                                                                                                                  |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Webhooks and code-host events      | Whether an event contains an actionable request, repeated feedback, or ordinary discussion; GitHub hooks are specified in [code-host-decisions.md](code-host-decisions.md)          |
+| Memory distillation                | Whether a completed conversation contains durable information worth extracting                                                                                                      |
+| Scheduled tasks and monitoring     | Whether a result represents a meaningful change worth notifying the user about                                                                                                      |
+| Organization knowledge suggestions | Whether an insight is useful to one agent or worth proposing for broader team reuse                                                                                                 |
+| Final-answer context refresh       | Whether newly arrived conversation changes materially affect a pending answer                                                                                                       |
+| Tool-approval assistance           | Whether a proposed operation raises concerns about risk or alignment with the user's task                                                                                           |
+| Workspace preparation              | Which of an agent's authorized repositories a new session should check out before its runtime starts; specified in [multi-repository-workspaces.md](multi-repository-workspaces.md) |
 
 Future consumers would retain their own context, result handling, permissions, and
 failure behavior. A judgment would not replace existing authorization or required

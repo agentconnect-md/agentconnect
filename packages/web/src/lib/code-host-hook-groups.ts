@@ -13,7 +13,7 @@ import { GT_FAMILIES, giteaHookFamily, type GtFamily } from './gitea-events'
 import { GL_FAMILIES, gitlabHookFamily, type GlFamily } from './gitlab-events'
 
 // Sibling order for one repo: the change-proposal subject (it carries reviews), issues, deployments, then the held-back push.
-const GH_ROW_ORDER: readonly GhFamily[] = ['pull_request', 'issues', 'deployment', 'push']
+const GH_ROW_ORDER: readonly GhFamily[] = ['pull_request', 'issues', 'deployment', 'release', 'push']
 const GL_ROW_ORDER: readonly GlFamily[] = ['merge_request', 'issues', 'push']
 const GT_ROW_ORDER: readonly GtFamily[] = ['merge_request', 'issues', 'push']
 

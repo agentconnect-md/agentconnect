@@ -117,6 +117,14 @@ const DEPLOY_ROW = githubHook({
   family: 'deployment',
   events: ['deployment:created']
 })
+const RELEASE_ROW = githubHook({
+  id: 'hook-release',
+  repoId: '1',
+  name: 'acme/api',
+  repoFullName: 'acme/api',
+  family: 'release',
+  events: ['release:published']
+})
 const WEB_ISSUES_ROW = githubHook({
   id: 'hook-web',
   repoId: '2',
@@ -175,7 +183,7 @@ function triggerOrder(scope: HTMLElement): string[] {
 }
 
 beforeEach(() => {
-  mocks.hooks = [ISSUES_ROW, PR_ROW, DEPLOY_ROW, WEB_ISSUES_ROW]
+  mocks.hooks = [ISSUES_ROW, PR_ROW, DEPLOY_ROW, RELEASE_ROW, WEB_ISSUES_ROW]
   mocks.createGithubHook.mockReset()
   mocks.createGithubHook.mockResolvedValue({ id: 'hook-new' })
   mocks.openModal.mockReset()
@@ -191,14 +199,15 @@ afterEach(async () => {
 describe('AgentDetailView, code-host repository blocks', () => {
   it('keeps a repository one row per family and names it once', async () => {
     const scope = await render()
-    // Three families ⇒ three rows, and exactly one of them names the repo (once per responsive tree).
+    // Four families ⇒ four rows, and exactly one of them names the repo (once per responsive tree).
     expect(repoNames(scope, 'acme/api')).toHaveLength(2)
     expect(repoNames(scope, 'acme/web')).toHaveLength(2)
-    // Repos sorted by name, a repo's rows adjacent, change proposals before issues before deployments.
+    // Repos sorted by name, a repo's rows adjacent, change proposals before issues before deployments before releases.
     expect(triggerOrder(scope)).toEqual([
       'Trigger for acme/api PRs',
       'Trigger for acme/api Issues',
       'Trigger for acme/api Deploys',
+      'Trigger for acme/api Releases',
       'Trigger for acme/web Issues'
     ])
   })
@@ -246,6 +255,7 @@ describe('AgentDetailView, code-host repository blocks', () => {
     await act(async () => triggers[0]!.click())
     expect(menuItem('Add Pull requests')).toBeTruthy()
     expect(menuItem('Add Deployments')).toBeTruthy()
+    expect(menuItem('Add Releases')).toBeTruthy()
     expect(menuItem('Add Issues')).toBeUndefined()
   })
 

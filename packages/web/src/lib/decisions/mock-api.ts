@@ -371,7 +371,6 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
         const channel = get(channels, id)
         if (channel.botId !== botId || channel.kind !== 'channel')
           conflict('Select group channels belonging to this bot.')
-        if (channel.settings.trigger === 'off') conflict('Enable the channel before adding it to routing.')
       }
       if ([...removals.values()].some((settings) => settings.trigger === 'decision'))
         conflict('Choose Off, Mention, or Any for removed channels.')
@@ -453,7 +452,7 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       }
       if (consumer.type === 'shared_bot_routing' && result.consumer) {
         const reason =
-          channel?.settings.trigger === 'off'
+          channel?.settings.trigger === 'off' && !consumer.channelIds.includes(consumer.channelId)
             ? 'off'
             : !consumer.channelIds.includes(consumer.channelId)
               ? 'outside_scope'
@@ -624,7 +623,7 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       }
       const saved = routings.get(botId)
       const reason: DecisionRoutingNotAppliedReason | null =
-        channel.settings.trigger === 'off'
+        channel.settings.trigger === 'off' && !input.channelIds.includes(input.channelId)
           ? 'off'
           : !input.channelIds.includes(input.channelId)
             ? 'outside_scope'

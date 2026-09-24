@@ -239,7 +239,8 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
               ? 'The evaluation host daemon does not support By decision routing yet.'
               : null
         const reason = routingNotApplied({
-          channelOff: conversation.some((row) => row.trigger === 'off'),
+          // Saving the draft turns an in-scope Off channel to By decision, so only an unrouted one previews as Off.
+          channelOff: !channelIds.includes(channelId) && conversation.some((row) => row.trigger === 'off'),
           inScope: channelIds.includes(channelId),
           enabled: config.enabled,
           savedNeedsReview: description.record?.needsReview === true,

@@ -370,7 +370,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
 
   it('offers no Retry for a refusal that would fail the same way again', async () => {
     routing.getRouting.mockResolvedValue(detail())
-    routing.saveRouting.mockRejectedValue(new ApiError('Enable the channel before adding it to routing.', 400))
+    routing.saveRouting.mockRejectedValue(new ApiError('By decision applies only to group conversations', 400))
     await render([row()])
     await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
     await click(document.body.querySelector('button[aria-label="Add decision"]'))
@@ -379,7 +379,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
     await click(document.body.querySelector('button[aria-label="Target for billing"]'))
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('review-bot')))
     await click(all('button').find((node) => node.textContent?.trim() === 'Save'))
-    expect(dialog()?.textContent).toContain("Couldn't save: Enable the channel before adding it to routing.")
+    expect(dialog()?.textContent).toContain("Couldn't save: By decision applies only to group conversations")
     expect(all('button').find((node) => node.textContent?.trim() === 'Retry')).toBeUndefined()
   })
 

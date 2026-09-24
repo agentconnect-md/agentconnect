@@ -103,7 +103,6 @@ import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
 import { microsandboxSkillTarget } from './microsandbox/shim.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
-import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
 import { IMPLICIT_CREDENTIAL_PROVIDER, parseManagedBaseUrl, stripHostPathPrefix } from './gitcred/managed-hosts.js'
 import { codeHostCredentials, credentialProviderOf, type ManagedWorkspaceRepo } from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
@@ -4700,21 +4699,7 @@ export class Daemon {
     // The daemon's own parent directory is used to prepare canonical clones before exposing a checkout.
     if (cwd === agent.dir) return undefined
     const { environment, launch } = this.microsandboxContext(agent, cwd)
-    return microsandboxGitRunner({
-      workspaceRoot: environment.workspaceRoot,
-      cwd,
-      env: launch.env,
-      abort,
-      execute: (command, args, options) => this.microsandbox!.exec(environment, command, args, options),
-      mapEnv: (env) => ({
-        ...env,
-        ...Object.fromEntries(
-          Object.entries(launch.env).filter(
-            ([name]) => name === 'HOME' || name === 'PATH' || name.startsWith('XDG_') || name === GITCRED_SOCKET_ENV
-          )
-        )
-      })
-    })
+    return microsandboxGitRunner({ manager: this.microsandbox, environment, cwd, env: launch.env, abort })
   }
 
   private microsandboxWorkspaceEnvironment(agent: LoadedAgent, path: string): MicrosandboxEnvironment | undefined {

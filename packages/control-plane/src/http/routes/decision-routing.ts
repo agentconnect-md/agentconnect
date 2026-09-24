@@ -247,8 +247,6 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
           if (conversation.length === 0) return reply.code(404).send(notFound('channel not found'))
           if (conversation.some((row) => row.kind === 'im'))
             return reply.code(400).send(badRequest('By decision applies only to group conversations'))
-          if (additions.includes(channelId) && conversation.some((row) => row.trigger === 'off'))
-            return reply.code(400).send(badRequest('Enable the channel before adding it to routing.'))
           const owner = pickConversationOwner(installs, conversation)
           const ownerAgent = owner ? await deps.repos.agent.get(orgOf(req), owner.agentId) : null
           if (!owner || !ownerAgent)
@@ -305,15 +303,7 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
           if (err instanceof RoutingChannelInvalid)
             return err.reason === 'missing'
               ? reply.code(404).send(notFound('channel not found'))
-              : reply
-                  .code(400)
-                  .send(
-                    badRequest(
-                      err.reason === 'off'
-                        ? 'Enable the channel before adding it to routing.'
-                        : 'By decision applies only to group conversations'
-                    )
-                  )
+              : reply.code(400).send(badRequest('By decision applies only to group conversations'))
           // The Decision was deleted between validation and the write (FK RESTRICT on the router).
           if (
             err instanceof DecisionBindingDenied ||
