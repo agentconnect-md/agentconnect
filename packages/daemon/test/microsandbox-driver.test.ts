@@ -50,7 +50,7 @@ class FakeExec {
       yield {
         id: this.id,
         flags: kind === 'exited' || kind === 'failed' ? 1 : 0,
-        body: Buffer.from(encode({ v: 7, t: `core.exec.${kind}`, p: encode(payload) }))
+        body: Buffer.from(encode({ v: 9, t: `core.exec.${kind}`, p: encode(payload) }))
       }
       if (kind === 'exited' || kind === 'failed') return
     }

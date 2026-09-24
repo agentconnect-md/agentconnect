@@ -28,7 +28,7 @@ class FrameQueue {
   private wake?: () => void
 
   push(type: string, payload: unknown, terminal = false): void {
-    this.frames.push({ flags: terminal ? 1 : 0, body: encode({ v: 7, t: type, p: encode(payload) }) })
+    this.frames.push({ flags: terminal ? 1 : 0, body: encode({ v: 9, t: type, p: encode(payload) }) })
     this.wake?.()
   }
 
