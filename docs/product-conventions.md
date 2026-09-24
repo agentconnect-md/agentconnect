@@ -1068,12 +1068,13 @@ begins preparing the review workspace, its Check becomes `in_progress` with the 
 link is added yet. After the session crosses the start barrier, the title becomes
 `Analyzing this revision`. Preparation updates are best-effort and never delay the turn.
 
-An Agent failure is not a code-review finding. When a GitHub review turn ends without a
-formal review verdict, keep the internal run failed for observability but complete its
-informational Check as non-blocking `skipped`; a runtime failure may still say
-`Review could not be completed`. A successfully submitted formal verdict remains
-authoritative (`REQUEST_CHANGES` stays `action_required`), and an ambiguous formal-review
-write remains a visible failure until it is reconciled.
+An Agent failure is not a code-review finding, but it cannot clear a required review Check.
+When a GitHub revision review turn ends without a submitted formal verdict, complete its
+Check as `failure` while retaining the turn's actual operational status. A provider quota
+failure names the usage limit in the Check title. A submitted formal verdict
+remains authoritative (`REQUEST_CHANGES` stays `action_required`), and an ambiguous
+formal-review write remains a visible failure until it is reconciled. An active
+terminal failure keeps the `Request review` action for a new attempt after the cause is resolved.
 
 A review turn the platform itself ended — the Agent stopped being served where it was
 running — is a distinct outcome from a review that ran and could not conclude, and must not

@@ -1250,10 +1250,8 @@ export class PgHookRepo implements HookRepo {
               THEN 'failure'
             WHEN latest."orphanedAt" IS NOT NULL
               THEN 'timed_out'
-            WHEN latest.status::text = 'success'
-              THEN 'neutral'
-            WHEN latest.status::text = 'failed'
-              THEN 'skipped'
+            WHEN latest.status::text IN ('success', 'failed')
+              THEN 'failure'
             WHEN latest."turnStartedAt" IS NOT NULL
               THEN 'in_progress'
             WHEN latest."preparingAt" IS NOT NULL

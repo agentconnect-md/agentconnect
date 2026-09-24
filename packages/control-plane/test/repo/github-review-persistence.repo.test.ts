@@ -2493,7 +2493,7 @@ describe('R1/R2a persistence foundation', () => {
     ['provider authentication required', HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED],
     ['definite agent unavailability', HOOK_DELIVERY_REASON_DAEMON_OFFLINE],
     ['daemon drain before admission', HOOK_DELIVERY_REASON_DAEMON_DRAINING]
-  ])('repairs %s to a skipped projection', async (_label, reason) => {
+  ])('repairs %s to a failing projection', async (_label, reason) => {
     await seedDaemon(prisma, D1)
     const agentId = AgentId(randomUUID())
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'quota-agent' })
@@ -2554,7 +2554,7 @@ describe('R1/R2a persistence foundation', () => {
         true
       )
       expect(await repo.listRunsNeedingReviewProjection()).toEqual([])
-      // The next due sweep retires the gate before the final skipped Check can converge.
+      // The next due sweep retires the gate before the final failing Check can converge.
       expect(
         await repo.claimRetryableDeliveryRedelivery(
           accepted.deliveryKey,
@@ -2593,7 +2593,7 @@ describe('R1/R2a persistence foundation', () => {
       projectionEpoch: run.projectionEpoch!,
       mode: 'check',
       gateMode: 'informational',
-      desiredState: retryable ? 'skipped' : 'failure',
+      desiredState: retryable ? 'failure' : 'skipped',
       currentHookRunId: run.id,
       nextAttemptAt: accepted.firedAt
     })
@@ -2613,7 +2613,7 @@ describe('R1/R2a persistence foundation', () => {
       await repo.setProjectionDesired(
         stale.id,
         stale.generation,
-        'skipped',
+        'failure',
         new Date('2026-07-11T02:00:02.000Z'),
         run.id
       )

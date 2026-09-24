@@ -382,17 +382,10 @@ export const HookContext = z.object({
 })
 export type HookContext = z.infer<typeof HookContext>
 
-/**
- * Normalized quota failure: the operational HookRun remains failed while an
- * informational GitHub Check may intentionally project the outcome as skipped.
- */
+/** Normalized quota failure; the unfinished review Check remains non-passing. */
 export const HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED = 'provider_quota_exhausted' as const
 
-/**
- * Normalized provider sign-in failure: the runtime cannot run until a human
- * refreshes its credentials, so an informational GitHub Check is skipped
- * instead of reported as a code-review failure.
- */
+/** Normalized provider sign-in failure; the unfinished review Check remains non-passing. */
 export const HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED = 'provider_auth_required' as const
 
 /** Normalized infrastructure interruption: the daemon stopped serving the agent mid-turn (a duty

@@ -27,8 +27,8 @@ import { githubRequest, githubRetryAfterMs, GithubApiError, type FetchLike } fro
 import {
   authoritativeHookProjectionState,
   hookRuntimeProjectionState,
-  hookSkippedCheckGuidance,
-  hookSkippedCheckLabel,
+  hookIncompleteCheckGuidance,
+  hookIncompleteCheckLabel,
   type ProjectionDesiredState
 } from './projection-state.js'
 import { GithubService, GitCredDeniedError } from './service.js'
@@ -123,9 +123,9 @@ interface CheckPresentation {
   detailsUrl?: string
   agentUrl?: string
   publication?: { pullNumber: number; url: string }
-  skippedLabel?: string
+  incompleteLabel?: string
   /** Markdown appended to the summary; Checks-tab only, unlike the title. */
-  skippedGuidance?: string
+  incompleteGuidance?: string
   requestReviewAction?: boolean
 }
 
@@ -673,11 +673,8 @@ export class GithubRunReporter {
       try {
         candidate = await this.deps.hooks.getRunById(projection.currentHookRunId)
       } catch (err) {
-        // For skipped projections this read selects semantic Check output. Retry
-        // before beginProjectionWrite instead of settling a generic title that
-        // would never be repaired for this generation. Other states only lose
-        // their best-effort session link and may continue.
-        if (projection.desiredState === 'skipped') throw err
+        // Incomplete reviews need their run reason before the terminal title is sealed.
+        if (projection.desiredState === 'failure' || projection.desiredState === 'skipped') throw err
       }
       if (
         candidate?.hookId === projection.hookId &&
@@ -688,15 +685,16 @@ export class GithubRunReporter {
       )
         run = candidate
     }
-    const skippedLabel = hookSkippedCheckLabel(run?.reason, this.deps.appSlug) ?? undefined
-    const skippedGuidance = hookSkippedCheckGuidance(run?.reason, this.deps.appSlug) ?? undefined
+    const incompleteReason = run?.reviewErrorCode ? null : run?.reason
+    const incompleteLabel = hookIncompleteCheckLabel(incompleteReason, this.deps.appSlug) ?? undefined
+    const incompleteGuidance = hookIncompleteCheckGuidance(incompleteReason, this.deps.appSlug) ?? undefined
     const requestReviewAction =
       projection.tombstonedAt === null && TERMINAL_CHECK_STATES.has(projection.desiredState) ? true : undefined
     const publication = run ? checkPublication(projection.repoFullName, run) : undefined
     const fallback = {
       ...(publication ? { publication } : {}),
-      ...(skippedLabel ? { skippedLabel } : {}),
-      ...(skippedGuidance ? { skippedGuidance } : {}),
+      ...(incompleteLabel ? { incompleteLabel } : {}),
+      ...(incompleteGuidance ? { incompleteGuidance } : {}),
       ...(requestReviewAction ? { requestReviewAction } : {})
     }
     if (!this.deps.webAppUrl || !this.deps.orgs) return fallback
@@ -1131,7 +1129,8 @@ function checkPayload(
   // Same gate as the call-to-action title: the how-to belongs on the Check only
   // while it is actually parked waiting for a maintainer. The write marker stays
   // last so recovery keeps matching on it.
-  const guidance = state === 'skipped' && !associationError ? presentation.skippedGuidance : undefined
+  const guidance =
+    (state === 'failure' || state === 'skipped') && !associationError ? presentation.incompleteGuidance : undefined
   const normalizedSummary = [
     `Phase: ${state}`,
     ...(agentLabel ? [`Agent: ${agentLabel}`] : []),
@@ -1179,7 +1178,7 @@ function checkOutputTitle(
   presentation: CheckPresentation
 ): string {
   if (associationError) return state === 'neutral' ? REVISION_NOT_CURRENT_TITLE : ASSOCIATION_ATTENTION_TITLE
-  if (state === 'skipped' && presentation.skippedLabel) return presentation.skippedLabel
+  if ((state === 'failure' || state === 'skipped') && presentation.incompleteLabel) return presentation.incompleteLabel
   return CHECK_OUTPUT_TITLE[state]
 }
 
