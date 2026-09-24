@@ -7,17 +7,28 @@
  * provenance pointer into this table, and an already-minted token surviving
  * to its ≤1h expiry is the documented revocation window.
  *
- * `repoId` + `repoFullName` are projected onto `AgentSpec.workspace.additionalRepos`
- * (multi-repository-workspaces.md decision 2), so every writer that changes either
- * bumps the owning agent's `configRevision` in the SAME transaction. Without it the
- * daemon receives new spec content at the applied revision and refuses it as an
- * invariant violation — permanently, on every reconnect.
+ * `repoId`, `repoFullName` and `materialize` are projected onto
+ * `AgentSpec.workspace.additionalRepos` (multi-repository-workspaces.md decisions 2
+ * and 13), so every writer that changes any of them bumps the owning agent's
+ * `configRevision` in the SAME transaction. Without it the daemon receives new spec
+ * content at the applied revision and refuses it as an invariant violation —
+ * permanently, on every reconnect. `access` stays off the spec, so it does not bump.
  */
-import type { AgentRepoAuthorization, PrismaClient, User } from '../../generated/prisma/client.js'
+import type {
+  AgentRepoAuthorization,
+  PrismaClient,
+  RepoMaterialization as DbRepoMaterialization,
+  User
+} from '../../generated/prisma/client.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
-import type { AgentRepoAuthorizationRecord, AgentRepoAuthorizationRepo, RepoAccess } from '../ports.js'
+import type {
+  AgentRepoAuthorizationRecord,
+  AgentRepoAuthorizationRepo,
+  RepoAccess,
+  RepoMaterialization
+} from '../ports.js'
 import { AgentId, type OrgId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockHookReviewAgentRepoScope } from '../review-projection-lock.js'
@@ -29,6 +40,10 @@ const withCreator = { createdBy: true } as const
 
 type Row = AgentRepoAuthorization & { createdBy: User | null }
 
+// The wire spells it `on-demand`; the Prisma enum member is `on_demand` (its `@map` keeps the DB value on the wire spelling).
+const toDbMaterialization = (m: RepoMaterialization): DbRepoMaterialization => (m === 'on-demand' ? 'on_demand' : m)
+const fromDbMaterialization = (m: DbRepoMaterialization): RepoMaterialization => (m === 'on_demand' ? 'on-demand' : m)
+
 function toRecord(r: Row): AgentRepoAuthorizationRecord {
   return {
     id: r.id,
@@ -37,6 +52,7 @@ function toRecord(r: Row): AgentRepoAuthorizationRecord {
     repoId: r.repoId,
     repoFullName: r.repoFullName,
     access: r.access as RepoAccess,
+    materialize: fromDbMaterialization(r.materialize),
     createdAt: r.createdAt,
     createdBy: r.createdBy
       ? { userId: r.createdBy.id, displayName: r.createdBy.displayName, email: r.createdBy.email }
@@ -58,6 +74,7 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
     repoId: bigint
     repoFullName: string
     access: RepoAccess
+    materialize?: RepoMaterialization
     createdByUserId?: string
   }): Promise<AgentRepoAuthorizationRecord> {
     return this.transaction(async (tx) => {
@@ -83,6 +100,7 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
           repoId: input.repoId,
           repoFullName: input.repoFullName,
           access: input.access,
+          materialize: toDbMaterialization(input.materialize ?? 'always'),
           ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
         },
         include: withCreator
@@ -123,6 +141,22 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
     const updated = await this.db.agentRepoAuthorization.updateMany({ where: { id }, data: { access } })
     if (updated.count === 0) return null
     return this.get(id)
+  }
+
+  async updateMaterialize(id: string, materialize: RepoMaterialization): Promise<AgentRepoAuthorizationRecord | null> {
+    return this.transaction(async (tx) => {
+      const row = await tx.agentRepoAuthorization.findUnique({ where: { id }, include: withCreator })
+      if (!row) return null
+      const next = toDbMaterialization(materialize)
+      if (row.materialize === next) return toRecord(row)
+      const updated = await tx.agentRepoAuthorization.update({
+        where: { id },
+        data: { materialize: next },
+        include: withCreator
+      })
+      await bumpAgentConfigRevisions(tx, [row.agentId])
+      return toRecord(updated)
+    })
   }
 
   async updateFullName(id: string, repoFullName: string): Promise<void> {

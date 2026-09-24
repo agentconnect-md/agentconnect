@@ -91,6 +91,92 @@ describe('workspace repository identity and additional grants', () => {
     expect(create).toHaveBeenCalledOnce()
   })
 
+  it('stores a grant as `always` unless told otherwise, spelling `on-demand` the Prisma way', async () => {
+    const created: Array<Record<string, unknown>> = []
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ id: AGENT }]),
+      agent: {
+        findUnique: vi.fn(async () => ({ gitCredentialProvider: 'github', workspaceRepoId: 7n })),
+        updateMany: vi.fn(async () => ({ count: 1 }))
+      },
+      agentRepoAuthorization: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          created.push(data)
+          return { id: 'ra-1', ...data, createdAt: new Date(0), createdBy: null }
+        })
+      }
+    }
+    const repo = new PgAgentRepoAuthorizationRepo(transactionalDb(tx) as never)
+    const base = { agentId: AGENT, provider: 'github' as const, repoId: REPO, repoFullName: 'acme/infra' }
+
+    const dflt = await repo.create({ ...base, access: 'read' })
+    const onDemand = await repo.create({ ...base, access: 'read', materialize: 'on-demand' })
+
+    expect(created.map((d) => d.materialize)).toEqual(['always', 'on_demand'])
+    expect(dflt.materialize).toBe('always')
+    expect(onDemand.materialize).toBe('on-demand')
+  })
+
+  it('a materialize change advances the agent’s config revision in the same transaction; an unchanged one does not', async () => {
+    const row = {
+      id: 'ra-1',
+      agentId: AGENT,
+      provider: 'github',
+      repoId: REPO,
+      repoFullName: 'acme/infra',
+      access: 'read',
+      materialize: 'always',
+      createdAt: new Date(0),
+      createdBy: null
+    }
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ id: AGENT }]),
+      agent: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      agentRepoAuthorization: {
+        findUnique: vi.fn(async () => row),
+        update: vi.fn(async ({ data }: { data: { materialize: string } }) => ({ ...row, ...data }))
+      }
+    }
+    const repo = new PgAgentRepoAuthorizationRepo(transactionalDb(tx) as never)
+
+    expect(await repo.updateMaterialize('ra-1', 'always')).toMatchObject({ materialize: 'always' })
+    expect(tx.agentRepoAuthorization.update).not.toHaveBeenCalled()
+    expect(tx.agent.updateMany).not.toHaveBeenCalled()
+
+    expect(await repo.updateMaterialize('ra-1', 'on-demand')).toMatchObject({ materialize: 'on-demand' })
+    expect(tx.agentRepoAuthorization.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'ra-1' }, data: { materialize: 'on_demand' } })
+    )
+    expect(tx.agent.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [AGENT] } },
+      data: { configRevision: { increment: 1 } }
+    })
+  })
+
+  it('an access-only change leaves the config revision alone — the tier is not on the spec', async () => {
+    const db = {
+      agentRepoAuthorization: {
+        updateMany: vi.fn(async () => ({ count: 1 })),
+        findUnique: vi.fn(async () => ({
+          id: 'ra-1',
+          agentId: AGENT,
+          provider: 'github',
+          repoId: REPO,
+          repoFullName: 'acme/infra',
+          access: 'write',
+          materialize: 'always',
+          createdAt: new Date(0),
+          createdBy: null
+        }))
+      },
+      agent: { updateMany: vi.fn() }
+    }
+    const repo = new PgAgentRepoAuthorizationRepo(db as never)
+
+    expect(await repo.updateAccess('ra-1', 'write')).toMatchObject({ access: 'write', materialize: 'always' })
+    expect(db.agent.updateMany).not.toHaveBeenCalled()
+  })
+
   it('deletes a redundant workspace grant without tombstoning live projections', async () => {
     const tx = {
       $queryRaw: vi.fn(async () => []),

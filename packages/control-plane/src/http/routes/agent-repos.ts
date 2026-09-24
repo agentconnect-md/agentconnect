@@ -26,7 +26,8 @@ import {
   isSyntheticEmail,
   type AgentRecord,
   type AgentRepoAuthorizationRecord,
-  type RepoAccess
+  type RepoAccess,
+  type RepoMaterialization
 } from '../../persistence/ports.js'
 import { AgentWorkspaceRepoConflict, GiteaBindingUnavailable } from '../../persistence/errors.js'
 import { GithubApiError } from '../../github/api.js'
@@ -60,6 +61,7 @@ function toDto(r: AgentRepoAuthorizationRecord): AgentRepoAuthDtoT {
     repoId: r.repoId.toString(),
     repoFullName: r.repoFullName,
     access: r.access,
+    materialize: r.materialize,
     createdBy: r.createdBy && !isSyntheticEmail(r.createdBy.email) ? r.createdBy.userId : null,
     createdAt: r.createdAt.toISOString()
   }
@@ -110,6 +112,16 @@ export function agentRepoRoutes(deps: HttpDeps) {
     }
     const agentNotFound = (reply: FastifyReply) =>
       reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+    // `decision` lands with the selector (multi-repository-workspaces.md decision 15); this is the one check that PR deletes.
+    const refuseDecisionMaterialize = (reply: FastifyReply, materialize: RepoMaterialization | undefined): boolean => {
+      if (materialize !== 'decision') return false
+      void reply.code(400).send({
+        error: 'Bad Request',
+        statusCode: 400,
+        message: 'selecting repositories by decision is not available yet; choose `always` or `on-demand`'
+      })
+      return true
+    }
 
     // A grant rides `AgentSpec.workspace.additionalRepos`, so authorizing or revoking
     // one is a spec edit. Re-read the agent (the repo advanced its configRevision in
@@ -145,7 +157,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
       req: FastifyRequest,
       reply: FastifyReply,
       agent: AgentRecord,
-      body: { projectId: string; access: RepoAccess }
+      body: { projectId: string; access: RepoAccess; materialize: RepoMaterialization }
     ): Promise<AgentRepoAuthDtoT | undefined> => {
       const conflict = (message: string): undefined => {
         void reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
@@ -183,6 +195,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           repoId: projectId,
           repoFullName: live.projectPath,
           access: body.access,
+          materialize: body.materialize,
           ...(req.principal ? { createdByUserId: req.principal.userId } : {})
         })
       // §7.2 identity bracket, exactly as the workspace and hook arms take it: the
@@ -212,8 +225,14 @@ export function agentRepoRoutes(deps: HttpDeps) {
           agentId: agent.id,
           ...(req.principal ? { actorUserId: req.principal.userId } : {}),
           frameType: 'gitcred/grant',
-          message: `gitlab project ${row.repoFullName} authorized (${row.access})`,
-          details: { repoAuthId: row.id, provider: 'gitlab', repoFullName: row.repoFullName, access: row.access }
+          message: `gitlab project ${row.repoFullName} authorized (${row.access}, ${row.materialize})`,
+          details: {
+            repoAuthId: row.id,
+            provider: 'gitlab',
+            repoFullName: row.repoFullName,
+            access: row.access,
+            materialize: row.materialize
+          }
         })
         .catch(() => {})
       await replicateUpsert(agent)
@@ -234,7 +253,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
       req: FastifyRequest,
       reply: FastifyReply,
       agent: AgentRecord,
-      body: { repoId: string; access: RepoAccess }
+      body: { repoId: string; access: RepoAccess; materialize: RepoMaterialization }
     ): Promise<AgentRepoAuthDtoT | undefined> => {
       const refused = (status: 400 | 403 | 404 | 409 | 429 | 502, message: string): undefined => {
         void reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
@@ -273,6 +292,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           repoId,
           repoFullName: binding.repoPath,
           access: body.access,
+          materialize: body.materialize,
           ...(req.principal ? { createdByUserId: req.principal.userId } : {})
         })
       } catch (e) {
@@ -287,8 +307,14 @@ export function agentRepoRoutes(deps: HttpDeps) {
           agentId: agent.id,
           ...(req.principal ? { actorUserId: req.principal.userId } : {}),
           frameType: 'gitcred/grant',
-          message: `gitea repository ${row.repoFullName} authorized (${row.access})`,
-          details: { repoAuthId: row.id, provider: 'gitea', repoFullName: row.repoFullName, access: row.access }
+          message: `gitea repository ${row.repoFullName} authorized (${row.access}, ${row.materialize})`,
+          details: {
+            repoAuthId: row.id,
+            provider: 'gitea',
+            repoFullName: row.repoFullName,
+            access: row.access,
+            materialize: row.materialize
+          }
         })
         .catch(() => {})
       // The grant is a consumer: the spec carries the host from here on (gitea-integration.md §11).
@@ -304,7 +330,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List an agent’s repository authorizations',
           description:
-            'Explicit GitHub repository grants for this agent. An App-backed workspace repo is implicit and not listed; scratch workspaces may grant any covered repository, while a manual GitHub workspace may explicitly grant only its own repo for review/check effects. Gated by the agent’s visibility.',
+            'Explicit code-host repository grants for this agent, each with its access tier and `materialize` choice (`always` clones it as a secondary workspace root, `on-demand` grants credentials only). An App-backed workspace repo is implicit and not listed; scratch workspaces may grant any covered repository, while a manual GitHub workspace may explicitly grant only its own repo for review/check effects. Gated by the agent’s visibility.',
           operationId: 'listAgentRepoAuthorizations',
           params: z.object({ agentId: z.string() }),
           response: { 200: AgentRepoAuthListDto, 404: ErrorDto }
@@ -325,7 +351,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Authorize a repository for an agent',
           description:
-            'Grant the agent access to one code-host repository. With `provider: github` (the default) the repository is named `owner/repo` and must be covered by one of the organization’s GitHub App installations; App-backed workspaces may add repositories beyond their implicit workspace grant, scratch workspaces may add any covered repository, and a manual GitHub workspace may explicitly authorize only its own repository for control-plane review/check effects. With the per-user gate configured, the caller must hold the matching GitHub permission (`read`/`comment` tiers need read, `write` needs write). With `provider: gitlab` the project is named by its numeric id and must already be a managed GitLab project in this organization; authorizing it provisions the agent’s own GitLab bot account and project membership before the grant lands. With `provider: gitea` the repository is named by its numeric id and must already be a managed Gitea repository in this organization; the organization’s bot token serves every tier, so the tier is a clamp on what the agent may do, never a provider role.',
+            'Grant the agent access to one code-host repository. With `provider: github` (the default) the repository is named `owner/repo` and must be covered by one of the organization’s GitHub App installations; App-backed workspaces may add repositories beyond their implicit workspace grant, scratch workspaces may add any covered repository, and a manual GitHub workspace may explicitly authorize only its own repository for control-plane review/check effects. With the per-user gate configured, the caller must hold the matching GitHub permission (`read`/`comment` tiers need read, `write` needs write). With `provider: gitlab` the project is named by its numeric id and must already be a managed GitLab project in this organization; authorizing it provisions the agent’s own GitLab bot account and project membership before the grant lands. With `provider: gitea` the repository is named by its numeric id and must already be a managed Gitea repository in this organization; the organization’s bot token serves every tier, so the tier is a clamp on what the agent may do, never a provider role. `materialize` chooses how sessions stand in the repository: `always` (the default) clones it as a secondary workspace root on every session, `on-demand` grants credentials only and the agent clones during the turn; `decision` is rejected until the per-session selector ships.',
           operationId: 'createAgentRepoAuthorization',
           params: z.object({ agentId: z.string() }),
           body: CreateAgentRepoAuthBody,
@@ -344,6 +370,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
         if (denyViewerWrite(req, reply)) return
         const agent = await getViewableAgent(req, req.params.agentId)
         if (!agent) return agentNotFound(reply)
+        if (refuseDecisionMaterialize(reply, req.body.materialize)) return
         if (req.body.provider === 'gitlab') return authorizeGitlabProject(req, reply, agent, req.body)
         if (req.body.provider === 'gitea') return authorizeGiteaRepository(req, reply, agent, req.body)
         if (!deps.github) {
@@ -444,6 +471,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
             repoId: ref.repoId,
             repoFullName: ref.fullName,
             access: req.body.access,
+            materialize: req.body.materialize,
             ...(req.principal ? { createdByUserId: req.principal.userId } : {})
           })
           void deps.repos.audit
@@ -453,8 +481,13 @@ export function agentRepoRoutes(deps: HttpDeps) {
               agentId: agent.id,
               ...(req.principal ? { actorUserId: req.principal.userId } : {}),
               frameType: 'gitcred/grant',
-              message: `repo ${row.repoFullName} authorized (${row.access})`,
-              details: { repoAuthId: row.id, repoFullName: row.repoFullName, access: row.access }
+              message: `repo ${row.repoFullName} authorized (${row.access}, ${row.materialize})`,
+              details: {
+                repoAuthId: row.id,
+                repoFullName: row.repoFullName,
+                access: row.access,
+                materialize: row.materialize
+              }
             })
             .catch(() => {})
           await replicateUpsert(agent)
@@ -492,14 +525,15 @@ export function agentRepoRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Agents],
-          summary: 'Upgrade a repository authorization',
+          summary: 'Update a repository authorization',
           description:
-            'Raise an existing repository grant to a stronger access tier after re-checking the caller’s matching GitHub permission. Downgrades still require revoke and reauthorize so review-check cleanup remains explicit.',
+            'Raise an existing repository grant to a stronger access tier after re-checking the caller’s matching GitHub permission, change how the repository is materialized (`materialize`: `always` or `on-demand`; `decision` is rejected until the per-session selector ships), or both. At least one field is required. Downgrades still require revoke and reauthorize so review-check cleanup remains explicit; `materialize` moves freely and re-projects the agent’s spec.',
           operationId: 'updateAgentRepoAuthorization',
           params: AgentRepoAuthParam,
           body: UpdateAgentRepoAuthBody,
           response: {
             200: AgentRepoAuthDto,
+            400: ErrorDto,
             403: ErrorDto,
             404: ErrorDto,
             409: ErrorDto,
@@ -516,27 +550,60 @@ export function agentRepoRoutes(deps: HttpDeps) {
         if (!row || row.agentId !== agent.id) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
         }
+        if (refuseDecisionMaterialize(reply, req.body.materialize)) return
         const rank = { read: 0, comment: 1, write: 2 } as const
-        if (rank[req.body.access] < rank[row.access]) {
+        if (req.body.access !== undefined && rank[req.body.access] < rank[row.access]) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
             message: 'revoke and reauthorize this repository to lower its access tier'
           })
         }
-        if (req.body.access === row.access) return toDto(row)
-        // What raising a tier means is the host's: a re-checked GitHub permission,
-        // or a raised project role on the grant's own §7.2 account.
-        return codeHosts[row.provider].upgradeRepoAuthorization({
-          deps,
-          req,
-          reply,
-          orgId: orgOf(req),
-          agent,
-          row,
-          access: req.body.access,
-          toDto
-        })
+        let dto = toDto(row)
+        // Access first: a denied tier leaves the row untouched. What raising a tier means
+        // is the host's — a re-checked GitHub permission, or a raised project role on the
+        // grant's own §7.2 account.
+        if (req.body.access !== undefined && req.body.access !== row.access) {
+          const upgraded = await codeHosts[row.provider].upgradeRepoAuthorization({
+            deps,
+            req,
+            reply,
+            orgId: orgOf(req),
+            agent,
+            row,
+            access: req.body.access,
+            toDto
+          })
+          if (!upgraded) return
+          dto = upgraded
+        }
+        // Materialization is projected onto the spec, so the repo bumps the revision and the agent is re-pushed.
+        if (req.body.materialize !== undefined && req.body.materialize !== row.materialize) {
+          const updated = await deps.repos.agentRepoAuth.updateMaterialize(row.id, req.body.materialize)
+          if (!updated) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
+          }
+          void deps.repos.audit
+            .append({
+              kind: 'agent_repo_change',
+              orgId: orgOf(req),
+              agentId: agent.id,
+              ...(req.principal ? { actorUserId: req.principal.userId } : {}),
+              frameType: 'gitcred/grant',
+              message: `repo ${updated.repoFullName} materialization changed (${row.materialize} → ${updated.materialize})`,
+              details: {
+                repoAuthId: updated.id,
+                provider: updated.provider,
+                repoFullName: updated.repoFullName,
+                previousMaterialize: row.materialize,
+                materialize: updated.materialize
+              }
+            })
+            .catch(() => {})
+          await replicateUpsert(agent)
+          dto = toDto(updated)
+        }
+        return dto
       }
     )
 

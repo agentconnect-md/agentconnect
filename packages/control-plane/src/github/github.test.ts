@@ -1151,6 +1151,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       repoId: 111n,
       repoFullName: 'Acme/Tools', // stored as GitHub cases it — may differ from the request
       access: 'comment',
+      materialize: 'always',
       createdAt: new Date(0),
       createdBy: null,
       ...over

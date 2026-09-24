@@ -253,13 +253,15 @@ export const AgentSchema = z.object({
     // repository/project id as a decimal string, so a rename cannot orphan an entry,
     // and `provider` qualifies it — the hosts number theirs independently
     // (gitlab-com-integration.md §8.1). Absent ⇒ github, what every entry a
-    // pre-GitLab control plane replicated means.
+    // pre-GitLab control plane replicated means. `materialize` (decision 13) is kept
+    // as replicated so a re-read never strips it; absent ⇒ always. Nothing reads it yet.
     additionalRepos: z
       .array(
         z.object({
           repoFullName: z.string(),
           repoId: z.string(),
-          provider: z.string().min(1).default('github')
+          provider: z.string().min(1).default('github'),
+          materialize: z.enum(['always', 'decision', 'on-demand']).default('always')
         })
       )
       .default([]),
