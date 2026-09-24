@@ -218,6 +218,9 @@
     },
     "social": {
       "title": "Sign-in methods",
+      "repoAccessTitle": "GitHub repository access",
+      "repoAccessOnly": "Connected for repositories only. GitHub sign-in still opens the original account.",
+      "disconnectRepo": "Disconnect",
       "description": "Link more than one social account to the same AgentConnect profile.",
       "retry": "Retry",
       "linked": "Linked",
@@ -902,6 +905,10 @@
       "signingIn": "Signing you in…"
     },
     "socialCallback": {
+      "repoConflict": "This GitHub account is linked to another AgentConnect account. You can connect it here for repository access. GitHub sign-in will still open the original account.",
+      "continueForRepoAccess": "Continue for repository access",
+      "connectingRepo": "Connecting GitHub repositories…",
+      "repoAuthorizationFailed": "GitHub repository access could not be connected. Return to Profile and try again.",
       "linking": "Linking your sign-in account…",
       "expired": "This account-linking request expired. Return to Profile and try again.",
       "updating": "Updating {provider} authorization…",

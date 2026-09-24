@@ -96,6 +96,27 @@ export interface SocialIdentityMutationGate {
   runExclusive<T>(oidcSubject: string, mutation: () => Promise<T>): Promise<T>
 }
 
+export interface GithubRepoIdentityRecord {
+  userId: string
+  githubUserId: bigint
+  login: string
+}
+
+export interface GithubRepoIdentityStateRecord {
+  nonce: string
+  userId: string
+  verifier: string
+  expiresAt: Date
+}
+
+export interface GithubRepoIdentityStore {
+  findBySubject(sub: string): Promise<GithubRepoIdentityRecord | null>
+  clearBySubject(sub: string): Promise<void>
+  createState(state: GithubRepoIdentityStateRecord, now: Date): Promise<void>
+  findState(userId: string, nonce: string, now: Date): Promise<GithubRepoIdentityStateRecord | null>
+  completeState(nonce: string, identity: GithubRepoIdentityRecord, now: Date): Promise<boolean>
+}
+
 /** The caller identity the OSS authorization policy needs: their id + org role.
  *  Built from `req.orgCtx` by `http/rbac.ts#ctxOf`. */
 export interface ViewCtx {

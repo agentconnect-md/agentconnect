@@ -11,6 +11,7 @@ import {
   createMySocialIdentityAuthorization,
   resolveMySocialConnectorId,
   unlinkMySocialIdentity,
+  unlinkMyGithubRepoAccess,
   type MySocialAccountDto,
   type MySocialIdentityDto
 } from '@/lib/api'
@@ -428,6 +429,8 @@ export default function SocialSignInCard({
       return
     }
     const linked = byTarget(currentAccount, autoAuthorize.target)
+    if (autoAuthorize.target === 'github' && autoAuthorize.purpose === 'link' && currentAccount.githubRepoIdentity)
+      return
     if (autoAuthorize.purpose === 'reauthorize' && linked) beginReauthorize(provider)
     else if (!linked) void beginLink(provider)
   }, [autoAuthorize, currentAccount, onAutoAuthorizeHandled, onNotice])
@@ -438,6 +441,18 @@ export default function SocialSignInCard({
     setPendingUnlink(undefined)
   }
 
+  const disconnectRepo = async () => {
+    setBusyProvider('github')
+    try {
+      await unlinkMyGithubRepoAccess()
+      await mutate()
+    } catch (caught) {
+      onNotice({ message: accountErrorMessage(caught) })
+    } finally {
+      setBusyProvider(undefined)
+    }
+  }
+
   const shell = mobile
     ? 'overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)'
     : 'card mt-[22px]'
@@ -445,6 +460,33 @@ export default function SocialSignInCard({
 
   return (
     <>
+      {currentAccount?.githubRepoIdentity ? (
+        <section className={shell} aria-label={t('repoAccessTitle')}>
+          <div className={header}>
+            <div className={mobile ? 'font-sans text-[14px] font-semibold leading-normal' : 'cardtitle'}>
+              {t('repoAccessTitle')}
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3 px-4 py-3.5">
+            <div className="min-w-0">
+              <div className="truncate font-sans text-[13px] font-medium leading-normal">
+                {currentAccount.githubRepoIdentity.login}
+              </div>
+              <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                {t('repoAccessOnly')}
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={busyProvider !== undefined}
+              onClick={() => void disconnectRepo()}
+            >
+              {busyProvider === 'github' ? t('unlinking') : t('disconnectRepo')}
+            </Button>
+          </div>
+        </section>
+      ) : null}
       <section id="sign-in-methods" className={shell} aria-label={t('title')}>
         <div className={header}>
           <div className={mobile ? '' : 'flex flex-col gap-0.5'}>

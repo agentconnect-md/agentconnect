@@ -86,6 +86,7 @@ import type { PullRequestViewService } from '../github/pull-request-view.service
 import type { SessionPullRequestLinkService } from '../github/session-pull-request-link.service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
+import type { GithubRepoIdentityService } from '../github/repo-identity.js'
 import type { HookService } from '../hooks/hook.service.js'
 import type { DaemonRegistry, DaemonAuth, ApiKeyAdmin, DaemonLiveness, ClusterWorkloadIdentity } from '../ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
@@ -479,6 +480,7 @@ export interface HttpDeps {
   /** Server-side Logto identity management for the signed-in user's Profile.
    *  Absent ⇒ LOGTO_MGMT_* or real OIDC auth is not configured. */
   logtoIdentity?: LogtoIdentityService
+  githubRepoIdentity?: GithubRepoIdentityService
   /** Provider-owned identity + current-scope checks for Session visibility. */
   sessionAccessPlugins?: readonly SessionAccessPlugin[]
   /** Uploaded-icon object store (docs/designs/icon-uploads.md); absent ⇒ S3_* unset,

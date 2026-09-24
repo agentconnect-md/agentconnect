@@ -623,6 +623,23 @@ export class GithubService {
     }
   }
 
+  // Resolve the current handle from the durable id, including managed users visible to this installation.
+  async userById(ins: GithubInstallationRecord, id: bigint): Promise<{ id: bigint; login: string } | null> {
+    const token = await this.tokens.metadataToken(ins.installationId)
+    try {
+      const user = await githubRequest<{ id: number; login: string }>(`/user/${id}`, {
+        auth: token,
+        fetchImpl: this.deps.fetchImpl,
+        baseUrl: this.deps.baseUrl
+      })
+      if (!Number.isSafeInteger(user.id) || BigInt(user.id) !== id || typeof user.login !== 'string') return null
+      return { id, login: user.login }
+    } catch (error) {
+      if (error instanceof GithubApiError && error.status === 404) return null
+      throw error
+    }
+  }
+
   private async userRepoPermissionWithPolicy(
     ins: GithubInstallationRecord,
     owner: string,

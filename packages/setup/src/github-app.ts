@@ -125,7 +125,7 @@ export function buildGithubAppManifest(
             appendPath(login.webUrl, '/auth/social/callback')
           ]
         }
-      : {}),
+      : { callback_urls: [appendPath(webUrl, '/auth/social/callback')] }),
     setup_url: appendPath(controlPlaneUrl, '/v1/github/setup/callback'),
     setup_on_update: true,
     public: true,

@@ -15,6 +15,7 @@ const MANAGED_KEYS = [
   'GITHUB_APP_ID',
   'GITHUB_APP_SLUG',
   'GITHUB_APP_CLIENT_ID',
+  'GITHUB_APP_CLIENT_SECRET',
   'GITHUB_APP_PRIVATE_KEY_B64',
   'GITLAB_CLIENT_ID',
   'GITLAB_CLIENT_SECRET',
@@ -60,6 +61,7 @@ export function applyDeploymentEnvironment(
     set('GITHUB_APP_ID', String(values.github.appId))
     set('GITHUB_APP_SLUG', values.github.slug)
     set('GITHUB_APP_CLIENT_ID', values.github.clientId)
+    set('GITHUB_APP_CLIENT_SECRET', secrets['github.clientSecret'])
     set('GITHUB_APP_PRIVATE_KEY_B64', secrets['github.privateKeyB64'])
   }
 

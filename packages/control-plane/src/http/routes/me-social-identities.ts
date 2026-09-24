@@ -1,27 +1,9 @@
-/**
- * The signed-in user's social sign-in methods. These routes deliberately use
- * `oidcAuth` (never devAuth or API keys). The current OIDC session is the
- * authorization boundary; unlinking does not add a second email-code step.
- *
- * Linking and unlinking deliberately run over DIFFERENT Logto surfaces:
- *
- *  - **Unlink** stays here, on the Management API, because it enforces a
- *    server-side invariant the browser cannot be trusted with: the last social
- *    sign-in method may not be removed, serialized per user by
- *    `SocialIdentityMutationGate`. It needs no connector session.
- *  - **Link** is driven by the browser against Logto's Account API, with the
- *    user's OWN token — the Management API has no session context, so any
- *    connector that persists state in `getAuthorizationUri` (Slack, Apple,
- *    standard OIDC/OAuth 2.0) fails inside Logto with a 500. That path needs
- *    nothing from the M2M credential, so it never reaches the browser either.
- *
- * What the browser still cannot do is discover the connector id, so this
- * module resolves target → connector id and stops there.
- */
+// OIDC-only profile identity management; repository access remains separate from social sign-in methods.
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { resolveWebAppUrl } from '../../config/env.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
+import { GithubRepoIdentityError } from '../../github/repo-identity.js'
 import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
 import { reconcileLinkedDms } from '../../orchestrator/linkedDmReconcile.js'
 import type { HttpDeps } from '../deps.js'
@@ -89,14 +71,14 @@ const SocialIdentitySummaryDto = z.object({
 
 const SocialAccountDto = z.object({
   identities: z.array(SocialIdentitySummaryDto),
+  githubRepoIdentity: z.object({ githubUserId: z.string(), login: z.string() }).optional(),
+  githubRepoAccessAvailable: z.boolean().optional(),
   /** Logto refuses an identity change the caller has not re-proven while this
    *  holds, so the console collects a code before starting one. */
   hasSecurityVerificationMethod: z.boolean(),
   primaryEmail: z.string().optional()
 })
 
-// No 'link': that runs in the browser against the Account API, so its provider
-// errors (422 "already in use" and friends) are mapped there, not here.
 type Operation = 'authorize' | 'link' | 'unlink' | 'read'
 
 function socialCallbackUrl(deps: HttpDeps): string | undefined {
@@ -105,6 +87,11 @@ function socialCallbackUrl(deps: HttpDeps): string | undefined {
 }
 
 function logtoFailure(reply: FastifyReply, error: unknown, operation: Operation) {
+  if (error instanceof GithubRepoIdentityError) {
+    return reply
+      .code(error.status)
+      .send({ error: error.code, code: error.code, statusCode: error.status, message: error.message })
+  }
   if (!(error instanceof LogtoApiError)) throw error
   // The upstream reason never reaches the caller — the mapping below flattens it
   // to a generic status — so record it once here. Without this an operator has
@@ -119,6 +106,14 @@ function logtoFailure(reply: FastifyReply, error: unknown, operation: Operation)
       statusCode: 409,
       code: error.code,
       message: 'connect another sign-in method before removing this one'
+    })
+  }
+  if (error.status === 409 && error.code === 'GITHUB_ALREADY_LINKED') {
+    return reply.code(409).send({
+      error: 'Conflict',
+      code: error.code,
+      statusCode: 409,
+      message: 'GitHub is already linked to this account'
     })
   }
   // Logto says the just-authorized identity belongs to a different user. A real
@@ -410,9 +405,89 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
         const identity = deps.logtoIdentity
         if (!identity) return reply.code(503).send(unavailable)
         try {
-          return await identity.socialAccountFor(req.oidcSubject!)
+          return {
+            ...(await identity.socialAccountFor(req.oidcSubject!)),
+            githubRepoAccessAvailable: deps.githubRepoIdentity?.enabled ?? false
+          }
         } catch (error) {
           return logtoFailure(reply, error, 'read')
+        }
+      }
+    )
+
+    const repoErrors = { 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 429: ErrorDto, 502: ErrorDto, 503: ErrorDto }
+    r.post(
+      '/me/social-identities/github/repo-access/authorization',
+      {
+        preHandler: app.oidcAuth,
+        schema: {
+          tags: [Tag.Profile],
+          summary: 'Connect GitHub for repository access',
+          description:
+            'Start a user-bound GitHub authorization without adding a sign-in method or replacing an existing identity.',
+          operationId: 'createMyGithubRepoAccessAuthorization',
+          response: { 200: z.object({ state: State, authorizationUri: z.url() }), ...repoErrors }
+        }
+      },
+      async (req, reply) => {
+        if (!deps.githubRepoIdentity) return reply.code(503).send(unavailable)
+        try {
+          return await deps.githubRepoIdentity.authorize(req.principal!.userId, req.oidcSubject!)
+        } catch (error) {
+          return logtoFailure(reply, error, 'authorize')
+        }
+      }
+    )
+
+    r.post(
+      '/me/social-identities/github/repo-access',
+      {
+        preHandler: app.oidcAuth,
+        schema: {
+          tags: [Tag.Profile],
+          summary: 'Complete GitHub repository authorization',
+          description:
+            'Consume a single-use authorization for the signed-in user and store only the verified GitHub identity.',
+          operationId: 'linkMyGithubRepoAccess',
+          body: z.object({ code: z.string().min(1).max(4096), state: State }).strict(),
+          response: { 200: z.object({ githubUserId: z.string(), login: z.string() }), ...repoErrors }
+        }
+      },
+      async (req, reply) => {
+        if (!deps.githubRepoIdentity) return reply.code(503).send(unavailable)
+        try {
+          return await deps.githubRepoIdentity.complete(
+            req.principal!.userId,
+            req.oidcSubject!,
+            req.body.code,
+            req.body.state
+          )
+        } catch (error) {
+          return logtoFailure(reply, error, 'link')
+        }
+      }
+    )
+
+    r.delete(
+      '/me/social-identities/github/repo-access',
+      {
+        preHandler: app.oidcAuth,
+        schema: {
+          tags: [Tag.Profile],
+          summary: 'Disconnect GitHub repository access',
+          description:
+            "Remove this account's repository-only connection and cancel pending authorizations without changing sign-in methods.",
+          operationId: 'unlinkMyGithubRepoAccess',
+          response: { 204: z.null(), ...repoErrors }
+        }
+      },
+      async (req, reply) => {
+        if (!deps.githubRepoIdentity) return reply.code(503).send(unavailable)
+        try {
+          await deps.githubRepoIdentity.disconnect(req.oidcSubject!)
+          return reply.code(204).send(null)
+        } catch (error) {
+          return logtoFailure(reply, error, 'unlink')
         }
       }
     )

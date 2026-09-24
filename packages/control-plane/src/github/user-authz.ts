@@ -1,30 +1,4 @@
-/**
- * GithubUserAuthzService — per-user repo authorization for github-app
- * workspaces (docs/designs/github-app-git-credentials.md open question #7,
- * identity-assertion route: zero OAuth leg, zero stored user tokens).
- *
- * The question it answers: "may THIS console user bind THIS repo into an
- * agent?" — decided by the user's own effective GitHub permission, asserted
- * server-side:
- *
- *   local user → oidcSubject → (Logto Mgmt API) GitHub login
- *              → (installation metadata token) collaborator permission
- *
- * Assembled only when GitHub repo grants AND LOGTO_MGMT_* AND real OIDC
- * auth are all configured — absent, callers keep today's org-level model
- * (installation coverage is the only gate). Every failure fails CLOSED: this
- * is an authorization gate, availability never widens it.
- *
- * Semantics (design open question #7):
- *  - need=read  ⇒ any effective permission, or the repo is public;
- *  - need=write ⇒ effective write/admin (GitHub collapses maintain→write) —
- *    public repos do NOT satisfy write;
- *  - no GitHub identity on the account (Google sign-in, deleted at provider)
- *    ⇒ public read remains available, while private/read-write checks return
- *    GITHUB_IDENTITY_REQUIRED;
- *  - authorization is asserted at pick/create time; the daemon keeps running
- *    on installation tokens (creator drift is the tracked re-attest follow-up).
- */
+// Authorizes repository access using verified GitHub identity and installation-token permission checks.
 import { LRUCache } from 'lru-cache'
 import { cacheOptions } from '../cache.js'
 import type { Clock } from '../domain/clock.js'
@@ -60,7 +34,9 @@ export interface UserRepoAccess {
 // Narrow structural deps (the composition root passes LogtoIdentityService /
 // GithubService / PgUserRepo; tests pass plain objects).
 interface UserAuthzDeps {
-  identity: { githubLoginFor(sub: string, maxAgeMs?: number): Promise<string | null> }
+  identity: {
+    githubLoginFor(sub: string, maxAgeMs?: number, installation?: GithubInstallationRecord): Promise<string | null>
+  }
   github: {
     getRepoMeta(ins: GithubInstallationRecord, owner: string, repo: string): Promise<{ private: boolean } | null>
     userRepoPermission(
@@ -116,9 +92,8 @@ export class GithubUserAuthzService {
     })
   }
 
-  /** The caller's GitHub login, or a GITHUB_IDENTITY_REQUIRED denial — the
-   *  shared first leg of every check. */
-  private async loginOf(userId: string, maxCacheAgeMs?: number): Promise<string> {
+  // Resolve the caller's GitHub login or deny with GITHUB_IDENTITY_REQUIRED.
+  private async loginOf(userId: string, ins: GithubInstallationRecord, maxCacheAgeMs?: number): Promise<string> {
     const sub = await this.deps.users.getOidcSubject(userId)
     if (!sub) {
       throw new UserAuthzDeniedError(
@@ -126,7 +101,7 @@ export class GithubUserAuthzService {
         'GITHUB_IDENTITY_REQUIRED'
       )
     }
-    const login = await this.deps.identity.githubLoginFor(sub, maxCacheAgeMs)
+    const login = await this.deps.identity.githubLoginFor(sub, maxCacheAgeMs, ins)
     if (!login) {
       throw new UserAuthzDeniedError(
         'no GitHub identity on this account — link GitHub to verify repository access',
@@ -181,7 +156,7 @@ export class GithubUserAuthzService {
     repo: string,
     options: { maxCacheAgeMs?: number; loginMaxAgeMs?: number } = {}
   ): Promise<RepoPermission> {
-    const login = await this.loginOf(userId, options.loginMaxAgeMs ?? options.maxCacheAgeMs)
+    const login = await this.loginOf(userId, ins, options.loginMaxAgeMs ?? options.maxCacheAgeMs)
     return this.permissionOf(login, ins, owner, repo, options.maxCacheAgeMs)
   }
 
@@ -211,7 +186,7 @@ export class GithubUserAuthzService {
     const repoPrivate = meta?.private ?? true
     let login: string
     try {
-      login = await this.loginOf(userId)
+      login = await this.loginOf(userId, ins)
     } catch (error) {
       // Public repository metadata is itself enough to authorize a read. Do
       // not turn the absence of an unrelated personal identity into a denial,
@@ -248,7 +223,7 @@ export class GithubUserAuthzService {
 
     let login: string
     try {
-      login = await this.loginOf(userId)
+      login = await this.loginOf(userId, ins)
     } catch (error) {
       if (error instanceof UserAuthzDeniedError && error.code === 'GITHUB_IDENTITY_REQUIRED') {
         return { repos: repos.filter((repo) => !repo.private), privateReposHidden: true }

@@ -1,29 +1,8 @@
-/**
- * LogtoIdentityService — the Control Plane's one deliberate Logto coupling.
- *
- * It resolves a console user's GitHub login for repo authorization and lets an
- * authenticated user link or unlink their own social sign-in methods from the
- * AgentConnect Profile UI. Both use Logto's Management API behind the CP; its
- * M2M credential never reaches the browser. We read identity metadata only and
- * never retain social access tokens.
- *
- * Auth: M2M client-credentials against `${endpoint}/oidc/token` with the
- * Management API resource indicator (default `${endpoint}/api`; cloud tenants
- * behind a custom domain must set LOGTO_MGMT_RESOURCE to the canonical
- * `https://tenant.example.com/api`).
- *
- * Caching: the M2M token until 60s before expiry; display/GitHub projections
- * keep a ≥10 min positive / 60 s negative user cache, while provider authorization
- * caps reuse of a positive assertion at the identity lease
- * (`SESSION_ACCESS_IDENTITY_TTL_SEC`, default 2 min). A hit past half of the lease it
- * ran under also renews the entry in the background (refresh-ahead), so an
- * entry read at least once per half-lease never ages into a blocking refetch —
- * the leases themselves stay hard for first-ever and idle-return reads.
- * Lookups are single-flight and fail CLOSED at their authorization callers.
- */
+// Resolves Logto identities and manages sign-in methods; repository-only GitHub connections are a fallback.
 import type { Clock } from '../domain/clock.js'
-import type { SocialIdentityMutationGate } from '../persistence/ports.js'
+import type { GithubInstallationRecord, SocialIdentityMutationGate } from '../persistence/ports.js'
 import type { FetchLike } from './api.js'
+import type { GithubRepoIdentityLookup, GithubRepoIdentitySummary } from './repo-identity.js'
 
 export interface LogtoMgmtConfig {
   /** Logto tenant origin, e.g. `https://tenant-id.logto.app` (no trailing slash). */
@@ -99,8 +78,12 @@ const LINK_MODE_TTL_MS = 60 * 60_000
 // so write recency tracks read recency closely enough for eviction.
 const MAX_SUBJECT_ENTRIES = 10_000
 
-interface CachedLogin {
+interface GithubLogin {
   login: string | null
+  repoAccessAllowed: boolean
+}
+
+interface CachedLogin extends GithubLogin {
   fetchedAt: number
   expiresAt: number
 }
@@ -143,6 +126,7 @@ export interface SocialIdentitySummary {
 /** Everything the Profile card needs about an account's sign-in methods. */
 export interface SocialAccount {
   identities: SocialIdentitySummary[]
+  githubRepoIdentity?: GithubRepoIdentitySummary
   /** Logto refuses an identity change the caller has not re-proven whenever
    *  this holds, so the console has to collect a code first. Mirrors Logto's own
    *  rule: a password, an email, or a phone. */
@@ -240,7 +224,7 @@ export class LogtoIdentityService {
   private token?: { value: string; expiresAt: number }
   private tokenInFlight?: Promise<string>
   private readonly logins = new Map<string, CachedLogin>()
-  private readonly loginInFlight = new Map<string, Promise<string | null>>()
+  private readonly loginInFlight = new Map<string, Promise<GithubLogin>>()
   // One cache for every display-only read, so a Profile load costs ONE upstream
   // fetch rather than one per projection. Kept separate from the login cache on
   // purpose: githubLoginFor sits on a live authorization gate, and display reads
@@ -272,34 +256,37 @@ export class LogtoIdentityService {
     private readonly mutations: SocialIdentityMutationGate,
     private readonly fetchImpl: FetchLike = fetch as FetchLike,
     private readonly log?: { debug(obj: object, msg: string): void; info(obj: object, msg: string): void },
-    opts?: { identityTtlMs?: number }
+    private readonly opts?: { identityTtlMs?: number; githubRepoIdentity?: GithubRepoIdentityLookup }
   ) {
     this.identityTtlMs = opts?.identityTtlMs ?? PROVIDER_IDENTITY_TTL_MS
     this.positiveTtlMs = Math.max(LOGIN_TTL_MS, this.identityTtlMs)
   }
 
-  /**
-   * The GitHub login behind a local user's OIDC subject, or null when the
-   * account has no GitHub identity (e.g. Google sign-in) — callers map null to
-   * a GITHUB_IDENTITY_REQUIRED denial, never a silent allow.
-   */
-  async githubLoginFor(sub: string, maxAgeMs?: number): Promise<string | null> {
+  // Prefer the social identity; consult repository identity only after a successful lookup without GitHub.
+  async githubLoginFor(
+    sub: string,
+    maxAgeMs?: number,
+    installation?: GithubInstallationRecord
+  ): Promise<string | null> {
     const cached = this.logins.get(sub)
     const now = this.clock.now()
+    let identity: GithubLogin
     if (cached && cached.expiresAt > now && (maxAgeMs === undefined || now - cached.fetchedAt < maxAgeMs)) {
       if (refreshAheadDue(cached, now, maxAgeMs)) this.refreshInBackground(sub, () => this.pendingLogin(sub))
-      return cached.login
+      identity = cached
+    } else {
+      this.noteColdBlock('logins', sub, maxAgeMs, this.loginInFlight.has(sub))
+      identity = await this.pendingLogin(sub)
     }
-    this.noteColdBlock('logins', sub, maxAgeMs, this.loginInFlight.has(sub))
-    return this.pendingLogin(sub)
+    if (identity.login || !identity.repoAccessAllowed || !installation) return identity.login
+    return this.opts?.githubRepoIdentity?.loginForSubject(sub, installation) ?? null
   }
 
-  /** The deduped in-flight login lookup — one upstream read serves every
-   *  concurrent caller, blocking miss and refresh-ahead alike. */
-  private pendingLogin(sub: string): Promise<string | null> {
+  // Share one upstream read across blocking misses and refresh-ahead requests.
+  private pendingLogin(sub: string): Promise<GithubLogin> {
     let pending = this.loginInFlight.get(sub)
     if (!pending) {
-      const tracked: Promise<string | null> = this.lookupLogin(sub).finally(() => {
+      const tracked: Promise<GithubLogin> = this.lookupLogin(sub).finally(() => {
         // Only clear our own registration — an invalidation may have replaced it
         // with a fresh in-flight read that must keep de-duplicating.
         if (this.loginInFlight.get(sub) === tracked) this.loginInFlight.delete(sub)
@@ -367,8 +354,12 @@ export class LogtoIdentityService {
       summarize(target, identity, target === 'slack' ? slack : null)
     )
     const primaryEmail = firstString(user.primaryEmail)
+    const githubRepoIdentity = user.identities?.github
+      ? undefined
+      : await this.opts?.githubRepoIdentity?.summaryForSubject(sub)
     return {
       identities,
+      ...(githubRepoIdentity ? { githubRepoIdentity } : {}),
       // Logto's own rule (core/routes/account): a password, an email, or a phone.
       hasSecurityVerificationMethod: Boolean(user.hasPassword) || Boolean(primaryEmail) || Boolean(user.primaryPhone),
       ...(primaryEmail ? { primaryEmail } : {})
@@ -387,6 +378,19 @@ export class LogtoIdentityService {
     this.bumpEpoch(sub)
     this.users.delete(sub)
     this.userInFlight.delete(sub)
+  }
+
+  forgetGithubLogin(sub: string): void {
+    this.invalidate(sub)
+  }
+
+  // Fresh provider evidence prevents a repository connection from replacing a real sign-in identity.
+  async assertGithubRepoLinkable(sub: string): Promise<void> {
+    const user = await this.lookupUser(sub)
+    if (!user) throw new LogtoApiError('account no longer exists', 404, false)
+    if (user.identities?.github) {
+      throw new LogtoApiError('GitHub is already linked to this account', 409, false, 'GITHUB_ALREADY_LINKED')
+    }
   }
 
   /** The cached upstream user every display read projects from. */
@@ -541,6 +545,8 @@ export class LogtoIdentityService {
       if (targets.length === 1) {
         throw new LogtoApiError('the last social sign-in method cannot be removed', 409, false, 'LAST_SOCIAL_IDENTITY')
       }
+      // Retire hidden repository bindings and pending callbacks before the social identity can disappear.
+      if (target === 'github') await this.opts?.githubRepoIdentity?.clearBySubject(sub)
       const res = await this.request(`/api/users/${encodeURIComponent(sub)}/identities/${encodeURIComponent(target)}`, {
         method: 'DELETE'
       })
@@ -593,7 +599,7 @@ export class LogtoIdentityService {
     return user
   }
 
-  private async lookupLogin(sub: string): Promise<string | null> {
+  private async lookupLogin(sub: string): Promise<GithubLogin> {
     const epoch = this.epochOf(sub)
     const res = await this.request(`/api/users/${encodeURIComponent(sub)}`)
     const current = () => this.epochOf(sub) === epoch
@@ -601,9 +607,14 @@ export class LogtoIdentityService {
       // Deleted at the provider — no identity, cache the miss briefly.
       if (current()) {
         const fetchedAt = this.clock.now()
-        this.setBounded(this.logins, sub, { login: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
+        this.setBounded(this.logins, sub, {
+          login: null,
+          repoAccessAllowed: false,
+          fetchedAt,
+          expiresAt: fetchedAt + NEGATIVE_TTL_MS
+        })
       }
-      return null
+      return { login: null, repoAccessAllowed: false }
     }
     if (!res.ok) {
       throw new LogtoApiError(`logto user lookup failed: ${res.status}`, res.status, res.status >= 500)
@@ -611,15 +622,16 @@ export class LogtoIdentityService {
     const user = (await res.json()) as LogtoUser
     const raw = user.identities?.github?.details?.rawData
     const login = firstString(raw?.userInfo?.login, raw?.login)
+    const identity = { login, repoAccessAllowed: !user.identities?.github }
     if (current()) {
       const fetchedAt = this.clock.now()
       this.setBounded(this.logins, sub, {
-        login,
+        ...identity,
         fetchedAt,
         expiresAt: fetchedAt + (login ? this.positiveTtlMs : NEGATIVE_TTL_MS)
       })
     }
-    return login
+    return identity
   }
 
   private async responseError(action: string, res: Response): Promise<LogtoApiError> {

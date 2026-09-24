@@ -1165,9 +1165,9 @@ the cache and stops requesting.
    Personal API keys retain their bound `userId`; the CP resolves that user's
    `oidcSubject` and GitHub identity without requiring a live browser session.
 
-   **Identity attestation uses an App permission self-check with no user OAuth
-   token.** The CP obtains the user's GitHub login from identity metadata via
-   the Logto Management API. It then uses an installation metadata token to
+   **Repository permission checks use an App installation token.** The CP
+   prefers the user's existing GitHub identity from the Logto Management API.
+   It then uses an installation metadata token to
    query
    `GET /repos/{owner}/{repo}/collaborators/{username}/permission`, which
    includes team- and organization-derived access. Read operations accept an
@@ -1182,6 +1182,43 @@ the cache and stops requesting.
    therefore never infers a Profile link from an installation account or
    callback. Profile linking remains an explicit social authorization through
    the existing sign-in-method flow.
+
+   If that flow fails specifically with `user.identity_already_in_use`, the
+   Console offers **Continue for repository access**. Existing successful links
+   keep their current flow. The continuation performs a separate GitHub App
+   OAuth exchange with S256 PKCE and a single-use state bound to the signed-in
+   AC user. It reads `/user`, attempts to revoke only that temporary token,
+   and stores the numeric GitHub user ID and display login without retaining
+   access or refresh tokens. Multiple AC users may prove the same GitHub ID.
+   This connection grants no sign-in method: GitHub sign-in still selects the
+   original Logto account. It also grants no repository permission by itself;
+   installation coverage and the existing per-user permission checks still apply.
+
+   The repository identity is consulted only after Logto successfully returns
+   an existing user without a GitHub identity. Provider failures and deleted
+   users never activate the fallback. The fallback resolves the current login
+   through `GET /user/{account_id}` using the relevant installation token, so
+   a renamed handle cannot permanently substitute another GitHub user. Its
+   binding is read from PostgreSQL on every fallback; resolved handles have a
+   bounded 60-second cache. Existing session-access leases and runtime
+   installation-token lifetimes remain unchanged. The Profile returns this connection separately
+   from `identities`, preserving the sign-in-method contract for older clients.
+
+   Disconnect cancels pending authorizations as well as the repository binding.
+   Callback completion and unlink share the existing per-subject mutation gate;
+   consuming the state and saving the binding are one database transaction.
+   Unlinking a real GitHub sign-in identity first retires any hidden repository
+   binding. A generic Profile refresh never removes a repository connection.
+
+   The continuation requires the GitHub App client ID and client secret plus
+   the public Web origin. Setup Server supplies the saved `github.clientSecret`
+   to the CP as `GITHUB_APP_CLIENT_SECRET`. The App's Callback URL list must
+   include `https://console.example.test/auth/social/callback` with the actual
+   configured Web origin. New Setup manifests include this callback; existing
+   Apps may need it added in GitHub settings. Missing configuration preserves
+   the current conflict result, and disconnect remains available if the OAuth
+   credentials are later removed. The second OAuth trip may show GitHub's
+   account picker or consent screen; it is never assumed to be silent.
 
    **Remaining limits:**
 
@@ -1212,7 +1249,8 @@ the cache and stops requesting.
    - **Decision chain** (`github/user-authz.ts`):
      `app_user.oidcSubject` -> Logto Management M2M ->
      `identities.github.details.rawData` from `GET /api/users/{sub}`, accepting
-     both supported login shapes -> GitHub login ->
+     both supported login shapes (or the verified repository-only identity
+     when the user has no GitHub sign-in identity) -> GitHub login ->
      installation metadata token ->
      `GET /repos/{o}/{r}/collaborators/{login}/permission`. For need=read,
      accept any effective permission **or a public repository**. For
