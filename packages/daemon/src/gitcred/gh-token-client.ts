@@ -2,8 +2,8 @@
 // One implementation for both entries: the daemon CLI dials its own socket, the in-pod entry dials the shim's tunnel.
 // Resolves the TARGET repo with the pure `cp/gh-target.ts` resolver, then proxies gitcred with `plane: 'gh'` —
 // the widened GH_TOKEN capability set; caching, coalescing and clamping all live daemon/CP-side.
-// Exit codes are the wrapper's contract: 0 = token on stdout, 1 = refused/unreachable (reason on stderr),
-// 2 = "not ours" (the target names a non-github.com host), which makes the wrapper run the real gh untouched.
+// Exit codes are the wrapper's contract: 0 = token on stdout, 1 = unreachable (reason on stderr), 2 = "not ours" (a
+// non-github.com target; the wrapper runs the real gh untouched), 3 = refused (reason on stderr; the wrapper stops).
 import { execFileSync } from 'node:child_process'
 import { resolveGhTargetRepo } from '../cp/gh-target.js'
 import { GITCRED_CAPABILITY_ENV } from './env.js'
@@ -28,7 +28,7 @@ export async function emitGhToken(agentId: string, ghArgv: readonly string[], so
     process.stderr.write(
       `agentconnect: no gh credentials for agent ${agentId}${target.repo ? ` on ${target.repo}` : ''}: ${res.error ?? 'unknown error'}\n`
     )
-    process.exitCode = 1
+    process.exitCode = res.denied ? 3 : 1
     return
   }
   process.stdout.write(res.password)

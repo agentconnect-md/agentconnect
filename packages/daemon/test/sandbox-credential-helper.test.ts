@@ -181,6 +181,27 @@ describe('the credential helper the runtime image ships', () => {
     expect(result.stdout).not.toContain('password=')
     expect(result.stderr).toContain('no git credentials for agent agent-a on acme/secret')
     expect(result.stderr).toContain('repository not authorized')
+    // A reply without `denied` is an older daemon's, which cannot say whether it refused.
+    expect(result.stderr).toContain('(the daemon must be running')
+  }, 60_000)
+
+  it('reports a refusal as the reason alone, without blaming the daemon connection', async () => {
+    // The appended "daemon must be running" line is what made a missing grant read as an agent-wide outage.
+    const server = await gitcredServer(() => ({
+      ok: false,
+      error: 'acme/secret is not authorized for this agent',
+      denied: 'repository'
+    }))
+    const result = await gitCredentialFill({
+      helper: helperWrapper(),
+      socketPath: server.path,
+      agentId: 'agent-a',
+      request: 'protocol=https\nhost=github.com\npath=acme/secret.git\n\n'
+    })
+
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('acme/secret is not authorized for this agent')
+    expect(result.stderr).not.toContain('the daemon must be running')
   }, 60_000)
 
   it('says why it cannot reach the daemon, rather than looking like a repo with no credentials', async () => {
@@ -195,6 +216,7 @@ describe('the credential helper the runtime image ships', () => {
 
     expect(result.status).not.toBe(0)
     expect(result.stderr).toMatch(/cannot reach the daemon socket at .*never-served\.sock/)
+    expect(result.stderr).toContain('(the daemon must be running')
   }, 60_000)
 
   it('stays silent for a host that is not github.com, so nothing is asked for it', async () => {

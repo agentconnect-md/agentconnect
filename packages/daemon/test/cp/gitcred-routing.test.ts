@@ -16,7 +16,7 @@ import {
   gitcredSocketPath,
   type GitCredServerDeps
 } from '../../src/cp/gitcred-server.js'
-import type { GitCredentialCache } from '../../src/cp/git-credential.js'
+import { GitCredUnavailableError, type GitCredentialCache } from '../../src/cp/git-credential.js'
 
 describe('repoFromPath (git credential path → owner/repo)', () => {
   it('parses plain, leading-slash, .git and LFS-subpath forms', () => {
@@ -99,7 +99,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     if (dir) rmSync(dir, { recursive: true, force: true })
   })
 
-  async function boot(workspace?: string, spec?: Partial<GitCredServerDeps>) {
+  async function boot(workspace?: string, spec?: Partial<GitCredServerDeps>, refuse?: GitCredUnavailableError) {
     dir = mkdtempSync(join(tmpdir(), 'gitcred-routing-'))
     const sockPath = gitcredSocketPath(dir)
     const gets: GetCall[] = []
@@ -109,6 +109,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     const fakeCache = {
       get: async (agentId: string, _reason: string, opts?: GetOpts) => {
         gets.push({ agentId, ...(opts ? { opts } : {}) })
+        if (refuse) throw refuse
         return {
           username: 'x-access-token',
           token: 'ghs_test',
@@ -161,6 +162,29 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'gh', repo: 'other/tools' } }])
     expect(logs.join('\n')).toContain('outcome=served')
     expect(logs.join('\n')).not.toContain('ghs_test')
+  })
+
+  it('tells the caller that a refusal was a refusal', async () => {
+    const refusal = new GitCredUnavailableError('other/tools is not authorized for this agent', false, 'repository')
+    const refused = await boot(undefined, undefined, refusal)
+    const res = await roundtrip(refused.sockPath, {
+      op: 'get',
+      agentId: 'a1',
+      capability: refused.capability,
+      repoFullName: 'other/tools'
+    })
+    expect(res).toEqual({ ok: false, error: 'other/tools is not authorized for this agent', denied: 'repository' })
+  })
+
+  it('leaves `denied` off an outage, so the helper still points at the daemon connection', async () => {
+    const outage = await boot(undefined, undefined, new GitCredUnavailableError('control plane unreachable', false))
+    const down = await roundtrip(outage.sockPath, {
+      op: 'get',
+      agentId: 'a1',
+      capability: outage.capability,
+      repoFullName: 'other/tools'
+    })
+    expect(down).toEqual({ ok: false, error: 'control plane unreachable' })
   })
 
   it('names the numeric project id for an authorized additional gitlab project (§8.3)', async () => {

@@ -130,6 +130,22 @@ describe('the in-sandbox gh token entry', () => {
     expect(result.stderr).toContain('repository acme/infra is not authorized')
   })
 
+  it('exits 3 when the daemon reports a refusal, so the wrapper stops instead of running gh', async () => {
+    const { path } = await gitcredServer(() => ({
+      ok: false,
+      error: 'acme/infra is not authorized for this agent',
+      denied: 'repository'
+    }))
+    const result = await runEntry(['-R', 'acme/infra', 'pr', 'list'], {
+      AC_GITCRED_SOCKET: path,
+      AC_GITCRED_CAPABILITY: 'cap'
+    })
+
+    expect(result.code).toBe(3)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toContain('acme/infra is not authorized for this agent')
+  })
+
   it('exits 2 without asking anyone when the target is not on github.com', async () => {
     const { path, seen } = await gitcredServer(() => ({ ok: true, username: 'x-access-token', password: 'leaked' }))
     const result = await runEntry(['-R', 'git.example.test/acme/infra', 'pr', 'list'], {

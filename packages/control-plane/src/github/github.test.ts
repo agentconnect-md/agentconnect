@@ -1475,10 +1475,15 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       repoRefs: { 'acme/unrelated': { id: 555, full_name: 'acme/unrelated' } }
     })
     await expect(wrongId.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/unrelated')).rejects.toMatchObject(scope)
+    // The first refusal names the remedy — it is what the agent reports to its user.
+    await expect(wrongId.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/unrelated')).rejects.toThrow(
+      /acme\/unrelated is not authorized for this agent — add it under Additional repositories/
+    )
     // Unknown owner, no name match: the probe must not learn whether an
     // installation covers it — SCOPE, not LEASE.
     const noOwner = harness({ rows: [grantRow()] })
     await expect(noOwner.svc.mintForAgent(AGENT, [], CONTENTS, 'evil/repo')).rejects.toMatchObject(scope)
+    await expect(noOwner.svc.mintForAgent(AGENT, [], CONTENTS, 'evil/repo')).rejects.toThrow(/add it under Additional/)
   })
 
   it('a name-matched grant without a live (or with a suspended) installation denies LEASE_DENIED', async () => {

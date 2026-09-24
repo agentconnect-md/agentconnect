@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -133,5 +133,50 @@ describe('gh wrapper rendered for the sandbox runtime image', () => {
       'acme/infra'
     ])
     expect(readFileSync(tokenCapture, 'utf8')).toBe('ghs_pod')
+  })
+})
+
+// A refusal must not reach the real gh: without a token it only adds "not logged in" advice to the daemon's reason.
+describe('gh wrapper on a failed token fetch', () => {
+  let root: string | undefined
+
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true })
+  })
+
+  const runWith = (tokenExit: number) => {
+    root = mkdtempSync(join(tmpdir(), 'gh-refused-'))
+    const pathbin = join(root, 'pathbin')
+    const realBin = join(root, 'real-bin')
+    mkdirSync(pathbin)
+    mkdirSync(realBin)
+    const ranCapture = join(root, 'ran.txt')
+    const tokenEntry = join(root, 'fake-token-entry.mjs')
+    writeFileSync(tokenEntry, `process.stderr.write('refused-reason\\n')\nprocess.exit(${tokenExit})\n`)
+    const realGh = join(realBin, 'gh')
+    writeFileSync(realGh, '#!/bin/sh\nprintf ran > "$RAN_CAPTURE"\n')
+    chmodSync(realGh, 0o755)
+    const wrapper = join(pathbin, 'gh')
+    writeFileSync(
+      wrapper,
+      renderGhWrapper({ selfDir: pathbin, tokenCommand: `${process.execPath} ${tokenEntry} "$AC_AGENT_ID" -- "$@"` }),
+      { mode: 0o755 }
+    )
+    const result = spawnSync(wrapper, ['pr', 'list', '-R', 'acme/infra'], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${pathbin}:${realBin}`, AC_AGENT_ID: 'agent-1', RAN_CAPTURE: ranCapture }
+    })
+    return { status: result.status, stderr: result.stderr, ran: existsSync(ranCapture) }
+  }
+
+  it('stops with the reason when the daemon refused the repository', () => {
+    const result = runWith(3)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('refused-reason')
+    expect(result.ran).toBe(false)
+  })
+
+  it('still runs the real gh when the daemon could not be reached', () => {
+    expect(runWith(1).ran).toBe(true)
   })
 })

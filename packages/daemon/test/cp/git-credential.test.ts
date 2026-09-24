@@ -88,9 +88,9 @@ describe('GitCredentialCache', () => {
       if (n === 1) throw Object.assign(new Error('agent is not placed on this daemon'), { code: 'SCOPE_DENIED' })
       return grant(`ghs_${n}`, 3540)
     })
-    await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: true })
+    await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: true, denied: 'agent' })
     // still denied — and crucially, no second WS request was made
-    await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: true })
+    await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: true, denied: 'agent' })
     expect(h.calls()).toBe(1)
 
     h.cache.clearDenied(AGENT) // agent/upsert replicated a fresh spec
@@ -302,12 +302,14 @@ describe('GitCredentialCache', () => {
         return repoGrant(`ghs_${n}`, p.repoFullName ?? 'acme/infra')
       })
       await expect(h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).rejects.toMatchObject({
-        terminal: false
+        terminal: false,
+        denied: 'repository'
       })
-      // Inside the window: refused locally, no second WS request.
-      await expect(h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).rejects.toBeInstanceOf(
-        GitCredUnavailableError
-      )
+      // Inside the window: refused locally with the control plane's own reason, no second WS request.
+      await expect(h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).rejects.toMatchObject({
+        message: 'repo not authorized',
+        denied: 'repository'
+      })
       expect(h.calls()).toBe(1)
       // The workspace key is untouched by a repo denial.
       expect((await h.cache.get(AGENT, 'clone')).repoFullName).toBe('acme/infra')

@@ -5,8 +5,7 @@
 > denied token; the `gh` wrapper gives repository flags precedence over
 > environment; and it recognizes every `-R` form.
 >
-> **Installation grants** (decision 10) and the denial-guidance fixes beside the
-> helper and wrapper sections are **proposed, not implemented**.
+> **Installation grants** (decision 10) are **proposed, not implemented**.
 >
 > Scratch workspaces use the same explicit repository allowlist and have no
 > implicit repository. Converting a scratch workspace to GitHub makes the target
@@ -434,6 +433,9 @@ repository-specific `erase` invalidates it. Generate the capability in daemon
 memory per agent, compare it in constant time, and pass it only through the
 managed subprocess environment. Reject missing values, values for another
 agent, and stale values after remove or detach, leaving only secret-free logs.
+A failed `get` replies `{ ok: false, error, denied? }`, where `denied` is
+`repository` or `agent` when the Control Plane refused and is absent when it
+could not be asked; see "Denial guidance" below.
 
 ### Git credential helper in `cli/git-credential.ts`
 
@@ -441,27 +443,27 @@ Replace path matching with routing. Send
 `normalizeRepoPath(input.path)` as `repoFullName` on the socket request. An
 absent path omits the field and retains workspace behavior. For an authorized
 repository, return that token. On `SCOPE_DENIED`, use the existing clean failure
-path and explain: "Repository is not authorized for this agent. Add it under
-Agent settings -> Repositories." Preserve rename guidance for a slow-path
-mismatch.
+path with the Control Plane's reason, which names the remedy. Preserve rename
+guidance for a slow-path mismatch.
 
-**Denial guidance, corrected (proposed).** Three details of the shipped output
-lead a model to read a repository-level denial as an agent-wide one, and to
-report "no GitHub access at all" for a repository that merely lacks a row:
+**Denial guidance.** A repository-level refusal must read as one, or a model
+reports "no GitHub access at all" for a repository that merely lacks a row:
 
 - The helper appends "(the daemon must be running and connected to the control
-  plane)" to every failure. It belongs only to an unreachable daemon or Control
-  Plane; a `SCOPE_DENIED` prints the Control Plane's reason alone.
-- The Control Plane's first by-name denial says only "`owner/repo` is not
-  authorized for this agent"; the hint to authorize it appears only in the
-  daemon's 60-second replay. The first answer carries the hint too, and names
-  the installation grant as the other remedy when the owner has a live
-  installation.
-- The `gh` wrapper, on any token failure, still runs real `gh` without a token,
-  which adds `gh`'s own "not logged in" advice. On `SCOPE_DENIED` the wrapper
-  exits with the guidance and does not run `gh`; falling through remains for a
-  daemon that could not be reached, where the user's own `gh` configuration may
-  legitimately apply.
+  plane)" only when the socket reply carries no `denied`, that is when the
+  daemon or Control Plane could not answer. A refusal prints the Control
+  Plane's reason alone.
+- The Control Plane's first by-name refusal names the remedy: "`owner/repo` is
+  not authorized for this agent — add it under Additional repositories in the
+  agent's workspace settings", or, for a repository its owner's installation
+  does not cover, that the GitHub App needs access to it first. The daemon's
+  60-second negative cache replays that same reason rather than a wording of
+  its own. Once installation grants (decision 10) land, the refusal also names
+  them when the owner has a live installation.
+- The `gh` token command exits 3 on a refusal, and the wrapper then exits
+  without running `gh`, whose unauthenticated run would only add "not logged
+  in" advice. It still falls through to the real `gh` when the daemon could not
+  be reached, where the user's own `gh` configuration may legitimately apply.
 
 ### New `gh` wrapper in `cp/gh-shim.ts`
 
@@ -486,7 +488,7 @@ report "no GitHub access at all" for a repository that merely lacks a row:
      `gitcred.sock`.
   4. On success, execute real `gh` with `GH_TOKEN=<token>`. On a denial of the
      named repository, print the token-free reason to stderr and exit without
-     running `gh` (see "Denial guidance, corrected"). On any other failure,
+     running `gh` (see "Denial guidance"). On any other failure,
      inject no token and allow real `gh` to try its own configuration while
      printing a token-free reason to stderr that the agent can report.
   5. Locate real `gh` by searching PATH while skipping the wrapper's own
