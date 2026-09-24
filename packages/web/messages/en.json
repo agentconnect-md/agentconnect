@@ -565,6 +565,7 @@
       "addAgents": "Add agents",
       "searchAgents": "Search agents…",
       "model": "Model",
+      "defaultModel": "Default",
       "duration": "Duration",
       "tokens": "Tokens",
       "cost": "Cost",

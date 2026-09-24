@@ -565,6 +565,7 @@
       "addAgents": "添加 Agent",
       "searchAgents": "搜索 Agent…",
       "model": "模型",
+      "defaultModel": "默认",
       "duration": "耗时",
       "tokens": "Tokens",
       "cost": "费用",
