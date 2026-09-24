@@ -25,9 +25,7 @@ jobs:
   # Reuse the same quality gate as pull requests. The reusable workflow runs
   # Build, Check, Unit Test, and sharded Integration tests in parallel against
   # this exact SHA; the publishing job below waits for all of them.
-  # Every leg a pull request runs, the kernel-sandbox and Windows suites included: publication is
-  # gated on the same evidence review was, and a leg dropped here is one whose failure reaches main
-  # unwatched. The cost is that a flaky runner can hold up a publish.
+  # Publication waits for every test leg, including the VM, Linux sandbox, and Windows suites.
   test:
     name: Test
     uses: ./.github/workflows/test.yaml

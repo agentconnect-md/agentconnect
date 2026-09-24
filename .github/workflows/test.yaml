@@ -40,14 +40,14 @@ jobs:
       windows: ${{ steps.filter.outputs.windows }}
       microsandbox: ${{ steps.filter.outputs.microsandbox }}
     steps:
-      # The files API instead of a checkout; non-PR events run all but the VM leg.
+      # The files API instead of a checkout; release events run every leg.
       - name: Which suites can this diff reach?
         id: filter
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          everything() { printf 'code=true\nwindows=true\nmicrosandbox=false\n' >> "$GITHUB_OUTPUT"; exit 0; }
+          everything() { printf 'code=true\nwindows=true\nmicrosandbox=true\n' >> "$GITHUB_OUTPUT"; exit 0; }
           [ "${{ github.event_name }}" = 'pull_request' ] || everything
           files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') || exit 1
           [ -n "$files" ] || { echo 'PR file list is empty' >&2; exit 1; }
@@ -425,9 +425,7 @@ jobs:
           test/skill-workspace-lock.test.ts
           test/skill-install-ledger.test.ts
 
-  # The microsandbox backend on a real VM, the one leg where the staged shim, the guest's `/run`, both helper tunnels
-  # and the executor facet's VM strategy meet a real kernel.
-  # Pull requests that reach that path only: it needs KVM and a registry pull, which a release gate should not wait on.
+  # Run the real VM, shim, and helper smoke test for relevant PRs and every release.
   sandbox-microsandbox:
     name: Sandbox (microsandbox VM)
     needs: scope
