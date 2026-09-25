@@ -146,7 +146,7 @@ try {
     writeFileSync(workspace + '/ok.txt', 'ok')
     assert(readFileSync(workspace + '/ok.txt', 'utf8') === 'ok', 'workspace was not writable')
     assert(denied(() => writeFileSync(workspace + '/.git/hooks/post-merge', 'escape')), 'git hooks remained writable')
-    writeFileSync(workspace + '/.git/config', '[core]\n\trepositoryformatversion = 0\n')
+    writeFileSync(workspace + '/.git/config', '[core]\\n\\trepositoryformatversion = 0\\n')
     assert(readFileSync(workspace + '/.git/config', 'utf8').includes('repositoryformatversion'), 'git config was not writable')
     // A read-denied directory is a private tmpfs inside bwrap, so this write may
     // succeed there. The host-side assertion below proves it cannot persist.

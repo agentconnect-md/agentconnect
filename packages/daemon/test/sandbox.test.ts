@@ -108,6 +108,18 @@ describe('sandboxWrap', () => {
       expect(statSync(settingsPath).mode & 0o777).toBe(0o600)
     }
   )
+
+  it('keeps an offline helper off `.git/config` and Unix sockets while a runtime gets both', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-srt-offline-'))
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    const policy = { writable: [workspace], denyRead: [], allowRead: [workspace] }
+    const offline = JSON.parse(readFileSync(writeSandboxSettings(root, 'skills', { ...policy, offline: true }), 'utf8'))
+    expect(offline.filesystem.allowGitConfig).toBe(false)
+    expect(offline.network.allowAllUnixSockets).toBe(false)
+    const runtime = JSON.parse(readFileSync(writeSandboxSettings(root, 'agent', policy), 'utf8'))
+    expect(runtime.filesystem.allowGitConfig).toBe(true)
+  })
 })
 
 // #956: a host missing SRT's own dependencies confines nothing and installs no
