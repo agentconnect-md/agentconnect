@@ -138,8 +138,10 @@ interface PlaygroundData {
   /** Mark `id` (a CP session id) as a session-targeted continuation: the socket
    *  mints through the session-target token route and the daemon dispatches
    *  turns onto that session's own platform coordinates
-   *  (webchat-cross-integration-continuation.md §6.5). */
-  markSessionTarget: (id: string) => void
+   *  (webchat-cross-integration-continuation.md §6.5). `targetSessionId` names
+   *  another member of the same merged conversation whose session the turns
+   *  continue instead; the live lane stays keyed by `id`. */
+  markSessionTarget: (id: string, targetSessionId?: string) => void
   /** Messages queued while a turn streams, oldest first. */
   getPgQueue: (id: string) => QueuedTurn[]
   /** Remove one queued message before it is sent. */
@@ -418,9 +420,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const pgQueueRef = useRef<Record<string, QueuedTurn[]>>({})
   const conns = useRef<Map<string, Conn>>(new Map())
   const conversationIds = useRef<Map<string, string>>(new Map())
-  // CP session ids opened as session-targeted continuations — their sockets mint
-  // through the session-target token route instead of the playground mints.
-  const sessionTargets = useRef<Set<string>>(new Set())
+  // Continuation lanes → the CP session their sockets mint for through the session-target token route.
+  const sessionTargets = useRef<Map<string, string>>(new Map())
   // Creation-time or relay-verified roster per session id (primary first).
   const rosterAgentIds = useRef<Map<string, string[]>>(new Map())
   // The in-flight send's requested turnId — lets an accepted ack from a
@@ -1440,12 +1441,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const ready = new Promise<WebSocket>((resolve, reject) => {
         const orgId = activeOrg?.id
         if (!orgId) return reject(new Error('no active org'))
-        // A session-targeted continuation mints through the session-target route
-        // on every (re)connect — the CP re-runs the continuation gates and
-        // converges on the caller's one adopted conversation.
+        // A continuation re-mints through the session-target route on every (re)connect, so the CP re-runs its gates.
+        const targetSessionId = sessionTargets.current.get(id)
         void (
-          sessionTargets.current.has(id)
-            ? webchatSessionWsUrl(orgId, id)
+          targetSessionId !== undefined
+            ? webchatSessionWsUrl(orgId, targetSessionId)
             : webchatWsUrl(orgId, agentId, resumeId, rosterAgentIds.current.get(id))
         )
           .then((url) => {
@@ -2367,8 +2367,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
   const pgSessionList = useMemo(() => Object.values(pgSessions), [pgSessions])
 
-  const markSessionTarget = useCallback((id: string): void => {
-    sessionTargets.current.add(id)
+  const markSessionTarget = useCallback((id: string, targetSessionId: string = id): void => {
+    const previous = sessionTargets.current.get(id)
+    sessionTargets.current.set(id, targetSessionId)
+    if (previous === undefined || previous === targetSessionId) return
+    // The open socket is bound to the previous target's adopted conversation, so the next send dials afresh.
+    conversationIds.current.delete(id)
+    const existing = conns.current.get(id)
+    if (!existing) return
+    existing.closing = true
+    if (existing.reconnectTimer) window.clearTimeout(existing.reconnectTimer)
+    existing.ws?.close()
+    conns.current.delete(id)
   }, [])
 
   /** See PlaygroundData.pgAttach. Doubles as socket warming: a reused live conn

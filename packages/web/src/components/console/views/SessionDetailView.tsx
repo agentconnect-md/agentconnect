@@ -217,6 +217,11 @@ const COMPOSER_PILL =
   'inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)'
 const COMPOSER_PILL_STATIC =
   'inline-flex h-7 min-w-0 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary)'
+// A continued conversation's roster chips pick the one member a send reaches.
+const COMPOSER_RECIPIENT =
+  'inline-flex h-7 min-w-0 cursor-pointer items-center gap-[7px] rounded-full border px-[10px] font-mono text-[11.5px] font-medium leading-normal disabled:cursor-not-allowed disabled:opacity-50'
+const COMPOSER_RECIPIENT_ON = `${COMPOSER_RECIPIENT} border-(--brand-soft-border) bg-(--brand-soft) text-(--brand-soft-text)`
+const COMPOSER_RECIPIENT_OFF = `${COMPOSER_RECIPIENT} border-transparent bg-transparent text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)`
 
 // A conversation whose cross-room lineage has not landed yet. Stable identity so
 // the family it feeds is not a new object on every render while the multi-request
@@ -2519,6 +2524,8 @@ export default function SessionDetailView() {
   // conversation showed lineage or not depending on how many members happened
   // to resolve. Keeping participant edges makes the answer the same either way.
   const conversationMode = !!conversationKey && (conversationMembers?.length ?? 0) > 1
+  // The composer's recipient in a continued multi-agent conversation — one member at a time, scoped to this key.
+  const [composerPick, setComposerPick] = useState({ scope: '', agentId: '' })
   const { data: conversationLineage, error: conversationLineageError } = useSWR(
     conversationMode && activeOrg?.id
       ? (['conversation-lineage', activeOrg.id, conversationKey, conversationSourceKey] as const)
@@ -2739,6 +2746,32 @@ export default function SessionDetailView() {
   // because this view now persists across route ids and must never merge a
   // retained previous snapshot into the newly selected rail row.
   const currentSessionDetail = sessionDetail?.id === detailId ? sessionDetail : null
+  // Each other member's own continuation verdict — the representative's says nothing about theirs.
+  const otherMemberIds = conversationMode
+    ? (conversationMembers ?? []).flatMap((member) => (member.sessionId !== id ? [member.sessionId] : [])).join(',')
+    : ''
+  const { data: otherMemberDetails } = useSWR(
+    otherMemberIds && activeOrg?.id ? (['conversation-member-details', activeOrg.id, otherMemberIds] as const) : null,
+    async ([, orgId, ids]) => {
+      const details = await Promise.all(
+        ids.split(',').map((sessionId) => fetchSessionDetail(sessionId, orgId).catch(() => null))
+      )
+      return new Map(details.flatMap((detail) => (detail ? [[detail.id, detail] as const] : [])))
+    }
+  )
+  const memberContinuable = (sessionId: string): boolean => otherMemberDetails?.get(sessionId)?.canContinue === true
+  // A pick that can no longer continue falls back to the representative rather than locking the composer on it.
+  const composerMember =
+    conversationMode && composerPick.scope === conversationKey
+      ? conversationMembers?.find(
+          (member) =>
+            member.agentId === composerPick.agentId && member.sessionId !== id && memberContinuable(member.sessionId)
+        )
+      : undefined
+  const composerSessionId = composerMember?.sessionId ?? id
+  const composerDetail = composerMember
+    ? (otherMemberDetails?.get(composerMember.sessionId) ?? null)
+    : currentSessionDetail
   const detailSession = currentSessionDetail ? sessionFromDetailDto(currentSessionDetail) : null
   // The cursor-loaded list row can predate the final Dream usage report. Keep
   // its local/live fields, but let the independently refreshed detail snapshot
@@ -2859,6 +2892,7 @@ export default function SessionDetailView() {
     conversationMembers,
     conversationRosterPlatform: conversationRoster?.platform ?? undefined,
     sessionBusyRef,
+    promptSessionId: composerSessionId,
     reconcileLiveSteps
   })
 
@@ -3539,7 +3573,7 @@ export default function SessionDetailView() {
     session &&
     session.platform !== 'playground' &&
     session.platform !== 'webchat' &&
-    currentSessionDetail?.canContinue === true
+    composerDetail?.canContinue === true
       ? session.id
       : null
   useEffect(() => {
@@ -3728,8 +3762,8 @@ export default function SessionDetailView() {
   // §6.5): server-computed — the client never re-derives authorization. A
   // transient blocker renders the disabled composer with product-language copy;
   // unauthorized/unsupported keep today's read-only view.
-  const isContinuable = !isPg && !isWebchat && currentSessionDetail?.canContinue === true
-  const continuationReason = currentSessionDetail?.continuationUnavailableReason ?? null
+  const isContinuable = !isPg && !isWebchat && composerDetail?.canContinue === true
+  const continuationReason = composerDetail?.continuationUnavailableReason ?? null
   const continuationBlocked =
     !isPg &&
     !isWebchat &&
@@ -3828,6 +3862,10 @@ export default function SessionDetailView() {
       ).map((p) => ({ ...p, name: rosterParticipantName(p, agentById.get(p.agentId)) }))
     : []
   const multiLive = liveRoster.length > 1
+  // A continued multi-agent conversation reaches one member session per send, picked on the composer's roster chips.
+  const pickRecipient = !isPg && !isWebchat && conversationMode && multiLive
+  const composerAgentId = composerMember?.agentId ?? session.agentId ?? ''
+  const composerAgentName = liveRoster.find((p) => p.agentId === composerAgentId)?.name ?? session.agentName
   const resumePlaceholder = continuationBlocked
     ? continuationReason === 'agent_moved'
       ? 'This session can’t continue because the agent moved to another daemon.'
@@ -3853,7 +3891,7 @@ export default function SessionDetailView() {
     const pick = commandPickRef.current
     commandPickRef.current = null
     // A continuation socket mints through the session-target route (§6.5).
-    if (isContinuable) markSessionTarget(session.id)
+    if (isContinuable) markSessionTarget(session.id, composerSessionId)
     // Pass the fetched roster: an adopted webchat session has no provider-side
     // state, and without it a multi-agent send can't pre-create stream lanes or
     // narrow by @mention (the relay would apply its all-participants default).
@@ -3861,7 +3899,7 @@ export default function SessionDetailView() {
     // chips show.
     const sent = pgSend(
       session.id,
-      session.agentId ?? '',
+      composerAgentId,
       text,
       isWebchat ? session.channelId : undefined,
       isWebchat ? liveRoster : undefined,
@@ -5790,9 +5828,9 @@ export default function SessionDetailView() {
                         <ComposerTextarea
                           sessionId={session.id}
                           placeholder={
-                            (session.participants?.length ?? 0) > 1
+                            (session.participants?.length ?? 0) > 1 && !pickRecipient
                               ? 'Message everyone…'
-                              : `Message ${session.agentName}…`
+                              : `Message ${pickRecipient ? composerAgentName : session.agentName}…`
                           }
                           onSend={() => onPgSend()}
                           onImageFile={attachmentsEnabled ? (file) => void onImageFile(file) : undefined}
@@ -5868,8 +5906,8 @@ export default function SessionDetailView() {
                             {multiLive &&
                               liveRoster.map((p) => {
                                 const rosterAgent = agents.find((a) => a.id === p.agentId)
-                                return (
-                                  <span key={p.agentId} className={COMPOSER_PILL_STATIC} title={t('participant')}>
+                                const chip = (
+                                  <>
                                     {rosterAgent && (
                                       <span className="av h-[14px] w-[14px] flex-none rounded-xs">
                                         <AgentIconView
@@ -5880,7 +5918,33 @@ export default function SessionDetailView() {
                                       </span>
                                     )}
                                     <span className="truncate">{p.name}</span>
-                                  </span>
+                                  </>
+                                )
+                                if (!pickRecipient) {
+                                  return (
+                                    <span key={p.agentId} className={COMPOSER_PILL_STATIC} title={t('participant')}>
+                                      {chip}
+                                    </span>
+                                  )
+                                }
+                                const member = conversationMembers?.find((m) => m.agentId === p.agentId)
+                                const selectable =
+                                  p.agentId === session.agentId || (!!member && memberContinuable(member.sessionId))
+                                const on = p.agentId === composerAgentId
+                                return (
+                                  <button
+                                    key={p.agentId}
+                                    type="button"
+                                    aria-pressed={on}
+                                    className={on ? COMPOSER_RECIPIENT_ON : COMPOSER_RECIPIENT_OFF}
+                                    // The socket follows the pick, so it holds still while a turn or queue is in flight.
+                                    disabled={!selectable || pgBusy || pgQueue.length > 0}
+                                    onClick={() =>
+                                      setComposerPick({ scope: conversationKey ?? '', agentId: p.agentId })
+                                    }
+                                  >
+                                    {chip}
+                                  </button>
                                 )
                               })}
                             {/* h-7 w-7 like every other control on this row (and the Home composer's
@@ -6046,7 +6110,7 @@ export default function SessionDetailView() {
                             hasImage={!!pgImage}
                             mentionJoining={mentionJoining}
                             onSend={() => onPgSend()}
-                            onStop={() => pgCancel(session.id, session.agentId ?? '', webchatConversationId)}
+                            onStop={() => pgCancel(session.id, composerAgentId, webchatConversationId)}
                           />
                         </div>
                       </div>
