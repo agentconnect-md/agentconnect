@@ -1630,7 +1630,7 @@ export interface SessionPullRequestFeedbackRepo {
     installationId: bigint
     pullNumber: number
   }): Promise<boolean>
-  /** Idempotently dirty one PR wake. */
+  /** Dirty one PR wake, at most once per delivery key: a redelivered key is a no-op. */
   enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, signalAt: Date, nextAttemptAt: Date): Promise<void>
   /** Cross-process lease for the next due wake that already has a proven session owner. */
   claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null>
@@ -1638,6 +1638,7 @@ export interface SessionPullRequestFeedbackRepo {
   complete(item: PullRequestWakeRecord, owner: string): Promise<void>
   /** Move one failed wake into the future so later PRs remain eligible. */
   defer(item: PullRequestWakeRecord, owner: string, nextAttemptAt: Date): Promise<void>
+  /** Drop unowned rows and delivery receipts older than the cutoff; returns the unowned rows removed. */
   deleteExpired(unmatchedBefore: Date): Promise<number>
 }
 
