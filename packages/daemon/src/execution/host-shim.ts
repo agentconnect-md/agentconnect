@@ -8,6 +8,7 @@ import { AF_UNIX_PATH_MAX } from '../acp/sandbox-temp.js'
 import type { Logger } from '../log.js'
 import { sweepMarkedUntilClear } from '../shim/marked-sweep.js'
 import {
+  SHIM_COMPLETE_ENV_FLAG,
   SHIM_HELPER_ROOT_ENV,
   SHIM_LISTEN_SOCKET_ENV,
   SHIM_PARENT_FD_ENV,
@@ -58,6 +59,8 @@ export interface HostShim {
   /** Helper locations `shimPaths` derives that this installation has nothing at, so a caller must not configure them. */
   missingHelpers: Array<keyof ShimPaths>
   exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>
+  /** Drop the runtime stderr the shim relays until the returned release. */
+  quiet(): () => void
   /** Ends the shim's process group, waits for it, and removes the runtime root; the workspace stays. */
   stop(): Promise<void>
 }
@@ -74,6 +77,10 @@ export interface HostShimInput {
   log?: Logger
   /** A boundary around the shim's process, the `srt` strategy's; absent ⇒ a plain child (§5). */
   boundary?: HostShimBoundary
+  /** A fixed leaf under `hs/` for an environment this daemon drives itself, so its launch can name the shim's sockets first; absent ⇒ a random one. */
+  runtimeRootName?: string
+  /** This daemon drives the shim and sends each runtime's whole environment, as for a local VM (§11). */
+  completeEnv?: boolean
   /** Test seam: the shim entry and how to run it; the default is this daemon's built bundle. */
   entry?: ShimEntry
 }
@@ -111,7 +118,7 @@ export interface WrappedShim {
 // A runtime root's private sibling: `<root>.p`.
 const PRIVATE_SUFFIX = '.p'
 
-/** The shim's launch environment: its own sockets and roots, the machine facts above and what the HOME seed points at — never the complete-env flag, which is a holder's claim about ITS machine. */
+/** The shim's launch environment: its own sockets and roots, the machine facts above and what the HOME seed points at; the complete-env flag only when this daemon itself drives the shim. */
 export function hostShimEnv(input: {
   machineEnv: Record<string, string | undefined>
   seedEnv?: Record<string, string>
@@ -123,6 +130,8 @@ export function hostShimEnv(input: {
   mark: string
   /** False under a boundary that hands the shim stdio only: stdin is then its lifeline in place of the extra descriptor. */
   watchesParent?: boolean
+  /** A holder on another machine describes that machine, so only a local environment claims it. */
+  completeEnv?: boolean
 }): Record<string, string> {
   const env: Record<string, string> = {}
   for (const name of INHERITED_ENV) {
@@ -139,11 +148,15 @@ export function hostShimEnv(input: {
   env[SHIM_RUNTIME_MARK_ENV] = input.mark
   if (input.watchesParent !== false) env[SHIM_PARENT_FD_ENV] = String(PARENT_FD)
   else env[SHIM_STDIN_LIFELINE_ENV] = '1'
+  if (input.completeEnv) env[SHIM_COMPLETE_ENV_FLAG] = '1'
   return env
 }
 
 /** Runtime roots whose shim this process started and has not seen go. */
 const liveRoots = new Set<string>()
+/** A fixed root's last removal, which the next start of that root waits out. */
+const removals = new Map<string, Promise<void>>()
+const ROOT_NAME = /^[a-f0-9]{12}$/
 
 /** End what an earlier daemon life left behind: each stale runtime root's marked processes — its shim included — then the root. */
 export async function sweepStaleHostShims(daemonRoot: string, log?: Pick<Logger, 'info'>): Promise<void> {
@@ -156,12 +169,19 @@ export async function sweepStaleHostShims(daemonRoot: string, log?: Pick<Logger,
         await rm(runtimeRoot, { recursive: true, force: true })
       continue
     }
-    const mark = (await readFile(join(runtimeRoot, MARK_FILE), 'utf8').catch(() => '')).trim()
-    // Only a mark this launcher could have minted is looked for; the sweep itself matches it exactly.
-    if (MARK.test(mark)) await sweepMarkedUntilClear(mark)
-    await rm(runtimeRoot, { recursive: true, force: true })
+    await removeStaleRoot(runtimeRoot)
     log?.info(`host shim: removed the runtime root ${name} an earlier run left behind`)
   }
+}
+
+/** End a root no live shim owns: the marked processes it names, then the root and its private sibling. */
+async function removeStaleRoot(runtimeRoot: string): Promise<void> {
+  const mark = (await readFile(join(runtimeRoot, MARK_FILE), 'utf8').catch(() => '')).trim()
+  // Only a mark this launcher could have minted is looked for; the sweep itself matches it exactly.
+  if (MARK.test(mark)) await sweepMarkedUntilClear(mark)
+  await Promise.all(
+    [runtimeRoot, `${runtimeRoot}${PRIVATE_SUFFIX}`].map((path) => rm(path, { recursive: true, force: true }))
+  )
 }
 
 // The same two candidates the VM starter stages from: beside this module in dist, or the package's dist from source.
@@ -183,8 +203,15 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   const helperRoot = dirname(dirname(entry.path))
   const paths = shimPaths(undefined, helperRoot)
   const missingHelpers = HELPER_KEYS.filter((key) => !existsSync(paths[key]))
+  if (input.runtimeRootName !== undefined && !ROOT_NAME.test(input.runtimeRootName))
+    throw new Error('invalid runtime root name')
   // Short and beside the sessions, not under a HOME: every tunnel socket beneath it must fit the AF_UNIX budget.
-  const runtimeRoot = join(input.daemonRoot, 'hs', randomBytes(6).toString('hex'))
+  const runtimeRoot = join(input.daemonRoot, 'hs', input.runtimeRootName ?? randomBytes(6).toString('hex'))
+  // A fixed root's previous shim may have exited and still be removing it; that is waited out before the root counts as live.
+  await removals.get(runtimeRoot)
+  if (liveRoots.has(runtimeRoot)) throw new Error('a shim already runs in this runtime root')
+  // An earlier daemon life may have left the root behind.
+  if (input.runtimeRootName !== undefined) await removeStaleRoot(runtimeRoot)
   const longest = Object.values(shimPaths(runtimeRoot).tunnels).reduce((a, b) => (b.length > a.length ? b : a))
   if (Buffer.byteLength(longest) > AF_UNIX_PATH_MAX) throw new Error('daemon root is too long for a host shim socket')
   const socketPath = join(runtimeRoot, 'shim.sock')
@@ -229,7 +256,8 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
         workspaceRoot,
         helperRoot,
         mark,
-        watchesParent: wrapped === undefined
+        watchesParent: wrapped === undefined,
+        ...(input.completeEnv ? { completeEnv: true } : {})
       }),
       ...wrapped?.env
     },
@@ -251,6 +279,14 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
     await Promise.all([runtimeRoot, privateDir].map((path) => rm(path, { recursive: true, force: true })))
   })
   void removed.catch(() => {})
+  // Recorded at exit, before any caller's own reaction to it: a restart then waits out this removal, while a start beside a live shim is refused.
+  void exited.then(() => {
+    const removal = removed.catch(() => {})
+    removals.set(runtimeRoot, removal)
+    void removal.then(() => {
+      if (removals.get(runtimeRoot) === removal) removals.delete(runtimeRoot)
+    })
+  })
   let resolveReady!: () => void
   let rejectReady!: (error: Error) => void
   const ready = new Promise<void>((yes, no) => {
@@ -270,11 +306,21 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
     } else if (!'ready\n'.startsWith(output)) rejectReady(new Error('invalid host shim readiness response'))
   })
   let tail = ''
+  let quieted = 0
   child.stderr!.on('data', (chunk: Buffer) => {
     const lines = (tail + chunk.toString()).split('\n')
     tail = lines.pop() ?? ''
+    if (quieted > 0) return
     for (const line of lines) log?.debug(`host shim ${basename(workspaceRoot)}: ${line}`)
   })
+  const quiet = (): (() => void) => {
+    quieted += 1
+    let released = false
+    return () => {
+      if (!released) quieted -= 1
+      released = true
+    }
+  }
   const signalGroup = (signal: NodeJS.Signals): void => {
     if (!child.pid) return
     try {
@@ -312,5 +358,5 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   } finally {
     clearTimeout(timer)
   }
-  return { socketPath, runtimeRoot, helperRoot, workspaceRoot, token, missingHelpers, exited, stop }
+  return { socketPath, runtimeRoot, helperRoot, workspaceRoot, token, missingHelpers, exited, quiet, stop }
 }

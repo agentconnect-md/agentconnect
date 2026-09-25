@@ -4,6 +4,8 @@ import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '..
 import { prepareSandboxTempDir, SANDBOX_TEMP_DIR_ENV } from '../acp/sandbox-temp.js'
 import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
+import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { shimPaths } from '../shim/sandbox-paths.js'
 import { prepareMicrosandboxLaunch } from '../microsandbox/launch.js'
 import { isRecognizedCredentialEnv, type MicrosandboxSecret } from '../microsandbox/secrets.js'
 import { compactReadRoots, protectedSandboxRoots } from '../runtimes/read-roots.js'
@@ -134,6 +136,15 @@ function isolateSandboxTempEnvironment(env: Record<string, string>, scopeDir: st
   return tempDir
 }
 
+/** Point a shim-launched runtime at the shim's temp root, which SRT's sockets fit under, and at its git-credential tunnel. */
+function shimEnvironment(env: Record<string, string>, runtimeRoot: string): void {
+  const tempDir = join(runtimeRoot, 't')
+  env.TMPDIR = tempDir
+  env.CLAUDE_CODE_TMPDIR = tempDir
+  env.CLAUDE_TMPDIR = tempDir
+  env[GITCRED_SOCKET_ENV] = shimPaths(runtimeRoot).tunnels.gitcred
+}
+
 export interface PreparedRuntimeLaunch {
   env: Record<string, string>
   /** Sandboxed launches carry a sanitized environment; unsandboxed launches inherit the daemon environment. */
@@ -143,6 +154,8 @@ export interface PreparedRuntimeLaunch {
   gitMetadataWriteRoots: string[]
   runtimeHome?: string
   microsandbox?: { mounts: SandboxMount[]; workspaceRoot: string; secrets?: MicrosandboxSecret[] }
+  /** A confined session launched through an SRT-wrapped shim: the environment its boundary is composed from (session-executors.md §11). */
+  srt?: { mounts: SandboxMount[]; workspaceRoot: string }
   toolSandbox?: AcpToolSandbox
   sandbox?: {
     mechanism: SandboxMechanism
@@ -251,6 +264,8 @@ export function prepareRuntimeLaunch(opts: {
   }
   /** A session placed on another machine: its HOME there, which that machine's strategy — never this one's sandbox — confines. */
   executor?: { home: string }
+  /** A confined session launched through the SRT-wrapped shim rooted here: its boundary, not a per-host policy, confines the runtime (§11). */
+  srtShim?: { runtimeRoot: string }
   /** A session whose clones are off this disk (a pool pod, an executor): their `.git`, found where they are as `sessionGitDirsIn` finds this disk's. */
   sessionGitDirs?: string[]
 }): PreparedRuntimeLaunch {
@@ -373,11 +388,14 @@ export function prepareRuntimeLaunch(opts: {
     ...credentials?.env
   }
 
+  // A confined session's shim is the boundary, with its own temp root and the tunnels that reach this daemon's sockets.
+  const shimRoot = opts.runInSandbox && sessionDir !== undefined ? opts.srtShim?.runtimeRoot : undefined
   let sandboxTempDir: string | undefined
   if (opts.runInSandbox) {
     isolateHostSocketEnvironment(env, runtimeHome)
+    if (shimRoot !== undefined) shimEnvironment(env, shimRoot)
     // NOT in k8s: a sandbox pod supplies its own temp dir, and this daemon must not name a path on a machine it is not on.
-    if (opts.k8s !== true) sandboxTempDir = isolateSandboxTempEnvironment(env, opts.scopeDir, opts.hostKey)
+    else if (opts.k8s !== true) sandboxTempDir = isolateSandboxTempEnvironment(env, opts.scopeDir, opts.hostKey)
   }
 
   if (!opts.runInSandbox) {
@@ -515,14 +533,31 @@ export function prepareRuntimeLaunch(opts: {
   for (const path of boundary.writable) {
     if (!existsSync(path)) mkdirSync(path, { recursive: true })
   }
-  const settingsPath = writeSandboxSettings(opts.scopeDir, hostKeyDirName(opts.hostKey), {
-    writable: boundary.writable,
-    // Host user data is default-denied. Re-open only the current agent surfaces
-    // plus trusted executable/package roots above; never an agent-provided path.
-    denyRead: denyReadRoots,
-    allowRead: boundary.allowRead,
-    gitSafeDirectories: boundary.gitSafeDirectories
-  })
+  // The shim's boundary is composed from these mounts on this machine (§11); a per-host policy is only for a runtime wrapped alone.
+  const writable = new Set(boundary.writable)
+  const srt =
+    shimRoot === undefined
+      ? undefined
+      : {
+          workspaceRoot: sessionDir!,
+          mounts: [
+            ...boundary.writable.map((path) => ({ source: path, target: path, mode: 'writable' as const })),
+            ...boundary.allowRead
+              .filter((path) => !writable.has(path))
+              .map((path) => ({ source: path, target: path, mode: 'readonly' as const }))
+          ]
+        }
+  const settingsPath =
+    srt !== undefined
+      ? undefined
+      : writeSandboxSettings(opts.scopeDir, hostKeyDirName(opts.hostKey), {
+          writable: boundary.writable,
+          // Host user data is default-denied. Re-open only the current agent surfaces
+          // plus trusted executable/package roots above; never an agent-provided path.
+          denyRead: denyReadRoots,
+          allowRead: boundary.allowRead,
+          gitSafeDirectories: boundary.gitSafeDirectories
+        })
   const protectedCredentialRoots = compactReadRoots([
     ...credentialWritableRoots,
     ...providerCredentialReadRoots,
@@ -552,14 +587,18 @@ export function prepareRuntimeLaunch(opts: {
     inheritProcessEnv: false,
     runtimeHome,
     gitMetadataWriteRoots,
-    sandbox: {
-      mechanism: opts.sandboxMechanism!,
-      writable: boundary.writable,
-      settingsPath,
-      cwd: boundary.gitSafeDirectories[0]!,
-      denyReadRoots,
-      allowReadRoots: boundary.allowRead
-    },
+    ...(srt !== undefined
+      ? { srt }
+      : {
+          sandbox: {
+            mechanism: opts.sandboxMechanism!,
+            writable: boundary.writable,
+            settingsPath: settingsPath!,
+            cwd: boundary.gitSafeDirectories[0]!,
+            denyReadRoots,
+            allowReadRoots: boundary.allowRead
+          }
+        }),
     toolSandbox: {
       protectedCredentialRoots,
       ...(opts.allowModelToolUnixSockets ? { allowModelToolUnixSockets: true } : {}),

@@ -131,8 +131,10 @@ the old optional-sandbox downgrade is gone, as is the downgrade of an
 catalog: the host install for `host` and `srt`, the image's runtimes for
 `microsandbox`. Executor placement asks for the agent's strategy by name, and every
 strategy spreads: an `srt` session lands on a member whose facet offers `srt`
-([below](#the-srt-strategy-srt-around-the-shim)). This machine's own `srt` sessions
-still launch through the per-runtime SRT provider until R1b.
+([below](#the-srt-strategy-srt-around-the-shim)). A confined `srt` session of this
+machine runs in its session directory's SRT-wrapped shim
+([below](#this-machines-confined-srt-sessions)); the agent's shared host still
+launches each runtime through the per-runtime SRT provider until R1b-2.
 
 The Control Plane half landed first. An agent stores `execution`, a strategy slug,
 beside `runInSandbox`, and the two are written together. The Control Plane checks a
@@ -1199,6 +1201,38 @@ The shim's socket is inside what the runtime can write, as in a pod or a VM: a
 runtime can reach and replace it. `test/srt-shim.test.ts` runs the real boundary in
 CI's **Sandbox (Linux)** job.
 
+### This machine's confined srt sessions
+
+A confined `srt` session — one with its own session directory — launches through
+the in-process executor entry, as a local VM does
+([session-executors.md](session-executors.md) §11). A second `LocalExecutor` drives
+the local srt launcher (`localSrtLauncher`, `execution/srt-local.ts`); the agent's
+shared host is unchanged until R1b-2.
+
+- **One shim per session directory.** The environment's id is
+  `<agentId>/session-<leaf>` and its workspace root the session directory, so the
+  shim's HOME is the session's `home`, as the launch composition names it.
+- **A runtime root fixed by the id**, `<daemonRoot>/hs/<12 hex of its hash>`, which
+  `startHostShim` takes as `runtimeRootName`. The launch composition therefore names
+  the shim's temp root (`<runtimeRoot>/t`) and its `gitcred` tunnel
+  (`AC_GITCRED_SOCKET`) before the shim starts, and the MCP spec names its `mcp`
+  tunnel. A start waits out the previous shim's removal of that root and clears one an
+  earlier daemon life left.
+- **The descriptor is the composition's roots.** `prepareRuntimeLaunch` computes the
+  write and read roots as for a runtime wrapped alone and returns them as mounts at
+  their host paths (`launch.srt`); `srtShimPolicy` composes the shim's policy from
+  them. No per-host settings file or temp directory is written, and this daemon's own
+  MCP and git-credential sockets are not opened in the boundary: both are reached
+  through the shim's tunnels. The runtime's inner profile is composed as before.
+- **Bound in process.** The shim runs with the complete-env flag, the launch env being
+  this daemon's whole composition, and the dial compares its one-time token.
+- **Lifetime.** The shim stops with its host unless something still holds it; the
+  session idle sweep stops one nothing has used within the session ttl, as it
+  suspends a local VM; shutdown stops them all. A descriptor that mounts anything
+  else is another environment, which the entry starts afresh once nothing holds the
+  old one.
+- **Still on the host** until R1b-2: the session's workspace Git and files.
+
 ### Sharing a machine with its group
 
 `sandbox.share` switches on the executor facet
@@ -1374,9 +1408,10 @@ Delivery is split into independently reviewable steps:
    Control Plane half, then the daemon's table, probes, dispatch and refusal (S2a),
    then the birth strategy and mismatch refusal (S2b), target checks and the image's
    model probe (S2c), the console picker (S3), local VMs launched through the
-   in-process executor (M4), and `srt` as an SRT boundary around the shim on an
-   executor (R1a); still designed is local `srt` through the in-process executor,
-   retiring the direct SRT launch (R1b; session-executors.md §5, §11, §12). Local
+   in-process executor (M4), `srt` as an SRT boundary around the shim on an executor
+   (R1a), and confined local `srt` sessions through the in-process executor (R1b-1);
+   still designed are their workspace Git over the shim, shared confined agents, and
+   retiring the direct SRT launch (R1b-2; session-executors.md §5, §11, §12). Local
    microsandbox Git and workspace files already cross the shim instead of agentd exec.
 
 Implementation status above does not establish successful end-to-end daemon

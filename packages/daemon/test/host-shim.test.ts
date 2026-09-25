@@ -246,6 +246,31 @@ describe('host strategy shim launcher', () => {
     }
   )
 
+  // A local environment restarts on its fixed root as soon as its shim exits, while that exit's removal of the root may still run.
+  it.skipIf(linuxOnly)(
+    'restarts on a fixed root right after its shim exits, and refuses one beside a live shim',
+    { timeout: 120_000 },
+    async () => {
+      root = await mkdtemp(join(tmpdir(), 'ac-hs-'))
+      const input = {
+        daemonRoot: root,
+        workspaceRoot: join(root, 'sessions', 'sess-a'),
+        entry,
+        runtimeRootName: 'a1b2c3d4e5f6'
+      }
+      const first = await startHostShim(input)
+      await expect(startHostShim(input)).rejects.toThrow('a shim already runs in this runtime root')
+      const stopping = first.stop()
+      await first.exited
+      // Exited, its root still being swept and removed: the restart waits that out rather than finding it live.
+      const second = await startHostShim(input)
+      started.push({ shim: second })
+      await stopping
+      expect(second.runtimeRoot).toBe(first.runtimeRoot)
+      expect(existsSync(second.socketPath)).toBe(true)
+    }
+  )
+
   it.skipIf(linuxOnly)('refuses a workspace root that is relative or not normalized', async () => {
     for (const workspaceRoot of ['sessions/x', '/nonexistent/sessions/../x', '/nonexistent/sessions/x/'])
       await expect(startHostShim({ daemonRoot: '/nonexistent', workspaceRoot, entry })).rejects.toThrow(
@@ -347,6 +372,7 @@ describe('the host launcher', () => {
         token: 't',
         missingHelpers: ['gitCredentialHelper'],
         exited: new Promise(() => {}),
+        quiet: () => () => {},
         stop: async () => {}
       }
     })

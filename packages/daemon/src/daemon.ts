@@ -477,6 +477,13 @@ import {
 import { HOSTED_PREFIX, microsandboxLauncher } from './execution/executor-vm.js'
 import { LocalExecutor } from './execution/local-executor.js'
 import {
+  localSrtEnvironmentId,
+  localSrtLauncher,
+  localSrtRuntimeRoot,
+  type LocalSrtLauncher
+} from './execution/srt-local.js'
+import { confinedSessionDirIn } from './workspace/session-layout.js'
+import {
   agentStrategyOf,
   assertSomeStrategyAvailable,
   effectiveStrategies,
@@ -1510,6 +1517,9 @@ export class Daemon {
   private microsandbox?: MicrosandboxManager
   // This machine's own VMs, bound in process as any executor's shim is (session-executors.md §11 step 4); undefined under --k8s.
   private localExecutor?: LocalExecutor
+  // This machine's own confined srt sessions, each in an SRT-wrapped shim bound the same way (§11); undefined under --k8s.
+  private localSrtExecutor?: LocalExecutor
+  private localSrt?: LocalSrtLauncher
   // The one `microsandbox` launcher: the VMs the facet hosts and this machine's own start through it.
   private readonly vmLauncher = microsandboxLauncher({
     manager: () => this.microsandbox,
@@ -2406,6 +2416,20 @@ export class Daemon {
     // A local session starts and runs with the control plane down, as it always has: this entry asks it nothing (§11 step 4).
     this.localExecutor = new LocalExecutor({
       launcher: this.vmLauncher,
+      generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
+      tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      log: this.log,
+      clock: this.clock
+    })
+    // A confined srt session's shim is bound the same way; the daemon's session idle policy stops the ones nothing uses.
+    this.localSrt = localSrtLauncher({
+      daemonRoot: root,
+      ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
+      readRoots: () => this.srtShimReadRoots(),
+      now: () => this.clock.now()
+    })
+    this.localSrtExecutor = new LocalExecutor({
+      launcher: this.localSrt,
       generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
       tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
       log: this.log,
@@ -4891,20 +4915,24 @@ export class Daemon {
     // env: runtimeOverrides.env could otherwise name any host file and have it carved in here.
     sessionGitConfigPath: string | undefined,
     githubAppCredentials: boolean,
-    gitlabCredentials: boolean
+    gitlabCredentials: boolean,
+    // A shim-launched runtime reaches both sockets through the shim's tunnels, so neither is opened for it (§11).
+    hostSockets = true
   ): string[] {
     const configuredMcp = agent.mcpServers.flatMap((name) => {
       const definition = this.mcpDefsForAgent(agent.id)[name]
       return definition ? [definition] : []
     })
     const cliEntry = daemonEntryForShims(this.root)
-    const paths = [mcpSocketPath(this.root)]
+    const sockets = hostSockets ? [mcpSocketPath(this.root)] : []
+    const paths = [...sockets]
     const executableCommands = [process.execPath]
     // Carved with or without credentials: the file carries the hook policy, and a hidden global
     // config is read by git as no config at all — a silent loss of the pins, not an error.
     if (sessionGitConfigPath) paths.push(sessionGitConfigPath)
+    if (hostSockets && (githubAppCredentials || gitlabCredentials)) paths.push(gitcredSocketPath(this.root))
     if (githubAppCredentials) {
-      paths.push(gitcredSocketPath(this.root), gitcredShimPath(this.root))
+      paths.push(gitcredShimPath(this.root))
       if (this.ghBinDir) paths.push(this.ghBinDir)
       const gh = resolveCommandPath('gh', process.env)
       if (gh) executableCommands.push(gh)
@@ -4912,7 +4940,7 @@ export class Daemon {
     if (gitlabCredentials) {
       // The gitlab twin: same helper socket/shim, the glab wrapper dir, and the
       // real glab binary for the OS sandbox's read allowlist (§13.3).
-      paths.push(gitcredSocketPath(this.root), gitcredShimPath(this.root))
+      paths.push(gitcredShimPath(this.root))
       if (this.glabBinDir) paths.push(this.glabBinDir)
       const glab = resolveCommandPath('glab', process.env)
       if (glab) executableCommands.push(glab)
@@ -4927,6 +4955,21 @@ export class Daemon {
       // Called for srt launches alone, which read every mount at its host path.
       readRoots: this.cfg.sandbox.mounts.map((mount) => mount.source)
     })
+  }
+
+  /** A confined srt session's environment on this machine, launched through an SRT-wrapped shim (§11); undefined for every other host. */
+  private localSrtEnvironment(
+    agent: LoadedAgent,
+    sessionKey: string | undefined,
+    strategy: string
+  ): { id: string; runtimeRoot: string } | undefined {
+    if (this.k8s || strategy !== 'srt' || !this.localSrtExecutor) return undefined
+    if (sessionKey === undefined || this.placedSession(sessionKey)) return undefined
+    // The session's own directory is the record of its tier; an agent's shared host still wraps each runtime until R1b-2.
+    const sessionDir = confinedSessionDirIn(agent.dir, sessionKey)
+    if (!sessionDir) return undefined
+    const id = localSrtEnvironmentId(agent.id, sessionDir)
+    return { id, runtimeRoot: localSrtRuntimeRoot(this.root, id) }
   }
 
   /** What an srt shim reads of this machine's code (§5): node, the runtime store whole — an adapter it installs after the start must be visible — and each admitted runtime's install. */
@@ -5136,11 +5179,34 @@ export class Daemon {
     }
   }
 
+  /** A confined srt session's runtimes, in the SRT-wrapped shim of its session directory (§11); its workspace Git still runs on this host until R1b-2. */
+  private readonly srtPlane: ExecutionPlane = {
+    spawnFor: ({ agent, hostKey, prepared }) => {
+      const executor = this.localSrtExecutor
+      if (!executor) throw new Error('srt unavailable: this daemon is not running its local shims')
+      const { workspaceRoot, mounts } = prepared.srt!
+      return {
+        driver: executor.driverFor({ id: localSrtEnvironmentId(agent.id, workspaceRoot), workspaceRoot, mounts }),
+        hostKey
+      }
+    },
+    gitRunnerFor: () => undefined,
+    workspaceFsFor: () => undefined,
+    // The shim shares this host's filesystem, so the session's files are at this daemon's paths.
+    workspacesOffDisk: false,
+    discardSessions: async (agentId, exceptLeaf) => {
+      await this.localSrt?.stopMatching(
+        (id) => id.startsWith(`${agentId}/session-`) && id !== `${agentId}/${exceptLeaf}`
+      )
+    }
+  }
+
   /** Where one host's runtime executes; undefined is this daemon's own host, where AcpHost keeps its LocalDriver. */
   private planeFor(launch: PlaneLaunch): ExecutionPlane | undefined {
     // A session placed on another machine runs there for its whole life, whatever this machine would have done with it (§7).
     if (this.placedSession(hostKeySessionKey(launch.hostKey))) return this.executorPlane
     if (this.k8sPlane) return this.k8sPlane
+    if (launch.prepared.srt) return this.srtPlane
     // Only a launch prepared for a VM runs in one: an agent that runs unsandboxed beside it stays on this host.
     return launch.prepared.microsandbox ? this.microsandboxPlane : undefined
   }
@@ -5538,6 +5604,16 @@ export class Daemon {
       const bridge = this.microsandboxTable?.mcpBridge
       if (!bridge) throw new Error('microsandbox image does not provide the AgentConnect MCP bridge')
       return buildSandboxMcpServers({ bridge, token })
+    }
+    // A confined srt session's shim serves the `mcp` tunnel under its runtime root; the bridge is this daemon's own (§11).
+    const loaded = agent && this.agents.get(agent.id)
+    const srt = loaded && this.localSrtEnvironment(loaded, sessionKey, this.sessionStrategy(loaded, sessionKey))
+    if (srt) {
+      return buildMcpServers({
+        socketPath: shimPaths(srt.runtimeRoot).tunnels.mcp,
+        token,
+        cliEntry: daemonEntryForShims(this.root)
+      })
     }
     if (!this.k8sPlane) {
       return buildMcpServers({
@@ -6243,6 +6319,10 @@ export class Daemon {
     const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
     // This machine wraps nothing around a placed session: the executor's strategy is its boundary.
     const runInSandbox = !this.k8s && opts.strategy !== 'host' && !remoteSession
+    // A confined srt session runs in its session directory's SRT-wrapped shim, not a runtime wrapped alone (§11).
+    const srtShim = runInSandbox
+      ? this.localSrtEnvironment(agent, hostKeySessionKey(opts.hostKey), opts.strategy)
+      : undefined
     // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11), or its executor's.
     const memoryAgent =
       memoryKindOf(agent) === 'native' && (runInSandbox || remoteHome)
@@ -6323,7 +6403,7 @@ export class Daemon {
       }
     }
     // Every shim driver routes its launch by AC_AGENT_ID — a pod's, a VM's, and an executor environment's.
-    if (this.k8sPlane || micro || remoteSession) env.AC_AGENT_ID = agent.id
+    if (this.k8sPlane || micro || remoteSession || srtShim) env.AC_AGENT_ID = agent.id
     const shimDirs = new Set<string>()
     // The gh wrapper is a DAEMON path: prepending it to a pod launch would name a dir the pod
     // never had, and the pod image ships no wrapper (gh there degrades to unauthenticated).
@@ -6370,6 +6450,7 @@ export class Daemon {
           : {}),
         ...(remoteHome ? { executor: { home: remoteHome } } : {}),
         ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
+        ...(srtShim ? { srtShim: { runtimeRoot: srtShim.runtimeRoot } } : {}),
         runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
         runtime: launchDef,
         provider: memoryKindOf(agent),
@@ -6415,7 +6496,8 @@ export class Daemon {
                   runtime,
                   sessionGitInjection?.GIT_CONFIG_GLOBAL,
                   githubAppCredentials,
-                  gitlabCredentials
+                  gitlabCredentials,
+                  srtShim === undefined
                 )
             : undefined,
         runtimeWriteRoots: runInSandbox
@@ -6428,7 +6510,8 @@ export class Daemon {
         // Not sandbox-gated: an unconfined Codex launch needs it too, its own profile protects `.git`.
         trustedPrimaryCheckout: this.workspaces.localPrimaryCheckoutFor(agent),
         sandboxMechanism: this.sandboxMechanism,
-        mcpSocketPath: mcpSocketPath(this.root),
+        // A shim-launched runtime reaches this daemon's tool server through the shim's `mcp` tunnel instead.
+        ...(srtShim ? {} : { mcpSocketPath: mcpSocketPath(this.root) }),
         // Inner tool sandboxes must CONNECT to the daemon socket for either
         // managed provider — read permission on the path alone is insufficient.
         allowModelToolUnixSockets: managedCredentials,
@@ -19639,6 +19722,13 @@ export class Daemon {
             this.log.info(`microsandbox: environment ${id} still has executions running — left for the idle sweep`)
           }
         }
+        // A confined srt session's shim goes with its host unless something still holds it (§11).
+        const agent = this.agents.get(agentId)
+        const sessionKey = hostKeySessionKey(key)
+        const srt = agent && this.localSrtEnvironment(agent, sessionKey, this.sessionStrategy(agent, sessionKey))
+        if (srt && !(await this.localSrt!.stopUnlessBusy(srt.id))) {
+          this.log.info(`srt: environment ${srt.id} is still in use — left for the idle sweep`)
+        }
       })
       .finally(() => {
         if (this.hostStopping.get(key) === stop) this.hostStopping.delete(key)
@@ -21147,6 +21237,8 @@ export class Daemon {
   /** Cluster only: suspend each quiet pod this member launched, keeping its Sandbox and volume; read off the driver's launches, which outlive their hosts, so a failed teardown cannot strand one. */
   private async sweepIdleSandboxes(now: number, ttl: number): Promise<void> {
     await this.microsandbox?.suspendIdle(now - ttl)
+    // A confined srt session's shim by the same rule as a local VM (§11).
+    await this.localSrt?.suspendIdle(now - ttl)
     // A spread session's environment is judged by the same rule: closing its pipe drops the launch with it, so the next turn prepares again (§7).
     if (this.executorPlane) await this.sweepIdleRemoteSessions(now, ttl, this.executorPlane)
     const plane = this.k8sPlane
@@ -23497,6 +23589,10 @@ export class Daemon {
     // unable to send its ACP close — a sandbox process still running, and reconnecting.
     await this.localExecutor?.stop().catch((error: unknown) => errors.push(error))
     this.localExecutor = undefined
+    await this.localSrtExecutor?.stop().catch((error: unknown) => errors.push(error))
+    this.localSrtExecutor = undefined
+    await this.localSrt?.stopAll().catch((error: unknown) => errors.push(error))
+    this.localSrt = undefined
     await this.microsandbox?.stopAll().catch((error: unknown) => errors.push(error))
     this.microsandbox = undefined
     // The drain above already stopped every hosted shim; this closes the listener and whatever a late launch left.
