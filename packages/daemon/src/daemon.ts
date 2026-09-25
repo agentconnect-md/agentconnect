@@ -178,6 +178,7 @@ import { reclaimStaleHostTempDirs } from './acp/sandbox-temp.js'
 import {
   agentHostKey,
   hostKeyAgentId,
+  hostEnvironmentId,
   hostKeyDirName,
   sessionKeyDirName,
   hostKeyLabel,
@@ -4978,7 +4979,7 @@ export class Daemon {
     if (sessionKey !== undefined && this.placedSession(sessionKey)) return undefined
     // The session's own directory is the record of its tier; any other host keys its environment as a VM's placement does.
     const sessionDir = sessionKey === undefined ? undefined : confinedSessionDirIn(agent.dir, sessionKey)
-    const id = sessionDir ? localSrtEnvironmentId(agent.id, sessionDir) : `${agent.id}/${hostKeyDirName(hostKey)}`
+    const id = sessionDir ? localSrtEnvironmentId(agent.id, sessionDir) : hostEnvironmentId(agent.id, hostKey)
     return { id, runtimeRoot: localSrtRuntimeRoot(this.root, id) }
   }
 
@@ -5444,8 +5445,8 @@ export class Daemon {
     for (const session of await this.store.listSessions()) {
       const key = sessionHostKey(session.agentId, session.key)
       if (
-        environments.has(`${session.agentId}/agent`) &&
-        !environments.has(`${session.agentId}/${hostKeyDirName(key)}`)
+        environments.has(hostEnvironmentId(session.agentId, undefined)) &&
+        !environments.has(hostEnvironmentId(session.agentId, key))
       ) {
         this.legacyMicrosandboxSessions.add(key)
       }
@@ -5636,7 +5637,7 @@ export class Daemon {
   /** A one-off dream host's environment goes with it — its VM and runtime home, or its srt shim — rather than waiting for the idle sweep. */
   private async discardDreamEnvironment(agent: LoadedAgent, dreamHostKey: HostKey): Promise<void> {
     await this.microsandbox
-      ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
+      ?.discard(hostEnvironmentId(agent.id, dreamHostKey))
       .then(() => rm(join(agent.dir, 'runtime-homes', hostKeyDirName(dreamHostKey)), { recursive: true, force: true }))
       .catch((error: unknown) => {
         this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
@@ -21573,7 +21574,7 @@ export class Daemon {
         if ([...this.legacyMicrosandboxSessions].some((other) => other !== key && hostKeyAgentId(other) === agentId))
           return
         await this.stopHostByKey(agentHostKey(agentId))
-        await this.microsandbox.discard(`${agentId}/agent`)
+        await this.microsandbox.discard(hostEnvironmentId(agentId, undefined))
       } else {
         await this.microsandbox.discard(`${agentId}/${leaf}`)
         const agent = this.agents.get(agentId)
