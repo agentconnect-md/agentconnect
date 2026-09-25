@@ -4331,7 +4331,7 @@ export interface AgentRepoAuthorizationRepo {
   listForAgent(agentId: AgentId): Promise<AgentRepoAuthorizationRecord[]>
   /** Every grant in the organization over one numeric repository — who still consumes a binding (gitea-integration.md §6). */
   listForRepository(orgId: OrgId, provider: CodeHostProvider, repoId: bigint): Promise<AgentRepoAuthorizationRecord[]>
-  /** Raise a grant's capability tier after the caller's GitHub access is re-checked. */
+  /** Raise a grant's capability tier after the caller's GitHub access is re-checked; a tier at or above `access` is left as is. */
   updateAccess(id: string, access: RepoAccess): Promise<AgentRepoAuthorizationRecord | null>
   /** Change how sessions stand in the repository; projected, so it advances the agent's config revision. */
   updateMaterialize(id: string, materialize: RepoMaterialization): Promise<AgentRepoAuthorizationRecord | null>
@@ -4383,7 +4383,7 @@ export interface AgentInstallationAuthorizationRepo {
   get(id: string): Promise<AgentInstallationAuthorizationRecord | null>
   /** The agent's grants, oldest first — the console list AND the mint-gate read (viewer-free). */
   listForAgent(agentId: AgentId): Promise<AgentInstallationAuthorizationRecord[]>
-  /** Change the tier and/or materialization in one transaction; null when the row is gone. */
+  /** Raise the tier and/or change materialization in one transaction (a tier at or above `access` is left as is); null when the row is gone. */
   update(
     id: string,
     patch: { access?: RepoAccess; materialize?: InstallationMaterialization }

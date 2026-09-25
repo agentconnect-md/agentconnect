@@ -35,6 +35,22 @@ function harness(current: ReturnType<typeof row> | null = row()) {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => row(data)),
       findUnique: vi.fn(async () => current),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ ...current!, ...data })),
+      // Honors the conditional writes' `access in` and `materialize not`, as Postgres would.
+      updateMany: vi.fn(
+        async ({
+          where,
+          data
+        }: {
+          where: { access?: { in: string[] }; materialize?: { not: string } }
+          data: Record<string, unknown>
+        }) => {
+          if (!current) return { count: 0 }
+          if (where.access && !where.access.in.includes(current.access)) return { count: 0 }
+          if (where.materialize && current.materialize === where.materialize.not) return { count: 0 }
+          current = { ...current, ...data }
+          return { count: 1 }
+        }
+      ),
       deleteMany: vi.fn(async () => ({ count: current ? 1 : 0 }))
     }
   }
@@ -60,11 +76,10 @@ describe('installation grants (agent-multi-repo-authorization.md decision 10)', 
     expect(tx.agent.updateMany).toHaveBeenCalledWith(BUMP)
   })
 
-  it('an access or materialize change bumps the revision once; an unchanged patch writes nothing', async () => {
+  it('an access raise or materialize change bumps the revision once; an unchanged or lower patch writes nothing', async () => {
     const { tx, repo } = harness()
 
     expect(await repo.update('ia-1', { access: 'read', materialize: 'on-demand' })).toMatchObject({ access: 'read' })
-    expect(tx.agentInstallationAuthorization.update).not.toHaveBeenCalled()
     expect(tx.agent.updateMany).not.toHaveBeenCalled()
 
     // Access is projected for a grant (unlike a repository row), so it advances the revision too.
@@ -72,11 +87,20 @@ describe('installation grants (agent-multi-repo-authorization.md decision 10)', 
       access: 'write',
       materialize: 'decision'
     })
-    expect(tx.agentInstallationAuthorization.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'ia-1' }, data: { access: 'write', materialize: 'decision' } })
-    )
+    expect(tx.agentInstallationAuthorization.updateMany).toHaveBeenCalledWith({
+      where: { id: 'ia-1', access: { in: ['read', 'comment'] } },
+      data: { access: 'write' }
+    })
+    expect(tx.agentInstallationAuthorization.updateMany).toHaveBeenCalledWith({
+      where: { id: 'ia-1', materialize: { not: 'decision' } },
+      data: { materialize: 'decision' }
+    })
     expect(tx.agent.updateMany).toHaveBeenCalledOnce()
     expect(tx.agent.updateMany).toHaveBeenCalledWith(BUMP)
+
+    // A stale lower tier writes nothing and keeps the revision.
+    expect(await repo.update('ia-1', { access: 'comment' })).toMatchObject({ access: 'write' })
+    expect(tx.agent.updateMany).toHaveBeenCalledOnce()
   })
 
   it('refreshes the projected account login only when it changed', async () => {

@@ -1528,6 +1528,29 @@ describe('agent installation grants REST (agent-multi-repo-authorization.md deci
     })
   })
 
+  it('a stale write never lowers a raised tier, on a repository row or an installation grant', async () => {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {})
+    // Two requests both read `read`: `write` commits first, then the stale `comment` arrives.
+    const rows = new PgAgentRepoAuthorizationRepo(prisma)
+    const row = await prisma.agentRepoAuthorization.create({
+      data: { agentId, provider: 'github', repoId: 777n, repoFullName: 'acme/raced', access: 'read' }
+    })
+    expect(await rows.updateAccess(row.id, 'write')).toMatchObject({ access: 'write' })
+    expect(await rows.updateAccess(row.id, 'comment')).toMatchObject({ access: 'write' })
+
+    const grants = new PgAgentInstallationAuthorizationRepo(prisma)
+    const grant = await prisma.agentInstallationAuthorization.create({
+      data: { agentId, installationId: INSTALLATION, accountLogin: 'acme', access: 'read' }
+    })
+    expect(await grants.update(grant.id, { access: 'write' })).toMatchObject({ access: 'write' })
+    // The stale tier is dropped; the same patch's checkout still applies.
+    expect(await grants.update(grant.id, { access: 'comment', materialize: 'decision' })).toMatchObject({
+      access: 'write',
+      materialize: 'decision'
+    })
+  })
+
   it('PATCH raises the tier and re-projects; it refuses a downgrade, `always`, `decision` without a selector and an empty body', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await workspaceAgent()

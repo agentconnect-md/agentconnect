@@ -44,6 +44,13 @@ type Row = AgentRepoAuthorization & { createdBy: User | null }
 const toDbMaterialization = (m: RepoMaterialization): DbRepoMaterialization => (m === 'on-demand' ? 'on_demand' : m)
 const fromDbMaterialization = (m: DbRepoMaterialization): RepoMaterialization => (m === 'on_demand' ? 'on-demand' : m)
 
+/** The tiers a write may raise to each tier from; access never falls without revoke and authorize again. */
+export const RAISABLE_FROM: Record<RepoAccess, RepoAccess[]> = {
+  read: [],
+  comment: ['read'],
+  write: ['read', 'comment']
+}
+
 function toRecord(r: Row): AgentRepoAuthorizationRecord {
   return {
     id: r.id,
@@ -137,9 +144,12 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
     return rows.map(toRecord)
   }
 
+  // Raise-only at the write: the tier condition is re-read after a concurrent raise commits, so a stale request is a no-op.
   async updateAccess(id: string, access: RepoAccess): Promise<AgentRepoAuthorizationRecord | null> {
-    const updated = await this.db.agentRepoAuthorization.updateMany({ where: { id }, data: { access } })
-    if (updated.count === 0) return null
+    await this.db.agentRepoAuthorization.updateMany({
+      where: { id, access: { in: RAISABLE_FROM[access] } },
+      data: { access }
+    })
     return this.get(id)
   }
 

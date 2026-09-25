@@ -15,6 +15,7 @@ import type {
 } from '../ports.js'
 import { AgentId } from '../../domain/ids.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
+import { RAISABLE_FROM } from './agent-repo-auth.repo.js'
 
 const withCreator = { createdBy: true } as const
 
@@ -95,9 +96,32 @@ export class PgAgentInstallationAuthorizationRepo implements AgentInstallationAu
     id: string,
     patch: { access?: RepoAccess; materialize?: InstallationMaterialization }
   ): Promise<AgentInstallationAuthorizationRecord | null> {
-    return this.write(id, {
-      ...(patch.access !== undefined ? { access: patch.access } : {}),
-      ...(patch.materialize !== undefined ? { materialize: toDbMaterialization(patch.materialize) } : {})
+    return this.transaction(async (tx) => {
+      const row = await tx.agentInstallationAuthorization.findUnique({ where: { id }, select: { agentId: true } })
+      if (!row) return null
+      // Raise-only at the write: the tier condition is re-read after a concurrent raise commits, so a stale request is a no-op.
+      const raised =
+        patch.access === undefined
+          ? 0
+          : (
+              await tx.agentInstallationAuthorization.updateMany({
+                where: { id, access: { in: RAISABLE_FROM[patch.access] } },
+                data: { access: patch.access }
+              })
+            ).count
+      const materialize = patch.materialize === undefined ? undefined : toDbMaterialization(patch.materialize)
+      const moved =
+        materialize === undefined
+          ? 0
+          : (
+              await tx.agentInstallationAuthorization.updateMany({
+                where: { id, materialize: { not: materialize } },
+                data: { materialize }
+              })
+            ).count
+      if (raised + moved > 0) await bumpAgentConfigRevisions(tx, [row.agentId])
+      const current = await tx.agentInstallationAuthorization.findUnique({ where: { id }, include: withCreator })
+      return current ? toRecord(current) : null
     })
   }
 
