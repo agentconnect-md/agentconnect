@@ -498,9 +498,9 @@ the shim's own bundle, and the changes the probe found are in:
 - the policy denies nothing under `.git`.
 
 SRT's temp root is `<runtimeRoot>/t`, short enough for its sockets, and the policy
-file sits beside the runtime root, outside everything the boundary can write. A
-host shim needs Linux, so the facet offers `srt` there alone, as it does `host`, when
-its probe passes, and placement spreads `srt` sessions like the others.
+file sits beside the runtime root, outside everything the boundary can write. The
+facet offers `srt` when its probe passes, and placement spreads `srt` sessions like
+the others.
 [daemon-sandbox-backends.md](daemon-sandbox-backends.md) has the policy.
 `test/srt-shim.test.ts` runs the real boundary in CI's **Sandbox (Linux)** job: a
 holder outside binds the shim; the daemon root and other sessions stay hidden and no
@@ -1303,7 +1303,7 @@ environment and `RemoteShimDriver` drives the shim in it. Each strategy had two 
 local microsandbox VM was keyed, driven and reached for Git differently from a hosted
 one, and a local `srt` session is a direct child with its own policy plumbing — and a
 fix to one did not reach the other. `microsandbox` now has one (step 4). `srt` has its
-launcher on executors (R1a), and on Linux a confined local session runs on it too, its
+launcher on executors (R1a), and a confined local session runs on it too, its
 workspace Git and files included (R1b-1, R1b-2a); the agent's shared host still wraps
 each runtime alone until R1b-2b.
 
@@ -1398,14 +1398,12 @@ locally went, in four steps that each landed alone:
    repository names therefore runs inside the boundary, which the policy's empty
    `.git` deny relies on. Git before the session's first runtime starts the shim on
    the session directory alone; the runtime's launch, which mounts more, waits for that
-   Git to end and starts the shim again, and only a running runtime refuses it. A host
-   shim needs Linux, so the local entry exists there alone: elsewhere SRT still wraps
-   each runtime and the session's Git runs on this host.
+   Git to end and starts the shim again, and only a running runtime refuses it.
 4. **The rest — R1b-2b.** A `shared` confined agent in an agent-scoped descriptor,
    one SRT-wrapped shim per host key as today's local path runs one ACP host per host
-   key; and on Linux the local direct SRT launch retires — the provider around each
-   runtime, the per-host settings and temp directories, the host-socket injection for
-   MCP and credentials — so one `srt` policy remains there.
+   key; and the local direct SRT launch retires — the provider around each runtime,
+   the per-host settings and temp directories, the host-socket injection for MCP and
+   credentials — so one `srt` policy remains.
 
 It costs a shim per environment (§5).
 
@@ -1476,8 +1474,8 @@ feature, S2 lands in three parts, M1–M4 precede R1, and R1 lands in four parts
 | M4     | The in-process executor entry: local microsandbox launches through it, a local VM's shim starts exposed and `RemoteShimDriver` binds it, every `withShim` caller (Git, workspace files, skills) moves to the entry's `withEnvironment`, and the bound shim mode retires (§11 step 4).                                                                                                                                                                                                                                                                    |
 | R1a    | The `srt` strategy on executors (§5): the launcher, the three changes the probe found, the executor's policy, and `srt` sessions spread.                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | R1b-1  | A confined local `srt` session launches through the in-process entry, its runtime root fixed by its environment id so MCP and git credentials reach this daemon through the shim's tunnels (§11).                                                                                                                                                                                                                                                                                                                                                        |
-| R1b-2a | Confined sessions' workspace Git and files over the shim, the local entry and the facet's `srt` on Linux alone (§11).                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| R1b-2b | `shared` confined agents in agent-scoped descriptors, and the direct SRT launch retires on Linux (§11).                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| R1b-2a | Confined sessions' workspace Git and files over the shim (§11).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| R1b-2b | `shared` confined agents in agent-scoped descriptors, and the direct SRT launch retires (§11).                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ## 13. Open questions
 

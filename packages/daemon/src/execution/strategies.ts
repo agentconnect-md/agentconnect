@@ -54,15 +54,17 @@ export function assertSomeStrategyAvailable(table: StrategyTable): void {
   throw new Error(`daemon startup refused: no execution strategy can run on this machine (${why})`)
 }
 
-/** The table the executor facet reports to other members (§5): the machine's own, with `host` and `srt`, each a host shim, Linux-only. */
+/** The table the executor facet reports to other members (§5): the machine's own, with `host` Linux-only. */
 export function effectiveStrategies(input: {
   platform?: NodeJS.Platform
   table: StrategyTable
 }): Record<ExecutionStrategy, StrategyAvailability> {
   const hostShim = hostShimUnavailableReason(input.platform ?? process.platform)
-  const shimmed = (entry: StrategyAvailability): StrategyAvailability =>
-    hostShim && entry.available ? { available: false, reason: hostShim } : entry
-  return { host: shimmed(input.table.host), srt: shimmed(input.table.srt), microsandbox: input.table.microsandbox }
+  return {
+    host: hostShim && input.table.host.available ? { available: false, reason: hostShim } : input.table.host,
+    srt: input.table.srt,
+    microsandbox: input.table.microsandbox
+  }
 }
 
 export function strategyReason(entry: StrategyAvailability): string {

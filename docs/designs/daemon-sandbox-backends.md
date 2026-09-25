@@ -133,9 +133,8 @@ catalog: the host install for `host` and `srt`, the image's runtimes for
 strategy spreads: an `srt` session lands on a member whose facet offers `srt`
 ([below](#the-srt-strategy-srt-around-the-shim)). A confined `srt` session of this
 machine runs in its session directory's SRT-wrapped shim
-([below](#this-machines-confined-srt-sessions)) on Linux; the agent's shared host
-still launches each runtime through the per-runtime SRT provider until R1b-2b, as
-every `srt` session does on a machine where no host shim runs.
+([below](#this-machines-confined-srt-sessions)); the agent's shared host still
+launches each runtime through the per-runtime SRT provider until R1b-2b.
 
 The Control Plane half landed first. An agent stores `execution`, a strategy slug,
 beside `runInSandbox`, and the two are written together. The Control Plane checks a
@@ -1135,10 +1134,9 @@ is the image's layout.
 
 `effectiveStrategies` (`execution/strategies.ts`) is the table the facet prepares
 from: `host`, `srt` and `microsandbox` of the machine's own table
-(`machineStrategies`), each available or unavailable with a reason, with `host` and
-`srt`, each a host shim, on Linux alone. The executor facet reports it at
-registration, beside the machine's own table for its own sessions
-([Strategy table](#strategy-table-implemented-on-the-daemon)).
+(`machineStrategies`), each available or unavailable with a reason, with `host` on
+Linux alone. The executor facet reports it at registration, beside the machine's own
+table for its own sessions ([Strategy table](#strategy-table-implemented-on-the-daemon)).
 
 ### The srt strategy: SRT around the shim
 
@@ -1210,8 +1208,7 @@ the in-process executor entry, as a local VM does
 ([session-executors.md](session-executors.md) §11). A second `LocalExecutor` drives
 the same `srtLauncher`, which starts a local environment at its fixed runtime root and
 a hosted one at a random root with its holder's seed; the agent's shared host is
-unchanged until R1b-2b. The entry exists on Linux alone, as every host shim does:
-elsewhere a confined session's runtime is wrapped alone and its Git runs on the host.
+unchanged until R1b-2b.
 
 - **One shim per session directory.** The environment's id is
   `<agentId>/session-<leaf>` and its workspace root the session directory, so the
@@ -1428,7 +1425,7 @@ Delivery is split into independently reviewable steps:
    in-process executor (M4), `srt` as an SRT boundary around the shim on an executor
    (R1a), confined local `srt` sessions through the in-process executor (R1b-1), and
    their workspace Git and files over the shim (R1b-2a); still designed are shared
-   confined agents and retiring the direct SRT launch on Linux (R1b-2b;
+   confined agents and retiring the direct SRT launch (R1b-2b;
    session-executors.md §5, §11, §12). Local
    microsandbox Git and workspace files already cross the shim instead of agentd exec.
 
