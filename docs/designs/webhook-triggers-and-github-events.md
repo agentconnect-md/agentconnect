@@ -812,17 +812,17 @@ platform anchor send is attempted, a later drain gate reports nonretryable
 `anchor_side_effect` even if the provider response was lost, because the
 external effect is then ambiguous rather than proven absent.
 
-A missing delivery is not proof of loss. The relay acknowledges GitHub before it
-dispatches, so a relay that dies in between drops an acknowledged delivery, and
-that is the case the first redelivery exists for. But a delivery the relay
-evaluated and deliberately fired nothing on is also missing a run, and the
-delivery summary cannot tell the two apart. The reconciler therefore reads
-GitHub's attempt list for the GUID: once the relay has acknowledged a
-_redelivered_ copy and still no run exists, the relay has evaluated the event
-itself and another copy would reproduce the same filtering, so that GUID is
-done. Unacknowledged redeliveries are retried up to three per GUID, and that
-count also comes from the attempt list, so a Control Plane restart cannot reset
-it.
+A missing run is not proof of loss. The relay acknowledges GitHub before it
+dispatches, so a relay that dies in between drops a delivery GitHub already
+counts as delivered, and neither the HTTP status nor the delivery summary tells
+that apart from an event the relay evaluated and deliberately fired nothing on.
+Both are therefore redelivered, up to three times per GUID. That count is kept
+in `HookDeliveryRecovery`, keyed by GUID and claimed atomically before each
+request, because every redelivery reappears in GitHub's listing with a fresh
+timestamp. A process-local count would restart on every Control Plane restart,
+and a count read back from the listing would miss attempts older than the
+window it walked. Rows are pruned once their last request is past twice the
+look-back horizon, when no listed attempt for the GUID can be a candidate again.
 
 Reconciliation does not retry an ambiguous dispatch, an agent/business
 rejection, or any row that may already have produced an effect. Partial

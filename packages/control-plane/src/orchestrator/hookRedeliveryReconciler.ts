@@ -16,15 +16,13 @@ const SUBSCRIPTION_EVENTS = new Set([
   'deployment_status',
   'release'
 ])
-/** Redeliveries per GUID before giving up, counted from GitHub's own attempt list so a restart cannot reset it. */
+/** Redeliveries per GUID that landed no run before giving up; counted durably, so a restart cannot reset it. */
 const MAX_ATTEMPTS = 3
 /** Delay before the first sweep of a process — see {@link HookRedeliveryReconciler.start}. */
 const FIRST_SWEEP_DELAY_MS = 60_000
 /** Durable minimum delay for failures proven to precede daemon admission. */
 // One external redelivery is safe; another could cross a placement move after an accepted report is lost.
 export const FAILED_DELIVERY_BACKOFF_MS = [30_000] as const
-/** Attempt-map bound (flush-at-cap, the daemon dedup-map precedent). */
-const MAX_TRACKED = 5_000
 /** Hard ceiling on how far back a post-outage catch-up may reach. GitHub's own
  *  redelivery window is 3 days; the delivery listing walks its cursor to the
  *  window floor and, when a firehose exhausts its page budget first, coverage
@@ -51,6 +49,8 @@ export interface HookRedeliveryHooks {
     backoffMs: readonly number[]
   ): Promise<boolean>
   settleRetryableDeliveryRedeliveries(requestedAt: Date, expiredBefore: Date, maxAttempts: number): Promise<number>
+  claimMissingDeliveryRedelivery(deliveryKey: string, requestedAt: Date, maxAttempts: number): Promise<boolean>
+  pruneMissingDeliveryRedeliveries(requestedBefore: Date): Promise<number>
 }
 
 export interface HookRedeliveryRelays {
@@ -109,8 +109,6 @@ function hookMatchesEvent(hook: HookRecord, event: string, action: string | null
 export class HookRedeliveryReconciler {
   private timer: TimerHandle | undefined
   private stopped = false
-  /** GUID → no-HookRun requests this process made, covering any GitHub does not list yet; failed runs persist instead. */
-  private readonly attempts = new Map<string, number>()
   /** Everything up to this instant has been swept. Skipped sweeps (relay pool
    *  down — the exact outage this job exists for) do NOT advance it, so the
    *  first post-recovery sweep reaches back over the whole outage instead of
@@ -178,6 +176,8 @@ export class HookRedeliveryReconciler {
       new Date(now - MAX_LOOKBACK_MS),
       FAILED_DELIVERY_BACKOFF_MS.length
     )
+    // No listed attempt older than the look-back can be a candidate again, so its count is no longer needed.
+    await this.hooks.pruneMissingDeliveryRedeliveries(new Date(now - 2 * MAX_LOOKBACK_MS))
 
     // The compile sieve: enabled github hooks that could actually fire.
     const byRepo = new Map<string, HookRecord[]>()
@@ -240,14 +240,6 @@ export class HookRedeliveryReconciler {
       return
     }
 
-    const listedRedeliveries = new Map<string, number>()
-    const relayEvaluated = new Set<string>()
-    for (const d of deliveries) {
-      if (!d.redelivery) continue
-      listedRedeliveries.set(d.guid, (listedRedeliveries.get(d.guid) ?? 0) + 1)
-      // The relay acknowledged a redelivered copy yet no run landed: that is its own filtering, which another copy repeats.
-      if (d.status_code >= 200 && d.status_code < 300) relayEvaluated.add(d.guid)
-    }
     const landed = await this.hooks.existingDeliveryKeys([...new Set(matching.map((c) => c.guid))])
     let redelivered = 0
     let oldestFailedAt: number | undefined // a failed GitHub call keeps its slice of the window open for retry
@@ -257,9 +249,6 @@ export class HookRedeliveryReconciler {
       const persistedFailure = landed.has(d.guid)
       const deliveredAt = Date.parse(d.delivered_at)
       if (!persistedFailure && deliveredAt < oldest) continue
-      if (!persistedFailure && relayEvaluated.has(d.guid)) continue
-      const attempts = Math.max(this.attempts.get(d.guid) ?? 0, listedRedeliveries.get(d.guid) ?? 0)
-      if (!persistedFailure && attempts >= MAX_ATTEMPTS) continue
 
       seenThisTick.add(d.guid)
       if (persistedFailure) {
@@ -273,9 +262,8 @@ export class HookRedeliveryReconciler {
             FAILED_DELIVERY_BACKOFF_MS
           ))
         if (!claimed) continue
-      } else {
-        if (this.attempts.size >= MAX_TRACKED) this.attempts.clear()
-        this.attempts.set(d.guid, attempts + 1)
+      } else if (!(await this.hooks.claimMissingDeliveryRedelivery(d.guid, new Date(now), MAX_ATTEMPTS))) {
+        continue
       }
       try {
         await this.github.redeliverHookDelivery(d.id)

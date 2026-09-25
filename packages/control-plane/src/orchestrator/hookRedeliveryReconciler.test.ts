@@ -62,8 +62,6 @@ function delivery(over: Partial<GhHookDelivery> = {}): GhHookDelivery {
     id: '1234567890123456789', // 19 digits — past Number.MAX_SAFE_INTEGER
     guid: 'guid-1',
     delivered_at: new Date(NOW - 10 * 60 * 1000).toISOString(),
-    redelivery: false,
-    status_code: 202,
     event: 'issues',
     action: 'opened',
     repository_id: Number(REPO_ID),
@@ -79,6 +77,8 @@ function make(opts: {
   truncated?: boolean
   landed?: string[]
   relaysAlive?: boolean | (() => boolean)
+  /** Durable no-run attempt counts; share one map between instances to model a restart. */
+  recoveryAttempts?: Map<string, number>
   redeliverError?: boolean
   reviewFanoutClaim?: boolean
   claim?:
@@ -102,6 +102,13 @@ function make(opts: {
       typeof opts.claim === 'function' ? opts.claim(deliveryKey, expectedHookIds, at, backoffMs) : (opts.claim ?? false)
   )
   const settleMock = vi.fn(async () => 0)
+  const recoveryAttempts = opts.recoveryAttempts ?? new Map<string, number>()
+  const claimMissingMock = vi.fn(async (deliveryKey: string, _at: Date, maxAttempts: number) => {
+    const attempts = recoveryAttempts.get(deliveryKey) ?? 0
+    if (attempts >= maxAttempts) return false
+    recoveryAttempts.set(deliveryKey, attempts + 1)
+    return true
+  })
   const reviewFanoutClaimMock = vi.fn(async () => opts.reviewFanoutClaim ?? false)
   const listMock = vi.fn(async (_opts?: { deliveredSince?: Date }) => ({
     deliveries: typeof opts.deliveries === 'function' ? opts.deliveries() : (opts.deliveries ?? [delivery()]),
@@ -117,7 +124,9 @@ function make(opts: {
       existingDeliveryKeys: vi.fn(async () => new Set(opts.landed ?? [])),
       claimReviewRequestRequiredFanoutRedelivery: reviewFanoutClaimMock,
       claimRetryableDeliveryRedelivery: claimMock,
-      settleRetryableDeliveryRedeliveries: settleMock
+      settleRetryableDeliveryRedeliveries: settleMock,
+      claimMissingDeliveryRedelivery: claimMissingMock,
+      pruneMissingDeliveryRedeliveries: vi.fn(async () => 0)
     },
     { listAlive: vi.fn(async () => (alive() ? [{ id: 'r1' } as RelayRecord] : [])) },
     clock,
@@ -376,34 +385,21 @@ describe('HookRedeliveryReconciler', () => {
     expect(h.redelivered).toEqual(['9001', '9001', '9001']) // MAX_ATTEMPTS
   })
 
-  it('stops once the relay has acknowledged a redelivered copy that still landed no run', async () => {
-    const at = (ms: number) => new Date(NOW - ms).toISOString()
-    const h = make({
-      deliveries: [
-        delivery({ id: 'retry', delivered_at: at(5 * 60 * 1000), redelivery: true, status_code: 202 }),
-        delivery({ id: 'original', delivered_at: at(15 * 60 * 1000) })
-      ]
-    })
-    await h.reconciler.tick()
-    expect(h.redelivered).toEqual([])
-  })
+  it('keeps the attempt cap across a restart', async () => {
+    const recoveryAttempts = new Map<string, number>()
+    const fresh = (h: ReturnType<typeof make>) => [
+      delivery({ id: '9001', delivered_at: new Date(h.clock.now() - 3 * 60 * 1000).toISOString() })
+    ]
+    const first = make({ recoveryAttempts, deliveries: () => fresh(first) })
+    for (let i = 0; i < 3; i++) {
+      await first.reconciler.tick()
+      first.clock.advance(CFG.intervalMs)
+    }
+    expect(first.redelivered).toHaveLength(3)
 
-  it('keeps retrying a redelivery the relay never acknowledged', async () => {
-    const h = make({
-      deliveries: [
-        delivery({ id: 'retry', redelivery: true, status_code: 503 }),
-        delivery({ id: 'original', delivered_at: new Date(NOW - 15 * 60 * 1000).toISOString() })
-      ]
-    })
-    await h.reconciler.tick()
-    expect(h.redelivered).toEqual(['retry'])
-  })
-
-  it('counts attempts GitHub already lists, so a restarted process does not reset the cap', async () => {
-    const failed = (id: string) => delivery({ id, redelivery: true, status_code: 0 })
-    const h = make({ deliveries: [failed('r3'), failed('r2'), failed('r1'), delivery({ id: 'original' })] })
-    await h.reconciler.tick()
-    expect(h.redelivered).toEqual([])
+    const restarted = make({ recoveryAttempts, deliveries: () => fresh(restarted) })
+    await restarted.reconciler.tick()
+    expect(restarted.redelivered).toEqual([])
   })
 
   it('an outage longer than the window is still caught up (skipped sweeps do not advance coverage)', async () => {

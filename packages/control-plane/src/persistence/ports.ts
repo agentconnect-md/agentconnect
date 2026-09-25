@@ -2808,6 +2808,10 @@ export interface HookRepo {
    * GitHub delivery lookup horizon, independent of whether the GUID remains in
    * the current API page. Cleared rows are terminal and cannot be reopened. */
   settleRetryableDeliveryRedeliveries(requestedAt: Date, expiredBefore: Date, maxAttempts: number): Promise<number>
+  /** Durably reserve one redelivery of a GUID that landed no run; false once it already had `maxAttempts`. */
+  claimMissingDeliveryRedelivery(deliveryKey: string, requestedAt: Date, maxAttempts: number): Promise<boolean>
+  /** Forget no-run redelivery counts last requested before the cutoff. */
+  pruneMissingDeliveryRedeliveries(requestedBefore: Date): Promise<number>
   /** Close `running` rows older than `staleBefore` to failed(orphaned) — the
    *  HookRunReaper sweep; a late completion still overwrites (see CronRepo). */
   reapStaleRuns(staleBefore: Date): Promise<number>
