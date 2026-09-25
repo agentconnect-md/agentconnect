@@ -1305,8 +1305,9 @@ one, and a local `srt` session is a direct child with its own policy plumbing �
 fix to one did not reach the other. `microsandbox` now has one (step 4). `srt` has its
 launcher on executors (R1a), and every local `srt` host runs on it too: a confined
 session in its directory's shim, its workspace Git and files included (R1b-1,
-R1b-2a), and every other host in an agent-scoped one (R1b-2b). The direct launch that
-wrapped each runtime alone is retired in R1b-2c.
+R1b-2a), and every other host in an agent-scoped one (R1b-2b). No daemon host wraps a
+runtime alone any more (R1b-2c); runtime probes, model enumeration and the local `chat`
+command still do.
 
 The local path reaches the launcher **in process**. It does not relay `prepare`
 through the Control Plane, open a pipe or run the TLS-PSK handshake: a local session
@@ -1409,10 +1410,15 @@ locally went, in four steps that each landed alone:
    roots are reopened; the sandbox starts in the host's cwd, which anchors SRT's own
    protections where a runtime wrapped alone's did. The MCP spec names the host's own
    tunnel. The agent's workspace Git and files stay on this host, as they were.
-5. **The direct launch retires — R1b-2c.** No daemon host takes it after R1b-2b;
-   runtime probes, model enumeration and the local `chat` command still do. The
-   provider around each runtime, the per-host settings and temp directories, and the
-   host-socket injection for MCP and credentials go, so one `srt` policy remains.
+5. **The direct launch retires for daemon hosts — landed (R1b-2c).** A sandboxed
+   `srt` launch with no shim environment is refused rather than wrapped alone, and
+   what only a host wrapped alone needed is gone: the per-host policy and temp-directory
+   cleanup at every host stop, and the grants of this daemon's MCP and git-credential
+   sockets. Every daemon host therefore runs under the one shim policy. Runtime probes,
+   model enumeration and the local `chat` command keep the per-runtime wrap: each is
+   short-lived, runs outside the daemon's hosts, and would pay a shim start per launch
+   (§5). A probe's scope is a temporary directory removed whole, and the boot sweep
+   still reclaims a `chat` run's temp directory under its agent.
 
 It costs a shim per environment (§5).
 
@@ -1467,8 +1473,8 @@ About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
 **The 2026-09-24 revision** adds the following. S1, S2a, S2b, S2c, S3 and M1–M4 have
-landed, and so have R1a, R1b-1, R1b-2a and R1b-2b; R1b-2c has not. Each lands alone; S1–S3
-are one feature, S2 lands in three parts, M1–M4 precede R1, and R1 lands in five parts.
+landed, and so have R1a and R1b-1 through R1b-2c. Each lands alone; S1–S3 are one
+feature, S2 lands in three parts, M1–M4 precede R1, and R1 lands in five parts.
 
 | PR     | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1485,7 +1491,7 @@ are one feature, S2 lands in three parts, M1–M4 precede R1, and R1 lands in fi
 | R1b-1  | A confined local `srt` session launches through the in-process entry, its runtime root fixed by its environment id so MCP and git credentials reach this daemon through the shim's tunnels (§11).                                                                                                                                                                                                                                                                                                                                                        |
 | R1b-2a | Confined sessions' workspace Git and files over the shim (§11).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | R1b-2b | Every other local `srt` host in an agent-scoped shim, one per host key, whose policy leaves the agent's directory hidden (§11).                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| R1b-2c | The direct SRT launch retires (§11).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| R1b-2c | No daemon host wraps a runtime alone: a sandboxed `srt` launch without a shim is refused, and the per-host cleanup and socket grants go; probes, model enumeration and `chat` keep the per-runtime wrap (§11).                                                                                                                                                                                                                                                                                                                                           |
 
 ## 13. Open questions
 

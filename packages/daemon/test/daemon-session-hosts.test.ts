@@ -1045,28 +1045,6 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
-  it('gives each host its own sandbox policy directory and removes it with the host', async () => {
-    const root = scaffold()
-    const { daemon } = await startDaemon(root)
-    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
-    await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
-    const agentDir = join(root, 'agents', 'bot-a')
-    const first = sessionHostKey('bot-a', KEY('T1'))
-    const second = sessionHostKey('bot-a', KEY('T2'))
-    expect(hostKeyDirName(first)).not.toBe(hostKeyDirName(second))
-    // The injected host factory writes no policy; stand in for what a real launch leaves behind.
-    for (const key of [first, second]) {
-      mkdirSync(sandboxSettingsDir(agentDir, hostKeyDirName(key)), { recursive: true })
-      writeFileSync(join(sandboxSettingsDir(agentDir, hostKeyDirName(key)), 'settings.json'), '{}')
-    }
-    await (daemon as any).stopHostByKey(first)
-    expect(existsSync(sandboxSettingsDir(agentDir, hostKeyDirName(first)))).toBe(false)
-    expect(existsSync(join(sandboxSettingsDir(agentDir, hostKeyDirName(second)), 'settings.json'))).toBe(true)
-    expect((daemon as any).hosts.has(second)).toBe(true)
-    await daemon.stop()
-    expect(existsSync(sandboxSettingsDir(agentDir, hostKeyDirName(second)))).toBe(false)
-  })
-
   it('launch preparation writes two concurrent session hosts two policies, each anchored on its own session cwd and HOME', () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-session-hosts-launch-'))
     const scopeDir = join(root, 'agent')

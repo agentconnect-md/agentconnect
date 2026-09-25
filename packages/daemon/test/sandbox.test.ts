@@ -26,7 +26,6 @@ import {
   detectSandbox,
   explainUserNamespaceFailure,
   probeSandboxHost,
-  removeHostSandboxState,
   writeSandboxSettings
 } from '../src/acp/sandbox.js'
 import {
@@ -674,24 +673,6 @@ describe('sandbox temp directories', () => {
       expect(readdirSync(parent).sort()).toEqual(['.agentconnect-runtime-temp', 'not-a-leaf'])
       // Idempotent: a second boot finds nothing left to reclaim.
       expect(reclaimStaleHostTempDirs(agentDir)).toEqual([])
-    } finally {
-      rmSync(agentDir, { recursive: true, force: true })
-    }
-  })
-
-  it("retires a stopped host's policy directory and its temp directory together", () => {
-    const agentDir = mkdtempSync(join(tmpdir(), 'ac-agent-teardown-'))
-    const stoppedHost = sessionHostKey('agent-1', 'session-a')
-    try {
-      const settingsPath = writeSandboxSettings(agentDir, hostKeyDirName(stoppedHost), {
-        writable: [join(agentDir, 'workspace')],
-        denyRead: [agentDir],
-        allowRead: [join(agentDir, 'workspace')]
-      })
-      const tempDir = prepareSandboxTempDir(agentDir, stoppedHost)
-      removeHostSandboxState(agentDir, stoppedHost)
-      expect(existsSync(settingsPath)).toBe(false)
-      expect(existsSync(tempDir)).toBe(false)
     } finally {
       rmSync(agentDir, { recursive: true, force: true })
     }

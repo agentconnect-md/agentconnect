@@ -1444,7 +1444,7 @@ Delivery is split into independently reviewable steps:
    in-process executor (M4), `srt` as an SRT boundary around the shim on an executor
    (R1a), confined local `srt` sessions through the in-process executor (R1b-1), and
    their workspace Git and files over the shim (R1b-2a), and every other `srt` host in
-   an agent-scoped shim (R1b-2b); still designed is retiring the direct SRT launch
+   an agent-scoped shim (R1b-2b), with no daemon host wrapping a runtime alone
    (R1b-2c; session-executors.md §5, §11, §12). Local
    microsandbox Git and workspace files already cross the shim instead of agentd exec.
 
