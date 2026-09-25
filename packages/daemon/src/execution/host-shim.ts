@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AF_UNIX_PATH_MAX } from '../acp/sandbox-temp.js'
 import type { Logger } from '../log.js'
-import { signalMarkedShim as signalShim, sweepMarkedUntilClear } from '../shim/marked-sweep.js'
+import { sweepMarkedUntilClear } from '../shim/marked-sweep.js'
 import {
   SHIM_HELPER_ROOT_ENV,
   SHIM_LISTEN_SOCKET_ENV,
@@ -14,6 +14,7 @@ import {
   SHIM_RUNTIME_MARK_ENV,
   SHIM_RUNTIME_ROOT_ENV,
   SHIM_SEED_ENV,
+  SHIM_STDIN_LIFELINE_ENV,
   SHIM_WORKSPACE_ROOT_ENV
 } from '../shim/protocol.js'
 import { shimPaths, type ShimPaths } from '../shim/sandbox-paths.js'
@@ -120,7 +121,7 @@ export function hostShimEnv(input: {
   workspaceRoot: string
   helperRoot: string
   mark: string
-  /** False under a boundary that hands the shim stdio only, where the boundary's own owner watch ends it instead. */
+  /** False under a boundary that hands the shim stdio only: stdin is then its lifeline in place of the extra descriptor. */
   watchesParent?: boolean
 }): Record<string, string> {
   const env: Record<string, string> = {}
@@ -137,6 +138,7 @@ export function hostShimEnv(input: {
   env[SHIM_HELPER_ROOT_ENV] = input.helperRoot
   env[SHIM_RUNTIME_MARK_ENV] = input.mark
   if (input.watchesParent !== false) env[SHIM_PARENT_FD_ENV] = String(PARENT_FD)
+  else env[SHIM_STDIN_LIFELINE_ENV] = '1'
   return env
 }
 
@@ -284,8 +286,9 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   let stopping: Promise<void> | undefined
   const stop = (): Promise<void> =>
     (stopping ??= (async () => {
-      // A boundary forwards no signal inward, so the shim itself is asked to end its runtimes; the group signal is the fallback.
-      if (!wrapped || !(await signalShim(mark, socketPath, 'SIGTERM'))) signalGroup('SIGTERM')
+      // A boundary forwards no signal inward, so closing the shim's stdin asks it to drain; the group kill below is the fallback.
+      if (wrapped) child.stdin?.end()
+      else signalGroup('SIGTERM')
       const timer = setTimeout(() => signalGroup('SIGKILL'), STOP_TIMEOUT_MS)
       try {
         await exited
@@ -296,8 +299,12 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
       await removed
     })())
   const timer = setTimeout(() => rejectReady(new Error('host shim startup timed out')), READY_TIMEOUT_MS)
+  // A write to a shim that already went is not a failure of its own; the exit reports it.
+  child.stdin!.on('error', () => {})
   try {
-    child.stdin!.end(token)
+    // Under a boundary stdin stays open past the identity line: it is the shim's lifeline.
+    if (wrapped) child.stdin!.write(`${token}\n`)
+    else child.stdin!.end(token)
     await ready
   } catch (error) {
     await stop()

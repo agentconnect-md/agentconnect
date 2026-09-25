@@ -5,6 +5,7 @@ import type {
   RuntimeStrategyEntry,
   SessionStayedHomeReason
 } from '@agentconnect.md/protocol'
+import { EXECUTION_STRATEGIES } from './strategies.js'
 
 /** What the holder knows about a session being born, and nothing wider. */
 export interface PlacementAsk {
@@ -32,8 +33,8 @@ export type Placement = { spread: PlacementChoice[] } | { stayedHome: SessionSta
 /** How long the CP must have gone without hearing from an executor before its environment counts as lost (§7, §13). */
 export const EXECUTOR_LOSS_GRACE_MS = 10 * 60_000
 
-/** The strategies a holder drives on another machine: every one the facet has a launcher for (§5). */
-const SPREADING_STRATEGIES: ReadonlySet<string> = new Set(['host', 'srt', 'microsandbox'])
+/** The strategies a holder drives on another machine: every one the facet prepares (§5). */
+const SPREADING_STRATEGIES: ReadonlySet<string> = new Set(EXECUTION_STRATEGIES)
 
 /** Whether a session of this strategy may be placed on another member at all. */
 export function strategySpreads(strategy: string): boolean {

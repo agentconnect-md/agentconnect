@@ -8,6 +8,7 @@ import {
   SHIM_PARENT_FD_ENV,
   SHIM_RUNTIME_MARK_ENV,
   SHIM_RUNTIME_ROOT_ENV,
+  SHIM_STDIN_LIFELINE_ENV,
   SHIM_WORKSPACE_ROOT_ENV
 } from './protocol.js'
 import { shimPaths, type ShimPaths } from './sandbox-paths.js'
@@ -23,6 +24,8 @@ export interface ShimEntryOptions {
   runtimeMark?: string
   /** Host mode only: the descriptor whose end-of-file means the daemon that started this shim is gone. */
   parentFd?: number
+  /** Host mode under a boundary: stdin stays open past the identity line, and its end-of-file means stop. */
+  stdinLifeline?: boolean
 }
 
 /** What the entrypoint reads from its environment; unset keeps the image's fixed layout, and `||` keeps '' from rooting paths at '/'. */
@@ -36,6 +39,7 @@ export function shimEntryOptions(env: Record<string, string | undefined>): ShimE
   return {
     // A pod or a VM ends with its sandbox, so only a shim on a host socket watches for its daemon.
     ...(socketPath && Number.isInteger(parentFd) && parentFd > 2 ? { parentFd } : {}),
+    ...(socketPath && env[SHIM_STDIN_LIFELINE_ENV] === '1' ? { stdinLifeline: true } : {}),
     listen: socketPath ? { socketPath } : { port },
     workspaceRoot: env[SHIM_WORKSPACE_ROOT_ENV] ?? DEFAULT_SHIM_WORKSPACE_ROOT,
     paths: shimPaths(env[SHIM_RUNTIME_ROOT_ENV]?.trim() || undefined, env[SHIM_HELPER_ROOT_ENV]?.trim() || undefined),

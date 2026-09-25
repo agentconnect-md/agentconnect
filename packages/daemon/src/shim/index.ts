@@ -25,17 +25,44 @@ const log = {
   warn: (message: string) => console.error(`[shim] ${message}`)
 }
 
+/** The identity's line alone, leaving stdin open: under a lifeline its end-of-file comes later and means stop. */
+function readIdentityLine(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = ''
+    const done = (error?: Error): void => {
+      process.stdin.off('data', onData)
+      process.stdin.off('end', onEnd)
+      process.stdin.pause()
+      if (error) reject(error)
+      else resolve(data.slice(0, data.indexOf('\n')).trim())
+    }
+    const onData = (chunk: Buffer): void => {
+      data += chunk.toString()
+      if (data.includes('\n')) done()
+      else if (data.length > 256) done(new Error('invalid sandbox identity'))
+    }
+    const onEnd = (): void => done(new Error('stdin closed before the sandbox identity arrived'))
+    process.stdin.on('data', onData)
+    process.stdin.once('end', onEnd)
+  })
+}
+
 async function main(): Promise<number> {
-  const localIdentity = process.argv[2] === '--identity-stdin' ? readFileSync(0, 'utf8').trim() : undefined
-  if (localIdentity !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(localIdentity)) {
-    throw new Error('invalid sandbox identity')
-  }
   let options: ReturnType<typeof shimEntryOptions>
   try {
     options = shimEntryOptions(process.env)
   } catch (error) {
     log.warn((error as Error).message)
     return 2
+  }
+  const identityOnStdin = process.argv[2] === '--identity-stdin'
+  const localIdentity = !identityOnStdin
+    ? undefined
+    : options.stdinLifeline
+      ? await readIdentityLine()
+      : readFileSync(0, 'utf8').trim()
+  if (localIdentity !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(localIdentity)) {
+    throw new Error('invalid sandbox identity')
   }
   const { workspaceRoot, paths } = options
   const exec = createExecHandler({ workspaceRoot, paths, log })
@@ -101,6 +128,16 @@ async function main(): Promise<number> {
       leave(true)
     })
     parent.resume()
+  }
+  if (options.stdinLifeline) {
+    // A boundary passes stdio alone, so stdin is the lifeline: its writer closes it to stop the shim, and the kernel does when that daemon dies.
+    for (const stream of [process.stdout, process.stderr]) stream.on('error', () => {})
+    process.stdin.on('data', () => {})
+    process.stdin.once('end', () => {
+      log.warn('stdin closed — ending the runtimes and exiting')
+      leave(true)
+    })
+    process.stdin.resume()
   }
   await client.start()
   // Bound: stay up serving daemon requests until the pod goes away.

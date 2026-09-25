@@ -295,6 +295,21 @@ describe('host strategy shim launcher', () => {
     })
   })
 
+  it('makes stdin the lifeline in place of the extra descriptor under a boundary that passes stdio alone', () => {
+    const env = hostShimEnv({
+      machineEnv: { PATH: '/usr/bin' },
+      home: '/d/sessions/s/home',
+      socketPath: '/d/hs/x/shim.sock',
+      runtimeRoot: '/d/hs/x',
+      workspaceRoot: '/d/sessions/s',
+      helperRoot: '/d/dist',
+      mark: 'm',
+      watchesParent: false
+    })
+    expect(env.AC_SHIM_PARENT_FD).toBeUndefined()
+    expect(env.AC_SHIM_STDIN_LIFELINE).toBe('1')
+  })
+
   it("carries the HOME seed in one variable for the runner, so it can name none of the shim's own sockets, roots or HOME", () => {
     const seedEnv = { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude', HOME: '/home/op', AC_SHIM_SOCKET: '/tmp/x' }
     const env = hostShimEnv({

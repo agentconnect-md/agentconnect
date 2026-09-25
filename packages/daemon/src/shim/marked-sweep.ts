@@ -1,5 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises'
-import { SHIM_LISTEN_SOCKET_ENV, SHIM_RUNTIME_MARK_ENV } from './protocol.js'
+import { SHIM_RUNTIME_MARK_ENV } from './protocol.js'
 
 /** SIGKILL every process of this user whose environment carries exactly this mark; returns how many it signalled. */
 // For crashes, not containment: runtimes lead their own groups, so a dead shim's group signal cannot reach them.
@@ -29,23 +29,4 @@ export async function sweepMarked(mark: string): Promise<number> {
 /** Sweep until a pass finds nothing: a match may have forked between the scan and its kill. */
 export async function sweepMarkedUntilClear(mark: string): Promise<void> {
   for (let pass = 0; pass < 5 && (await sweepMarked(mark)) > 0; pass++);
-}
-
-/** Signal the shim alone — the marked process listening on `socketPath` — and say whether one was found; a runtime carries the mark but not the socket. */
-export async function signalMarkedShim(mark: string, socketPath: string, signal: NodeJS.Signals): Promise<boolean> {
-  const entries = [`${SHIM_RUNTIME_MARK_ENV}=${mark}`, `${SHIM_LISTEN_SOCKET_ENV}=${socketPath}`]
-  let found = false
-  for (const name of await readdir('/proc').catch(() => [])) {
-    const pid = Number(name)
-    if (!Number.isInteger(pid) || pid === process.pid) continue
-    try {
-      const environ = (await readFile(`/proc/${pid}/environ`, 'latin1')).split('\0')
-      if (!entries.every((entry) => environ.includes(entry))) continue
-      process.kill(pid, signal)
-      found = true
-    } catch {
-      /* gone, or not ours to read */
-    }
-  }
-  return found
 }

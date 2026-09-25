@@ -47,6 +47,9 @@ export const SHIM_RUNTIME_MARK_ENV = 'AC_SHIM_RUNTIME_MARK'
 /** A host launcher's inherited descriptor that reaches end-of-file when the daemon that started the shim is gone. */
 export const SHIM_PARENT_FD_ENV = 'AC_SHIM_PARENT_FD'
 
+/** `1` under a boundary that passes stdio alone: stdin stays open past the identity line, and its end-of-file means stop or a gone daemon. */
+export const SHIM_STDIN_LIFELINE_ENV = 'AC_SHIM_STDIN_LIFELINE'
+
 /** `cluster-skills-v2` admits the widened skill manifest; a v1-only shim still gets the narrow one. */
 export const ShimFeatureSchema = z.enum(['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>

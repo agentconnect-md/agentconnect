@@ -488,20 +488,28 @@ the shim requires:
   shim to the holder needs the identity token, which exists only in the shim's memory.
 
 **Landed on executors (R1a).** `srtLauncher` wraps the shim with the provider from
-the shim's own bundle, and the three changes above are in: no `AC_SHIM_PARENT_FD`
-under the boundary; the ACP runner copies SRT's proxy variables (`HTTP_PROXY`,
-`HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, their lowercase forms and
-`NODE_USE_ENV_PROXY`) from its own environment over the launch's, only when SRT
-marked it; and the policy denies nothing under `.git`. SRT's temp root is
-`<runtimeRoot>/t`, short enough for its sockets, and the policy file sits beside the
-runtime root, outside everything the boundary can write. Stop sends SIGTERM to the
-shim itself, since SRT forwards no signal inward. The facet offers `srt` when its
-probe passes, and placement spreads `srt` sessions like the others.
-[daemon-sandbox-backends.md](daemon-sandbox-backends.md) has the policy.
+the shim's own bundle, and the three changes above are in:
+
+- no `AC_SHIM_PARENT_FD` under the boundary; the shim's stdin stays open as its
+  lifeline instead, so a stop that closes it drains the runtimes, and so does the
+  daemon's death;
+- the ACP runner copies SRT's proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`,
+  `ALL_PROXY`, `NO_PROXY`, their lowercase forms and `NODE_USE_ENV_PROXY`) from its
+  own environment over the launch's, only when SRT marked it, and adds
+  `http.proxyAuthMethod=basic` to the runtime's Git config for the bridge's
+  credentials; the holder's Git takes the same route, its empty proxy pins pointed at
+  the bridge where it runs, since workspace Git is otherwise pinned to no proxy;
+- the policy denies nothing under `.git`.
+
+SRT's temp root is `<runtimeRoot>/t`, short enough for its sockets, and the policy
+file sits beside the runtime root, outside everything the boundary can write. The
+facet offers `srt` when its probe passes, and placement spreads `srt` sessions like
+the others. [daemon-sandbox-backends.md](daemon-sandbox-backends.md) has the policy.
 `test/srt-shim.test.ts` runs the real boundary in CI's **Sandbox (Linux)** job: a
 holder outside binds the shim; the daemon root and other sessions stay hidden and no
 write outside the session reaches the host; SRT's proxy reaches the runtime; the
-holder's `git config` and `git remote add` succeed; and killing the daemon ends the
+holder's `git config` and `git remote add` succeed and its proxy pin names the bridge;
+a stop drains a runtime before the boundary goes; and killing the daemon ends the
 sandbox, runtimes included. The identity token arrives on stdin, so the shim's
 command line and environment never carry it. Whether a runtime inside the boundary
 can reach the token some other way is still an open check, not a measured result.

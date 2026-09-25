@@ -1165,9 +1165,12 @@ command once its runtime root exists.
   `node <shim entry> __sandbox-runtime <policy> <daemon pid> <environment> -- node <shim entry> --identity-stdin`,
   so the executor's own installation is the one SRT runs from, and the identity
   still arrives on stdin.
-- **No parent-death descriptor.** The provider hands bubblewrap stdio only, so the
-  launcher sets no `AC_SHIM_PARENT_FD`. The provider's owner watch ends the sandbox
-  when the daemon dies: bubblewrap's PID namespace takes the shim and every runtime
+- **Stdin is the lifeline.** The provider hands bubblewrap stdio only, so the
+  launcher sets no `AC_SHIM_PARENT_FD`. It sets `AC_SHIM_STDIN_LIFELINE` instead and
+  keeps the shim's stdin open past the identity line. Its end-of-file — a stop closing
+  it, or the kernel closing it when the daemon dies — makes the shim end its runtimes
+  and exit, as the extra descriptor does for a plain host shim. The provider's owner
+  watch stays behind it: bubblewrap's PID namespace takes the shim and every runtime
   with it.
 - **A short temp root**, `<runtimeRoot>/t`, handed to the provider as SRT's TMPDIR.
   SRT's multiplexer socket sits directly under TMPDIR, so the root stays within the
@@ -1177,11 +1180,20 @@ command once its runtime root exists.
   forms) for its bridge; the provider adds `NODE_USE_ENV_PROXY`. The ACP runner copies
   them from its own environment over the launch's in both environment modes, but
   only when SRT marked the shim (`SANDBOX_RUNTIME=1`): inside that namespace the
-  bridge is the only route out. Pods and VMs are unchanged.
-- **Stop reaches the shim.** SRT forwards no signal inward, so stop sends SIGTERM to
-  the shim itself — the process carrying the launch's mark and its socket — which ends
-  its runtimes before it exits; the group kill past the deadline and the marked sweep
-  remain behind it.
+  bridge is the only route out. SRT's bridge asks for credentials, so the runner also
+  appends `http.proxyAuthMethod=basic` to the launch's `GIT_CONFIG_*` pairs; without
+  it Git answers the proxy's 407 by asking the runtime's credential helper. Pods and
+  VMs are unchanged.
+- **The holder's Git takes the same route.** Workspace Git strips proxy variables and
+  pins `http.<url>.proxy` and `remote.<name>.proxy` to empty, so nothing a checkout or
+  the host configures reroutes its egress. Inside SRT that would leave it no route at
+  all, so the shim's Git exec (`srtGitEnv`, `shim/srt-route.ts`) points those empty
+  pins at the bridge and adds the same auth method, keeping every other setting the
+  holder sent. The bridge is the boundary's own, set by SRT in the shim's environment,
+  so it is no route a checkout chose.
+- **Stop drains the shim.** SRT forwards no signal inward, so stop closes the shim's
+  stdin; the shim ends its runtimes before it exits, and the group kill past the
+  deadline and the marked sweep remain behind it.
 
 The shim's socket is inside what the runtime can write, as in a pod or a VM: a
 runtime can reach and replace it. `test/srt-shim.test.ts` runs the real boundary in

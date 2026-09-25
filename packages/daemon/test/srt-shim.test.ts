@@ -223,12 +223,31 @@ describe('the srt boundary around a shim', () => {
       expect((await git.raw(['config', '--get', 'remote.origin.url'])).trim()).toBe(
         'https://example.test/example-org/example-repo.git'
       )
+      // A holder's empty proxy pin names SRT's bridge where its Git runs, with Basic proxy auth beside it.
+      const pinned = new ShimGitRunner(session, join(workspace, 'repo'), {
+        PATH: process.env.PATH ?? '',
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'http.https://example.test/example-org/example-repo.git.proxy',
+        GIT_CONFIG_VALUE_0: ''
+      })
+      expect(
+        (await pinned.raw(['config', '--get', 'http.https://example.test/example-org/example-repo.git.proxy'])).trim()
+      ).toBe(seen.env.HTTPS_PROXY)
+      expect((await pinned.raw(['config', '--get', 'http.proxyAuthMethod'])).trim()).toBe('basic')
 
-      // Stopping asks the shim itself to end its runtimes, then its roots go and the workspace stays.
+      // A runtime that needs to finish on SIGTERM, which the shim sends when it drains.
+      const drained = join(workspace, 'drained')
+      const trapping = `process.on('SIGTERM', () => { require('fs').writeFileSync(${JSON.stringify(drained)}, 'yes'); process.exit(0) })
+setInterval(() => {}, 60000)
+process.stdout.write(JSON.stringify({ up: true }) + '\\n')`
+      expect(await runThrough(session, workspace, trapping)).toEqual({ up: true })
+
+      // Stopping closes the shim's stdin: it drains its runtimes before the boundary goes, then its roots go and the workspace stays.
       const mark = (await readFile(join(shim.runtimeRoot, 'mark'), 'utf8')).trim()
       expect((await markedPids(mark)).length).toBeGreaterThan(0)
       await shim.stop()
       shims.splice(0)
+      expect(existsSync(drained)).toBe(true)
       expect(await markedPids(mark)).toEqual([])
       expect(existsSync(shim.runtimeRoot) || existsSync(`${shim.runtimeRoot}.p`)).toBe(false)
       expect(existsSync(join(workspace, 'repo', '.git', 'config'))).toBe(true)
