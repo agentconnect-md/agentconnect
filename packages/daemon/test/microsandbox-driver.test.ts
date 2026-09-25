@@ -73,6 +73,7 @@ function fakeSdk() {
   // Names a failed create claimed on disk before its database row: `get` misses them and a plain create collides.
   const claimed = new Set<string>()
   let nextCreateFailure: Error | undefined
+  let nextCreateGate: { entered: () => void; released: Promise<void> } | undefined
   const created: FakeSandbox[] = []
   const processes: FakeExec[] = []
   let onRun: ((process: FakeExec) => void | Promise<void>) | undefined
@@ -356,6 +357,12 @@ function fakeSdk() {
             return builder
           },
           async create() {
+            const gate = nextCreateGate
+            nextCreateGate = undefined
+            if (gate) {
+              gate.entered()
+              await gate.released
+            }
             if (replace && sandboxes.has(name)) throw new Error(`replace would destroy the tracked sandbox ${name}`)
             if (claimed.has(name) && !replace) throw new SandboxAlreadyExistsError(`sandbox '${name}' already exists`)
             claimed.delete(name)
@@ -393,6 +400,14 @@ function fakeSdk() {
     imageCache,
     removeVolume,
     claimed,
+    /** Hold the next create, once it has begun, until `release`, as a slow disk holds a real one. */
+    holdNextCreate: () => {
+      let release!: () => void
+      let entered!: () => void
+      const creating = new Promise<void>((resolve) => (entered = resolve))
+      nextCreateGate = { entered, released: new Promise<void>((resolve) => (release = resolve)) }
+      return { creating, release }
+    },
     /** Fail the next create after it claimed its name, as msb does when the disk fills mid-create. */
     failNextCreate: (failure: Error) => {
       nextCreateFailure = failure
@@ -965,6 +980,26 @@ describe('microsandbox process and VM ownership', () => {
     await writeFile(release, '')
     await expect(preparing).rejects.toThrow('microsandbox manager is shutting down')
     expect(created).toHaveLength(booted)
+  })
+
+  it('runs nothing in a preparation VM whose creation outlasted the shutdown, and removes it before the shutdown ends', async () => {
+    const { manager, created, holdNextCreate } = await fixture()
+    const { creating, release } = holdNextCreate()
+    const preparing = manager.prepare()
+    preparing.catch(() => {})
+    // Past the pull and its check, the VM's creation is pending.
+    await creating
+    const stopped = manager.stopAll()
+    let stopDone = false
+    void stopped.then(() => (stopDone = true))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(stopDone).toBe(false)
+    release()
+    await stopped
+    await expect(preparing).rejects.toThrow('microsandbox manager is shutting down')
+    const vm = created.at(-1)!
+    expect(vm.exec).not.toHaveBeenCalled()
+    expect(vm.destroy).toHaveBeenCalled()
   })
 
   it('tries a failed preparation again at the next use', async () => {

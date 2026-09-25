@@ -160,6 +160,8 @@ export class MicrosandboxManager {
   private readonly guests = new Map<string, GuestShim>()
   private preparation?: Promise<K8sRuntimeTable>
   private recovery?: Promise<void>
+  // The preparation VM's creation through its teardown, which no environment tracks.
+  private preparationVm: Promise<void> = Promise.resolve()
   private closed = false
   private startGate: Promise<void> = Promise.resolve()
   private readonly imageIdentities = new Map<string, Promise<string | undefined>>()
@@ -438,6 +440,8 @@ export class MicrosandboxManager {
 
   async stopAll(): Promise<void> {
     this.closed = true
+    // Not the pull before it, which a closed manager fences on its own and a drain must not wait for.
+    await this.preparationVm
     const results = await Promise.allSettled(
       [...this.environments.entries()].map(async ([id, state]) => {
         await Promise.all([...state.pending])
@@ -597,8 +601,19 @@ export class MicrosandboxManager {
     // A shutdown during the pull stopped every VM this manager knew of; the preparation VM must not start after it.
     this.assertOpen()
     this.imageIdentities.delete(this.options.config.image)
+    const preflight = this.preflight(name)
+    this.preparationVm = preflight.then(
+      () => undefined,
+      () => undefined
+    )
+    return await preflight
+  }
+
+  /** The preparation VM's whole life, which shutdown waits out: it runs nothing once shutdown has begun, and always goes. */
+  private async preflight(name: string): Promise<K8sRuntimeTable> {
     let sandbox = await this.serializeStart(() => this.createReclaiming(name, () => this.builder(name, [])))
     try {
+      this.assertOpen()
       const output = await sandbox.exec(MICROSANDBOX_NODE, [
         '-e',
         IMAGE_PROBE_SCRIPT,
