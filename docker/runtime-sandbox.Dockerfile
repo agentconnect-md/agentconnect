@@ -4,7 +4,7 @@ ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20260911-0
 ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20260911-021456@sha256:669063d1594c8610267bbcd5d9503ea5932e712774346a1b1920e6aeb18891ae
 
 ARG AGENT_BROWSER_VERSION=0.38.1
-ARG CLAUDE_ACP_VERSION=0.81.1
+ARG CLAUDE_ACP_VERSION=0.81.2
 ARG CODEX_ACP_VERSION=1.13.1-agentconnect.1
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.33
 
@@ -60,8 +60,8 @@ COPY --from=runtime-payload-digest /payload-digest /
 
 # Antigravity is the first, independently cached application layer in the full image.
 FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS antigravity
-ARG ANTIGRAVITY_VERSION=1.1.1
-ARG ANTIGRAVITY_SHA256_AMD64=38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df
+ARG ANTIGRAVITY_VERSION=1.2.1
+ARG ANTIGRAVITY_SHA256_AMD64=9fbf0bd584a26478161f637cabd75113f72541c842d148f578ef1a6a9edcb843
 ARG TARGETARCH
 RUN test "${TARGETARCH:-amd64}" = amd64 \
   && apt-get update \
@@ -69,7 +69,7 @@ RUN test "${TARGETARCH:-amd64}" = amd64 \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /out/antigravity
 RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
-  "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_${ANTIGRAVITY_VERSION}-linux-x86_64.zip" \
+  "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-${ANTIGRAVITY_VERSION}-linux-x86_64.zip" \
   && printf '%s  /tmp/antigravity.zip\n' "$ANTIGRAVITY_SHA256_AMD64" | sha256sum -c - \
   && unzip -q /tmp/antigravity.zip -d /out/antigravity \
   && test -x /out/antigravity/agy_acp_server.par \
@@ -79,10 +79,10 @@ RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
 
 # Other native harness downloads are independent of Antigravity and agent-browser.
 FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS full-native-runtimes
-ARG OMP_VERSION=18.1.19
-ARG OMP_SHA256_AMD64=4b5df0c61cc978223bd12f7e8d533554e80bb360a9192491de13da3d53b283ac
-ARG DEVIN_VERSION=3000.10.21
-ARG DEVIN_SHA256_AMD64=7cac6f5739ba3a3e5542f3b7fa07ed902d6dfb96ca22e4c63ae84c03bb7db47c
+ARG OMP_VERSION=18.3.0
+ARG OMP_SHA256_AMD64=d2fdaa29affe96e596eb9c78d42f548f1f291df28608631bcc00750a84b94bc3
+ARG DEVIN_VERSION=3000.11.3
+ARG DEVIN_SHA256_AMD64=83b3b113c01bf2a3e9e100db08d77e6b086806a7754f091e20831bdfe215157e
 ARG TARGETARCH
 RUN test "${TARGETARCH:-amd64}" = amd64 \
   && apt-get update \
@@ -120,15 +120,15 @@ RUN --mount=type=bind,source=docker/runtime-sandbox/install-core-harnesses.sh,ta
   --mount=type=bind,source=docker/runtime-sandbox/bake-dsh-preset.mjs,target=/tmp/bake-dsh-preset.mjs \
   HOME=/root sh /tmp/install-core-harnesses.sh
 
-ARG CLINE_VERSION=3.0.61
-ARG PI_ACP_VERSION=0.0.33
-ARG PI_VERSION=0.85.1
-ARG OPENCODE_VERSION=1.18.30
-ARG QWEN_CODE_VERSION=0.23.3
-ARG COPILOT_VERSION=1.0.83
-ARG GROK_VERSION=1.0.30
-ARG QODER_VERSION=1.1.51
-ARG QODER_CN_VERSION=1.1.51
+ARG CLINE_VERSION=3.0.65
+ARG PI_ACP_VERSION=0.0.34
+ARG PI_VERSION=0.87.1
+ARG OPENCODE_VERSION=1.18.32
+ARG QWEN_CODE_VERSION=0.24.5
+ARG COPILOT_VERSION=1.0.88
+ARG GROK_VERSION=1.0.41
+ARG QODER_VERSION=1.1.63
+ARG QODER_CN_VERSION=1.1.63
 # pi-acp delegates to the separately installed pi CLI; all launches use local executables.
 RUN export HOME=/root \
   && npm install --global --no-fund --no-audit \
