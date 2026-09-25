@@ -247,8 +247,8 @@ importers:
         specifier: ^8.18.1
         version: 8.18.1
       dotenv:
-        specifier: ^17.4.2
-        version: 17.4.2
+        specifier: ^18.0.2
+        version: 18.0.2
       execa:
         specifier: ^10.0.0
         version: 10.0.1
@@ -5110,6 +5110,11 @@ packages:
   dotenv@17.4.2:
     resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
     engines: {node: '>=12'}
+
+  dotenv@18.0.2:
+    resolution: {integrity: sha512-wl0U3CxC0iobaryqEKpFJxzyp4AxQFYAKj/WWszXZr87vVHLi2yJv2syax5Vxt+u02xqNgE277rsc3lOKg9sPg==}
+    engines: {node: '>=12'}
+    hasBin: true
 
   drizzle-orm@0.45.3:
     resolution: {integrity: sha512-CAloER21cDdcgZ1OmjrZX82EeRNsdP+y0onX/eyoYDaYzki/adrAa91lzM5jWh7zZPK4qUbw/6LGv9J+A+uizA==}
@@ -13740,6 +13745,8 @@ snapshots:
     optional: true
 
   dotenv@17.4.2: {}
+
+  dotenv@18.0.2: {}
 
   drizzle-orm@0.45.3(@electric-sql/pglite@0.4.3)(@libsql/client@0.18.0)(@opentelemetry/api@1.9.1)(@prisma/client@7.10.0)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(mysql2@3.24.4(@types/node@24.13.6))(pg@8.23.0)(postgres@3.4.7)(prisma@7.10.0(@types/node@24.13.6)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(better-sqlite3@11.10.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)):
     optionalDependencies:
