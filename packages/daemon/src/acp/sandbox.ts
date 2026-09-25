@@ -345,7 +345,9 @@ export function writeSandboxSettings(agentDir: string, hostDir: string, policy: 
       denyRead,
       allowRead: canonical(policy.allowRead),
       allowWrite: canonical(policy.writable),
-      denyWrite: canonical([...(policy.denyWrite ?? []), '/tmp/claude', '/private/tmp/claude'])
+      denyWrite: canonical([...(policy.denyWrite ?? []), '/tmp/claude', '/private/tmp/claude']),
+      // `git remote add`, `push -u` and hook installers write `.git/config`; daemon-run Git pins what it must per command.
+      allowGitConfig: true
     },
     ...(policy.gitSafeDirectories?.length ? { git: { safeDirectories: canonical(policy.gitSafeDirectories) } } : {})
   }

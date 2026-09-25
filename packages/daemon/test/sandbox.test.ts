@@ -99,7 +99,8 @@ describe('sandboxWrap', () => {
       expect(settings.network).toEqual({ allowedDomains: [], deniedDomains: [], allowAllUnixSockets: true })
       expect(settings.filesystem).toMatchObject({
         denyRead: expect.arrayContaining([realpathSync(agentDir)]),
-        allowWrite: [realpathSync(workspace), realpathSync(home), realpathSync(memory)]
+        allowWrite: [realpathSync(workspace), realpathSync(home), realpathSync(memory)],
+        allowGitConfig: true
       })
       expect(settings.filesystem.denyWrite.some((path: string) => basename(path) === 'claude')).toBe(true)
       expect(settings.git.safeDirectories).toEqual([realpathSync(workspace)])
