@@ -50,6 +50,56 @@ const MATERIALIZE_COPY = {
   'on-demand': { label: 'materializeOnDemand', title: 'materializeOnDemandTitle' }
 } as const satisfies Record<RepoMaterialize, { label: string; title: string }>
 
+// The console's two grant tiers (AddAgentRepoModal's TIERS), each an icon segment of a list row's access toggle.
+const ACCESS_TOGGLE = [
+  { value: 'read', icon: 'eye', label: 'readOnly' },
+  { value: 'write', icon: 'pencil', label: 'readWrite' }
+] as const satisfies readonly { value: WorkspaceRepoAccess; icon: string; label: string }[]
+
+/** A list row's access as a two-segment toggle; a legacy `comment` row presses neither segment. */
+export function RepositoryAccessToggle({
+  value,
+  name,
+  disabled = false,
+  onChange
+}: {
+  value: RepoAccess
+  /** The row's repository or account, which names the control for assistive tech. */
+  name: string
+  disabled?: boolean
+  onChange: (value: WorkspaceRepoAccess) => void
+}) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
+  return (
+    <span
+      role="group"
+      aria-label={t('accessFor', { name })}
+      className={disabled ? 'pillbar flex-none gap-[2px] p-[2px] opacity-60' : 'pillbar flex-none gap-[2px] p-[2px]'}
+    >
+      {ACCESS_TOGGLE.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={value === option.value}
+          aria-label={t(option.label)}
+          title={t(option.label)}
+          disabled={disabled}
+          className={
+            value === option.value
+              ? 'pill on flex h-[22px] w-[26px] cursor-default items-center justify-center p-0'
+              : 'pill flex h-[22px] w-[26px] items-center justify-center p-0 disabled:cursor-default'
+          }
+          onClick={() => {
+            if (value !== option.value) onChange(option.value)
+          }}
+        >
+          <Icon name={option.icon} size={13} />
+        </button>
+      ))}
+    </span>
+  )
+}
+
 /** Read-only checkout badge in the access badge's neutral style, shown only for a grant that is not checked out always. */
 export function RepositoryMaterializeBadge({ value }: { value: RepoMaterialize }) {
   const t = useTranslations('Integrations.dialog.workspaceFields')
