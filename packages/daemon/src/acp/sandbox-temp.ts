@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { HostKey } from './host-key.js'
 
 // SRT opens its multiplexer at `<TMPDIR>/srt-mux-<pid>-<seq>.sock`, directly under TMPDIR, and AF_UNIX truncates the whole path at 107 usable bytes on Linux (103 on macOS). A confined host's temp dir is therefore a SHORT leaf of the agent dir; #1763 put it under the per-session runtime HOME, whose 52-byte tail overflowed that budget on every realistic install.
@@ -67,12 +67,6 @@ export function prepareSandboxTempDir(
   }
   mkdirSync(path, { recursive: true, mode: 0o700 })
   return path
-}
-
-/** Drop one host's temp directory once its child is gone; a missing one is not an error. Teardown runs on paths this daemon only COMPOSED — a launch that refused an unowned parent still reaches it — so the marker gates the removal exactly as it gates the boot sweep. */
-export function removeSandboxTempDir(path: string): void {
-  if (!daemonOwnsTempParent(dirname(path))) return
-  rmSync(path, { recursive: true, force: true })
 }
 
 /** The marker is the whole proof: a real file, written only by the call that created the parent. */

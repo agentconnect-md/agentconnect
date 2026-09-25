@@ -19,8 +19,6 @@ import { spawnSync } from 'node:child_process'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
-import { hostKeyDirName, type HostKey } from './host-key.js'
-import { removeSandboxTempDir, sandboxTempDirFor } from './sandbox-temp.js'
 
 /**
  * OS-level process sandbox for agent runtimes (issue #312).
@@ -282,17 +280,6 @@ function canonical(paths: string[]): string[] {
 /** Daemon-owned home of one host's SRT policy: `<agentDir>/.agentconnect/sandbox/<hostDir>`. */
 export function sandboxSettingsDir(agentDir: string, hostDir: string): string {
   return join(agentDir, '.agentconnect', 'sandbox', hostDir)
-}
-
-/** Drop a stopped host's policy directory; a missing one is not an error. */
-export function removeSandboxSettings(agentDir: string, hostDir: string): void {
-  rmSync(sandboxSettingsDir(agentDir, hostDir), { recursive: true, force: true })
-}
-
-/** Drop everything daemon-owned a stopped host had: its policy directory and its temp directory. */
-export function removeHostSandboxState(agentDir: string, hostKey: HostKey | undefined): void {
-  removeSandboxSettings(agentDir, hostKeyDirName(hostKey))
-  removeSandboxTempDir(sandboxTempDirFor(agentDir, hostKey))
 }
 
 // Atomically publish the trusted SRT policy outside every agent-writable path, one directory per host.

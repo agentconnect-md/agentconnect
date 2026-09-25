@@ -167,13 +167,7 @@ import {
   isRuntimeSessionGone,
   undecorateRuntimeError
 } from './acp/acp-host.js'
-import {
-  probeSandboxHost,
-  removeHostSandboxState,
-  SandboxError,
-  type SandboxMechanism,
-  type SandboxProbe
-} from './acp/sandbox.js'
+import { probeSandboxHost, SandboxError, type SandboxMechanism, type SandboxProbe } from './acp/sandbox.js'
 import { reclaimStaleHostTempDirs } from './acp/sandbox-temp.js'
 import {
   agentHostKey,
@@ -4916,9 +4910,7 @@ export class Daemon {
     )
   }
 
-  /** Code/socket carve-backs below the denied host HOME/daemon root. Every input
-   * is daemon- or registry-owned; agent.json contributes only MCP names, never a
-   * filesystem path. */
+  /** An srt shim's code carve-backs below the hidden host HOME and daemon root, from daemon- or registry-owned inputs alone: agent.json names MCP servers, never a path. */
   private sandboxRuntimeReadRoots(
     agent: LoadedAgent,
     runtime: RuntimeDef,
@@ -4926,22 +4918,18 @@ export class Daemon {
     // env: runtimeOverrides.env could otherwise name any host file and have it carved in here.
     sessionGitConfigPath: string | undefined,
     githubAppCredentials: boolean,
-    gitlabCredentials: boolean,
-    // A shim-launched runtime reaches both sockets through the shim's tunnels, so neither is opened for it (§11).
-    hostSockets = true
+    gitlabCredentials: boolean
   ): string[] {
     const configuredMcp = agent.mcpServers.flatMap((name) => {
       const definition = this.mcpDefsForAgent(agent.id)[name]
       return definition ? [definition] : []
     })
     const cliEntry = daemonEntryForShims(this.root)
-    const sockets = hostSockets ? [mcpSocketPath(this.root)] : []
-    const paths = [...sockets]
+    const paths: string[] = []
     const executableCommands = [process.execPath]
     // Carved with or without credentials: the file carries the hook policy, and a hidden global
     // config is read by git as no config at all — a silent loss of the pins, not an error.
     if (sessionGitConfigPath) paths.push(sessionGitConfigPath)
-    if (hostSockets && (githubAppCredentials || gitlabCredentials)) paths.push(gitcredSocketPath(this.root))
     if (githubAppCredentials) {
       paths.push(gitcredShimPath(this.root))
       if (this.ghBinDir) paths.push(this.ghBinDir)
@@ -5644,7 +5632,6 @@ export class Daemon {
       })
     const srt = this.localSrtEnvironment(agent, dreamHostKey, 'srt')
     if (srt) await this.localSrt?.stopMatching((id) => id === srt.id)
-    removeHostSandboxState(agent.dir, dreamHostKey)
   }
 
   // The session row an ACP id names for THIS owner. A session-bound owner answers only for its own row —
@@ -6439,8 +6426,10 @@ export class Daemon {
     const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
     // This machine wraps nothing around a placed session: the executor's strategy is its boundary.
     const runInSandbox = !this.k8s && opts.strategy !== 'host' && !remoteSession
-    // An srt host runs in its environment's SRT-wrapped shim, not a runtime wrapped alone (§11).
+    // An srt host runs in its environment's SRT-wrapped shim, never a runtime wrapped alone (§11).
     const srtShim = runInSandbox ? this.localSrtEnvironment(agent, opts.hostKey, opts.strategy) : undefined
+    if (runInSandbox && !micro && !srtShim)
+      throw new Error('srt unavailable: this daemon is not running its local shims')
     // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11), or its executor's.
     const memoryAgent =
       memoryKindOf(agent) === 'native' && (runInSandbox || remoteHome)
@@ -6614,8 +6603,7 @@ export class Daemon {
                   runtime,
                   sessionGitInjection?.GIT_CONFIG_GLOBAL,
                   githubAppCredentials,
-                  gitlabCredentials,
-                  srtShim === undefined
+                  gitlabCredentials
                 )
             : undefined,
         runtimeWriteRoots: runInSandbox
@@ -6628,8 +6616,6 @@ export class Daemon {
         // Not sandbox-gated: an unconfined Codex launch needs it too, its own profile protects `.git`.
         trustedPrimaryCheckout: this.workspaces.localPrimaryCheckoutFor(agent),
         sandboxMechanism: this.sandboxMechanism,
-        // A shim-launched runtime reaches this daemon's tool server through the shim's `mcp` tunnel instead.
-        ...(srtShim ? {} : { mcpSocketPath: mcpSocketPath(this.root) }),
         // Inner tool sandboxes must CONNECT to the daemon socket for either
         // managed provider — read permission on the path alone is insufficient.
         allowModelToolUnixSockets: managedCredentials,
@@ -7013,11 +6999,9 @@ export class Daemon {
     })
   }
 
-  /** Forget a host's launch facts and drop its sandbox policy directory, once its process is gone. */
+  /** Forget a host's launch facts once its process is gone. */
   private releaseHostLaunch(key: HostKey): void {
-    const launch = this.hostLaunch.get(key)
     this.hostLaunch.delete(key)
-    if (launch) removeHostSandboxState(launch.agentDir, key)
   }
 
   /** Drop an agent's config-file secrets once the pool's last host for it is gone. */
@@ -18402,9 +18386,7 @@ export class Daemon {
         // Reap the dead child and drop it so the next attempt spawns a fresh one.
         if (this.hosts.get(key) === host) this.hosts.delete(key)
         await host.stop().catch(() => {})
-        const failedLaunch = this.hostLaunch.get(key)
         this.hostLaunch.delete(key)
-        if (failedLaunch) removeHostSandboxState(failedLaunch.agentDir, key)
         if (this.hostStartGeneration.get(key) !== generation) throw err
         // Remove the failed attempt's materialized config-file secrets unless another host of the agent still reads them.
         if (!this.agentHasOtherHosts(agentId, key)) {
@@ -19843,8 +19825,6 @@ export class Daemon {
       clearDeliveryBindings()
       clearMemoryExtractionQuarantines()
       removeConfigFiles()
-      // The policy the provider read for this child and the temp directory it opened are daemon-owned per host; both go with the child.
-      if (launch) removeHostSandboxState(launch.agentDir, key)
     }
   }
 
