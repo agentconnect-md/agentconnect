@@ -148,7 +148,11 @@ describe('EditWorkspaceModal installation grants', () => {
     await act(async () => document.querySelector<HTMLButtonElement>('[data-access="write"]')?.click())
     await act(async () => button('Authorize')?.click())
 
-    expect(mocks.createAgentInstallation).toHaveBeenCalledWith('agent-a', { installationId: 23456, access: 'write' })
+    expect(mocks.createAgentInstallation).toHaveBeenCalledWith('agent-a', {
+      installationId: 23456,
+      access: 'write',
+      materialize: 'on-demand'
+    })
     expect(onChange).toHaveBeenCalledWith([grant(), created])
     expect(grantRow(23456)?.textContent).toContain('All repositories in example-org')
   })

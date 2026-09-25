@@ -11,6 +11,7 @@ import { featureFlagEnabled } from '@/lib/feature-flags'
 import { GITEA_REPOSITORY_STATE, giteaChoiceSelectable, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import type { RepoAccess, RepoMaterialize } from '@/lib/api'
+import type { RepositoryDecisionBlock } from '@/lib/repository-selector'
 
 // The TILE the user types through, not what is stored (git-workspace-model.md §7):
 // every repo tile produces the same `{ mode: 'git', gitRepo }` payload, and the
@@ -28,8 +29,19 @@ export const REPOSITORY_ACCESS_BADGE: Record<RepoAccess, string> = {
   write: 'badge flex-none bg-(--status-paused-soft) text-(--amber-500)'
 }
 
-// The checkout choices a console user may pick; the per-session selector adds `decision` here.
-export const REPOSITORY_MATERIALIZE_OPTIONS = ['always', 'on-demand'] as const satisfies readonly RepoMaterialize[]
+// The checkout choices a repository row offers, and an installation grant's, which never checks out always.
+export const REPOSITORY_MATERIALIZE_OPTIONS = [
+  'always',
+  'decision',
+  'on-demand'
+] as const satisfies readonly RepoMaterialize[]
+export const INSTALLATION_MATERIALIZE_OPTIONS = ['decision', 'on-demand'] as const satisfies readonly RepoMaterialize[]
+
+// Why By decision is unavailable, as its tooltip says it.
+const DECISION_BLOCK_TITLE = {
+  provider: 'materializeByDecisionNoProvider',
+  selector: 'materializeByDecisionNoSelector'
+} as const satisfies Record<NonNullable<RepositoryDecisionBlock>, string>
 
 const MATERIALIZE_COPY = {
   always: { label: 'materializeAlways', title: 'materializeAlwaysTitle' },
@@ -63,34 +75,48 @@ const MATERIALIZE_PILL = {
 /** Segment that switches a grant's checkout between the selectable options; `sm` fits a list row. */
 export function RepositoryMaterializeSwitch({
   value,
+  options = REPOSITORY_MATERIALIZE_OPTIONS,
   size = 'md',
   disabled = false,
+  decisionBlock = null,
+  onDecisionBlocked,
   onChange
 }: {
   value: RepoMaterialize
+  options?: readonly RepoMaterialize[]
   size?: keyof typeof MATERIALIZE_PILL
   disabled?: boolean
+  /** Why By decision cannot be chosen now; a value already By decision stays shown as chosen. */
+  decisionBlock?: RepositoryDecisionBlock
+  /** Given, a By decision blocked only by a missing selector stays clickable to reveal the selector. */
+  onDecisionBlocked?: () => void
   onChange: (value: RepoMaterialize) => void
 }) {
   const t = useTranslations('Integrations.dialog.workspaceFields')
   const pill = MATERIALIZE_PILL[size]
   return (
     <span className={pill.bar} role="group" aria-label={t('checkout')}>
-      {REPOSITORY_MATERIALIZE_OPTIONS.map((option) => (
-        <button
-          key={option}
-          type="button"
-          className={value === option ? pill.on : pill.off}
-          aria-pressed={value === option}
-          title={t(MATERIALIZE_COPY[option].title)}
-          disabled={disabled}
-          onClick={() => {
-            if (value !== option) onChange(option)
-          }}
-        >
-          {t(MATERIALIZE_COPY[option].label)}
-        </button>
-      ))}
+      {options.map((option) => {
+        const blocked = option === 'decision' && value !== 'decision' ? decisionBlock : null
+        const reveals = blocked === 'selector' && !!onDecisionBlocked
+        return (
+          <button
+            key={option}
+            type="button"
+            className={value === option ? pill.on : reveals ? `${pill.off} opacity-50` : pill.off}
+            aria-pressed={value === option}
+            aria-disabled={blocked ? true : undefined}
+            title={t(blocked ? DECISION_BLOCK_TITLE[blocked] : MATERIALIZE_COPY[option].title)}
+            disabled={disabled || (!!blocked && !reveals)}
+            onClick={() => {
+              if (reveals) onDecisionBlocked()
+              else if (value !== option) onChange(option)
+            }}
+          >
+            {t(MATERIALIZE_COPY[option].label)}
+          </button>
+        )
+      })}
     </span>
   )
 }
@@ -98,16 +124,25 @@ export function RepositoryMaterializeSwitch({
 /** The add flow's labelled checkout choice, beside the access tiers. */
 export function RepositoryMaterializeField({
   value,
+  options,
+  decisionBlock,
   onChange
 }: {
   value: RepoMaterialize
+  options?: readonly RepoMaterialize[]
+  decisionBlock?: RepositoryDecisionBlock
   onChange: (value: RepoMaterialize) => void
 }) {
   const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
     <div className="fld mb-4">
       <span className="fldlbl">{t('checkout')}</span>
-      <RepositoryMaterializeSwitch value={value} onChange={onChange} />
+      <RepositoryMaterializeSwitch
+        value={value}
+        {...(options ? { options } : {})}
+        decisionBlock={decisionBlock ?? null}
+        onChange={onChange}
+      />
     </div>
   )
 }

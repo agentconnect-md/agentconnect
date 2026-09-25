@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
+import type { AgentRepositorySelector } from '@agentconnect.md/protocol/decision'
 import { GithubMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { agentLabel, type Agent } from '@/lib/data'
@@ -11,8 +12,11 @@ import {
   createAgentInstallation,
   type AgentInstallationAuthDto,
   type GithubInstallationDto,
+  type InstallationMaterialize,
   type RepoAccess
 } from '@/lib/api'
+import { useRepositoryDecision } from '@/lib/repository-selector'
+import { INSTALLATION_MATERIALIZE_OPTIONS, RepositoryMaterializeField } from '@/components/console/WorkspaceFormFields'
 
 /** Installations an owner may still grant: live, unsuspended, and not already held by the agent. */
 export function grantableInstallations(
@@ -27,6 +31,7 @@ export default function AuthorizeInstallationModal({
   agent,
   installations,
   granted,
+  repositorySelector,
   onClose,
   onExit,
   onCreated
@@ -35,6 +40,8 @@ export default function AuthorizeInstallationModal({
   /** The organization's claimed installations, as the workspace editor probed them. */
   installations: readonly GithubInstallationDto[]
   granted: readonly AgentInstallationAuthDto[]
+  /** The selector as Edit workspace holds it, which may be newer than `agent`'s. */
+  repositorySelector?: AgentRepositorySelector | null
   /** Back to the workspace form. */
   onClose: () => void
   /** Close the whole workspace editor. */
@@ -47,6 +54,11 @@ export default function AuthorizeInstallationModal({
     candidates.length === 1 ? candidates[0]!.installationId : null
   )
   const [access, setAccess] = useState<RepoAccess>('read')
+  const [materialize, setMaterialize] = useState<InstallationMaterialize>('on-demand')
+  const { block: decisionBlock } = useRepositoryDecision(
+    agent,
+    repositorySelector !== undefined ? repositorySelector : agent.repositorySelector
+  )
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const busyRef = useRef(false)
@@ -70,7 +82,7 @@ export default function AuthorizeInstallationModal({
     setSaving(true)
     setErr(null)
     try {
-      onCreated(await createAgentInstallation(agent.id, { installationId: pick, access }))
+      onCreated(await createAgentInstallation(agent.id, { installationId: pick, access, materialize }))
     } catch (error) {
       setErr(error instanceof Error ? error.message : String(error))
       setSaving(false)
@@ -192,6 +204,12 @@ export default function AuthorizeInstallationModal({
               )
             })}
           </div>
+          <RepositoryMaterializeField
+            value={materialize}
+            options={INSTALLATION_MATERIALIZE_OPTIONS}
+            decisionBlock={decisionBlock}
+            onChange={(value) => setMaterialize(value as InstallationMaterialize)}
+          />
           {err && <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
         </div>
         <div className="modalfoot">

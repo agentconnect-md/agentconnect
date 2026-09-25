@@ -2,7 +2,11 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
-import type { AgentModelSelection, ChannelDecisionBinding } from '@agentconnect.md/protocol/decision'
+import type {
+  AgentModelSelection,
+  AgentRepositorySelector,
+  ChannelDecisionBinding
+} from '@agentconnect.md/protocol/decision'
 import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import {
@@ -535,6 +539,8 @@ export interface Agent {
   icon?: AgentIcon | null
   model: string
   modelSelection?: AgentModelSelection | null
+  /** The evaluator that chooses which `decision` repositories a new session checks out. */
+  repositorySelector?: AgentRepositorySelector | null
   /** Authoritative runtime id (e.g. 'claude' | 'codex' | 'opencode' | 'claude-acp').
    * This is a distinct field from `model` — never derive one from the other. */
   runtime: string

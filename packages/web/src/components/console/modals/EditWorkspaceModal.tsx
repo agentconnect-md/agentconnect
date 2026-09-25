@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
+import type { AgentRepositorySelector } from '@agentconnect.md/protocol/decision'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon } from '@/components/ui'
@@ -34,15 +35,20 @@ import {
   repoAuthMaterialize,
   repoAuthProvider,
   syncGithubInstallations,
+  updateAgent,
+  updateAgentInstallation,
   updateAgentRepo,
   type AgentInstallationAuthDto,
   type AgentRepoAuthDto,
   type GithubInstallationDto,
   type GithubRepoAccess,
   type GithubRepoDto,
+  type InstallationMaterialize,
   type RepoAccess,
   type RepoMaterialize
 } from '@/lib/api'
+import { useRepositoryDecision } from '@/lib/repository-selector'
+import { RepositorySelectorField } from '@/components/console/RepositorySelectorField'
 import { fetchPublicGithubBranches } from '@/lib/github-public-repos'
 import { useGithubRepoPicker, type InstalledRepo } from '@/lib/use-github-repo-picker'
 import { GithubRepoPickerOptions } from '@/components/console/GithubRepoPickerOptions'
@@ -59,9 +65,9 @@ import {
   GitlabProjectField,
   GitlabProjectOption,
   GitUrlTileFields,
+  INSTALLATION_MATERIALIZE_OPTIONS,
   PublicGitlabProjectOption,
   RepositoryAccessField,
-  RepositoryMaterializeBadge,
   RepositoryMaterializeSwitch,
   REPOSITORY_ACCESS_BADGE,
   WorktreeField,
@@ -76,6 +82,8 @@ import AuthorizeInstallationModal from '@/components/console/modals/AuthorizeIns
 /** Stable empty roster: a fresh literal would re-run the picker's lookups. */
 const NO_INSTALLATIONS: GithubInstallationDto[] = []
 const NO_INSTALLATION_GRANTS: AgentInstallationAuthDto[] = []
+// The busy marker while the repository selector saves; no row id takes this form.
+const SELECTOR_BUSY = 'repository-selector'
 
 export interface InitialRepositoryAuthorization {
   repo?: string
@@ -91,6 +99,7 @@ export default function EditWorkspaceModal({
   onAuthorizedChange,
   onInstallationGrantsChange,
   onRepositoryCreated,
+  onAgentChange,
   onClose,
   onChanged
 }: {
@@ -110,6 +119,8 @@ export default function EditWorkspaceModal({
   onInstallationGrantsChange?: (rows: AgentInstallationAuthDto[]) => void
   /** Resume a contextual flow, such as GitHub integration setup, after adding. */
   onRepositoryCreated?: (row: AgentRepoAuthDto) => void
+  /** The agent after an edit saved here directly, such as its repository selector. */
+  onAgentChange?: (agent: Agent) => void
   onClose: () => void
   onChanged: () => void
 }) {
@@ -202,6 +213,10 @@ export default function EditWorkspaceModal({
   const [removingAuthorization, setRemovingAuthorization] = useState<string | null>(null)
   const [updatingAuthorization, setUpdatingAuthorization] = useState<string | null>(null)
   const [repositoryError, setRepositoryError] = useState<string | null>(null)
+  const [selector, setSelector] = useState<AgentRepositorySelector | null>(agent.repositorySelector ?? null)
+  const [selectorRevealed, setSelectorRevealed] = useState(false)
+  const selectorRef = useRef<HTMLDivElement>(null)
+  const { providers: selectorProviders, block: decisionBlock } = useRepositoryDecision(agent, selector)
   // Per-user authz preflight for the picked repo. null = unknown/loading —
   // never blocks; the server re-checks when the edit is submitted.
   const [probe, setProbe] = useState<GithubRepoAccess | null>(null)
@@ -645,6 +660,43 @@ export default function EditWorkspaceModal({
     }
   }
 
+  const changeGrantMaterialize = async (grant: AgentInstallationAuthDto, materialize: InstallationMaterialize) => {
+    if (updatingAuthorization || removingAuthorization) return
+    setUpdatingAuthorization(grant.id)
+    setRepositoryError(null)
+    try {
+      const updated = await updateAgentInstallation(agent.id, grant.id, { materialize })
+      const next = grants.map((row) => (row.id === grant.id ? updated : row))
+      setGrants(next)
+      onInstallationGrantsChange?.(next)
+    } catch (error) {
+      setRepositoryError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setUpdatingAuthorization(null)
+    }
+  }
+
+  // Saved at once, like a checkout switch; the Control Plane refuses a clear while anything is By decision.
+  const changeSelector = async (value: AgentRepositorySelector | null) => {
+    if (updatingAuthorization || removingAuthorization) return
+    setUpdatingAuthorization(SELECTOR_BUSY)
+    setRepositoryError(null)
+    try {
+      const updated = await updateAgent(agent.id, { repositorySelector: value })
+      setSelector(updated.repositorySelector ?? null)
+      onAgentChange?.(updated)
+    } catch (error) {
+      setRepositoryError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setUpdatingAuthorization(null)
+    }
+  }
+
+  const revealSelector = () => {
+    setSelectorRevealed(true)
+    requestAnimationFrame(() => selectorRef.current?.querySelector('button')?.focus())
+  }
+
   const changeMaterialize = async (row: AgentRepoAuthDto, materialize: RepoMaterialize) => {
     if (updatingAuthorization || removingAuthorization) return
     setUpdatingAuthorization(row.id)
@@ -668,6 +720,7 @@ export default function EditWorkspaceModal({
         agent={agent}
         workspaceRepo={isGithubApp && githubWorkspace ? githubWorkspace.repo : null}
         authorized={authorizations}
+        repositorySelector={selector}
         {...(githubWorkspace && githubWorkspace.provider === undefined ? { fixedRepo: githubWorkspace.repo } : {})}
         {...(repositoryEditor.repo ? { initialRepo: repositoryEditor.repo } : {})}
         {...(repositoryEditor.access ? { initialAccess: repositoryEditor.access } : {})}
@@ -693,6 +746,7 @@ export default function EditWorkspaceModal({
         agent={agent}
         installations={gh?.installations ?? NO_INSTALLATIONS}
         granted={grants}
+        repositorySelector={selector}
         onClose={() => setInstallationEditor(false)}
         onExit={onClose}
         onCreated={(row) => {
@@ -707,6 +761,11 @@ export default function EditWorkspaceModal({
 
   // Offered wherever the organization has an installation to grant from; enabled for an owner only.
   const installationEntry = gh?.enabled === true && gh.installations.length > 0
+  const usesDecision =
+    authorizations.some((row) => repoAuthMaterialize(row) === 'decision') ||
+    grants.some((grant) => grant.materialize === 'decision')
+  const showSelector = selectorRevealed || selector !== null || usesDecision
+  const rowBusy = updatingAuthorization !== null || removingAuthorization !== null
 
   return (
     <div className="scrim">
@@ -1196,19 +1255,29 @@ export default function EditWorkspaceModal({
                 <div
                   key={grant.id}
                   data-installation-grant={grant.installationId}
-                  className="flex min-w-0 items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px]"
+                  className="flex min-w-0 items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px] max-desktop:flex-wrap"
                 >
                   <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
                     <GithubMark />
                   </span>
-                  <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                  <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary) max-desktop:min-w-[45%]">
                     {t.rich('allRepositoriesIn', {
                       account: grant.accountLogin,
                       mono: (chunks) => <span className="mono">{chunks}</span>
                     })}
                   </span>
                   <span className={REPOSITORY_ACCESS_BADGE[grant.access]}>{grant.access}</span>
-                  <RepositoryMaterializeBadge value={grant.materialize} />
+                  <span title={isOwner ? undefined : t('installationOwnerOnly')}>
+                    <RepositoryMaterializeSwitch
+                      size="sm"
+                      options={INSTALLATION_MATERIALIZE_OPTIONS}
+                      value={grant.materialize}
+                      disabled={!isOwner || rowBusy}
+                      decisionBlock={decisionBlock}
+                      onDecisionBlocked={revealSelector}
+                      onChange={(value) => void changeGrantMaterialize(grant, value as InstallationMaterialize)}
+                    />
+                  </span>
                   <span title={isOwner ? t('revokeInstallationAccess') : t('installationOwnerOnly')}>
                     <button
                       type="button"
@@ -1233,13 +1302,13 @@ export default function EditWorkspaceModal({
                 authorizations.map((authorization) => (
                   <div
                     key={authorization.id}
-                    className="flex min-w-0 items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px]"
+                    className="flex min-w-0 items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px] max-desktop:flex-wrap"
                   >
                     <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
                       <CodeHostMark provider={repoAuthProvider(authorization)} />
                     </span>
                     <span
-                      className="mono min-w-0 flex-1 truncate text-[12.5px] font-semibold text-(--text-primary)"
+                      className="mono min-w-0 flex-1 truncate text-[12.5px] font-semibold text-(--text-primary) max-desktop:min-w-[45%]"
                       title={authorization.repoFullName}
                     >
                       {authorization.repoFullName}
@@ -1248,7 +1317,9 @@ export default function EditWorkspaceModal({
                     <RepositoryMaterializeSwitch
                       size="sm"
                       value={repoAuthMaterialize(authorization)}
-                      disabled={updatingAuthorization !== null || removingAuthorization !== null}
+                      disabled={rowBusy}
+                      decisionBlock={decisionBlock}
+                      onDecisionBlocked={revealSelector}
                       onChange={(value) => void changeMaterialize(authorization, value)}
                     />
                     <button
@@ -1266,6 +1337,15 @@ export default function EditWorkspaceModal({
                 ))
               )}
             </div>
+            {showSelector && (
+              <RepositorySelectorField
+                ref={selectorRef}
+                value={selector}
+                providers={selectorProviders}
+                disabled={rowBusy}
+                onChange={(value) => void changeSelector(value)}
+              />
+            )}
             {repositoryError && (
               <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
                 {repositoryError}

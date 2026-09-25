@@ -1548,7 +1548,9 @@
         "materializeByDecision": "By decision",
         "materializeAlwaysTitle": "Checked out beside the workspace in every session",
         "materializeOnDemandTitle": "Cloned by the agent when a session needs it",
-        "materializeByDecisionTitle": "Checked out when a session is about it"
+        "materializeByDecisionTitle": "Checked out when a session is about it",
+        "materializeByDecisionNoProvider": "No Decision provider is ready where this agent runs",
+        "materializeByDecisionNoSelector": "Set the Repository selector first"
       },
       "listenFor": "Listen for",
       "alreadyWatched": "already watched",
@@ -1908,6 +1910,10 @@
       "installationOwnerOnly": "Only organization owners can authorize or revoke an installation",
       "allRepositoriesIn": "All repositories in <mono>{account}</mono>",
       "revokeInstallationAccess": "Revoke installation access",
+      "repositorySelector": "Repository selector",
+      "repositorySelectorTitle": "The Decision provider and model that pick, before each new session, which By decision repositories it checks out",
+      "repositorySelectorPlaceholder": "Choose a provider and model",
+      "clearRepositorySelector": "Clear repository selector",
       "cancel": "Cancel",
       "saving": "Saving…",
       "replaceWorkspace": "Replace workspace",

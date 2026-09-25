@@ -7,6 +7,7 @@
 import type { DecisionApi, DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
 import type {
   AgentModelSelection,
+  AgentRepositorySelector,
   ChannelDecisionGate,
   CodeHostRoutingFamily,
   CodeHostRoutingProvider,
@@ -364,6 +365,7 @@ export interface AgentDto {
   managedSkills?: string[] // enabled centrally accepted immutable skill ids; absent on older CPs
   decisionIds?: string[] // explicitly attached saved Decisions
   modelSelection?: AgentModelSelection | null
+  repositorySelector?: AgentRepositorySelector | null // the evaluator that chooses `decision` repositories; absent on an older CP
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
@@ -1058,6 +1060,8 @@ export interface UpdateAgentInput {
   managedSkills?: string[]
   decisionIds?: string[]
   modelSelection?: AgentModelSelection | null
+  /** The repository selector's Decision provider and model; null clears. */
+  repositorySelector?: AgentRepositorySelector | null
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
   /** Accept a change the CP otherwise refuses with a 409, such as moving the memory home back to `daemon` (keeps no memory). */
@@ -1977,6 +1981,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // default). Never fall back to the runtime id: that would fabricate a model.
     model: d.model ?? '',
     modelSelection: d.modelSelection ?? null,
+    repositorySelector: d.repositorySelector ?? null,
     // Blank when the runtime is deferred (an unplaced preset) — mirrors the
     // daemon '—' coalesce below; display sites render '—' for an empty runtime.
     runtime: d.runtime ?? '',

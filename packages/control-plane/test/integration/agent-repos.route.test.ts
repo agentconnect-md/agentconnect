@@ -18,7 +18,9 @@
  *    then an empty list; a foreign or unknown row id reads 404;
  *  - `materialize` (multi-repository-workspaces.md decision 13): `always` by
  *    default, chosen on POST, changed on PATCH with a config-revision bump and
- *    a re-projected spec; `decision` is refused until the selector ships;
+ *    a re-projected spec; `decision` needs the agent's repository selector and
+ *    daemons advertising `repo-selector-v1`, on rows and grants alike, and the
+ *    selector cannot be cleared while anything uses it;
  *  - github hooks may watch only workspace ∪ authorized repos: 409 before the
  *    grant, 200 after; the workspace repo needs no row; grandfathered rows
  *    keep working for non-binding edits but a repo CHANGE re-enters the gate;
@@ -26,7 +28,14 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { generateKeyPairSync, randomUUID } from 'node:crypto'
-import type { Ack, AgentActivate, AgentDetach, AgentUpsert } from '@agentconnect.md/protocol'
+import {
+  DECISION_PROVIDER_PROFILES,
+  REPO_SELECTOR_V1_FEATURE,
+  type Ack,
+  type AgentActivate,
+  type AgentDetach,
+  type AgentUpsert
+} from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, TEST_API_KEY_PEPPER, type HttpApp } from '../fakes/build-http.js'
@@ -1080,29 +1089,6 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     })
   })
 
-  it('`decision` is refused on POST and PATCH until the selector ships', async () => {
-    await seedDaemon(prisma, DAEMON)
-    const agentId = await workspaceAgent()
-    await seedInstallation()
-    const a = app()
-
-    const refusedCreate = await post(a, agentId, { repoFullName: 'acme/tools', materialize: 'decision' })
-    expect(refusedCreate.statusCode).toBe(400)
-    expect((refusedCreate.json() as { message: string }).message).toMatch(/not available yet/)
-    expect(await prisma.agentRepoAuthorization.count()).toBe(0)
-
-    const created = (await post(a, agentId, { repoFullName: 'acme/tools', access: 'read' })).json() as { id: string }
-    const refusedPatch = await patch(a, agentId, created.id, { materialize: 'decision' })
-    expect(refusedPatch.statusCode).toBe(400)
-    expect((refusedPatch.json() as { message: string }).message).toMatch(/not available yet/)
-    // Refused before the tier is considered: neither field moved.
-    expect((await patch(a, agentId, created.id, { access: 'write', materialize: 'decision' })).statusCode).toBe(400)
-    expect(await prisma.agentRepoAuthorization.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
-      access: 'read',
-      materialize: 'always'
-    })
-  })
-
   it('identity assertion (when wired): read/comment tiers need read, write needs write; denial reads 403 + code', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await workspaceAgent()
@@ -1491,7 +1477,7 @@ describe('agent installation grants REST (agent-multi-repo-authorization.md deci
     ])
   })
 
-  it('refuses `always`, `decision` for now, an unclaimed or revoked installation, a suspended one, and a duplicate', async () => {
+  it('refuses `always`, an unclaimed or revoked installation, a suspended one, and a duplicate', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await workspaceAgent()
     await seedInstallation()
@@ -1509,11 +1495,6 @@ describe('agent installation grants REST (agent-multi-repo-authorization.md deci
     const always = await grantInstallation(a, agentId, { installationId: CLAIMED, materialize: 'always' })
     expect(always.statusCode).toBe(400)
     expect(always.json()).toMatchObject({ message: 'request does not match schema' })
-    const decision = await grantInstallation(a, agentId, { installationId: CLAIMED, materialize: 'decision' })
-    expect(decision.statusCode).toBe(400)
-    expect(decision.json()).toMatchObject({
-      message: 'selecting repositories by decision is not available yet; choose `on-demand`'
-    })
     // Another organization's claim, a revoked row and an unknown id all read alike.
     for (const installationId of [7654321, 2345678, 1111111]) {
       const refused = await grantInstallation(a, agentId, { installationId })
@@ -1547,7 +1528,7 @@ describe('agent installation grants REST (agent-multi-repo-authorization.md deci
     })
   })
 
-  it('PATCH raises the tier and re-projects; it refuses a downgrade, `always`, `decision` and an empty body', async () => {
+  it('PATCH raises the tier and re-projects; it refuses a downgrade, `always`, `decision` without a selector and an empty body', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await workspaceAgent()
     await seedInstallation()
@@ -1567,7 +1548,7 @@ describe('agent installation grants REST (agent-multi-repo-authorization.md deci
     expect(BigInt(spy.upserts[1]!.spec.configRevision!)).toBeGreaterThan(BigInt(spy.upserts[0]!.spec.configRevision!))
 
     expect((await patchGrant({ access: 'read' })).statusCode).toBe(409)
-    expect((await patchGrant({ materialize: 'decision' })).statusCode).toBe(400)
+    expect((await patchGrant({ materialize: 'decision' })).statusCode).toBe(409)
     expect((await patchGrant({ materialize: 'always' })).statusCode).toBe(400)
     expect((await patchGrant({})).statusCode).toBe(400)
     expect((await patchGrant({ access: 'write' }, randomUUID())).statusCode).toBe(404)
@@ -1652,5 +1633,180 @@ describe('agent installation grants REST (agent-multi-repo-authorization.md deci
     expect(checks.json()).toMatchObject({
       message: expect.stringContaining('an installation grant does not carry them')
     })
+  })
+})
+
+describe('choosing repositories by decision (multi-repository-workspaces.md decisions 13–18)', () => {
+  const SELECTOR = DECISION_PROVIDER_PROFILES.flatMap((provider) =>
+    provider.models
+      .filter((model) => model.questionTypes.includes('choice'))
+      .map((model) => ({ providerId: provider.id, model: model.id }))
+  )[0]!
+  const SELECTOR_CAPS = { ...WORKSPACE_CAPS, features: [...WORKSPACE_CAPS.features, REPO_SELECTOR_V1_FEATURE] }
+  const CLAIMED = Number(INSTALLATION)
+  const grants = (agentId: string) => `${ORG}/agents/${agentId}/installations`
+  const grantInstallation = (a: HttpApp, agentId: string, payload: Record<string, unknown>) =>
+    a.app.inject({ method: 'POST', url: grants(agentId), payload })
+  const patchGrant = (a: HttpApp, agentId: string, id: string, payload: Record<string, unknown>) =>
+    a.app.inject({ method: 'PATCH', url: `${grants(agentId)}/${id}`, payload })
+  const patchAgent = (a: HttpApp, agentId: string, payload: Record<string, unknown>) =>
+    a.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload })
+  const setSelector = (agentId: string) =>
+    prisma.agent.update({
+      where: { id: agentId },
+      data: { repositorySelectorProviderId: SELECTOR.providerId, repositorySelectorModel: SELECTOR.model }
+    })
+  const upgradeDaemon = (daemonId = DAEMON) =>
+    prisma.daemon.update({ where: { id: daemonId }, data: { capabilities: SELECTOR_CAPS } })
+  const refusal = (res: { statusCode: number; json(): unknown }) => ({
+    statusCode: res.statusCode,
+    code: (res.json() as { code?: string }).code
+  })
+
+  it('a repository row needs the selector, then a daemon that runs it, on POST and PATCH', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: WORKSPACE_CAPS })
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+
+    const noSelector = await post(a, agentId, { repoFullName: 'acme/tools', materialize: 'decision' })
+    expect(refusal(noSelector)).toEqual({ statusCode: 409, code: 'REPOSITORY_SELECTOR_MISSING' })
+    expect((noSelector.json() as { message: string }).message).toMatch(/repositorySelector/)
+    await setSelector(agentId)
+    const oldDaemon = await post(a, agentId, { repoFullName: 'acme/tools', materialize: 'decision' })
+    expect(refusal(oldDaemon)).toEqual({ statusCode: 409, code: 'DAEMON_FEATURE_MISSING' })
+    expect(await prisma.agentRepoAuthorization.count()).toBe(0)
+
+    const created = (await post(a, agentId, { repoFullName: 'acme/tools', materialize: 'on-demand' })).json() as {
+      id: string
+    }
+    // Refused before the tier is considered: neither field moves.
+    expect(refusal(await patch(a, agentId, created.id, { access: 'write', materialize: 'decision' }))).toEqual({
+      statusCode: 409,
+      code: 'DAEMON_FEATURE_MISSING'
+    })
+    expect(await prisma.agentRepoAuthorization.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+      access: 'read',
+      materialize: 'on_demand'
+    })
+
+    await upgradeDaemon()
+    const moved = await patch(a, agentId, created.id, { materialize: 'decision' })
+    expect(moved.statusCode, moved.body).toBe(200)
+    expect(moved.json()).toMatchObject({ materialize: 'decision' })
+    expect(spy.upserts.at(-1)!.spec.workspace).toMatchObject({
+      additionalRepos: [expect.objectContaining({ repoFullName: 'acme/tools', materialize: 'decision' })]
+    })
+    await prisma.agentRepoAuthorization.deleteMany()
+    const direct = await post(a, agentId, { repoFullName: 'acme/tools', materialize: 'decision' })
+    expect(direct.statusCode, direct.body).toBe(200)
+    expect(await prisma.agentRepoAuthorization.findFirstOrThrow()).toMatchObject({ materialize: 'decision' })
+  })
+
+  it('an installation grant needs the same preconditions on POST and PATCH', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: WORKSPACE_CAPS })
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+
+    expect(refusal(await grantInstallation(a, agentId, { installationId: CLAIMED, materialize: 'decision' }))).toEqual({
+      statusCode: 409,
+      code: 'REPOSITORY_SELECTOR_MISSING'
+    })
+    await setSelector(agentId)
+    expect(refusal(await grantInstallation(a, agentId, { installationId: CLAIMED, materialize: 'decision' }))).toEqual({
+      statusCode: 409,
+      code: 'DAEMON_FEATURE_MISSING'
+    })
+    expect(await prisma.agentInstallationAuthorization.count()).toBe(0)
+
+    const { id } = (await grantInstallation(a, agentId, { installationId: CLAIMED })).json() as { id: string }
+    expect(refusal(await patchGrant(a, agentId, id, { materialize: 'decision' }))).toEqual({
+      statusCode: 409,
+      code: 'DAEMON_FEATURE_MISSING'
+    })
+    await upgradeDaemon()
+    const moved = await patchGrant(a, agentId, id, { materialize: 'decision' })
+    expect(moved.statusCode, moved.body).toBe(200)
+    expect(moved.json()).toMatchObject({ materialize: 'decision' })
+    expect(spy.upserts.at(-1)!.spec.workspace).toMatchObject({
+      additionalInstallations: [{ provider: 'github', accountLogin: 'acme', access: 'read', materialize: 'decision' }]
+    })
+    expect((await patchGrant(a, agentId, id, { materialize: 'always' })).statusCode).toBe(400)
+
+    await prisma.agentInstallationAuthorization.deleteMany()
+    const direct = await grantInstallation(a, agentId, { installationId: CLAIMED, materialize: 'decision' })
+    expect(direct.statusCode, direct.body).toBe(200)
+    expect(await prisma.agentInstallationAuthorization.findFirstOrThrow()).toMatchObject({ materialize: 'decision' })
+  })
+
+  it('a group agent needs every ready member to run the selector', async () => {
+    const [memberA, memberB] = [randomUUID(), randomUUID()]
+    await seedDaemon(prisma, memberA, { capabilities: SELECTOR_CAPS })
+    await seedDaemon(prisma, memberB, { capabilities: WORKSPACE_CAPS })
+    const setId = randomUUID()
+    await prisma.memberSet.create({ data: { id: setId, orgId: DEFAULT_ORG_ID, name: 'lab' } })
+    await prisma.memberSetMember.createMany({ data: [memberA, memberB].map((daemonId) => ({ setId, daemonId })) })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {
+      setId,
+      gitRepo: 'https://github.com/acme/infra',
+      installationId: INSTALLATION_ROW
+    })
+    await setSelector(agentId)
+    await seedInstallation()
+    const ready = new Set<string>([memberA, memberB])
+    const liveness: DaemonLiveness = {
+      get: (id) => (ready.has(id) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
+    }
+    const a = buildHttpApp(prisma, { PUBLIC_RELAY_URL: RELAY_URL }, liveness, undefined, { github: stubbedGithub() })
+    opened.push(a)
+
+    expect(refusal(await post(a, agentId, { repoFullName: 'acme/tools', materialize: 'decision' }))).toEqual({
+      statusCode: 409,
+      code: 'DAEMON_FEATURE_MISSING'
+    })
+    // A member that is not ready now does not hold the choice back.
+    ready.delete(memberB)
+    const accepted = await post(a, agentId, { repoFullName: 'acme/tools', materialize: 'decision' })
+    expect(accepted.statusCode, accepted.body).toBe(200)
+    ready.clear()
+    expect(refusal(await grantInstallation(a, agentId, { installationId: CLAIMED, materialize: 'decision' }))).toEqual({
+      statusCode: 409,
+      code: 'DAEMON_FEATURE_MISSING'
+    })
+  })
+
+  it('the selector cannot be cleared while a row or a grant is marked by decision', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: SELECTOR_CAPS })
+    const agentId = await workspaceAgent()
+    await setSelector(agentId)
+    await seedInstallation()
+    const a = app()
+    const row = (await post(a, agentId, { repoFullName: 'acme/tools', materialize: 'decision' })).json() as {
+      id: string
+    }
+
+    const inUse = await patchAgent(a, agentId, { repositorySelector: null })
+    expect(inUse.statusCode).toBe(409)
+    expect((inUse.json() as { message: string }).message).toMatch(/repository selector is in use/)
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
+      repositorySelectorProviderId: SELECTOR.providerId
+    })
+
+    expect((await patch(a, agentId, row.id, { materialize: 'on-demand' })).statusCode).toBe(200)
+    const { id } = (
+      await grantInstallation(a, agentId, { installationId: CLAIMED, materialize: 'decision' })
+    ).json() as {
+      id: string
+    }
+    expect((await patchAgent(a, agentId, { repositorySelector: null })).statusCode).toBe(409)
+    expect((await patchGrant(a, agentId, id, { materialize: 'on-demand' })).statusCode).toBe(200)
+
+    const cleared = await patchAgent(a, agentId, { repositorySelector: null })
+    expect(cleared.statusCode, cleared.body).toBe(200)
+    expect(cleared.json()).toMatchObject({ repositorySelector: null })
   })
 })

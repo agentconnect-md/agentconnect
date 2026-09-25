@@ -1548,7 +1548,9 @@
         "materializeByDecision": "由 Decision 选择",
         "materializeAlwaysTitle": "每个会话都在工作区旁检出",
         "materializeOnDemandTitle": "会话需要时由 Agent 克隆",
-        "materializeByDecisionTitle": "会话与之相关时检出"
+        "materializeByDecisionTitle": "会话与之相关时检出",
+        "materializeByDecisionNoProvider": "此 Agent 运行的位置没有就绪的 Decision 提供方",
+        "materializeByDecisionNoSelector": "请先设置仓库选择器"
       },
       "listenFor": "监听对象",
       "alreadyWatched": "已监听",
@@ -1908,6 +1910,10 @@
       "installationOwnerOnly": "只有组织所有者可以授权或撤销安装",
       "allRepositoriesIn": "<mono>{account}</mono> 中的所有仓库",
       "revokeInstallationAccess": "撤销安装访问权限",
+      "repositorySelector": "仓库选择器",
+      "repositorySelectorTitle": "每个新会话开始前，由这个 Decision 提供方和模型挑选要检出哪些“由 Decision 选择”的仓库",
+      "repositorySelectorPlaceholder": "选择提供方和模型",
+      "clearRepositorySelector": "清除仓库选择器",
       "cancel": "取消",
       "saving": "保存中…",
       "replaceWorkspace": "替换工作区",

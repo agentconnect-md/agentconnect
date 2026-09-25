@@ -18,6 +18,8 @@ export function DecisionModelSelect({
   questionType,
   providers,
   disabled,
+  placeholder,
+  ariaLabel,
   onChange
 }: {
   providerId: string
@@ -25,6 +27,9 @@ export function DecisionModelSelect({
   questionType: DecisionQuestion['type']
   providers: Pick<DecisionProviderOption, 'id' | 'name' | 'models'>[]
   disabled: boolean
+  /** Shown while no provider is chosen yet. */
+  placeholder?: string
+  ariaLabel?: string
   onChange(value: { providerId: string; model: string }): void
 }) {
   const t = useTranslations('Decisions')
@@ -43,6 +48,7 @@ export function DecisionModelSelect({
   const providerName = selected?.name ?? providerId
   const modelLabel = selected?.models.find((entry) => entry.id === model)?.label ?? model
   const options = profiles.find((entry) => entry.id === browsing)?.models ?? []
+  const empty = !providerId && placeholder !== undefined
 
   return (
     <AnchoredFlyout
@@ -58,21 +64,27 @@ export function DecisionModelSelect({
             type="button"
             disabled={disabled}
             className={`inp min-h-9 w-full cursor-pointer gap-2 text-left hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
-            aria-label={t('providerModel')}
+            aria-label={ariaLabel ?? t('providerModel')}
             aria-haspopup="dialog"
             aria-expanded={open}
             aria-controls={open ? menuId : undefined}
             {...hover.triggerProps}
             onClick={() => {
               hover.hide()
-              setBrowsing(providerId)
+              setBrowsing(providerId || profiles[0]?.id || '')
               toggle()
             }}
           >
-            <MarkSlot>{providerMark(providerId)}</MarkSlot>
-            <span className="min-w-0 flex-1 truncate">
-              {providerName} · {modelLabel}
-            </span>
+            {empty ? (
+              <span className="min-w-0 flex-1 truncate text-(--text-tertiary)">{placeholder}</span>
+            ) : (
+              <>
+                <MarkSlot>{providerMark(providerId)}</MarkSlot>
+                <span className="min-w-0 flex-1 truncate">
+                  {providerName} · {modelLabel}
+                </span>
+              </>
+            )}
             <Icon
               name="chevron-down"
               size={14}
@@ -80,6 +92,7 @@ export function DecisionModelSelect({
             />
           </button>
           {!open &&
+            !empty &&
             hover.card(
               <HoverCardRows
                 rows={[

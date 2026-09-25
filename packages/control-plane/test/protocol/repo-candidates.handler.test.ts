@@ -63,7 +63,7 @@ async function seedGrants(): Promise<void> {
       }
     })
   }
-  // The routes still refuse `decision` until the selector lands, so the grant is written directly.
+  // Written directly: the route preconditions for `decision` are agent-repos.route.test.ts’s concern.
   await prisma.agentInstallationAuthorization.createMany({
     data: [
       { agentId: AGENT, installationId: INSTALLATION, accountLogin: 'acme', access: 'read', materialize: 'decision' },

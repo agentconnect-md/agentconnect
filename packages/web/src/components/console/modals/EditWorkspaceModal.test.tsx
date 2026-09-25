@@ -134,7 +134,9 @@ describe('EditWorkspaceModal repository checkout', () => {
     expect(groups).toHaveLength(2)
     expect(groups[0]?.querySelector('[aria-pressed="true"]')?.textContent).toBe('Always')
     expect(groups[1]?.querySelector('[aria-pressed="true"]')?.textContent).toBe('On demand')
-    expect(document.body.textContent).not.toContain('By decision')
+    // No provider is ready where the agent runs, so By decision is offered but cannot be chosen.
+    expect(checkout('By decision')?.disabled).toBe(true)
+    expect(document.querySelector('[data-repository-selector]')).toBeNull()
   })
 
   it('switches a row to On demand with a materialize-only PATCH', async () => {
