@@ -10,6 +10,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmationDialog } from './ConfirmationDialog'
+import { SectionHeader } from './SectionHeader'
 
 export default function ProviderKeysSection() {
   const { activeOrg, myRole } = useOrgs()
@@ -93,240 +94,245 @@ function ProviderKeysForOrg({ orgId, isOwner }: { orgId: string; isOwner: boolea
   }
 
   return (
-    <section className="card mt-6" aria-labelledby={`${inputId}-title`}>
-      <div className="cardhead">
-        <Icon name="key-round" size={16} />
-        <h2 id={`${inputId}-title`} className="cardtitle">
-          {t('title')}
-        </h2>
-      </div>
-      <p className="px-4 pt-3 text-[12.5px] text-(--text-secondary)">{t('description')}</p>
-      {!isOwner && <p className="px-4 pt-2 text-[12px] text-(--text-tertiary)">{t('ownerOnly')}</p>}
-      {loadError ? (
-        <div className="flex items-center gap-3 p-4">
-          <span role="alert" className="text-[12px] text-(--status-error)">
-            {t('loadError')}
-          </span>
-          <Button variant="secondary" size="xs" onClick={() => void mutate()}>
-            {t('retry')}
-          </Button>
-        </div>
-      ) : !entries ? (
-        <LoadingState size={22} padding={20} />
-      ) : (
-        <div className="divide-y divide-(--border-subtle)">
-          {entries.map((entry) => (
-            <div key={entry.provider} className="px-4 py-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="min-w-0 flex-1 font-sans text-[13px] font-semibold leading-normal">{entry.name}</span>
-                <span
-                  className={`badge ${entry.configured ? 'bg-(--status-online-soft) text-(--status-online)' : 'bg-(--surface-sunken) text-(--text-tertiary)'}`}
-                >
-                  {entry.configured ? t('configured') : t('notConfigured')}
-                </span>
-                {entry.updatedAt && (
-                  <time dateTime={entry.updatedAt} className="text-[12px] text-(--text-tertiary)">
-                    {t('updated', {
-                      date: format.dateTime(new Date(entry.updatedAt), { dateStyle: 'medium', timeStyle: 'short' })
-                    })}
-                  </time>
-                )}
-                {isOwner && (
-                  <div className="flex gap-2">
-                    <Button
-                      variant="secondary"
-                      size="xs"
-                      disabled={busy}
-                      onClick={() => {
-                        setEditing(entry)
-                        setEndpoint(entry.endpoint ?? '')
-                        setHeaders(entry.headerNames.map((name) => ({ name, value: '', saved: true, removed: false })))
-                        setSettingsOpen(entry.endpointRequired || !!entry.endpoint || entry.headerNames.length > 0)
-                        setApiKey('')
-                        setError(null)
-                      }}
-                    >
-                      {entry.configured ? t('edit') : t('add')}
-                    </Button>
-                    {entry.configured && (
+    <section aria-labelledby={`${inputId}-title`}>
+      <SectionHeader
+        id={`${inputId}-title`}
+        label={t('title')}
+        count={entries?.filter((entry) => entry.configured).length}
+      />
+      <div className="card">
+        <p className="px-4 pt-4 text-[12.5px] text-(--text-secondary)">{t('description')}</p>
+        {!isOwner && <p className="px-4 pt-2 text-[12px] text-(--text-tertiary)">{t('ownerOnly')}</p>}
+        {loadError ? (
+          <div className="flex items-center gap-3 p-4">
+            <span role="alert" className="text-[12px] text-(--status-error)">
+              {t('loadError')}
+            </span>
+            <Button variant="secondary" size="xs" onClick={() => void mutate()}>
+              {t('retry')}
+            </Button>
+          </div>
+        ) : !entries ? (
+          <LoadingState size={22} padding={20} />
+        ) : (
+          <div className="divide-y divide-(--border-subtle)">
+            {entries.map((entry) => (
+              <div key={entry.provider} className="px-4 py-4">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="min-w-0 flex-1 font-sans text-[13px] font-semibold leading-normal">
+                    {entry.name}
+                  </span>
+                  <span
+                    className={`badge ${entry.configured ? 'bg-(--status-online-soft) text-(--status-online)' : 'bg-(--surface-sunken) text-(--text-tertiary)'}`}
+                  >
+                    {entry.configured ? t('configured') : t('notConfigured')}
+                  </span>
+                  {entry.updatedAt && (
+                    <time dateTime={entry.updatedAt} className="text-[12px] text-(--text-tertiary)">
+                      {t('updated', {
+                        date: format.dateTime(new Date(entry.updatedAt), { dateStyle: 'medium', timeStyle: 'short' })
+                      })}
+                    </time>
+                  )}
+                  {isOwner && (
+                    <div className="flex gap-2">
                       <Button
-                        variant="ghost"
+                        variant="secondary"
                         size="xs"
                         disabled={busy}
                         onClick={() => {
-                          setDeleting(entry)
+                          setEditing(entry)
+                          setEndpoint(entry.endpoint ?? '')
+                          setHeaders(
+                            entry.headerNames.map((name) => ({ name, value: '', saved: true, removed: false }))
+                          )
+                          setSettingsOpen(entry.endpointRequired || !!entry.endpoint || entry.headerNames.length > 0)
+                          setApiKey('')
+                          setError(null)
+                        }}
+                      >
+                        {entry.configured ? t('edit') : t('add')}
+                      </Button>
+                      {entry.configured && (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          disabled={busy}
+                          onClick={() => {
+                            setDeleting(entry)
+                            setEditing(null)
+                            setHeaders([])
+                            setApiKey('')
+                            setError(null)
+                          }}
+                        >
+                          {t('remove')}
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {editing?.provider === entry.provider && (
+                  <form
+                    className="mt-4 flex flex-col gap-3 rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      void save()
+                    }}
+                  >
+                    <label className="fldlbl" htmlFor={inputId}>
+                      {entry.configured ? t('replacementKey') : t('apiKey')}
+                    </label>
+                    <input
+                      id={inputId}
+                      className="inp w-full"
+                      type="password"
+                      autoComplete="new-password"
+                      autoFocus
+                      spellCheck={false}
+                      maxLength={8192}
+                      required={!entry.configured}
+                      disabled={busy}
+                      value={apiKey}
+                      placeholder={entry.configured ? t('keepValue') : undefined}
+                      onChange={(event) => setApiKey(event.target.value)}
+                      aria-describedby={`${inputId}-help`}
+                    />
+                    <p id={`${inputId}-help`} className="text-[12px] text-(--text-secondary)">
+                      {t('writeOnly')}
+                    </p>
+                    <details open={settingsOpen} onToggle={(event) => setSettingsOpen(event.currentTarget.open)}>
+                      <summary className="cursor-pointer text-[12px] text-(--text-secondary)">
+                        {t('connectionSettings')}
+                      </summary>
+                      <div className="mt-3 flex flex-col gap-3">
+                        <label className="fldlbl" htmlFor={`${inputId}-endpoint`}>
+                          {t('endpoint')}
+                          {entry.endpointRequired ? ' *' : ''}
+                        </label>
+                        <input
+                          id={`${inputId}-endpoint`}
+                          className="inp w-full"
+                          type="url"
+                          value={endpoint}
+                          disabled={busy}
+                          required={entry.endpointRequired}
+                          placeholder={entry.defaultEndpoint ?? 'https://gateway.example.test/v1'}
+                          onChange={(event) => setEndpoint(event.target.value)}
+                        />
+                        <p className="text-[12px] text-(--text-secondary)">
+                          {entry.endpointRequired ? t('gatewayHelp') : t('endpointHelp')}
+                        </p>
+                        <span className="fldlbl">{t('headers')}</span>
+                        {headers.map((header, index) =>
+                          header.removed ? null : (
+                            <div key={index} className="flex flex-wrap gap-2">
+                              <input
+                                className="inp min-w-0 flex-1"
+                                aria-label={t('headerName')}
+                                placeholder={t('headerName')}
+                                value={header.name}
+                                readOnly={header.saved}
+                                disabled={busy}
+                                required
+                                onChange={(event) =>
+                                  setHeaders((rows) =>
+                                    rows.map((row, i) => (i === index ? { ...row, name: event.target.value } : row))
+                                  )
+                                }
+                              />
+                              <input
+                                className="inp min-w-0 flex-1"
+                                type="password"
+                                autoComplete="new-password"
+                                aria-label={t('headerValue')}
+                                placeholder={header.saved ? t('keepValue') : t('headerValue')}
+                                value={header.value}
+                                disabled={busy}
+                                required={!header.saved}
+                                maxLength={8192}
+                                onChange={(event) =>
+                                  setHeaders((rows) =>
+                                    rows.map((row, i) => (i === index ? { ...row, value: event.target.value } : row))
+                                  )
+                                }
+                              />
+                              <Button
+                                variant="ghost"
+                                size="xs"
+                                disabled={busy}
+                                ariaLabel={t('removeHeader')}
+                                onClick={() =>
+                                  setHeaders((rows) =>
+                                    rows.flatMap((row, i) =>
+                                      i !== index ? [row] : row.saved ? [{ ...row, value: '', removed: true }] : []
+                                    )
+                                  )
+                                }
+                              >
+                                <Icon name="x" size={14} />
+                              </Button>
+                            </div>
+                          )
+                        )}
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          disabled={busy || headers.length >= 32}
+                          onClick={() =>
+                            setHeaders((rows) => [...rows, { name: '', value: '', saved: false, removed: false }])
+                          }
+                        >
+                          {t('addHeader')}
+                        </Button>
+                        <p className="text-[12px] text-(--text-secondary)">{t('headersHelp')}</p>
+                        {duplicateHeaders && (
+                          <p role="alert" className="text-[12px] text-(--status-error)">
+                            {t('duplicateHeaders')}
+                          </p>
+                        )}
+                      </div>
+                    </details>
+                    {error && (
+                      <p role="alert" className="text-[12px] text-(--status-error)">
+                        {error}
+                      </p>
+                    )}
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => {
                           setEditing(null)
                           setHeaders([])
                           setApiKey('')
                           setError(null)
                         }}
                       >
-                        {t('remove')}
+                        {t('cancel')}
                       </Button>
-                    )}
-                  </div>
-                )}
-              </div>
-              {editing?.provider === entry.provider && (
-                <form
-                  className="mt-4 flex flex-col gap-3 rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3"
-                  onSubmit={(event) => {
-                    event.preventDefault()
-                    void save()
-                  }}
-                >
-                  <label className="fldlbl" htmlFor={inputId}>
-                    {entry.configured ? t('replacementKey') : t('apiKey')}
-                  </label>
-                  <input
-                    id={inputId}
-                    className="inp w-full"
-                    type="password"
-                    autoComplete="new-password"
-                    autoFocus
-                    spellCheck={false}
-                    maxLength={8192}
-                    required={!entry.configured}
-                    disabled={busy}
-                    value={apiKey}
-                    placeholder={entry.configured ? t('keepValue') : undefined}
-                    onChange={(event) => setApiKey(event.target.value)}
-                    aria-describedby={`${inputId}-help`}
-                  />
-                  <p id={`${inputId}-help`} className="text-[12px] text-(--text-secondary)">
-                    {t('writeOnly')}
-                  </p>
-                  <details open={settingsOpen} onToggle={(event) => setSettingsOpen(event.currentTarget.open)}>
-                    <summary className="cursor-pointer text-[12px] text-(--text-secondary)">
-                      {t('connectionSettings')}
-                    </summary>
-                    <div className="mt-3 flex flex-col gap-3">
-                      <label className="fldlbl" htmlFor={`${inputId}-endpoint`}>
-                        {t('endpoint')}
-                        {entry.endpointRequired ? ' *' : ''}
-                      </label>
-                      <input
-                        id={`${inputId}-endpoint`}
-                        className="inp w-full"
-                        type="url"
-                        value={endpoint}
-                        disabled={busy}
-                        required={entry.endpointRequired}
-                        placeholder={entry.defaultEndpoint ?? 'https://gateway.example.test/v1'}
-                        onChange={(event) => setEndpoint(event.target.value)}
-                      />
-                      <p className="text-[12px] text-(--text-secondary)">
-                        {entry.endpointRequired ? t('gatewayHelp') : t('endpointHelp')}
-                      </p>
-                      <span className="fldlbl">{t('headers')}</span>
-                      {headers.map((header, index) =>
-                        header.removed ? null : (
-                          <div key={index} className="flex flex-wrap gap-2">
-                            <input
-                              className="inp min-w-0 flex-1"
-                              aria-label={t('headerName')}
-                              placeholder={t('headerName')}
-                              value={header.name}
-                              readOnly={header.saved}
-                              disabled={busy}
-                              required
-                              onChange={(event) =>
-                                setHeaders((rows) =>
-                                  rows.map((row, i) => (i === index ? { ...row, name: event.target.value } : row))
-                                )
-                              }
-                            />
-                            <input
-                              className="inp min-w-0 flex-1"
-                              type="password"
-                              autoComplete="new-password"
-                              aria-label={t('headerValue')}
-                              placeholder={header.saved ? t('keepValue') : t('headerValue')}
-                              value={header.value}
-                              disabled={busy}
-                              required={!header.saved}
-                              maxLength={8192}
-                              onChange={(event) =>
-                                setHeaders((rows) =>
-                                  rows.map((row, i) => (i === index ? { ...row, value: event.target.value } : row))
-                                )
-                              }
-                            />
-                            <Button
-                              variant="ghost"
-                              size="xs"
-                              disabled={busy}
-                              ariaLabel={t('removeHeader')}
-                              onClick={() =>
-                                setHeaders((rows) =>
-                                  rows.flatMap((row, i) =>
-                                    i !== index ? [row] : row.saved ? [{ ...row, value: '', removed: true }] : []
-                                  )
-                                )
-                              }
-                            >
-                              <Icon name="x" size={14} />
-                            </Button>
-                          </div>
-                        )
-                      )}
                       <Button
-                        variant="secondary"
-                        size="xs"
-                        disabled={busy || headers.length >= 32}
-                        onClick={() =>
-                          setHeaders((rows) => [...rows, { name: '', value: '', saved: false, removed: false }])
+                        type="submit"
+                        size="sm"
+                        disabled={
+                          busy ||
+                          duplicateHeaders ||
+                          (!entry.configured && !apiKey.trim()) ||
+                          /\s/.test(apiKey.trim()) ||
+                          (entry.endpointRequired && !endpoint.trim())
                         }
                       >
-                        {t('addHeader')}
+                        {busy ? t('saving') : t('save')}
                       </Button>
-                      <p className="text-[12px] text-(--text-secondary)">{t('headersHelp')}</p>
-                      {duplicateHeaders && (
-                        <p role="alert" className="text-[12px] text-(--status-error)">
-                          {t('duplicateHeaders')}
-                        </p>
-                      )}
                     </div>
-                  </details>
-                  {error && (
-                    <p role="alert" className="text-[12px] text-(--status-error)">
-                      {error}
-                    </p>
-                  )}
-                  <div className="flex justify-end gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={busy}
-                      onClick={() => {
-                        setEditing(null)
-                        setHeaders([])
-                        setApiKey('')
-                        setError(null)
-                      }}
-                    >
-                      {t('cancel')}
-                    </Button>
-                    <Button
-                      type="submit"
-                      size="sm"
-                      disabled={
-                        busy ||
-                        duplicateHeaders ||
-                        (!entry.configured && !apiKey.trim()) ||
-                        /\s/.test(apiKey.trim()) ||
-                        (entry.endpointRequired && !endpoint.trim())
-                      }
-                    >
-                      {busy ? t('saving') : t('save')}
-                    </Button>
-                  </div>
-                </form>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+                  </form>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       {deleting && (
         <ConfirmationDialog
           title={t('deleteTitle', { provider: deleting.name })}
