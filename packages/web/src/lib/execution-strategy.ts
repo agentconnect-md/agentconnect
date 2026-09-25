@@ -188,6 +188,20 @@ export function strategyRuntimeModels(runtimes: readonly RuntimeFacts[], value: 
   })
 }
 
+/** The serving members a group's `value` tab intersects: each whose table can run it, as that strategy starts its runtimes; one with no table keeps its merged list. */
+export function strategyMembers<T extends Pick<DaemonRow, 'caps' | 'runtimeModels'>>(
+  members: readonly T[],
+  value: string
+): T[] {
+  return members.flatMap((member) => {
+    const table = member.caps.strategies
+    if (!table) return [member]
+    return table[value]?.available
+      ? [{ ...member, runtimeModels: strategyRuntimeModels(member.runtimeModels, value) }]
+      : []
+  })
+}
+
 /** A daemon's facts as an agent in `value` picks its models: each runtime's list from its entry for that strategy, else an older daemon's single list; no strategy leaves them as reported. */
 export function strategyModelSource<T extends Pick<DaemonRow, 'runtimeModels'>>(
   source: T,

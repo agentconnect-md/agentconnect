@@ -1402,6 +1402,15 @@ reveals them with their existing login status. This is presentation only; discov
 and runtime selection keep the full inventory. Managed pools show their full image
 inventory directly.
 
+A daemon group's **Runtimes** section has the same tabs, names and order. A tab appears
+when at least one serving member's table offers the strategy, the rule the picker and
+placement apply to a group, and shows a probe reason when no serving member can run it.
+A tab lists only what every serving member able to run that strategy offers there,
+runtimes and models alike, read from their entries for it; a member that reports no
+table counts in every tab with its single list, and a group whose serving members all
+predate the table keeps one list. Login warnings name only the members a tab reads,
+and a tab that starts the image folds a runtime any of them lacks on the host.
+
 Every feature is supported in environments both **with and without** an OS sandbox,
 and a trusted agent may deliberately run unsandboxed. A sandbox is a best-effort
 isolation layer, never a precondition: no feature may fail closed just because the

@@ -36,6 +36,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
 import { useOrgs } from '@/lib/org-context'
 import { useModal } from '@/components/console/ModalProvider'
+import { useStrategyNames } from '@/components/console/ExecutionStrategyField'
 
 /** Bar colour tracks the reading — one scale across Infra, cluster, group and daemon detail. */
 export function barColor(pct: number): string {
@@ -187,6 +188,17 @@ export function intersectRuntimes(members: readonly DaemonRow[]): FleetRuntime[]
     })
   }
   return out
+}
+
+/** The runtimes a non-host tab folds away: in the image but not on the host, per the members' readings for that tab. */
+export function imageOnlyRuntimeIds(members: readonly Pick<DaemonRow, 'runtimeModels'>[]): Set<string> {
+  return new Set(
+    members.flatMap((m) =>
+      m.runtimeModels
+        .filter((rt) => rt.hostAvailable === false && !rt.unavailableReason)
+        .map((rt) => rt.aliasOf ?? rt.runtime)
+    )
+  )
 }
 
 /** One cell of a detail page's metric column. */
@@ -401,6 +413,63 @@ function EmptyTile({ title, hint }: { title: string; hint?: string }) {
   )
 }
 
+/** A Runtimes card's strategy tabs, named and described as the picker names them; a lone strategy is a plain label. */
+export function StrategyTabs({
+  tabs,
+  value,
+  onChange
+}: {
+  tabs: readonly string[]
+  value: string
+  onChange: (slug: string) => void
+}) {
+  const t = useTranslations('Common.fleetDetail')
+  const names = useStrategyNames()
+  if (tabs.length === 0) return null
+  if (tabs.length === 1)
+    return (
+      <span
+        className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
+        title={names.detail(tabs[0]!)}
+      >
+        {names.name(tabs[0]!)}
+      </span>
+    )
+  return (
+    <div className="pillbar" role="group" aria-label={t('runtimeEnvironment')}>
+      {tabs.map((slug) => (
+        <button
+          key={slug}
+          type="button"
+          className={value === slug ? 'pill on px-[10px] py-1 text-[12px]' : 'pill px-[10px] py-1 text-[12px]'}
+          aria-pressed={value === slug}
+          title={names.detail(slug)}
+          onClick={() => onChange(slug)}
+        >
+          {names.name(slug)}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** Reveals the runtimes a tab folds away because they are in the image but not on the host. */
+export function HostMissingToggle({ count, shown, onToggle }: { count: number; shown: boolean; onToggle: () => void }) {
+  const t = useTranslations('Common.fleetDetail')
+  if (count === 0) return null
+  return (
+    <button
+      type="button"
+      aria-expanded={shown}
+      onClick={onToggle}
+      className="flex w-full cursor-pointer items-center gap-2 border-0 border-t border-(--border-subtle) bg-transparent px-4 py-3 text-left font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover)"
+    >
+      <Icon name={shown ? 'chevron-up' : 'chevron-down'} size={14} className="flex-none" />
+      {shown ? t('hideHostMissing', { count }) : t('showHostMissing', { count })}
+    </button>
+  )
+}
+
 // The runtimes a set offers, each disclosing its models. A real button, not the design's hover
 // target: the model list is the only place a set's models are readable, and a pointer is not the
 // only input.
@@ -442,14 +511,21 @@ export function FleetRuntimesCard({
 
   return (
     <div className="card mb-[18px]">
-      <div className="cardhead">
+      {/* Wraps so tabs beside a note drop below it on a phone rather than overflowing. */}
+      <div className="cardhead flex-wrap">
         <span className="cardtitle">{title}</span>
-        {headerActions && <div className="ml-auto">{headerActions}</div>}
         {note && (
-          <span className="ml-auto font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+          <span
+            className={
+              headerActions
+                ? 'font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)'
+                : 'ml-auto font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)'
+            }
+          >
             {note}
           </span>
         )}
+        {headerActions && <div className="ml-auto">{headerActions}</div>}
       </div>
       {runtimes.length > 0 ? (
         <TileGrid>

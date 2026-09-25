@@ -25,21 +25,36 @@ import {
   FleetRuntimesCard,
   FleetStat,
   FleetStatColumn,
+  HostMissingToggle,
+  StrategyTabs,
   barColor,
+  imageOnlyRuntimeIds,
   intersectRuntimes
 } from '@/components/console/FleetDetail'
+import { useStrategyNames } from '@/components/console/ExecutionStrategyField'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
+import {
+  agentStrategyValue,
+  groupStrategies,
+  HOST_STRATEGY,
+  sortStrategies,
+  strategyMembers
+} from '@/lib/execution-strategy'
 import { useOrgs } from '@/lib/org-context'
 
 export default function GroupDetailView() {
   const t = useTranslations('Daemons.groupDetail')
+  const tf = useTranslations('Common.fleetDetail')
+  const strategyNames = useStrategyNames()
   const { orgPath } = useOrgs()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const { daemons, agents, agentsLoading, daemonsLoading, memberSets, memberSetsLoading } = useConsoleData()
   const { openModal } = useModal()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [runtimeTab, setRuntimeTab] = useState<string>(HOST_STRATEGY)
+  const [showHostMissing, setShowHostMissing] = useState(false)
 
   const group = useMemo(() => memberSets.find((g) => g.setId === id), [memberSets, id])
   const members = useMemo(
@@ -54,10 +69,6 @@ export default function GroupDetailView() {
     () => (group ? agents.filter((a) => isSetPlacementKind(a.placementKind) && a.setId === group.setId) : []),
     [agents, group]
   )
-  // INTERSECTED, not unioned: a group's members are machines an operator enrolled, not the
-  // interchangeable replicas a pool rolls, and an agent here lands on whichever one is serving.
-  // A runtime that only some members have is therefore not one the group can run.
-  const runtimes = useMemo(() => intersectRuntimes(serving), [serving])
   // Agents PINNED to a member, per member. They are not the group's — a pinned agent names one
   // machine and stays there — but they are why a member's load is what it is.
   const pinnedByDaemon = useMemo(() => {
@@ -113,6 +124,36 @@ export default function GroupDetailView() {
       : members.length <= 3
         ? members.map((m) => m.name).join(', ')
         : t('daemonCount', { count: members.length })
+
+  // One tab per strategy any serving member offers, as the picker reads a group; no member table keeps one merged list.
+  const placement = groupStrategies(serving.map((m) => m.caps))
+  const table = placement.kind === 'table' ? placement.table : undefined
+  const runtimeTabs = table ? sortStrategies(Object.keys(table)) : []
+  const runtimeStrategy = runtimeTabs.includes(runtimeTab) ? runtimeTab : (runtimeTabs[0] ?? HOST_STRATEGY)
+  const tableEntry = table?.[runtimeStrategy]
+  const strategyDown = tableEntry?.available === false
+  const strategyDownReason = tableEntry && !tableEntry.available ? tableEntry.reason : undefined
+  const tabMembers = !table ? serving : strategyDown ? [] : strategyMembers(serving, runtimeStrategy)
+  // Intersected, not unioned: an agent here lands on whichever member is serving, so only what they all offer can run.
+  const tabRuntimes = intersectRuntimes(tabMembers)
+  const imageOnly = table && runtimeStrategy !== HOST_STRATEGY ? imageOnlyRuntimeIds(tabMembers) : new Set<string>()
+  const hostMissingIds = new Set(tabRuntimes.filter((rt) => imageOnly.has(rt.runtime)).map((rt) => rt.runtime))
+  const runtimes = tabRuntimes.filter((rt) => showHostMissing || !hostMissingIds.has(rt.runtime))
+  const runtimeAgents = table ? hosted.filter((a) => agentStrategyValue(a) === runtimeStrategy) : hosted
+  const runtimeEmpty =
+    members.length === 0
+      ? t('noRuntimesNoMembers')
+      : serving.length === 0
+        ? t('noRuntimesNoServing')
+        : strategyDownReason
+          ? t('strategyReason', { strategy: strategyNames.name(runtimeStrategy), reason: strategyDownReason })
+          : strategyDown
+            ? t('strategyUnavailable', { strategy: strategyNames.name(runtimeStrategy) })
+            : hostMissingIds.size > 0
+              ? tf('expandHostMissing')
+              : tabMembers.length === 1
+                ? t('noRuntimesUnadvertised')
+                : t('noRuntimesIntersection')
 
   return (
     <div className="wrap max-w-[1240px] px-4 pt-[14px] pb-1 desktop:p-0">
@@ -225,15 +266,15 @@ export default function GroupDetailView() {
         title={t('runtimes')}
         note={t('runtimesNote')}
         runtimes={runtimes}
-        agents={hosted}
-        empty={
-          members.length === 0
-            ? t('noRuntimesNoMembers')
-            : serving.length === 0
-              ? t('noRuntimesNoServing')
-              : serving.length === 1
-                ? t('noRuntimesUnadvertised')
-                : t('noRuntimesIntersection')
+        agents={runtimeAgents}
+        empty={runtimeEmpty}
+        headerActions={table && <StrategyTabs tabs={runtimeTabs} value={runtimeStrategy} onChange={setRuntimeTab} />}
+        footer={
+          <HostMissingToggle
+            count={hostMissingIds.size}
+            shown={showHostMissing}
+            onToggle={() => setShowHostMissing((shown) => !shown)}
+          />
         }
       />
 
