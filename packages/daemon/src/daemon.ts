@@ -1795,6 +1795,8 @@ export class Daemon {
       sandboxMechanism?: SandboxMechanism | null
       /** Test seam for the microsandbox host check (Linux, a usable /dev/kvm): why this host cannot run a VM, or undefined. */
       microsandboxHost?: () => string | undefined
+      /** Test seam for msb's install on the VM strategy's first use; the real one fetches the pinned package. */
+      installMicrosandbox?: typeof installMicrosandbox
       /** `--k8s`: runtimes live in sandbox pods, not on this host. Disables runtime
        *  probing, host executable discovery (the image declares its runtimes instead),
        *  the SRT mechanism, and the self-installing upgrade path. */
@@ -2508,7 +2510,10 @@ export class Daemon {
       const readiness = (async () => {
         open()
         const installed =
-          this.microsandbox ?? (await installMicrosandbox(this.microsandboxInstallOptions(this.cfg, this.root)))
+          this.microsandbox ??
+          (await (this.opts.installMicrosandbox ?? installMicrosandbox)(
+            this.microsandboxInstallOptions(this.cfg, this.root)
+          ))
         open()
         const manager = (this.microsandbox ??= installed)
         await manager.recover()

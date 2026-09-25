@@ -7,11 +7,7 @@ import { Daemon } from '../src/daemon.js'
 import { agentHostKey } from '../src/acp/host-key.js'
 
 // msb's install, which tests control rather than fetch.
-const install = vi.hoisted(() => vi.fn(async (): Promise<unknown> => Promise.reject(new Error('tests install no msb'))))
-vi.mock('../src/microsandbox/install.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../src/microsandbox/install.js')>()),
-  installMicrosandbox: install
-}))
+const install = vi.fn(async (): Promise<unknown> => Promise.reject(new Error('tests install no msb')))
 
 const AGENT_ID = 'bot-a'
 const NO_KVM = 'microsandbox requires KVM, but this daemon cannot open /dev/kvm: the device is absent'
@@ -60,6 +56,7 @@ async function boot(
     root: opts.root ?? scaffold(),
     sandboxMechanism: opts.srt ? 'bwrap' : null,
     microsandboxHost: () => (opts.kvm ? undefined : NO_KVM),
+    installMicrosandbox: install as never,
     ...(opts.hosts === false
       ? {}
       : { hostFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn(async () => {}) }) as never })
