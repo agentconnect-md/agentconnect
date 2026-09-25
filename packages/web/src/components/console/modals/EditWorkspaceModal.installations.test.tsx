@@ -45,6 +45,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 }))
 
 import EditWorkspaceModal from './EditWorkspaceModal'
+import { fetchGithubRepoRoster } from '@/lib/api'
 import { grantableInstallations } from './AddAgentRepoModal'
 
 const agent = { id: 'agent-a', name: 'build-agent', canEdit: true, workspace: { mode: 'scratch' } } as unknown as Agent
@@ -213,6 +214,38 @@ describe('EditWorkspaceModal installation grants', () => {
     })
     expect(onChange).toHaveBeenCalledWith([grant(), created])
     expect(grantRow(23456)?.textContent).toContain('All repositories in example-org')
+  })
+
+  it('groups the picker by account, in installation order: the installation first, then its repositories', async () => {
+    const repo = (fullName: string, installationId: string) => ({
+      fullName,
+      private: false,
+      defaultBranch: 'main',
+      description: null,
+      updatedAt: null,
+      installationId
+    })
+    // Edit workspace's own repository field reads the roster too, so every read answers with these two.
+    vi.mocked(fetchGithubRepoRoster).mockResolvedValue({
+      repos: [repo('example-org/tools', 'inst-example'), repo('acme/api', 'inst-acme')],
+      privateReposHidden: false,
+      failed: false
+    })
+    await render([grant()])
+    await openPicker()
+
+    const groups = Array.from(document.querySelectorAll('[data-picker-group]')).map((group) => [
+      group.getAttribute('data-picker-group'),
+      Array.from(group.querySelectorAll('button')).map(
+        (option) => option.getAttribute('data-installation') ?? option.querySelector('[title]')?.getAttribute('title')
+      )
+    ])
+    // acme is already granted, so its group lists only its repository.
+    expect(groups).toEqual([
+      ['acme', ['acme/api']],
+      ['example-org', ['23456', 'example-org/tools']]
+    ])
+    vi.mocked(fetchGithubRepoRoster).mockResolvedValue({ repos: [], privateReposHidden: false, failed: false })
   })
 
   it('shows the server refusal and stays on the step', async () => {

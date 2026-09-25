@@ -580,11 +580,12 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
    - The same section lists installation grants as "All repositories in
      `<account>`" with the GitHub mark, the access toggle, the checkout menu and
      a revoke action. There is no separate installation entry: **Authorize
-     repository**'s GitHub picker lists, first, "All repositories in
-     `<account>`" for each live, unsuspended installation the agent does not
-     hold yet, and picking one keeps the same **Read only** / **Read & write**
-     choice (default read) with a write option that names every repository as
-     its reach, offers **By decision** / **On demand** (default **On
+     repository**'s GitHub picker groups its choices by account, in
+     installation order: each group opens with "All repositories in
+     `<account>`" when that live, unsuspended installation is not held yet,
+     then lists the account's repositories. Picking an installation keeps the
+     same **Read only** / **Read & write** choice (default read) with a write
+     option that names every repository as its reach, offers **By decision** / **On demand** (default **On
      demand**), and creates the grant. The Workspace card counts rows and
      grants apart (`+3 repos · 1 org`). The Workspace card's dropdown lists
      each grant, as the dialog does, with the same controls. Both are

@@ -466,6 +466,98 @@ export default function AddAgentRepoModal({
     mark: <CodeHostMark provider={v} color="var(--text-primary)" />
   }))
 
+  // The GitHub picker groups by account: its "All repositories" choice first, then its repositories, in installation order.
+  const pickerGroups = (() => {
+    const order = (gh?.installations ?? []).map((installation) => installation.accountLogin.toLowerCase())
+    type PickerGroup = { key: string; account: string; installation?: GithubInstallationDto; repos: typeof matches }
+    const groups = new Map<string, PickerGroup>()
+    const groupOf = (account: string) => {
+      const key = account.toLowerCase()
+      const existing = groups.get(key)
+      if (existing) return existing
+      const created: PickerGroup = { key, account, repos: [] }
+      groups.set(key, created)
+      return created
+    }
+    for (const installation of installationMatches) groupOf(installation.accountLogin).installation = installation
+    for (const r of matches) groupOf(r.fullName.split('/')[0] ?? r.fullName).repos.push(r)
+    const rank = (key: string) => (order.includes(key) ? order.indexOf(key) : order.length)
+    return [...groups.values()].sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key))
+  })()
+  const installationOption = (installation: GithubInstallationDto) => (
+    <button
+      key={`installation:${installation.installationId}`}
+      type="button"
+      data-installation={installation.installationId}
+      aria-disabled={canAuthorizeInstallation ? undefined : true}
+      title={canAuthorizeInstallation ? undefined : tWorkspace('installationOwnerOnly')}
+      className={
+        canAuthorizeInstallation
+          ? 'fopt min-h-[46px] items-center gap-3 px-2 py-2'
+          : 'fopt min-h-[46px] cursor-default items-center gap-3 px-2 py-2 opacity-55'
+      }
+      onClick={() => chooseInstallation(installation.installationId)}
+    >
+      <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
+        <GithubMark color="var(--text-secondary)" />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+        <span className="block w-full min-w-0 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+          {tWorkspace.rich('allRepositoriesIn', {
+            account: installation.accountLogin,
+            mono: (chunks) => <span className="mono">{chunks}</span>
+          })}
+        </span>
+        <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          {installation.repositorySelection === 'all'
+            ? tInstallation('allRepositories')
+            : tInstallation('selectedRepositories')}
+        </span>
+      </span>
+      {pickInstallation === installation.installationId && <Icon name="check" size={17} color="var(--brand)" />}
+    </button>
+  )
+  const repositoryOption = (r: (typeof matches)[number]) => {
+    const taken = isWorkspace(r.fullName) || isAuthorized(r.fullName)
+    return (
+      <button
+        key={r.fullName}
+        className={`fopt min-h-[46px] items-center gap-3 px-2 py-2 ${taken ? 'cursor-default opacity-55' : ''}`}
+        disabled={taken}
+        onClick={() => chooseRepository(r.fullName)}
+      >
+        <Icon
+          name={r.private ? 'lock' : 'book-bookmark'}
+          size={16}
+          color="var(--text-tertiary)"
+          className="flex-none"
+        />
+        <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+          <span
+            className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)"
+            title={r.fullName}
+          >
+            {r.fullName}
+          </span>
+          <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            {isWorkspace(r.fullName)
+              ? t('workspaceCovered')
+              : isAuthorized(r.fullName)
+                ? t('alreadyAuthorized')
+                : (r.description ?? t('noDescription'))}
+          </span>
+        </span>
+        {isWorkspace(r.fullName) ? (
+          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">{t('workspace')}</span>
+        ) : isAuthorized(r.fullName) ? (
+          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">{t('added')}</span>
+        ) : (
+          pick.toLowerCase() === r.fullName.toLowerCase() && <Icon name="check" size={17} color="var(--brand)" />
+        )}
+      </button>
+    )
+  }
+
   // Each host's own picker — GitHub's installation roster, GitLab's project list. Total over the
   // providers, so a new code host brings its own pane instead of inheriting the first one's; one
   // whose console surface does not exist yet says so rather than rendering another host's.
@@ -684,87 +776,13 @@ export default function AddAgentRepoModal({
                       </button>
                     </div>
                   )}
-                  {installationMatches.map((installation) => (
-                    <button
-                      key={`installation:${installation.installationId}`}
-                      type="button"
-                      data-installation={installation.installationId}
-                      aria-disabled={canAuthorizeInstallation ? undefined : true}
-                      title={canAuthorizeInstallation ? undefined : tWorkspace('installationOwnerOnly')}
-                      className={
-                        canAuthorizeInstallation
-                          ? 'fopt min-h-[46px] items-center gap-3 px-2 py-2'
-                          : 'fopt min-h-[46px] cursor-default items-center gap-3 px-2 py-2 opacity-55'
-                      }
-                      onClick={() => chooseInstallation(installation.installationId)}
-                    >
-                      <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
-                        <GithubMark color="var(--text-secondary)" />
-                      </span>
-                      <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
-                        <span className="block w-full min-w-0 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-                          {tWorkspace.rich('allRepositoriesIn', {
-                            account: installation.accountLogin,
-                            mono: (chunks) => <span className="mono">{chunks}</span>
-                          })}
-                        </span>
-                        <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                          {installation.repositorySelection === 'all'
-                            ? tInstallation('allRepositories')
-                            : tInstallation('selectedRepositories')}
-                        </span>
-                      </span>
-                      {pickInstallation === installation.installationId && (
-                        <Icon name="check" size={17} color="var(--brand)" />
-                      )}
-                    </button>
+                  {pickerGroups.map((group) => (
+                    <div key={group.key} role="group" aria-label={group.account} data-picker-group={group.key}>
+                      <div className="fhdr">{group.account}</div>
+                      {group.installation && installationOption(group.installation)}
+                      {group.repos.map(repositoryOption)}
+                    </div>
                   ))}
-                  {matches.map((r) => {
-                    const taken = isWorkspace(r.fullName) || isAuthorized(r.fullName)
-                    return (
-                      <button
-                        key={r.fullName}
-                        className={`fopt min-h-[46px] items-center gap-3 px-2 py-2 ${taken ? 'cursor-default opacity-55' : ''}`}
-                        disabled={taken}
-                        onClick={() => chooseRepository(r.fullName)}
-                      >
-                        <Icon
-                          name={r.private ? 'lock' : 'book-bookmark'}
-                          size={16}
-                          color="var(--text-tertiary)"
-                          className="flex-none"
-                        />
-                        <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
-                          <span
-                            className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)"
-                            title={r.fullName}
-                          >
-                            {r.fullName}
-                          </span>
-                          <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                            {isWorkspace(r.fullName)
-                              ? t('workspaceCovered')
-                              : isAuthorized(r.fullName)
-                                ? t('alreadyAuthorized')
-                                : (r.description ?? t('noDescription'))}
-                          </span>
-                        </span>
-                        {isWorkspace(r.fullName) ? (
-                          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                            {t('workspace')}
-                          </span>
-                        ) : isAuthorized(r.fullName) ? (
-                          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                            {t('added')}
-                          </span>
-                        ) : (
-                          pick.toLowerCase() === r.fullName.toLowerCase() && (
-                            <Icon name="check" size={17} color="var(--brand)" />
-                          )
-                        )}
-                      </button>
-                    )
-                  })}
                   {typedRepo && !typedIsListed && !typedTaken && (
                     <button
                       key={`typed:${typedRepo}`}
