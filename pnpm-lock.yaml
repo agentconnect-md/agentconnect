@@ -320,7 +320,7 @@ importers:
         version: 1.43.0
       '@slack/bolt':
         specifier: ^5.1.0
-        version: 5.1.0(@types/express@5.0.6)(supports-color@7.2.0)(undici@8.11.0)
+        version: 5.1.0(@types/express@5.0.6)(supports-color@7.2.0)(undici@8.11.2)
       '@slack/web-api':
         specifier: ^8.1.0
         version: 8.1.1
@@ -373,8 +373,8 @@ importers:
         specifier: 7.5.22
         version: 7.5.22
       undici:
-        specifier: ^8.11.0
-        version: 8.11.0
+        specifier: ^8.11.2
+        version: 8.11.2
       unique-names-generator:
         specifier: ^4.7.1
         version: 4.7.1
@@ -568,8 +568,8 @@ importers:
         specifier: ^5.12.5
         version: 5.12.5
       undici:
-        specifier: ^8.11.0
-        version: 8.11.0
+        specifier: ^8.11.2
+        version: 8.11.2
       ws:
         specifier: ^8.21.1
         version: 8.21.3
@@ -8821,6 +8821,10 @@ packages:
     resolution: {integrity: sha512-AdzuGcAkzhbha3GgCSoUBx2P0quwym6qdFNCQz/fDGZc8w9XJ741wHUbt2kTmfPz+ZIOMkySFkiY7RXmiDDC8w==}
     engines: {node: '>=22.19.0'}
 
+  undici@8.11.2:
+    resolution: {integrity: sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ==}
+    engines: {node: '>=22.19.0'}
+
   unicode-emoji-modifier-base@1.0.0:
     resolution: {integrity: sha512-yLSH4py7oFH3oG/9K+XWrz1pSi3dfUrWEnInbxMfArOfc1+33BlGPQtLsOYwvdMy11AwUBetYuaRxSPqgkq+8g==}
     engines: {node: '>=4'}
@@ -11986,11 +11990,11 @@ snapshots:
 
   '@sindresorhus/merge-streams@4.0.0': {}
 
-  '@slack/bolt@5.1.0(@types/express@5.0.6)(supports-color@7.2.0)(undici@8.11.0)':
+  '@slack/bolt@5.1.0(@types/express@5.0.6)(supports-color@7.2.0)(undici@8.11.2)':
     dependencies:
       '@slack/logger': 5.0.0
       '@slack/oauth': 4.0.0
-      '@slack/socket-mode': 3.0.1(undici@8.11.0)
+      '@slack/socket-mode': 3.0.1(undici@8.11.2)
       '@slack/types': 3.1.0
       '@slack/web-api': 8.1.1
       '@types/express': 5.0.6
@@ -12014,13 +12018,13 @@ snapshots:
       '@types/node': 24.13.6
       jsonwebtoken: 9.0.3
 
-  '@slack/socket-mode@3.0.1(undici@8.11.0)':
+  '@slack/socket-mode@3.0.1(undici@8.11.2)':
     dependencies:
       '@slack/logger': 5.0.0
       '@slack/web-api': 8.1.1
       '@types/node': 24.13.6
       eventemitter3: 5.0.4
-      undici: 8.11.0
+      undici: 8.11.2
 
   '@slack/types@3.1.0': {}
 
@@ -18038,6 +18042,8 @@ snapshots:
   undici@8.10.0: {}
 
   undici@8.11.0: {}
+
+  undici@8.11.2: {}
 
   unicode-emoji-modifier-base@1.0.0: {}
 
