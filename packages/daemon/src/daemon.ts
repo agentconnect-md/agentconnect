@@ -476,7 +476,6 @@ import {
   type PlacementChoice
 } from './execution/executor-placement.js'
 import { HOSTED_PREFIX, microsandboxLauncher } from './execution/executor-vm.js'
-import { hostShimUnavailableReason } from './execution/host-shim.js'
 import { LocalExecutor } from './execution/local-executor.js'
 import {
   localSrtEnvironmentId,
@@ -2430,21 +2429,19 @@ export class Daemon {
       log: this.log,
       clock: this.clock
     })
-    // A confined srt session's shim is bound the same way, by the one srt launcher the facet's hosted environments use too; a host shim needs Linux, so elsewhere SRT still wraps each runtime alone.
-    if (!hostShimUnavailableReason()) {
-      this.localSrt = srtLauncher(root, {
-        ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
-        readRoots: () => this.srtShimReadRoots(),
-        now: () => this.clock.now()
-      })
-      this.localSrtExecutor = new LocalExecutor({
-        launcher: this.localSrt,
-        generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
-        tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
-        log: this.log,
-        clock: this.clock
-      })
-    }
+    // A confined srt session's shim is bound the same way, by the one srt launcher the facet's hosted environments use too.
+    this.localSrt = srtLauncher(root, {
+      ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
+      readRoots: () => this.srtShimReadRoots(),
+      now: () => this.clock.now()
+    })
+    this.localSrtExecutor = new LocalExecutor({
+      launcher: this.localSrt,
+      generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
+      tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      log: this.log,
+      clock: this.clock
+    })
     // A withdrawn srt confines nothing, not even a probe.
     if (cfg.sandbox.srt) this.logSandboxPreflight()
     else this.sandboxMechanism = undefined
@@ -19832,7 +19829,7 @@ export class Daemon {
         const agent = this.agents.get(agentId)
         const sessionKey = hostKeySessionKey(key)
         const srt = agent && this.localSrtEnvironment(agent, sessionKey, this.sessionStrategy(agent, sessionKey))
-        if (srt && this.localSrt && !(await this.localSrt.stopUnlessBusy(srt.id))) {
+        if (srt && !(await this.localSrt!.stopUnlessBusy(srt.id))) {
           this.log.info(`srt: environment ${srt.id} is still in use — left for the idle sweep`)
         }
       })

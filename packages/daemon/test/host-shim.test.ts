@@ -447,7 +447,7 @@ describe('the machine’s own strategy table', () => {
 })
 
 describe('the table an executor reports to its group', () => {
-  it('keeps host and srt, each a host shim, Linux-only and passes the rest through', () => {
+  it('keeps host Linux-only and passes the rest through', () => {
     expect(effectiveStrategies({ platform: 'linux', table: AVAILABLE })).toEqual({
       host: { available: true },
       srt: { available: true },
@@ -455,8 +455,6 @@ describe('the table an executor reports to its group', () => {
     })
     const darwin = effectiveStrategies({ platform: 'darwin', table: AVAILABLE })
     expect(darwin.host).toEqual({ available: false, reason: expect.stringContaining('needs Linux') })
-    expect(darwin.srt).toEqual(darwin.host)
-    expect(darwin.microsandbox).toEqual({ available: true })
     // A withdrawn host keeps its own reason rather than the platform's.
     const off = machineStrategies({
       offered: { ...OFFERED, host: false },

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sessionKeyDirName } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
-import { localSrtRuntimeRoot, srtLauncher } from '../src/execution/srt-local.js'
+import { localSrtRuntimeRoot } from '../src/execution/srt-local.js'
 import type { GitExecPayload } from '../src/shim/git-exec.js'
 import { inProcessShimExecutor } from './fixtures/in-process-shim.js'
 
@@ -55,9 +55,7 @@ async function started(execution: string) {
   mkdirSync(join(layout.sessionDir, 'workspace'), { recursive: true })
   execFileSync('git', ['init', '-q', '--initial-branch=main'], { cwd: join(layout.sessionDir, 'workspace') })
   const executor = inProcessShimExecutor()
-  // The shim itself needs Linux; its handlers run anywhere.
   d.localSrtExecutor = executor
-  d.localSrt ??= srtLauncher(layout.root, { readRoots: () => [] })
   const stopMatching = vi.spyOn(d.localSrt, 'stopMatching')
   return { ...layout, daemon, d, executor, stopMatching }
 }
