@@ -96,15 +96,16 @@ export function normalizeSandboxMounts(
   guestHome?: string
 ): SandboxMount[] {
   const normalized = new Map<string, SandboxMount>()
+  // The operator's modes per target, before SRT degrades an overlay, so a conflict is caught for every strategy alike.
+  const requestedModes = new Map<string, SandboxMount['mode']>()
   for (const mount of mounts) {
     const source = existingRoot(mount.source, env, 'sandbox.mounts source')
     const target =
       backend === 'srt'
         ? existingRoot(mount.target, env, 'sandbox.mounts target')
         : guestMountTarget(mount.target, guestHome)
-    if (backend !== 'microsandbox' && mount.mode === 'overlay') {
-      throw new Error('sandbox.mounts mode=overlay requires microsandbox')
-    }
+    // SRT has no copy-on-write layer, so an overlay base is mounted read-only there.
+    const requested = backend !== 'microsandbox' && mount.mode === 'overlay' ? 'readonly' : mount.mode
     if (backend === 'srt' && source !== target) {
       throw new Error('sandbox.mounts requires source and target to be the same path for srt')
     }
@@ -121,10 +122,12 @@ export function normalizeSandboxMounts(
     if (previous && previous.source !== source) {
       throw new Error(`sandbox.mounts cannot map different sources to the same target: ${target}`)
     }
-    if (previous && previous.mode !== mount.mode && [previous.mode, mount.mode].includes('overlay')) {
+    const previousRequested = requestedModes.get(target)
+    if (previousRequested && previousRequested !== mount.mode && [previousRequested, mount.mode].includes('overlay')) {
       throw new Error(`sandbox.mounts cannot combine overlay and bind modes at the same target: ${target}`)
     }
-    const mode = previous?.mode === 'writable' ? previous.mode : mount.mode
+    requestedModes.set(target, mount.mode)
+    const mode = previous?.mode === 'writable' ? previous.mode : requested
     normalized.set(target, { source, target, mode })
   }
   const result = [...normalized.values()]

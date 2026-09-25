@@ -189,7 +189,20 @@ describe('trusted runtime read roots', () => {
     expect(normalizeSandboxMounts(normalized, {}, 'microsandbox', '/session/home')[0]!.target).toBe(
       '/session/home/.cache/store'
     )
-    expect(() => normalizeSandboxMounts([{ ...mount, target: root }])).toThrow('requires microsandbox')
+    // SRT mounts an overlay base read-only; a renamed target stays unsupported there.
+    expect(normalizeSandboxMounts([{ ...mount, target: root }])).toEqual([
+      { source: realpathSync(root), target: realpathSync(root), mode: 'readonly' }
+    ])
+    expect(() => normalizeSandboxMounts([{ ...mount, target: tmpdir() }])).toThrow(/same path for srt/)
+    // The degrade never turns an overlay/bind conflict into a writable grant.
+    for (const other of ['writable', 'readonly'] as const) {
+      expect(() =>
+        normalizeSandboxMounts([
+          { ...mount, target: root },
+          { ...mount, target: root, mode: other }
+        ])
+      ).toThrow(/cannot combine overlay and bind modes/)
+    }
     const file = join(root, 'file')
     writeFileSync(file, '')
     expect(() => normalizeSandboxMounts([{ ...mount, source: file }], {}, 'microsandbox')).toThrow(
