@@ -67,6 +67,8 @@ export interface AssembleRuntimeLaunchOptions {
   executor?: { home: string }
   /** A session whose clones are off this disk: their `.git` where they are (see prepareRuntimeLaunch). */
   sessionGitDirs?: string[]
+  /** A confined session launched through the SRT-wrapped shim rooted here (see prepareRuntimeLaunch). */
+  srtShim?: { runtimeRoot: string }
 }
 
 /** The single launch-assembly entry: turn `*_DATA` secrets (from either env, so an explicit pointer anywhere wins) into files and pointers, merge the child env, then compose the launch. */
@@ -100,6 +102,7 @@ export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): Assem
     ...(opts.microsandbox ? { microsandbox: opts.microsandbox } : {}),
     ...(opts.executor ? { executor: opts.executor } : {}),
     ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
+    ...(opts.srtShim ? { srtShim: opts.srtShim } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
     provider: opts.provider,

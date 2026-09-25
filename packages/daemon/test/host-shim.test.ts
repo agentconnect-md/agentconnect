@@ -347,6 +347,7 @@ describe('the host launcher', () => {
         token: 't',
         missingHelpers: ['gitCredentialHelper'],
         exited: new Promise(() => {}),
+        quiet: () => () => {},
         stop: async () => {}
       }
     })

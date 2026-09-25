@@ -553,6 +553,63 @@ describe('prepareRuntimeLaunch', () => {
     expect(table).not.toContain(`"${realpathSync(dirname(store))}" = "write"`)
   })
 
+  // session-executors.md §11: its shim is the boundary, composed from the mounts; nothing per host is written for it.
+  it('launches a confined session through its SRT-wrapped shim: mounts in place of a per-host policy, the shim temp root and tunnel', () => {
+    const { scopeDir, hostHome, key, sessionDir, cwd, primaryGit } = sessionCloneFixture()
+    const runtimeRoot = join(dirname(scopeDir), 'hs', '0a1b2c3d4e5f')
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: key,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      trustedWorkspaceWriteRoots: [sessionDir],
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      srtShim: { runtimeRoot },
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+    expect(launch.sandbox).toBeUndefined()
+    expect(launch.srt!.workspaceRoot).toBe(realpathSync(sessionDir))
+    const writable = launch.srt!.mounts.filter((mount) => mount.mode === 'writable').map((mount) => mount.source)
+    const readonly = launch.srt!.mounts.filter((mount) => mount.mode === 'readonly').map((mount) => mount.source)
+    expect(coveredBy(writable, realpathSync(sessionDir))).toBe(true)
+    expect(coveredBy(writable, realpathSync(primaryGit))).toBe(false)
+    expect(readonly.some((path) => writable.includes(path))).toBe(false)
+    for (const mount of launch.srt!.mounts) expect(mount.target).toBe(mount.source)
+    // The shim's own short temp root and its git-credential tunnel, never this host's temp dir or socket.
+    expect(launch.env.TMPDIR).toBe(join(runtimeRoot, 't'))
+    expect(launch.env.CLAUDE_CODE_TMPDIR).toBe(join(runtimeRoot, 't'))
+    expect(launch.env[SANDBOX_TEMP_DIR_ENV]).toBeUndefined()
+    expect(launch.env.AC_GITCRED_SOCKET).toBe(join(runtimeRoot, 'gitcred.sock'))
+    expect(existsSync(sandboxTempDirFor(scopeDir, key))).toBe(false)
+    expect(existsSync(join(scopeDir, '.agentconnect', 'sandbox', hostKeyDirName(key)))).toBe(false)
+    // The runtime's inner profile is composed exactly as it is for a runtime wrapped alone.
+    expect(launch.toolSandbox).toBeDefined()
+    expect(agentFilesystem(launch.env)).toContain(`"${realpathSync(join(sessionDir, 'workspace', '.git'))}" = "write"`)
+  })
+
+  it("keeps an agent's shared host on the per-host policy until its shim path lands", () => {
+    const { scopeDir, hostHome } = fixture()
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
+      scopeDir,
+      cwd: join(scopeDir, 'workspace'),
+      hostKey: agentHostKey('bot-a'),
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      srtShim: { runtimeRoot: join(dirname(scopeDir), 'hs', '0a1b2c3d4e5f') },
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+    expect(launch.srt).toBeUndefined()
+    expect(launch.sandbox?.settingsPath).toBeDefined()
+  })
+
   // §11: the session's HOME lives under its leaf, so runtime state, temp and package caches are the session's alone and go with it.
   it('gives a confined session its own HOME under its leaf, seeded like the agent one and pointed at by the env', () => {
     const { scopeDir, hostHome, key, sessionDir, cwd } = sessionCloneFixture()

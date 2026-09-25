@@ -484,7 +484,7 @@ the shim requires:
   shim to the holder needs the identity token, which exists only in the shim's memory.
 
 **Landed on executors (R1a).** `srtLauncher` wraps the shim with the provider from
-the shim's own bundle, and the three changes above are in:
+the shim's own bundle, and the changes the probe found are in:
 
 - no `AC_SHIM_PARENT_FD` under the boundary; the shim's stdin stays open as its
   lifeline instead, so a stop that closes it drains the runtimes, and so does the
@@ -1280,9 +1280,9 @@ session and a spread one take the same path: the strategy's launcher prepares th
 environment and `RemoteShimDriver` drives the shim in it. Each strategy had two — the
 local microsandbox VM was keyed, driven and reached for Git differently from a hosted
 one, and a local `srt` session is a direct child with its own policy plumbing — and a
-fix to one did not reach the other. `microsandbox` now has one (step 4); `srt` has its
-launcher on executors (R1a) and still has two paths until its local sessions move
-onto it (R1b).
+fix to one did not reach the other. `microsandbox` now has one (step 4). `srt` has its
+launcher on executors (R1a), and a confined local session runs on it too (R1b-1); the
+agent's shared host still wraps each runtime alone until R1b-2.
 
 The local path reaches the launcher **in process**. It does not relay `prepare`
 through the Control Plane, open a pipe or run the TLS-PSK handshake: a local session
@@ -1352,16 +1352,29 @@ locally went, in four steps that each landed alone:
    executor path: a helper tunnel the shim cannot serve is logged by name and the VM
    still runs, where the bound mode refused the VM.
 
-**`srt` second**, on §5's launcher, in two steps. The launcher, the executor's policy
-and the spread landed first (R1a), so a remote `srt` session already runs inside an
-SRT-wrapped shim. Then local sessions move onto it (R1b), and the local direct SRT
-launch retires with them — the provider around each runtime, the
-per-host settings and temp directories, the host-socket injection for MCP and
-credentials, the local Git runner for confined sessions — and one `srt` policy
-remains. It needs steps 3 and 4 first: a `shared` confined agent runs in an
-agent-scoped descriptor through the in-process entry, one SRT-wrapped shim per host
-key as today's local path runs one ACP host per host key. It costs a shim per
-environment (§5).
+**`srt` second**, on §5's launcher, in three steps:
+
+1. **On executors — landed (R1a).** The launcher, the executor's policy and the
+   spread, so a remote `srt` session runs inside an SRT-wrapped shim.
+2. **Confined local sessions — landed (R1b-1).** A session with its own directory
+   launches through the in-process entry: `LocalExecutor` over the local srt launcher
+   (`execution/srt-local.ts`), one shim per session directory, bound by its token with
+   this daemon's complete launch env. The environment's runtime root is fixed by its
+   id, so the launch names the shim's temp root and its `gitcred` and `mcp` tunnels
+   before the shim starts, and this daemon's own sockets are not opened in the
+   boundary. The descriptor is the launch composition's write and read roots at their
+   host paths, which the shim's policy is composed from; nothing per host is written.
+   The shim goes with its host unless something holds it, and the session idle policy
+   stops one nothing uses, as it stops a local VM. The session's workspace Git still
+   runs on this host.
+3. **The rest — R1b-2.** Workspace Git and files over the shim for a confined
+   session; a `shared` confined agent in an agent-scoped descriptor, one SRT-wrapped
+   shim per host key as today's local path runs one ACP host per host key; and the
+   local direct SRT launch retires — the provider around each runtime, the per-host
+   settings and temp directories, the host-socket injection for MCP and credentials,
+   the local Git runner for confined sessions — so one `srt` policy remains.
+
+It costs a shim per environment (§5).
 
 **The unconfined direct path stays.** Local `host` is a child process with no
 boundary to share. Routing it through a shim would add a process and a socket to the
@@ -1414,22 +1427,23 @@ About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
 **The 2026-09-24 revision** adds the following. S1, S2a, S2b, S2c, S3 and M1–M4 have
-landed, and so has R1a; R1b has not. Each lands alone; S1–S3 are one feature,
+landed, and so have R1a and R1b-1; R1b-2 has not. Each lands alone; S1–S3 are one feature,
 S2 lands in three parts, M1–M4 precede R1, and R1 lands in two parts.
 
-| PR  | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1  | Protocol and CP: the agent's `execution` slug beside `runInSandbox`; the daemon's own effective strategy table at registration, in the executor report's shape, and its legacy backend for the migration; the one-time backfill; validation of `execution` against the placement's tables in place of the two sandbox conflicts; per-strategy runtime entries in `facts/daemon-runtimes` (availability, `models`, `modelsSource`) and those entries on each candidate runtime, the birth strategy in the CP's hint, and the `strategy_mismatch` refusal. |
-| S2a | Daemon: the `sandbox` strategy table with the legacy mapping and on-by-default probes, reported at registration and by the facet in place of S1's reading of the single backend; launch dispatch on the agent's strategy instead of `sandbox.backend`, `srt` and `microsandbox` side by side in one process with a runtime catalog per strategy; refusal instead of downgrade; per-strategy entries in `facts/daemon-runtimes` from the host probe; the placement ask by strategy slug, `srt` staying on its holder until R1.                            |
-| S2b | Daemon: the birth strategy in the session's verdict, its upgrade backfill, and the executor's `strategy_mismatch` refusal.                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| S2c | Daemon: the image runtime's model probe per image identity; model selection judging targets against the candidates and the strategy's catalog, and placement landing a session only where its runtime and model run (§5).                                                                                                                                                                                                                                                                                                                                |
-| S3  | Console: the strategy picker per placement, plain names with the boundary in a tooltip, and unavailable reasons; the daemon's runtime list per strategy; the pool shows none.                                                                                                                                                                                                                                                                                                                                                                            |
-| M1  | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| M2  | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| M3  | The launcher takes an environment descriptor instead of a session leaf: hosted and local descriptors, identities unchanged, nothing migrated (§11 step 3).                                                                                                                                                                                                                                                                                                                                                                                               |
-| M4  | The in-process executor entry: local microsandbox launches through it, a local VM's shim starts exposed and `RemoteShimDriver` binds it, every `withShim` caller (Git, workspace files, skills) moves to the entry's `withEnvironment`, and the bound shim mode retires (§11 step 4).                                                                                                                                                                                                                                                                    |
-| R1a | The `srt` strategy on executors (§5): the launcher, the three changes the probe found, the executor's policy, and `srt` sessions spread.                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| R1b | Local `srt` launches through the in-process entry, `shared` confined agents included, and the direct SRT launch retires (§11).                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| PR    | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1    | Protocol and CP: the agent's `execution` slug beside `runInSandbox`; the daemon's own effective strategy table at registration, in the executor report's shape, and its legacy backend for the migration; the one-time backfill; validation of `execution` against the placement's tables in place of the two sandbox conflicts; per-strategy runtime entries in `facts/daemon-runtimes` (availability, `models`, `modelsSource`) and those entries on each candidate runtime, the birth strategy in the CP's hint, and the `strategy_mismatch` refusal. |
+| S2a   | Daemon: the `sandbox` strategy table with the legacy mapping and on-by-default probes, reported at registration and by the facet in place of S1's reading of the single backend; launch dispatch on the agent's strategy instead of `sandbox.backend`, `srt` and `microsandbox` side by side in one process with a runtime catalog per strategy; refusal instead of downgrade; per-strategy entries in `facts/daemon-runtimes` from the host probe; the placement ask by strategy slug, `srt` staying on its holder until R1.                            |
+| S2b   | Daemon: the birth strategy in the session's verdict, its upgrade backfill, and the executor's `strategy_mismatch` refusal.                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| S2c   | Daemon: the image runtime's model probe per image identity; model selection judging targets against the candidates and the strategy's catalog, and placement landing a session only where its runtime and model run (§5).                                                                                                                                                                                                                                                                                                                                |
+| S3    | Console: the strategy picker per placement, plain names with the boundary in a tooltip, and unavailable reasons; the daemon's runtime list per strategy; the pool shows none.                                                                                                                                                                                                                                                                                                                                                                            |
+| M1    | Local microsandbox Git and workspace files over the shim's channels (§11 step 1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| M2    | The credential preparers in the microsandbox launcher (§11 step 2, §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| M3    | The launcher takes an environment descriptor instead of a session leaf: hosted and local descriptors, identities unchanged, nothing migrated (§11 step 3).                                                                                                                                                                                                                                                                                                                                                                                               |
+| M4    | The in-process executor entry: local microsandbox launches through it, a local VM's shim starts exposed and `RemoteShimDriver` binds it, every `withShim` caller (Git, workspace files, skills) moves to the entry's `withEnvironment`, and the bound shim mode retires (§11 step 4).                                                                                                                                                                                                                                                                    |
+| R1a   | The `srt` strategy on executors (§5): the launcher, the three changes the probe found, the executor's policy, and `srt` sessions spread.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| R1b-1 | A confined local `srt` session launches through the in-process entry, its runtime root fixed by its environment id so MCP and git credentials reach this daemon through the shim's tunnels (§11).                                                                                                                                                                                                                                                                                                                                                        |
+| R1b-2 | Confined sessions' workspace Git and files over the shim, `shared` confined agents in agent-scoped descriptors, and the direct SRT launch retires (§11).                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## 13. Open questions
 

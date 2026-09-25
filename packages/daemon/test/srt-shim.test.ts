@@ -11,11 +11,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { probeSandboxHost } from '../src/acp/sandbox.js'
 import { hostedEnvironment } from '../src/execution/executor-vm.js'
 import { startHostShim, sweepStaleHostShims, type HostShim } from '../src/execution/host-shim.js'
+import { LocalExecutor } from '../src/execution/local-executor.js'
+import { localSrtLauncher, localSrtRuntimeRoot } from '../src/execution/srt-local.js'
 import { srtShimBoundary, srtShimPolicy } from '../src/execution/srt-shim.js'
-import { srtLauncher, type SessionEnvironment } from '../src/execution/strategies.js'
+import { srtLauncher, type EnvironmentDescriptor, type SessionEnvironment } from '../src/execution/strategies.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimGitRunner } from '../src/shim/git-exec.js'
 import { ShimSession } from '../src/shim/session.js'
+import { daemonSocket } from './fixtures/microsandbox-vm.js'
 import { WAIT } from './wait-support.js'
 
 const silent = { info: () => {}, warn: () => {} }
@@ -117,8 +120,10 @@ describe('the srt boundary around a shim', () => {
   const environments: SessionEnvironment[] = []
   const dialers: ShimDialer[] = []
   const launchers: ChildProcess[] = []
+  const closers: Array<() => unknown> = []
 
   afterEach(async () => {
+    for (const close of closers.splice(0)) await Promise.resolve(close()).catch(() => {})
     for (const dialer of dialers.splice(0)) dialer.stop()
     for (const shim of shims.splice(0)) await shim.stop()
     for (const environment of environments.splice(0)) await environment.stop()
@@ -320,6 +325,75 @@ process.stdout.write(JSON.stringify({ seen: fs.readFileSync(p, 'utf8') }) + '\\n
       expect(await runThrough(session, join(root, 'sessions', LEAF, 'workspace'), script)).toEqual({
         seen: 'refreshable refreshed'
       })
+    }
+  )
+
+  // session-executors.md §11: a confined srt session on this machine, bound in process by the shim's token, with no control plane.
+  it.skipIf(!srt)(
+    "runs a local confined session through the in-process entry: this daemon's env, SRT's route, and a tunnel to its socket",
+    { timeout: 180_000 },
+    async () => {
+      root = await mkdtemp(join(tmpdir(), 'ac-srt-'))
+      const sockets = { mcp: join(root, 'daemon-mcp.sock'), gitcred: join(root, 'daemon-gitcred.sock') }
+      const servers = [await daemonSocket(sockets.mcp, 'mcp'), await daemonSocket(sockets.gitcred, 'gitcred')]
+      closers.push(...servers.map((server) => () => server.close()))
+      const sessionDir = join(root, 'agents', 'a', 'sessions', LEAF)
+      await mkdir(join(sessionDir, 'workspace'), { recursive: true })
+      const launcher = localSrtLauncher({
+        daemonRoot: root,
+        readRoots: () => READ_ROOTS,
+        start: (input) => startHostShim({ ...input, entry })
+      })
+      let generation = 0
+      const local = new LocalExecutor({
+        launcher,
+        generations: { nextSandboxGeneration: async () => ++generation },
+        tunnelSocketPath: (tunnel) => sockets[tunnel],
+        log: quiet
+      })
+      closers.push(
+        () => local.stop(),
+        () => launcher.stopAll()
+      )
+      const environment: EnvironmentDescriptor = {
+        id: `agent-1/${LEAF}`,
+        workspaceRoot: sessionDir,
+        mounts: [{ source: sessionDir, target: sessionDir, mode: 'writable' }]
+      }
+      const runtimeRoot = localSrtRuntimeRoot(root, environment.id)
+      // Retries the connect: the shim binds its tunnel sockets once its channel is bound, around the runtime's start.
+      const script = `
+const net = require('net')
+const report = (tunnel) => process.stdout.write(JSON.stringify({ tunnel, home: process.env.HOME, proxy: process.env.HTTPS_PROXY }) + '\\n')
+const attempt = (left) => {
+  const socket = net.connect(process.env.AC_GITCRED_SOCKET)
+  socket.once('data', (data) => report(data.toString()))
+  socket.once('connect', () => socket.write('hello'))
+  socket.once('error', () => (left > 0 ? setTimeout(() => attempt(left - 1), 100) : report('unreachable')))
+}
+attempt(50)
+process.stdin.resume()`
+      const runtime = await local.driverFor(environment).launch({
+        command: process.execPath,
+        args: ['-e', script],
+        env: {
+          AC_AGENT_ID: 'agent-1',
+          PATH: process.env.PATH ?? '',
+          HOME: join(sessionDir, 'home'),
+          AC_GITCRED_SOCKET: join(runtimeRoot, 'gitcred.sock')
+        }
+      })
+      closers.unshift(() => runtime.stop(5_000, 1_000))
+      const reader = runtime.fromAgent.getReader()
+      let text = ''
+      while (!text.includes('\n')) text += Buffer.from((await reader.read()).value!).toString()
+      reader.releaseLock()
+      const seen = JSON.parse(text.slice(0, text.indexOf('\n'))) as { tunnel: string; home: string; proxy?: string }
+      // The shim's tunnel under its fixed root reached this daemon's socket, the launch env arrived whole, and SRT's route rode over it.
+      expect(seen.tunnel).toBe('gitcred:hello')
+      expect(seen.home).toBe(join(sessionDir, 'home'))
+      expect(seen.proxy).toMatch(/^http:\/\/.*localhost:\d+$/)
+      expect(generation).toBe(1)
     }
   )
 })
