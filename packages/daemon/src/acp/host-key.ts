@@ -39,6 +39,11 @@ export function hostKeyDirName(key: HostKey | undefined): string {
   return sessionKey === undefined ? 'agent' : sessionKeyDirName(sessionKey)
 }
 
+/** The local environment a host without a directory of its own runs in, `<agentId>/<host dir>`: the id a VM's placement and an srt shim share. */
+export function hostEnvironmentId(agentId: string, key: HostKey | undefined): string {
+  return `${agentId}/${hostKeyDirName(key)}`
+}
+
 /** Printable form for logs: the agent id, plus the session leaf for a session-bound host. */
 export function hostKeyLabel(key: HostKey): string {
   const sessionKey = hostKeySessionKey(key)
