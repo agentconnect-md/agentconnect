@@ -309,7 +309,7 @@ describe('DaemonsView pool — self-hosted', () => {
 
     const html = render()
 
-    expect(html).not.toContain('Manage')
+    expect(html).not.toContain('>Manage<')
   })
 
   it('opens the CLUSTER, never one of its Pods', () => {

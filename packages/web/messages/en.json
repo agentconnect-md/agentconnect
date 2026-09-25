@@ -3369,7 +3369,7 @@
       "cpu": "CPU",
       "memory": "Memory"
     },
-    "description": "Your AgentConnect daemons. Each hosts agents over ACP and holds platform connections.",
+    "description": "Manage the daemons that run your agents and the organization-wide default connection for each AI provider.",
     "addDaemon": "Add daemon",
     "online": "{count} online",
     "paused": "{count} paused",
@@ -4842,7 +4842,6 @@
   },
   "ProviderKeys": {
     "title": "Provider keys",
-    "description": "Organization-wide AI provider connections. One default configuration per provider.",
     "ownerOnly": "Only organization owners can add, replace, or remove keys.",
     "configured": "Configured",
     "notConfigured": "Not configured",

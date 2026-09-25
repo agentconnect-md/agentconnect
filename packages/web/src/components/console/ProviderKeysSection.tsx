@@ -102,8 +102,7 @@ function ProviderKeysForOrg({ orgId, isOwner }: { orgId: string; isOwner: boolea
         count={loadError ? undefined : entries?.filter((entry) => entry.configured).length}
       />
       <div className="card">
-        <p className="px-4 pt-4 text-[12.5px] text-(--text-secondary)">{t('description')}</p>
-        {!isOwner && <p className="px-4 pt-2 text-[12px] text-(--text-tertiary)">{t('ownerOnly')}</p>}
+        {!isOwner && <p className="px-4 pt-4 text-[12px] text-(--text-tertiary)">{t('ownerOnly')}</p>}
         {loadError ? (
           <div className="flex items-center gap-3 p-4">
             <span role="alert" className="text-[12px] text-(--status-error)">
