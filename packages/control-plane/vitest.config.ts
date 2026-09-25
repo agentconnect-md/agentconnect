@@ -40,6 +40,8 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'integration',
+          // Isolate Prisma's Wasm compilation and teardown across worker processes.
+          pool: 'forks',
           include: ['test/**/*.test.ts'],
           exclude: ['test/**/*.unit.test.ts', 'test/protocol/fencing.test.ts'],
           environment: 'node',
