@@ -40,6 +40,9 @@ export const INSTALLATION_MATERIALIZE_OPTIONS = ['decision', 'on-demand'] as con
 
 // Why By decision is unavailable, as its tooltip says it.
 const DECISION_BLOCK_TITLE = {
+  credentials: 'materializeByDecisionNoCredentials',
+  outdated: 'materializeByDecisionDaemonOutdated',
+  offline: 'materializeByDecisionDaemonOffline',
   provider: 'materializeByDecisionNoProvider',
   selector: 'materializeByDecisionNoSelector'
 } as const satisfies Record<NonNullable<RepositoryDecisionBlock>, string>

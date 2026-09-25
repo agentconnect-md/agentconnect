@@ -156,7 +156,7 @@ const selectorField = () => document.querySelector('[data-repository-selector]')
 const selectorPicker = () => document.querySelector<HTMLButtonElement>('button[aria-label="Repository selector"]')
 
 describe('EditWorkspaceModal, By decision', () => {
-  it('disables By decision while no provider is ready where the agent runs', async () => {
+  it('disables By decision while no provider is ready where the agent runs, naming the missing key', async () => {
     state.providers = [
       provider({ daemonId: 'daemon-2' }),
       provider({ readiness: { status: 'missing_credentials' } }),
@@ -166,7 +166,7 @@ describe('EditWorkspaceModal, By decision', () => {
 
     const byDecision = await openChoice('By decision')
     expect(byDecision?.getAttribute('aria-disabled')).toBe('true')
-    expect(byDecision?.title).toBe('No Decision provider is ready where this agent runs')
+    expect(byDecision?.title).toBe('Add a Decision provider key in Infra first')
     await click(byDecision)
     expect(mocks.updateAgentRepo).not.toHaveBeenCalled()
   })
