@@ -40,11 +40,28 @@ describe('repository selector availability', () => {
     ])
   })
 
-  it('names why By decision is unavailable: no ready provider first, then no selector', () => {
+  it('names why By decision is unavailable: the most fixable provider reason first, then no selector', () => {
     expect(repositoryDecisionBlock([], onDaemon, SELECTOR)).toBe('provider')
-    expect(repositoryDecisionBlock([option({ readiness: { status: 'daemon_offline' } })], onDaemon, SELECTOR)).toBe(
+    expect(repositoryDecisionBlock([option({ readiness: { status: 'pending_sync' } })], onDaemon, SELECTOR)).toBe(
       'provider'
     )
+    expect(repositoryDecisionBlock([option({ readiness: { status: 'daemon_offline' } })], onDaemon, SELECTOR)).toBe(
+      'offline'
+    )
+    expect(repositoryDecisionBlock([option({ readiness: { status: 'unsupported' } })], onDaemon, SELECTOR)).toBe(
+      'outdated'
+    )
+    // A missing key is the reason a user can fix themselves, so it names it over the others.
+    expect(
+      repositoryDecisionBlock(
+        [
+          option({ readiness: { status: 'daemon_offline' } }),
+          option({ id: 'typesafe', readiness: { status: 'missing_credentials' } })
+        ],
+        onDaemon,
+        SELECTOR
+      )
+    ).toBe('credentials')
     expect(repositoryDecisionBlock([option()], onDaemon, null)).toBe('selector')
     expect(repositoryDecisionBlock([option()], onDaemon, SELECTOR)).toBeNull()
   })

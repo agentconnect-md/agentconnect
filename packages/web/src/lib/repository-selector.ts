@@ -4,8 +4,8 @@ import type { DecisionProviderOption } from '@agentconnect.md/protocol/decision-
 import { isSetPlacementKind, type Agent } from '@/lib/data'
 import { useDecisionProviders } from '@/lib/decisions/provider'
 
-/** Why By decision cannot be chosen now: no ready provider where the agent runs, or no selector yet. */
-export type RepositoryDecisionBlock = 'provider' | 'selector' | null
+/** Why By decision cannot be chosen now: the most fixable reason no provider is ready where the agent runs, else no selector yet. */
+export type RepositoryDecisionBlock = 'credentials' | 'outdated' | 'offline' | 'provider' | 'selector' | null
 
 type PlacedAgent = Pick<Agent, 'placementKind' | 'setId' | 'daemon'>
 
@@ -36,11 +36,13 @@ export function repositoryDecisionBlock(
   agent: PlacedAgent,
   selector: AgentRepositorySelector | null | undefined
 ): RepositoryDecisionBlock {
-  const ready = repositorySelectorProviders(placementDecisionProviders(providers, agent)).some(
-    (option) => option.readiness.status === 'ready'
-  )
-  if (!ready) return 'provider'
-  return selector ? null : 'selector'
+  const placed = repositorySelectorProviders(placementDecisionProviders(providers, agent))
+  if (placed.some((option) => option.readiness.status === 'ready')) return selector ? null : 'selector'
+  const statuses = new Set(placed.map((option) => option.readiness.status))
+  if (statuses.has('missing_credentials')) return 'credentials'
+  if (statuses.has('unsupported')) return 'outdated'
+  if (statuses.has('daemon_offline')) return 'offline'
+  return 'provider'
 }
 
 /** The agent's selector-capable providers and whether By decision is available, from the Decision editor's catalog. */

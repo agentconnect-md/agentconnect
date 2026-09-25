@@ -1552,6 +1552,9 @@
         "materializeAlwaysTitle": "Checked out beside the workspace in every session",
         "materializeOnDemandTitle": "Cloned by the agent when a session needs it",
         "materializeByDecisionTitle": "Checked out when a session is about it",
+        "materializeByDecisionNoCredentials": "Add a Decision provider key in Infra first",
+        "materializeByDecisionDaemonOutdated": "Update the daemon that runs this agent to use Decisions",
+        "materializeByDecisionDaemonOffline": "The daemon that runs this agent is offline",
         "materializeByDecisionNoProvider": "No Decision provider is ready where this agent runs",
         "materializeByDecisionNoSelector": "Set the Repository selector first"
       },
