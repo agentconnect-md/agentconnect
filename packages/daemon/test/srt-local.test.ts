@@ -120,4 +120,34 @@ describe('the local srt launcher', () => {
     await launcher.stopMatching((id) => id !== environment().id)
     expect(stops).toEqual([SESSION, other.workspaceRoot])
   })
+
+  // The in-process entry holds a launch before it starts it, so a session's first runtime is held from before its shim exists.
+  it('counts a hold taken before the shim starts, so neither the idle sweep nor its host stop ends a running first runtime', async () => {
+    const { launcher, stops, advance } = stubbed()
+    const release = launcher.hold!(environment())
+    await launcher.start({ environment: environment(), log: quiet })
+    advance(60_000)
+    await launcher.suspendIdle(10_000_000)
+    expect(await launcher.stopUnlessBusy(environment().id)).toBe(false)
+    expect(stops).toEqual([])
+    release()
+    expect(await launcher.stopUnlessBusy(environment().id)).toBe(true)
+    expect(stops).toEqual([SESSION])
+  })
+
+  // A changed descriptor is another environment on the same fixed root, which the entry starts once nothing holds the old launch.
+  it('stops the shim it started before under an id it starts again, which still owns the fixed root', async () => {
+    const { launcher, inputs, stops } = stubbed()
+    await launcher.start({ environment: environment(), log: quiet })
+    const changed = environment({
+      mounts: [...environment().mounts, { source: '/srv/data', target: '/srv/data', mode: 'readonly' }]
+    })
+    const started = await launcher.start({ environment: changed, log: quiet })
+    expect(stops).toEqual([SESSION])
+    expect(inputs.map((input) => input.runtimeRootName)).toEqual([
+      localSrtRootName(environment().id),
+      localSrtRootName(environment().id)
+    ])
+    expect(started.local?.identity).toBe('token-2')
+  })
 })

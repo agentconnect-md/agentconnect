@@ -476,7 +476,12 @@ import {
 } from './execution/executor-placement.js'
 import { HOSTED_PREFIX, microsandboxLauncher } from './execution/executor-vm.js'
 import { LocalExecutor } from './execution/local-executor.js'
-import { localSrtLauncher, localSrtRuntimeRoot, type LocalSrtLauncher } from './execution/srt-local.js'
+import {
+  localSrtEnvironmentId,
+  localSrtLauncher,
+  localSrtRuntimeRoot,
+  type LocalSrtLauncher
+} from './execution/srt-local.js'
 import { confinedSessionDirIn } from './workspace/session-layout.js'
 import {
   agentStrategyOf,
@@ -4963,7 +4968,7 @@ export class Daemon {
     // The session's own directory is the record of its tier; an agent's shared host still wraps each runtime until R1b-2.
     const sessionDir = confinedSessionDirIn(agent.dir, sessionKey)
     if (!sessionDir) return undefined
-    const id = `${agent.id}/${basename(sessionDir)}`
+    const id = localSrtEnvironmentId(agent.id, sessionDir)
     return { id, runtimeRoot: localSrtRuntimeRoot(this.root, id) }
   }
 
@@ -5181,7 +5186,7 @@ export class Daemon {
       if (!executor) throw new Error('srt unavailable: this daemon is not running its local shims')
       const { workspaceRoot, mounts } = prepared.srt!
       return {
-        driver: executor.driverFor({ id: `${agent.id}/${basename(workspaceRoot)}`, workspaceRoot, mounts }),
+        driver: executor.driverFor({ id: localSrtEnvironmentId(agent.id, workspaceRoot), workspaceRoot, mounts }),
         hostKey
       }
     },

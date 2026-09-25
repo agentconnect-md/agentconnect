@@ -1,12 +1,17 @@
 // This machine's own srt environments (session-executors.md §11): the srt launcher's local mode, which `LocalExecutor` drives; the daemon's session idle policy is their idle judge, as it is a local VM's.
 import { createHash } from 'node:crypto'
 import { connect } from 'node:net'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import { startHostShim, type HostShim, type HostShimInput } from './host-shim.js'
 import { srtShimBoundary } from './srt-shim.js'
 import type { EnvironmentDescriptor, SessionEnvironment, StrategyLauncher } from './strategies.js'
+
+/** A confined session's environment id: `<agentId>/session-<leaf>`, named by its session directory. */
+export function localSrtEnvironmentId(agentId: string, sessionDir: string): string {
+  return `${agentId}/${basename(sessionDir)}`
+}
 
 /** A local environment's fixed runtime-root leaf: its launch names the shim's tunnel sockets before the shim starts. */
 export function localSrtRootName(environmentId: string): string {
@@ -31,6 +36,11 @@ export interface LocalSrtLauncher extends StrategyLauncher {
 interface Running {
   environment: EnvironmentDescriptor
   shim: HostShim
+  startedAt: number
+}
+
+/** Holds on an environment id, counted from before its shim starts: the entry holds a launch first and starts it after. */
+interface Usage {
   holds: number
   lastUsed: number
 }
@@ -52,14 +62,21 @@ export function localSrtLauncher(deps: {
   const now = deps.now ?? Date.now
   const start = deps.start ?? startHostShim
   const running = new Map<string, Running>()
+  const usage = new Map<string, Usage>()
 
   const stopMatching = async (matches: (id: string) => boolean): Promise<void> => {
     const stopping = [...running.entries()].filter(([id]) => matches(id)).map(([, state]) => state.shim.stop())
     await Promise.allSettled(stopping)
   }
+  const held = (id: string): boolean => (usage.get(id)?.holds ?? 0) > 0
+  const forgetIdleUsage = (id: string): void => {
+    if (!held(id) && !running.has(id)) usage.delete(id)
+  }
 
   return {
     start: async ({ environment, log }: { environment: EnvironmentDescriptor; log: Logger }) => {
+      // The entry starts an id again only once nothing holds its old launch: a changed descriptor, or a shim it gave up on, still owns the fixed root.
+      await running.get(environment.id)?.shim.stop()
       const shim = await start({
         daemonRoot: deps.daemonRoot,
         workspaceRoot: environment.workspaceRoot,
@@ -75,10 +92,11 @@ export function localSrtLauncher(deps: {
           log
         })
       })
-      const state: Running = { environment, shim, holds: 0, lastUsed: now() }
+      const state: Running = { environment, shim, startedAt: now() }
       running.set(environment.id, state)
       void shim.exited.then(() => {
         if (running.get(environment.id) === state) running.delete(environment.id)
+        forgetIdleUsage(environment.id)
       })
       const started: SessionEnvironment = {
         connect: () => connect(shim.socketPath),
@@ -93,29 +111,33 @@ export function localSrtLauncher(deps: {
       return started
     },
     hold: (environment) => {
-      const state = running.get(environment.id)
-      if (!state) return () => {}
-      state.holds += 1
-      state.lastUsed = now()
+      const id = environment.id
+      const entry = usage.get(id) ?? { holds: 0, lastUsed: now() }
+      usage.set(id, entry)
+      entry.holds += 1
+      entry.lastUsed = now()
       let released = false
       return () => {
         if (released) return
         released = true
-        state.holds -= 1
-        state.lastUsed = now()
+        entry.holds -= 1
+        entry.lastUsed = now()
+        forgetIdleUsage(id)
       }
     },
     // The policy is fixed when the boundary starts, so a descriptor that mounts anything else is another environment.
     sameEnvironment: (a, b) =>
       a.id === b.id && a.workspaceRoot === b.workspaceRoot && mountKey(a.mounts) === mountKey(b.mounts),
     suspendIdle: async (before) => {
-      const idle = [...running.values()].filter((state) => state.holds === 0 && state.lastUsed <= before)
-      await Promise.allSettled(idle.map((state) => state.shim.stop()))
+      const idle = [...running.entries()].filter(
+        ([id, state]) => !held(id) && Math.max(state.startedAt, usage.get(id)?.lastUsed ?? 0) <= before
+      )
+      await Promise.allSettled(idle.map(([, state]) => state.shim.stop()))
     },
     stopUnlessBusy: async (id) => {
       const state = running.get(id)
       if (!state) return true
-      if (state.holds > 0) return false
+      if (held(id)) return false
       await state.shim.stop()
       return true
     },
