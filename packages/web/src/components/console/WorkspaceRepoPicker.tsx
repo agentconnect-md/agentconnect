@@ -16,7 +16,7 @@ import { GithubMark } from '@/components/marks'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
-import { REPOSITORY_ACCESS_BADGE, RepositoryMaterializeBadge } from '@/components/console/WorkspaceFormFields'
+import { RepositoryMaterializeBadge } from '@/components/console/WorkspaceFormFields'
 import { repoAuthMaterialize, type AgentRepoAuthDto } from '@/lib/api'
 
 /**
@@ -149,7 +149,7 @@ export function WorkspaceRepoPicker({
                     aria-checked={active}
                     data-repo-choice
                     className={active ? CHOICE_ON : CHOICE}
-                    title={`${repo.repoFullName} — ${repo.access} access`}
+                    title={repo.repoFullName}
                     onClick={() => {
                       close(true)
                       onChange(repo.repoFullName)
@@ -159,7 +159,6 @@ export function WorkspaceRepoPicker({
                       <GithubMark />
                     </span>
                     <span className="mono min-w-0 flex-1 truncate text-[11.5px]">{repo.repoFullName}</span>
-                    <span className={REPOSITORY_ACCESS_BADGE[repo.access]}>{repo.access}</span>
                     <RepositoryMaterializeBadge value={repoAuthMaterialize(repo)} />
                   </button>
                 )

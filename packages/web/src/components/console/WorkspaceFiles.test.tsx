@@ -341,7 +341,7 @@ it('offers the workspace and every authorized repository from the browser root',
   // The menu is body-portaled out of the breadcrumb's clipped overflow.
   expect(Array.from(document.body.querySelectorAll('[data-repo-choice]')).map((n) => n.textContent)).toEqual([
     'acme/primary-serviceworkspace',
-    'acme/infrawrite'
+    'acme/infra'
   ])
 })
 
