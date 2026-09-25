@@ -10,6 +10,7 @@ import { prepareRuntimeLaunch, privateRuntimeHomeFor } from '../src/launch/prepa
 import { sessionKey } from '../src/store/local-store.js'
 import { pendingTurnKey, sdkLeaseKey } from '../src/daemon/turn-types.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { inProcessShimExecutor } from './fixtures/in-process-shim.js'
 import { fakeVm, fakeVmManager } from './fixtures/microsandbox-vm.js'
 import { WAIT } from './wait-support.js'
 
@@ -620,8 +621,9 @@ async function startDaemon(root: string, opts: { sandboxMechanism?: 'bwrap' | nu
   return { daemon, hosts, factory }
 }
 
-/** No git here: preparation materializes the directory the request's tier names and nothing else. */
+/** No git here: preparation materializes the directory the request's tier names and nothing else, and a confined session's shim is served in process. */
 function stubWorkspacePreparation(daemon: Daemon): void {
+  ;(daemon as any).localSrtExecutor = inProcessShimExecutor()
   const workspaces = (daemon as any).workspaces
   vi.spyOn(workspaces, 'prepareWorkspace').mockImplementation(async (...args: unknown[]) => {
     const agent = args[0] as { workspace: { path: string } }

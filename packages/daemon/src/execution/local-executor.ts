@@ -30,6 +30,10 @@ interface LocalLaunch extends Launch {
   started?: Promise<SessionEnvironment>
   running?: SessionEnvironment
   holds: Array<() => void>
+  /** Runtimes launched or launching into it, which a changed descriptor is refused over. */
+  runtimes: number
+  /** The `withEnvironment` operations on it, which end by themselves, so a changed descriptor waits them out. */
+  operations: Set<Promise<void>>
 }
 
 export interface LocalExecutorDeps {
@@ -113,6 +117,9 @@ export class LocalExecutor {
     const operation = (async () => {
       const launch = await this.ensureLaunch(environment)
       this.endpoints.retain(launch)
+      let done!: () => void
+      const held = new Promise<void>((resolve) => (done = resolve))
+      launch.operations.add(held)
       try {
         await this.driver.ensureBoundChannel(environment.id)
         const session = this.sessionFor(environment.id)
@@ -120,6 +127,8 @@ export class LocalExecutor {
         return await work(session)
       } finally {
         this.endpoints.release(launch)
+        launch.operations.delete(held)
+        done()
       }
     })()
     this.operations.add(operation)
@@ -146,10 +155,19 @@ export class LocalExecutor {
   }
 
   private async launch(environment: EnvironmentDescriptor, request: SpawnRequest): Promise<SpawnedRuntime> {
-    const local = (await this.start(await this.ensureLaunch(environment))).local
-    const quiet = request.suppressChildStderr ? local?.quiet() : undefined
+    const launch = await this.ensureLaunch(environment)
+    launch.runtimes += 1
+    let counted = true
+    const uncount = () => {
+      if (counted) launch.runtimes -= 1
+      counted = false
+    }
+    let quiet: (() => void) | undefined
+    let local: SessionEnvironment['local']
     let runtime: SpawnedRuntime
     try {
+      local = (await this.start(launch)).local
+      quiet = request.suppressChildStderr ? local?.quiet() : undefined
       // A complete-env shim takes nothing but what it is sent, so the environment's own base goes beneath the launch's.
       runtime = await this.driver.launch(
         { ...request, env: { ...local?.runtimeEnv, ...request.env } },
@@ -157,12 +175,14 @@ export class LocalExecutor {
       )
     } catch (error) {
       quiet?.()
+      uncount()
       throw error
     }
     let exited = false
     runtime.onExit(() => {
       exited = true
       quiet?.()
+      uncount()
     })
     return {
       ...runtime,
@@ -180,7 +200,7 @@ export class LocalExecutor {
     return environment
   }
 
-  /** The environment's current launch, or a new one: when there is none, or the descriptor now starts a different environment and nothing holds the old one. */
+  /** The environment's current launch, or a new one: when there is none, or the descriptor now starts a different environment and no runtime holds the old one. */
   private ensureLaunch(environment: EnvironmentDescriptor): Promise<LocalLaunch> {
     if (this.closed) return Promise.reject(new Error('this daemon is shutting down'))
     const pending = this.recording.get(environment.id)
@@ -188,14 +208,18 @@ export class LocalExecutor {
     const current = this.registry.currentLaunch(environment.id)
     const same = current && (this.deps.launcher.sameEnvironment?.(current.environment, environment) ?? true)
     if (current && !same) {
-      if (current.holds.length)
+      // A runtime holds its launch until it exits, but an operation (Git, a file) ends by itself, so the new descriptor waits for it.
+      if (current.runtimes)
         return Promise.reject(new Error(`environment ${environment.id} configuration changed while active`))
+      if (current.operations.size)
+        return Promise.allSettled([...current.operations]).then(() => this.ensureLaunch(environment))
       this.forget(environment.id, 'its configuration changed')
     }
-    this.latest.set(environment.id, environment)
+    // A launch that serves a narrower request keeps the descriptor it started from, which is what a re-derived launch must start again.
     if (current && same) return Promise.resolve(current)
+    this.latest.set(environment.id, environment)
     const recording = this.registry
-      .recordLaunch(environment.id, randomUUID(), { environment, holds: [] })
+      .recordLaunch(environment.id, randomUUID(), { environment, holds: [], runtimes: 0, operations: new Set() })
       .finally(() => this.recording.delete(environment.id))
     this.recording.set(environment.id, recording)
     return recording

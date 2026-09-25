@@ -118,6 +118,35 @@ describe('a local session through the in-process executor entry', () => {
     await runtime.stop(2_000)
   })
 
+  // Git before a session's first runtime starts its environment narrower than that runtime's launch, which must not fail on it.
+  it('starts a changed environment once the operations holding the old one end, rather than refusing it', async () => {
+    const { local, launch, allocated, environment, manager } = await fixture()
+    manager.sameEnvironment.mockImplementation((a, b) => a.mounts.length === b.mounts.length)
+    let finish!: () => void
+    const working = new Promise<void>((resolve) => (finish = resolve))
+    const operation = local.withEnvironment(environment, async (session) => {
+      await working
+      return session
+    })
+    await vi.waitFor(() => expect(allocated).toHaveBeenCalledOnce())
+    const changed = { ...environment, mounts: [{ source: '/store', target: '/store', mode: 'writable' as const }] }
+    let launched = false
+    const started = launch({ command: 'cat', args: [], env: { PATH: process.env.PATH ?? '' } }, changed).then(
+      (runtime) => {
+        launched = true
+        return runtime
+      }
+    )
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(launched).toBe(false)
+    finish()
+    const before = await operation
+    const runtime = await started
+    expect(before.isAttached()).toBe(false)
+    expect(allocated).toHaveBeenCalledTimes(2)
+    await runtime.stop(2_000)
+  })
+
   it("drops a quiet launch's stderr until its runtime exits, and leaves every other launch's alone", async () => {
     const { local, environment, manager, unquiet } = await fixture()
     const env = { AC_AGENT_ID: 'agent', PATH: process.env.PATH ?? '' }

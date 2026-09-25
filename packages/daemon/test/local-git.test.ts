@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { microsandboxGitRunner } from '../src/microsandbox/git.js'
+import { localShimGitRunner } from '../src/execution/local-git.js'
 import type { ShimRequester } from '../src/shim/channels.js'
 import { createExecHandler } from '../src/shim/exec-handler.js'
 import { GitExecError, type GitExecPayload } from '../src/shim/git-exec.js'
@@ -15,14 +15,14 @@ afterEach(() => {
 })
 
 function repository(): string {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ac-microsandbox-git-')))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ac-local-git-')))
   roots.push(root)
   execFileSync('git', ['init', '--initial-branch=main'], { cwd: root, stdio: 'ignore' })
   writeFileSync(join(root, 'file with spaces.txt'), 'untracked\n')
   return root
 }
 
-// The VM's bound shim, served by the exec handler that ships in it, as the local executor's `withEnvironment` hands it over.
+// The environment's bound shim, served by the exec handler that ships in it, as the local executor's `withEnvironment` hands it over.
 function vm(root: string, seen: { capability: string; payload: GitExecPayload; abort?: AbortSignal }[] = []) {
   const handle = createExecHandler({ workspaceRoot: root, log: { info: () => {}, warn: () => {} } })
   const session: ShimRequester = {
@@ -34,7 +34,7 @@ function vm(root: string, seen: { capability: string; payload: GitExecPayload; a
   return <T>(work: (bound: ShimRequester) => Promise<T>): Promise<T> => work(session)
 }
 
-describe.skipIf(process.platform === 'win32')('microsandbox Git over the VM shim', () => {
+describe.skipIf(process.platform === 'win32')("Git over a local environment's shim", () => {
   it('runs on the exec channel with the launch guest paths over a caller replacement env', async () => {
     const root = repository()
     const seen: Parameters<typeof vm>[1] = []
@@ -46,7 +46,7 @@ describe.skipIf(process.platform === 'win32')('microsandbox Git over the VM shim
       AC_GITCRED_SOCKET: '/run/agentconnect/gitcred.sock',
       LAUNCH_ONLY: '1'
     }
-    const runner = microsandboxGitRunner({
+    const runner = localShimGitRunner({
       run: vm(root, seen),
       cwd: root,
       env: launchEnv,
@@ -77,22 +77,34 @@ describe.skipIf(process.platform === 'win32')('microsandbox Git over the VM shim
     })
   })
 
+  // An srt shim shares this host's filesystem, so it names only what differs inside the boundary and a bare request takes the shim's own env.
+  it('sends a bare request with no env, and puts what the environment names over a caller replacement env', async () => {
+    const root = repository()
+    const seen: Parameters<typeof vm>[1] = []
+    const owned = { HOME: join(root, 'home'), TMPDIR: join(root, 't'), AC_GITCRED_SOCKET: join(root, 'gitcred.sock') }
+    const runner = localShimGitRunner({ run: vm(root, seen), cwd: root, owned })
+    expect((await runner.status()).current).toBe('main')
+    expect(seen.at(-1)!.payload.env).toBeUndefined()
+    await runner.withEnv({ HOME: '/host/home', PATH: process.env.PATH!, TMPDIR: '/host/tmp' }).status()
+    expect(seen.at(-1)!.payload.env).toEqual({ PATH: process.env.PATH!, ...owned })
+  })
+
   it('keeps the shim output limit a bounded overflow', async () => {
     const root = repository()
     const env = { PATH: process.env.PATH!, GIT_CONFIG_GLOBAL: '/dev/null' }
     const identity = ['-c', 'user.name=T', '-c', 'user.email=t@example.test']
     execFileSync('git', [...identity, 'commit', '--allow-empty', '-q', '-m', 'x'.repeat(70_000)], { cwd: root })
-    const runner = microsandboxGitRunner({ run: vm(root), cwd: root, env })
+    const runner = localShimGitRunner({ run: vm(root), cwd: root, env })
     expect(await runner.readBounded(['log', '--max-count=1', '--format=%B'], 16)).toEqual({
       out: Buffer.alloc(0),
       overflow: true
     })
   })
 
-  it('reports a VM it could not reach as transport, and the shim answers as they came', async () => {
+  it('reports an environment it could not reach as transport, and the shim answers as they came', async () => {
     const root = repository()
     const env = { PATH: process.env.PATH! }
-    const unreachable = microsandboxGitRunner({
+    const unreachable = localShimGitRunner({
       run: async () => {
         throw new Error('microsandbox environment agent/session-000000000000000000000000 is stopping')
       },
@@ -100,7 +112,7 @@ describe.skipIf(process.platform === 'win32')('microsandbox Git over the VM shim
       env
     })
     await expect(unreachable.status()).rejects.toBeInstanceOf(GitTransportError)
-    const runner = microsandboxGitRunner({ run: vm(root), cwd: root, env })
+    const runner = localShimGitRunner({ run: vm(root), cwd: root, env })
     const escape = runner.raw(['clone', '--shared', root, '../escaped'])
     await expect(escape).rejects.toThrow('path escapes the workspace root')
     await expect(escape).rejects.not.toBeInstanceOf(GitTransportError)

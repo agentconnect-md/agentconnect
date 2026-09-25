@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import { sessionKeyDirName } from '../acp/host-key.js'
 import {
   isRepoSegment,
@@ -33,6 +33,16 @@ export function sessionDirIn(agentRoot: string, leaf: string): string {
  */
 export function confinedSessionDirIn(agentRoot: string, sessionKey: string): string | undefined {
   const dir = sessionDirIn(agentRoot, sessionKeyDirName(sessionKey))
+  return isRealDir(dir) ? dir : undefined
+}
+
+/** The confined session directory `path` is in, by the same record; undefined for a path outside every one. */
+export function confinedSessionDirOf(agentRoot: string, path: string): string | undefined {
+  const rel = relative(agentRoot, path)
+  if (rel === '' || isAbsolute(rel)) return undefined
+  const [parent, leaf] = rel.split(sep)
+  if (parent !== SESSIONS_DIR || leaf === undefined || sessionLeafId(leaf) === undefined) return undefined
+  const dir = sessionDirIn(agentRoot, leaf)
   return isRealDir(dir) ? dir : undefined
 }
 
