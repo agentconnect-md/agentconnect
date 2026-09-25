@@ -16,6 +16,7 @@ import {
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE
 } from '@agentconnect.md/protocol'
+import { ProtocolError } from '../../src/domain/errors.js'
 import type {
   WorkspaceGitCommitReq,
   WorkspaceGitCommitResult,
@@ -225,5 +226,27 @@ describe('version skew on the repo scope', () => {
     // The unscoped reads are untouched by the missing marker — the primary still serves.
     const primary = await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/workspace/files` })
     expect(primary.statusCode).toBe(200)
+  })
+
+  it("answers the daemon's busy refusal of a sync as a 409 the console can act on, not an offline daemon", async () => {
+    await seedAuthorized()
+    const control = new ScopeSpy()
+    control.workspaceGitPull = async () => {
+      throw new ProtocolError(
+        'CONFLICT',
+        'workspace/gitpull failed: the agent is working in this workspace; retry when it is idle',
+        {
+          details: { reason: 'stale' }
+        }
+      )
+    }
+    const running = app(control)
+
+    const pull = await running.app.inject({ method: 'POST', url: `${ORG}/agents/${AGENT}/workspace/gitpull` })
+    expect(pull.statusCode).toBe(409)
+    expect(pull.json()).toMatchObject({
+      code: 'WORKSPACE_STALE',
+      message: expect.stringContaining('working in this workspace')
+    })
   })
 })

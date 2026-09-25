@@ -2671,7 +2671,7 @@
         "scratchWorkspace": "Scratch workspace",
         "publicRepository": "Public repository, cloned anonymously",
         "public": "public",
-        "pull": "Fast-forward pull from the remote",
+        "pull": "Sync the checkout with its remote branch",
         "viewRemote": "View on {provider}",
         "implicitAuthorization": "The workspace repository — authorized implicitly by the GitHub App installation",
         "editWorkspace": "Edit workspace",
