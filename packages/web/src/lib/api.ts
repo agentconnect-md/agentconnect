@@ -6211,7 +6211,7 @@ export function createAgentInstallation(
   return sendAgentInstallation('POST', `${orgBase()}/agents/${encodeURIComponent(agentId)}/installations`, input)
 }
 
-// At least one field is required; a refused access change is 409.
+// Access only rises (a lower tier is 409); at least one field is required.
 export function updateAgentInstallation(
   agentId: string,
   id: string,

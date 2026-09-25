@@ -110,7 +110,7 @@ const button = (text: string) =>
 const grantRow = (id: number) => document.querySelector<HTMLDivElement>(`[data-installation-grant="${id}"]`)
 const revoke = () => document.querySelector<HTMLButtonElement>('button[aria-label="Revoke installation access"]')
 const segment = (id: number, title: 'Read only' | 'Read & write') =>
-  grantRow(id)?.querySelector<HTMLButtonElement>(`button[title="${title}"]`) ?? null
+  grantRow(id)?.querySelector<HTMLButtonElement>(`button[aria-label="${title}"]`) ?? null
 
 describe('EditWorkspaceModal installation grants', () => {
   it('lists a grant as every repository of its account with its tier and checkout', async () => {
@@ -142,7 +142,7 @@ describe('EditWorkspaceModal installation grants', () => {
     )
   })
 
-  it('changes a grant’s access both ways with an access-only PATCH', async () => {
+  it('raises a grant’s access with an access-only PATCH, then offers no lowering', async () => {
     mocks.updateAgentInstallation.mockResolvedValueOnce(grant({ access: 'write' }))
     const onChange = await render([grant()])
 
@@ -151,11 +151,9 @@ describe('EditWorkspaceModal installation grants', () => {
     expect(onChange).toHaveBeenCalledWith([grant({ access: 'write' })])
     expect(segment(12345, 'Read & write')?.getAttribute('aria-pressed')).toBe('true')
 
-    mocks.updateAgentInstallation.mockRejectedValueOnce(new Error('turn off formal reviews first'))
+    expect(segment(12345, 'Read only')?.disabled).toBe(true)
     await act(async () => segment(12345, 'Read only')?.click())
-    expect(mocks.updateAgentInstallation).toHaveBeenLastCalledWith('agent-a', 'grant-1', { access: 'read' })
-    expect(document.body.textContent).toContain('turn off formal reviews first')
-    expect(segment(12345, 'Read & write')?.getAttribute('aria-pressed')).toBe('true')
+    expect(mocks.updateAgentInstallation).toHaveBeenCalledOnce()
   })
 
   it('offers only live installations the agent does not hold and posts the picked one at the chosen tier', async () => {

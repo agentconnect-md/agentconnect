@@ -1529,6 +1529,7 @@
         "readOnlyDescription": "仅克隆和读取文件",
         "readWrite": "读写",
         "accessFor": "{name} 的访问权限",
+        "lowerAccessRevoke": "要降低权限，请撤销后重新授权",
         "githubWriteAccess": "推送、创建 PR 并运行 GitHub Actions",
         "repositoryAccess": "仓库访问权限",
         "selectRepositoryFirst": "请先选择仓库",

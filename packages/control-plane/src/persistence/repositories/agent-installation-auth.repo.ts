@@ -15,9 +15,6 @@ import type {
 } from '../ports.js'
 import { AgentId } from '../../domain/ids.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
-import { lockHookReviewAgentLifecycleScope } from '../review-projection-lock.js'
-import { assertInstallationGrantServesGithubHooks } from './repo-integration-fence.js'
-import { accessBelow } from '../../domain/repo-access.js'
 
 const withCreator = { createdBy: true } as const
 
@@ -124,22 +121,12 @@ export class PgAgentInstallationAuthorizationRepo implements AgentInstallationAu
     data: { access?: RepoAccess; materialize?: DbRepoMaterialization; accountLogin?: string }
   ): Promise<AgentInstallationAuthorizationRecord | null> {
     return this.transaction(async (tx) => {
-      let row = await tx.agentInstallationAuthorization.findUnique({ where: { id }, include: withCreator })
+      const row = await tx.agentInstallationAuthorization.findUnique({ where: { id }, include: withCreator })
       if (!row) return null
-      if (data.access !== undefined) {
-        // The agent lifecycle scope every GitHub hook write takes: a concurrent enable either lands first and is seen, or re-checks this tier.
-        await lockHookReviewAgentLifecycleScope(tx, AgentId(row.agentId))
-        row = await tx.agentInstallationAuthorization.findUnique({ where: { id }, include: withCreator })
-        if (!row) return null
-        if (accessBelow(data.access, row.access as RepoAccess)) {
-          await assertInstallationGrantServesGithubHooks(tx, AgentId(row.agentId), row.installationId, data.access)
-        }
-      }
-      const current = row
-      const changed = (Object.keys(data) as Array<keyof typeof data>).some((key) => data[key] !== current[key])
-      if (!changed) return toRecord(current)
+      const changed = (Object.keys(data) as Array<keyof typeof data>).some((key) => data[key] !== row[key])
+      if (!changed) return toRecord(row)
       const updated = await tx.agentInstallationAuthorization.update({ where: { id }, data, include: withCreator })
-      await bumpAgentConfigRevisions(tx, [current.agentId])
+      await bumpAgentConfigRevisions(tx, [row.agentId])
       return toRecord(updated)
     })
   }
