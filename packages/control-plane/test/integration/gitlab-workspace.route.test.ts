@@ -899,6 +899,34 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
     expect((await service.grantForAgent(gitlabAgent(), SECOND_PROJECT)).access).toBe('write')
   })
 
+  it('a stale raise that loses to a higher stored tier leaves the account at that tier’s role', async () => {
+    const h = await harness()
+    await secondBinding(h)
+    const created = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    const id = (created.json() as { id: string }).id
+    const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
+    const raised = await h.a.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${AGENT}/repos/${id}`,
+      payload: { access: 'write' }
+    })
+    expect(raised.statusCode).toBe(200)
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
+
+    // A request that read the row before the raise committed still asks for `comment`.
+    const stored = await h.a.deps.repos.agentRepoAuth.get(id)
+    vi.spyOn(h.a.deps.repos.agentRepoAuth, 'get').mockResolvedValueOnce({ ...stored!, access: 'read' })
+    const stale = await h.a.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${AGENT}/repos/${id}`,
+      payload: { access: 'comment' }
+    })
+    expect(stale.statusCode).toBe(200)
+    expect(stale.json()).toMatchObject({ access: 'write' })
+    // The stale Reporter role is re-derived from the stored `write`.
+    expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
+  })
+
   it('drops the consumer when the authorization is revoked', async () => {
     const h = await harness()
     const fresh = await secondBinding(h)

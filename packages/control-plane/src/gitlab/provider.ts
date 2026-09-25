@@ -167,6 +167,12 @@ export const gitlabCodeHostProvider: CodeHostProviderModule = {
       void reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
       return undefined
     }
+    // A concurrent raise stored a higher tier, so the role this request just set is stale; re-derive it from the rows.
+    if (updated.access !== access) {
+      await gitlab.provisioner
+        .convergeProject(orgId, row.repoId)
+        .catch((err: unknown) => req.log.warn({ err }, 'gitlab: re-converging a project after a stale raise failed'))
+    }
     void deps.repos.audit
       .append({
         kind: 'agent_repo_change',
