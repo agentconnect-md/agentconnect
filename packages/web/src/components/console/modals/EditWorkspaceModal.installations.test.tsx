@@ -45,7 +45,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 }))
 
 import EditWorkspaceModal from './EditWorkspaceModal'
-import { grantableInstallations } from './AuthorizeInstallationModal'
+import { grantableInstallations } from './AddAgentRepoModal'
 
 const agent = { id: 'agent-a', name: 'build-agent', canEdit: true, workspace: { mode: 'scratch' } } as unknown as Agent
 
@@ -112,6 +112,22 @@ const revoke = () => document.querySelector<HTMLButtonElement>('button[aria-labe
 const segment = (id: number, title: 'Read only' | 'Read & write') =>
   grantRow(id)?.querySelector<HTMLButtonElement>(`button[aria-label="${title}"]`) ?? null
 
+// Installations are authorized from Authorize repository's GitHub picker, as "All repositories in <account>".
+const openPicker = async () => {
+  await act(async () =>
+    Array.from(document.querySelectorAll('button'))
+      .find((b) => b.textContent?.includes('Authorize repository'))
+      ?.click()
+  )
+  await act(async () =>
+    Array.from(document.querySelectorAll<HTMLElement>('.inp'))
+      .find((el) => el.textContent?.includes('Pick a repository'))
+      ?.click()
+  )
+}
+const exactButton = (text: string) =>
+  Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent === text)
+
 describe('EditWorkspaceModal installation grants', () => {
   it('lists a grant as every repository of its account with its tier and checkout', async () => {
     await render([grant({ access: 'write' })])
@@ -125,21 +141,25 @@ describe('EditWorkspaceModal installation grants', () => {
     expect(document.body.textContent).not.toContain('No additional repositories authorized.')
   })
 
-  it('leaves the rows visible but the entry and revoke disabled for an editor who is not an owner', async () => {
+  it('leaves the rows visible but installations unpickable and revoke disabled for an editor who is not an owner', async () => {
     role.value = 'admin'
     await render([grant()])
 
-    const entry = button('Authorize an installation')
-    expect(entry?.disabled).toBe(true)
-    expect(entry?.parentElement?.getAttribute('title')).toBe(
-      'Only organization owners can authorize or revoke an installation'
-    )
+    expect(button('Authorize an installation')).toBeUndefined()
     expect(grantRow(12345)).not.toBeNull()
     expect(revoke()?.disabled).toBe(true)
     expect(segment(12345, 'Read & write')?.disabled).toBe(true)
     expect(segment(12345, 'Read & write')?.closest('[role="group"]')?.parentElement?.title).toBe(
       'Only organization owners can authorize or revoke an installation'
     )
+
+    await openPicker()
+    const offered = document.querySelector<HTMLButtonElement>('[data-installation="23456"]')
+    expect(offered?.getAttribute('aria-disabled')).toBe('true')
+    expect(offered?.title).toBe('Only organization owners can authorize or revoke an installation')
+    await act(async () => offered?.click())
+    expect(document.body.textContent).not.toContain('Push, open PRs & run GitHub Actions in every repository')
+    expect(document.querySelector('[data-installation="23456"]')).not.toBeNull()
   })
 
   it('raises a grant’s access with an access-only PATCH, then offers no lowering', async () => {
@@ -161,17 +181,30 @@ describe('EditWorkspaceModal installation grants', () => {
     mocks.createAgentInstallation.mockResolvedValue(created)
     const onChange = await render([grant()])
 
-    await act(async () => button('Authorize an installation')?.click())
+    expect(button('Authorize an installation')).toBeUndefined()
+    await openPicker()
     const offered = Array.from(document.querySelectorAll('[data-installation]')).map((el) =>
       el.getAttribute('data-installation')
     )
-    // acme is already granted and paused-org is suspended; the one left is preselected.
+    // acme is already granted and paused-org is suspended, so example-org is the one offered.
     expect(offered).toEqual(['23456'])
     expect(document.body.textContent).toContain('Selected repositories')
-    expect(document.querySelector('[data-access="read"]')?.className).toContain('border-(--brand)')
 
-    await act(async () => document.querySelector<HTMLButtonElement>('[data-access="write"]')?.click())
-    await act(async () => button('Authorize')?.click())
+    await act(async () => document.querySelector<HTMLButtonElement>('[data-installation="23456"]')?.click())
+    expect(document.body.textContent).toContain('All repositories in example-org')
+    // A whole installation checks out By decision or On demand, never Always.
+    const checkout = document.querySelector('[role="group"][aria-label="Checkout"]')
+    expect(Array.from(checkout?.querySelectorAll('button') ?? []).map((b) => b.textContent)).toEqual([
+      'By decision',
+      'On demand'
+    ])
+    expect(document.body.textContent).toContain('Push, open PRs & run GitHub Actions in every repository')
+    await act(async () =>
+      Array.from(document.querySelectorAll<HTMLElement>('div'))
+        .find((el) => el.textContent === 'Read & write')
+        ?.click()
+    )
+    await act(async () => exactButton('Add')?.click())
 
     expect(mocks.createAgentInstallation).toHaveBeenCalledWith('agent-a', {
       installationId: 23456,
@@ -186,12 +219,12 @@ describe('EditWorkspaceModal installation grants', () => {
     mocks.createAgentInstallation.mockRejectedValue(new Error('only an organization owner may do this'))
     await render([])
 
-    await act(async () => button('Authorize an installation')?.click())
+    await openPicker()
     await act(async () => document.querySelector<HTMLButtonElement>('[data-installation="12345"]')?.click())
-    await act(async () => button('Authorize')?.click())
+    await act(async () => exactButton('Add')?.click())
 
     expect(document.body.textContent).toContain('only an organization owner may do this')
-    expect(document.querySelector('[data-installation="12345"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('All repositories in acme')
   })
 
   it('revokes a grant and drops its row', async () => {

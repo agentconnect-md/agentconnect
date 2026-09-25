@@ -33,6 +33,7 @@ import {
   GitlabNoProjectsNotice,
   GitlabProjectField,
   GitlabProjectOption,
+  INSTALLATION_MATERIALIZE_OPTIONS,
   RepositoryMaterializeField
 } from '@/components/console/WorkspaceFormFields'
 import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
@@ -41,6 +42,7 @@ import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   ApiError,
+  createAgentInstallation,
   createAgentRepo,
   fetchGithubInstallations,
   fetchGithubInstallUrl,
@@ -49,10 +51,12 @@ import {
   invalidateGithubRepoRosterCache,
   repoAuthProvider,
   syncGithubInstallations,
+  type AgentInstallationAuthDto,
   type AgentRepoAuthDto,
   type GithubInstallationDto,
   type GithubRepoAccess,
   type GithubRepoDto,
+  type InstallationMaterialize,
   type RepoAccess,
   type RepoMaterialize
 } from '@/lib/api'
@@ -99,10 +103,22 @@ const GITEA_TIERS: { v: RepoAccess; label: string; icon: string; desc: string }[
   }
 ]
 
+/** Installations an owner may still grant: live, unsuspended, and not already held by the agent. */
+export function grantableInstallations(
+  installations: readonly GithubInstallationDto[],
+  granted: readonly AgentInstallationAuthDto[]
+): GithubInstallationDto[] {
+  const held = new Set(granted.map((grant) => grant.installationId))
+  return installations.filter((installation) => !installation.suspended && !held.has(installation.installationId))
+}
+
 export default function AddAgentRepoModal({
   agent,
   workspaceRepo,
   authorized,
+  installationGrants = [],
+  canAuthorizeInstallation = false,
+  onInstallationCreated,
   repositorySelector,
   initialRepo,
   fixedRepo,
@@ -118,6 +134,12 @@ export default function AddAgentRepoModal({
   workspaceRepo: string | null
   /** Existing grants — offered rows are disabled, duplicates rejected inline. */
   authorized: AgentRepoAuthDto[]
+  /** The agent's installation grants; their installations are not offered again. */
+  installationGrants?: readonly AgentInstallationAuthDto[]
+  /** An organization owner may pick a whole installation (agent-multi-repo-authorization.md decision 10). */
+  canAuthorizeInstallation?: boolean
+  /** Given, the GitHub picker also offers each grantable installation as "All repositories in <account>". */
+  onInstallationCreated?: (grant: AgentInstallationAuthDto) => void
   /** The selector as Edit workspace holds it, which may be newer than `agent`'s. */
   repositorySelector?: AgentRepositorySelector | null
   /** Pre-selected owner/repo (the hook editor's "Authorize…" shortcut). */
@@ -136,6 +158,8 @@ export default function AddAgentRepoModal({
   onCreated: (row: AgentRepoAuthDto) => void
 }) {
   const t = useTranslations('Agents.repoModal')
+  const tWorkspace = useTranslations('Agents.workspaceEdit')
+  const tInstallation = useTranslations('Agents.installationModal')
   const { orgPath } = useOrgs()
   // A repository locked by a manual GitHub workspace pins the host too — that arm
   // may authorize only its own repository, so the choice would be a dead end.
@@ -151,6 +175,8 @@ export default function AddAgentRepoModal({
   const [privateReposHidden, setPrivateReposHidden] = useState(false)
   const [reposNonce, setReposNonce] = useState(0)
   const [pick, setPick] = useState(fixedRepo ?? initialRepo ?? '')
+  // A whole installation picked instead of one repository; `pick` is empty then.
+  const [pickInstallation, setPickInstallation] = useState<number | null>(null)
   const [pickOpen, setPickOpen] = useState(false)
   const [q, setQ] = useState('')
   const [access, setAccess] = useState<RepoAccess>(initialAccess ?? 'read')
@@ -303,6 +329,27 @@ export default function AddAgentRepoModal({
     setErr(null)
   }
 
+  const installationChoices =
+    onInstallationCreated && !fixedRepo ? grantableInstallations(gh?.installations ?? [], installationGrants) : []
+  const pickedInstallation = installationChoices.find(
+    (installation) => installation.installationId === pickInstallation
+  )
+  const chooseRepository = (fullName: string) => {
+    // An installation's checkout choices lack Always, so a repository after one starts from the default again.
+    if (pickInstallation !== null) setMaterialize('always')
+    setPickInstallation(null)
+    setPick(fullName)
+    setPickOpen(false)
+  }
+  const chooseInstallation = (installationId: number) => {
+    if (!canAuthorizeInstallation) return
+    if (materialize === 'always') setMaterialize('on-demand')
+    setPick('')
+    setPickInstallation(installationId)
+    setPickOpen(false)
+    setErr(null)
+  }
+
   const picked = repos?.find((r) => r.fullName.toLowerCase() === pick.toLowerCase())
   const pickOwner = pick.split('/')[0] ?? ''
   // Installation covering the pick: the picked row's own, else match the owner
@@ -341,6 +388,9 @@ export default function AddAgentRepoModal({
 
   const q1 = q.trim().toLowerCase()
   const matches = (repos ?? []).filter((r) => !q1 || r.fullName.toLowerCase().includes(q1))
+  const installationMatches = installationChoices.filter(
+    (installation) => !q1 || installation.accountLogin.toLowerCase().includes(q1)
+  )
   // A typed owner/repo missing from a failed or stale roster refresh — the CP
   // re-validates it against the installations either way.
   const typedRepo = /^[^/\s]+\/[^/\s]+$/.test(q.trim()) ? q.trim() : null
@@ -365,16 +415,27 @@ export default function AddAgentRepoModal({
         input: { provider: 'gitea', repoId: gtPick, access, materialize }
       }
     }
-  const canSubmit = grantSubmit[provider].ready
+  const installationPicked = provider === 'github' && pickedInstallation !== undefined
+  const canSubmit = installationPicked ? canAuthorizeInstallation : grantSubmit[provider].ready
 
   const submit = async () => {
     const input = grantSubmit[provider].input
-    if (busyRef.current || !canSubmit || !input) return
+    if (busyRef.current || !canSubmit || (!installationPicked && !input)) return
     busyRef.current = true
     setSaving(true)
     setErr(null)
     try {
-      const row = await createAgentRepo(agent.id, input)
+      if (installationPicked && pickedInstallation && onInstallationCreated) {
+        onInstallationCreated(
+          await createAgentInstallation(agent.id, {
+            installationId: pickedInstallation.installationId,
+            access,
+            materialize: materialize as InstallationMaterialize
+          })
+        )
+        return
+      }
+      const row = await createAgentRepo(agent.id, input!)
       onCreated(row)
     } catch (e) {
       if (e instanceof ApiError && e.code === 'GITHUB_IDENTITY_REQUIRED') {
@@ -553,7 +614,19 @@ export default function AddAgentRepoModal({
               }}
             >
               <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
-                {pick ? (
+                {pickedInstallation ? (
+                  <>
+                    <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
+                      <GithubMark color="var(--text-secondary)" />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal">
+                      {tWorkspace.rich('allRepositoriesIn', {
+                        account: pickedInstallation.accountLogin,
+                        mono: (chunks) => <span className="mono">{chunks}</span>
+                      })}
+                    </span>
+                  </>
+                ) : pick ? (
                   <>
                     <Icon
                       name={picked && !picked.private ? 'book-bookmark' : 'lock'}
@@ -611,6 +684,41 @@ export default function AddAgentRepoModal({
                       </button>
                     </div>
                   )}
+                  {installationMatches.map((installation) => (
+                    <button
+                      key={`installation:${installation.installationId}`}
+                      type="button"
+                      data-installation={installation.installationId}
+                      aria-disabled={canAuthorizeInstallation ? undefined : true}
+                      title={canAuthorizeInstallation ? undefined : tWorkspace('installationOwnerOnly')}
+                      className={
+                        canAuthorizeInstallation
+                          ? 'fopt min-h-[46px] items-center gap-3 px-2 py-2'
+                          : 'fopt min-h-[46px] cursor-default items-center gap-3 px-2 py-2 opacity-55'
+                      }
+                      onClick={() => chooseInstallation(installation.installationId)}
+                    >
+                      <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
+                        <GithubMark color="var(--text-secondary)" />
+                      </span>
+                      <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+                        <span className="block w-full min-w-0 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                          {tWorkspace.rich('allRepositoriesIn', {
+                            account: installation.accountLogin,
+                            mono: (chunks) => <span className="mono">{chunks}</span>
+                          })}
+                        </span>
+                        <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                          {installation.repositorySelection === 'all'
+                            ? tInstallation('allRepositories')
+                            : tInstallation('selectedRepositories')}
+                        </span>
+                      </span>
+                      {pickInstallation === installation.installationId && (
+                        <Icon name="check" size={17} color="var(--brand)" />
+                      )}
+                    </button>
+                  ))}
                   {matches.map((r) => {
                     const taken = isWorkspace(r.fullName) || isAuthorized(r.fullName)
                     return (
@@ -618,10 +726,7 @@ export default function AddAgentRepoModal({
                         key={r.fullName}
                         className={`fopt min-h-[46px] items-center gap-3 px-2 py-2 ${taken ? 'cursor-default opacity-55' : ''}`}
                         disabled={taken}
-                        onClick={() => {
-                          setPick(r.fullName)
-                          setPickOpen(false)
-                        }}
+                        onClick={() => chooseRepository(r.fullName)}
                       >
                         <Icon
                           name={r.private ? 'lock' : 'book-bookmark'}
@@ -664,10 +769,7 @@ export default function AddAgentRepoModal({
                     <button
                       key={`typed:${typedRepo}`}
                       className="fopt min-h-[46px] items-center gap-3 px-2 py-2"
-                      onClick={() => {
-                        setPick(typedRepo)
-                        setPickOpen(false)
-                      }}
+                      onClick={() => chooseRepository(typedRepo)}
                     >
                       <Icon name="book-bookmark" size={16} color="var(--text-tertiary)" className="flex-none" />
                       <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
@@ -687,9 +789,11 @@ export default function AddAgentRepoModal({
                         : t('isAuthorized', { repo: typedRepo })}
                     </div>
                   )}
-                  {repos !== null && matches.length === 0 && !typedRepo && !reposError && (
-                    <div className="fnohit">{t('noRepositoriesMatch', { query: q })}</div>
-                  )}
+                  {repos !== null &&
+                    matches.length === 0 &&
+                    installationMatches.length === 0 &&
+                    !typedRepo &&
+                    !reposError && <div className="fnohit">{t('noRepositoriesMatch', { query: q })}</div>}
                   {repos === null && (
                     <div className="px-2 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                       {t('loadingRepositories')}
@@ -718,7 +822,7 @@ export default function AddAgentRepoModal({
                   <div className="min-w-0 flex-1">
                     <div className="font-sans text-[13px] font-semibold leading-normal">{t.label}</div>
                     <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                      {t.desc}
+                      {pickedInstallation && t.v === 'write' ? tInstallation('writeDescription') : t.desc}
                     </div>
                   </div>
                   <span
@@ -732,7 +836,12 @@ export default function AddAgentRepoModal({
               )
             })}
           </div>
-          <RepositoryMaterializeField value={materialize} decisionBlock={decisionBlock} onChange={setMaterialize} />
+          <RepositoryMaterializeField
+            value={materialize}
+            {...(pickedInstallation ? { options: INSTALLATION_MATERIALIZE_OPTIONS } : {})}
+            decisionBlock={decisionBlock}
+            onChange={setMaterialize}
+          />
 
           {uncovered && (
             <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">

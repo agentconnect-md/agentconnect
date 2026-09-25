@@ -240,12 +240,16 @@ describe('workspace source row', () => {
 })
 
 describe('repository dropdown trigger', () => {
-  it('counts explicit repositories and installation grants together', () => {
+  it('counts explicit repositories and installation grants apart', () => {
     expect(html(agent({ mode: 'scratch' }))).toContain('>Repos<')
     repos.rows = [repo()]
     expect(html(agent({ mode: 'scratch' }))).toContain('+1 repo<')
     grants.rows = [grant()]
-    expect(html(agent({ mode: 'scratch' }))).toContain('+2 repos<')
+    expect(html(agent({ mode: 'scratch' }))).toContain('+1 repo · 1 org<')
+    repos.rows = [repo(), repo({ id: 'r2', repoFullName: 'example-org/docs' })]
+    expect(html(agent({ mode: 'scratch' }))).toContain('+2 repos · 1 org<')
+    repos.rows = []
+    expect(html(agent({ mode: 'scratch' }))).toContain('+1 org<')
   })
 
   it('does not count the App-backed workspace repository, which the source already names', () => {
