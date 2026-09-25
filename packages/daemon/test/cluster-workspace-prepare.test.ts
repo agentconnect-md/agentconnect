@@ -1067,9 +1067,12 @@ describe('secondary roots on the pod volume', () => {
   const SHARED = `${REPOS}/example-co/shared-library`
 
   function agentWithRoots(
-    rows: Array<{ repoFullName: string; repoId: string; provider?: string; materialize?: 'always' | 'on-demand' }> = [
-      { repoFullName: 'acme/infra', repoId: '42' }
-    ]
+    rows: Array<{
+      repoFullName: string
+      repoId: string
+      provider?: string
+      materialize?: 'always' | 'decision' | 'on-demand'
+    }> = [{ repoFullName: 'acme/infra', repoId: '42' }]
   ): Agent {
     return clusterAgent({ additionalRepos: rows } as Partial<Agent['workspace']>)
   }
@@ -1643,6 +1646,33 @@ describe('secondary roots on the pod volume', () => {
       expect(asked).toEqual([])
       expect([...pod.dirs, ...pod.files.keys()].filter((path) => path.startsWith(`${REPOS}/`))).toEqual([])
       expect(calls.filter((call) => !inSession(KEY)(call))).toEqual([])
+    })
+
+    it('clones a selected `decision` row on the session pod alone, with the rest on demand (decisions 15 and 19)', async () => {
+      const agent = agentWithRoots([
+        { repoFullName: 'acme/infra', repoId: '42', materialize: 'decision' },
+        { repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'decision' }
+      ])
+      const selected = { ...request, sessionKey: 'sess-selected' }
+      workspaces.setSessionSelection(selected.sessionKey, [
+        { provider: 'github', repoFullName: 'acme/infra', repoId: '42' }
+      ])
+      const asked = agentPodFails()
+
+      const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, selected)
+
+      expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, selected)).toEqual([
+        sessionCloneOf(selected.sessionKey, 'acme/infra'),
+        `${sessionDirOf(selected.sessionKey)}/repos`
+      ])
+      expect(await attested(sessionCloneOf(selected.sessionKey, 'acme/infra'))).toMatchObject({ repoId: '42' })
+      expect(
+        (await workspaces.sessionOnDemandClones(agent, selected))?.repositories.map((repo) => repo.repoFullName)
+      ).toEqual(['example-co/shared-library'])
+      // The unselected row was neither asked about nor cloned, and the agent pod did nothing for either.
+      expect(calls.some((call) => call.args.some((arg) => arg.includes('shared-library')))).toBe(false)
+      expect(asked).toEqual([])
+      expect([...pod.dirs, ...pod.files.keys()].filter((path) => path.startsWith(`${REPOS}/`))).toEqual([])
     })
 
     it('resumes a clone by its own attestation, asking the remote nothing and following no later default', async () => {

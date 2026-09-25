@@ -96,6 +96,44 @@ it('records once that a session was handed an on-demand clone directory, which l
   await s.close()
 })
 
+// multi-repository-workspaces.md decision 19: the repositories the selector chose, pinned once per session and held against the retire sweep.
+it('pins a session’s selected repositories once, and lists what an agent’s sessions still hold', async () => {
+  const s = await store()
+  const row = {
+    key: 'selected',
+    agentId: 'bot-a',
+    platform: 'webchat',
+    channel: 'conversation',
+    thread: 'thread',
+    acpSessionId: 'acp-1',
+    state: 'idle' as const,
+    lastDeliveredTs: null,
+    updatedAt: 1
+  }
+  const infra = { provider: 'github' as const, repoFullName: 'acme/infra', repoId: '42' }
+  const tools = { provider: 'github' as const, repoFullName: 'example-co/tools', repoId: '900' }
+  await s.upsertSession(row)
+  expect((await s.getSession(row.key))?.selectedRepos ?? null).toBeNull()
+
+  await s.pinSelectedRepos(row.key, [infra])
+  await s.pinSelectedRepos(row.key, [tools])
+  await s.upsertSession({ ...row, state: 'closed', updatedAt: 2 })
+  expect(JSON.parse((await s.getSession(row.key))!.selectedRepos!)).toEqual([infra])
+
+  await s.upsertSession({ ...row, key: 'other', thread: 'thread-2' })
+  await s.pinSelectedRepos('other', [infra, tools])
+  await s.upsertSession({ ...row, key: 'elsewhere', agentId: 'bot-b', thread: 'thread-3' })
+  await s.pinSelectedRepos('elsewhere', [{ ...tools, repoId: '901' }])
+  const held = await s.listSelectedRepos('bot-a')
+  expect(held).toHaveLength(2)
+  expect(held).toEqual(expect.arrayContaining([infra, tools]))
+  expect(await s.listSelectedRepos('bot-c')).toEqual([])
+  // A key with no row is a no-op, never a row of its own.
+  await s.pinSelectedRepos('never-opened', [infra])
+  expect(await s.getSession('never-opened')).toBeUndefined()
+  await s.close()
+})
+
 /** A second handle on the same durable store — a daemon restart, not a new store. */
 async function reopen(path: string): Promise<LocalStore> {
   return await openTestStore(path)
@@ -3757,7 +3795,7 @@ describe.skipIf(pg)('the v25 → v26 decision tables', () => {
   }
 
   it('creates both tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(29)
+    expect(SCHEMA_VERSION).toBe(30)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
@@ -3826,6 +3864,42 @@ describe.skipIf(pg)('the v27 → v28 on-demand clones column', () => {
     expect((await upgraded.getSession(row.key))?.onDemandClones).toBeNull()
     await upgraded.markSessionOnDemandClones(row.key)
     expect((await upgraded.getSession(row.key))?.onDemandClones).toBe(1)
+    await upgraded.close()
+
+    const check = new DatabaseSync(path)
+    const version = (check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+    check.close()
+    expect(version).toBe(SCHEMA_VERSION)
+  })
+})
+
+// multi-repository-workspaces.md decision 19: v30 records the repositories the selector chose for a session.
+describe.skipIf(pg)('the v29 → v30 selected repositories column', () => {
+  it('adds selectedRepos to a v29 store, empty on the sessions it already holds', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v29-')), 'local.sqlite')
+    const first = await LocalStore.open(path)
+    const row = {
+      key: 'held',
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: null,
+      state: 'idle' as const,
+      lastDeliveredTs: null,
+      updatedAt: 1
+    }
+    await first.upsertSession(row)
+    await first.close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE sessions DROP COLUMN selectedRepos; PRAGMA user_version = 29')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    expect((await upgraded.getSession(row.key))?.selectedRepos).toBeNull()
+    const selected = [{ provider: 'github' as const, repoFullName: 'acme/infra', repoId: '42' }]
+    await upgraded.pinSelectedRepos(row.key, selected)
+    expect(await upgraded.listSelectedRepos('bot-a')).toEqual(selected)
     await upgraded.close()
 
     const check = new DatabaseSync(path)

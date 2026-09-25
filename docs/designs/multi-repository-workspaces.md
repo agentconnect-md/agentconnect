@@ -4,9 +4,10 @@
 > (pod) daemons (phase 7), `gh` in the pod included. Per-authorization
 > materialization below is implemented for `always` and `on-demand` rows
 > (decisions 13 and 20); installation grants (decision 14) are implemented for
-> `on-demand`, and the repository selector (decisions 15–19) has its evaluator
-> setting and roster request; the selection itself is **proposed, not
-> implemented**.
+> `on-demand`, and the repository selector (decisions 15–19) is implemented on
+> the daemon, advertised as `repo-selector-v1`. The Control Plane still refuses
+> `decision` on rows and grants until it lifts that on the daemon feature, and
+> the console's **By decision** is pending.
 >
 > Before this design an agent's workspace was exactly one repository.
 > Additional repositories existed only as an authorization allowlist
@@ -265,8 +266,10 @@ no root for a secondary repository on a cluster agent.
 > `always` rows with decision 20's clone directory, and **Always** or **On
 > demand** on each row in the console. Decision 14 has its control-plane,
 > daemon and console halves (change-map step 2). Of decisions 15–19, the
-> evaluator setting and the roster request pair have their protocol and
-> control-plane half (change-map step 3); the selection itself has not landed.
+> protocol, control-plane and daemon halves have landed (change-map step 3):
+> the selection runs on the daemon, which advertises `repo-selector-v1`; the
+> Control Plane still refuses `decision` until it gates that on the feature,
+> and the console half has not landed.
 
 Decision 1 scales with the number of rows. An organization with a few hundred
 repositories that authorizes them all — or that holds an installation grant
@@ -289,8 +292,8 @@ out to need later can be cloned on demand.
 | 15  | **The selector is a built-in Decision consumer at workspace preparation.** Its candidates are the rows marked `decision` plus the rosters of the installation grants marked `decision`. The agent chooses the evaluator once, `repositorySelector: { providerId, model }` on the Workspace card through the Decision editor's Provider · model picker over the daemon catalog, shown as soon as any authorization is marked `decision`; the daemon generates the question. Candidates are split into chunks of at most 31, each chunk one Choice question of those repositories plus a `none` option, evaluated concurrently within the evaluator's own caps. Following [decisions.md §1](decisions.md), the consumer lives here, in the feature that owns the action; the typed answer is evidence, and the `materialize` choice is the authority that turns it into clones.      | A saved Decision carries a fixed question of at most 32 options; the candidate list is the agent's and changes with its grants, so the question must be built from it. Chunking is what makes a few hundred candidates one bounded stage rather than one evaluation per repository.                                                                                   |
 | 16  | **State is the model-selection state.** The selector reads the same input as [Agent runtime and model selection](decisions.md#106-agent-runtime-and-model-selection): a chat's opening message with the gate's bounded history, or a PR/MR hook's description, commit messages and diff prefix, plus `workspace.primary` naming the primary repository. Candidates appear only in the question's criteria, never in the state.                                                                                                                                                                                                                                                                                                                                                                                                                                                     | One state builder for both once-per-session consumers, one set of budgets and truncation rules, and the request stays within the evaluator's 32 KiB.                                                                                                                                                                                                                  |
 | 17  | **Selection is relative to `none`, bounded by a cap.** Within a chunk every option whose probability exceeds `none`'s is a hit; hits across chunks are ordered by probability and at most 5 are materialized (a proposal to measure). A chunk in which `none` leads contributes nothing. The primary is always present, and a review session's subject root is always its `cwd` (decision 6) whatever the selector said.                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Probabilities within a chunk sum to one, so a request about two repositories in the same chunk splits its mass between them; an absolute threshold would drop both, while beating `none` keeps both. The cap bounds preparation time the way the clone budget bounds one root.                                                                                        |
-| 18  | **No fallback.** When any authorization is marked `decision`, an evaluator that is not ready (`DecisionReadiness` other than `ready`) or an `unavailable` evaluation fails the session's start with a visible error naming the cause. The daemon never treats a failed selection as `always` or as `on-demand`. The console offers **By decision** on a row or grant only while at least one provider is ready, and disables it otherwise.                                                                                                                                                                                                                                                                                                                                                                                                                                         | A silent downgrade would make which repositories a session stands in depend on provider health that nobody can see. The operator chose by decision; a failure of its precondition is theirs to see and fix, exactly as a runtime that cannot start is.                                                                                                                |
-| 19  | **The selection is per session and recorded.** The selected set is saved in the session's Decision snapshot beside the model selection, so restart and resume re-materialize the same roots and a later turn does not re-evaluate. The evaluation is recorded as evidence with the session's other Decision evaluations. Widening a running session's roots is a follow-up (see below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | The runtime's directories are fixed at `session/new`; re-selecting on a later turn would need a host restart to take effect, which is a separate design.                                                                                                                                                                                                              |
+| 18  | **No fallback.** When any authorization is marked `decision`, a missing precondition fails the session's start with a visible error naming the cause, through the same path a runtime that cannot start uses: an agent with no `repositorySelector`, an evaluator the catalog does not offer for Choice questions or that is not ready (`DecisionReadiness` other than `ready`), a Control Plane that cannot answer the roster a `decision` grant needs, or an `unavailable` evaluation of any chunk. The daemon never treats a failed selection as `always` or as `on-demand`. The console offers **By decision** on a row or grant only while at least one provider is ready and the daemon advertises `repo-selector-v1`, and disables it otherwise.                                                                                                                            | A silent downgrade would make which repositories a session stands in depend on provider health that nobody can see. The operator chose by decision; a failure of its precondition is theirs to see and fix, exactly as a runtime that cannot start is.                                                                                                                |
+| 19  | **The selection is per session and recorded.** The selected set is pinned on the session's row beside the pinned model (`selectedRepos`, first-wins), so restart and resume re-materialize the same roots and a later turn does not re-evaluate; a session whose runtime session already exists, or a channel-root seed that opens one without a request, selects nothing. A root a snapshot still selects is held against retirement (decision 12) until that session's row is gone. The evaluation is logged with the session's start; recording it beside the gate and router verdicts is a follow-up, since those are keyed by conversation lane. Widening a running session's roots is a follow-up (see below).                                                                                                                                                               | The runtime's directories are fixed at `session/new`; re-selecting on a later turn would need a host restart to take effect, which is a separate design.                                                                                                                                                                                                              |
 | 20  | **On-demand clones live in the session's own directory, and the prompt says where.** A confined session clones into `sessions/<leaf>/repos/<owner>/<repo>`, the place a daemon-materialized secondary would occupy; a worktree-tier or shared session clones into `<agentDir>/clones/<sid>/<owner>/<repo>`, a subtree nothing else enumerates. The daemon makes it only for a session with something to clone and hands it to the runtime as an additional directory. Both go with the session, shared ones too, under a session clone's rules, and are carved into the OS-sandbox boundary like `repos/`. The standing context names the directory, gives one clone command with the host's own URL, says credentials for those repositories are automatic, and lists what is authorized but not checked out (rows by name, installation grants by account, at most 100 of each). | A clone inside the primary's worktree would show up as untracked work; one under `repos/<o>/<r>/checkout` would race the daemon's own staging. Using the confined session's `repos/` lets the console browser and a key-server host's clone listing find it without new code. Telling the model the rule is what makes on-demand cloning reliable instead of a guess. |
 
 ### The selector
@@ -307,44 +310,54 @@ and leaves out a repository with its own row and the workspace repository. The
 reply is control metadata (names, ids, the descriptions GitHub already
 publishes, cut to 350 characters), never message content. It is bounded: at
 most 512 candidates, most recent push first, within one frame, with `partial`
-set when a bound cut anything; the daemon puts the rows first, keeps the same
-bound, and carries `partial` into `context.partial` on the evaluation's
-evidence. The daemon caches the reply for the roster's own TTL.
+set when a bound cut anything; the daemon puts the rows first, deduplicates by
+host and id, keeps the same bound, and carries `partial` into the state's
+`context.partial`. The daemon keeps the reply for five minutes, the roster page
+cache's own TTL, and drops it when the agent's authorizations or selector
+change.
 
 **Question.** One Choice question per chunk. Criteria keys are `r1…r31` plus
 `none`, because a full name can exceed the 64-character key limit; each
-criterion's text is the repository's full name followed by its description,
-trimmed so the whole question stays within its 16 KiB limit. The instructions
-are fixed text: choose the repositories this request is about, or `none` when
-it is about none of these. The primary repository is named in the state, not
-offered as an option.
+criterion's text is `owner/repo: description`, descriptions halved until the
+whole question stays within its 16 KiB limit. The instructions are fixed text:
+choose the repositories this request is about, or `none` when it is about none
+of these. The primary repository is named in the state, not offered as an
+option.
 
-**Evaluation.** Chunks are evaluated concurrently through the existing
-`DecisionEvaluator` with the agent's `repositorySelector`, so its four
-active evaluations per daemon and five-second deadline per request apply
-unchanged; seven chunks are two rounds. The stage runs where the
-model-selection evaluation runs: on the serving daemon, before executor
-placement and workspace preparation, so on a cluster daemon the session pod
-clones only the selected roots. Provider results stay on the data plane.
+**Evaluation.** Chunks are evaluated through the existing `DecisionEvaluator`
+with the agent's `repositorySelector`, at most four at once — its own active
+cap, so a batch never answers `capacity` to itself — with its five-second
+deadline per request; seven chunks are two rounds. The state is the
+model-selection state (a chat's opening with its bounded history, or the PR/MR
+context) trimmed against the largest chunk's question, plus `workspace.primary`
+and the partial mark; a wake with no recorded opening uses the message text
+alone. The stage runs where the model-selection evaluation runs: on the serving
+daemon, before executor placement and workspace preparation, so on a cluster
+daemon the session pod clones only the selected roots. Provider results stay on
+the data plane.
 
 **Result.** The hits of decision 17 join the `always` rows as the session's
 secondary roots and are prepared exactly as the confined or worktree tier
-prepares a root today, including per-root failure handling (decision 7). Every
-other candidate and every `on-demand` authorization is on demand for that
-session. The recorded snapshot holds `{ repoFullName,
-repoId, provider }` per selected root, and the prompt's "Additional
-repositories" block lists the selected roots as it lists every root today, then
-the on-demand rule of decision 20.
+prepares a root today, including per-root failure handling (decision 7); a
+selected roster repository, which has no row, gets its root through the same
+placement a row gets. A selected root is that session's alone: another session
+of the agent is not handed it, whichever tier they share. Every other candidate
+and every `on-demand` authorization is on demand for that session. The
+recorded snapshot holds `{ repoFullName, repoId, provider }` per selected root,
+and the prompt's "Additional repositories" block lists the selected roots as
+it lists every root today, then the on-demand rule of decision 20 with the
+unselected rows by name.
 
 ### Cluster daemons
 
 Nothing here needs a new pod primitive. The selection runs on the pool member;
-`prepareClusterConfinedSession` receives the selected roots instead of the
-whole set, so a session pod's clone pass is bounded by the cap rather than by
-the number of grants, and the agent pod's `prepareSecondaryRoots` pass prepares
-only the `always` rows. The candidate request is a control-plane round trip on the
-turn's path, in the same class as `gitcred/request` and the model-selection
-`decision/get`.
+`prepareClusterConfinedSession` clones the `always` rows and the session's
+selected roots instead of the whole set, so a session pod's clone pass is
+bounded by the cap rather than by the number of grants, and the agent pod's
+`prepareSecondaryRoots` pass prepares the `always` rows plus, for a shared
+session, that session's selected ones. The candidate request is a control-plane
+round trip on the turn's path, in the same class as `gitcred/request` and the
+model-selection `decision/get`.
 
 ### Change map
 
@@ -384,8 +397,15 @@ turn's path, in the same class as `gitcred/request` and the model-selection
    model the catalog offers for Choice questions, 400 otherwise; `null`
    clears), stored on the agent, projected value-or-null into `AgentSpec` and
    kept in `agent.json`, advancing the config revision; and the roster pair,
-   advertised as `repo-candidates-v1`. `decision` is still refused on rows and
-   grants.
+   advertised as `repo-candidates-v1`. _Landed:_ the daemon half —
+   `repo-selector-v1`, the candidates from the `decision` rows and the cached
+   roster, the chunked Choice questions, the selection rule, the per-session
+   snapshot (`selectedRepos`, store v30) that restart and resume reuse, each
+   missing precondition as a visible start failure, the selected roots prepared
+   on every tier and held against retirement, and the unselected rows listed on
+   demand. `decision` is still refused on rows and grants until the Control
+   Plane lifts that on the daemon feature, and **By decision** in the console
+   has not landed.
 4. **Public documentation** travels with steps 1 and 3.
 
 Follow-ups filed together once the above lands: re-selection on a later turn

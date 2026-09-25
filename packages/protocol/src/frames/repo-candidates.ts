@@ -3,6 +3,8 @@ import { CodeHostExternalId, CodeHostProviderString } from '../code-host.js'
 
 // The CP answers `repo-candidates/request`; a daemon sends it only after seeing this (multi-repository-workspaces.md, The selector).
 export const REPO_CANDIDATES_V1_FEATURE = 'repo-candidates-v1'
+// The daemon selects a session's `decision` repositories before it starts (decisions 15–19); the CP refuses `decision` for a daemon without it.
+export const REPO_SELECTOR_V1_FEATURE = 'repo-selector-v1'
 // At most this many candidates in one reply, across every grant.
 export const REPO_CANDIDATES_MAX = 512
 // A longer description is cut to this many characters before it is sent.

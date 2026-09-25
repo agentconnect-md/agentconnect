@@ -119,7 +119,7 @@ function agentFixture(
   opts: {
     mode?: 'git-repo' | 'from-scratch'
     githubApp?: boolean
-    additionalRepos?: Array<{ repoFullName: string; repoId: string; materialize?: 'always' | 'on-demand' }>
+    additionalRepos?: Array<{ repoFullName: string; repoId: string; materialize?: 'always' | 'decision' | 'on-demand' }>
     additionalInstallations?: Array<{ accountLogin: string; materialize: 'decision' | 'on-demand' }>
   } = {}
 ): Agent {
@@ -319,6 +319,37 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(existsSync(join(home, 'worktrees'))).toBe(false)
     expect(git(checkout, ['branch', '--list', 'dev/*'])).toBe('')
     expect(git(checkout, ['worktree', 'list']).split('\n')).toHaveLength(1)
+  })
+
+  it('clones a selected `decision` row into the session directory and lists the rest on demand (decisions 15 and 19)', async () => {
+    const agent = agentFixture({
+      additionalRepos: [
+        { repoFullName: 'acme/infra', repoId: '42', materialize: 'decision' },
+        { repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'decision' }
+      ]
+    })
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const key = 'slack:C1:1700000000.000200'
+    workspaces.setSessionSelection(key, [{ provider: 'github', repoFullName: 'acme/infra', repoId: '42' }])
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined({ sessionKey: key }))
+
+    const scope = { sessionKey: key, isolation: 'session' as const }
+    const repos = join(workspaces.sessionDir(agent, key), 'repos')
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([
+      realpathSync(join(repos, 'acme', 'infra')),
+      realpathSync(repos)
+    ])
+    // Taken from the remote at its default, attested like every session clone (§11).
+    expect(
+      JSON.parse(readFileSync(join(repos, 'acme', 'infra', '.git', 'agentconnect-materialization.json'), 'utf8'))
+    ).toEqual({ provider: 'github', repoId: '42', repoFullName: 'acme/infra', branch: 'trunk' })
+    expect(existsSync(join(repos, 'example-co'))).toBe(false)
+    expect(
+      (await workspaces.sessionOnDemandClones(agent, scope))?.repositories.map((repo) => repo.repoFullName)
+    ).toEqual(['example-co/shared-library'])
+    // A confined session clones for itself: the agent's own `repos/` holds nothing of it.
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'repos'))).toBe(false)
   })
 
   it('keeps the clone, its branch and its files across turns', async () => {

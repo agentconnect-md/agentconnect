@@ -81,7 +81,7 @@ export function modelSelectionState(source: 'chat' | 'pull_request', text: strin
 // Preserve description-based instructions while adding bounded, explicitly partial code-host context.
 export function pullRequestModelSelectionState(
   input: PullRequestContext,
-  decision: DecisionToolDefinition
+  decision: Pick<DecisionToolDefinition, 'model' | 'question'>
 ): Record<string, unknown> {
   const opening = modelSelectionState('pull_request', input.description)
   const messages = input.commitMessages.join('\n\n')
