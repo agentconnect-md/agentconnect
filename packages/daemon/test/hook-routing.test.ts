@@ -9,7 +9,8 @@ import {
 import { DecisionEvaluationReader, DecisionEvaluationScopeError } from '../src/decisions/evaluations.js'
 import type { DecisionEvaluationInput } from '../src/decisions/evaluator.js'
 import { hookRouteEvidenceText } from '../src/decisions/evidence.js'
-import { buildCodeHostHookState } from '../src/codehost/decision-state.js'
+import { buildCodeHostDecisionState, loadCodeHostDecisionContext } from '../src/codehost/decision-state.js'
+import { decisionRequestBody } from '../src/decisions/evaluator.js'
 import { HookRouter, hookRouterSubject } from '../src/codehost/hook-routing.js'
 import type { ChannelTextRow, LocalStore } from '../src/store/local-store.js'
 import { openTestStore } from './store-support.js'
@@ -131,6 +132,7 @@ async function harness() {
   const live: { current?: HookRoutingProjection | null; base?: HookRoutingProjection } = {}
   const router = new HookRouter({
     store: () => store,
+    pullRequestContext: async () => undefined,
     evaluate: (input) => evaluate(input),
     now: () => Date.now(),
     ownerFence: () => 'local:test',
@@ -167,7 +169,7 @@ describe('hook router (host choice)', () => {
     const child = {
       ...p.definition,
       id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-      question: { type: 'boolean' as const, instructions: 'Needs an expert?', criteria: { true: 'Yes', false: 'No' } }
+      question: { type: 'boolean' as const, instructions: 'x'.repeat(14_000), criteria: { true: 'Yes', false: 'No' } }
     }
     p.config.rules[0]!.action = { type: 'decision', nextStepId: 'expert' }
     p.config.steps = [
@@ -186,12 +188,14 @@ describe('hook router (host choice)', () => {
       model: child.model,
       usage: { inputTokens: 10, outputTokens: 1 }
     })
+    await h.post('Earlier context '.repeat(1000))
     const event = await h.post('Route this issue', ALL, '42', p)
     expect(h.agentsOf(await event.choose())).toEqual([HOOK_B, HOOK_C])
     const [root, next] = h.evaluate.mock.calls.map(([input]) => input)
     expect(next!.state).toBe(root!.state)
     expect(next!.deadlineAt).toBe(root!.deadlineAt)
     expect(next!.decision.question).toEqual(child.question)
+    expect(Buffer.byteLength(decisionRequestBody(next!))).toBeLessThanOrEqual(32_000)
     const verdict = await h.store.getDecisionVerdict(event.record.seq, hookRouterSubject(ROUTING))
     expect(verdict).toMatchObject({ inputTokens: 30, outputTokens: 2 })
     expect(JSON.parse(verdict!.answerJson!).chain).toMatchObject([
@@ -361,7 +365,89 @@ describe('hook route evidence', () => {
 
 describe('code-host decision state', () => {
   const build = (msg: RdMsgHook, history: ChannelTextRow[], full = false) =>
-    buildCodeHostHookState({ msg, current: row('Still broken?'), history, full, question, model: 'jev-1.13.0' })
+    buildCodeHostDecisionState({ msg, current: row('Still broken?'), history, full }, { question, model: 'jev-1.13.0' })
+
+  it('budgets escaped code-host context in priority order without mutating the snapshot', () => {
+    const msg = fire({ github: { ...fire().github!, subjectKind: 'pull_request', pullNumber: 42 } })
+    const context = {
+      msg,
+      current: row('Review this'),
+      history: [row('prior '.repeat(2000))],
+      full: false,
+      pullRequest: {
+        description: 'Description',
+        commitMessages: ['界'.repeat(2000)],
+        diff: '\t'.repeat(12 * 1024),
+        reasons: []
+      }
+    }
+    const decision = { model: 'jev-latest', question: { ...question, instructions: 'x'.repeat(14_000) } }
+    const built = buildCodeHostDecisionState(context, decision)
+    if (built.unsupported) throw new Error('unsupported')
+    expect(Buffer.byteLength(decisionRequestBody({ decision, state: built.state }))).toBeLessThanOrEqual(32_000)
+    expect(built.state).toMatchObject({
+      currentMessage: { text: 'Review this' },
+      history: [],
+      subject: { body: 'It crashes.' },
+      context: { partial: true, omittedMessages: 1 }
+    })
+    const pull = built.state.pullRequest as { commitMessages: string; diff: string }
+    expect(Buffer.byteLength(pull.commitMessages)).toBe(4095)
+    expect(pull.commitMessages).not.toContain('�')
+    expect(pull.diff.length).toBeGreaterThan(0)
+    expect(pull.diff.length).toBeLessThan(context.pullRequest.diff.length)
+    expect(context.history).toHaveLength(1)
+    expect(context.pullRequest.diff).toHaveLength(12 * 1024)
+  })
+
+  it('retains the event on enrichment failure and omits supplements for another revision', async () => {
+    const store = await openTestStore()
+    try {
+      const msg = fire({
+        github: { ...fire().github!, subjectKind: 'pull_request', pullNumber: 42, headSha: 'expected' }
+      })
+      const input = { msg, store, current: row('Review this'), signal: new AbortController().signal }
+      const unavailable = await loadCodeHostDecisionContext({
+        ...input,
+        pullRequest: async () => {
+          throw new Error('offline')
+        }
+      })
+      const decision = { question, model: 'jev-latest' }
+      const built = buildCodeHostDecisionState(unavailable!, decision)
+      expect(built).toMatchObject({
+        state: {
+          currentMessage: { text: 'Review this' },
+          subject: { body: 'It crashes.' },
+          pullRequest: { headSha: 'expected', diff: '' },
+          context: { partial: true, reasons: ['observed_history', 'history_unavailable', 'pull_request_unavailable'] }
+        }
+      })
+      const changed = await loadCodeHostDecisionContext({
+        ...input,
+        pullRequest: async () => ({
+          description: 'Later description',
+          headSha: 'other',
+          commitMessages: ['Later commit'],
+          diff: '+later',
+          reasons: []
+        })
+      })
+      expect(buildCodeHostDecisionState(changed!, decision)).toMatchObject({
+        state: {
+          currentMessage: { text: 'Review this' },
+          subject: { body: 'It crashes.' },
+          pullRequest: { headSha: 'expected', commitMessages: '', diff: '' },
+          context: { reasons: expect.arrayContaining(['revision_mismatch']) }
+        }
+      })
+      const pullRequest = vi.fn(async () => undefined)
+      await loadCodeHostDecisionContext({ ...input, msg: fire(), pullRequest })
+      expect(pullRequest).not.toHaveBeenCalled()
+    } finally {
+      await store.close()
+    }
+  })
 
   it('keeps the chat field names beside the subject, history oldest first', () => {
     const older = row('first comment', '42', 'alice')
@@ -405,14 +491,15 @@ describe('code-host decision state', () => {
     expect(body.length).toBeLessThan(40_000)
     expect(halved.reasons).toContain('subject_body_trimmed')
     expect((halved.state.currentMessage as { text: string }).text).toBe('Still broken?')
-    const hugeCurrent = buildCodeHostHookState({
-      msg: fire(),
-      current: row('c'.repeat(40_000)),
-      history: [],
-      full: false,
-      question,
-      model: 'jev-1.13.0'
-    })
+    const hugeCurrent = buildCodeHostDecisionState(
+      {
+        msg: fire(),
+        current: row('c'.repeat(40_000)),
+        history: [],
+        full: false
+      },
+      { question, model: 'jev-1.13.0' }
+    )
     expect(hugeCurrent).toEqual({ unsupported: true })
   })
 })
@@ -453,14 +540,15 @@ const giteaFire = (target: NonNullable<RdMsgHook['gitea']>['target']): RdMsgHook
 
 describe('code-host decision state across providers', () => {
   const build = (msg: RdMsgHook) =>
-    buildCodeHostHookState({
-      msg,
-      current: row('Still broken?'),
-      history: [],
-      full: false,
-      question,
-      model: 'jev-1.13.0'
-    })
+    buildCodeHostDecisionState(
+      {
+        msg,
+        current: row('Still broken?'),
+        history: [],
+        full: false
+      },
+      { question, model: 'jev-1.13.0' }
+    )
   const stateOf = (msg: RdMsgHook) => {
     const built = build(msg)
     if (built.unsupported) throw new Error('unsupported')
@@ -533,6 +621,7 @@ describe('hook router for GitLab and Gitea routings', () => {
       }
       const router = new HookRouter({
         store: () => store,
+        pullRequestContext: async () => undefined,
         evaluate: (input) => evaluate(input),
         now: () => Date.now(),
         ownerFence: () => 'local:test',

@@ -111,6 +111,8 @@ export const gitlabTurnFinal: CodeHostTurnFinal<'gitlab'> = {
       {
         description: path,
         descriptionField: 'description',
+        baseShaPath: ['diff_refs', 'base_sha'],
+        headShaPath: ['diff_refs', 'head_sha'],
         commits: `${path}/commits?per_page=${PULL_CONTEXT_COMMIT_LIMIT}&page=1`,
         commitMessagePath: ['message'],
         diff: `${path}/raw_diffs`

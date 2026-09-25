@@ -195,7 +195,7 @@ export function RuntimeSelectionSample({
         </div>
         <div className="flex flex-col gap-[6px]">
           <span className={SECTION_LABEL}>
-            {t('evaluatedText')} · {t(sample === 1 || sample === 3 ? 'description' : 'opening')}
+            {t('evaluatedText')} · {t(sample === 1 || sample === 3 ? 'trigger' : 'opening')}
           </span>
           <div className="rounded-sm border border-(--border-subtle) bg-(--surface-sunken) px-[10px] py-2 font-sans text-[12.5px] leading-[1.5] text-(--text-secondary)">
             {t(`text${sample}`)}

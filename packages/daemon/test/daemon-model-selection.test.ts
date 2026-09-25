@@ -8,6 +8,7 @@ import {
   type ExecutorCandidate,
   type ExecutorPrepareReq,
   type ExecutorPrepareResult,
+  type RdMsgHook,
   type RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
@@ -17,6 +18,7 @@ import { fakeCpClient } from './webchat-continuation-fixture.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { transcriptChannelKey } from '../src/store/local-store.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import { buildHookMessage } from '../src/messages/hook-message.js'
 import type { DecisionEvaluator } from '../src/decisions/evaluator.js'
 import { WAIT } from './wait-support.js'
 
@@ -24,6 +26,33 @@ const agentId = 'example-agent'
 const decisionId = '33333333-3333-4333-8333-333333333333'
 const roots: string[] = []
 const daemons: Daemon[] = []
+const pullHook = (): RdMsgHook => ({
+  source: 'hook',
+  agentId,
+  hookId: 'example-hook',
+  deliveryKey: 'delivery-1',
+  msgId: 'example-hook:delivery-1',
+  sessionKey: 'example-org/example-repo#42',
+  firedAt: '2026-01-01T00:00:00.000Z',
+  event: 'issue_comment:created',
+  github: {
+    repoId: '100',
+    repoFullName: 'example-org/example-repo',
+    sourceInstallationId: '200',
+    subjectKind: 'pull_request',
+    pullNumber: 42
+  },
+  context: {
+    source: 'github',
+    event: 'issue_comment',
+    action: 'created',
+    number: 42,
+    repo: 'example-org/example-repo',
+    senderLogin: 'reviewer',
+    bodyExcerpt: 'Review the login change',
+    subject: { body: 'Fix login' }
+  }
+})
 afterEach(async () => {
   for (const daemon of daemons.splice(0)) await daemon.stop()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -188,7 +217,7 @@ async function start(root: string) {
 }
 
 describe('session-pinned Decision model', () => {
-  it('passes PR description, commit messages and diff to model selection before opening a runtime', async () => {
+  it('shares one code-host snapshot between model and repository selection before opening a runtime', async () => {
     const { internal, evaluate, started } = await start(scaffold())
     const read = vi.spyOn(internal.githubReviews, 'pullRequestContext').mockResolvedValue({
       description: 'Fix login',
@@ -196,21 +225,30 @@ describe('session-pinned Decision model', () => {
       diff: '-return cached\n+return refresh()',
       reasons: []
     })
+    const hook = pullHook()
+    const msg = buildHookMessage(hook, 'trace-1')
+    const channel = transcriptChannelKey(msg.channel, msg.transportScope)
+    await internal.store.recordObservations(agentId, channel, [
+      { ts: 'prior', thread: msg.thread, sender: 'author', text: 'The retry still fails' },
+      { ts: msg.transcriptTs, thread: msg.thread, sender: msg.sender.id, text: msg.text }
+    ])
     const run = {
       key: 'pr-session',
       plan: {},
       entry: {
         agentId,
-        hookContext: { hookId: 'example-hook' },
+        hookContext: hook,
         initAbort: new AbortController(),
-        msg: { text: 'Review comment is not the description' }
+        msg
       }
     }
     await internal.selectSessionModel(run, undefined)
     expect(read).toHaveBeenCalledOnce()
     expect(evaluate.mock.calls[0]![0].state).toMatchObject({
-      source: 'pull_request',
-      currentMessage: { text: 'Fix login' },
+      source: 'github',
+      subject: { kind: 'pull_request', number: 42, body: 'Fix login' },
+      currentMessage: { text: 'Review the login change' },
+      history: [{ text: 'The retry still fails' }],
       pullRequest: { commitMessages: 'Handle expired sessions', diff: '-return cached\n+return refresh()' }
     })
     expect(started).toEqual([])
@@ -219,6 +257,20 @@ describe('session-pinned Decision model', () => {
     await internal.selectSessionModel(run, { decisionModel: JSON.stringify(selected) })
     expect(read).toHaveBeenCalledOnce()
     expect(evaluate).toHaveBeenCalledOnce()
+    const agent = internal.agents.get(agentId)
+    agent.workspace.additionalRepos = [
+      { repoFullName: 'example-org/related-repo', repoId: '300', materialize: 'decision' }
+    ]
+    agent.repositorySelector = { providerId: 'typesafe', model: 'jev-latest' }
+    evaluate.mockResolvedValueOnce({
+      status: 'answered',
+      model: 'jev-latest',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      answer: { type: 'choice', value: 'r1', confidence: 0.9, probabilities: { r1: 0.9, none: 0.1 } }
+    })
+    await internal.selectSessionRepositories(run, undefined)
+    expect(evaluate.mock.calls[1]![0].state).toEqual({ ...evaluate.mock.calls[0]![0].state, workspace: {} })
+    expect(read).toHaveBeenCalledOnce()
   })
 
   it('selects from observed chat history before the opening message, scoped to its bot and conversation', async () => {
@@ -634,9 +686,9 @@ describe('a target judged where the session could land (session-executors.md §5
       plan: {},
       entry: {
         agentId,
-        hookContext: { hookId: 'example-hook' },
+        hookContext: pullHook(),
         initAbort: new AbortController(),
-        msg: { text: 'Review this' },
+        msg: buildHookMessage(pullHook(), 'trace-birth'),
         ...(opts.manual ? { webchat: { runtime: opts.manual } } : {})
       }
     }

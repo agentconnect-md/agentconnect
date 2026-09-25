@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DecisionToolDefinition, AgentModelSelection } from '@agentconnect.md/protocol'
-import { decisionRequestBody } from '../src/decisions/evaluator.js'
-import {
-  evaluateSessionModel,
-  modelSelectionState,
-  pullRequestModelSelectionState
-} from '../src/decisions/model-selection.js'
+import { evaluateSessionModel, modelSelectionState } from '../src/decisions/model-selection.js'
 import { codeHostPullRequestContext, type CodeHostTurnFinalHost } from '../src/codehost/turn-final.js'
 import { PULL_CONTEXT_TIMEOUT_MS, readPullRequestContext } from '../src/codehost/pull-context.js'
 
@@ -36,15 +31,24 @@ const lease = {
 const paths = {
   description: '/pulls/42',
   descriptionField: 'body' as const,
+  baseShaPath: ['base', 'sha'],
+  headShaPath: ['head', 'sha'],
   commits: '/pulls/42/commits',
   commitMessagePath: ['commit', 'message'],
   diff: '/pulls/42.diff'
 }
 const patch = 'diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-old\n+new\n'
+const revision = { base: { sha: 'base' }, head: { sha: 'head' }, diff_refs: { base_sha: 'base', head_sha: 'head' } }
+const revisionState = { baseSha: 'base', headSha: 'head' }
 
 describe('session model evaluation', () => {
   it('evaluates only the chosen path against one input snapshot and falls back on a failed next step', async () => {
-    const next = { ...decision, id: '44444444-4444-4444-8444-444444444444', name: 'Urgency' }
+    const next = {
+      ...decision,
+      id: '44444444-4444-4444-8444-444444444444',
+      name: 'Urgency',
+      question: { ...decision.question, instructions: 'x'.repeat(14_000) }
+    }
     const chain: AgentModelSelection = {
       decisionId: decision.id,
       rules: [{ when: { type: 'boolean', values: [true] }, nextStepId: 'urgency' }],
@@ -72,6 +76,7 @@ describe('session model evaluation', () => {
     expect(await evaluateSessionModel(input)).toEqual({ runtime: 'claude', model: 'model-capable' })
     expect(get.mock.calls.map(([id]) => id)).toEqual([decision.id, next.id])
     expect(state).toHaveBeenCalledOnce()
+    expect(state).toHaveBeenCalledWith(next)
     const calls = evaluate.mock.calls as unknown as Array<
       [{ state: unknown; deadlineAt: number; evaluationId: string }]
     >
@@ -86,7 +91,7 @@ describe('session model evaluation', () => {
       answer: { type: 'boolean', value: false, probability: 0.1 }
     })
     expect(await evaluateSessionModel(input)).toBeUndefined()
-    expect(get).toHaveBeenCalledExactlyOnceWith(decision.id)
+    expect(get.mock.calls.map(([id]) => id)).toEqual([decision.id, next.id])
     expect(
       await evaluateSessionModel({
         ...input,
@@ -136,7 +141,7 @@ describe('session model evaluation', () => {
     expect(await result).toBeUndefined()
     release({ decision: { ...decision, id: nextId } })
     await vi.advanceTimersByTimeAsync(1)
-    expect(evaluate).toHaveBeenCalledOnce()
+    expect(evaluate).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
   })
 
@@ -192,11 +197,11 @@ describe('session model evaluation', () => {
     ).rejects.toThrow()
   })
 
-  it('reads description, commit messages and diff concurrently under one GitHub repository grant', async () => {
+  it('checks the revision around bounded commits and diff under one GitHub repository grant', async () => {
     const fetcher = vi.fn<typeof fetch>(async (url, init) => {
       if (String(url).includes('/commits?')) return Response.json([{ commit: { message: 'Fix login' } }])
       if (new Headers(init?.headers).get('accept') === 'application/vnd.github.diff') return new Response(patch)
-      return Response.json({ body: 'The PR description', title: 'Not the input' })
+      return Response.json({ ...revision, body: 'The PR description', title: 'Not the input' })
     })
     vi.stubGlobal('fetch', fetcher)
     const getPostToken = vi.fn(async () => ({ token: 'fixture-token' }))
@@ -215,12 +220,13 @@ describe('session model evaluation', () => {
     }
     expect(await codeHostPullRequestContext(source, 'example-agent', host, new AbortController().signal)).toEqual({
       description: 'The PR description',
+      ...revisionState,
       commitMessages: ['Fix login'],
       diff: patch,
       reasons: []
     })
     expect(getPostToken).toHaveBeenCalledOnce()
-    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(fetcher).toHaveBeenCalledTimes(4)
     expect(fetcher.mock.calls.map(([url]) => String(url))).toContain(
       'https://api.github.com/repos/example-org/example-repo/pulls/42/commits?per_page=10&page=1'
     )
@@ -275,11 +281,12 @@ describe('session model evaluation', () => {
             provider === 'gitlab' ? { message: 'Fix login' } : { commit: { message: 'Fix login' } }
           ])
         if (String(url).endsWith('/raw_diffs') || String(url).endsWith('.diff')) return new Response(patch)
-        return Response.json({ body: 'Description', description: 'Description' })
+        return Response.json({ ...revision, body: 'Description', description: 'Description' })
       })
       vi.stubGlobal('fetch', fetcher)
       expect(await codeHostPullRequestContext(source, 'example-agent', host, new AbortController().signal)).toEqual({
         description: 'Description',
+        ...revisionState,
         commitMessages: ['Fix login'],
         diff: patch,
         reasons: []
@@ -291,12 +298,14 @@ describe('session model evaluation', () => {
           ? [
               'https://code.example.test/api/v4/projects/100/merge_requests/42',
               'https://code.example.test/api/v4/projects/100/merge_requests/42/commits?per_page=10&page=1',
-              'https://code.example.test/api/v4/projects/100/merge_requests/42/raw_diffs'
+              'https://code.example.test/api/v4/projects/100/merge_requests/42/raw_diffs',
+              'https://code.example.test/api/v4/projects/100/merge_requests/42'
             ]
           : [
               'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42',
               'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42/commits?limit=10&page=1&verification=false&files=false',
-              'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42.diff'
+              'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42.diff',
+              'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42'
             ]
       )
       for (const [, init] of fetcher.mock.calls)
@@ -308,7 +317,7 @@ describe('session model evaluation', () => {
   )
 
   it.each(['commits', 'diff'] as const)(
-    'abandons slow %s at the shared short deadline and keeps successful context',
+    'abandons slow %s at the shared deadline and discards unverified supplements',
     async (slow) => {
       vi.useFakeTimers()
       const cancelled = vi.fn()
@@ -316,7 +325,7 @@ describe('session model evaluation', () => {
         if (String(url).endsWith(paths[slow])) return new Response(new ReadableStream({ cancel: cancelled }))
         if (String(url).endsWith(paths.commits)) return Response.json([{ commit: { message: 'Fix login' } }])
         if (String(url).endsWith(paths.diff)) return new Response(patch)
-        return Response.json({ body: 'Description' })
+        return Response.json({ ...revision, body: 'Description' })
       })
       const result = readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
       const settled = vi.fn()
@@ -327,9 +336,10 @@ describe('session model evaluation', () => {
       await vi.advanceTimersByTimeAsync(1)
       expect(await result).toEqual({
         description: 'Description',
-        commitMessages: slow === 'commits' ? [] : ['Fix login'],
-        diff: slow === 'diff' ? '' : patch,
-        reasons: [`${slow}_unavailable`]
+        ...revisionState,
+        commitMessages: [],
+        diff: '',
+        reasons: ['revision_unverified']
       })
       expect(cancelled).toHaveBeenCalledOnce()
       expect(vi.getTimerCount()).toBe(0)
@@ -350,7 +360,7 @@ describe('session model evaluation', () => {
             cancel
           })
         )
-      return Response.json({ body: 'Description' })
+      return Response.json({ ...revision, body: 'Description' })
     })
     const result = await readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
     expect(result).toMatchObject({ reasons: ['commit_limit', 'diff_truncated'] })
@@ -398,26 +408,19 @@ describe('session model evaluation', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
-  it('budgets the whole PR request including escaping and rubric, trimming diff before commit messages', () => {
-    const rubric = { ...decision, question: { ...decision.question, instructions: 'x'.repeat(14_000) } }
-    const state = pullRequestModelSelectionState(
-      {
-        description: 'Description',
-        commitMessages: ['界'.repeat(2000)],
-        diff: '\t'.repeat(12 * 1024),
-        reasons: ['diff_truncated']
-      },
-      rubric
-    )
-    expect(Buffer.byteLength(decisionRequestBody({ decision: rubric, state }))).toBeLessThanOrEqual(32_000)
-    expect(state).toMatchObject({
-      currentMessage: { text: 'Description' },
-      context: { partial: true, reasons: ['diff_truncated', 'commits_truncated', 'budget_trimmed'] }
+  it('omits commits and diff if the PR moves during the read', async () => {
+    let reads = 0
+    const fetcher = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith(paths.commits)) return Response.json([{ commit: { message: 'Fix login' } }])
+      if (String(url).endsWith(paths.diff)) return new Response(patch)
+      return Response.json({ ...revision, head: { sha: ++reads === 1 ? 'head' : 'new-head' }, body: 'Description' })
     })
-    const pr = state.pullRequest as { commitMessages: string; diff: string }
-    expect(Buffer.byteLength(pr.commitMessages)).toBe(4095)
-    expect(pr.commitMessages).not.toContain('�')
-    expect(pr.diff.length).toBeGreaterThan(0)
-    expect(pr.diff.length).toBeLessThan(12 * 1024)
+    expect(await readPullRequestContext(lease, paths, new AbortController().signal, fetcher)).toEqual({
+      ...revisionState,
+      description: 'Description',
+      commitMessages: [],
+      diff: '',
+      reasons: ['revision_changed']
+    })
   })
 })

@@ -6,6 +6,8 @@ const DIFF_MAX_BYTES = 12 * 1024
 
 export interface PullRequestContext {
   description: string
+  baseSha?: string
+  headSha?: string
   commitMessages: string[]
   diff: string
   reasons: string[]
@@ -14,6 +16,8 @@ export interface PullRequestContext {
 interface PullContextPaths {
   description: string
   descriptionField: 'body' | 'description'
+  baseShaPath: readonly string[]
+  headShaPath: readonly string[]
   commits: string
   commitMessagePath: readonly string[]
   diff: string
@@ -39,7 +43,7 @@ function field(value: unknown, path: readonly string[]): unknown {
   return value
 }
 
-// Read at most one page and one diff prefix; optional context never starts a checkout or retries.
+// Bracket one commit page and diff prefix with revision reads; no checkout, pagination or retries.
 export async function readPullRequestContext(
   lease: CodeHostEffectLease,
   paths: PullContextPaths,
@@ -47,19 +51,20 @@ export async function readPullRequestContext(
   fetchImpl: typeof fetch = fetch
 ): Promise<PullRequestContext | undefined> {
   signal.throwIfAborted()
-  const token = await abortable(lease.token(), signal)
-  signal.throwIfAborted()
-  const root = lease.apiBaseUrl()
   const optional = new AbortController()
   const timer = setTimeout(() => optional.abort(), PULL_CONTEXT_TIMEOUT_MS)
   const extraSignal = AbortSignal.any([signal, optional.signal])
+  let token: string
   const read = async (path: string, limit: number, readSignal: AbortSignal, accept = 'application/json') => {
     readSignal.throwIfAborted()
-    const response = await fetchImpl(`${root}${path}`, {
-      headers: { authorization: `${paths.authorization ?? 'Bearer'} ${token}`, accept },
-      signal: readSignal,
-      redirect: 'error'
-    })
+    const response = await abortable(
+      fetchImpl(`${lease.apiBaseUrl()}${path}`, {
+        headers: { authorization: `${paths.authorization ?? 'Bearer'} ${token}`, accept },
+        signal: readSignal,
+        redirect: 'error'
+      }),
+      readSignal
+    )
     if (!response.ok || !response.body) {
       void response.body?.cancel().catch(() => {})
       return undefined
@@ -86,21 +91,44 @@ export async function readPullRequestContext(
       reader.releaseLock()
     }
   }
+  const metadata = async () => {
+    const body = await read(paths.description, 1024 * 1024, extraSignal)
+    return body && !body.truncated ? (JSON.parse(body.text) as unknown) : undefined
+  }
+  const revision = (value: unknown) => {
+    const baseSha = field(value, paths.baseShaPath)
+    const headSha = field(value, paths.headShaPath)
+    return typeof baseSha === 'string' && baseSha && typeof headSha === 'string' && headSha
+      ? { baseSha, headSha }
+      : undefined
+  }
   try {
-    const [description, commits, diff] = await Promise.allSettled([
-      read(paths.description, 1024 * 1024, signal).then((body) =>
-        body && !body.truncated ? field(JSON.parse(body.text), [paths.descriptionField]) : undefined
-      ),
+    token = await abortable(lease.token(), extraSignal)
+    const before = await metadata()
+    const text = field(before, [paths.descriptionField])
+    if (text !== null && typeof text !== 'string') return undefined
+    const start = revision(before)
+    const context: PullRequestContext = {
+      description: text ?? '',
+      ...start,
+      commitMessages: [],
+      diff: '',
+      reasons: []
+    }
+    if (!start) return { ...context, reasons: ['revision_unverified'] }
+    const [commits, diff] = await Promise.allSettled([
       read(paths.commits, 128 * 1024, extraSignal).then((body) =>
         body && !body.truncated ? (JSON.parse(body.text) as unknown) : undefined
       ),
       read(paths.diff, DIFF_MAX_BYTES, extraSignal, paths.diffAccept ?? 'text/plain')
     ])
-    const text = description.status === 'fulfilled' ? description.value : undefined
-    if (text !== null && typeof text !== 'string') return undefined
-    const reasons: string[] = []
+    const after = await metadata().catch(() => undefined)
+    const end = revision(after)
+    if (!end) return { ...context, reasons: ['revision_unverified'] }
+    if (start.headSha !== end.headSha || start.baseSha !== end.baseSha)
+      return { ...context, reasons: ['revision_changed'] }
+    const { reasons, commitMessages } = context
     const rows = commits.status === 'fulfilled' && Array.isArray(commits.value) ? commits.value : undefined
-    const commitMessages: string[] = []
     if (!rows) reasons.push('commits_unavailable')
     else {
       if (rows.length >= PULL_CONTEXT_COMMIT_LIMIT) reasons.push('commit_limit')
@@ -113,7 +141,7 @@ export async function readPullRequestContext(
     const patch = diff.status === 'fulfilled' ? diff.value : undefined
     if (!patch) reasons.push('diff_unavailable')
     else if (patch.truncated) reasons.push('diff_truncated')
-    return { description: text ?? '', commitMessages, diff: patch?.text ?? '', reasons }
+    return { ...context, diff: patch?.text ?? '' }
   } finally {
     clearTimeout(timer)
     optional.abort()

@@ -563,7 +563,9 @@ import {
   type RouterAdmitResult
 } from './decisions/router.js'
 import { routerFingerprint, resolveDecisionBundle } from './decisions/bundle.js'
-import { buildDecisionState } from './decisions/state.js'
+import { buildDecisionState, largestDecisionRequest } from './decisions/state.js'
+import { buildCodeHostDecisionState, loadCodeHostDecisionContext } from './codehost/decision-state.js'
+import { hookDecisionFacts } from './messages/hook-message.js'
 import { HookRouter } from './codehost/hook-routing.js'
 import {
   DecisionGate,
@@ -582,7 +584,6 @@ import {
   agentWithRuntime,
   configuredRuntimeAgent,
   modelSelectionState,
-  pullRequestModelSelectionState,
   pinnedDecisionModel
 } from './decisions/model-selection.js'
 import {
@@ -1858,6 +1859,7 @@ export class Daemon {
     this.decisionRouter = new DecisionRouter(this.decisionRouterHost(), this.decisionLanes)
     this.hookRouter = new HookRouter({
       store: () => this.store,
+      pullRequestContext: (msg, signal) => this.githubReviews.pullRequestContext(msg, signal),
       evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal),
       now: () => this.clock.now(),
       ownerFence: () => `${this.cfg.daemonId ?? 'local'}:${this.decisionBootNonce}`,
@@ -14294,22 +14296,41 @@ export class Daemon {
     })
   }
 
-  /** The once-per-session Decision input (decisions.md §10.6): a PR/MR hook's description, commits and diff prefix, else the chat opening with its bounded history; undefined when there is nothing recorded to judge. */
+  // Collect a session's code-host snapshot once, then build it against each consumer's request budget.
   private async sessionDecisionState(
     entry: QueueEntry,
     agent: LoadedAgent,
     decision: Pick<DecisionToolDefinition, 'question' | 'model'>
   ): Promise<Record<string, unknown> | undefined> {
-    if (entry.hookContext) {
-      const context = await this.githubReviews.pullRequestContext(
-        entry.hookContext,
-        AbortSignal.any([entry.initAbort.signal, AbortSignal.timeout(5_000)])
-      )
-      return context === undefined ? undefined : pullRequestModelSelectionState(context, decision)
-    }
     const msg = entry.msg
-    if (msg.source !== 'user') return undefined
     const channel = transcriptChannelKey(msg.channel, msg.transportScope)
+    if (entry.hookContext) {
+      const hook = entry.hookContext
+      entry.codeHostDecisionContext ??= (async () =>
+        loadCodeHostDecisionContext({
+          msg: hook,
+          store: this.store,
+          record: await this.store.channelRecordRef(channel, transcriptCoords(msg).ts, agent.id),
+          current: {
+            seq: 0,
+            ts: transcriptCoords(msg).ts,
+            thread: msg.thread ?? null,
+            sender: msg.sender.id,
+            text: msg.text,
+            body: null,
+            quoteJson: null,
+            eventTimeUs: 0,
+            kind: 'text'
+          },
+          pullRequest: (signal) => this.githubReviews.pullRequestContext(hook, signal),
+          signal: entry.initAbort.signal
+        }))()
+      const context = await entry.codeHostDecisionContext
+      if (!context) return undefined
+      const built = buildCodeHostDecisionState(context, decision)
+      return built.unsupported ? undefined : built.state
+    }
+    if (msg.source !== 'user') return undefined
     const record = await this.store.channelRecordRef(channel, transcriptCoords(msg).ts, agent.id)
     if (!record) return modelSelectionState('chat', msg.text)
     const window = await this.store.decisionWindow(
@@ -14372,13 +14393,15 @@ export class Daemon {
     if (chunks.length > 0) {
       const decision = { providerId: selector.providerId, model: selector.model }
       // Trimmed against the largest chunk, so the one state fits every request (decision 16).
-      const largest = chunks.reduce((a, b) =>
-        JSON.stringify(b.question).length > JSON.stringify(a.question).length ? b : a
-      ).question
+      const [first, ...rest] = chunks.map((chunk) => ({ ...decision, question: chunk.question }))
+      const largest = largestDecisionRequest([first!, ...rest]).question
       const opening = modelSelectionState('chat', entry.msg.text)
-      const base = (await this.sessionDecisionState(entry, agent, { ...decision, question: largest })) ?? opening
+      const base = await this.sessionDecisionState(entry, agent, { ...decision, question: largest })
+      if (!base && entry.hookContext && hookDecisionFacts(entry.hookContext))
+        throw new Error('Repository selection failed: the input is unavailable (unsupported_input).')
       const primary = agent.workspace.gitRepo ? gitRepoLabel(agent.workspace.gitRepo) : undefined
-      const state = repoSelectionState(base, opening, { primary, partial }, { ...decision, question: largest })
+      const state = repoSelectionState(base ?? opening, { primary, partial }, { ...decision, question: largest })
+      if (!state) throw new Error('Repository selection failed: the input is unavailable (unsupported_input).')
       signal.throwIfAborted()
       const evaluationId = randomUUID()
       // Other Decision consumers share the evaluator's slots, so a chunk waits out `capacity` rather than failing the start on it.

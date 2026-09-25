@@ -1021,14 +1021,14 @@ function normalize<P extends CodeHostProvider, R>(
 }
 
 /** The relay envelope, only when it agrees with the host the delivery resolved to; otherwise the fire reads as generic. */
-function envelopeOf(msg: RdMsgHook, host: HookProviderCase | undefined): HookContext | undefined {
+function envelopeOf(msg: Pick<RdMsgHook, 'context'>, host: HookProviderCase | undefined): HookContext | undefined {
   const c = msg.context
   return c && host && c.source === host.provider ? c : undefined
 }
 
 /** The host a routed delivery resolved to, its agreeing envelope, and the subject identity its normalizer reads. */
 export function hookDecisionFacts(
-  msg: RdMsgHook
+  msg: Pick<RdMsgHook, 'github' | 'gitlab' | 'gitea' | 'context'>
 ): { provider: CodeHostProvider; context: HookContext | undefined; subject: HookDecisionSubject } | undefined {
   const host = hookProviderOf(msg)
   if (!host) return undefined
