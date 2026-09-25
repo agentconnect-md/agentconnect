@@ -43,6 +43,8 @@ export interface ShimDialerDeps {
     opts: { subprotocol: string; path: string; handshakeTimeoutMs?: number },
     record: SpawnRecord
   ) => Promise<ShimTransport>
+  // Refresh a launch's peer before each attempt when its backing process can be replaced.
+  resolveEndpoint?: (record: SpawnRecord) => Promise<{ endpoint: string; podName: string }>
   /** Per-phase backoff factory. Injected so tests dial and reconnect in milliseconds. */
   backoff?: (phase: ShimDialPhase) => Backoff
   credentialTtlMs?: number
@@ -94,7 +96,8 @@ export class ShimDialer {
     if (
       existing &&
       !existing.stopped &&
-      existing.endpoint === endpoint &&
+      (existing.endpoint === endpoint || this.deps.resolveEndpoint) &&
+      existing.record.sandboxUid === record.sandboxUid &&
       existing.record.generation === record.generation
     ) {
       return existing.current ? Promise.resolve(existing.current) : this.awaitReady(existing, timeoutMs)
@@ -219,14 +222,17 @@ export class ShimDialer {
       }, boundedMs)
     })
     const attempt = (async () => {
+      const resolved = await this.deps.resolveEndpoint?.(dial.record)
+      if (timedOut || dial.stopped) throw new Error(timedOut ? 'binding timeout' : 'dial no longer current')
+      const record = resolved ? { ...dial.record, podName: resolved.podName } : dial.record
       transport = await (this.deps.dial ?? defaultDial)(
-        dial.endpoint,
+        resolved?.endpoint ?? dial.endpoint,
         {
           subprotocol: SHIM_SUBPROTOCOL,
           path: SHIM_WS_PATH,
           ...(handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs })
         },
-        dial.record
+        record
       )
       if (timedOut || dial.stopped) {
         transport.close(4408, timedOut ? 'binding timeout' : 'dial no longer current')
@@ -234,7 +240,7 @@ export class ShimDialer {
       }
       dial.inFlight = transport
       try {
-        return await this.bind(transport, dial.record)
+        return await this.bind(transport, record)
       } finally {
         if (dial.inFlight === transport) dial.inFlight = undefined
       }

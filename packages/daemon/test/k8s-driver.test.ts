@@ -305,6 +305,35 @@ describe('cluster spawn driver', () => {
     expect(infos).not.toContain('cluster: sandbox sb-1 → Running')
   })
 
+  it('waits for current-generation readiness before dialing a resumed pod', async () => {
+    const { api, state } = fakeApi({ mode: 'Suspended' })
+    state.sandbox.metadata!.generation = 3
+    state.sandbox.status = {
+      conditions: [{ type: 'Ready', status: 'True', observedGeneration: 2 }],
+      podIPs: ['192.0.2.10']
+    }
+    state.beforeResume = () => {
+      state.sandbox.metadata!.generation = 4
+    }
+    const connectChannel = vi.fn(async (record: SpawnRecord) => stubConnection(record.generation))
+    const { instance, clock } = driver(api, { connectChannel })
+    const binding = instance.ensureBoundChannel('agent-a')
+    await vi.waitFor(() => expect(clock.pending > 0 || connectChannel.mock.calls.length > 0).toBe(true))
+    expect(connectChannel).not.toHaveBeenCalled()
+
+    state.sandbox.status = {
+      conditions: [{ type: 'Ready', status: 'True', observedGeneration: 4 }],
+      podIPs: ['192.0.2.11']
+    }
+    clock.advance(250)
+    await binding
+    expect(connectChannel).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ podName: 'sb-1' }),
+      '192.0.2.11',
+      90_000
+    )
+  })
+
   it('uses the guarded resume when the suspended sandbox already has the template image', async () => {
     const { api, state } = fakeApi({ mode: 'Suspended', templateImage: 'runtime:old' })
     const { instance, infos } = driver(api)
