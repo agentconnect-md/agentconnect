@@ -4789,6 +4789,7 @@ export class Daemon {
                 c.hostRespawn && 'host',
                 c.workspace && 'workspace',
                 c.workspaceRepoRename && 'workspace-origin',
+                c.additionalRepos && 'additional-repos',
                 c.integrations && 'integrations'
               ]
                 .filter(Boolean)
@@ -4916,6 +4917,8 @@ export class Daemon {
           if (!wasDraining && !this.agentDestructivePending(a.id)) this.drainingAgents.delete(a.id)
         }
       }
+      // Additional repositories and grants reach sessions started from now (decision 19): running turns keep their roots, and the next credential request mints at the new authorization.
+      if (change.additionalRepos && !workspaceNeedsColdRecovery) this.gitCreds.remove(a.id)
       // workspace change → eagerly (re-)materialize the checkout in the background so
       // a re-pointed git-repo is warm before the next message, instead of paying the
       // clone latency on that first session.

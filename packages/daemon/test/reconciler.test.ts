@@ -181,6 +181,46 @@ describe('diffAgents', () => {
     })
   })
 
+  it('keeps the host for an additional repository or installation grant change, which reaches later sessions only', () => {
+    const repo = { repoFullName: 'example-org/tools', repoId: '42', provider: 'github', materialize: 'always' }
+    const before = { ...a('x'), workspace: { ...a('x').workspace, additionalRepos: [repo] } } as unknown as Agent
+    const cases = [
+      { additionalRepos: [{ ...repo, materialize: 'on-demand' }] },
+      { additionalRepos: [] },
+      {
+        additionalInstallations: [
+          { provider: 'github', accountLogin: 'example-org', access: 'read', materialize: 'decision' }
+        ]
+      }
+    ]
+    for (const change of cases) {
+      const after = { ...before, workspace: { ...before.workspace, ...change } } as unknown as Agent
+      const { toChange } = diffAgents([after], actual(before))
+      expect(toChange[0]).toMatchObject({
+        hostRespawn: false,
+        workspace: false,
+        workspaceRepoRename: false,
+        additionalRepos: true,
+        integrations: false
+      })
+    }
+  })
+
+  it('still evicts the host when the workspace’s own checkout moves beside an additional repository change', () => {
+    const after = {
+      ...a('x'),
+      workspace: {
+        ...a('x').workspace,
+        gitBranch: 'release',
+        additionalRepos: [
+          { repoFullName: 'example-org/tools', repoId: '42', provider: 'github', materialize: 'always' }
+        ]
+      }
+    } as unknown as Agent
+    const { toChange } = diffAgents([after], actual(a('x')))
+    expect(toChange[0]).toMatchObject({ workspace: true, additionalRepos: true })
+  })
+
   it('classifies an App-backed URL-only rename as non-destructive origin convergence', () => {
     const before = {
       ...a('x'),

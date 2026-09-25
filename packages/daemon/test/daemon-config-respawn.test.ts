@@ -169,6 +169,42 @@ describe('config change respawn', () => {
     }
   })
 
+  it('keeps a running turn and its process when only the additional repositories or grants change', async () => {
+    const old = blockingHost('old')
+    const root = scaffold()
+    const daemon = await boot(root, [old.host])
+    const dropped = vi.spyOn((daemon as any).gitCreds, 'remove')
+    const running = (daemon as any).dispatch(AGENT_ID, msg('100', 'long question', 'T1'), 'int-a')
+
+    try {
+      await vi.waitFor(() => expect(old.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      const workspace = { mode: 'from-scratch', path: join(root, 'agents', AGENT_ID, 'workspace') }
+      updateAgent(root, {
+        workspace: {
+          ...workspace,
+          additionalInstallations: [
+            { provider: 'github', accountLogin: 'example-org', access: 'read', materialize: 'decision' }
+          ]
+        }
+      })
+      await daemon.reconcile()
+
+      // Only later sessions see the grant; the cached tokens go so the next request mints under it.
+      expect(old.host.cancel).not.toHaveBeenCalled()
+      expect(old.host.stop).not.toHaveBeenCalled()
+      expect((daemon as any).respawnHeldEntries.size).toBe(0)
+      expect(dropped).toHaveBeenCalledWith(AGENT_ID)
+
+      old.release()
+      await expect(running).resolves.toBe('acp-old')
+      expect(old.host.stop).not.toHaveBeenCalled()
+    } finally {
+      old.release()
+      await Promise.allSettled([running])
+      await daemon.stop()
+    }
+  })
+
   it('serves a new session at once when each session has its own process', async () => {
     const old = blockingHost('old')
     const fresh = answeringHost('new')
