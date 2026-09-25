@@ -588,11 +588,14 @@ export class MicrosandboxManager {
     await this.recover()
     const name = this.name('probe')
     await this.withImageCache(true, async () => {
+      this.assertOpen()
       // Free the retired releases before the pull, so a tight disk is not asked to hold both.
       const keep = await this.boundImages()
       await this.collect((image) => keep.has(image.reference))
       await this.pullImage()
     })
+    // A shutdown during the pull stopped every VM this manager knew of; the preparation VM must not start after it.
+    this.assertOpen()
     this.imageIdentities.delete(this.options.config.image)
     let sandbox = await this.serializeStart(() => this.createReclaiming(name, () => this.builder(name, [])))
     try {
@@ -607,6 +610,7 @@ export class MicrosandboxManager {
       const table = K8sRuntimeTableSchema.parse(JSON.parse(output.stdout()))
       await sandbox.stopWithTimeout(STOP_TIMEOUT_MS)
       await sandbox.detach()
+      this.assertOpen()
       sandbox = await this.startVm(name, async () => (await this.options.sdk.Sandbox.get(name)).startDetached())
       await sandbox.ping()
       this.options.log?.info('microsandbox: image, Node, Python, runtime table and disk resume verified')
@@ -617,6 +621,11 @@ export class MicrosandboxManager {
       await sandbox.detach()
       await this.removeVolume(`${name}-docker`)
     }
+  }
+
+  /** Refuse new VM work once shutdown has closed the manager. */
+  private assertOpen(): void {
+    if (this.closed) throw new Error('microsandbox manager is shutting down')
   }
 
   /** Best effort: a record that cannot be written costs the next restart one probe VM, never a session. */

@@ -945,6 +945,28 @@ describe('microsandbox process and VM ownership', () => {
     expect(await next.cachedModels()).toEqual({ test: ['model-d'], other: ['model-c'] })
   })
 
+  it('starts no preparation VM after a shutdown that came during the image pull', async () => {
+    const { manager, options, created } = await fixture()
+    const release = join(options.root, 'release-pull')
+    const pulling = join(options.root, 'pulling')
+    // A pull that holds until the test releases it, as a real one holds for minutes.
+    options.msbCommand = {
+      command: process.execPath,
+      args: [
+        '-e',
+        `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(pulling)}, ''); const wait = setInterval(() => fs.existsSync(${JSON.stringify(release)}) && clearInterval(wait), 20)`
+      ]
+    }
+    const booted = created.length
+    const preparing = manager.prepare()
+    preparing.catch(() => {})
+    await vi.waitFor(() => expect(readFile(pulling, 'utf8')).resolves.toBe(''))
+    await manager.stopAll()
+    await writeFile(release, '')
+    await expect(preparing).rejects.toThrow('microsandbox manager is shutting down')
+    expect(created).toHaveLength(booted)
+  })
+
   it('tries a failed preparation again at the next use', async () => {
     const { options } = await fixture()
     let fail = true

@@ -18,6 +18,7 @@ import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { makeLogger } from '../src/log.js'
 import { localShimGitRunner } from '../src/execution/local-git.js'
 import { clusterProbeHostFactory } from '../src/acp/probe-host-factory.js'
+import { MICROSANDBOX_NODE } from '../src/microsandbox/exec.js'
 import { installMicrosandbox } from '../src/microsandbox/install.js'
 import { probeImageModels, VM_PROBE_ENVIRONMENT_ID } from '../src/microsandbox/model-probe.js'
 import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
@@ -497,10 +498,20 @@ try {
   assert.equal(existsSync(hostedDir), false, 'the released session directory was kept')
   step('the-release-took-the-vm-its-disks-and-the-session-directory')
 
-  // The VM strategy's model probe (session-executors.md §5): the host's runtime probe, for the image's runtime, in one probe VM.
+  // The VM strategy's model probe (session-executors.md §5): the host's runtime probe in one probe VM, of an ACP runtime the image's Node runs with a known selector.
+  const fakeAcp = readFileSync(new URL('../test/fixtures/fake-acp-agent.mjs', import.meta.url), 'utf8').replace(
+    /^#!.*\n/,
+    ''
+  )
   const probeStarted = performance.now()
   const [probed] = await probeImageModels({
-    runtimes: { 'claude-acp': { command: 'claude-agent-acp', args: [], env: [] } as never },
+    runtimes: {
+      'smoke-acp': {
+        command: MICROSANDBOX_NODE,
+        args: ['--input-type=module', '-e', fakeAcp],
+        env: [{ name: 'AC_MODELS', value: 'smoke-model-a,smoke-model-b' }]
+      } as never
+    },
     root: join(root, 'run', 'vm-probe'),
     daemonRoot: root,
     hostEnv: { HOME: hostHome, PATH: process.env.PATH },
@@ -514,13 +525,10 @@ try {
     log: makeLogger('info')
   })
   summary.modelProbeMs = elapsed(probeStarted)
-  // Signed out, the runtime still answers over ACP through the probe VM's shim: with a session, or with its login requirement.
-  assert.ok(probed?.ok || probed?.authRequired, `the VM model probe reached no runtime: ${probed?.error}`)
+  assert.ok(probed?.ok, `the VM model probe failed: ${probed?.error}`)
+  assert.deepEqual(probed.models, ['smoke-model-a', 'smoke-model-b'])
   assert.ok(!(await manager.environmentIds()).includes(VM_PROBE_ENVIRONMENT_ID), 'the probe VM was kept')
-  step('image-models-probed-in-one-vm-and-the-vm-removed', {
-    ms: summary.modelProbeMs,
-    models: probed.models.length
-  })
+  step('image-models-probed-in-one-vm-and-the-vm-removed', { ms: summary.modelProbeMs })
 
   passed = true
 } finally {

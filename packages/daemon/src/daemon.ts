@@ -2501,12 +2501,22 @@ export class Daemon {
     // An image this run already read, at startup from its record or at an earlier first use.
     if (this.microsandbox && this.microsandboxCatalog) return Promise.resolve(this.microsandbox)
     if (!this.microsandboxReadiness) {
+      // Shutdown stops only the VMs of the manager it finds, so no step resumes once it has begun.
+      const open = (): void => {
+        if (this.shutdownDraining) throw new Error('microsandbox unavailable: this daemon is shutting down')
+      }
       const readiness = (async () => {
-        this.microsandbox ??= await installMicrosandbox(this.microsandboxInstallOptions(this.cfg, this.root))
-        await this.microsandbox.recover()
-        const table = await this.microsandbox.prepare()
+        open()
+        const installed =
+          this.microsandbox ?? (await installMicrosandbox(this.microsandboxInstallOptions(this.cfg, this.root)))
+        open()
+        const manager = (this.microsandbox ??= installed)
+        await manager.recover()
+        open()
+        const table = await manager.prepare()
+        open()
         this.adoptMicrosandboxTable(table)
-        return this.microsandbox
+        return manager
       })()
       this.microsandboxReadiness = readiness
       // A failed install or pull fails the session that asked; the next one tries again.

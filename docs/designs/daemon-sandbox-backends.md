@@ -329,7 +329,9 @@ host probe's per-runtime budget. A runtime whose launch disagrees with those alr
 in the VM on a binding name, a mount, or another runtime's protected credential file
 is left out with a warning. The VM starts through the manager's serialized start, is
 drained and removed when the sweep ends, and a shutdown aborts the sweep without
-waiting on it; the next probe removes a probe VM an earlier run left behind. The task
+waiting on it. No install, pull or preparation VM resumes once shutdown has begun,
+whoever asked for the image; the next probe removes a probe VM an earlier run left
+behind. The task
 runs once a run, only where the strategy is available. A session in the strategy while it
 is unavailable is refused, with no fallback to SRT or a host process. The
 standalone `chat` command refuses an agent that runs in microsandbox; use daemon

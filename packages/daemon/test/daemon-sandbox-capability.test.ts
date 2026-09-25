@@ -6,6 +6,13 @@ import { RegisterReq } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey } from '../src/acp/host-key.js'
 
+// msb's install, which tests control rather than fetch.
+const install = vi.hoisted(() => vi.fn(async (): Promise<unknown> => Promise.reject(new Error('tests install no msb'))))
+vi.mock('../src/microsandbox/install.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/microsandbox/install.js')>()),
+  installMicrosandbox: install
+}))
+
 const AGENT_ID = 'bot-a'
 const NO_KVM = 'microsandbox requires KVM, but this daemon cannot open /dev/kvm: the device is absent'
 
@@ -421,6 +428,41 @@ describe('a runtime under each strategy this machine offers', () => {
       daemon.microsandbox = undefined
       await stop()
     }
+  })
+
+  it('adopts no manager and prepares no image once shutdown began during the msb install', async () => {
+    const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }), srt: true, kvm: true })
+    const manager = { recover: vi.fn(async () => {}), prepare: vi.fn(), stopAll: vi.fn(async () => {}) }
+    let installed!: (value: unknown) => void
+    install.mockImplementationOnce(() => new Promise((resolve) => (installed = resolve)))
+    daemon.opts.probeHostFactory = probeHosts({})
+    daemon.startMicrosandboxModelProbe()
+    await vi.waitFor(() => expect(install).toHaveBeenCalled())
+    await stop()
+    installed(manager)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(daemon.microsandbox).toBeUndefined()
+    expect(manager.recover).not.toHaveBeenCalled()
+    expect(manager.prepare).not.toHaveBeenCalled()
+  })
+
+  it('prepares no image once shutdown began while the manager recovered', async () => {
+    const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }), srt: true, kvm: true })
+    let recovered!: () => void
+    const manager = {
+      recover: vi.fn(() => new Promise<void>((resolve) => (recovered = resolve))),
+      prepare: vi.fn(),
+      stopAll: vi.fn(async () => {})
+    }
+    daemon.microsandbox = manager
+    daemon.opts.probeHostFactory = probeHosts({})
+    daemon.startMicrosandboxModelProbe()
+    await vi.waitFor(() => expect(manager.recover).toHaveBeenCalled())
+    await stop()
+    expect(manager.stopAll).toHaveBeenCalled()
+    recovered()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(manager.prepare).not.toHaveBeenCalled()
   })
 
   it('probes no VM where microsandbox is unavailable or withdrawn', async () => {
