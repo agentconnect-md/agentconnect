@@ -212,6 +212,48 @@ describe('sandbox shim dial-in', () => {
     ).toBe(true)
   })
 
+  it('refreshes a replaced pod between attempts and shares the launch across changed endpoints', async () => {
+    const { endpoint } = await sandbox()
+    let attempted!: () => void
+    let retry!: () => void
+    const firstAttempt = new Promise<void>((resolve) => (attempted = resolve))
+    const retrying = new Promise<void>((resolve) => (retry = resolve))
+    const resolveEndpoint = vi
+      .fn<NonNullable<ShimDialerDeps['resolveEndpoint']>>()
+      .mockResolvedValueOnce({ endpoint: SCRIPTED_ENDPOINT, podName: 'old-pod' })
+      .mockResolvedValue({ endpoint, podName: 'replacement-pod' })
+    const dial = vi.fn<NonNullable<ShimDialerDeps['dial']>>(async (url, opts) => {
+      if (url === SCRIPTED_ENDPOINT) {
+        attempted()
+        await retrying
+        throw new Error('old pod stopped')
+      }
+      return ClientTransport.dial(url, opts) as Promise<ShimTransport>
+    })
+    const dialer = fixtures.dialer({
+      resolveEndpoint,
+      dial,
+      verifier: {
+        reviewToken: async () => ({ authenticated: true, podName: 'replacement-pod', podUid: 'replacement-uid' })
+      },
+      backoff: fastBackoff,
+      log: quiet
+    })
+    const initial = dialer.connect(SCRIPTED_ENDPOINT, record(), 5_000)
+    await firstAttempt
+    const concurrent = dialer.connect(endpoint, { ...record(), podName: 'replacement-pod' }, 5_000)
+    const connected = Promise.all([initial, concurrent])
+    retry()
+    const [first, second] = await connected
+    expect(first).toBe(second)
+    expect(first.binding).toMatchObject({ podName: 'replacement-pod', podUid: 'replacement-uid', generation: 1 })
+    expect(dial.mock.calls.map(([url, , launch]) => [url, launch.podName])).toEqual([
+      [SCRIPTED_ENDPOINT, 'old-pod'],
+      [endpoint, 'replacement-pod']
+    ])
+    expect(resolveEndpoint).toHaveBeenCalledTimes(2)
+  })
+
   it('waits for the replacement connection while a bound channel is reconnecting', async () => {
     // Both reconnect loops run on injected zero-jitter backoffs, so the redial and the
     // sandbox re-attach race each other every run instead of sleeping jittered seconds.

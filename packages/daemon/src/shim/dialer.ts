@@ -43,6 +43,8 @@ export interface ShimDialerDeps {
     opts: { subprotocol: string; path: string; handshakeTimeoutMs?: number },
     record: SpawnRecord
   ) => Promise<ShimTransport>
+  // Refresh a launch's peer before each attempt when its backing process can be replaced.
+  resolveEndpoint?: (record: SpawnRecord, signal: AbortSignal) => Promise<{ endpoint: string; podName: string }>
   /** Per-phase backoff factory. Injected so tests dial and reconnect in milliseconds. */
   backoff?: (phase: ShimDialPhase) => Backoff
   credentialTtlMs?: number
@@ -59,6 +61,7 @@ interface SupervisedDial {
   stopped: boolean
   readySettled: boolean
   inFlight?: ShimTransport
+  inFlightAbort?: AbortController
   current?: ShimConnection
   ready: Promise<ShimConnection>
   resolveReady: (connection: ShimConnection) => void
@@ -94,7 +97,8 @@ export class ShimDialer {
     if (
       existing &&
       !existing.stopped &&
-      existing.endpoint === endpoint &&
+      (existing.endpoint === endpoint || this.deps.resolveEndpoint) &&
+      existing.record.sandboxUid === record.sandboxUid &&
       existing.record.generation === record.generation
     ) {
       return existing.current ? Promise.resolve(existing.current) : this.awaitReady(existing, timeoutMs)
@@ -137,6 +141,7 @@ export class ShimDialer {
   private stopDial(dial: SupervisedDial, reason: string): void {
     if (dial.stopped) return
     dial.stopped = true
+    dial.inFlightAbort?.abort()
     dial.inFlight?.close(4408, reason)
     dial.inFlight = undefined
     dial.current?.close(reason)
@@ -208,25 +213,31 @@ export class ShimDialer {
     handshakeTimeoutMs?: number
   ): Promise<{ connection: ShimConnection; closed: Promise<{ code: number; reason: string }> }> {
     const boundedMs = Math.max(1, timeoutMs)
+    const abort = new AbortController()
+    dial.inFlightAbort = abort
     let transport: ShimTransport | undefined
     let timedOut = false
     let timeoutHandle: ReturnType<Clock['setTimeout']> | undefined
     const timeout = new Promise<never>((_resolve, reject) => {
       timeoutHandle = this.clock.setTimeout(() => {
         timedOut = true
+        abort.abort()
         transport?.close(4408, 'binding timeout')
         reject(new Error(`binding timed out after ${boundedMs}ms`))
       }, boundedMs)
     })
     const attempt = (async () => {
+      const resolved = await this.deps.resolveEndpoint?.(dial.record, abort.signal)
+      if (timedOut || dial.stopped) throw new Error(timedOut ? 'binding timeout' : 'dial no longer current')
+      const record = resolved ? { ...dial.record, podName: resolved.podName } : dial.record
       transport = await (this.deps.dial ?? defaultDial)(
-        dial.endpoint,
+        resolved?.endpoint ?? dial.endpoint,
         {
           subprotocol: SHIM_SUBPROTOCOL,
           path: SHIM_WS_PATH,
           ...(handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs })
         },
-        dial.record
+        record
       )
       if (timedOut || dial.stopped) {
         transport.close(4408, timedOut ? 'binding timeout' : 'dial no longer current')
@@ -234,13 +245,15 @@ export class ShimDialer {
       }
       dial.inFlight = transport
       try {
-        return await this.bind(transport, dial.record)
+        return await this.bind(transport, record)
       } finally {
         if (dial.inFlight === transport) dial.inFlight = undefined
       }
     })()
     return Promise.race([attempt, timeout]).finally(() => {
       if (timeoutHandle !== undefined) this.clock.clearTimeout(timeoutHandle)
+      abort.abort()
+      if (dial.inFlightAbort === abort) dial.inFlightAbort = undefined
     })
   }
 

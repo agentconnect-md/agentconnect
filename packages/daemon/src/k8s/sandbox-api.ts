@@ -49,7 +49,7 @@ interface SandboxPodTemplate {
 export interface Sandbox extends K8sObject {
   spec?: { operatingMode?: OperatingMode; podTemplate?: SandboxPodTemplate }
   status?: {
-    conditions?: Array<{ type?: string; status?: string }>
+    conditions?: Array<{ type?: string; status?: string; observedGeneration?: number }>
     podIPs?: Array<string | { ip?: string }>
   }
 }
@@ -414,9 +414,12 @@ export class SandboxApi {
   }
 }
 
-/** Whether a Sandbox reports Ready, the signal that its pod is up. */
+// Readiness must describe the current spec, since a resume can still carry the previous pod's status.
 export function isSandboxReady(sandbox: Sandbox): boolean {
   return (sandbox.status?.conditions ?? []).some(
-    (condition) => condition.type === 'Ready' && condition.status === 'True'
+    (condition) =>
+      condition.type === 'Ready' &&
+      condition.status === 'True' &&
+      condition.observedGeneration === sandbox.metadata?.generation
   )
 }

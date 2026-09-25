@@ -10,6 +10,7 @@ export interface K8sObject {
   metadata?: {
     name?: string
     uid?: string
+    generation?: number
     resourceVersion?: string
     creationTimestamp?: string
     annotations?: Record<string, string>

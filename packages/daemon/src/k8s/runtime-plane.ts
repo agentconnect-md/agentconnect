@@ -6,13 +6,15 @@ import {
   RUNTIME_GRANTS,
   agentSandboxSubject,
   poolRuntimeImage,
+  resolvePodIp,
+  resolvePodName,
   sandboxSubjectAgentId,
   sandboxSubjectForPath,
   sandboxSubjectSessionLeaf,
   sessionSandboxSubject,
   type SandboxSubject
 } from './sandbox-identity.js'
-import { SandboxApi } from './sandbox-api.js'
+import { SandboxApi, assertSandboxFence } from './sandbox-api.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, PROBE_CLAIM_TTL_MS, probeAgentId } from './probe-claim.js'
 import { clusterMetrics } from '../metrics/cluster-metrics.js'
 import { ShimDialer } from '../shim/dialer.js'
@@ -268,6 +270,21 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
 
   const dialer = new ShimDialer({
     verifier: { reviewToken: (token, audiences) => api.reviewToken(token, audiences) },
+    resolveEndpoint: async (record, signal) => {
+      const subject = spawnSubject(record)
+      const launch = driver.currentLaunch(subject)
+      if (!launch || launch.generation !== record.generation || launch.sandboxUid !== record.sandboxUid) {
+        throw new Error(`sandbox ${subject} no longer owns this shim dial`)
+      }
+      const sandbox = await api.getSandbox(launch.sandboxName, { signal })
+      if (driver.currentLaunch(subject) !== launch) throw new Error(`sandbox ${subject} left this member`)
+      assertSandboxFence(sandbox, launch)
+      // A reconnect may reach a healthy shim before the pod's Ready condition catches up.
+      const podIp = resolvePodIp(sandbox)
+      const podName = resolvePodName(sandbox)
+      if (!podIp || !podName) throw new Error(`sandbox ${subject} has no pod endpoint`)
+      return { endpoint: shimEndpoint(podIp, settings.shimPort), podName }
+    },
     now: () => Date.now(),
     metrics: clusterMetrics,
     onConnection: (connection) => {
