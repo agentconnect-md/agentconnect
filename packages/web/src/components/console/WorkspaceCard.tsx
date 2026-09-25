@@ -342,6 +342,7 @@ export function WorkspaceCard({
           onInstallationGrantsChange={(rows) => {
             void mutateGrants(rows, { revalidate: false })
           }}
+          onAgentChange={() => refresh()}
           onClose={() => setEditState(null)}
           onChanged={() => {
             void mutate()

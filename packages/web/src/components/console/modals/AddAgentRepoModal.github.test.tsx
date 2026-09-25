@@ -3,12 +3,15 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { AgentRepositorySelector } from '@agentconnect.md/protocol/decision'
+import type { DecisionProviderOption } from '@agentconnect.md/protocol/decision-api'
 import type { AgentRepoAuthDto } from '@/lib/api'
 import type { Agent } from '@/lib/data'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const mocks = vi.hoisted(() => ({ createAgentRepo: vi.fn() }))
+const decisionProviders = vi.hoisted(() => ({ rows: [] as DecisionProviderOption[] }))
 
 const INSTALLATION = { id: 'inst-1', accountLogin: 'example-org', accountType: 'Organization' }
 const REPO = {
@@ -21,6 +24,10 @@ const REPO = {
 }
 
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/acme${path}` }) }))
+vi.mock('@/lib/decisions/provider', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/decisions/provider')>()),
+  useDecisionProviders: () => ({ providers: decisionProviders.rows, daemonId: null, error: null })
+}))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchGithubInstallations: vi.fn(async () => ({ enabled: true, installations: [INSTALLATION] })),
@@ -37,7 +44,25 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 
 const AddAgentRepoModal = (await import('./AddAgentRepoModal')).default
 
-const agent = { id: 'agent-a', name: 'build-agent', canEdit: true, workspace: { mode: 'scratch' } } as unknown as Agent
+const agent = {
+  id: 'agent-a',
+  name: 'build-agent',
+  canEdit: true,
+  workspace: { mode: 'scratch' },
+  placementKind: 'daemon',
+  daemon: 'daemon-1'
+} as unknown as Agent
+
+const READY_PROVIDER: DecisionProviderOption = {
+  id: 'typesafe',
+  daemonId: 'daemon-1',
+  memberSetId: null,
+  name: 'TypeSafe',
+  kind: 'typesafe',
+  source: 'byok',
+  readiness: { status: 'ready' },
+  models: [{ id: 'jev-latest', label: 'Jev latest', questionTypes: ['choice'] }]
+}
 
 const grant = (over: Partial<AgentRepoAuthDto>): AgentRepoAuthDto => ({
   id: 'ra-1',
@@ -53,7 +78,13 @@ const grant = (over: Partial<AgentRepoAuthDto>): AgentRepoAuthDto => ({
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 
-async function render(props: { initialRepo?: string; initialAccess?: 'read' | 'write' } = {}) {
+async function render(
+  props: {
+    initialRepo?: string
+    initialAccess?: 'read' | 'write'
+    repositorySelector?: AgentRepositorySelector | null
+  } = {}
+) {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -80,18 +111,18 @@ afterEach(async () => {
   root = undefined
   host = undefined
   mocks.createAgentRepo.mockReset()
+  decisionProviders.rows = []
 })
 
 describe('AddAgentRepoModal, GitHub checkout', () => {
-  it('offers Always and On demand, and never By decision yet', async () => {
+  it('offers Always, By decision and On demand; By decision waits for a ready provider', async () => {
     await render({ initialRepo: 'example-org/example-repo' })
 
     const group = document.querySelector('[role="group"][aria-label="Checkout"]')
-    expect(Array.from(group?.querySelectorAll('button') ?? []).map((button) => button.textContent)).toEqual([
-      'Always',
-      'On demand'
-    ])
-    expect(document.body.textContent).not.toContain('By decision')
+    const buttons = Array.from(group?.querySelectorAll('button') ?? [])
+    expect(buttons.map((button) => button.textContent)).toEqual(['Always', 'By decision', 'On demand'])
+    expect(buttons[1]?.disabled).toBe(true)
+    expect(buttons[1]?.title).toBe('No Decision provider is ready where this agent runs')
   })
 
   it('authorizes a repository on demand when that checkout is chosen', async () => {
@@ -120,5 +151,31 @@ describe('AddAgentRepoModal, GitHub checkout', () => {
       access: 'write',
       materialize: 'always'
     })
+  })
+
+  it('authorizes a repository By decision once a provider is ready and a selector is set', async () => {
+    decisionProviders.rows = [READY_PROVIDER]
+    mocks.createAgentRepo.mockResolvedValue(grant({ materialize: 'decision' }))
+    await render({
+      initialRepo: 'example-org/example-repo',
+      repositorySelector: { providerId: 'typesafe', model: 'jev-latest' }
+    })
+    await act(async () => buttonsNamed('By decision')[0]?.click())
+    await act(async () => buttonsNamed('Add')[0]?.click())
+
+    expect(mocks.createAgentRepo).toHaveBeenCalledWith('agent-a', {
+      repoFullName: 'example-org/example-repo',
+      access: 'read',
+      materialize: 'decision'
+    })
+  })
+
+  it('keeps By decision unavailable without a repository selector', async () => {
+    decisionProviders.rows = [READY_PROVIDER]
+    await render({ initialRepo: 'example-org/example-repo', repositorySelector: null })
+
+    const byDecision = buttonsNamed('By decision')[0]
+    expect(byDecision?.disabled).toBe(true)
+    expect(byDecision?.title).toBe('Set the Repository selector first')
   })
 })

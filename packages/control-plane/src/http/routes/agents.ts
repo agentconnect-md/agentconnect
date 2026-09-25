@@ -136,6 +136,7 @@ import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { repositorySelectorRefusal } from '../../agents/repository-selector.js'
+import { readySetMembers, usesDecisionMaterialize } from '../repository-selection.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { AgentMoveConflict, AgentMoveFailed } from '../../orchestrator/agentMove.js'
 import { AgentWakeCoordinator, agentWakeRequest } from '../../orchestrator/agentWake.js'
@@ -504,18 +505,6 @@ function placementRefusalMessage(e: unknown): string | null {
   }
   if (e instanceof AgentSetPlacementDenied) return 'the agent may not be placed on that member set'
   return null
-}
-
-/** The members of a set that could serve an agent right now. One read; reuse it for a page.
- *  Membership is the read — not "org-less daemon", which is only what the pool's membership MEANS
- *  by the write-time invariant (daemon-groups.md §2). */
-async function readySetMembers(deps: HttpDeps, orgId: OrgId, setId: string): Promise<DaemonView[]> {
-  const [daemons, memberIds] = await Promise.all([
-    deps.registry.listAvailable(orgId),
-    deps.repos.memberSet.memberIdsOf(setId)
-  ])
-  const members = new Set(memberIds)
-  return daemons.filter((d) => members.has(d.daemonId) && placementViewOf(deps, d).ready)
 }
 
 async function placementViewFor(deps: HttpDeps, a: AgentRecord, setMembers?: DaemonView[]): Promise<PlacementView> {
@@ -2496,7 +2485,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an agent',
           description:
-            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home. A new `execution` (or the legacy `runInSandbox`) is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it.',
+            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home. A new `execution` (or the legacy `runInSandbox`) is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it (409 while any repository authorization or installation grant is marked `decision`).',
           operationId: 'updateAgent',
           params: IdParam,
           body: UpdateAgentBody,
@@ -2550,6 +2539,14 @@ export function agentRoutes(deps: HttpDeps) {
           if (contradictsExecution(req.body)) return badRequest(reply, EXECUTION_CONTRADICTION)
           const selectorRefusal = repositorySelectorRefusal(req.body.repositorySelector)
           if (selectorRefusal) return badRequest(reply, selectorRefusal)
+          if (req.body.repositorySelector === null && (await usesDecisionMaterialize(deps, existing.id))) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message:
+                'the repository selector is in use; move every repository and installation marked by decision to another checkout first'
+            })
+          }
           const asksExecution = req.body.execution !== undefined || req.body.runInSandbox !== undefined
           const executionChoice = asksExecution
             ? resolveExecution(

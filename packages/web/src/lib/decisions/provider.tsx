@@ -268,16 +268,18 @@ export function boundDecision(
   return decisions.find((entry) => entry.id === binding.decisionId) ?? null
 }
 
-/** The daemon catalog a preview resolves against, read from the active organization's API. */
+/** The daemon catalog a preview resolves against, read from the active organization's API; empty outside the provider. */
 export function useDecisionProviders(): {
   providers: DecisionProviderOption[]
   daemonId: string | null
   error: string | null
 } {
-  const { api, orgId } = useDecisionsPrototype()
-  const { data, error } = useSWR(orgId ? ['decision-providers', api.mode, orgId] : null, () => api.listProviders(), {
-    refreshInterval: 30000
-  })
+  const { api, orgId } = useOptionalDecisionsPrototype() ?? {}
+  const { data, error } = useSWR(
+    api && orgId ? ['decision-providers', api.mode, orgId] : null,
+    () => api!.listProviders(),
+    { refreshInterval: 30000 }
+  )
   return {
     providers: data ?? [],
     daemonId: data?.[0]?.daemonId ?? null,

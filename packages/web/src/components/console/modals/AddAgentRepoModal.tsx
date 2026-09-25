@@ -17,12 +17,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
+import type { AgentRepositorySelector } from '@agentconnect.md/protocol/decision'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon } from '@/components/ui'
 import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
 import { agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
+import { useRepositoryDecision } from '@/lib/repository-selector'
 import {
   GiteaNoRepositoriesNotice,
   GiteaRepositoryField,
@@ -101,6 +103,7 @@ export default function AddAgentRepoModal({
   agent,
   workspaceRepo,
   authorized,
+  repositorySelector,
   initialRepo,
   fixedRepo,
   initialAccess,
@@ -115,6 +118,8 @@ export default function AddAgentRepoModal({
   workspaceRepo: string | null
   /** Existing grants — offered rows are disabled, duplicates rejected inline. */
   authorized: AgentRepoAuthDto[]
+  /** The selector as Edit workspace holds it, which may be newer than `agent`'s. */
+  repositorySelector?: AgentRepositorySelector | null
   /** Pre-selected owner/repo (the hook editor's "Authorize…" shortcut). */
   initialRepo?: string
   /** Repo locked by a manual GitHub workspace; it cannot authorize any other repo. */
@@ -150,6 +155,10 @@ export default function AddAgentRepoModal({
   const [q, setQ] = useState('')
   const [access, setAccess] = useState<RepoAccess>(initialAccess ?? 'read')
   const [materialize, setMaterialize] = useState<RepoMaterialize>('always')
+  const { block: decisionBlock } = useRepositoryDecision(
+    agent,
+    repositorySelector !== undefined ? repositorySelector : agent.repositorySelector
+  )
   // Per-user authz preflight for the picked repo. null = unknown/loading —
   // never blocks; the CP re-checks at create either way.
   const [probe, setProbe] = useState<GithubRepoAccess | null>(null)
@@ -492,7 +501,7 @@ export default function AddAgentRepoModal({
               )
             })}
           </div>
-          <RepositoryMaterializeField value={materialize} onChange={setMaterialize} />
+          <RepositoryMaterializeField value={materialize} decisionBlock={decisionBlock} onChange={setMaterialize} />
         </>
       ),
     github: () =>
@@ -723,7 +732,7 @@ export default function AddAgentRepoModal({
               )
             })}
           </div>
-          <RepositoryMaterializeField value={materialize} onChange={setMaterialize} />
+          <RepositoryMaterializeField value={materialize} decisionBlock={decisionBlock} onChange={setMaterialize} />
 
           {uncovered && (
             <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
@@ -835,7 +844,7 @@ export default function AddAgentRepoModal({
               )
             })}
           </div>
-          <RepositoryMaterializeField value={materialize} onChange={setMaterialize} />
+          <RepositoryMaterializeField value={materialize} decisionBlock={decisionBlock} onChange={setMaterialize} />
         </>
       )
   }

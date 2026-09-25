@@ -44,6 +44,7 @@ import { AgentId, OrgId } from '../../domain/ids.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, denyNonOwner, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
+import { decisionMaterializeRefusal } from '../repository-selection.js'
 import { codeHostsOf } from '../../codehost/registry.js'
 import { Tag } from '../plugins/openapi.js'
 import { isCanonicalGithubAddress } from '../../domain/git-host.js'
@@ -134,18 +135,17 @@ export function agentRepoRoutes(deps: HttpDeps) {
     }
     const agentNotFound = (reply: FastifyReply) =>
       reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-    // `decision` lands with the selector (multi-repository-workspaces.md decision 15); this is the one check that PR deletes, for rows and grants alike.
-    const refuseDecisionMaterialize = (
+    // Marking a row or grant `decision` needs the agent's selector and daemons that run it (multi-repository-workspaces.md decision 18).
+    const refuseDecisionMaterialize = async (
       reply: FastifyReply,
+      agent: AgentRecord,
       materialize: RepoMaterialization | undefined,
-      alternatives = '`always` or `on-demand`'
-    ): boolean => {
-      if (materialize !== 'decision') return false
-      void reply.code(400).send({
-        error: 'Bad Request',
-        statusCode: 400,
-        message: `selecting repositories by decision is not available yet; choose ${alternatives}`
-      })
+      current?: RepoMaterialization
+    ): Promise<boolean> => {
+      if (materialize !== 'decision' || current === 'decision') return false
+      const refusal = await decisionMaterializeRefusal(deps, agent)
+      if (!refusal) return false
+      void reply.code(409).send({ error: 'Conflict', statusCode: 409, message: refusal.message, code: refusal.code })
       return true
     }
 
@@ -377,7 +377,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Authorize a repository for an agent',
           description:
-            'Grant the agent access to one code-host repository. With `provider: github` (the default) the repository is named `owner/repo` and must be covered by one of the organization’s GitHub App installations; App-backed workspaces may add repositories beyond their implicit workspace grant, scratch workspaces may add any covered repository, and a manual GitHub workspace may explicitly authorize only its own repository for control-plane review/check effects. With the per-user gate configured, the caller must hold the matching GitHub permission (`read`/`comment` tiers need read, `write` needs write). With `provider: gitlab` the project is named by its numeric id and must already be a managed GitLab project in this organization; authorizing it provisions the agent’s own GitLab bot account and project membership before the grant lands. With `provider: gitea` the repository is named by its numeric id and must already be a managed Gitea repository in this organization; the organization’s bot token serves every tier, so the tier is a clamp on what the agent may do, never a provider role. `materialize` chooses how sessions stand in the repository: `always` (the default) clones it as a secondary workspace root on every session, `on-demand` grants credentials only and the agent clones during the turn; `decision` is rejected until the per-session selector ships.',
+            'Grant the agent access to one code-host repository. With `provider: github` (the default) the repository is named `owner/repo` and must be covered by one of the organization’s GitHub App installations; App-backed workspaces may add repositories beyond their implicit workspace grant, scratch workspaces may add any covered repository, and a manual GitHub workspace may explicitly authorize only its own repository for control-plane review/check effects. With the per-user gate configured, the caller must hold the matching GitHub permission (`read`/`comment` tiers need read, `write` needs write). With `provider: gitlab` the project is named by its numeric id and must already be a managed GitLab project in this organization; authorizing it provisions the agent’s own GitLab bot account and project membership before the grant lands. With `provider: gitea` the repository is named by its numeric id and must already be a managed Gitea repository in this organization; the organization’s bot token serves every tier, so the tier is a clamp on what the agent may do, never a provider role. `materialize` chooses how sessions stand in the repository: `always` (the default) clones it as a secondary workspace root on every session, `on-demand` grants credentials only and the agent clones during the turn, and `decision` makes it a candidate the per-session repository selector may check out. `decision` needs the agent’s `repositorySelector` (409 `REPOSITORY_SELECTOR_MISSING` otherwise) and daemons serving the agent that advertise `repo-selector-v1` (409 `DAEMON_FEATURE_MISSING` otherwise).',
           operationId: 'createAgentRepoAuthorization',
           params: z.object({ agentId: z.string() }),
           body: CreateAgentRepoAuthBody,
@@ -396,7 +396,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
         if (denyViewerWrite(req, reply)) return
         const agent = await getViewableAgent(req, req.params.agentId)
         if (!agent) return agentNotFound(reply)
-        if (refuseDecisionMaterialize(reply, req.body.materialize)) return
+        if (await refuseDecisionMaterialize(reply, agent, req.body.materialize)) return
         if (req.body.provider === 'gitlab') return authorizeGitlabProject(req, reply, agent, req.body)
         if (req.body.provider === 'gitea') return authorizeGiteaRepository(req, reply, agent, req.body)
         if (!deps.github) {
@@ -553,7 +553,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update a repository authorization',
           description:
-            'Raise an existing repository grant to a stronger access tier after re-checking the caller’s matching GitHub permission, change how the repository is materialized (`materialize`: `always` or `on-demand`; `decision` is rejected until the per-session selector ships), or both. At least one field is required. Downgrades still require revoke and reauthorize so review-check cleanup remains explicit; `materialize` moves freely and re-projects the agent’s spec.',
+            'Raise an existing repository grant to a stronger access tier after re-checking the caller’s matching GitHub permission, change how the repository is materialized (`materialize`: `always`, `decision` or `on-demand`; `decision` needs the agent’s `repositorySelector` and daemons serving the agent that advertise `repo-selector-v1`, else 409 with `REPOSITORY_SELECTOR_MISSING` or `DAEMON_FEATURE_MISSING`), or both. At least one field is required. Downgrades still require revoke and reauthorize so review-check cleanup remains explicit; `materialize` moves freely and re-projects the agent’s spec.',
           operationId: 'updateAgentRepoAuthorization',
           params: AgentRepoAuthParam,
           body: UpdateAgentRepoAuthBody,
@@ -576,7 +576,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
         if (!row || row.agentId !== agent.id) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
         }
-        if (refuseDecisionMaterialize(reply, req.body.materialize)) return
+        if (await refuseDecisionMaterialize(reply, agent, req.body.materialize, row.materialize)) return
         const rank = { read: 0, comment: 1, write: 2 } as const
         if (req.body.access !== undefined && rank[req.body.access] < rank[row.access]) {
           return reply.code(409).send({
@@ -789,7 +789,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Authorize an installation for an agent',
           description:
-            'Grant the agent every repository a live, unsuspended GitHub App installation claimed by this organization covers, at one tier (`read` by default); an explicit repository authorization on a covered repository keeps its own tier. Only an organization owner may do this, and no per-repository permission check runs. `materialize` defaults to `on-demand`; `decision` is rejected until the per-session selector ships, and `always` is never accepted. An agent holds at most one grant per installation.',
+            'Grant the agent every repository a live, unsuspended GitHub App installation claimed by this organization covers, at one tier (`read` by default); an explicit repository authorization on a covered repository keeps its own tier. Only an organization owner may do this, and no per-repository permission check runs. `materialize` defaults to `on-demand`; `decision` feeds the installation’s repositories to the per-session repository selector and needs the agent’s `repositorySelector` and daemons serving the agent that advertise `repo-selector-v1` (409 `REPOSITORY_SELECTOR_MISSING` or `DAEMON_FEATURE_MISSING` otherwise), and `always` is never accepted. An agent holds at most one grant per installation.',
           operationId: 'createAgentInstallationAuthorization',
           params: z.object({ agentId: z.string() }),
           body: CreateAgentInstallationAuthBody,
@@ -799,7 +799,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await installationGrantEditor(req, reply, req.params.agentId)
         if (!agent) return
-        if (refuseDecisionMaterialize(reply, req.body.materialize, '`on-demand`')) return
+        if (await refuseDecisionMaterialize(reply, agent, req.body.materialize)) return
         if (!deps.github) {
           return reply.code(409).send({
             error: 'Conflict',
@@ -860,7 +860,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an installation grant',
           description:
-            'Raise an installation grant to a stronger access tier, change how its repositories are materialized (`on-demand`; `decision` is rejected until the per-session selector ships), or both. At least one field is required. Lowering the tier requires revoking and granting again. Organization owners only; the change re-projects the agent’s spec.',
+            'Raise an installation grant to a stronger access tier, change how its repositories are materialized (`on-demand` or `decision`; `decision` has the same preconditions as on create, 409 otherwise), or both. At least one field is required. Lowering the tier requires revoking and granting again. Organization owners only; the change re-projects the agent’s spec.',
           operationId: 'updateAgentInstallationAuthorization',
           params: AgentInstallationAuthParam,
           body: UpdateAgentInstallationAuthBody,
@@ -872,7 +872,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
         if (!agent) return
         const grant = await ownGrant(agent, req.params.id)
         if (!grant) return grantNotFound(reply)
-        if (refuseDecisionMaterialize(reply, req.body.materialize, '`on-demand`')) return
+        if (await refuseDecisionMaterialize(reply, agent, req.body.materialize, grant.materialize)) return
         const rank = { read: 0, comment: 1, write: 2 } as const
         if (req.body.access !== undefined && rank[req.body.access] < rank[grant.access]) {
           return reply.code(409).send({
