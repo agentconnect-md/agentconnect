@@ -62,6 +62,8 @@ function delivery(over: Partial<GhHookDelivery> = {}): GhHookDelivery {
     id: '1234567890123456789', // 19 digits — past Number.MAX_SAFE_INTEGER
     guid: 'guid-1',
     delivered_at: new Date(NOW - 10 * 60 * 1000).toISOString(),
+    redelivery: false,
+    status_code: 202,
     event: 'issues',
     action: 'opened',
     repository_id: Number(REPO_ID),
@@ -372,6 +374,36 @@ describe('HookRedeliveryReconciler', () => {
       h.clock.advance(CFG.intervalMs)
     }
     expect(h.redelivered).toEqual(['9001', '9001', '9001']) // MAX_ATTEMPTS
+  })
+
+  it('stops once the relay has acknowledged a redelivered copy that still landed no run', async () => {
+    const at = (ms: number) => new Date(NOW - ms).toISOString()
+    const h = make({
+      deliveries: [
+        delivery({ id: 'retry', delivered_at: at(5 * 60 * 1000), redelivery: true, status_code: 202 }),
+        delivery({ id: 'original', delivered_at: at(15 * 60 * 1000) })
+      ]
+    })
+    await h.reconciler.tick()
+    expect(h.redelivered).toEqual([])
+  })
+
+  it('keeps retrying a redelivery the relay never acknowledged', async () => {
+    const h = make({
+      deliveries: [
+        delivery({ id: 'retry', redelivery: true, status_code: 503 }),
+        delivery({ id: 'original', delivered_at: new Date(NOW - 15 * 60 * 1000).toISOString() })
+      ]
+    })
+    await h.reconciler.tick()
+    expect(h.redelivered).toEqual(['retry'])
+  })
+
+  it('counts attempts GitHub already lists, so a restarted process does not reset the cap', async () => {
+    const failed = (id: string) => delivery({ id, redelivery: true, status_code: 0 })
+    const h = make({ deliveries: [failed('r3'), failed('r2'), failed('r1'), delivery({ id: 'original' })] })
+    await h.reconciler.tick()
+    expect(h.redelivered).toEqual([])
   })
 
   it('an outage longer than the window is still caught up (skipped sweeps do not advance coverage)', async () => {

@@ -83,6 +83,8 @@ export interface GhHookDelivery {
   id: string
   guid: string // stable across redeliveries of the same event — the HookRun deliveryKey
   delivered_at: string
+  redelivery: boolean
+  status_code: number // the relay's HTTP status for this attempt; 0 when it never answered
   event: string
   action: string | null
   repository_id: number | null

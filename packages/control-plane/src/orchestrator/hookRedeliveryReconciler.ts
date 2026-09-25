@@ -16,7 +16,7 @@ const SUBSCRIPTION_EVENTS = new Set([
   'deployment_status',
   'release'
 ])
-/** Redeliveries requested per GUID before giving up (loop breaker). */
+/** Redeliveries per GUID before giving up, counted from GitHub's own attempt list so a restart cannot reset it. */
 const MAX_ATTEMPTS = 3
 /** Delay before the first sweep of a process — see {@link HookRedeliveryReconciler.start}. */
 const FIRST_SWEEP_DELAY_MS = 60_000
@@ -109,8 +109,7 @@ function hookMatchesEvent(hook: HookRecord, event: string, action: string | null
 export class HookRedeliveryReconciler {
   private timer: TimerHandle | undefined
   private stopped = false
-  /** GUID → no-HookRun recovery requests (capped at MAX_ATTEMPTS). Failed
-   * HookRun attempts are persisted by HookRedeliveryHooks instead. */
+  /** GUID → no-HookRun requests this process made, covering any GitHub does not list yet; failed runs persist instead. */
   private readonly attempts = new Map<string, number>()
   /** Everything up to this instant has been swept. Skipped sweeps (relay pool
    *  down — the exact outage this job exists for) do NOT advance it, so the
@@ -241,6 +240,14 @@ export class HookRedeliveryReconciler {
       return
     }
 
+    const listedRedeliveries = new Map<string, number>()
+    const relayEvaluated = new Set<string>()
+    for (const d of deliveries) {
+      if (!d.redelivery) continue
+      listedRedeliveries.set(d.guid, (listedRedeliveries.get(d.guid) ?? 0) + 1)
+      // The relay acknowledged a redelivered copy yet no run landed: that is its own filtering, which another copy repeats.
+      if (d.status_code >= 200 && d.status_code < 300) relayEvaluated.add(d.guid)
+    }
     const landed = await this.hooks.existingDeliveryKeys([...new Set(matching.map((c) => c.guid))])
     let redelivered = 0
     let oldestFailedAt: number | undefined // a failed GitHub call keeps its slice of the window open for retry
@@ -250,7 +257,9 @@ export class HookRedeliveryReconciler {
       const persistedFailure = landed.has(d.guid)
       const deliveredAt = Date.parse(d.delivered_at)
       if (!persistedFailure && deliveredAt < oldest) continue
-      if (!persistedFailure && (this.attempts.get(d.guid) ?? 0) >= MAX_ATTEMPTS) continue
+      if (!persistedFailure && relayEvaluated.has(d.guid)) continue
+      const attempts = Math.max(this.attempts.get(d.guid) ?? 0, listedRedeliveries.get(d.guid) ?? 0)
+      if (!persistedFailure && attempts >= MAX_ATTEMPTS) continue
 
       seenThisTick.add(d.guid)
       if (persistedFailure) {
@@ -266,7 +275,7 @@ export class HookRedeliveryReconciler {
         if (!claimed) continue
       } else {
         if (this.attempts.size >= MAX_TRACKED) this.attempts.clear()
-        this.attempts.set(d.guid, (this.attempts.get(d.guid) ?? 0) + 1)
+        this.attempts.set(d.guid, attempts + 1)
       }
       try {
         await this.github.redeliverHookDelivery(d.id)
