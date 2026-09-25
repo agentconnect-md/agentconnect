@@ -20385,11 +20385,9 @@ export class Daemon {
       if (res.outcome === 'retained') {
         retained += 1
         this.log.info(
-          res.reason === 'unsafe-config'
-            ? `retention: keeping session ${rec.key} — its Git configuration could run a command, so it was not inspected`
-            : `retention: keeping session ${rec.key} — worktree has ${
-                res.reason === 'dirty' ? 'uncommitted/untracked changes' : 'commits not on any remote'
-              } (delete or push them to release it)`
+          `retention: keeping session ${rec.key} — worktree has ${
+            res.reason === 'dirty' ? 'uncommitted/untracked changes' : 'commits not on any remote'
+          } (delete or push them to release it)`
         )
         continue
       }

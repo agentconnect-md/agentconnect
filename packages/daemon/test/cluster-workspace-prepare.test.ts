@@ -416,8 +416,6 @@ describe('preparing a cluster git-repo workspace', () => {
       cwd: CHECKOUT,
       args: ['checkout', '--no-recurse-submodules', '--no-track', '-B', 'main', 'refs/remotes/origin/main']
     })
-    // And the audit ran against the POD's config, not a directory on this disk.
-    expect(calls.some((call) => call.cwd === CHECKOUT && call.args.includes('--includes'))).toBe(true)
   })
 
   it('follows a repository rename on a resumed volume, in the pod', async () => {

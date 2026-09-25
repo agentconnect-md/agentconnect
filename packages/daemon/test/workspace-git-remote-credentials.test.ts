@@ -38,10 +38,7 @@ function recordingRunner(recorded: Record<string, string>[]): GitRunner {
       recorded.push(next)
       return recordingRunner(recorded)
     },
-    // The config audit runs before the remote command and must answer, not throw: an empty list is a
-    // checkout that pins nothing, which is what lets the caller proceed to the fetch under test.
     raw: async (args) => {
-      if (args[0] === 'config') return ''
       throw new Error(`git ${args[0]} failed: no remote in this test`)
     },
     clone: async () => undefined,

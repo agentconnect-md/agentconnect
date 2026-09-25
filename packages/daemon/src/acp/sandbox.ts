@@ -352,10 +352,8 @@ export function writeSandboxSettingsUnder(trustedRoot: string, relDir: string, p
       allowRead: canonical(policy.allowRead),
       allowWrite: canonical(policy.writable),
       denyWrite: canonical([...(policy.denyWrite ?? []), '/tmp/claude', '/private/tmp/claude']),
-      // Daemon-managed Git writes the credential-helper entries outside the
-      // sandbox. A confined runtime must not redirect later host-side Git via
-      // core.hooksPath, core.fsmonitor, filter.*, or similar settings.
-      allowGitConfig: false
+      // A runtime's `git remote add`, `push -u` and hook installers write `.git/config`; an offline helper never needs to.
+      allowGitConfig: policy.offline !== true
     },
     ...(policy.gitSafeDirectories?.length ? { git: { safeDirectories: canonical(policy.gitSafeDirectories) } } : {})
   }

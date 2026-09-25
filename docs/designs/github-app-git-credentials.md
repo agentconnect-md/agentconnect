@@ -849,9 +849,10 @@ Injection uses **two channels**:
      The cost is precedence — `GIT_CONFIG_GLOBAL` is global
      scope, which repository-local config outranks, where command scope outranked
      everything. Daemon-run Git keeps its command-scope pins
-     (`workspaceGitConfigPairs`) and a confined runtime cannot write
-     `.git/config` or `.git/hooks`, so the exposed case is an unconfined agent's
-     own git in a checkout that sets `core.hooksPath` locally.
+     (`workspaceGitConfigPairs`), so the exposed case is a runtime's own git in a
+     checkout that sets `core.hooksPath` locally. That is accepted: `srt` isolates
+     environments, not trust, and a runtime may write its checkout's
+     `.git/config` ([session-executors.md](session-executors.md) §5).
    - **The file is keyed by what it contains, not by the host that asked for
      it.** A credential-stripped host (a dream) coexists with the warm host and
      shares its pod on the pool, so it writes a separate policy-only name rather

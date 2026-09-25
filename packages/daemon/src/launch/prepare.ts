@@ -521,10 +521,6 @@ export function prepareRuntimeLaunch(opts: {
     // plus trusted executable/package roots above; never an agent-provided path.
     denyRead: denyReadRoots,
     allowRead: boundary.allowRead,
-    // A Git metadata root is opened for the index, refs, and objects alone. SRT's own mandatory
-    // protection only covers a `.git` DIRECTORY below the cwd, which an isolated worktree's link
-    // file is not, so hooks and config are closed here instead.
-    denyWrite: gitMetadataWriteRoots.flatMap((gitDir) => [join(gitDir, 'hooks'), join(gitDir, 'config')]),
     gitSafeDirectories: boundary.gitSafeDirectories
   })
   const protectedCredentialRoots = compactReadRoots([

@@ -7,7 +7,6 @@ import { simpleGit } from 'simple-git'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../src/cp/gitcred-server.js'
 import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
 import {
-  assertSafeWorkspaceGitConfig,
   canonicalWorkspaceGitUrl,
   cloneGitEnv,
   gitEnvBase,
@@ -59,12 +58,6 @@ const POLLUTED = {
   GIT_CONFIG_KEY_0: 'core.editor',
   GIT_CONFIG_VALUE_0: 'vim'
 } as const
-
-// The audit takes a runner: it must read the config the git it guards reads, which for a cluster
-// workspace is the sandbox's filesystem rather than this one.
-function localRunner(cwd: string): GitRunner {
-  return new LocalGitRunner(gitFor(cwd), cwd, (env) => gitFor(cwd).env(env))
-}
 
 function configPairs(env: Record<string, string>): Array<[string | undefined, string | undefined]> {
   return Array.from({ length: Number(env.GIT_CONFIG_COUNT ?? 0) }, (_, index) => [
@@ -266,7 +259,7 @@ describe('gitEnvBase', () => {
     }
   })
 
-  it('pins a full target against broader URL rewrites and rejects checkout-owned rewrites', async () => {
+  it('pins a full target against broader URL rewrites', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'git-url-policy-test-'))
     const repository = 'https://github.com/acme/repo.git'
     const localEnv = workspaceGitLocalEnv()
@@ -283,7 +276,6 @@ describe('gitEnvBase', () => {
           env: workspaceGitEnvBase(repository)
         }).trim()
       ).toBe(repository)
-      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/disallowed network override/)
     } finally {
       rmSync(workspace, { recursive: true, force: true })
     }
@@ -317,119 +309,6 @@ describe('gitEnvBase', () => {
           env: target.env
         }).trim()
       ).toBe(repository)
-    } finally {
-      rmSync(workspace, { recursive: true, force: true })
-    }
-  })
-
-  it('rejects a checkout-owned incremental bundle URI before pull', async () => {
-    const workspace = mkdtempSync(join(tmpdir(), 'git-bundle-policy-test-'))
-    try {
-      execFileSync('git', ['init', workspace], { env: workspaceGitLocalEnv(), stdio: 'ignore' })
-      execFileSync('git', ['-C', workspace, 'config', 'fetch.bundleURI', 'https://127.0.0.1/private.bundle'], {
-        env: workspaceGitLocalEnv()
-      })
-      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/disallowed network override/)
-    } finally {
-      rmSync(workspace, { recursive: true, force: true })
-    }
-  })
-
-  it(`audits the config of the filesystem the RUNNER reaches, not this daemon's disk`, async () => {
-    // Why the audit takes a runner: a cluster workspace's config lives on the sandbox pod, so a
-    // check performed here is performed on the wrong machine — passing while the real config is
-    // hostile.
-    const workspace = mkdtempSync(join(tmpdir(), 'git-audit-filesystem-'))
-    const localEnv = workspaceGitLocalEnv()
-    try {
-      // Locally CLEAN...
-      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
-      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).resolves.toBeUndefined()
-
-      // ...while the runner's filesystem reports a hostile setting: the audit must follow it.
-      const hostile: GitRunner = {
-        withEnv: () => hostile,
-        raw: async () => 'filter.generated.process\0',
-        clone: async () => undefined,
-        pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
-        status: async () => ({ current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
-        log: async () => [],
-        readBounded: async () => ({ out: Buffer.alloc(0), overflow: false })
-      }
-      await expect(assertSafeWorkspaceGitConfig(hostile)).rejects.toThrow(/executable setting/)
-
-      // The converse proves the local disk is not consulted: unsafe LOCAL, clean runner, passes.
-      execFileSync('git', ['-C', workspace, 'config', 'filter.generated.process', './evil'], { env: localEnv })
-      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/executable setting/)
-      const clean: GitRunner = { ...hostile, withEnv: () => clean, raw: async () => '' }
-      await expect(assertSafeWorkspaceGitConfig(clean)).resolves.toBeUndefined()
-    } finally {
-      rmSync(workspace, { recursive: true, force: true })
-    }
-  })
-
-  it('rejects checkout-owned executable Git settings that daemon policy does not override', async () => {
-    const workspace = mkdtempSync(join(tmpdir(), 'git-executable-config-test-'))
-    const localEnv = workspaceGitLocalEnv()
-    try {
-      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
-      execFileSync('git', ['-C', workspace, 'config', 'filter.generated.process', './filter-process'], {
-        env: localEnv
-      })
-      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/executable setting/)
-    } finally {
-      rmSync(workspace, { recursive: true, force: true })
-    }
-  })
-
-  it('allows an included hooksPath while still auditing included network overrides', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'git-included-hook-policy-test-'))
-    const workspace = join(root, 'workspace')
-    const include = join(root, 'workspace.gitconfig')
-    const localEnv = workspaceGitLocalEnv()
-    try {
-      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
-      writeFileSync(include, '[core]\n\thooksPath = .github/.githooks\n')
-      execFileSync('git', ['-C', workspace, 'config', 'include.path', include], { env: localEnv })
-      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).resolves.toBeUndefined()
-
-      writeFileSync(
-        include,
-        '[core]\n\thooksPath = .github/.githooks\n[url "https://127.0.0.1.invalid/"]\n\tinsteadOf = https://github.com/\n'
-      )
-      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/disallowed network override/)
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  it('rejects conditional includes that can activate only in a linked worktree', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'git-conditional-include-policy-test-'))
-    const workspace = join(root, 'workspace')
-    const include = join(root, 'worktree.gitconfig')
-    const localEnv = workspaceGitLocalEnv()
-    try {
-      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
-      writeFileSync(include, '[filter "evil"]\n\tprocess = ./filter-process\n')
-      execFileSync('git', ['-C', workspace, 'config', 'includeIf.gitdir:**/.git/worktrees/**.path', include], {
-        env: localEnv
-      })
-
-      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/executable setting/)
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  it('rejects the separate worktree config scope omitted by a local-scope audit', async () => {
-    const workspace = mkdtempSync(join(tmpdir(), 'git-worktree-config-policy-test-'))
-    const localEnv = workspaceGitLocalEnv()
-    try {
-      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
-      execFileSync('git', ['-C', workspace, 'config', 'extensions.worktreeConfig', 'true'], { env: localEnv })
-      writeFileSync(join(workspace, '.git', 'config.worktree'), '[filter "evil"]\n\tsmudge = ./filter-smudge\n')
-
-      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/executable setting/)
     } finally {
       rmSync(workspace, { recursive: true, force: true })
     }
