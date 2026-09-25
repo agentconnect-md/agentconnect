@@ -2526,6 +2526,8 @@ export default function SessionDetailView() {
   const conversationMode = !!conversationKey && (conversationMembers?.length ?? 0) > 1
   // The composer's recipient in a continued multi-agent conversation — one member at a time, scoped to this key.
   const [composerPick, setComposerPick] = useState({ scope: '', agentId: '' })
+  // Every member session this page sent into, so a later pick never unconfirms an earlier turn's live prompt.
+  const [sentSessionIds, setSentSessionIds] = useState({ scope: '', ids: [] as string[] })
   const { data: conversationLineage, error: conversationLineageError } = useSWR(
     conversationMode && activeOrg?.id
       ? (['conversation-lineage', activeOrg.id, conversationKey, conversationSourceKey] as const)
@@ -2769,6 +2771,8 @@ export default function SessionDetailView() {
         )
       : undefined
   const composerSessionId = composerMember?.sessionId ?? id
+  const promptSessionIds =
+    sentSessionIds.scope === (conversationKey ?? '') ? [...sentSessionIds.ids, composerSessionId] : [composerSessionId]
   const composerDetail = composerMember
     ? (otherMemberDetails?.get(composerMember.sessionId) ?? null)
     : currentSessionDetail
@@ -2892,7 +2896,7 @@ export default function SessionDetailView() {
     conversationMembers,
     conversationRosterPlatform: conversationRoster?.platform ?? undefined,
     sessionBusyRef,
-    promptSessionId: composerSessionId,
+    promptSessionIds,
     reconcileLiveSteps
   })
 
@@ -3891,7 +3895,16 @@ export default function SessionDetailView() {
     const pick = commandPickRef.current
     commandPickRef.current = null
     // A continuation socket mints through the session-target route (§6.5).
-    if (isContinuable) markSessionTarget(session.id, composerSessionId)
+    if (isContinuable) {
+      markSessionTarget(session.id, composerSessionId)
+      const scope = conversationKey ?? ''
+      setSentSessionIds((cur) => {
+        const ids = cur.scope === scope ? cur.ids : []
+        return ids.includes(composerSessionId) && cur.scope === scope
+          ? cur
+          : { scope, ids: [...ids, composerSessionId] }
+      })
+    }
     // Pass the fetched roster: an adopted webchat session has no provider-side
     // state, and without it a multi-agent send can't pre-create stream lanes or
     // narrow by @mention (the relay would apply its all-participants default).

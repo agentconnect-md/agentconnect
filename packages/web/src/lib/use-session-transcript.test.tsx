@@ -151,3 +151,57 @@ describe('useSessionTranscript conversation tail', () => {
     expect(reconcile).toHaveBeenCalledWith('s1', [saved], 'agent', [saved])
   })
 })
+
+describe('useSessionTranscript prompt confirmation across members', () => {
+  function MembersHarness({
+    reconcile,
+    promptSessionIds
+  }: {
+    reconcile: (id: string, persisted: SessionMessageDto[], agentId: string, promptRows?: SessionMessageDto[]) => void
+    promptSessionIds: string[]
+  }) {
+    useSessionTranscript({
+      sid: 's1',
+      aid: 'agent',
+      wantTranscript: true,
+      sessionPlatform: 'webchat',
+      conversationKey: 'c1',
+      conversationSourceKey: 's1,s2',
+      conversationMembers: [
+        { sessionId: 's1', agentId: 'agent' },
+        { sessionId: 's2', agentId: 'reviewer' }
+      ],
+      conversationRosterPlatform: 'webchat',
+      sessionBusyRef: { current: false },
+      promptSessionIds,
+      reconcileLiveSteps: reconcile
+    })
+    return null
+  }
+
+  it('confirms a prompt saved in a member the page sent to earlier, not only the current pick', async () => {
+    const reconcile = vi.fn()
+    const sentToReviewer = row(1, 'user', 'please re-review')
+    fetchMock.mockImplementation(async (sessionId: string) =>
+      sessionId === 's2' ? page([sentToReviewer], 'c-s2') : page([], 'c-s1')
+    )
+    // The reader sent to s2, then picked s1 again before the fetch settled.
+    await act(async () => root.render(<MembersHarness reconcile={reconcile} promptSessionIds={['s2', 's1']} />))
+    await flush()
+
+    expect(reconcile).toHaveBeenCalledTimes(1)
+    expect(reconcile.mock.calls[0]?.[3]).toEqual([sentToReviewer])
+  })
+
+  it('keeps fuzzy prompt matching to the representative when the page sent nowhere else', async () => {
+    const reconcile = vi.fn()
+    const peerRow = row(1, 'user', 'please re-review')
+    fetchMock.mockImplementation(async (sessionId: string) =>
+      sessionId === 's2' ? page([peerRow], 'c-s2') : page([], 'c-s1')
+    )
+    await act(async () => root.render(<MembersHarness reconcile={reconcile} promptSessionIds={['s1']} />))
+    await flush()
+
+    expect(reconcile.mock.calls[0]?.[3]).toEqual([])
+  })
+})

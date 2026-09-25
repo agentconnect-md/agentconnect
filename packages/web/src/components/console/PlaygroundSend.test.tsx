@@ -69,6 +69,7 @@ let pgAppRpc: ReturnType<typeof usePlayground>['pgAppRpc']
 let getPgSession: ReturnType<typeof usePlayground>['getPgSession']
 let pgStageRuntime: ReturnType<typeof usePlayground>['pgStageRuntime']
 let markSessionTarget: ReturnType<typeof usePlayground>['markSessionTarget']
+let getBusyLaneAgentIds: ReturnType<typeof usePlayground>['getBusyLaneAgentIds']
 
 function Probe() {
   const pg = usePlayground()
@@ -89,6 +90,7 @@ function Probe() {
   getPgSession = pg.getPgSession
   pgStageRuntime = pg.pgStageRuntime
   markSessionTarget = pg.markSessionTarget
+  getBusyLaneAgentIds = pg.getBusyLaneAgentIds
   return null
 }
 
@@ -2049,6 +2051,8 @@ describe('MCP App card lifetime (webchat-mcp-apps.md §7.3)', () => {
 describe('a continuation lane retargeted to another member session', () => {
   class TargetSocket extends StubSocket {
     static instances: TargetSocket[] = []
+    onopen?: () => void
+    onmessage?: (event: { data: string }) => void
     constructor() {
       super()
       TargetSocket.instances.push(this)
@@ -2087,5 +2091,39 @@ describe('a continuation lane retargeted to another member session', () => {
     // Re-marking the same target is a no-op: it must not tear down a socket already bound to it.
     act(() => markSessionTarget('s-architect', 's-review'))
     expect(first?.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the next turn on the new target, not on the roster the previous socket verified', async () => {
+    markSessionTarget('s-architect')
+    await act(async () => {
+      pgSend('s-architect', 'agent-architect', 'first')
+    })
+    const [first] = TargetSocket.instances
+    await act(async () => {
+      first!.readyState = 1
+      first!.onopen?.()
+    })
+    const turnId = (JSON.parse(String(first!.send.mock.calls.at(-1)?.[0])) as { turnId: string }).turnId
+    act(() => {
+      first!.onmessage?.({
+        data: JSON.stringify({
+          type: 'ready',
+          conversationId: 'c-architect',
+          participants: [{ agentId: 'agent-architect', primary: true }]
+        })
+      })
+      first!.onmessage?.({
+        data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-architect', lastIndex: -1 } })
+      })
+    })
+    expect(getBusyLaneAgentIds('s-architect')).toEqual([])
+
+    act(() => markSessionTarget('s-architect', 's-review'))
+    await act(async () => {
+      pgSend('s-architect', 'agent-review', 'second')
+    })
+
+    // A lane still keyed to the previous socket's roster would wait on an agent this socket never reaches.
+    expect(getBusyLaneAgentIds('s-architect')).toEqual(['agent-review'])
   })
 })

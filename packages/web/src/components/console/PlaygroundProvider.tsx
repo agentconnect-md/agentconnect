@@ -2371,8 +2371,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     const previous = sessionTargets.current.get(id)
     sessionTargets.current.set(id, targetSessionId)
     if (previous === undefined || previous === targetSessionId) return
-    // The open socket is bound to the previous target's adopted conversation, so the next send dials afresh.
+    // The open socket and its verified roster belong to the previous target, so the next send dials and targets afresh.
     conversationIds.current.delete(id)
+    rosterAgentIds.current.delete(id)
     const existing = conns.current.get(id)
     if (!existing) return
     existing.closing = true
