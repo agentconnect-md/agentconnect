@@ -2081,6 +2081,16 @@ model HookRun {
   @@map("hook_run")
 }
 
+// Durable no-HookRun redelivery count per GitHub GUID: the loop breaker that survives a Control Plane restart.
+model HookDeliveryRecovery {
+  deliveryKey     String   @id
+  attempts        Int
+  lastRequestedAt DateTime @db.Timestamptz(6)
+
+  @@index([lastRequestedAt], map: "hook_delivery_recovery_requested_idx")
+  @@map("hook_delivery_recovery")
+}
+
 // Durable GitHub Checks/status projection.  It deliberately has no FK to
 // HookDef/Agent/Org: cleanup must still run after an owner row is deleted.
 model HookReviewProjection {

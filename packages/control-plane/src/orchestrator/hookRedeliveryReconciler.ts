@@ -16,15 +16,13 @@ const SUBSCRIPTION_EVENTS = new Set([
   'deployment_status',
   'release'
 ])
-/** Redeliveries requested per GUID before giving up (loop breaker). */
+/** Redeliveries per GUID that landed no run before giving up; counted durably, so a restart cannot reset it. */
 const MAX_ATTEMPTS = 3
 /** Delay before the first sweep of a process — see {@link HookRedeliveryReconciler.start}. */
 const FIRST_SWEEP_DELAY_MS = 60_000
 /** Durable minimum delay for failures proven to precede daemon admission. */
 // One external redelivery is safe; another could cross a placement move after an accepted report is lost.
 export const FAILED_DELIVERY_BACKOFF_MS = [30_000] as const
-/** Attempt-map bound (flush-at-cap, the daemon dedup-map precedent). */
-const MAX_TRACKED = 5_000
 /** Hard ceiling on how far back a post-outage catch-up may reach. GitHub's own
  *  redelivery window is 3 days; the delivery listing walks its cursor to the
  *  window floor and, when a firehose exhausts its page budget first, coverage
@@ -51,6 +49,8 @@ export interface HookRedeliveryHooks {
     backoffMs: readonly number[]
   ): Promise<boolean>
   settleRetryableDeliveryRedeliveries(requestedAt: Date, expiredBefore: Date, maxAttempts: number): Promise<number>
+  claimMissingDeliveryRedelivery(deliveryKey: string, requestedAt: Date, maxAttempts: number): Promise<boolean>
+  pruneMissingDeliveryRedeliveries(requestedBefore: Date): Promise<number>
 }
 
 export interface HookRedeliveryRelays {
@@ -109,9 +109,6 @@ function hookMatchesEvent(hook: HookRecord, event: string, action: string | null
 export class HookRedeliveryReconciler {
   private timer: TimerHandle | undefined
   private stopped = false
-  /** GUID → no-HookRun recovery requests (capped at MAX_ATTEMPTS). Failed
-   * HookRun attempts are persisted by HookRedeliveryHooks instead. */
-  private readonly attempts = new Map<string, number>()
   /** Everything up to this instant has been swept. Skipped sweeps (relay pool
    *  down — the exact outage this job exists for) do NOT advance it, so the
    *  first post-recovery sweep reaches back over the whole outage instead of
@@ -179,6 +176,8 @@ export class HookRedeliveryReconciler {
       new Date(now - MAX_LOOKBACK_MS),
       FAILED_DELIVERY_BACKOFF_MS.length
     )
+    // No listed attempt older than the look-back can be a candidate again, so its count is no longer needed.
+    await this.hooks.pruneMissingDeliveryRedeliveries(new Date(now - 2 * MAX_LOOKBACK_MS))
 
     // The compile sieve: enabled github hooks that could actually fire.
     const byRepo = new Map<string, HookRecord[]>()
@@ -250,7 +249,6 @@ export class HookRedeliveryReconciler {
       const persistedFailure = landed.has(d.guid)
       const deliveredAt = Date.parse(d.delivered_at)
       if (!persistedFailure && deliveredAt < oldest) continue
-      if (!persistedFailure && (this.attempts.get(d.guid) ?? 0) >= MAX_ATTEMPTS) continue
 
       seenThisTick.add(d.guid)
       if (persistedFailure) {
@@ -264,9 +262,8 @@ export class HookRedeliveryReconciler {
             FAILED_DELIVERY_BACKOFF_MS
           ))
         if (!claimed) continue
-      } else {
-        if (this.attempts.size >= MAX_TRACKED) this.attempts.clear()
-        this.attempts.set(d.guid, (this.attempts.get(d.guid) ?? 0) + 1)
+      } else if (!(await this.hooks.claimMissingDeliveryRedelivery(d.guid, new Date(now), MAX_ATTEMPTS))) {
+        continue
       }
       try {
         await this.github.redeliverHookDelivery(d.id)

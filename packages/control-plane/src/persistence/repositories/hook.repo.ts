@@ -2389,6 +2389,27 @@ export class PgHookRepo implements HookRepo {
     return settled
   }
 
+  async claimMissingDeliveryRedelivery(deliveryKey: string, requestedAt: Date, maxAttempts: number): Promise<boolean> {
+    if (maxAttempts < 1) return false
+    const created = await this.db.hookDeliveryRecovery.createMany({
+      data: [{ deliveryKey, attempts: 1, lastRequestedAt: requestedAt }],
+      skipDuplicates: true
+    })
+    if (created.count === 1) return true
+    const bumped = await this.db.hookDeliveryRecovery.updateMany({
+      where: { deliveryKey, attempts: { lt: maxAttempts } },
+      data: { attempts: { increment: 1 }, lastRequestedAt: requestedAt }
+    })
+    return bumped.count === 1
+  }
+
+  async pruneMissingDeliveryRedeliveries(requestedBefore: Date): Promise<number> {
+    const deleted = await this.db.hookDeliveryRecovery.deleteMany({
+      where: { lastRequestedAt: { lt: requestedBefore } }
+    })
+    return deleted.count
+  }
+
   async reapStaleRuns(staleBefore: Date): Promise<number> {
     return this.transaction(async (tx) => {
       const rows = await tx.hookRun.findMany({

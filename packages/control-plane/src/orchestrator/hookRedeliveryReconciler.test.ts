@@ -77,6 +77,8 @@ function make(opts: {
   truncated?: boolean
   landed?: string[]
   relaysAlive?: boolean | (() => boolean)
+  /** Durable no-run attempt counts; share one map between instances to model a restart. */
+  recoveryAttempts?: Map<string, number>
   redeliverError?: boolean
   reviewFanoutClaim?: boolean
   claim?:
@@ -100,6 +102,13 @@ function make(opts: {
       typeof opts.claim === 'function' ? opts.claim(deliveryKey, expectedHookIds, at, backoffMs) : (opts.claim ?? false)
   )
   const settleMock = vi.fn(async () => 0)
+  const recoveryAttempts = opts.recoveryAttempts ?? new Map<string, number>()
+  const claimMissingMock = vi.fn(async (deliveryKey: string, _at: Date, maxAttempts: number) => {
+    const attempts = recoveryAttempts.get(deliveryKey) ?? 0
+    if (attempts >= maxAttempts) return false
+    recoveryAttempts.set(deliveryKey, attempts + 1)
+    return true
+  })
   const reviewFanoutClaimMock = vi.fn(async () => opts.reviewFanoutClaim ?? false)
   const listMock = vi.fn(async (_opts?: { deliveredSince?: Date }) => ({
     deliveries: typeof opts.deliveries === 'function' ? opts.deliveries() : (opts.deliveries ?? [delivery()]),
@@ -115,7 +124,9 @@ function make(opts: {
       existingDeliveryKeys: vi.fn(async () => new Set(opts.landed ?? [])),
       claimReviewRequestRequiredFanoutRedelivery: reviewFanoutClaimMock,
       claimRetryableDeliveryRedelivery: claimMock,
-      settleRetryableDeliveryRedeliveries: settleMock
+      settleRetryableDeliveryRedeliveries: settleMock,
+      claimMissingDeliveryRedelivery: claimMissingMock,
+      pruneMissingDeliveryRedeliveries: vi.fn(async () => 0)
     },
     { listAlive: vi.fn(async () => (alive() ? [{ id: 'r1' } as RelayRecord] : [])) },
     clock,
@@ -372,6 +383,23 @@ describe('HookRedeliveryReconciler', () => {
       h.clock.advance(CFG.intervalMs)
     }
     expect(h.redelivered).toEqual(['9001', '9001', '9001']) // MAX_ATTEMPTS
+  })
+
+  it('keeps the attempt cap across a restart', async () => {
+    const recoveryAttempts = new Map<string, number>()
+    const fresh = (h: ReturnType<typeof make>) => [
+      delivery({ id: '9001', delivered_at: new Date(h.clock.now() - 3 * 60 * 1000).toISOString() })
+    ]
+    const first = make({ recoveryAttempts, deliveries: () => fresh(first) })
+    for (let i = 0; i < 3; i++) {
+      await first.reconciler.tick()
+      first.clock.advance(CFG.intervalMs)
+    }
+    expect(first.redelivered).toHaveLength(3)
+
+    const restarted = make({ recoveryAttempts, deliveries: () => fresh(restarted) })
+    await restarted.reconciler.tick()
+    expect(restarted.redelivered).toEqual([])
   })
 
   it('an outage longer than the window is still caught up (skipped sweeps do not advance coverage)', async () => {
