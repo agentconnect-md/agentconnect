@@ -90,7 +90,7 @@ import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import { LabelFilterField } from '@/components/console/LabelFilterField'
 import { VisibilityValue } from '@/components/console/VisibilityField'
-import { IntegrationPlatformGroups } from '@/components/console/IntegrationPlatformGroups'
+import { IntegrationPlatformGroups, PLATFORM_TILE_WIDTH } from '@/components/console/IntegrationPlatformGroups'
 import { SelfAgentContext } from '@/components/console/SelfAgentTag'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import { AgentMark, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
@@ -2622,18 +2622,20 @@ function AgentDetail() {
                   <div className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
                     {t('integrations.noneTitle')}
                   </div>
-                  <div className="mx-auto mt-1 max-w-[380px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                  <div className="mt-1 truncate font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
                     {t('integrations.noneDescription', { agent: da.name })}
                   </div>
                 </div>
                 <div className="mt-4">
                   <IntegrationPlatformGroups
+                    // Tiles stop at 132px; past that the block centers instead of stretching.
+                    className="mx-auto max-w-[calc(var(--tile-cols)_*_--spacing(33)_+_(var(--tile-cols)_-_1)_*_--spacing(2))]"
                     renderTile={(p) => {
                       const available = integrationPlatformAvailable(p.key)
                       return (
                         <div
                           key={p.key}
-                          className={`ptile w-33 flex-none flex-col desktop:w-[min(--spacing(33),calc((100%_-_(var(--tile-cols)_-_1)_*_--spacing(2))_/_var(--tile-cols)))] justify-center gap-[6px] px-2 text-center ${available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
+                          className={`ptile ${PLATFORM_TILE_WIDTH} flex-none flex-col justify-center gap-[6px] px-2 text-center ${available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
                           aria-disabled={!available}
                           title={available ? INTEGRATION_BLURB[p.key] : 'Not supported by this daemon'}
                           onClick={available ? () => openModal('integration', da, { platform: p.key }) : undefined}
@@ -2647,16 +2649,24 @@ function AgentDetail() {
                               <PlatformMark platform={p.key} fillPct={100} />
                             </span>
                           )}
+                          {/* Mobile tiles are icon-only; the name stays for screen readers. */}
                           {p.key === 'feishu' ? (
-                            <LarkFeishuSwitcher
-                              value="lark"
-                              disabled={!available}
-                              onSwitch={(feishuRegion) =>
-                                openModal('integration', da, { platform: 'feishu', feishuRegion })
-                              }
-                            />
+                            <>
+                              <span className="max-desktop:hidden">
+                                <LarkFeishuSwitcher
+                                  value="lark"
+                                  disabled={!available}
+                                  onSwitch={(feishuRegion) =>
+                                    openModal('integration', da, { platform: 'feishu', feishuRegion })
+                                  }
+                                />
+                              </span>
+                              <span className="sr-only desktop:hidden">{p.label}</span>
+                            </>
                           ) : (
-                            <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
+                            <span className="font-sans text-[13px] font-semibold leading-normal max-desktop:sr-only">
+                              {p.label}
+                            </span>
                           )}
                         </div>
                       )

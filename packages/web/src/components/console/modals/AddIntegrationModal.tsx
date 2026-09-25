@@ -19,7 +19,7 @@ import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
-import { IntegrationPlatformGroups } from '@/components/console/IntegrationPlatformGroups'
+import { IntegrationPlatformGroups, PLATFORM_TILE_WIDTH } from '@/components/console/IntegrationPlatformGroups'
 import {
   GithubPrivateReposNotice,
   GiteaNoRepositoriesNotice,
@@ -1423,6 +1423,19 @@ export default function AddIntegrationModal({
               hidden: footerView?.hidden === true
             }
 
+  // Rendered inside the Lark tile on desktop and below the grid on mobile, where tiles are icon-only.
+  const feishuSwitcher = (
+    <LarkFeishuSwitcher
+      value={feishuRegion}
+      // A pending registration locks the region so the picker cannot relabel its cloud.
+      disabled={!isPlatformAvailable('feishu') || !!createdHook || regionLocked}
+      onSwitch={(next) => {
+        if (platform !== 'feishu') pickPlatform('feishu')
+        setFeishuRegion(next)
+      }}
+    />
+  )
+
   return (
     <>
       <div className="modalhead">
@@ -1458,7 +1471,7 @@ export default function AddIntegrationModal({
               return (
                 <div
                   key={candidate.key}
-                  className={`${on ? 'ptile on' : 'ptile'} w-[66px] flex-none flex-col desktop:w-[calc((100%_-_(var(--tile-cols)_-_1)_*_--spacing(2))_/_var(--tile-cols))] justify-center gap-[5px] px-1.5 py-[9px] text-center ${
+                  className={`${on ? 'ptile on' : 'ptile'} ${PLATFORM_TILE_WIDTH} flex-none flex-col justify-center gap-[5px] px-1.5 py-[9px] text-center ${
                     available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
                   }`}
                   aria-disabled={!available}
@@ -1474,23 +1487,22 @@ export default function AddIntegrationModal({
                       <PlatformMark platform={candidate.key} fillPct={100} />
                     </span>
                   )}
+                  {/* Mobile tiles are icon-only; the name stays for screen readers. */}
                   {candidate.key === 'feishu' ? (
-                    <LarkFeishuSwitcher
-                      value={feishuRegion}
-                      // A pending registration locks the region so the picker cannot relabel its cloud.
-                      disabled={!available || !!createdHook || regionLocked}
-                      onSwitch={(next) => {
-                        if (platform !== 'feishu') pickPlatform('feishu')
-                        setFeishuRegion(next)
-                      }}
-                    />
+                    <>
+                      <span className="max-desktop:hidden">{feishuSwitcher}</span>
+                      <span className="sr-only desktop:hidden">{candidate.label}</span>
+                    </>
                   ) : (
-                    <span className="font-sans text-[12px] font-semibold leading-normal">{candidate.label}</span>
+                    <span className="font-sans text-[12px] font-semibold leading-normal max-desktop:sr-only">
+                      {candidate.label}
+                    </span>
                   )}
                 </div>
               )
             }}
           />
+          {platform === 'feishu' && <div className="mt-2 desktop:hidden">{feishuSwitcher}</div>}
         </div>
         {platform === 'webhook' && !createdHook && (
           <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
