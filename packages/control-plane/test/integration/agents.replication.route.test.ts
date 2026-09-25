@@ -208,6 +208,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         managedSkills: [],
         decisionIds: [decisionId],
         modelSelection,
+        repositorySelector: null, // always shipped value-or-null so clearing the evaluator replicates
         hookRoutings: [], // always shipped so losing the last hosted routing replicates
         // Agent→agent call policy (§2.5) — always shipped so a policy/allow-list change replicates.
         callPolicy: 'all',

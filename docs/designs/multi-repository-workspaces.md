@@ -4,7 +4,8 @@
 > (pod) daemons (phase 7), `gh` in the pod included. Per-authorization
 > materialization below is implemented for `always` and `on-demand` rows
 > (decisions 13 and 20); installation grants (decision 14) are implemented for
-> `on-demand`, and the repository selector (decisions 15–19) is **proposed, not
+> `on-demand`, and the repository selector (decisions 15–19) has its evaluator
+> setting and roster request; the selection itself is **proposed, not
 > implemented**.
 >
 > Before this design an agent's workspace was exactly one repository.
@@ -263,7 +264,9 @@ no root for a secondary repository on a cluster agent.
 > projection (`always` and `on-demand` only), the daemon checking out only
 > `always` rows with decision 20's clone directory, and **Always** or **On
 > demand** on each row in the console. Decision 14 has its control-plane,
-> daemon and console halves (change-map step 2); decisions 15–19 have not landed.
+> daemon and console halves (change-map step 2). Of decisions 15–19, the
+> evaluator setting and the roster request pair have their protocol and
+> control-plane half (change-map step 3); the selection itself has not landed.
 
 Decision 1 scales with the number of rows. An organization with a few hundred
 repositories that authorizes them all — or that holds an installation grant
@@ -283,7 +286,7 @@ out to need later can be cloned on demand.
 | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 13  | **Materialization is chosen per authorization: a repository row is `always` (default), `decision`, or `on-demand`; an installation grant is `decision` or `on-demand`.** `always` is decision 1 unchanged for that row. `on-demand` materializes nothing: the agent clones the repository during the turn when it needs it. `decision` makes the repository a candidate for a selection that runs once per new session, before the runtime starts, and picks which candidates become that session's secondary roots; the other candidates stay on demand for that session. The choice is a `materialize` column on `AgentRepoAuthorization` and on the installation grant, projected into `AgentSpec.workspace` beside each entry. Changing it re-projects the spec: a row leaving `always` retires its root in place (decision 12), and returning to `always` un-retires it.      | The set is what grows, and the rows are already the one list the console shows; how much of it a session should stand in belongs on each entry, not in a second list (the non-goal above). An installation grant has no single repository to stand in, so `always` is not one of its options.                                                                         |
 | 14  | **An installation grant cannot be `always`.** Its roster is every repository the installation covers, so `always` would clone an installation; the grant chooses `decision` (its roster feeds the selector) or `on-demand` (credentials only), defaulting to `on-demand`. A repository row for a covered repository is independent of the grant and may be `always`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Cloning an installation is exactly the failure this section exists to prevent. A pinned repository inside a covered account is expressed the way it always was: as its own row.                                                                                                                                                                                       |
-| 15  | **The selector is a built-in Decision consumer at workspace preparation.** Its candidates are the rows marked `decision` plus the rosters of the installation grants marked `decision`. The agent chooses the evaluator once, `{ providerId, model }` on the Workspace card through the Decision editor's Provider · model picker over the daemon catalog, shown as soon as any authorization is marked `decision`; the daemon generates the question. Candidates are split into chunks of at most 31, each chunk one Choice question of those repositories plus a `none` option, evaluated concurrently within the evaluator's own caps. Following [decisions.md §1](decisions.md), the consumer lives here, in the feature that owns the action; the typed answer is evidence, and the `materialize` choice is the authority that turns it into clones.                          | A saved Decision carries a fixed question of at most 32 options; the candidate list is the agent's and changes with its grants, so the question must be built from it. Chunking is what makes a few hundred candidates one bounded stage rather than one evaluation per repository.                                                                                   |
+| 15  | **The selector is a built-in Decision consumer at workspace preparation.** Its candidates are the rows marked `decision` plus the rosters of the installation grants marked `decision`. The agent chooses the evaluator once, `repositorySelector: { providerId, model }` on the Workspace card through the Decision editor's Provider · model picker over the daemon catalog, shown as soon as any authorization is marked `decision`; the daemon generates the question. Candidates are split into chunks of at most 31, each chunk one Choice question of those repositories plus a `none` option, evaluated concurrently within the evaluator's own caps. Following [decisions.md §1](decisions.md), the consumer lives here, in the feature that owns the action; the typed answer is evidence, and the `materialize` choice is the authority that turns it into clones.      | A saved Decision carries a fixed question of at most 32 options; the candidate list is the agent's and changes with its grants, so the question must be built from it. Chunking is what makes a few hundred candidates one bounded stage rather than one evaluation per repository.                                                                                   |
 | 16  | **State is the model-selection state.** The selector reads the same input as [Agent runtime and model selection](decisions.md#106-agent-runtime-and-model-selection): a chat's opening message with the gate's bounded history, or a PR/MR hook's description, commit messages and diff prefix, plus `workspace.primary` naming the primary repository. Candidates appear only in the question's criteria, never in the state.                                                                                                                                                                                                                                                                                                                                                                                                                                                     | One state builder for both once-per-session consumers, one set of budgets and truncation rules, and the request stays within the evaluator's 32 KiB.                                                                                                                                                                                                                  |
 | 17  | **Selection is relative to `none`, bounded by a cap.** Within a chunk every option whose probability exceeds `none`'s is a hit; hits across chunks are ordered by probability and at most 5 are materialized (a proposal to measure). A chunk in which `none` leads contributes nothing. The primary is always present, and a review session's subject root is always its `cwd` (decision 6) whatever the selector said.                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Probabilities within a chunk sum to one, so a request about two repositories in the same chunk splits its mass between them; an absolute threshold would drop both, while beating `none` keeps both. The cap bounds preparation time the way the clone budget bounds one root.                                                                                        |
 | 18  | **No fallback.** When any authorization is marked `decision`, an evaluator that is not ready (`DecisionReadiness` other than `ready`) or an `unavailable` evaluation fails the session's start with a visible error naming the cause. The daemon never treats a failed selection as `always` or as `on-demand`. The console offers **By decision** on a row or grant only while at least one provider is ready, and disables it otherwise.                                                                                                                                                                                                                                                                                                                                                                                                                                         | A silent downgrade would make which repositories a session stands in depend on provider health that nobody can see. The operator chose by decision; a failure of its precondition is theirs to see and fix, exactly as a runtime that cannot start is.                                                                                                                |
@@ -294,13 +297,19 @@ out to need later can be cloned on demand.
 
 **Candidates.** The rows marked `decision` are already in the spec. For the
 installation grants marked `decision` the daemon asks the Control Plane once
-per selection, over the control WebSocket, for each grant's roster from the
-Control Plane's cached `/installation/repositories` pages — `{ provider,
-repoFullName, repoId, description?, pushedAt? }`. The reply is control metadata
-(names, ids, the descriptions GitHub already publishes), never message content.
-It is bounded: at most 512 candidates in all, rows first and rosters ordered by
-most recent push, and a roster beyond that is cut with `context.partial` set on
-the evaluation's evidence. The daemon caches the reply for the roster's own TTL.
+per selection, over the control WebSocket and only after `register/ok`
+advertises `repo-candidates-v1`: `repo-candidates/request { agentId }` →
+`repo-candidates/reply { candidates: [{ provider, repoFullName, repoId,
+description?, pushedAt? }], partial }`. The Control Plane answers a daemon that
+serves the agent from each grant's roster, read through its cached
+`/installation/repositories` pages (at most 20 pages of 100 per installation),
+and leaves out a repository with its own row and the workspace repository. The
+reply is control metadata (names, ids, the descriptions GitHub already
+publishes, cut to 350 characters), never message content. It is bounded: at
+most 512 candidates, most recent push first, within one frame, with `partial`
+set when a bound cut anything; the daemon puts the rows first, keeps the same
+bound, and carries `partial` into `context.partial` on the evaluation's
+evidence. The daemon caches the reply for the roster's own TTL.
 
 **Question.** One Choice question per chunk. Criteria keys are `r1…r31` plus
 `none`, because a full name can exceed the 64-character key limit; each
@@ -311,7 +320,7 @@ it is about none of these. The primary repository is named in the state, not
 offered as an option.
 
 **Evaluation.** Chunks are evaluated concurrently through the existing
-`DecisionEvaluator` with the agent's `{ providerId, model }`, so its four
+`DecisionEvaluator` with the agent's `repositorySelector`, so its four
 active evaluations per daemon and five-second deadline per request apply
 unchanged; seven chunks are two rounds. The stage runs where the
 model-selection evaluation runs: on the serving daemon, before executor
@@ -370,7 +379,13 @@ turn's path, in the same class as `gitcred/request` and the model-selection
 3. **`decision`** — the evaluator pair on the agent, the roster request and
    reply frames, chunked question generation, the selection rule, the snapshot,
    evidence recording, the readiness gate, and **By decision** on rows and
-   grants in the console.
+   grants in the console. _Landed:_ the protocol and control-plane half of the
+   first two — `repositorySelector` on agent create and `PATCH` (a provider and
+   model the catalog offers for Choice questions, 400 otherwise; `null`
+   clears), stored on the agent, projected value-or-null into `AgentSpec` and
+   kept in `agent.json`, advancing the config revision; and the roster pair,
+   advertised as `repo-candidates-v1`. `decision` is still refused on rows and
+   grants.
 4. **Public documentation** travels with steps 1 and 3.
 
 Follow-ups filed together once the above lands: re-selection on a later turn

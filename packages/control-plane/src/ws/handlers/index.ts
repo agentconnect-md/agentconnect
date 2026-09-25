@@ -52,6 +52,7 @@ import { handleSessionPurged } from './event-session-purged.js'
 import { handleGitCredRequest } from './gitcred.js'
 import { handleLinearCredRequest } from './linearcred.js'
 import { handleProviderCredentials } from './provider-credentials.js'
+import { handleRepoCandidates } from './repo-candidates.js'
 import { handleHookStart } from './hook-start.js'
 import { handleHookPreparing } from './hook-preparing.js'
 import { handleApprovalRoute } from './approval-route.js'
@@ -125,6 +126,7 @@ export class FrameRouter {
       'gitcred/request': handleGitCredRequest,
       'linearcred/request': handleLinearCredRequest,
       'provider-credentials/request': handleProviderCredentials,
+      'repo-candidates/request': handleRepoCandidates,
       'decision/list': handleDecisionRead,
       'decision/get': handleDecisionRead,
       'webchat/mcp-grant/issue': handleWebchatMcpGrantIssue,

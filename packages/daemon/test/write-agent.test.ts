@@ -33,6 +33,7 @@ import {
   writeAgentSpec
 } from '../src/agents/write-agent.js'
 import { writeCronDef } from '../src/agents/write-cron.js'
+import { AgentSchema } from '../src/agents/agent-schema.js'
 
 const deps = { knownRuntimes: ['claude', 'codex'] }
 
@@ -124,6 +125,20 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     expect(readJson(file).modelSelection).toEqual(modelSelection)
     writeAgentSpec(dir, 'bot-a', baseSpec({ modelSelection: null }), deps)
     expect(readJson(file)).not.toHaveProperty('modelSelection')
+  })
+  it('keeps the repository selector through agent.json, leaves it on omission, and clears it on null', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-repository-selector-'))
+    const repositorySelector = { providerId: 'typesafe', model: 'jev-latest' }
+    const file = seedAgent(dir, 'bot-a', { id: 'bot-a', name: 'bot-a', runtime: 'claude' })
+    writeAgentSpec(dir, 'bot-a', baseSpec({ repositorySelector }), deps)
+    expect(readJson(file).repositorySelector).toEqual(repositorySelector)
+    expect(
+      AgentSchema.parse({ ...readJson(file), workspace: { mode: 'from-scratch', path: dir } }).repositorySelector
+    ).toEqual(repositorySelector)
+    writeAgentSpec(dir, 'bot-a', baseSpec(), deps)
+    expect(readJson(file).repositorySelector).toEqual(repositorySelector)
+    writeAgentSpec(dir, 'bot-a', baseSpec({ repositorySelector: null }), deps)
+    expect(readJson(file)).not.toHaveProperty('repositorySelector')
   })
   it('merges displayName from the CP spec', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))

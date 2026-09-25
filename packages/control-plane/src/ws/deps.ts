@@ -37,6 +37,7 @@ import type { UsageWriter } from '../usage/writer.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { DutyAgentBundle, IntegrationRevoked, RelayRosterEntry } from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
+import type { RepoCandidatesService } from '../github/repo-candidates.js'
 import type { GitlabGitcredService } from '../gitlab/gitcred.service.js'
 import type { GiteaGitcredService } from '../gitea/gitcred.service.js'
 import type { LinearTokenService } from '../platforms/linear/token-service.js'
@@ -178,6 +179,8 @@ export interface DaemonWsDeps {
   agentMemoryHistory?: Pick<AgentMemoryHistoryRepo, 'append' | 'page'>
   /** github-app workspaces façade; absent ⇒ gitcred/request answers SCOPE_DENIED. */
   github?: GithubService
+  /** The selector's installation rosters; absent ⇒ `repo-candidates/request` answers SCOPE_DENIED and is not advertised. */
+  repoCandidates?: Pick<RepoCandidatesService, 'forAgent'>
   /** gitcred v2 GitLab grants (§13.1); absent ⇒ gitlab workspaces disabled. */
   gitlabGitcred?: GitlabGitcredService
   /** gitcred v2 Gitea grants (gitea-integration.md §4.2, §9); absent ⇒ gitea workspaces disabled. */

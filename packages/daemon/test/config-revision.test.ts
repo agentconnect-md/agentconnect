@@ -62,6 +62,12 @@ describe('agentSpecDigest', () => {
     expect(agentSpecDigest(spec({ hookRoutings: [routing] }))).not.toBe(agentSpecDigest(spec({})))
   })
 
+  it('digests a cleared repository selector as the absent field, and a selector as content', () => {
+    expect(agentSpecDigest(spec({ repositorySelector: null }))).toBe(agentSpecDigest(spec({})))
+    const selected = spec({ repositorySelector: { providerId: 'typesafe', model: 'jev-latest' } })
+    expect(agentSpecDigest(selected)).not.toBe(agentSpecDigest(spec({})))
+  })
+
   it('is insensitive to key order but sensitive to values', () => {
     const a = agentSpecDigest(spec({ env: { A: '1', B: '2' } }))
     const b = agentSpecDigest(spec({ env: { B: '2', A: '1' } }))

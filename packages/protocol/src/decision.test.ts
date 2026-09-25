@@ -27,6 +27,10 @@ import {
   settleRoutingPreview,
   DecisionRoutingEvaluationRecord,
   DecisionRoutingEvaluationRecordDetail,
+  AgentRepositorySelector,
+  DECISION_PROVIDER_PROFILES,
+  supportsDecision,
+  supportsRepositorySelector,
   type DecisionAnswer,
   type SharedBotDecisionRouting
 } from './decision.js'
@@ -160,6 +164,47 @@ const routing: SharedBotDecisionRouting = {
     { id: 'sales', when: { type: 'choice', thresholds: { sales: 0.7 } }, action: { type: 'skip' } }
   ]
 }
+
+describe('repository selector evaluator (multi-repository-workspaces.md decision 15)', () => {
+  const catalog = [
+    {
+      id: 'example-provider',
+      models: [
+        { id: 'example-choice', questionTypes: ['choice' as const] },
+        { id: 'example-boolean', questionTypes: ['boolean' as const, 'score' as const] }
+      ]
+    }
+  ]
+
+  it('is a provider and model pair of Decision identifiers', () => {
+    expect(AgentRepositorySelector.parse({ providerId: ' typesafe ', model: 'jev-latest' })).toEqual({
+      providerId: 'typesafe',
+      model: 'jev-latest'
+    })
+    expect(AgentRepositorySelector.safeParse({ providerId: 'typesafe' }).success).toBe(false)
+    expect(AgentRepositorySelector.safeParse({ providerId: '', model: 'jev-latest' }).success).toBe(false)
+    expect(AgentRepositorySelector.safeParse({ providerId: 'typesafe', model: 'x'.repeat(129) }).success).toBe(false)
+  })
+
+  it('accepts only a catalog model that answers Choice', () => {
+    for (const model of DECISION_PROVIDER_PROFILES[0]!.models) {
+      expect(supportsRepositorySelector({ providerId: 'typesafe', model: model.id })).toBe(true)
+    }
+    expect(supportsRepositorySelector({ providerId: 'unknown', model: 'jev-latest' })).toBe(false)
+    expect(supportsRepositorySelector({ providerId: 'typesafe', model: 'unknown' })).toBe(false)
+    expect(supportsRepositorySelector({ providerId: 'example-provider', model: 'example-choice' }, catalog)).toBe(true)
+    expect(supportsRepositorySelector({ providerId: 'example-provider', model: 'example-boolean' }, catalog)).toBe(
+      false
+    )
+  })
+
+  it('reads the question type alone, so a saved Decision keeps its check', () => {
+    expect(supportsDecision({ providerId: 'typesafe', model: 'jev-latest', question: choice })).toBe(true)
+    const boolean = { providerId: 'example-provider', model: 'example-boolean', question: { type: 'boolean' as const } }
+    expect(supportsDecision(boolean, catalog)).toBe(true)
+    expect(supportsDecision({ ...boolean, question: { type: 'choice' } }, catalog)).toBe(false)
+  })
+})
 
 describe('Decision contracts and consumer matching', () => {
   it('keeps consumer fields out of definitions and validates real input limits', () => {

@@ -4,7 +4,7 @@
  * agent-move fingerprint path), and the instance-owned icon bases reach the spec.
  */
 import { describe, it, expect } from 'vitest'
-import { GITLAB_DEFAULT_BASE_URL, type AgentAdditionalRepo } from '@agentconnect.md/protocol'
+import { AgentSpec, GITLAB_DEFAULT_BASE_URL, type AgentAdditionalRepo } from '@agentconnect.md/protocol'
 import { AgentSpecAssembler, gitlabHost } from './agentSpecAssembler.js'
 import type {
   AgentInstallationAuthorizationRepo,
@@ -178,6 +178,15 @@ describe('AgentSpecAssembler', () => {
     const pending = specs.project({ ...sandboxed, execution: null }, {}, [])
     expect(pending.runInSandbox).toBe(true)
     expect('execution' in pending).toBe(false)
+  })
+
+  it('ships the repository selector’s evaluator, or null so a cleared one replicates', () => {
+    const specs = new AgentSpecAssembler(storeWith({}))
+    const repositorySelector = { providerId: 'typesafe', model: 'jev-latest' }
+    expect(specs.project({ ...AGENT, repositorySelector }, {}, []).repositorySelector).toEqual(repositorySelector)
+    const none = specs.project(AGENT, {}, [])
+    expect(none).toHaveProperty('repositorySelector', null)
+    expect(AgentSpec.parse(none).repositorySelector).toBeNull()
   })
 
   it('redacts legacy URL secrets before projecting an anonymous workspace onto the daemon wire', () => {

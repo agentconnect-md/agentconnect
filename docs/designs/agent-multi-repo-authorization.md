@@ -7,11 +7,11 @@
 >
 > **Installation grants** (decision 10): the control-plane half is implemented —
 > the table, the owner-only routes, the projected `additionalInstallations`, the
-> mint and hook gates, and the refusal that names the grant. The daemon offers a
-> grant's repositories on demand, and the console lists grant rows with
-> **Authorize an installation** in Edit workspace, shows chips on the Workspace
-> card, and counts covered repositories as authorized in the GitHub hook editor
-> and on the agent page.
+> mint and hook gates, the refusal that names the grant, and the roster request
+> for a grant marked `decision`. The daemon offers a grant's repositories on
+> demand, and the console lists grant rows with **Authorize an installation** in
+> Edit workspace, shows chips on the Workspace card, and counts covered
+> repositories as authorized in the GitHub hook editor and on the agent page.
 >
 > Scratch workspaces use the same explicit repository allowlist and have no
 > implicit repository. Converting a scratch workspace to GitHub makes the target
@@ -347,13 +347,15 @@ defaulting to `[]` so an older peer decodes unchanged, and each
 Control Plane's list still means what it meant. A grant carries no roster: the
 daemon needs the accounts for the standing context and nothing else. A daemon
 whose grant is marked `decision` asks for the roster with a new control request
-pair, `repo-candidates/request { agentId }` →
+pair, negotiated by `repo-candidates-v1`: `repo-candidates/request { agentId }` →
 `repo-candidates/reply { candidates: [{ provider, repoFullName, repoId,
-description?, pushedAt? }], partial }`, answered from each `decision` grant's
-cached installation roster (the rows are already in the spec) and bounded to
-512 entries by most recent push. The reply is control metadata and never message content. `GitCredRequest`
-and `GitCredGrant` are unchanged: a request still names one repository, and the
-grant still echoes it.
+description?, pushedAt? }], partial }`. The Control Plane answers a daemon that
+serves the agent from each `decision` grant's cached installation roster,
+leaving out a repository with its own row (the rows are already in the spec)
+and the workspace repository, most recent push first, bounded to 512 entries
+and one frame, with `partial` when a bound cut anything. The reply is control
+metadata and never message content. `GitCredRequest` and `GitCredGrant` are
+unchanged: a request still names one repository, and the grant still echoes it.
 
 ## Control Plane
 

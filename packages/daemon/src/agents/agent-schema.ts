@@ -3,6 +3,7 @@ import {
   AgentAdditionalInstallation,
   AgentDecisionIds,
   AgentModelSelection,
+  AgentRepositorySelector,
   AgentMemoryBinding,
   HookRoutingProjection,
   CompatibleAgentSkillEntry,
@@ -184,6 +185,8 @@ export const AgentSchema = z.object({
   skills: z.array(CompatibleAgentSkillEntry).default([]),
   decisionIds: AgentDecisionIds.optional(),
   modelSelection: AgentModelSelection.optional(),
+  // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); CP-owned.
+  repositorySelector: AgentRepositorySelector.optional(),
   // The code-host routings this agent evaluates as host (code-host-decisions.md §3.2).
   hookRoutings: z.array(HookRoutingProjection).optional(),
   // Centrally accepted immutable `.skill` revisions. Content stays in the

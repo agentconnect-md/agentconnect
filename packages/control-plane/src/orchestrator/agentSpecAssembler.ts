@@ -492,6 +492,8 @@ export function agentRecordToSpec(
     skills: skillEntries,
     decisionIds: a.decisionIds ?? [],
     modelSelection: a.modelSelection ?? null,
+    // Value or null, so clearing the evaluator replicates; the daemon digests null as the absent field.
+    repositorySelector: a.repositorySelector ?? null,
     ...(hookRoutings !== undefined ? { hookRoutings } : {}),
     // Immutable centrally-managed bundle metadata. Content is fetched separately
     // in bounded chunks, keeping reconcile/upsert frames small.

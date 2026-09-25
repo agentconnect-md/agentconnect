@@ -90,6 +90,7 @@ import {
   ProviderCredentialsReply,
   ProviderCredentialsChanged
 } from './frames/provider-credentials.js'
+import { RepoCandidatesRequest, RepoCandidatesReply } from './frames/repo-candidates.js'
 import {
   DecisionListRequest,
   DecisionListReply,
@@ -391,6 +392,9 @@ export const FRAME_SCHEMAS = {
   'provider-credentials/request': ProviderCredentialsRequest,
   'provider-credentials/reply': ProviderCredentialsReply,
   'provider-credentials/changed': ProviderCredentialsChanged,
+  // ── the repository selector's installation rosters (multi-repository-workspaces.md, The selector) ──
+  'repo-candidates/request': RepoCandidatesRequest,
+  'repo-candidates/reply': RepoCandidatesReply,
   // ── secrets ──
   'secrets/request': SecretsRequest,
   'secrets/grant': SecretsGrant,
@@ -721,6 +725,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('provider-credentials/request', FRAME_SCHEMAS['provider-credentials/request']),
   frame('provider-credentials/reply', FRAME_SCHEMAS['provider-credentials/reply']),
   frame('provider-credentials/changed', FRAME_SCHEMAS['provider-credentials/changed']),
+  frame('repo-candidates/request', FRAME_SCHEMAS['repo-candidates/request']),
+  frame('repo-candidates/reply', FRAME_SCHEMAS['repo-candidates/reply']),
   frame('secrets/request', FRAME_SCHEMAS['secrets/request']),
   frame('secrets/grant', FRAME_SCHEMAS['secrets/grant']),
   frame('secrets/renew', FRAME_SCHEMAS['secrets/renew']),

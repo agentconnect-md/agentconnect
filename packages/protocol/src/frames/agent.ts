@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentDecisionIds, AgentModelSelection, HookRoutingProjection } from '../decision.js'
+import { AgentDecisionIds, AgentModelSelection, AgentRepositorySelector, HookRoutingProjection } from '../decision.js'
 import { CodeHostProviderString } from '../code-host.js'
 import { AgentMemoryBinding } from './memory-connection.js'
 import { IntegrationSpec } from './integration.js'
@@ -434,6 +434,8 @@ export const AgentSpec = z.object({
   skills: z.array(CompatibleAgentSkillEntry).default([]),
   decisionIds: AgentDecisionIds.optional(),
   modelSelection: AgentModelSelection.nullable().optional(),
+  // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); a current CP ships value or null.
+  repositorySelector: AgentRepositorySelector.nullable().optional(),
   // The code-host routings this agent hosts (code-host-decisions.md §3.2); absent leaves them unchanged, [] clears.
   hookRoutings: z.array(HookRoutingProjection).max(256).optional(),
   // Centrally accepted `.skill` ZIP revisions. Unlike Git source entries above,
