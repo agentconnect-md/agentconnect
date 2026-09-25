@@ -207,9 +207,10 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
     throw new Error('invalid runtime root name')
   // Short and beside the sessions, not under a HOME: every tunnel socket beneath it must fit the AF_UNIX budget.
   const runtimeRoot = join(input.daemonRoot, 'hs', input.runtimeRootName ?? randomBytes(6).toString('hex'))
-  if (liveRoots.has(runtimeRoot)) throw new Error('a shim already runs in this runtime root')
-  // A fixed root's previous shim may still be removing it, and an earlier daemon life may have left it behind.
+  // A fixed root's previous shim may have exited and still be removing it; that is waited out before the root counts as live.
   await removals.get(runtimeRoot)
+  if (liveRoots.has(runtimeRoot)) throw new Error('a shim already runs in this runtime root')
+  // An earlier daemon life may have left the root behind.
   if (input.runtimeRootName !== undefined) await removeStaleRoot(runtimeRoot)
   const longest = Object.values(shimPaths(runtimeRoot).tunnels).reduce((a, b) => (b.length > a.length ? b : a))
   if (Buffer.byteLength(longest) > AF_UNIX_PATH_MAX) throw new Error('daemon root is too long for a host shim socket')
@@ -278,10 +279,13 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
     await Promise.all([runtimeRoot, privateDir].map((path) => rm(path, { recursive: true, force: true })))
   })
   void removed.catch(() => {})
-  const removal = removed.catch(() => {})
-  removals.set(runtimeRoot, removal)
-  void removal.then(() => {
-    if (removals.get(runtimeRoot) === removal) removals.delete(runtimeRoot)
+  // Recorded at exit, before any caller's own reaction to it: a restart then waits out this removal, while a start beside a live shim is refused.
+  void exited.then(() => {
+    const removal = removed.catch(() => {})
+    removals.set(runtimeRoot, removal)
+    void removal.then(() => {
+      if (removals.get(runtimeRoot) === removal) removals.delete(runtimeRoot)
+    })
   })
   let resolveReady!: () => void
   let rejectReady!: (error: Error) => void
