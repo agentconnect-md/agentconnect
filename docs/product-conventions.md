@@ -1242,23 +1242,24 @@ Entry-specific capabilities belong in the preview summary row: the entry browser
 exposes `Edit`, `Delete`, and `History` there, and repository-backed Workspace
 history must reuse the same action slot and history pane when it is added.
 
-For a Git workspace, show the effective `read` or `write` access beside the
-repository — an anonymous checkout is always `read`, whatever preference is stored.
-The editor may switch freely between the sources, choose another repository or
-branch, change the working subdirectory, edit read/write access, or bind a manual
-checkout to the GitHub App. Before a mode, repository, or branch change, state
-clearly that saving permanently replaces the current daemon-local workspace files
-and cannot be undone. Use an explicit `Replace workspace` save label for that
-destructive case. A working-subdirectory or access-only edit preserves the
-current checkout.
+The Workspace card shows no `read` or `write` badge beside the repository; the Edit
+workspace dialog owns that access, and an anonymous checkout is always `read`,
+whatever preference is stored. The editor may switch freely between the sources,
+choose another repository or branch, change the working subdirectory, edit
+read/write access, or bind a manual checkout to the GitHub App. Before a mode,
+repository, or branch change, state clearly that saving permanently replaces the
+current daemon-local workspace files and cannot be undone. Use an explicit
+`Replace workspace` save label for that destructive case. A working-subdirectory
+or access-only edit preserves the current checkout.
 
 The same Edit workspace dialog owns additional repository access for both GitHub and
-scratch workspaces: it lists current grants, adds another repository, and revokes an
-existing grant. The Workspace card and contextual authorization prompts may keep
-direct shortcuts for discoverability, but those shortcuts open this shared dialog at
-the additional-repository step and return to the calling flow after authorization.
-There must not be a second standalone repository-management surface with different
-options or vocabulary.
+scratch workspaces: it lists current grants, sets each one's access and checkout, adds
+another repository, and revokes an existing grant. The Workspace card's repository
+dropdown may also change an additional repository's or installation grant's access and
+checkout, or revoke it. Both surfaces use the same options and vocabulary, and adding a
+repository has one flow: the dropdown and contextual authorization prompts open the
+shared dialog at the additional-repository step and return to the calling flow after
+authorization.
 
 GitHub workspace settings expose one boolean named `Worktree`. When enabled, each
 logical session runs in its own stable Git worktree under the Agent directory, so one
@@ -1298,8 +1299,8 @@ remain distinct actions. Menu choices match the closed control's compact height,
 while the menu itself may extend wider to keep titles legible. Their session time
 stays out of the row and appears in its tooltip instead. Session links use their
 message icon and label without a redundant external-link arrow. The Source card
-remains directly above the browser and names only the repository or scratch
-workspace; it does not repeat the branch.
+remains directly above the browser and names the repository or scratch workspace
+and, for a Git workspace, its configured branch.
 
 Workspace changes are cold edits: active work is drained and existing cached
 credentials are cleared before the new definition becomes active. Any edit that removes

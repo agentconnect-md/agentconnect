@@ -130,6 +130,43 @@ const pick = async (label: string) => {
   await act(async () => choice(label)?.click())
 }
 
+const accessOf = (title: 'Read only' | 'Read & write', name = 'example-org/example-repo') =>
+  document.querySelector<HTMLButtonElement>(`[role="group"][aria-label="Access for ${name}"] button[title="${title}"]`)
+
+describe('EditWorkspaceModal repository access toggle', () => {
+  it('replaces the static tier badge, pressing neither segment for a legacy comment row', async () => {
+    await render([row(), row({ id: 'repo-auth-2', repoFullName: 'example-org/legacy', access: 'comment' })])
+    expect(accessOf('Read only')?.getAttribute('aria-pressed')).toBe('true')
+    expect(accessOf('Read & write')?.getAttribute('aria-pressed')).toBe('false')
+    expect(accessOf('Read only', 'example-org/legacy')?.getAttribute('aria-pressed')).toBe('false')
+    expect(accessOf('Read & write', 'example-org/legacy')?.getAttribute('aria-pressed')).toBe('false')
+    expect(document.body.innerHTML).not.toContain('>read<')
+  })
+
+  it('raises and lowers a row’s access with an access-only PATCH', async () => {
+    mocks.updateAgentRepo.mockResolvedValueOnce(row({ access: 'write' })).mockResolvedValueOnce(row())
+    const onAuthorizedChange = await render([row()])
+
+    await act(async () => accessOf('Read & write')?.click())
+    expect(mocks.updateAgentRepo).toHaveBeenCalledWith('agent-a', 'repo-auth-1', { access: 'write' })
+    expect(onAuthorizedChange).toHaveBeenLastCalledWith([row({ access: 'write' })])
+    expect(accessOf('Read & write')?.getAttribute('aria-pressed')).toBe('true')
+
+    await act(async () => accessOf('Read only')?.click())
+    expect(mocks.updateAgentRepo).toHaveBeenLastCalledWith('agent-a', 'repo-auth-1', { access: 'read' })
+    expect(onAuthorizedChange).toHaveBeenLastCalledWith([row()])
+  })
+
+  it('names a refused change in the section’s error line and keeps the tier', async () => {
+    mocks.updateAgentRepo.mockRejectedValue(new Error('turn off formal reviews first'))
+    await render([row({ access: 'write' })])
+    await act(async () => accessOf('Read only')?.click())
+
+    expect(document.body.textContent).toContain('turn off formal reviews first')
+    expect(accessOf('Read & write')?.getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
 describe('EditWorkspaceModal repository checkout', () => {
   it('shows each row’s checkout, an older CP’s row as Always', async () => {
     await render([

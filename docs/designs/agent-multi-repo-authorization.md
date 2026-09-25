@@ -11,7 +11,7 @@
 > for a grant marked `decision`. The daemon offers a grant's repositories on
 > demand or to the repository selector, and the console lists grant rows with
 > **Authorize an installation** and an **On demand** / **By decision** checkout
-> in Edit workspace, shows chips on the Workspace card, and counts covered
+> in Edit workspace and the Workspace card's repository dropdown, and counts covered
 > repositories as authorized in the GitHub hook editor and on the agent page.
 >
 > Scratch workspaces use the same explicit repository allowlist and have no
@@ -525,8 +525,9 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
 
 1. **Workspace card in the agent's Workspace tab, for GitHub and scratch:**
    - The card heads the Workspace tab itself, above the file browser; there is no
-     workspace summary row in Configuration to navigate from. Show `read|write`
-     next to a GitHub repository and "Scratch workspace" for scratch.
+     workspace summary row in Configuration to navigate from. Name the GitHub
+     repository, linked to its remote, or "Scratch workspace" for scratch; the
+     card shows no access badge for it, since Edit workspace owns that access.
    - A `Source` segment switches between scratch and GitHub, and one Edit action
      chooses a repository, branch, `agentDir`, and access. Mode, repository, or
      branch changes show an irreversible warning and "Replace workspace."
@@ -547,36 +548,42 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
    - Every change uses the cold lifecycle to clear daemon credential cache.
      Return 409 when it would remove workspace write authority required by an
      enabled formal review or Check.
-   - Beside it, summarize each additional repository with `repoFullName` and its
-     access tier, badging read-only a checkout other than **Always**. The
-     workspace repository itself appears here only when the workspace is
-     App-backed, where the installation makes it implicit; a manual checkout is
-     represented solely by its explicit grant, if one exists.
+   - Beside it, a `+N repos` trigger counts the explicit repositories and
+     installation grants and opens a dropdown listing each with its host mark,
+     `repoFullName` (a GitHub row links to its page), access toggle, checkout
+     menu, and revoke action. The implicit repository of an App-backed workspace
+     is not listed, since the source names it; a manual checkout is represented
+     solely by its explicit grant, if one exists.
    - The same Edit workspace dialog lists, adds, and deletes additional repository
-     grants, and sets each row's checkout (**Always**, **By decision** or **On
-     demand**) from a compact menu that shows the current choice, so a long
-     repository name keeps its room. Card and hook-editor shortcuts open that dialog directly at its
-     authorization step, so every context keeps the fast path without creating a
-     second repository-management surface.
+     grants, and sets each row's access and checkout (**Always**, **By decision**
+     or **On demand**) from a compact menu that shows the current choice, so a
+     long repository name keeps its room. The card's dropdown edits the same rows
+     with the same controls; its "Authorize repository" and the hook editor's
+     shortcut open that dialog directly at its authorization step, so adding a
+     repository keeps one flow.
+   - On both surfaces a row's access is a two-segment toggle, **Read only** (eye)
+     and **Read & write** (pencil), saved at once by `PATCH`; a legacy `comment`
+     row presses neither. Lowering access is refused (409) only while an enabled
+     formal review or Check on that repository needs write.
    - "Authorize repository" reuses the installation/repository picker and list
      filtering, offers access options defaulting to read, describes each level,
      warns on write blast radius, and reuses `/access` preflight. Beside access it
      offers the checkout (**Always**, **By decision** or **On demand**),
      defaulting to **Always**; shortcuts keep that default.
-   - The card is visible under `canView`; add, delete, and a checkout change
-     require `canEdit` and a non-viewer role.
+   - The card is visible under `canView`; add, delete, and an access or checkout
+     change require `canEdit` and a non-viewer role, and a viewer sees the
+     dropdown's rows with every control disabled.
    - The same section lists installation grants as "All repositories in
-     `<account>`" with the GitHub mark, the tier badge, the checkout menu and a
-     revoke action, and "Authorize an installation" offers the organization's
+     `<account>`" with the GitHub mark, the access toggle, the checkout menu and
+     a revoke action, and "Authorize an installation" offers the organization's
      live, unsuspended installations the agent does not hold yet, with the same
      **Read only** / **Read & write** choice (default read) whose write option
-     names every repository as its reach. The Workspace card shows each grant
-     as a read-only chip beside the repository chips. Both are visible under
-     `canView` and enabled only for an organization `owner`; other editors see
-     the rows and a disabled action whose tooltip names the role. As on a
-     repository row there is no inline tier change: lowering or raising a
-     grant's tier is revoke and authorize again (the route still accepts an
-     upward `PATCH`). Every row carries its materialization:
+     names every repository as its reach. The Workspace card's dropdown lists
+     each grant, as the dialog does, with the same controls. Both are
+     visible under `canView` and enabled only for an organization `owner`; other
+     editors see the rows and disabled controls whose tooltip names the role. A
+     grant's access toggle follows the repository rows' rule. Every row carries
+     its materialization:
      **Always**, **By decision** or **On demand** on a repository row, **By
      decision** or **On demand** on a grant (an owner's menu), and the
      authorize step offers the same two, defaulting to **On demand**. **By
@@ -587,8 +594,8 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
      Decision editor's Provider · model picker limited to models that answer
      Choice questions, saved through agent `PATCH` `repositorySelector` and
      clearable — which stays shown while any entry is **By decision** or a
-     selector is set. A refused change (409) is named in the section's error
-     line ([multi-repository-workspaces.md](multi-repository-workspaces.md),
+     selector is set. A refused change (409) is named in the section's or the
+     dropdown's error line ([multi-repository-workspaces.md](multi-repository-workspaces.md),
      decisions 13–15 and 18).
 2. **GitHub hook editor:** candidates are workspace plus additional
    repositories. An unauthorized target shows inline guidance and, for an

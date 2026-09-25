@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// Installation grants in Edit workspace: rows beside the repositories, an owner-only authorize flow and revoke.
+// Installation grants in Edit workspace: rows beside the repositories, an owner-only authorize flow, access toggle and revoke.
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,7 +9,11 @@ import type { Agent } from '@/lib/data'
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const role = vi.hoisted(() => ({ value: 'owner' as string }))
-const mocks = vi.hoisted(() => ({ createAgentInstallation: vi.fn(), deleteAgentInstallation: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  createAgentInstallation: vi.fn(),
+  deleteAgentInstallation: vi.fn(),
+  updateAgentInstallation: vi.fn()
+}))
 
 const installation = (over: Partial<GithubInstallationDto>): GithubInstallationDto => ({
   id: 'inst-row',
@@ -36,7 +40,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   fetchGithubInstallUrl: vi.fn(async () => null),
   fetchGithubRepoRoster: vi.fn(async () => ({ repos: [], privateReposHidden: false, failed: false })),
   createAgentInstallation: mocks.createAgentInstallation,
-  deleteAgentInstallation: mocks.deleteAgentInstallation
+  deleteAgentInstallation: mocks.deleteAgentInstallation,
+  updateAgentInstallation: mocks.updateAgentInstallation
 }))
 
 import EditWorkspaceModal from './EditWorkspaceModal'
@@ -78,8 +83,7 @@ afterEach(async () => {
   host?.remove()
   root = undefined
   host = undefined
-  mocks.createAgentInstallation.mockReset()
-  mocks.deleteAgentInstallation.mockReset()
+  for (const mock of Object.values(mocks)) mock.mockReset()
 })
 
 async function render(grants: AgentInstallationAuthDto[], onInstallationGrantsChange = vi.fn()) {
@@ -105,6 +109,8 @@ const button = (text: string) =>
   Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent?.includes(text))
 const grantRow = (id: number) => document.querySelector<HTMLDivElement>(`[data-installation-grant="${id}"]`)
 const revoke = () => document.querySelector<HTMLButtonElement>('button[aria-label="Revoke installation access"]')
+const segment = (id: number, title: 'Read only' | 'Read & write') =>
+  grantRow(id)?.querySelector<HTMLButtonElement>(`button[title="${title}"]`) ?? null
 
 describe('EditWorkspaceModal installation grants', () => {
   it('lists a grant as every repository of its account with its tier and checkout', async () => {
@@ -112,7 +118,8 @@ describe('EditWorkspaceModal installation grants', () => {
 
     const row = grantRow(12345)
     expect(row?.textContent).toContain('All repositories in acme')
-    expect(row?.textContent).toContain('write')
+    expect(segment(12345, 'Read & write')?.getAttribute('aria-pressed')).toBe('true')
+    expect(segment(12345, 'Read only')?.getAttribute('aria-pressed')).toBe('false')
     expect(row?.textContent).toContain('On demand')
     expect(revoke()?.disabled).toBe(false)
     expect(document.body.textContent).not.toContain('No additional repositories authorized.')
@@ -129,6 +136,26 @@ describe('EditWorkspaceModal installation grants', () => {
     )
     expect(grantRow(12345)).not.toBeNull()
     expect(revoke()?.disabled).toBe(true)
+    expect(segment(12345, 'Read & write')?.disabled).toBe(true)
+    expect(segment(12345, 'Read & write')?.closest('[role="group"]')?.parentElement?.title).toBe(
+      'Only organization owners can authorize or revoke an installation'
+    )
+  })
+
+  it('changes a grant’s access both ways with an access-only PATCH', async () => {
+    mocks.updateAgentInstallation.mockResolvedValueOnce(grant({ access: 'write' }))
+    const onChange = await render([grant()])
+
+    await act(async () => segment(12345, 'Read & write')?.click())
+    expect(mocks.updateAgentInstallation).toHaveBeenCalledWith('agent-a', 'grant-1', { access: 'write' })
+    expect(onChange).toHaveBeenCalledWith([grant({ access: 'write' })])
+    expect(segment(12345, 'Read & write')?.getAttribute('aria-pressed')).toBe('true')
+
+    mocks.updateAgentInstallation.mockRejectedValueOnce(new Error('turn off formal reviews first'))
+    await act(async () => segment(12345, 'Read only')?.click())
+    expect(mocks.updateAgentInstallation).toHaveBeenLastCalledWith('agent-a', 'grant-1', { access: 'read' })
+    expect(document.body.textContent).toContain('turn off formal reviews first')
+    expect(segment(12345, 'Read & write')?.getAttribute('aria-pressed')).toBe('true')
   })
 
   it('offers only live installations the agent does not hold and posts the picked one at the chosen tier', async () => {
