@@ -412,9 +412,13 @@ time on shared filesystems.
   is judged again inside the admission fence (#2283).
 - **Console push and Git reads** resolve the session root as today.
 - **Sandbox grants** are per session and exact: the clone's `.git` is writable
-  in the outer sandbox, and Codex's inner profile keeps its `hooks` and `config`
-  read-only. The session's `home/` is writable in both layers as well — a
-  runtime's inner policy pins writes to the cwd, and HOME is its _sibling_, so
+  in the outer sandbox, `config` included, and Codex's inner profile keeps its
+  `hooks` and `config` read-only. The outer grant is deliberate: `srt` isolates
+  environments, not trust, so this host's Git honors whatever the runtime writes
+  to that config, and the daemon's command-scope pins keep its own Git
+  deterministic and its credentials on the authorized remote without insulating
+  it from the runtime ([session-executors.md](session-executors.md) §5). The
+  session's `home/` is writable in both layers as well — a runtime's inner policy pins writes to the cwd, and HOME is its _sibling_, so
   the grant is named there too or no package manager can write the caches below
   it. `home/.codex` is carved back out of that grant and stays denied: its
   `auth.json` is a link to the shared host credential the outer layer keeps
