@@ -442,7 +442,7 @@ describe('prepareRuntimeLaunch', () => {
   // An isolated session's `.git` is a link FILE, so the checkout that owns its index, refs, and
   // objects sits outside the cwd — and outside every other carve-back, which left a confined
   // runtime unable to run any Git write in its own worktree.
-  it('carves back the owner checkout .git for a session worktree cwd, hooks and config excepted', () => {
+  it('carves back the owner checkout .git for a session worktree cwd', () => {
     const { scopeDir, hostHome } = fixture()
     const primaryGit = join(scopeDir, 'workspace', '.git')
     const worktrees = join(scopeDir, 'worktrees')
@@ -468,9 +468,9 @@ describe('prepareRuntimeLaunch', () => {
     expect(coveredBy(policy.filesystem.allowWrite, realpathSync(primaryGit))).toBe(true)
     // The working tree beside it stays outside the boundary: isolation is the point of the worktree.
     expect(coveredBy(policy.filesystem.allowWrite, realpathSync(join(scopeDir, 'workspace')))).toBe(false)
-    // SRT's own mandatory protection is derived from the cwd, which holds no `.git` DIRECTORY here.
-    expect(policy.filesystem.denyWrite).toContain(join(realpathSync(primaryGit), 'hooks'))
-    expect(policy.filesystem.denyWrite).toContain(join(realpathSync(primaryGit), 'config'))
+    // The outer layer leaves hooks and config writable: daemon-run Git pins them per command.
+    expect(policy.filesystem.denyWrite).not.toContain(join(realpathSync(primaryGit), 'hooks'))
+    expect(policy.filesystem.denyWrite).not.toContain(join(realpathSync(primaryGit), 'config'))
     const profile = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] }
     const writes = profile.configOverrides.filter((value) => value.includes('filesystem='))
     expect(writes.some((value) => value.includes(`"${realpathSync(primaryGit)}" = "write"`))).toBe(true)
@@ -534,8 +534,8 @@ describe('prepareRuntimeLaunch', () => {
     expect(coveredBy(policy.filesystem.allowWrite, realpathSync(primaryGit))).toBe(false)
     expect(coveredBy(policy.filesystem.allowWrite, realpathSync(join(scopeDir, 'workspace')))).toBe(false)
     for (const gitDir of clones) {
-      expect(policy.filesystem.denyWrite).toContain(join(gitDir, 'hooks'))
-      expect(policy.filesystem.denyWrite).toContain(join(gitDir, 'config'))
+      expect(policy.filesystem.denyWrite).not.toContain(join(gitDir, 'hooks'))
+      expect(policy.filesystem.denyWrite).not.toContain(join(gitDir, 'config'))
     }
     // Inner Codex profile: the exact per-clone entries, `read` on hooks/config, no worktrees subtree.
     const table = agentFilesystem(launch.env)
@@ -894,7 +894,6 @@ describe('prepareRuntimeLaunch', () => {
 
     const policy = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
     expect(coveredBy(policy.filesystem.allowWrite, realpathSync(primaryGit))).toBe(true)
-    expect(policy.filesystem.denyWrite).toContain(join(realpathSync(primaryGit), 'hooks'))
   })
 
   it('refuses a primary checkout outside the agent root instead of carving it back', () => {
