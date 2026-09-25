@@ -154,8 +154,8 @@ export interface PreparedRuntimeLaunch {
   gitMetadataWriteRoots: string[]
   runtimeHome?: string
   microsandbox?: { mounts: SandboxMount[]; workspaceRoot: string; secrets?: MicrosandboxSecret[] }
-  /** A confined session launched through an SRT-wrapped shim: the environment its boundary is composed from (session-executors.md §11). */
-  srt?: { mounts: SandboxMount[]; workspaceRoot: string }
+  /** A launch through an SRT-wrapped shim: the environment its boundary is composed from (session-executors.md §11). */
+  srt?: { mounts: SandboxMount[]; workspaceRoot: string; cwd?: string }
   toolSandbox?: AcpToolSandbox
   sandbox?: {
     mechanism: SandboxMechanism
@@ -264,7 +264,7 @@ export function prepareRuntimeLaunch(opts: {
   }
   /** A session placed on another machine: its HOME there, which that machine's strategy — never this one's sandbox — confines. */
   executor?: { home: string }
-  /** A confined session launched through the SRT-wrapped shim rooted here: its boundary, not a per-host policy, confines the runtime (§11). */
+  /** A launch through the SRT-wrapped shim rooted here: its boundary, not a per-host policy, confines the runtime (§11). */
   srtShim?: { runtimeRoot: string }
   /** A session whose clones are off this disk (a pool pod, an executor): their `.git`, found where they are as `sessionGitDirsIn` finds this disk's. */
   sessionGitDirs?: string[]
@@ -388,8 +388,8 @@ export function prepareRuntimeLaunch(opts: {
     ...credentials?.env
   }
 
-  // A confined session's shim is the boundary, with its own temp root and the tunnels that reach this daemon's sockets.
-  const shimRoot = opts.runInSandbox && sessionDir !== undefined ? opts.srtShim?.runtimeRoot : undefined
+  // The shim is the boundary, with its own temp root and the tunnels that reach this daemon's sockets.
+  const shimRoot = opts.runInSandbox ? opts.srtShim?.runtimeRoot : undefined
   let sandboxTempDir: string | undefined
   if (opts.runInSandbox) {
     isolateHostSocketEnvironment(env, runtimeHome)
@@ -536,11 +536,14 @@ export function prepareRuntimeLaunch(opts: {
   // The shim's boundary is composed from these mounts on this machine (§11); a per-host policy is only for a runtime wrapped alone.
   // Compacted, so the cwd, the HOME and the clones' `.git` fold into the session directory and the environment is the same whatever the cwd.
   const writable = compactReadRoots(boundary.writable)
+  // A confined session's environment is its directory; every other host's is the agent's, whose agent.json only the mounts below leave hidden.
   const srt =
     shimRoot === undefined
       ? undefined
       : {
-          workspaceRoot: sessionDir!,
+          workspaceRoot: sessionDir ?? agentRoot,
+          // An agent-scoped environment starts where its host does, which anchors SRT's own protections as a runtime wrapped alone's cwd does.
+          ...(sessionDir === undefined ? { cwd: boundary.gitSafeDirectories[0]! } : {}),
           mounts: [
             ...writable.map((path) => ({ source: path, target: path, mode: 'writable' as const })),
             ...compactReadRoots(boundary.allowRead)

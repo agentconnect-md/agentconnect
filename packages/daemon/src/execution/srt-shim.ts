@@ -17,13 +17,15 @@ export interface SrtShimPolicyInput {
   tempDir: string
   /** The environment's mounts at their host paths: the session's own state, a sign-in the HOME points at, operator mounts. */
   mounts: SandboxMount[]
+  /** Where the sandbox starts and anchors SRT's own protections, when that is not the root; a mount must grant it. */
+  cwd?: string
   /** Code this machine runs inside: node and the runtime installs, never state. */
   readRoots: string[]
   hostEnv: NodeJS.ProcessEnv
 }
 
-/** The policy, and the read roots dropped because they would reopen a protected path. */
-export function srtShimPolicy(input: SrtShimPolicyInput): { policy: SrtSandboxPolicy; skipped: string[] } {
+/** The policy, the directory the sandbox starts in, and the read roots dropped because they would reopen a protected path. */
+export function srtShimPolicy(input: SrtShimPolicyInput): { policy: SrtSandboxPolicy; cwd: string; skipped: string[] } {
   const { layout, hostEnv } = input
   const canonical = (path: string): string => canonicalPath(path, hostEnv)
   const protectedPaths = protectedSandboxRoots({
@@ -44,14 +46,23 @@ export function srtShimPolicy(input: SrtShimPolicyInput): { policy: SrtSandboxPo
     if (reopened) throw new SandboxError(`${label} "${trusted}" would reopen protected path "${reopened}"`)
     return trusted
   }
+  // The root is written only as a mount names it: a session's directory is its own, but an agent's holds its agent.json.
+  const mounted = input.mounts
+    .filter((mount) => mount.mode === 'writable')
+    .map((mount) => exception(mount.source, 'mount'))
+  const grantsWrite = (path: string) => mounted.some((root) => contains(root, canonical(path)))
+  // The provider starts the sandbox in a write root: the root, or the host cwd an agent-scoped environment names, where a runtime wrapped alone starts too.
+  const start = input.cwd ?? layout.workspaceRoot
+  if (!grantsWrite(start)) throw new SandboxError(`environment start "${start}" is not a writable mount`)
+  const cwd = canonical(start)
   // Each listed exactly, not compacted: the provider requires the cwd, the HOME and the temp root to be write roots themselves.
   const writable = [
     ...new Set([
-      exception(layout.workspaceRoot, 'environment root'),
-      exception(layout.home, 'session HOME'),
+      cwd,
+      exception(layout.home, 'environment HOME'),
       exception(layout.runtimeRoot, 'runtime root'),
       exception(input.tempDir, 'SRT temp root'),
-      ...input.mounts.filter((mount) => mount.mode === 'writable').map((mount) => exception(mount.source, 'mount'))
+      ...mounted
     ])
   ]
   const skipped: string[] = []
@@ -69,10 +80,10 @@ export function srtShimPolicy(input: SrtShimPolicyInput): { policy: SrtSandboxPo
       ...readRoots,
       ...input.mounts.filter((mount) => mount.mode !== 'writable').map((mount) => exception(mount.source, 'mount'))
     ]),
-    // No `.git/config` or `.git/hooks` deny: the holder's Git runs through the shim inside this boundary, as in a VM, and the runtime's inner profile keeps its own.
-    gitSafeDirectories: [canonical(layout.workspaceRoot)]
+    // No `.git` deny beyond SRT's own at the start: a session's holder Git runs inside, as in a VM, and a runtime wrapped alone could already write its config.
+    gitSafeDirectories: [cwd]
   }
-  return { policy, skipped }
+  return { policy, cwd, skipped }
 }
 
 /** SRT around the shim: the provider runs from the shim's own bundle, hands it stdio alone, and ends the sandbox when this daemon dies. */
@@ -80,6 +91,7 @@ export function srtShimBoundary(input: {
   daemonRoot: string
   agentsRoot?: string
   mounts: SandboxMount[]
+  cwd?: string
   readRoots: string[]
   hostEnv?: NodeJS.ProcessEnv
   log?: Pick<Logger, 'warn'>
@@ -94,12 +106,13 @@ export function srtShimBoundary(input: {
           `daemon root is too long for an srt shim: its SRT socket would exceed ${AF_UNIX_PATH_MAX} bytes`
         )
       mkdirSync(tempDir, { mode: 0o700 })
-      const { policy, skipped } = srtShimPolicy({
+      const { policy, cwd, skipped } = srtShimPolicy({
         daemonRoot: input.daemonRoot,
         ...(input.agentsRoot ? { agentsRoot: input.agentsRoot } : {}),
         layout,
         tempDir,
         mounts: input.mounts,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
         readRoots: input.readRoots,
         hostEnv: input.hostEnv ?? process.env
       })
@@ -115,7 +128,7 @@ export function srtShimBoundary(input: {
         mechanism: 'bwrap',
         writable: policy.writable,
         settingsPath,
-        cwd: layout.workspaceRoot,
+        cwd,
         provider: { cmd: process.execPath, args: [...layout.entry.execArgv, layout.entry.path] }
       })
       return { ...launch, env: { [SANDBOX_TEMP_DIR_ENV]: tempDir } }

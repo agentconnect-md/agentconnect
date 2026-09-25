@@ -127,6 +127,8 @@ export interface EnvironmentDescriptor {
   id: string
   /** The directory the environment's durable state lives under. */
   workspaceRoot: string
+  /** Where its runtimes start, when that is not the root: an agent-scoped srt environment's host cwd, as a runtime wrapped alone starts in (§11). */
+  cwd?: string
   mounts: SandboxMount[]
   secrets?: MicrosandboxSecret[]
   /** A session this machine hosts for another member: its shim bound by that member through the executor's pipe (§6), and started with what the HOME seed points a runtime at. Absent on every local environment. */

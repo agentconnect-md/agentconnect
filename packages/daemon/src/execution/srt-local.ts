@@ -2,8 +2,8 @@
 import { createHash } from 'node:crypto'
 import { connect } from 'node:net'
 import { basename, join, relative } from 'node:path'
-import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
+import { canonicalPath, contains } from '../runtimes/read-roots.js'
 import { localWorkspaceFs, RoutedWorkspaceFs, type WorkspaceFs } from '../workspace/workspace-fs.js'
 import { startHostShim, type HostShim, type HostShimInput } from './host-shim.js'
 import { srtShimBoundary } from './srt-shim.js'
@@ -47,16 +47,26 @@ interface Usage {
   lastUsed: number
 }
 
-const mountKey = (mount: SandboxMount): string => JSON.stringify([mount.source, mount.target])
-
-/** Whether a running environment's policy already grants every mount a request names: the policy is fixed when the boundary starts. */
-function grants(running: EnvironmentDescriptor, requested: EnvironmentDescriptor): boolean {
-  if (running.id !== requested.id || running.workspaceRoot !== requested.workspaceRoot) return false
-  const granted = new Map(running.mounts.map((mount) => [mountKey(mount), mount.mode]))
-  return requested.mounts.every((mount) => {
-    const mode = granted.get(mountKey(mount))
-    return mode === mount.mode || (mode === 'writable' && mount.mode === 'readonly')
-  })
+/** Whether a running environment's policy already grants every mount a request names, compared as the policy is, canonically: it is fixed when the boundary starts. */
+function grants(running: EnvironmentDescriptor, requested: EnvironmentDescriptor, hostEnv: NodeJS.ProcessEnv): boolean {
+  const canonical = (path: string) => canonicalPath(path, hostEnv)
+  if (running.id !== requested.id || canonical(running.workspaceRoot) !== canonical(requested.workspaceRoot))
+    return false
+  // A request that names where to start must be the start the boundary anchored at.
+  if (requested.cwd !== undefined && canonical(requested.cwd) !== canonical(running.cwd ?? running.workspaceRoot))
+    return false
+  // A mount at its host path grants its whole tree; writable serves a read request, never the other way round.
+  const granted = running.mounts
+    .filter((mount) => mount.source === mount.target)
+    .map((mount) => ({ root: canonical(mount.source), mode: mount.mode }))
+  return requested.mounts.every(
+    (mount) =>
+      mount.source === mount.target &&
+      granted.some(
+        (grant) =>
+          contains(grant.root, canonical(mount.source)) && (grant.mode === 'writable' || mount.mode === 'readonly')
+      )
+  )
 }
 
 /** SRT around the shim (§5). A hosted environment gets a random runtime root and its holder's seed; a local one a root fixed by its id, the complete-env flag and its token compared in process (§11). */
@@ -81,6 +91,7 @@ export function srtLauncher(
       daemonRoot,
       ...(deps.agentsRoot ? { agentsRoot: deps.agentsRoot } : {}),
       mounts: environment.mounts,
+      ...(environment.cwd ? { cwd: environment.cwd } : {}),
       readRoots: deps.readRoots(),
       ...(deps.hostEnv ? { hostEnv: deps.hostEnv } : {}),
       log
@@ -153,7 +164,7 @@ export function srtLauncher(
       }
     },
     // A request the running boundary already grants — the Git of a session whose runtime is up — reuses it; anything more is another environment.
-    sameEnvironment: (current, requested) => grants(current, requested),
+    sameEnvironment: (current, requested) => grants(current, requested, deps.hostEnv ?? process.env),
     suspendIdle: async (before) => {
       const idle = [...running.entries()].filter(
         ([id, state]) => !held(id) && Math.max(state.startedAt, usage.get(id)?.lastUsed ?? 0) <= before

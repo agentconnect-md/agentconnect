@@ -94,6 +94,16 @@ describe('the local srt launcher', () => {
       false
     )
     expect(same(host, environment({ id: 'agent-1/session-76543210fedcba9876543210' }))).toBe(false)
+    // A mount grants its whole tree, and still only in its own mode.
+    const inside = (path: string, mode: 'writable' | 'readonly') =>
+      environment({ mounts: [{ source: path, target: path, mode }] })
+    expect(same(host, inside(join(SESSION, 'workspace'), 'writable'))).toBe(true)
+    expect(same(host, inside('/srv/data/sub', 'readonly'))).toBe(true)
+    expect(same(host, inside('/srv/data/sub', 'writable'))).toBe(false)
+    expect(same(host, inside('/srv/elsewhere', 'readonly'))).toBe(false)
+    // A boundary anchored at one start serves no request that names another.
+    expect(same(host, environment({ cwd: SESSION }))).toBe(true)
+    expect(same(host, environment({ cwd: join(SESSION, 'workspace') }))).toBe(false)
   })
 
   it('starts a hosted environment on a random root with its holder seed, outside the local lifecycle', async () => {

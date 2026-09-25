@@ -171,7 +171,7 @@ export class LocalExecutor {
       // A complete-env shim takes nothing but what it is sent, so the environment's own base goes beneath the launch's.
       runtime = await this.driver.launch(
         { ...request, env: { ...local?.runtimeEnv, ...request.env } },
-        { subject: environment.id, cwd: environment.workspaceRoot }
+        { subject: environment.id, cwd: environment.cwd ?? environment.workspaceRoot }
       )
     } catch (error) {
       quiet?.()

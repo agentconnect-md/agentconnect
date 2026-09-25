@@ -81,12 +81,16 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       ;(daemon as any).hosts.delete('bot-a')
       agent.runInSandbox = true
       expect((daemon as any).agentRunsInSandbox(agent)).toBe(true)
+      const driverFor = vi.spyOn((daemon as any).localSrtExecutor, 'driverFor')
       const sandboxed = (daemon as any).ensureHost('bot-a', (daemon as any).cfg)
-      expect((sandboxed as any).opts.sandbox).toMatchObject({ mechanism: 'bwrap' })
-      const sandbox = (sandboxed as any).opts.sandbox
-      expect(sandbox.allowReadRoots).toContain(realpathSync(toolchain))
-      expect(sandbox.writable).toContain(realpathSync(cache))
-      expect(sandbox.writable).not.toContain(realpathSync(toolchain))
+      // The agent's shared host runs in its agent-scoped shim, whose mounts carry the operator's toolchain read-only and its cache writable.
+      expect((sandboxed as any).opts.sandbox).toBeUndefined()
+      const environment = driverFor.mock.calls.at(-1)![0] as { id: string; mounts: { source: string; mode: string }[] }
+      expect(environment.id).toBe('bot-a/agent')
+      const mounted = (mode: string) => environment.mounts.filter((m) => m.mode === mode).map((m) => m.source)
+      expect(mounted('readonly')).toContain(realpathSync(toolchain))
+      expect(mounted('writable')).toContain(realpathSync(cache))
+      expect(mounted('writable')).not.toContain(realpathSync(toolchain))
       expect((sandboxed as any).opts.toolSandbox.sharedWriteRoots).toEqual([realpathSync(cache)])
     } finally {
       await daemon.stop().catch(() => undefined)
