@@ -144,7 +144,7 @@ const ImageRuntimesRecordSchema = z.object({
   identity: z.string().min(1),
   table: K8sRuntimeTableSchema
 })
-// The models each runtime's selector advertised in an environment of an image, the VM's entry in the per-strategy catalog (session-executors.md §5).
+// The models each runtime's selector last advertised in a VM, the VM's entry in the per-strategy catalog (session-executors.md §5); `image` and `identity` name the image that wrote it.
 const ImageModelsRecordSchema = z.object({
   version: z.literal(1),
   image: z.string().min(1),
@@ -160,6 +160,8 @@ export class MicrosandboxManager {
   private readonly guests = new Map<string, GuestShim>()
   private preparation?: Promise<K8sRuntimeTable>
   private recovery?: Promise<void>
+  // The preparation VM's creation through its teardown, which no environment tracks.
+  private preparationVm: Promise<void> = Promise.resolve()
   private closed = false
   private startGate: Promise<void> = Promise.resolve()
   private readonly imageIdentities = new Map<string, Promise<string | undefined>>()
@@ -207,10 +209,9 @@ export class MicrosandboxManager {
     return join(this.options.root, 'microsandbox', 'image-runtimes.json')
   }
 
-  /** The models earlier environments of the configured image advertised, per runtime; empty once the cache holds another image. It boots nothing. */
-  async cachedModels(): Promise<Record<string, string[]>> {
-    const identity = await this.imageIdentity(this.options.config.image)
-    return (identity && (await this.readModels(identity))?.models) || {}
+  /** The models each runtime last advertised in a VM, whichever image that was: carried across an upgrade until a probe of the new image replaces them. It boots nothing. */
+  cachedModels(): Promise<Record<string, string[]>> {
+    return recordedImageModels(this.options.root)
   }
 
   /** Record what a runtime's selector advertised in an environment of the configured image; best effort, as the table's record is. */
@@ -218,7 +219,7 @@ export class MicrosandboxManager {
     const write = this.modelWrites.then(async () => {
       const identity = await this.imageIdentity(this.options.config.image)
       if (!identity) return
-      const recorded = (await this.readModels(identity))?.models
+      const recorded = await recordedImageModels(this.options.root)
       await writeFileAtomic(
         this.imageModelsPath(),
         JSON.stringify({
@@ -235,16 +236,8 @@ export class MicrosandboxManager {
     return this.modelWrites
   }
 
-  private async readModels(identity: string): Promise<z.infer<typeof ImageModelsRecordSchema> | undefined> {
-    const record = ImageModelsRecordSchema.safeParse(
-      parseJson(await readFile(this.imageModelsPath(), 'utf8').catch(() => ''))
-    )
-    if (!record.success || record.data.image !== this.options.config.image) return undefined
-    return record.data.identity === identity ? record.data : undefined
-  }
-
   private imageModelsPath(): string {
-    return join(this.options.root, 'microsandbox', 'image-models.json')
+    return imageModelsPath(this.options.root)
   }
 
   async prepareImage(): Promise<void> {
@@ -447,6 +440,8 @@ export class MicrosandboxManager {
 
   async stopAll(): Promise<void> {
     this.closed = true
+    // Not the pull before it, which a closed manager fences on its own and a drain must not wait for.
+    await this.preparationVm
     const results = await Promise.allSettled(
       [...this.environments.entries()].map(async ([id, state]) => {
         await Promise.all([...state.pending])
@@ -597,14 +592,28 @@ export class MicrosandboxManager {
     await this.recover()
     const name = this.name('probe')
     await this.withImageCache(true, async () => {
+      this.assertOpen()
       // Free the retired releases before the pull, so a tight disk is not asked to hold both.
       const keep = await this.boundImages()
       await this.collect((image) => keep.has(image.reference))
       await this.pullImage()
     })
+    // A shutdown during the pull stopped every VM this manager knew of; the preparation VM must not start after it.
+    this.assertOpen()
     this.imageIdentities.delete(this.options.config.image)
+    const preflight = this.preflight(name)
+    this.preparationVm = preflight.then(
+      () => undefined,
+      () => undefined
+    )
+    return await preflight
+  }
+
+  /** The preparation VM's whole life, which shutdown waits out: it runs nothing once shutdown has begun, and always goes. */
+  private async preflight(name: string): Promise<K8sRuntimeTable> {
     let sandbox = await this.serializeStart(() => this.createReclaiming(name, () => this.builder(name, [])))
     try {
+      this.assertOpen()
       const output = await sandbox.exec(MICROSANDBOX_NODE, [
         '-e',
         IMAGE_PROBE_SCRIPT,
@@ -616,6 +625,7 @@ export class MicrosandboxManager {
       const table = K8sRuntimeTableSchema.parse(JSON.parse(output.stdout()))
       await sandbox.stopWithTimeout(STOP_TIMEOUT_MS)
       await sandbox.detach()
+      this.assertOpen()
       sandbox = await this.startVm(name, async () => (await this.options.sdk.Sandbox.get(name)).startDetached())
       await sandbox.ping()
       this.options.log?.info('microsandbox: image, Node, Python, runtime table and disk resume verified')
@@ -626,6 +636,11 @@ export class MicrosandboxManager {
       await sandbox.detach()
       await this.removeVolume(`${name}-docker`)
     }
+  }
+
+  /** Refuse new VM work once shutdown has closed the manager. */
+  private assertOpen(): void {
+    if (this.closed) throw new Error('microsandbox manager is shutting down')
   }
 
   /** Best effort: a record that cannot be written costs the next restart one probe VM, never a session. */
@@ -1501,6 +1516,18 @@ class MicrosandboxProcess implements SpawnedRuntime {
     await this.handle.kill()
     if (!(await this.waitExit(STOP_TIMEOUT_MS))) throw new Error('microsandbox process did not exit after SIGKILL')
   }
+}
+
+function imageModelsPath(root: string): string {
+  return join(root, 'microsandbox', 'image-models.json')
+}
+
+/** The VM models a daemon rooted here recorded, read without msb, an image or a VM: an upgrade that also moves the msb pin starts from them too. */
+export async function recordedImageModels(root: string): Promise<Record<string, string[]>> {
+  const record = ImageModelsRecordSchema.safeParse(
+    parseJson(await readFile(imageModelsPath(root), 'utf8').catch(() => ''))
+  )
+  return record.success ? record.data.models : {}
 }
 
 function stableJson(value: unknown): string {

@@ -6,6 +6,9 @@ import { RegisterReq } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey } from '../src/acp/host-key.js'
 
+// msb's install, which tests control rather than fetch.
+const install = vi.fn(async (): Promise<unknown> => Promise.reject(new Error('tests install no msb')))
+
 const AGENT_ID = 'bot-a'
 const NO_KVM = 'microsandbox requires KVM, but this daemon cannot open /dev/kvm: the device is absent'
 
@@ -53,12 +56,67 @@ async function boot(
     root: opts.root ?? scaffold(),
     sandboxMechanism: opts.srt ? 'bwrap' : null,
     microsandboxHost: () => (opts.kvm ? undefined : NO_KVM),
+    installMicrosandbox: install as never,
     ...(opts.hosts === false
       ? {}
       : { hostFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn(async () => {}) }) as never })
   })
   await daemon.start()
   return { daemon: daemon as never as Record<string, any>, stop: () => daemon.stop().catch(() => {}) }
+}
+
+/** The record a VM model probe or session leaves, written by an earlier image. */
+function recordImageModels(root: string, models: Record<string, string[]>): void {
+  mkdirSync(join(root, 'microsandbox'), { recursive: true })
+  writeFileSync(
+    join(root, 'microsandbox', 'image-models.json'),
+    JSON.stringify({
+      version: 1,
+      image: 'registry.example.test/runtime:previous',
+      identity: 'linux/amd64@sha256:0',
+      models
+    })
+  )
+}
+
+/** A prepared image with one runtime, a manager that removes VMs, and this machine's VM entry, standing in for msb and KVM. */
+function probeMachine(daemon: Record<string, any>) {
+  const manager = {
+    recordModels: vi.fn(async () => {}),
+    suspend: vi.fn(async () => {}),
+    discard: vi.fn(async () => {}),
+    environmentIds: async () => []
+  }
+  const executor = {
+    withEnvironment: vi.fn(async (_environment: unknown, work: () => Promise<unknown>) => await work()),
+    driverFor: vi.fn(() => ({ launch: vi.fn() })),
+    stop: vi.fn(async () => {})
+  }
+  daemon.microsandbox = manager
+  daemon.localExecutor = executor
+  daemon.microsandboxCatalog = {
+    entries: {
+      'arbitrary-acp': { name: 'arbitrary-acp', version: '1.0.0', runtime: { command: 'image-acp', args: [], env: [] } }
+    },
+    runtimes: {}
+  }
+  return { manager, executor }
+}
+
+/** Probe hosts that answer with these models, or fail with this error. */
+function probeHosts(models: Record<string, string[] | Error>) {
+  return (_rt: unknown, id: string) => ({
+    start: async () => {
+      if (models[id] instanceof Error) throw models[id]
+    },
+    newSession: async () => 'probe-session',
+    modelOptions: () => {
+      const answer = models[id]
+      return Array.isArray(answer) ? { current: answer[0], models: answer } : null
+    },
+    acpProtocolVersion: () => 1,
+    stop: async () => {}
+  })
 }
 
 function registers(capabilities: Record<string, unknown>): boolean {
@@ -273,18 +331,16 @@ describe('a runtime under each strategy this machine offers', () => {
   })
 
   it('names the models the image advertised in this machine’s own VM, and reads a recorded list as cached', async () => {
-    const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }), srt: true, kvm: true })
+    const root = scaffold({ sandbox: IMAGE })
+    const { daemon, stop } = await boot({ root, srt: true, kvm: true })
     const recordModels = vi.fn(async () => {})
     try {
-      daemon.microsandbox = {
-        recordModels,
-        cachedModels: async () => ({ 'arbitrary-acp': ['m-recorded'] }),
-        environmentIds: async () => []
-      }
+      daemon.microsandbox = { recordModels, environmentIds: async () => [] }
       daemon.microsandboxCatalog = { entries: { 'arbitrary-acp': { name: 'arbitrary-acp' } }, runtimes: {} }
       const vm = () => daemon.runtimeFacts.profileFor('arbitrary-acp').strategies.microsandbox
       // Read back at startup without a VM, and permissive until this run's own session confirms it.
-      await daemon.loadMicrosandboxModels()
+      recordImageModels(root, { 'arbitrary-acp': ['m-recorded'] })
+      await daemon.loadMicrosandboxModels(root)
       expect(vm()).toEqual({ available: true, models: ['m-recorded'], modelsSource: 'cached' })
       const advertised = ['m-vm', 'm-recorded']
       const host = { modelOptions: () => ({ current: 'm-vm', models: advertised }) }
@@ -303,6 +359,123 @@ describe('a runtime under each strategy this machine offers', () => {
     } finally {
       daemon.microsandbox = undefined
       await stop()
+    }
+  })
+
+  it('starts from the previous image’s lists after an upgrade, before msb is even installed', async () => {
+    const root = scaffold({ sandbox: IMAGE })
+    recordImageModels(root, { 'arbitrary-acp': ['m-previous'] })
+    const { daemon, stop } = await boot({ root, srt: true, kvm: true })
+    try {
+      expect(daemon.microsandbox).toBeUndefined()
+      expect(daemon.runtimeFacts.profileFor('arbitrary-acp').strategies.microsandbox).toEqual({
+        available: true,
+        models: ['m-previous'],
+        modelsSource: 'cached'
+      })
+    } finally {
+      await stop()
+    }
+  })
+
+  it('probes the image’s runtimes in a VM where the strategy is available, replacing a carried list', async () => {
+    const root = scaffold({ sandbox: IMAGE })
+    recordImageModels(root, { 'arbitrary-acp': ['m-previous'] })
+    const { daemon, stop } = await boot({ root, srt: true, kvm: true })
+    const vm = () => daemon.runtimeFacts.profileFor('arbitrary-acp').strategies.microsandbox
+    const { manager, executor } = probeMachine(daemon)
+    try {
+      daemon.opts.probeHostFactory = probeHosts({ 'arbitrary-acp': ['m-image-1', 'm-image-2'] })
+      daemon.startMicrosandboxModelProbe()
+      await vi.waitFor(() =>
+        expect(vm()).toEqual({ available: true, models: ['m-image-1', 'm-image-2'], modelsSource: 'probed' })
+      )
+      expect(manager.recordModels).toHaveBeenCalledWith('arbitrary-acp', ['m-image-1', 'm-image-2'])
+      // The image's own runtime, in one VM this probe started, and removed again.
+      expect(executor.withEnvironment).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'probe/models' }),
+        expect.any(Function)
+      )
+      await vi.waitFor(() => expect(manager.discard).toHaveBeenCalledTimes(2))
+      // Once a run.
+      daemon.startMicrosandboxModelProbe()
+      expect(executor.withEnvironment).toHaveBeenCalledOnce()
+    } finally {
+      daemon.microsandbox = undefined
+      await stop()
+    }
+  })
+
+  it('keeps the carried list when the runtime fails in the VM', async () => {
+    const root = scaffold({ sandbox: IMAGE })
+    recordImageModels(root, { 'arbitrary-acp': ['m-previous'] })
+    const { daemon, stop } = await boot({ root, srt: true, kvm: true })
+    const { manager } = probeMachine(daemon)
+    try {
+      daemon.opts.probeHostFactory = probeHosts({ 'arbitrary-acp': new Error('adapter exited') })
+      daemon.startMicrosandboxModelProbe()
+      await vi.waitFor(() => expect(manager.discard).toHaveBeenCalledTimes(2))
+      expect(daemon.runtimeFacts.profileFor('arbitrary-acp').strategies.microsandbox).toEqual({
+        available: true,
+        models: ['m-previous'],
+        modelsSource: 'cached'
+      })
+      expect(manager.recordModels).not.toHaveBeenCalled()
+    } finally {
+      daemon.microsandbox = undefined
+      await stop()
+    }
+  })
+
+  it('adopts no manager and prepares no image once shutdown began during the msb install', async () => {
+    const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }), srt: true, kvm: true })
+    const manager = { recover: vi.fn(async () => {}), prepare: vi.fn(), stopAll: vi.fn(async () => {}) }
+    let installed!: (value: unknown) => void
+    install.mockImplementationOnce(() => new Promise((resolve) => (installed = resolve)))
+    daemon.opts.probeHostFactory = probeHosts({})
+    daemon.startMicrosandboxModelProbe()
+    await vi.waitFor(() => expect(install).toHaveBeenCalled())
+    await stop()
+    installed(manager)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(daemon.microsandbox).toBeUndefined()
+    expect(manager.recover).not.toHaveBeenCalled()
+    expect(manager.prepare).not.toHaveBeenCalled()
+  })
+
+  it('prepares no image once shutdown began while the manager recovered', async () => {
+    const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }), srt: true, kvm: true })
+    let recovered!: () => void
+    const manager = {
+      recover: vi.fn(() => new Promise<void>((resolve) => (recovered = resolve))),
+      prepare: vi.fn(),
+      stopAll: vi.fn(async () => {})
+    }
+    daemon.microsandbox = manager
+    daemon.opts.probeHostFactory = probeHosts({})
+    daemon.startMicrosandboxModelProbe()
+    await vi.waitFor(() => expect(manager.recover).toHaveBeenCalled())
+    await stop()
+    expect(manager.stopAll).toHaveBeenCalled()
+    recovered()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(manager.prepare).not.toHaveBeenCalled()
+  })
+
+  it('probes no VM where microsandbox is unavailable or withdrawn', async () => {
+    for (const setup of [
+      { root: scaffold({ sandbox: IMAGE }), srt: true },
+      { root: scaffold({ sandbox: { microsandbox: false } }), srt: true, kvm: true }
+    ]) {
+      const { daemon, stop } = await boot(setup)
+      try {
+        daemon.opts.probeHostFactory = probeHosts({})
+        daemon.startMicrosandboxModelProbe()
+        expect(daemon.vmModelProbe).toBeUndefined()
+        expect(daemon.microsandboxReadiness).toBeUndefined()
+      } finally {
+        await stop()
+      }
     }
   })
 

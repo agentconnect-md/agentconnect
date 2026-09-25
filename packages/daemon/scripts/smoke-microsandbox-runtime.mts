@@ -17,7 +17,10 @@ import type { PlaneLaunch } from '../src/execution/plane.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { makeLogger } from '../src/log.js'
 import { localShimGitRunner } from '../src/execution/local-git.js'
+import { clusterProbeHostFactory } from '../src/acp/probe-host-factory.js'
+import { MICROSANDBOX_NODE } from '../src/microsandbox/exec.js'
 import { installMicrosandbox } from '../src/microsandbox/install.js'
+import { probeImageModels, VM_PROBE_ENVIRONMENT_ID } from '../src/microsandbox/model-probe.js'
 import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
@@ -495,6 +498,38 @@ try {
   assert.equal(existsSync(hostedDir), false, 'the released session directory was kept')
   step('the-release-took-the-vm-its-disks-and-the-session-directory')
 
+  // The VM strategy's model probe (session-executors.md §5): the host's runtime probe in one probe VM, of an ACP runtime the image's Node runs with a known selector.
+  const fakeAcp = readFileSync(new URL('../test/fixtures/fake-acp-agent.mjs', import.meta.url), 'utf8').replace(
+    /^#!.*\n/,
+    ''
+  )
+  const probeStarted = performance.now()
+  const [probed] = await probeImageModels({
+    runtimes: {
+      'smoke-acp': {
+        command: MICROSANDBOX_NODE,
+        args: ['--input-type=module', '-e', fakeAcp],
+        env: [{ name: 'AC_MODELS', value: 'smoke-model-a,smoke-model-b' }]
+      } as never
+    },
+    root: join(root, 'run', 'vm-probe'),
+    daemonRoot: root,
+    hostEnv: { HOME: hostHome, PATH: process.env.PATH },
+    start: (probeVm) => local.withEnvironment(probeVm, async () => {}),
+    driverFor: (probeVm) => local.driverFor(probeVm),
+    discard: async (id) => {
+      await manager.suspend(id, { drain: true })
+      await manager.discard(id)
+    },
+    hostFactory: (driver) => clusterProbeHostFactory({ driver }),
+    log: makeLogger('info')
+  })
+  summary.modelProbeMs = elapsed(probeStarted)
+  assert.ok(probed?.ok, `the VM model probe failed: ${probed?.error}`)
+  assert.deepEqual(probed.models, ['smoke-model-a', 'smoke-model-b'])
+  assert.ok(!(await manager.environmentIds()).includes(VM_PROBE_ENVIRONMENT_ID), 'the probe VM was kept')
+  step('image-models-probed-in-one-vm-and-the-vm-removed', { ms: summary.modelProbeMs })
+
   passed = true
 } finally {
   await plane.stop().catch((error: unknown) => console.error(error))
@@ -502,6 +537,7 @@ try {
   await facet.stop().catch((error: unknown) => console.error(error))
   await manager.discard(environmentId).catch((error: unknown) => console.error(error))
   await manager.discard(`executor/${LEAF}`).catch((error: unknown) => console.error(error))
+  await manager.discard(VM_PROBE_ENVIRONMENT_ID).catch((error: unknown) => console.error(error))
   await manager.stopAll().catch((error: unknown) => console.error(error))
   await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
   if (passed) await rm(root, { recursive: true, force: true })

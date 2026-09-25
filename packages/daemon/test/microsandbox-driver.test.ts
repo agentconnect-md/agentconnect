@@ -10,6 +10,7 @@ import type { SecretBuilder } from 'microsandbox/native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   MicrosandboxManager,
+  recordedImageModels,
   type MicrosandboxEnvironment,
   type MicrosandboxManagerOptions
 } from '../src/microsandbox/driver.js'
@@ -72,6 +73,7 @@ function fakeSdk() {
   // Names a failed create claimed on disk before its database row: `get` misses them and a plain create collides.
   const claimed = new Set<string>()
   let nextCreateFailure: Error | undefined
+  let nextCreateGate: { entered: () => void; released: Promise<void> } | undefined
   const created: FakeSandbox[] = []
   const processes: FakeExec[] = []
   let onRun: ((process: FakeExec) => void | Promise<void>) | undefined
@@ -355,6 +357,12 @@ function fakeSdk() {
             return builder
           },
           async create() {
+            const gate = nextCreateGate
+            nextCreateGate = undefined
+            if (gate) {
+              gate.entered()
+              await gate.released
+            }
             if (replace && sandboxes.has(name)) throw new Error(`replace would destroy the tracked sandbox ${name}`)
             if (claimed.has(name) && !replace) throw new SandboxAlreadyExistsError(`sandbox '${name}' already exists`)
             claimed.delete(name)
@@ -392,6 +400,14 @@ function fakeSdk() {
     imageCache,
     removeVolume,
     claimed,
+    /** Hold the next create, once it has begun, until `release`, as a slow disk holds a real one. */
+    holdNextCreate: () => {
+      let release!: () => void
+      let entered!: () => void
+      const creating = new Promise<void>((resolve) => (entered = resolve))
+      nextCreateGate = { entered, released: new Promise<void>((resolve) => (release = resolve)) }
+      return { creating, release }
+    },
     /** Fail the next create after it claimed its name, as msb does when the disk fills mid-create. */
     failNextCreate: (failure: Error) => {
       nextCreateFailure = failure
@@ -923,7 +939,7 @@ describe('microsandbox process and VM ownership', () => {
     expect(await new MicrosandboxManager(other).cachedTable()).toBeUndefined()
   })
 
-  it('records what each runtime advertised in an environment against the image, and reads it back without a VM', async () => {
+  it('records what each runtime advertised in a VM, and carries it across an image change until replaced', async () => {
     const { options, imageDigests, created } = await fixture()
     await new MicrosandboxManager(options).prepare()
     const booted = created.length
@@ -933,12 +949,57 @@ describe('microsandbox process and VM ownership', () => {
     await manager.recordModels('other', ['model-c'])
     await manager.recordModels('test', ['model-b'])
     expect(await new MicrosandboxManager(options).cachedModels()).toEqual({ test: ['model-b'], other: ['model-c'] })
+    expect(await recordedImageModels(options.root)).toEqual({ test: ['model-b'], other: ['model-c'] })
     expect(created).toHaveLength(booted)
-    // Another build behind the same tag has advertised nothing yet, and neither has another image.
+    // Another build behind the same tag, or another image, starts from the previous lists, and replaces one at a time.
     imageDigests.set('test-image', 'sha256:moved')
-    expect(await new MicrosandboxManager(options).cachedModels()).toEqual({})
-    const other = { ...options, config: { ...options.config, image: 'next-image' } }
-    expect(await new MicrosandboxManager(other).cachedModels()).toEqual({})
+    expect(await new MicrosandboxManager(options).cachedModels()).toEqual({ test: ['model-b'], other: ['model-c'] })
+    const next = new MicrosandboxManager({ ...options, config: { ...options.config, image: 'next-image' } })
+    expect(await next.cachedModels()).toEqual({ test: ['model-b'], other: ['model-c'] })
+    await next.recordModels('test', ['model-d'])
+    expect(await next.cachedModels()).toEqual({ test: ['model-d'], other: ['model-c'] })
+  })
+
+  it('starts no preparation VM after a shutdown that came during the image pull', async () => {
+    const { manager, options, created } = await fixture()
+    const release = join(options.root, 'release-pull')
+    const pulling = join(options.root, 'pulling')
+    // A pull that holds until the test releases it, as a real one holds for minutes.
+    options.msbCommand = {
+      command: process.execPath,
+      args: [
+        '-e',
+        `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(pulling)}, ''); const wait = setInterval(() => fs.existsSync(${JSON.stringify(release)}) && clearInterval(wait), 20)`
+      ]
+    }
+    const booted = created.length
+    const preparing = manager.prepare()
+    preparing.catch(() => {})
+    await vi.waitFor(() => expect(readFile(pulling, 'utf8')).resolves.toBe(''))
+    await manager.stopAll()
+    await writeFile(release, '')
+    await expect(preparing).rejects.toThrow('microsandbox manager is shutting down')
+    expect(created).toHaveLength(booted)
+  })
+
+  it('runs nothing in a preparation VM whose creation outlasted the shutdown, and removes it before the shutdown ends', async () => {
+    const { manager, created, holdNextCreate } = await fixture()
+    const { creating, release } = holdNextCreate()
+    const preparing = manager.prepare()
+    preparing.catch(() => {})
+    // Past the pull and its check, the VM's creation is pending.
+    await creating
+    const stopped = manager.stopAll()
+    let stopDone = false
+    void stopped.then(() => (stopDone = true))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(stopDone).toBe(false)
+    release()
+    await stopped
+    await expect(preparing).rejects.toThrow('microsandbox manager is shutting down')
+    const vm = created.at(-1)!
+    expect(vm.exec).not.toHaveBeenCalled()
+    expect(vm.destroy).toHaveBeenCalled()
   })
 
   it('tries a failed preparation again at the next use', async () => {
