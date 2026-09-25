@@ -165,8 +165,6 @@ const WORKSPACE_GIT_PROXY_ENV = /^(?:all|ftp|http|https|no)_proxy$/i
 const EMPTY_GIT_CONFIG = process.platform === 'win32' ? 'NUL' : '/dev/null'
 const WORKSPACE_SSH_COMMAND =
   'ssh -F none -o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ClearAllForwardings=yes'
-const UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG =
-  /^(?:url\..*\.insteadof|includeif\..*\.path|extensions\.worktreeconfig|http(?:\..*)?\.(?:proxy|curloptresolve)|remote\..*\.(?:proxy|uploadpack|receivepack|vcs)|core\.(?:sshcommand|worktree|alternaterefscommand|askpass|pager)|pager\..*|filter\..*\.(?:clean|smudge|process)|diff\.(?:external|.*\.(?:command|textconv))|merge\..*\.driver|submodule\..*\.update|fetch\.bundleuri)$/i
 const WORKSPACE_GIT_CONTROLLED_ENV = new Set([
   'GIT_ALLOW_PROTOCOL',
   'GIT_CONFIG_NOSYSTEM',
@@ -181,9 +179,7 @@ function workspaceGitProcessEnv(): Record<string, string> {
   for (const key of Object.keys(env)) {
     if (WORKSPACE_GIT_PROXY_ENV.test(key) || WORKSPACE_GIT_CONTROLLED_ENV.has(key.toUpperCase())) delete env[key]
   }
-  // Daemon-managed workspace Git must not inherit user-writable routing rules
-  // from ~/.gitconfig or system config. Local checkout config is audited
-  // separately before an existing workspace performs network I/O.
+  // Daemon-managed workspace Git must not inherit user-writable routing rules from ~/.gitconfig or system config.
   env.GIT_CONFIG_NOSYSTEM = '1'
   env.GIT_CONFIG_GLOBAL = EMPTY_GIT_CONFIG
   // Repository-owned replacement refs can make a trusted object id materialize
@@ -216,9 +212,7 @@ function workspaceGitConfigPairs(repository?: string): ReadonlyArray<readonly [s
   ]
   if (!repository) return pairs
   const normalized = normalizeGitCloneUrl(repository)
-  // Pin the complete URL against broader url.*.insteadOf rules. Existing
-  // checkout config is also audited because Git keeps the earlier value when
-  // an untrusted rule has the same match length.
+  // Pin the complete URL against broader url.*.insteadOf rules.
   pairs.push([`url.${normalized}.insteadOf`, normalized])
   if (normalized.toLowerCase().startsWith('https://')) {
     // URL-specific values outrank generic http.* values. Disable redirects,
@@ -305,22 +299,6 @@ export function workspaceGitLocalEnv(): Record<string, string> {
     ...workspaceGitProcessEnv(),
     GIT_ALLOW_PROTOCOL: '',
     ...gitConfigEnv(workspaceGitConfigPairs())
-  }
-}
-
-/** Whether checkout-owned config is free of routing and executable settings: includes are expanded and their keys audited (daemon Git pins hooksPath/fsmonitor itself), while `includeIf` and worktree config are refused because `--local` cannot see what they select later. */
-export async function workspaceGitConfigIsSafe(git: GitRunner): Promise<boolean> {
-  // A runner, not a cwd: the audit reads the config the guarded Git will, which for a cluster workspace is the sandbox's.
-  const names = await git
-    .withEnv(workspaceGitLocalEnv())
-    .raw(['config', '--local', '--includes', '--name-only', '-z', '--list'])
-  return !names.split('\0').some((name) => UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG.test(name))
-}
-
-/** Refuse a daemon-run network or checkout operation on a checkout whose config fails {@link workspaceGitConfigIsSafe}. */
-export async function assertSafeWorkspaceGitConfig(git: GitRunner): Promise<void> {
-  if (!(await workspaceGitConfigIsSafe(git))) {
-    throw new Error('workspace Git configuration contains a disallowed network override or executable setting')
   }
 }
 

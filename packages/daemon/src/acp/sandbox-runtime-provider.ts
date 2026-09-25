@@ -180,12 +180,7 @@ export async function runSandboxRuntimeProvider(argv: string[], opts: { offline?
     }
     removeLegacyMountPoints(sandboxCwd)
     seedProtectedHomeEntries(privateHome)
-    // SRT's Linux mandatory-deny scan is anchored at its own process.cwd() (the cwd argument to
-    // wrapWithSandboxArgv plays no part in it), and for a missing name it has bwrap create a zero-byte
-    // mount point there. Its names are HOME's — shell rc files, `.gitconfig`, `.mcp.json` — so anchor
-    // the scan at the private HOME, where they belong and where the entries above are real files of
-    // ours, instead of the checkout. The checkouts' `.git/config` and `.git/hooks` are denied
-    // explicitly by the launch (launch/prepare.ts), so nothing depends on scanning the workspace.
+    // SRT anchors its Linux mandatory-deny scan (and the empty mount points it makes for missing names) at process.cwd(); those names are HOME's, so scan the private HOME.
     process.chdir(privateHome)
     const privateTmp = childTempDir(writeRoots, privateHome)
     // SRT otherwise defaults TMPDIR to the shared host /tmp/claude path.

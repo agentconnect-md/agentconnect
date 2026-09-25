@@ -26,10 +26,9 @@
  * session mechanics are injected as {@link CommitMessagePass}; this module owns the staged-diff read,
  * its cap, and turning every possible disappointment into DATA.
  *
- * Three properties the writes need and the reads do not: they go through the SAME
+ * Two properties the writes need and the reads do not: they go through the SAME
  * per-agent runner seam (a cluster agent's `git add` must land on its sandbox volume,
- * not this disk); the local config audit runs FIRST (`git add` executes a repository's
- * own `filter.*.clean` program); and runtime quiescence is the CALLER's job — the
+ * not this disk); and runtime quiescence is the CALLER's job — the
  * daemon wraps each of them in `Daemon.withWorkspaceIndexWrite`.
  */
 import { promises as fs } from 'node:fs'
@@ -58,7 +57,6 @@ import {
 import { codeHostCredentials } from '../codehost/credentials.js'
 import { IMPLICIT_CREDENTIAL_PROVIDER } from '../gitcred/managed-hosts.js'
 import {
-  assertSafeWorkspaceGitConfig,
   canonicalWorkspaceGitUrl,
   gitCommitIdentityEnv,
   GITHUB_CREDENTIAL_SCOPE,
@@ -391,8 +389,6 @@ export function createWorkspaceGit(
     if (!(await isRepo(base))) return { agentId: req.agentId, isRepo: false, clean: true }
     const wanted = new Set(req.paths.map((requested) => relativeWorkspacePath(at.root, requested)))
     if (wanted.size > 0) {
-      // `git add` runs the repository's own clean filter, so the audit gates a stage like a fetch.
-      await assertSafeWorkspaceGitConfig(base)
       const git = base.withEnv(workspaceGitLocalEnv())
       const changed = (await git.status()).files.filter((file) => wanted.has(file.path))
       // '?' is untracked: there is something to stage and nothing to unstage.
@@ -560,7 +556,6 @@ export function createWorkspaceGit(
         if (!authorized) {
           return { agentId, isRepo: true, ok: false, detail: 'workspace origin is not a safe remote' }
         }
-        await assertSafeWorkspaceGitConfig(base)
         const pullBranch = authorized.branch
         const pullTarget = workspaceGitRemoteTarget(
           authorized.origin,
@@ -618,17 +613,6 @@ export function createWorkspaceGit(
         )
       }
       const git = base.withEnv({ ...workspaceGitLocalEnv(), ...gitCommitIdentityEnv(identity) })
-      try {
-        // A commit runs the checkout's own hooks and filters unless the command-scope policy holds.
-        await assertSafeWorkspaceGitConfig(base)
-      } catch {
-        return commitRefusal(
-          agentId,
-          true,
-          'unsafe-config',
-          'This checkout carries a disallowed local Git override, so the daemon will not commit in it.'
-        )
-      }
       const staged = await git.readBounded(['diff', '--cached', '--name-only', '-z'], METADATA_OUTPUT_BUDGET)
       const stagedPaths = staged.out.toString('utf8').split('\0').filter(Boolean)
       if (!staged.overflow && stagedPaths.length === 0) {
@@ -696,16 +680,6 @@ export function createWorkspaceGit(
         const authorized = await authorizedTarget(agentId, git, req.repo, req.sessionId)
         if (!authorized) {
           return pushRefusal(agentId, true, 'unsafe-origin', 'workspace origin is not a safe remote')
-        }
-        try {
-          await assertSafeWorkspaceGitConfig(base)
-        } catch {
-          return pushRefusal(
-            agentId,
-            true,
-            'unsafe-config',
-            'This checkout carries a disallowed local Git override, so the daemon will not push from it.'
-          )
         }
         // Whether the upstream this branch tracks IS the authorized origin. Only then does an
         // `ahead` of zero mean "the remote we are allowed to push to already has these commits".

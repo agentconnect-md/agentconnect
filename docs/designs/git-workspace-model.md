@@ -411,9 +411,9 @@ time on shared filesystems.
   as `uninspected`. An agent with work in flight is skipped, and each directory
   is judged again inside the admission fence (#2283).
 - **Console push and Git reads** resolve the session root as today.
-- **Sandbox grants** are per session and exact: the clone's `.git` writable,
-  its `hooks` and `config` read-only, for both the outer sandbox and a runtime's
-  inner one. The session's `home/` is writable in both layers as well — a
+- **Sandbox grants** are per session and exact: the clone's `.git` is writable
+  in the outer sandbox, and Codex's inner profile keeps its `hooks` and `config`
+  read-only. The session's `home/` is writable in both layers as well — a
   runtime's inner policy pins writes to the cwd, and HOME is its _sibling_, so
   the grant is named there too or no package manager can write the caches below
   it. `home/.codex` is carved back out of that grant and stays denied: its

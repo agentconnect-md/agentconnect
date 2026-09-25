@@ -397,25 +397,6 @@ describe('prepareSessionWorkspace', () => {
     expect(readdirSync(cwd)).toEqual([])
   })
 
-  it('blocks unsafe config before ordinary linked-worktree creation when pull is disabled', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'ac-session-policy-'))
-    const path = join(root, 'workspace')
-    mkdirSync(join(path, '.git'), { recursive: true })
-    const agent = gitRepoAgent(path)
-    agent.workspace.pullOnNewSession = false
-
-    rawMock.mockImplementation(async (args: string[], cwd?: string) => {
-      if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
-      if (cwd === path && args[0] === 'config') return 'filter.evil.smudge\0'
-      return ''
-    })
-
-    await expect(
-      workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
-    ).rejects.toThrow('workspace Git configuration contains a disallowed network override or executable setting')
-    expect(rawMock.mock.calls.some(([args]) => args[0] === 'worktree' && args[1] === 'add')).toBe(false)
-  })
-
   it('uses a stable distinct worktree for each logical session', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-session-ws-'))
     const path = join(root, 'workspace')

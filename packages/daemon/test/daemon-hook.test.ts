@@ -1491,9 +1491,7 @@ describe('Daemon rd/msg hook fires', () => {
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
     const prepare = vi
       .spyOn(daemon as any, 'prepareAgentWorkspace')
-      .mockRejectedValueOnce(
-        new Error('workspace Git configuration contains a disallowed network override or executable setting')
-      )
+      .mockRejectedValueOnce(new Error('exact checkout preparation failed'))
       .mockResolvedValueOnce('/agent/worktrees/revision-only')
     const headSha = 'a'.repeat(40)
     const baseSha = 'b'.repeat(40)
@@ -1568,7 +1566,7 @@ describe('Daemon rd/msg hook fires', () => {
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
     const prepare = vi
       .spyOn(daemon as any, 'prepareAgentWorkspace')
-      .mockRejectedValue(new Error('workspace Git configuration contains a disallowed network override'))
+      .mockRejectedValue(new Error('exact checkout preparation failed'))
     const headSha = 'a'.repeat(40)
     const baseSha = 'b'.repeat(40)
     const entry = {

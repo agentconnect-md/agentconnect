@@ -235,9 +235,8 @@ its operator does not control — a pull request or issue from outside the
 organization, a public webhook, an external channel — is untrusted because of that
 input, however its trigger was authorized, since a model acts on what it reads. Such
 a session runs in `microsandbox`, or in a pool's pod, where the daemon's Git for it
-runs inside the same boundary. The configuration audit that precedes the daemon's
-host-side Git is defense in depth for `srt`, not its boundary. GitHub draws the same
-line when it advises against self-hosted runners for public repositories.
+runs inside the same boundary. GitHub draws the same line when it advises against
+self-hosted runners for public repositories.
 
 **`host` ships first**, though since #2161 it is no longer the smaller half on the
 executor. A VM is the pool's layout by construction — fixed in-guest paths, a shim
@@ -474,13 +473,6 @@ the shim requires:
   namespace and injects `HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY` and
   `NODE_USE_ENV_PROXY` for its bridge. The shim's base-environment allowlist drops
   them and the runtime has no network; forwarded, egress works.
-- **The VM's rule for `.git`, not the local path's.** The outer deny on `.git/config`
-  and `.git/hooks` also blocks the holder's own Git, which now runs through the shim
-  inside the boundary: `git config` and `git remote add` fail with `EBUSY`. The deny
-  exists because daemon-side Git runs outside the sandbox
-  ([git-workspace-model.md](git-workspace-model.md) §11); here it runs inside, so a
-  planted hook executes within the boundary, as in a VM. The runtime's inner profile
-  keeps its own deny.
 - **The shim's socket is inside what the runtime can write.** A host shim
   authenticates nobody who dials it, so a runtime can reach and replace the socket,
   and at worst take its own session's channel during a re-dial. That is the exposure

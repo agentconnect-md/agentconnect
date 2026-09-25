@@ -22,6 +22,7 @@ const workspaces = new WorkspaceManager()
  */
 
 const AGENT = 'bot-cluster'
+const OID = '0'.repeat(40)
 
 afterEach(() => workspaces.setPlaneResolver(undefined))
 
@@ -160,20 +161,19 @@ describe.skipIf(process.platform === 'win32')('a shim channel that goes away mid
         const args = (payload as { args: string[] }).args
         seen.push(args)
         if (args[0] === 'rev-parse' && args[1] === '--show-prefix') return { code: 0, stdout: '', stderr: '' }
+        if (args[0] === 'status')
+          return { code: 0, stdout: `1 .M N... 100644 100644 100644 ${OID} ${OID} a.ts\0`, stderr: '' }
         throw new ShimChannelLostError('shim channel renewed')
       }
     }
     wireTestPlane(workspaces, { workspacesOffDisk: true, gitRunnerFor: () => new ShimGitRunner(session) })
-    // Refused as transient rather than retried. `config` — the executable-config audit a stage runs
-    // first — is left out of the repeatable set for the same reason: it CAN write, and the cheapest
-    // way never to get that wrong is to repeat nothing that can.
+    // Refused as transient rather than retried.
     await expect(
       createWorkspaceGit(workspaces, async () => '/agent/repo').stage({ agentId: AGENT, paths: ['a.ts'] })
     ).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
-    // Nothing that mutates was sent twice — nor, here, even once.
+    // The `add` whose reply was lost went exactly once.
     const sent = seen.map((args) => args.join(' '))
-    expect(new Set(sent).size).toBe(sent.length)
-    expect(sent.some((line) => line.startsWith('add ') || line.startsWith('commit'))).toBe(false)
+    expect(sent.filter((line) => line.startsWith('add '))).toEqual(['add -- :(literal)a.ts'])
   })
 })
 

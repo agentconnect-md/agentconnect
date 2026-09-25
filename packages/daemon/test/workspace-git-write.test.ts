@@ -218,10 +218,6 @@ describe('workspace git stage / unstage (real repo, real index)', () => {
     await expect(seam.stage({ agentId: 'a', paths: ['../outside.txt'] })).rejects.toMatchObject({
       reason: 'path-escape'
     })
-    git(dir, ['config', 'filter.refused.clean', 'false'])
-    await expect(seam.stage({ agentId: 'a', paths: ['tracked.txt'] })).rejects.toThrow(/disallowed/)
-    expect(git(dir, ['diff', '--cached', '--name-only'])).toBe('')
-    git(dir, ['config', '--unset', 'filter.refused.clean'])
 
     const staged = await seam.stage({ agentId: 'a', paths: ['tracked.txt'] })
     expect(staged.files).toContainEqual({
@@ -326,16 +322,6 @@ describe('workspace git stage / unstage (real repo, real index)', () => {
     await expect(seam.unstage({ agentId: 'a', paths: ['.git/config'] })).rejects.toMatchObject({
       reason: 'git-internals'
     })
-    expect(git(dir, ['diff', '--cached', '--name-only'])).toBe('')
-  })
-
-  it('refuses to stage in a checkout whose local config carries a disallowed override', async () => {
-    // `git add` runs the repository's own clean filter, which is why the audit gates a stage at all.
-    const dir = repo()
-    writeFileSync(join(dir, 'tracked.txt'), 'two\n')
-    git(dir, ['config', 'filter.evil.process', 'sh -c "touch /tmp/pwned"'])
-    const seam = createWorkspaceGit(workspaces, async () => dir)
-    await expect(seam.stage({ agentId: 'a', paths: ['tracked.txt'] })).rejects.toThrow(/disallowed/)
     expect(git(dir, ['diff', '--cached', '--name-only'])).toBe('')
   })
 })
@@ -444,27 +430,6 @@ describe('workspace git commit (real repo, real commit)', () => {
       ok: false,
       reason: 'not-a-repo'
     })
-  })
-
-  it('refuses to commit in a checkout with a disallowed local override, as data', async () => {
-    const dir = repo()
-    writeFileSync(join(dir, 'tracked.txt'), 'two\n')
-    const seam = createWorkspaceGit(
-      workspaces,
-      async () => dir,
-      () => undefined,
-      async () => githubTarget(),
-      () => IDENTITY
-    )
-    await seam.stage({ agentId: 'a', paths: ['tracked.txt'] })
-    git(dir, ['config', 'diff.external', 'sh -c "touch /tmp/pwned"'])
-    const head = git(dir, ['rev-parse', 'HEAD']).trim()
-
-    expect(await seam.commit({ agentId: 'a', message: 'feat: second' })).toMatchObject({
-      ok: false,
-      reason: 'unsafe-config'
-    })
-    expect(git(dir, ['rev-parse', 'HEAD']).trim()).toBe(head)
   })
 
   it('does not run the checkout own commit hooks', async () => {

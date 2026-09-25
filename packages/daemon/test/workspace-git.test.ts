@@ -443,49 +443,6 @@ describe('createWorkspaceGit.pull', () => {
     expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>)).toEqual([])
   })
 
-  it('refuses checkout-owned URL rewrites before pull', async () => {
-    const dir = ws(true)
-    rawImpl = vi
-      .fn()
-      .mockImplementation(async (args: string[]) =>
-        args[0] === 'remote'
-          ? 'https://github.com/acme/repo.git\n'
-          : 'url.https://127.0.0.1.invalid/redirected/.insteadof\0'
-      )
-    const git = createWorkspaceGit(
-      workspaces,
-      async () => dir,
-      () => undefined,
-      githubTarget
-    )
-
-    expect(await git.pull('a')).toMatchObject({
-      isRepo: true,
-      ok: false,
-      detail: 'workspace Git configuration contains a disallowed network override or executable setting'
-    })
-    expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>)).toEqual([])
-  })
-
-  it('pulls normally when local includes only configure repository hooks', async () => {
-    const dir = ws(true)
-    const probes = syncRaw()
-    rawImpl = vi
-      .fn()
-      .mockImplementation(async (args: string[]) =>
-        args[0] === 'config' ? 'include.path\0core.hookspath\0' : probes(args)
-      )
-    const git = createWorkspaceGit(
-      workspaces,
-      async () => dir,
-      () => undefined,
-      githubTarget
-    )
-
-    await expect(git.pull('a')).resolves.toMatchObject({ isRepo: true, ok: true })
-    expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>).map((args) => args[0])).toEqual(['fetch', 'checkout'])
-  })
-
   it('ignores a checkout-controlled upstream and syncs the configured target explicitly', async () => {
     const dir = ws(true)
     rawImpl = syncRaw()

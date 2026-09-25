@@ -345,11 +345,7 @@ export function writeSandboxSettings(agentDir: string, hostDir: string, policy: 
       denyRead,
       allowRead: canonical(policy.allowRead),
       allowWrite: canonical(policy.writable),
-      denyWrite: canonical([...(policy.denyWrite ?? []), '/tmp/claude', '/private/tmp/claude']),
-      // Daemon-managed Git writes the credential-helper entries outside the
-      // sandbox. A confined runtime must not redirect later host-side Git via
-      // core.hooksPath, core.fsmonitor, filter.*, or similar settings.
-      allowGitConfig: false
+      denyWrite: canonical([...(policy.denyWrite ?? []), '/tmp/claude', '/private/tmp/claude'])
     },
     ...(policy.gitSafeDirectories?.length ? { git: { safeDirectories: canonical(policy.gitSafeDirectories) } } : {})
   }
