@@ -334,8 +334,8 @@ enforcement predicate reads it. Nothing in the ledger changes — PR 1 already m
 set-shaped. Org-set CRUD and membership are an org-scoped REST surface
 (`/orgs/:orgId/member-sets`), and the daemon read model carries its set. **Shipped as the
 mechanism**, with the transition ergonomics reduced to the preconditions §3 records.
-Console — set CRUD in org settings, membership on the daemon detail, one more placement
-entry per set — is still to come; the data and wire formats it needs are in place.
+The Console exposes group CRUD from Daemons, membership on daemon detail, and one
+placement entry per group in every deployment, without a feature flag.
 
 Load-bearing tests, all mutation-checked: an org-scoped member of set G in org X claims
 a `set`-placed agent of X in G; the same member is refused a `set` agent of X in another

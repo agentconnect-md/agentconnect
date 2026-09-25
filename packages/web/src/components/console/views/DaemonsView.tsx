@@ -59,8 +59,8 @@ export default function DaemonsView() {
     [agents, orgSetIds, showPool]
   )
 
-  // Lifted out of `GroupsSection`: the "Daemons" label needs it too. The flag hides the entry point, not the feature.
-  const showGroups = featureFlagEnabled('daemon-groups') && (ownDaemons.length > 0 || memberSets.length > 0)
+  // The "Daemons" label and group section share the same visibility condition.
+  const showGroups = ownDaemons.length > 0 || memberSets.length > 0
 
   // Fleet summary for the mobile-only strip below — counted over what the page SHOWS,
   // so the pool contributes one entry rather than one per member.

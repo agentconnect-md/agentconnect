@@ -134,10 +134,6 @@ function render(): string {
   return html
 }
 
-const setFlags = (value: string) => {
-  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: value }
-}
-
 beforeEach(() => {
   mocks.daemons = []
   mocks.agents = []
@@ -148,11 +144,10 @@ beforeEach(() => {
   mocks.routeId = 'g1'
   mocks.push.mockClear()
   mocks.openModal.mockClear()
-  setFlags('daemon-groups')
 })
 
 describe('GroupDetailView', () => {
-  it('names the group and its members, and reads them as one fleet', () => {
+  it('names the group and its members without feature flags, and reads them as one fleet', () => {
     mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
     mocks.daemons = [daemon('d1'), daemon('d2', { status: 'offline' })]
 
@@ -442,16 +437,5 @@ describe('GroupDetailView', () => {
     mocks.memberSetsLoading = true
 
     expect(render()).not.toContain('Group not found')
-  })
-
-  it('is not reachable where the deployment did not ask for groups', () => {
-    setFlags('')
-    mocks.memberSets = [group({ memberDaemonIds: ['d1'] })]
-    mocks.daemons = [daemon('d1')]
-
-    const html = render()
-
-    expect(html).toContain('Group not found')
-    expect(html).not.toContain('build-farm')
   })
 })

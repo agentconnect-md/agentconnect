@@ -75,7 +75,6 @@ spec:
             {{- fail "web.extraEnv.FEATURE_FLAGS collides with the features block: flip features.* instead, so a console flag cannot come from two sources" }}
             {{- end }}
             {{- $flags := list }}
-            {{- if .Values.features.daemonGroups }}{{- $flags = append $flags "daemon-groups" }}{{- end }}
             {{- if .Values.features.daemonPool }}{{- $flags = append $flags "daemon-pool" }}{{- end }}
             {{- if .Values.features.managed }}{{- $flags = append $flags "managed" }}{{- end }}
             {{- if .Values.features.billing }}{{- $flags = append $flags "billing" }}{{- end }}

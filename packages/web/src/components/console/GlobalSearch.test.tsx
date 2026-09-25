@@ -100,7 +100,6 @@ function type(value: string) {
   })
 }
 
-/** The console names and offers the pool and groups only where the deployment asked for them. */
 const setFlags = (value: string) => {
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: value }
 }
@@ -265,8 +264,7 @@ describe('GlobalSearch infra entities', () => {
     expect(push).toHaveBeenCalledWith('/org-test/daemons/cluster')
   })
 
-  it('finds a group by name and opens the group', () => {
-    setFlags('daemon-pool,daemon-groups,managed')
+  it('finds a group by name and opens the group without feature flags', () => {
     withFleet()
     render()
     type('lab')
@@ -275,7 +273,6 @@ describe('GlobalSearch infra entities', () => {
   })
 
   it('still finds a machine, and a group member is one', () => {
-    setFlags('daemon-pool,daemon-groups,managed')
     withFleet()
     render()
     type('lab-box')
@@ -283,14 +280,13 @@ describe('GlobalSearch infra entities', () => {
     expect(push).toHaveBeenCalledWith('/org-test/daemons/dmn-2')
   })
 
-  it('offers neither the pool nor a group where the deployment does not', () => {
+  it('keeps groups and their members searchable when the pool is hidden', () => {
     withFleet()
     render()
     type('cloud')
     expect(host.textContent).not.toContain('AgentConnect Cloud')
     type('lab')
-    // The group is hidden; the machine that happens to be in it is not.
     expect(host.textContent).toContain('lab-box')
-    expect([...host.querySelectorAll('button')].some((b) => b.textContent?.includes('1 daemon ·'))).toBe(false)
+    expect(host.textContent).toContain('1 daemon · 2 agents')
   })
 })

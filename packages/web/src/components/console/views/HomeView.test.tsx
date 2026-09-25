@@ -158,7 +158,6 @@ const render = async () => {
   await act(async () => root.render(<HomeView />))
 }
 
-/** The console offers a set target's own page only where the deployment asked for that surface. */
 const setFlags = (value: string) => {
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: value }
 }
@@ -166,7 +165,7 @@ const setFlags = (value: string) => {
 beforeEach(() => {
   mocks.menus = []
   mocks.memberSets = []
-  setFlags('daemon-pool,daemon-groups')
+  setFlags('daemon-pool')
   mocks.openPlayground.mockClear()
   mocks.pgSend.mockClear()
   mocks.pgSetModel.mockClear()
@@ -563,9 +562,8 @@ describe('HomeView default agent across a late member-set read', () => {
   })
 })
 
-// Both set targets NotFound behind their own flag, while a placement made before the flag went off
-// is still NAMED here — so the banner's action must not offer a door that does not open.
-describe('HomeView blocked-banner action behind the flags', () => {
+// Placement actions must open a reachable page even when the pool feature flag is off.
+describe('HomeView blocked-banner placement action', () => {
   const blockedOnGroup = () => {
     mocks.agents = [agent({ daemon: 'pool', placementKind: 'set', setId: 'set-lab', placementReady: true })]
     mocks.memberSets = [{ setId: 'set-lab', name: 'lab', memberDaemonIds: ['dmn-lab'], agentCount: 1 }]
@@ -585,19 +583,12 @@ describe('HomeView blocked-banner action behind the flags', () => {
     act(() => btn.click())
   }
 
-  it('opens the group where the deployment offers groups', async () => {
-    blockedOnGroup()
-    await render()
-    clickAction()
-    expect(mocks.push).toHaveBeenCalledWith('/acme/daemons/groups/set-lab')
-  })
-
-  it('falls back to Infra where it does not, instead of the group NotFound', async () => {
+  it('opens the group without feature flags', async () => {
     setFlags('')
     blockedOnGroup()
     await render()
     clickAction()
-    expect(mocks.push).toHaveBeenCalledWith('/acme/daemons')
+    expect(mocks.push).toHaveBeenCalledWith('/acme/daemons/groups/set-lab')
   })
 
   it('falls back to Infra for a pool placement behind the pool flag', async () => {

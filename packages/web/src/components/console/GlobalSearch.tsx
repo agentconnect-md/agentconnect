@@ -223,7 +223,7 @@ export function GlobalSearch({
         iconName: placementIcon('daemon'),
         href: orgPath(`/daemons/${d.daemonId}`)
       }))
-    const groupMatches = (featureFlagEnabled('daemon-groups') ? memberSets : [])
+    const groupMatches = memberSets
       .filter((group) => hit(group.name))
       .map((group) => ({
         key: `group:${group.setId}`,
