@@ -21,6 +21,8 @@ export interface Launch {
 export interface LaunchRegistryDeps {
   generations: LaunchGenerations
   clock: Clock
+  /** Dynamic ownership gate, checked again after the awaited generation allocation. */
+  servesAgent?: (agentId: string) => boolean
 }
 
 // Cache launches and fence pending publication and adoption across local releases.
@@ -121,7 +123,9 @@ export class LaunchRegistry<L extends Launch = Launch> {
   }
 
   stillServed(subject: string, releasedAt: number): boolean {
-    return this.releaseFence(subject) === releasedAt
+    return (
+      this.releaseFence(subject) === releasedAt && (this.deps.servesAgent?.(sandboxSubjectAgentId(subject)) ?? true)
+    )
   }
 
   assertStillServed(subject: string, releasedAt: number): void {

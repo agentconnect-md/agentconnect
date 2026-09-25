@@ -2572,6 +2572,7 @@ export class Daemon {
           // member shares — a per-process counter restarts at 1 and the agent's pod refuses it.
           generations: this.dataPlane!.store,
           orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
+          servesAgent: (agentId) => this.servesAgent(agentId),
           // Which sockets this agent's pod needs, and where this daemon serves them — both are on
           // the daemon's own filesystem, so without a tunnel they exist nowhere the pod can reach.
           // `mcp` for every pod agent: any session may carry tools and the listener lives as long as the pod.
