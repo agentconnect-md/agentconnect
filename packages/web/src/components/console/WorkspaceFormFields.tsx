@@ -6,6 +6,7 @@ import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { GiteaMark, GithubMark, GitlabMark } from '@/components/marks'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon, Toggle } from '@/components/ui'
+import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { GITEA_REPOSITORY_STATE, giteaChoiceSelectable, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
@@ -63,54 +64,34 @@ export function RepositoryMaterializeBadge({ value }: { value: RepoMaterialize }
   )
 }
 
-const MATERIALIZE_PILL = {
-  sm: {
-    bar: 'pillbar flex-none p-[2px]',
-    on: 'pill on px-2 py-[2px] text-[11.5px] leading-normal',
-    off: 'pill px-2 py-[2px] text-[11.5px] leading-normal disabled:cursor-default disabled:opacity-50'
-  },
-  md: { bar: 'pillbar self-start', on: 'pill on', off: 'pill disabled:cursor-default disabled:opacity-50' }
-} as const
-
-/** Segment that switches a grant's checkout between the selectable options; `sm` fits a list row. */
-export function RepositoryMaterializeSwitch({
+/** Segment that switches the add flow's checkout between the selectable options. */
+function RepositoryMaterializeSwitch({
   value,
-  options = REPOSITORY_MATERIALIZE_OPTIONS,
-  size = 'md',
-  disabled = false,
-  decisionBlock = null,
-  onDecisionBlocked,
+  options,
+  decisionBlock,
   onChange
 }: {
   value: RepoMaterialize
-  options?: readonly RepoMaterialize[]
-  size?: keyof typeof MATERIALIZE_PILL
-  disabled?: boolean
+  options: readonly RepoMaterialize[]
   /** Why By decision cannot be chosen now; a value already By decision stays shown as chosen. */
-  decisionBlock?: RepositoryDecisionBlock
-  /** Given, a By decision blocked only by a missing selector stays clickable to reveal the selector. */
-  onDecisionBlocked?: () => void
+  decisionBlock: RepositoryDecisionBlock
   onChange: (value: RepoMaterialize) => void
 }) {
   const t = useTranslations('Integrations.dialog.workspaceFields')
-  const pill = MATERIALIZE_PILL[size]
   return (
-    <span className={pill.bar} role="group" aria-label={t('checkout')}>
+    <span className="pillbar self-start" role="group" aria-label={t('checkout')}>
       {options.map((option) => {
         const blocked = option === 'decision' && value !== 'decision' ? decisionBlock : null
-        const reveals = blocked === 'selector' && !!onDecisionBlocked
         return (
           <button
             key={option}
             type="button"
-            className={value === option ? pill.on : reveals ? `${pill.off} opacity-50` : pill.off}
+            className={value === option ? 'pill on' : 'pill disabled:cursor-default disabled:opacity-50'}
             aria-pressed={value === option}
-            aria-disabled={blocked ? true : undefined}
             title={t(blocked ? DECISION_BLOCK_TITLE[blocked] : MATERIALIZE_COPY[option].title)}
-            disabled={disabled || (!!blocked && !reveals)}
+            disabled={!!blocked}
             onClick={() => {
-              if (reveals) onDecisionBlocked()
-              else if (value !== option) onChange(option)
+              if (value !== option) onChange(option)
             }}
           >
             {t(MATERIALIZE_COPY[option].label)}
@@ -118,6 +99,95 @@ export function RepositoryMaterializeSwitch({
         )
       })}
     </span>
+  )
+}
+
+/** A list row's checkout: the current choice, the rest behind a menu so the repository name keeps its room. */
+export function RepositoryMaterializeSelect({
+  value,
+  options = REPOSITORY_MATERIALIZE_OPTIONS,
+  name,
+  disabled = false,
+  decisionBlock = null,
+  onDecisionBlocked,
+  onChange
+}: {
+  value: RepoMaterialize
+  options?: readonly RepoMaterialize[]
+  /** The row's repository or account, which names the control for assistive tech. */
+  name: string
+  disabled?: boolean
+  /** Why By decision cannot be chosen now; a value already By decision stays shown as chosen. */
+  decisionBlock?: RepositoryDecisionBlock
+  /** Given, a By decision blocked only by a missing selector stays pickable to reveal the selector. */
+  onDecisionBlocked?: () => void
+  onChange: (value: RepoMaterialize) => void
+}) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
+  const ariaLabel = t('checkoutFor', { name })
+  return (
+    <AnchoredFlyout
+      ariaLabel={ariaLabel}
+      align="end"
+      width={180}
+      estimatedHeight={10 + options.length * 34}
+      triggerClassName="flex flex-none"
+      trigger={({ open, menuId, toggle }) => (
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={ariaLabel}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? menuId : undefined}
+          title={t(MATERIALIZE_COPY[value].title)}
+          onClick={toggle}
+          className={
+            disabled
+              ? 'selbtn h-7 min-w-[112px] cursor-default opacity-60'
+              : open
+                ? 'selbtn on h-7 min-w-[112px]'
+                : 'selbtn h-7 min-w-[112px]'
+          }
+        >
+          <span className="lbl">{t(MATERIALIZE_COPY[value].label)}</span>
+        </button>
+      )}
+    >
+      {({ close }) =>
+        options.map((option) => {
+          const blocked = option === 'decision' && value !== 'decision' ? decisionBlock : null
+          const reveals = blocked === 'selector' && !!onDecisionBlocked
+          return (
+            <button
+              key={option}
+              type="button"
+              role="menuitemradio"
+              aria-checked={option === value}
+              aria-disabled={blocked ? true : undefined}
+              title={t(blocked ? DECISION_BLOCK_TITLE[blocked] : MATERIALIZE_COPY[option].title)}
+              className={
+                reveals
+                  ? 'fopt text-(--text-tertiary)'
+                  : blocked
+                    ? 'fopt cursor-not-allowed text-(--text-tertiary) opacity-60'
+                    : 'fopt'
+              }
+              onClick={() => {
+                if (blocked && !reveals) return
+                // Revealing moves focus to the selector, so the trigger must not take it back.
+                close(!reveals)
+                if (reveals) onDecisionBlocked()
+                else if (option !== value) onChange(option)
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate">{t(MATERIALIZE_COPY[option].label)}</span>
+              {option === value && <Icon name="check" size={14} color="var(--brand)" className="flex-none" />}
+            </button>
+          )
+        })
+      }
+    </AnchoredFlyout>
   )
 }
 
@@ -139,7 +209,7 @@ export function RepositoryMaterializeField({
       <span className="fldlbl">{t('checkout')}</span>
       <RepositoryMaterializeSwitch
         value={value}
-        {...(options ? { options } : {})}
+        options={options ?? REPOSITORY_MATERIALIZE_OPTIONS}
         decisionBlock={decisionBlock ?? null}
         onChange={onChange}
       />

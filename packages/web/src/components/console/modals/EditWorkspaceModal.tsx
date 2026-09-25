@@ -68,7 +68,7 @@ import {
   INSTALLATION_MATERIALIZE_OPTIONS,
   PublicGitlabProjectOption,
   RepositoryAccessField,
-  RepositoryMaterializeSwitch,
+  RepositoryMaterializeSelect,
   REPOSITORY_ACCESS_BADGE,
   WorktreeField,
   WorkingSubdirectoryField,
@@ -1268,8 +1268,8 @@ export default function EditWorkspaceModal({
                   </span>
                   <span className={REPOSITORY_ACCESS_BADGE[grant.access]}>{grant.access}</span>
                   <span title={isOwner ? undefined : t('installationOwnerOnly')}>
-                    <RepositoryMaterializeSwitch
-                      size="sm"
+                    <RepositoryMaterializeSelect
+                      name={grant.accountLogin}
                       options={INSTALLATION_MATERIALIZE_OPTIONS}
                       value={grant.materialize}
                       disabled={!isOwner || rowBusy}
@@ -1314,8 +1314,8 @@ export default function EditWorkspaceModal({
                       {authorization.repoFullName}
                     </span>
                     <span className={REPOSITORY_ACCESS_BADGE[authorization.access]}>{authorization.access}</span>
-                    <RepositoryMaterializeSwitch
-                      size="sm"
+                    <RepositoryMaterializeSelect
+                      name={authorization.repoFullName}
                       value={repoAuthMaterialize(authorization)}
                       disabled={rowBusy}
                       decisionBlock={decisionBlock}

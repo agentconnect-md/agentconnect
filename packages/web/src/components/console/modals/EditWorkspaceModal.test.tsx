@@ -119,10 +119,16 @@ async function render(authorized: AgentRepoAuthDto[], onAuthorizedChange = vi.fn
   return onAuthorizedChange
 }
 
-const checkout = (label: string) =>
-  Array.from(document.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Checkout"] button')).find(
-    (button) => button.textContent === label
+const checkoutOf = (name = 'example-org/example-repo') =>
+  document.querySelector<HTMLButtonElement>(`button[aria-label="Checkout for ${name}"]`)
+const choice = (label: string) =>
+  Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).find(
+    (item) => item.textContent === label
   )
+const pick = async (label: string) => {
+  await act(async () => checkoutOf()?.click())
+  await act(async () => choice(label)?.click())
+}
 
 describe('EditWorkspaceModal repository checkout', () => {
   it('shows each row’s checkout, an older CP’s row as Always', async () => {
@@ -130,37 +136,40 @@ describe('EditWorkspaceModal repository checkout', () => {
       row({ materialize: undefined }),
       row({ id: 'repo-auth-2', repoFullName: 'example-org/second', materialize: 'on-demand' })
     ])
-    const groups = document.querySelectorAll('[role="group"][aria-label="Checkout"]')
-    expect(groups).toHaveLength(2)
-    expect(groups[0]?.querySelector('[aria-pressed="true"]')?.textContent).toBe('Always')
-    expect(groups[1]?.querySelector('[aria-pressed="true"]')?.textContent).toBe('On demand')
+    expect(checkoutOf()?.textContent).toBe('Always')
+    expect(checkoutOf('example-org/second')?.textContent).toBe('On demand')
+    expect(document.querySelector('[role="group"][aria-label="Checkout"]')).toBeNull()
     // No provider is ready where the agent runs, so By decision is offered but cannot be chosen.
-    expect(checkout('By decision')?.disabled).toBe(true)
+    await act(async () => checkoutOf()?.click())
+    expect(choice('By decision')?.getAttribute('aria-disabled')).toBe('true')
+    await act(async () => choice('By decision')?.click())
+    expect(mocks.updateAgentRepo).not.toHaveBeenCalled()
     expect(document.querySelector('[data-repository-selector]')).toBeNull()
   })
 
   it('switches a row to On demand with a materialize-only PATCH', async () => {
     mocks.updateAgentRepo.mockResolvedValue(row({ materialize: 'on-demand' }))
     const onAuthorizedChange = await render([row()])
-    await act(async () => checkout('On demand')?.click())
+    await pick('On demand')
 
     expect(mocks.updateAgentRepo).toHaveBeenCalledWith('agent-a', 'repo-auth-1', { materialize: 'on-demand' })
     expect(onAuthorizedChange).toHaveBeenCalledWith([row({ materialize: 'on-demand' })])
-    expect(checkout('On demand')?.getAttribute('aria-pressed')).toBe('true')
+    expect(checkoutOf()?.textContent).toBe('On demand')
+    expect(choice('On demand')).toBeUndefined()
   })
 
   it('keeps the row and names the failure when the switch is refused', async () => {
     mocks.updateAgentRepo.mockRejectedValue(new Error('authorization not found'))
     await render([row()])
-    await act(async () => checkout('On demand')?.click())
+    await pick('On demand')
 
     expect(document.body.textContent).toContain('authorization not found')
-    expect(checkout('Always')?.getAttribute('aria-pressed')).toBe('true')
+    expect(checkoutOf()?.textContent).toBe('Always')
   })
 
-  it('sends nothing when the current checkout is clicked again', async () => {
+  it('sends nothing when the current checkout is picked again', async () => {
     await render([row()])
-    await act(async () => checkout('Always')?.click())
+    await pick('Always')
     expect(mocks.updateAgentRepo).not.toHaveBeenCalled()
   })
 })

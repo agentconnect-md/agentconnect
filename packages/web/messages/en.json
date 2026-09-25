@@ -1543,6 +1543,7 @@
         "workingSubdirectoryAriaLabel": "Working subdirectory",
         "repoRoot": "repo root",
         "checkout": "Checkout",
+        "checkoutFor": "Checkout for {name}",
         "materializeAlways": "Always",
         "materializeOnDemand": "On demand",
         "materializeByDecision": "By decision",
