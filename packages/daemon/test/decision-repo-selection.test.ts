@@ -4,6 +4,7 @@ import { DECISION_REQUEST_MAX_BYTES, decisionRequestBody } from '../src/decision
 import { modelSelectionState } from '../src/decisions/model-selection.js'
 import {
   evaluateChunks,
+  evaluateWithCapacityWait,
   hasDecisionAuthorizations,
   hasDecisionGrants,
   parseSelectedRepositories,
@@ -264,5 +265,49 @@ describe('the snapshot (decision 19)', () => {
     ).toBeUndefined()
     expect(sameSelection(selected, [{ ...selected[0]!, repoFullName: 'acme/renamed' }])).toBe(true)
     expect(sameSelection(selected, [])).toBe(false)
+  })
+})
+
+describe('evaluateWithCapacityWait', () => {
+  const capacity: DecisionEvaluation = { status: 'unavailable', reason: 'capacity' }
+  // A fake clock the sleeps advance, so the wait's deadline is exercised without real time.
+  const clock = () => {
+    let now = 0
+    const sleeps: number[] = []
+    return {
+      now: () => now,
+      sleep: async (ms: number) => {
+        sleeps.push(ms)
+        now += ms
+      },
+      sleeps
+    }
+  }
+
+  it('waits out the shared slots and returns the answer once one is free', async () => {
+    const deps = clock()
+    const answers = [capacity, capacity, answered({ r1: 0.7, none: 0.3 })]
+    const result = await evaluateWithCapacityWait(async () => answers.shift()!, deps)
+    expect(result.status).toBe('answered')
+    expect(deps.sleeps).toEqual([250, 500])
+  })
+
+  it('gives up with capacity once the wait runs out', async () => {
+    const deps = clock()
+    const result = await evaluateWithCapacityWait(async () => capacity, { ...deps, waitMs: 1_000 })
+    expect(result).toEqual(capacity)
+    expect(deps.sleeps.reduce((a, b) => a + b, 0)).toBe(1_000)
+  })
+
+  it('never retries any other refusal', async () => {
+    const deps = clock()
+    let calls = 0
+    const result = await evaluateWithCapacityWait(async () => {
+      calls++
+      return { status: 'unavailable', reason: 'credentials' }
+    }, deps)
+    expect(result).toEqual({ status: 'unavailable', reason: 'credentials' })
+    expect(calls).toBe(1)
+    expect(deps.sleeps).toEqual([])
   })
 })

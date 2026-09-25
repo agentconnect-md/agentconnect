@@ -327,7 +327,10 @@ option.
 **Evaluation.** Chunks are evaluated through the existing `DecisionEvaluator`
 with the agent's `repositorySelector`, at most four at once — its own active
 cap, so a batch never answers `capacity` to itself — with its five-second
-deadline per request; seven chunks are two rounds. The state is the
+deadline per request; seven chunks are two rounds. Other Decision consumers
+share those slots, so a chunk answered `capacity` waits for one, with backoff,
+for up to 15 seconds before the start fails (decision 18); no other refusal is
+retried. The state is the
 model-selection state (a chat's opening with its bounded history, or the PR/MR
 context) trimmed against the largest chunk's question, plus `workspace.primary`
 and the partial mark; a wake with no recorded opening uses the message text

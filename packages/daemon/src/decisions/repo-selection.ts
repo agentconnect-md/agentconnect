@@ -190,6 +190,24 @@ export async function evaluateChunks<C, T>(
   return results
 }
 
+/** How long one chunk waits out the evaluator's shared slots before `capacity` fails the start (decision 18). */
+export const REPO_SELECTION_CAPACITY_WAIT_MS = 15_000
+
+/** Evaluate once, retrying only the evaluator's own `capacity` answer with backoff until the wait runs out: other Decision consumers share its slots, and no other refusal is retried. */
+export async function evaluateWithCapacityWait(
+  evaluate: () => Promise<DecisionEvaluation>,
+  deps: { now: () => number; sleep: (ms: number) => Promise<void>; waitMs?: number }
+): Promise<DecisionEvaluation> {
+  const deadline = deps.now() + (deps.waitMs ?? REPO_SELECTION_CAPACITY_WAIT_MS)
+  for (let attempt = 0; ; attempt++) {
+    const evaluation = await evaluate()
+    if (evaluation.status !== 'unavailable' || evaluation.reason !== 'capacity') return evaluation
+    const remaining = deadline - deps.now()
+    if (remaining <= 0) return evaluation
+    await deps.sleep(Math.min(250 * 2 ** attempt, 2_000, remaining))
+  }
+}
+
 /** Decision 17: within a chunk every option that beats `none` is a hit, hits are ordered by probability across chunks, and at most {@link REPO_SELECTION_MAX} are selected; any chunk without an answer makes the whole selection unavailable (decision 18). */
 export function selectRepositories(
   chunks: readonly RepoSelectionChunk[],

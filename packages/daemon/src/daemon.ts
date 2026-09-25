@@ -123,6 +123,7 @@ import { IMPLICIT_CREDENTIAL_PROVIDER, parseManagedBaseUrl, stripHostPathPrefix 
 import { codeHostCredentials, credentialProviderOf, type ManagedWorkspaceRepo } from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { setTimeout as sleepFor } from 'node:timers/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
@@ -581,6 +582,7 @@ import {
 } from './decisions/model-selection.js'
 import {
   evaluateChunks,
+  evaluateWithCapacityWait,
   hasDecisionAuthorizations,
   hasDecisionGrants,
   parseSelectedRepositories,
@@ -14132,15 +14134,24 @@ export class Daemon {
       const state = repoSelectionState(base, opening, { primary, partial }, { ...decision, question: largest })
       signal.throwIfAborted()
       const evaluationId = randomUUID()
+      // Other Decision consumers share the evaluator's slots, so a chunk waits out `capacity` rather than failing the start on it.
+      const waitDeps = {
+        now: () => this.clock.now(),
+        sleep: (ms: number) => sleepFor(ms, undefined, { signal })
+      }
       const evaluations = await evaluateChunks(chunks, (chunk, index) =>
-        this.decisionEvaluator.evaluate(
-          {
-            agentId: agent.id,
-            evaluationId: `${evaluationId}:${index}`,
-            decision: { ...decision, question: chunk.question },
-            state
-          },
-          signal
+        evaluateWithCapacityWait(
+          () =>
+            this.decisionEvaluator.evaluate(
+              {
+                agentId: agent.id,
+                evaluationId: `${evaluationId}:${index}`,
+                decision: { ...decision, question: chunk.question },
+                state
+              },
+              signal
+            ),
+          waitDeps
         )
       )
       const result = selectRepositories(chunks, evaluations)
