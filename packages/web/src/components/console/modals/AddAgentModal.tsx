@@ -37,6 +37,7 @@ import {
   executionAsk,
   groupStrategies,
   isSandboxStrategy,
+  strategyModelSource,
   strategyOptions,
   strategyUsesImage,
   type PlacementStrategies
@@ -386,6 +387,9 @@ export default function AddAgentModal({
   const effectiveRunInSandbox = placementStrategies.kind !== 'pool' && isSandboxStrategy(effectiveExecution)
   // Only a strategy that starts the image's install reads its image-binary warning.
   const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(effectiveExecution)
+  // Models come from the chosen strategy's catalog: the host install's for host and srt, the image's for a VM.
+  const modelSource =
+    daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : effectiveExecution)
   // The pool's pod, not the strategy, is what encloses a session there.
   const isolationLabel = sessionIsolationLabel({
     pool: placement?.kind === 'pool',
@@ -413,10 +417,10 @@ export default function AddAgentModal({
   // There is no separate "Default" entry: with real models known, the picker
   // preselects the runtime's resolved default (else the first model) and the
   // agent stores that concrete id. '' survives only when nothing is advertised.
-  const runtimeProfile = daemon?.runtimeModels.find((r) => r.runtime === effectiveRuntime)
+  const runtimeProfile = modelSource?.runtimeModels.find((r) => r.runtime === effectiveRuntime)
   const models = runtimeProfile?.models ?? []
   const modelCatalog = runtimeProfile?.modelCatalog ?? undefined
-  const selectedModel = models.includes(model) ? model : preferredModelFor(daemon, effectiveRuntime)
+  const selectedModel = models.includes(model) ? model : preferredModelFor(modelSource, effectiveRuntime)
   const runtimeSupportsModes = supportsModes(effectiveRuntime)
   // Dynamic-first vocabularies (runtime-model-catalog.md §7): the SELECTED
   // model's discovered capability drives the effort/fast controls, the catalog's
@@ -1048,7 +1052,7 @@ export default function AddAgentModal({
                 permissionMode: selectedPermissionMode,
                 fastMode
               }}
-              source={daemon}
+              source={modelSource}
               runtimes={runtimeIds}
               runInSandbox={readsImage}
               onFallbackChange={(target) => {

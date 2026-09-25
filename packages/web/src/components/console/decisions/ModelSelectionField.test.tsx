@@ -39,6 +39,7 @@ vi.mock('@/lib/decisions/provider', () => ({
 }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => path }) }))
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
+import { strategyModelSource } from '@/lib/execution-strategy'
 import { ModelSelectionField } from './ModelSelectionField'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -254,6 +255,55 @@ it('changes a rule without changing sibling or fallback run settings', async () 
     fastMode: true
   })
   expect(onChange).toHaveBeenCalledOnce()
+})
+
+it('offers and checks the models of the agent’s strategy: the host install’s, or the image’s for a VM', async () => {
+  const daemon = {
+    runtimeModels: [
+      {
+        runtime: 'claude',
+        version: '',
+        models: ['model-host'],
+        strategies: {
+          host: { available: true, models: ['model-host'] },
+          microsandbox: { available: true, models: ['model-image'], modelsSource: 'cached' as const }
+        }
+      }
+    ]
+  }
+  const rules = [{ when: { type: 'score', min: 0, max: 2 }, runtime: 'claude', model: 'model-host' }] as never
+  for (const [strategy, offered, valid] of [
+    ['host', 'model-host', true],
+    ['microsandbox', 'model-image', false]
+  ] as const) {
+    const onValidityChange = vi.fn()
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () =>
+      root!.render(
+        <ModelSelectionField
+          value={{ decisionId: '33333333-3333-4333-8333-333333333333', rules }}
+          onChange={vi.fn()}
+          onValidityChange={onValidityChange}
+          source={strategyModelSource(daemon, strategy)}
+          runtimes={['claude']}
+          fallback={{ runtime: 'claude', model: offered }}
+          onFallbackChange={vi.fn()}
+        />
+      )
+    )
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Provider and model"]')!.click())
+    const options = [...document.querySelectorAll('[role="dialog"] [aria-label*=" · "]')].map(
+      (option) => option.getAttribute('aria-label')!.split(' · ')[1]
+    )
+    expect(options).toEqual([offered])
+    // A rule naming the host install's model cannot run in the VM.
+    expect(onValidityChange).toHaveBeenLastCalledWith(valid)
+    act(() => root!.unmount())
+    root = undefined
+    container.remove()
+  }
 })
 
 it('edits the agent run settings from the fixed picker', async () => {

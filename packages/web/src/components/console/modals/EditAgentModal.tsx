@@ -56,6 +56,7 @@ import {
   daemonStrategies,
   executionAsk,
   groupStrategies,
+  strategyModelSource,
   strategyOptions,
   strategyUsesImage,
   type PlacementStrategies
@@ -413,6 +414,8 @@ export default function EditAgentModal({
   const executionOptions = strategyOptions(placementStrategies, execution)
   // Only a strategy that starts the image's install reads its image-binary warning.
   const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(execution)
+  // Models come from the chosen strategy's catalog: the host install's for host and srt, the image's for a VM.
+  const modelSource = daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : execution)
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
     // With the flag off the picker offers Cloud only to an agent already ON it — same rule
@@ -508,13 +511,18 @@ export default function EditAgentModal({
   // never silently pins. A runtime that advertises nothing (cursor) leaves the
   // picker inert. During a move a stale stored id stays visible as unavailable
   // so Save can require an explicit compatible choice.
-  const runtimeProfile = daemon?.runtimeModels.find((r) => r.runtime === runtime)
+  const runtimeProfile = modelSource?.runtimeModels.find((r) => r.runtime === runtime)
   const reportedModels = runtimeProfile?.models ?? []
   const selectedModel =
-    model && (reportedModels.includes(model) || daemonChanged) ? model : preferredModelFor(daemon, runtime)
+    model && (reportedModels.includes(model) || daemonChanged) ? model : preferredModelFor(modelSource, runtime)
   const runtimeUnavailable = daemonChanged && reportedRuntimeIds.length > 0 && !reportedRuntimeIds.includes(runtime)
   const modelUnavailable =
     daemonChanged && !!selectedModel && reportedModels.length > 0 && !reportedModels.includes(selectedModel)
+  // A new strategy whose catalog lacks the stored model: Save keeps the one the picker shows in its place.
+  const strategyModel =
+    execution !== initialExecution.current && !!model && !!selectedModel && selectedModel !== model
+      ? selectedModel
+      : undefined
 
   // Agent-call reachability, computed with THIS agent's in-progress policy so the
   // "X of Y" hints track the pending edits (same graph the standalone card built).
@@ -560,13 +568,21 @@ export default function EditAgentModal({
   const secretsChanged = Object.keys(secretsPatch).length > 0
   const modelSelectionChanged = JSON.stringify(modelSelection) !== JSON.stringify(initialModelSelection.current)
   const validateModelSelection =
-    modelSelectionChanged || model !== initialModel.current || runtime !== initialRuntime.current || daemonChanged
+    modelSelectionChanged ||
+    model !== initialModel.current ||
+    runtime !== initialRuntime.current ||
+    daemonChanged ||
+    execution !== initialExecution.current
   const envSecretError = envSecretsError(envRows, secretRows)
   const patch: UpdateAgentInput = {
     ...(normalizedDisplayName !== (initialDisplayName.current.trim() || null)
       ? { displayName: normalizedDisplayName }
       : {}),
-    ...(model !== initialModel.current ? { model: model || (modelSelection ? selectedModel : null) } : {}),
+    ...(strategyModel
+      ? { model: strategyModel }
+      : model !== initialModel.current
+        ? { model: model || (modelSelection ? selectedModel : null) }
+        : {}),
     ...(modelSelectionChanged ? { modelSelection, ...(modelSelection && !model ? { model: selectedModel } : {}) } : {}),
     ...(runtime.trim() !== initialRuntime.current ? { runtime: runtime.trim() } : {}),
     ...(effort !== initialEffort.current ? { reasoningEffort: effort || null } : {}),
@@ -836,7 +852,7 @@ export default function EditAgentModal({
                 onChange={setModelSelection}
                 onValidityChange={setModelSelectionValid}
                 fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
-                source={daemon}
+                source={modelSource}
                 runtimes={runtimeOptions}
                 runInSandbox={readsImage}
                 onFallbackChange={(target) => {

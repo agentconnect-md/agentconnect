@@ -168,6 +168,7 @@ import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
 import { approvalNotice, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
+import { agentStrategyValue, strategyModelSource } from '@/lib/execution-strategy'
 import {
   CodeHostDecisionResult,
   DecisionResultMarker,
@@ -4686,12 +4687,16 @@ export default function SessionDetailView() {
   const runtimeUnresolved = byDecision || session.runtimePending === true
   const runtimePending = runtimeUnresolved && !beforeFirstTurn
   const runtimeDecision = decisionCatalog?.decisions.find((item) => item.id === owner?.modelSelection?.decisionId)
-  const runtimeProfile = owningDaemon?.runtimeModels.find((profile) => profile.runtime === agentRuntime)
+  // Before a live list, models come from the catalog of the agent's strategy: the host install's for host and srt, the image's for a VM.
+  const modelSource =
+    owningDaemon &&
+    strategyModelSource(owningDaemon, owner && !owningDaemon.pool ? agentStrategyValue(owner) : undefined)
+  const runtimeProfile = modelSource?.runtimeModels.find((profile) => profile.runtime === agentRuntime)
   const runtimeCatalog = runtimeProfile?.modelCatalog ?? undefined
   const pgModel =
     runtimeSelection?.model ??
     (beforeFirstTurn
-      ? session.model || owner?.model || preferredModelFor(owningDaemon, agentRuntime)
+      ? session.model || owner?.model || preferredModelFor(modelSource, agentRuntime)
       : (session.model ?? ''))
   // A resolved runtime that reported no concrete model ran its own default; the picker names that entry.
   const pgShownModel =
@@ -4700,7 +4705,7 @@ export default function SessionDetailView() {
   const pgModelOptions =
     pgModels.length > 0 && pgModel && !pgModels.includes(pgModel) ? [pgModel, ...pgModels] : pgModels
   const pickerSource = beforeFirstTurn
-    ? owningDaemon
+    ? modelSource
     : {
         runtimeModels: [
           { ...runtimeProfile, runtime: agentRuntime, version: runtimeProfile?.version ?? '', models: pgModelOptions }

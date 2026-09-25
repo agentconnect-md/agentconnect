@@ -1291,7 +1291,11 @@ which daemon executes it, or why it stayed on its holder (§7). The agent's stra
 picker (§5) replaces "Run in sandbox". A daemon's runtime list has one tab per
 strategy in the machine's own table, named as the picker names it, each listing the
 runtimes that strategy starts with their models there, or the probe's reason when the
-machine cannot run it. A group's runtime list names the members that
+machine cannot run it. The agent's model pickers read the same entries: the Fixed
+picker, each By decision rule and its fallback, and a chat composer before the
+session's first turn offer each runtime's models under the agent's strategy — the host
+install's for `host` and `srt`, the image's for `microsandbox` — where an older daemon's
+single list and a pool agent's stay as reported. A group's runtime list names the members that
 need a runtime login, since those are the machines whose sign-in a session would
 lack (#2397).
 
