@@ -248,10 +248,11 @@ describe('AgentDetailView, github decision routing', () => {
     expect(add?.disabled).toBe(false)
   })
 
-  it('stops the routing from the row menu with a DELETE', async () => {
+  it('stops the routing from the pill with a DELETE, and leaves the row menu without a second stop', async () => {
     const scope = await render()
     await click(scope.querySelector('[aria-label="More for acme/api PRs"]'))
-    await click(menuItem('Stop using decision'))
+    expect(menuItem('Stop using')).toBeUndefined()
+    await click(scope.querySelector('button[aria-label^="Stop using By decision"]'))
     expect(mocks.deleteCodeHostRouting).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'github', repoId: '1', family: 'pull_request' }),
       'org-1'
@@ -314,7 +315,7 @@ describe.each([
     expect(menuItem('@-mention')?.getAttribute('aria-disabled')).toBeNull()
   })
 
-  it('opens Recent evaluations and stops the routing from the row menu', async () => {
+  it('opens Recent evaluations from the row menu and stops the routing from the pill', async () => {
     const scope = await render()
     await click(scope.querySelector(`[aria-label="More for ${repo} Issues"]`))
     expect(menuItem('Recent evaluations')).toBeUndefined()
@@ -328,7 +329,8 @@ describe.each([
       'org-1'
     )
     await click(scope.querySelector(`[aria-label="More for ${repo} ${change}"]`))
-    await click(menuItem('Stop using decision'))
+    expect(menuItem('Stop using')).toBeUndefined()
+    await click(scope.querySelector('button[aria-label^="Stop using By decision"]'))
     expect(mocks.deleteCodeHostRouting).toHaveBeenCalledWith(
       expect.objectContaining({ provider, repoId: REPO[provider].repoId, family: 'merge_request' }),
       'org-1'

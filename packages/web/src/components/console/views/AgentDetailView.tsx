@@ -2280,7 +2280,6 @@ function AgentDetail() {
                                   </button>
                                 </span>
                               </div>
-                              {routing.error}
                               {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
                                 <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
                                   {addFamilyError.message}
@@ -2433,7 +2432,6 @@ function AgentDetail() {
                                   </button>
                                 </span>
                               </div>
-                              {routing.error}
                               {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
                                 <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
                                   {addFamilyError.message}
@@ -2585,7 +2583,6 @@ function AgentDetail() {
                                   </button>
                                 </span>
                               </div>
-                              {routing.error}
                               {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
                                 <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
                                   {addFamilyError.message}
