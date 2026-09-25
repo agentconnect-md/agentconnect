@@ -188,6 +188,21 @@ export function strategyRuntimeModels(runtimes: readonly RuntimeFacts[], value: 
   })
 }
 
+/** A daemon's facts as an agent in `value` picks its models: each runtime's list from its entry for that strategy, else an older daemon's single list; no strategy leaves them as reported. */
+export function strategyModelSource<T extends Pick<DaemonRow, 'runtimeModels'>>(
+  source: T,
+  value: string | undefined
+): T {
+  if (!value) return source
+  return {
+    ...source,
+    runtimeModels: source.runtimeModels.map((rt) => {
+      const entry = rt.strategies?.[value]
+      return entry ? { ...rt, models: entry.models ?? [] } : rt
+    })
+  }
+}
+
 /** The request field naming `value`: the slug where the placement reports a table, the legacy boolean where it does not, nothing on the pool. */
 export function executionAsk(
   placement: PlacementStrategies,

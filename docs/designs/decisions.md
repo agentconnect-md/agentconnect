@@ -1703,7 +1703,8 @@ This consumer is independent of MCP Decision attachments and live message trigge
 
 The Agent create/edit **Runtime** section has two modes, **Fixed** and **By decision**.
 Both use the same Provider · model picker: runtimes on the left, their advertised
-models on the right, and search across every runtime. The Fixed picker and each
+models on the right, and search across every runtime. The models are each runtime's
+under the agent's execution strategy ([session-executors.md](session-executors.md) §10). The Fixed picker and each
 By decision rule and fallback picker end in one run-settings row below the model
 list: a model-specific Effort select, a runtime-specific Approval select, and a Fast
 switch that appears only when the chosen model offers it. There are no separate

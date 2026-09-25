@@ -62,6 +62,7 @@ import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
+import { agentStrategyValue, strategyModelSource } from '@/lib/execution-strategy'
 
 // Design composer selectors: agent/model are "pills" (rounded, with a leading
 // mark), effort/permission are plain "chips". Full literal strings so Tailwind's
@@ -260,6 +261,10 @@ export default function HomeView() {
   // What to CALL it, and where to send the reader: a set is named and opened as itself, never as
   // the member standing in for it — a pool member is a Pod that no longer exists after a roll.
   const placementKind = agent ? agentPlacementKind(agent, memberSets) : undefined
+  // Models come from the catalog of the agent's strategy: the host install's for host and srt, the image's for a VM.
+  const modelSource =
+    owningDaemon &&
+    strategyModelSource(owningDaemon, agent && placementKind !== 'pool' ? agentStrategyValue(agent) : undefined)
   const placementLabel = agent ? agentDaemonLabel(agent, daemons, memberSets) : '—'
   const placementName = placementLabel === '—' ? '' : placementLabel
   // Existing pool placements fall back to the Infra list when the pool page is hidden.
@@ -276,7 +281,7 @@ export default function HomeView() {
   const runtimeChangesAllowed = agent?.allowRuntimeChangesInChat === true
   const byDecision = !!agent?.modelSelection && !runtime.model && !runtime.runtime
   const selectedDecision = decisions.find((item) => item.id === agent?.modelSelection?.decisionId)
-  const runtimeProfile = owningDaemon?.runtimeModels.find((r) => r.runtime === selectedRuntime)
+  const runtimeProfile = modelSource?.runtimeModels.find((r) => r.runtime === selectedRuntime)
   const models = runtimeProfile?.models ?? []
   const modelCatalog = runtimeProfile?.modelCatalog ?? undefined
 
@@ -287,7 +292,7 @@ export default function HomeView() {
   const defaultModel =
     agent && selectedRuntime === agent.runtime && models.includes(agent.model)
       ? agent.model
-      : preferredModelFor(owningDaemon, selectedRuntime) || agent?.model || ''
+      : preferredModelFor(modelSource, selectedRuntime) || agent?.model || ''
   const model = runtime.model ?? defaultModel
   const modelChoices = (models.length ? models : model ? [model] : []).map((m) => {
     const description = agent ? modelTooltip(owningDaemon, selectedRuntime, m) : undefined
@@ -706,7 +711,7 @@ export default function HomeView() {
                     readOnly={!runtimeChangesAllowed}
                     runInSandbox={agent.runInSandbox}
                     value={{ runtime: selectedRuntime, model }}
-                    source={owningDaemon}
+                    source={modelSource}
                     decision={
                       agent.modelSelection
                         ? {

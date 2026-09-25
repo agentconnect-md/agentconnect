@@ -56,6 +56,7 @@ import {
   daemonStrategies,
   executionAsk,
   groupStrategies,
+  strategyModelSource,
   strategyOptions,
   strategyUsesImage,
   type PlacementStrategies
@@ -413,6 +414,8 @@ export default function EditAgentModal({
   const executionOptions = strategyOptions(placementStrategies, execution)
   // Only a strategy that starts the image's install reads its image-binary warning.
   const readsImage = placementStrategies.kind !== 'pool' && strategyUsesImage(execution)
+  // Models come from the chosen strategy's catalog: the host install's for host and srt, the image's for a VM.
+  const modelSource = daemon && strategyModelSource(daemon, placementStrategies.kind === 'pool' ? undefined : execution)
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
     // With the flag off the picker offers Cloud only to an agent already ON it — same rule
@@ -508,10 +511,10 @@ export default function EditAgentModal({
   // never silently pins. A runtime that advertises nothing (cursor) leaves the
   // picker inert. During a move a stale stored id stays visible as unavailable
   // so Save can require an explicit compatible choice.
-  const runtimeProfile = daemon?.runtimeModels.find((r) => r.runtime === runtime)
+  const runtimeProfile = modelSource?.runtimeModels.find((r) => r.runtime === runtime)
   const reportedModels = runtimeProfile?.models ?? []
   const selectedModel =
-    model && (reportedModels.includes(model) || daemonChanged) ? model : preferredModelFor(daemon, runtime)
+    model && (reportedModels.includes(model) || daemonChanged) ? model : preferredModelFor(modelSource, runtime)
   const runtimeUnavailable = daemonChanged && reportedRuntimeIds.length > 0 && !reportedRuntimeIds.includes(runtime)
   const modelUnavailable =
     daemonChanged && !!selectedModel && reportedModels.length > 0 && !reportedModels.includes(selectedModel)
@@ -836,7 +839,7 @@ export default function EditAgentModal({
                 onChange={setModelSelection}
                 onValidityChange={setModelSelectionValid}
                 fallback={{ runtime, model: selectedModel, effort, permissionMode, fastMode }}
-                source={daemon}
+                source={modelSource}
                 runtimes={runtimeOptions}
                 runInSandbox={readsImage}
                 onFallbackChange={(target) => {

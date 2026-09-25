@@ -12,6 +12,7 @@ import {
   sortStrategies,
   strategyNameKey,
   strategyOptions,
+  strategyModelSource,
   strategyRuntimeModels,
   strategyUsesImage
 } from './execution-strategy'
@@ -221,5 +222,52 @@ describe('the runtimes one strategy starts', () => {
     expect(strategyRuntimeModels([legacy], LEGACY_SANDBOX)).toMatchObject([
       { version: '', models: ['host-model'], unavailableReason: 'image-binary-missing' }
     ])
+  })
+})
+
+describe('the models an agent picks from', () => {
+  type Runtime = DaemonRow['runtimeModels'][number]
+  const runtime = (strategies: Runtime['strategies']): Runtime => ({
+    runtime: 'claude',
+    version: '9.0.0',
+    models: ['host-model'],
+    strategies
+  })
+  const models = (source: { runtimeModels: Runtime[] }) => source.runtimeModels.map((rt) => rt.models)
+
+  it('takes each runtime’s list from its entry for the agent’s strategy', () => {
+    const daemon = {
+      runtimeModels: [
+        runtime({
+          host: { available: true, models: ['host-model'] },
+          srt: { available: true, models: ['host-model'] },
+          microsandbox: { available: true, models: ['image-model'], modelsSource: 'cached' }
+        }),
+        {
+          ...runtime({ microsandbox: { available: false, unavailableReason: 'the image lacks it' } }),
+          runtime: 'codex'
+        }
+      ]
+    }
+    expect(models(strategyModelSource(daemon, 'srt'))).toEqual([['host-model'], ['host-model']])
+    expect(models(strategyModelSource(daemon, 'microsandbox'))).toEqual([['image-model'], []])
+    // Every runtime stays listed, with the rest of its facts as reported.
+    expect(strategyModelSource(daemon, 'microsandbox').runtimeModels.map((rt) => [rt.runtime, rt.version])).toEqual([
+      ['claude', '9.0.0'],
+      ['codex', '9.0.0']
+    ])
+  })
+
+  it('offers a VM entry nothing has probed yet no models, rather than the host install’s', () => {
+    const daemon = { runtimeModels: [runtime({ microsandbox: { available: true } })] }
+    expect(models(strategyModelSource(daemon, 'microsandbox'))).toEqual([[]])
+  })
+
+  it('keeps an older daemon’s single list, and leaves a pool agent’s as reported', () => {
+    const legacy = { runtimeModels: [runtime(null)] }
+    expect(models(strategyModelSource(legacy, 'microsandbox'))).toEqual([['host-model']])
+    expect(models(strategyModelSource(legacy, LEGACY_SANDBOX))).toEqual([['host-model']])
+    const daemon = { runtimeModels: [runtime({ microsandbox: { available: true, models: ['image-model'] } })] }
+    expect(strategyModelSource(daemon, undefined)).toBe(daemon)
   })
 })
