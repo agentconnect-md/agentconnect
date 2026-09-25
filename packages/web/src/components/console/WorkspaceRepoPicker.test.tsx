@@ -82,7 +82,7 @@ describe('workspaceRepoParamRewrite', () => {
 })
 
 describe('WorkspaceRepoPicker', () => {
-  it('lists the workspace first, then every authorized repository with its access tier and checkout', async () => {
+  it('lists the workspace first, then every authorized repository with its checkout', async () => {
     await render(
       <WorkspaceRepoPicker
         primaryLabel="acme/primary-service"
@@ -96,8 +96,8 @@ describe('WorkspaceRepoPicker', () => {
 
     expect(choices().map((choice) => choice.textContent)).toEqual([
       'acme/primary-serviceworkspace',
-      'acme/infrawrite',
-      'example-co/shared-libraryreadOn demand'
+      'acme/infra',
+      'example-co/shared-libraryOn demand'
     ])
     // The workspace is the selected root until a repository is picked.
     expect(choices()[0]?.getAttribute('aria-checked')).toBe('true')
