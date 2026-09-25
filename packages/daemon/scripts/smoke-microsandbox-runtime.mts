@@ -16,7 +16,7 @@ import { LocalExecutor } from '../src/execution/local-executor.js'
 import type { PlaneLaunch } from '../src/execution/plane.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { makeLogger } from '../src/log.js'
-import { microsandboxGitRunner } from '../src/microsandbox/git.js'
+import { localShimGitRunner } from '../src/execution/local-git.js'
 import { installMicrosandbox } from '../src/microsandbox/install.js'
 import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
@@ -339,7 +339,7 @@ try {
     { cwd: environment.workspaceRoot, env: launch.env, timeoutMs: 60_000 }
   )
   assert.equal(init.exitCode, 0, init.stderr)
-  const git = microsandboxGitRunner({
+  const git = localShimGitRunner({
     run: (work) => local.withEnvironment(environment, work),
     cwd: repo,
     env: launch.env

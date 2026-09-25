@@ -104,7 +104,8 @@ import {
 import { resolveMicrosandboxImage } from './release-image.js'
 import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
-import { microsandboxGitRunner } from './microsandbox/git.js'
+import { localShimGitRunner } from './execution/local-git.js'
+import type { GitRunner } from './workspace/git-runner.js'
 import {
   localMicrosandboxEnvironment,
   localMicrosandboxPlacement,
@@ -184,7 +185,7 @@ import {
   sessionHostKey,
   type HostKey
 } from './acp/host-key.js'
-import { prepareRuntimeLaunch, privateRuntimeHomeFor } from './launch/prepare.js'
+import { prepareRuntimeLaunch, privateRuntimeHomeFor, shimEnvironment } from './launch/prepare.js'
 import {
   SessionManager,
   transcriptCoords,
@@ -475,14 +476,16 @@ import {
   type PlacementChoice
 } from './execution/executor-placement.js'
 import { HOSTED_PREFIX, microsandboxLauncher } from './execution/executor-vm.js'
+import { hostShimUnavailableReason } from './execution/host-shim.js'
 import { LocalExecutor } from './execution/local-executor.js'
 import {
   localSrtEnvironmentId,
-  localSrtLauncher,
   localSrtRuntimeRoot,
-  type LocalSrtLauncher
+  srtLauncher,
+  SrtWorkspaceFs,
+  type SrtLauncher
 } from './execution/srt-local.js'
-import { confinedSessionDirIn } from './workspace/session-layout.js'
+import { confinedSessionDirIn, confinedSessionDirOf, sessionHomeIn } from './workspace/session-layout.js'
 import {
   agentStrategyOf,
   assertSomeStrategyAvailable,
@@ -491,9 +494,9 @@ import {
   isSandboxStrategy,
   machineStrategies,
   SANDBOX_STRATEGIES,
-  srtLauncher,
   StrategyUnavailableError,
   strategyReason,
+  type EnvironmentDescriptor,
   type SandboxStrategy,
   type StrategyTable
 } from './execution/strategies.js'
@@ -625,7 +628,13 @@ import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { sessionPodOf } from './cp/agent-wake.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
-import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
+import {
+  canonicalWorkspacePath,
+  containedWorkspacePath,
+  localWorkspaceFiles,
+  RoutedWorkspaceFiles,
+  WorkspaceViolationError
+} from './workspace/workspace-files.js'
 import { readRegularFile, RegularFileError } from './fs/regular-file.js'
 import { localWorkspaceFs } from './workspace/workspace-fs.js'
 import type { SaveAttachmentResult } from './mcp/ops/platform-reads.js'
@@ -1519,7 +1528,7 @@ export class Daemon {
   private localExecutor?: LocalExecutor
   // This machine's own confined srt sessions, each in an SRT-wrapped shim bound the same way (§11); undefined under --k8s.
   private localSrtExecutor?: LocalExecutor
-  private localSrt?: LocalSrtLauncher
+  private localSrt?: SrtLauncher
   // The one `microsandbox` launcher: the VMs the facet hosts and this machine's own start through it.
   private readonly vmLauncher = microsandboxLauncher({
     manager: () => this.microsandbox,
@@ -2421,20 +2430,21 @@ export class Daemon {
       log: this.log,
       clock: this.clock
     })
-    // A confined srt session's shim is bound the same way; the daemon's session idle policy stops the ones nothing uses.
-    this.localSrt = localSrtLauncher({
-      daemonRoot: root,
-      ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
-      readRoots: () => this.srtShimReadRoots(),
-      now: () => this.clock.now()
-    })
-    this.localSrtExecutor = new LocalExecutor({
-      launcher: this.localSrt,
-      generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
-      tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
-      log: this.log,
-      clock: this.clock
-    })
+    // A confined srt session's shim is bound the same way, by the one srt launcher the facet's hosted environments use too; a host shim needs Linux, so elsewhere SRT still wraps each runtime alone.
+    if (!hostShimUnavailableReason()) {
+      this.localSrt = srtLauncher(root, {
+        ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
+        readRoots: () => this.srtShimReadRoots(),
+        now: () => this.clock.now()
+      })
+      this.localSrtExecutor = new LocalExecutor({
+        launcher: this.localSrt,
+        generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
+        tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+        log: this.log,
+        clock: this.clock
+      })
+    }
     // A withdrawn srt confines nothing, not even a probe.
     if (cfg.sandbox.srt) this.logSandboxPreflight()
     else this.sandboxMechanism = undefined
@@ -4033,10 +4043,12 @@ export class Daemon {
       launchers: {
         host: hostLauncher(root),
         // SRT around the shim, its policy this machine's own: the session's directory, its sign-in, and the code it runs (§5).
-        srt: srtLauncher(root, {
-          ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
-          readRoots: () => this.srtShimReadRoots()
-        }),
+        srt:
+          this.localSrt ??
+          srtLauncher(root, {
+            ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
+            readRoots: () => this.srtShimReadRoots()
+          }),
         // A VM seeds its own HOME from the same admitted runtimes, with their credentials behind placeholders (§8).
         microsandbox: this.vmLauncher
       },
@@ -4966,7 +4978,7 @@ export class Daemon {
   ): { id: string; runtimeRoot: string } | undefined {
     if (this.k8s || strategy !== 'srt' || !this.localSrtExecutor) return undefined
     if (sessionKey === undefined || this.placedSession(sessionKey)) return undefined
-    // The session's own directory is the record of its tier; an agent's shared host still wraps each runtime until R1b-2.
+    // The session's own directory is the record of its tier; an agent's shared host still wraps each runtime alone.
     const sessionDir = confinedSessionDirIn(agent.dir, sessionKey)
     if (!sessionDir) return undefined
     const id = localSrtEnvironmentId(agent.id, sessionDir)
@@ -4992,6 +5004,23 @@ export class Daemon {
         // An install that is not there yet reads from the store, which is already open.
         this.log.debug(`srt: no install of runtime ${runtimeId} to open for a shim (${formatErr(error)})`)
       }
+    }
+    // This daemon's own helpers, which Git run through the shim needs before any runtime is launched: code, never state.
+    try {
+      const executables = ['gh', 'glab'].flatMap((name) => resolveCommandPath(name, process.env) ?? [])
+      const helpers = [gitcredShimPath(this.root), this.ghBinDir, this.glabBinDir].filter(
+        (path): path is string => path !== undefined && existsSync(path)
+      )
+      for (const path of trustedRuntimeReadRoots({
+        runtime: { command: process.execPath, args: [], env: [] },
+        hostEnv: process.env,
+        executableCommands: executables,
+        moduleEntries: [daemonEntryForShims(this.root), ...nodeExecArgvModuleEntries()],
+        paths: helpers
+      }))
+        roots.add(path)
+    } catch (error) {
+      this.log.debug(`srt: could not open this daemon's helpers for a shim (${formatErr(error)})`)
     }
     return [...roots]
   }
@@ -5087,7 +5116,7 @@ export class Daemon {
     if (cwd === agent.dir) return undefined
     const { environment, launch } = this.microsandboxContext(agent, cwd)
     const local = this.localVms()
-    return microsandboxGitRunner({
+    return localShimGitRunner({
       run: (work) => local.withEnvironment(environment, work),
       cwd,
       env: launch.env,
@@ -5180,7 +5209,71 @@ export class Daemon {
     }
   }
 
-  /** A confined srt session's runtimes, in the SRT-wrapped shim of its session directory (§11); its workspace Git still runs on this host until R1b-2. */
+  /** The confined srt session whose directory holds `path`, as its Git and files reach it (§11); undefined for any other path. */
+  private srtSessionAt(
+    agentId: string,
+    path: string | undefined,
+    sessionKey?: string
+  ): { environment: EnvironmentDescriptor; runtimeRoot: string } | undefined {
+    const agent = path === undefined || this.k8s || !this.localSrtExecutor ? undefined : this.agents.get(agentId)
+    const sessionDir = agent && confinedSessionDirOf(agent.dir, path!)
+    if (!agent || !sessionDir || (sessionKey !== undefined && this.placedSession(sessionKey))) return undefined
+    const strategy = sessionKey === undefined ? this.agentStrategy(agent) : this.sessionStrategy(agent, sessionKey)
+    if (strategy !== 'srt') return undefined
+    const id = localSrtEnvironmentId(agent.id, sessionDir)
+    // The session directory alone, which a running launch grants and a runtime launched later starts again with its own roots.
+    return {
+      environment: { id, workspaceRoot: sessionDir, mounts: [] },
+      runtimeRoot: localSrtRuntimeRoot(this.root, id)
+    }
+  }
+
+  private usesLocalSrt(agentId: string): boolean {
+    const agent = this.localSrtExecutor && !this.k8s ? this.agents.get(agentId) : undefined
+    return agent !== undefined && this.agentStrategy(agent) === 'srt'
+  }
+
+  /** A scope's confined srt session: the path it names, else its session's directory. */
+  private srtSessionFor(scope: PlaneScope): { environment: EnvironmentDescriptor; runtimeRoot: string } | undefined {
+    const agent = this.k8s || !this.localSrtExecutor ? undefined : this.agents.get(scope.agentId)
+    const path =
+      scope.path ??
+      (agent && scope.sessionKey !== undefined ? confinedSessionDirIn(agent.dir, scope.sessionKey) : undefined)
+    return this.srtSessionAt(scope.agentId, path, scope.sessionKey)
+  }
+
+  private srtRequester(environment: EnvironmentDescriptor): ShimRequester & { agentId: string } {
+    const executor = this.localSrtExecutor!
+    return {
+      agentId: sandboxSubjectAgentId(environment.id),
+      request: (capability, payload, options) =>
+        executor.withEnvironment(environment, (session) => session.request(capability, payload, options))
+    }
+  }
+
+  /** Git in a confined srt session's shim, inside its boundary, where the holder's Git of a hosted one runs too (§5). */
+  private srtGit(agentId: string, cwd?: string, abort?: AbortSignal, sessionKey?: string): GitRunner | undefined {
+    const session = this.srtSessionAt(agentId, cwd, sessionKey)
+    if (!session) return undefined
+    // This host's HOME, temp root and credential socket are hidden inside; the session's HOME and the shim's own stand in.
+    const owned: Record<string, string> = { HOME: sessionHomeIn(session.environment.workspaceRoot) }
+    shimEnvironment(owned, session.runtimeRoot)
+    return localShimGitRunner({
+      run: (work) => this.localSrtExecutor!.withEnvironment(session.environment, work),
+      cwd: cwd!,
+      owned,
+      ...(abort ? { abort } : {})
+    })
+  }
+
+  private srtWorkspaceFs(agentId: string, sessionKey?: string): SrtWorkspaceFs {
+    return new SrtWorkspaceFs(
+      (path) => this.srtSessionAt(agentId, path, sessionKey)?.environment,
+      (environment) => new ShimWorkspaceFs(this.srtRequester(environment), environment.workspaceRoot)
+    )
+  }
+
+  /** A confined srt session's runtimes, Git and files, all in the SRT-wrapped shim of its session directory (§11). */
   private readonly srtPlane: ExecutionPlane = {
     spawnFor: ({ agent, hostKey, prepared }) => {
       const executor = this.localSrtExecutor
@@ -5191,8 +5284,8 @@ export class Daemon {
         hostKey
       }
     },
-    gitRunnerFor: () => undefined,
-    workspaceFsFor: () => undefined,
+    gitRunnerFor: (agentId, cwd, abort, sessionKey) => this.srtGit(agentId, cwd, abort, sessionKey),
+    workspaceFsFor: (agentId, scope) => ({ fs: this.srtWorkspaceFs(agentId, scope?.sessionKey) }),
     // The shim shares this host's filesystem, so the session's files are at this daemon's paths.
     workspacesOffDisk: false,
     discardSessions: async (agentId, exceptLeaf) => {
@@ -5215,7 +5308,12 @@ export class Daemon {
   /** Every workspace scope's plane: a session this holder placed on another machine, else this daemon's own — a VM, a pod, or its disk. */
   private wirePlaneResolver(local?: ExecutionPlane): void {
     if (local) this.localPlane = local
-    this.workspaces.setPlaneResolver((scope: PlaneScope) => this.executorPlane?.planeFor(scope) ?? this.localPlane)
+    // An srt agent's workspace is on the srt plane, which sends a confined session's to its shim; the rest stays on this machine's — a VM's, a pod's, or its disk.
+    this.workspaces.setPlaneResolver(
+      (scope: PlaneScope) =>
+        this.executorPlane?.planeFor(scope) ??
+        (this.srtSessionFor(scope) || this.usesLocalSrt(scope.agentId) ? this.srtPlane : this.localPlane)
+    )
   }
 
   /** Where a session is placed, or undefined for one that runs on this machine. */
@@ -5230,6 +5328,13 @@ export class Daemon {
     const cluster = this.k8sPlane?.workspaceFilesFor(agentId)
     if (cluster) return cluster
     const agent = this.agents.get(agentId)
+    // A root in a confined srt session is read by its shim, inside the boundary; any other root of the agent on this disk.
+    if (agent && this.localSrtExecutor && this.agentStrategy(agent) === 'srt') {
+      return new RoutedWorkspaceFiles(async (root) => {
+        const session = this.srtSessionAt(agentId, root, scope?.sessionKey)
+        return session ? new ShimWorkspaceFiles(this.srtRequester(session.environment)) : localWorkspaceFiles
+      })
+    }
     if (!agent || !this.usesMicrosandbox(agent) || !this.microsandbox) return undefined
     return new ShimWorkspaceFiles({
       request: (capability, payload, options) => {
@@ -19727,7 +19832,7 @@ export class Daemon {
         const agent = this.agents.get(agentId)
         const sessionKey = hostKeySessionKey(key)
         const srt = agent && this.localSrtEnvironment(agent, sessionKey, this.sessionStrategy(agent, sessionKey))
-        if (srt && !(await this.localSrt!.stopUnlessBusy(srt.id))) {
+        if (srt && this.localSrt && !(await this.localSrt.stopUnlessBusy(srt.id))) {
           this.log.info(`srt: environment ${srt.id} is still in use — left for the idle sweep`)
         }
       })

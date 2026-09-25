@@ -42,7 +42,7 @@ const HELPER_KEYS: ReadonlyArray<Exclude<keyof ShimPaths, 'tunnels'>> = [
 /** Why this machine offers no `host` strategy (session-executors.md §5), or undefined on Linux. */
 export function hostShimUnavailableReason(platform: NodeJS.Platform = process.platform): string | undefined {
   if (platform === 'linux') return undefined
-  return `the host strategy needs Linux: the shim's console read path is fd-bound and its helper locations are image-fixed`
+  return `a host shim needs Linux: the shim's console read path is fd-bound and its helper locations are image-fixed`
 }
 
 /** A session's shim started as a plain child of this daemon, with no sandbox around it (architecture.md §9.1). */

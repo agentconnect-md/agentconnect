@@ -4,7 +4,6 @@ import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import type { MicrosandboxSecret } from '../microsandbox/secrets.js'
 import { hostShimUnavailableReason, startHostShim, type HostShim, type HostShimInput } from './host-shim.js'
-import { srtShimBoundary } from './srt-shim.js'
 
 /** The strategies the executor facet can prepare (session-executors.md §5); `docker` joins later. */
 export type ExecutionStrategy = 'host' | 'srt' | 'microsandbox'
@@ -55,17 +54,15 @@ export function assertSomeStrategyAvailable(table: StrategyTable): void {
   throw new Error(`daemon startup refused: no execution strategy can run on this machine (${why})`)
 }
 
-/** The table the executor facet reports to other members (§5): the machine's own, with `host` Linux-only. */
+/** The table the executor facet reports to other members (§5): the machine's own, with `host` and `srt`, each a host shim, Linux-only. */
 export function effectiveStrategies(input: {
   platform?: NodeJS.Platform
   table: StrategyTable
 }): Record<ExecutionStrategy, StrategyAvailability> {
   const hostShim = hostShimUnavailableReason(input.platform ?? process.platform)
-  return {
-    host: hostShim && input.table.host.available ? { available: false, reason: hostShim } : input.table.host,
-    srt: input.table.srt,
-    microsandbox: input.table.microsandbox
-  }
+  const shimmed = (entry: StrategyAvailability): StrategyAvailability =>
+    hostShim && entry.available ? { available: false, reason: hostShim } : entry
+  return { host: shimmed(input.table.host), srt: shimmed(input.table.srt), microsandbox: input.table.microsandbox }
 }
 
 export function strategyReason(entry: StrategyAvailability): string {
@@ -155,39 +152,9 @@ export function hostLauncher(
   return { start: ({ environment, log }) => startShim(start, { daemonRoot, environment, log }) }
 }
 
-/** The `srt` strategy (§5): the `host` launcher with SRT around the shim, whose policy this machine composes from the environment and its own paths. */
-export function srtLauncher(
-  daemonRoot: string,
-  deps: {
-    /** This machine's agents directory, hidden from every environment like the daemon root. */
-    agentsRoot?: string
-    /** The code the shim and its runtimes read: node and this machine's runtime installs. */
-    readRoots: () => string[]
-    hostEnv?: NodeJS.ProcessEnv
-  },
-  start: (input: HostShimInput) => Promise<HostShim> = startHostShim
-): StrategyLauncher {
-  return {
-    start: ({ environment, log }) =>
-      startShim(start, {
-        daemonRoot,
-        environment,
-        log,
-        boundary: srtShimBoundary({
-          daemonRoot,
-          ...(deps.agentsRoot ? { agentsRoot: deps.agentsRoot } : {}),
-          mounts: environment.mounts,
-          readRoots: deps.readRoots(),
-          ...(deps.hostEnv ? { hostEnv: deps.hostEnv } : {}),
-          log
-        })
-      })
-  }
-}
-
 async function startShim(
   start: (input: HostShimInput) => Promise<HostShim>,
-  input: { daemonRoot: string; environment: EnvironmentDescriptor; log: Logger; boundary?: HostShimInput['boundary'] }
+  input: { daemonRoot: string; environment: EnvironmentDescriptor; log: Logger }
 ): Promise<SessionEnvironment> {
   const { environment } = input
   // A host shim shares this machine's filesystem, so the workspace root and the seed's pointers are all it needs.
@@ -195,8 +162,7 @@ async function startShim(
     daemonRoot: input.daemonRoot,
     workspaceRoot: environment.workspaceRoot,
     log: input.log,
-    ...(environment.hosted ? { seedEnv: environment.hosted.env } : {}),
-    ...(input.boundary ? { boundary: input.boundary } : {})
+    ...(environment.hosted ? { seedEnv: environment.hosted.env } : {})
   })
   return {
     connect: () => connect(shim.socketPath),

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -11,10 +11,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { probeSandboxHost } from '../src/acp/sandbox.js'
 import { hostedEnvironment } from '../src/execution/executor-vm.js'
 import { startHostShim, sweepStaleHostShims, type HostShim } from '../src/execution/host-shim.js'
+import { localShimGitRunner } from '../src/execution/local-git.js'
 import { LocalExecutor } from '../src/execution/local-executor.js'
-import { localSrtLauncher, localSrtRuntimeRoot } from '../src/execution/srt-local.js'
+import { localSrtRuntimeRoot, srtLauncher } from '../src/execution/srt-local.js'
 import { srtShimBoundary, srtShimPolicy } from '../src/execution/srt-shim.js'
-import { srtLauncher, type EnvironmentDescriptor, type SessionEnvironment } from '../src/execution/strategies.js'
+import type { EnvironmentDescriptor, SessionEnvironment } from '../src/execution/strategies.js'
+import { shimEnvironment } from '../src/launch/prepare.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimGitRunner } from '../src/shim/git-exec.js'
 import { SHIM_SUBPROTOCOL, SHIM_WS_PATH } from '../src/shim/protocol.js'
@@ -469,11 +471,7 @@ process.stdout.write(JSON.stringify({ seen: fs.readFileSync(p, 'utf8') }) + '\\n
       closers.push(...servers.map((server) => () => server.close()))
       const sessionDir = join(root, 'agents', 'a', 'sessions', LEAF)
       await mkdir(join(sessionDir, 'workspace'), { recursive: true })
-      const launcher = localSrtLauncher({
-        daemonRoot: root,
-        readRoots: () => READ_ROOTS,
-        start: (input) => startHostShim({ ...input, entry })
-      })
+      const launcher = srtLauncher(root, { readRoots: () => READ_ROOTS }, (input) => startHostShim({ ...input, entry }))
       let generation = 0
       const local = new LocalExecutor({
         launcher,
@@ -523,6 +521,58 @@ process.stdin.resume()`
       expect(seen.tunnel).toBe('gitcred:hello')
       expect(seen.home).toBe(join(sessionDir, 'home'))
       expect(seen.proxy).toMatch(/^http:\/\/.*localhost:\d+$/)
+      expect(generation).toBe(1)
+    }
+  )
+
+  // session-executors.md §11: a confined session's workspace Git runs in its shim, so what its repository configures runs inside the boundary.
+  it.skipIf(!srt)(
+    "runs a confined session's Git inside its boundary, where a filter its repository names cannot write outside the session",
+    { timeout: 180_000 },
+    async () => {
+      root = await mkdtemp(join(tmpdir(), 'ac-srt-'))
+      const sessionDir = join(root, 'agents', 'a', 'sessions', LEAF)
+      const repo = join(sessionDir, 'workspace')
+      await mkdir(repo, { recursive: true })
+      const git = (...args: string[]) =>
+        execFileSync('git', ['-c', 'user.name=T', '-c', 'user.email=t@example.test', ...args], { cwd: repo })
+      git('init', '-q', '--initial-branch=main')
+      await writeFile(join(repo, '.gitattributes'), '*.txt filter=probe\n')
+      await writeFile(join(repo, 'a.txt'), 'content\n')
+      git('add', '.')
+      git('commit', '-q', '-m', 'init')
+      // What a runtime can write into its own session: a filter whose command also reaches for this daemon's root.
+      const outside = join(root, 'outside-marker')
+      const inside = join(sessionDir, 'inside-marker')
+      git('config', 'filter.probe.smudge', `sh -c 'touch ${inside}; touch ${outside}; cat'`)
+      await rm(join(repo, 'a.txt'))
+      const launcher = srtLauncher(root, { readRoots: () => READ_ROOTS }, (input) => startHostShim({ ...input, entry }))
+      let generation = 0
+      const local = new LocalExecutor({
+        launcher,
+        generations: { nextSandboxGeneration: async () => ++generation },
+        tunnelSocketPath: () => undefined,
+        log: quiet
+      })
+      closers.push(
+        () => local.stop(),
+        () => launcher.stopAll()
+      )
+      // The session directory alone, as Git before the session's first runtime asks for it.
+      const environment: EnvironmentDescriptor = { id: `agent-1/${LEAF}`, workspaceRoot: sessionDir, mounts: [] }
+      const owned: Record<string, string> = { HOME: join(sessionDir, 'home') }
+      shimEnvironment(owned, localSrtRuntimeRoot(root, environment.id))
+      const runner = localShimGitRunner({
+        run: (work) => local.withEnvironment(environment, work),
+        cwd: repo,
+        owned
+      }).withEnv({ PATH: process.env.PATH ?? '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' })
+      await runner.raw(['reset', '--hard', 'HEAD'])
+      // The filter ran, in the boundary: the session took its write, and this daemon's root took none.
+      expect(existsSync(inside)).toBe(true)
+      expect(existsSync(outside)).toBe(false)
+      expect(await readFile(join(repo, 'a.txt'), 'utf8')).toBe('content\n')
+      expect((await runner.status()).current).toBe('main')
       expect(generation).toBe(1)
     }
   )

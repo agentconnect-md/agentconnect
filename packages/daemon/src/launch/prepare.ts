@@ -137,7 +137,7 @@ function isolateSandboxTempEnvironment(env: Record<string, string>, scopeDir: st
 }
 
 /** Point a shim-launched runtime at the shim's temp root, which SRT's sockets fit under, and at its git-credential tunnel. */
-function shimEnvironment(env: Record<string, string>, runtimeRoot: string): void {
+export function shimEnvironment(env: Record<string, string>, runtimeRoot: string): void {
   const tempDir = join(runtimeRoot, 't')
   env.TMPDIR = tempDir
   env.CLAUDE_CODE_TMPDIR = tempDir
@@ -534,16 +534,17 @@ export function prepareRuntimeLaunch(opts: {
     if (!existsSync(path)) mkdirSync(path, { recursive: true })
   }
   // The shim's boundary is composed from these mounts on this machine (§11); a per-host policy is only for a runtime wrapped alone.
-  const writable = new Set(boundary.writable)
+  // Compacted, so the cwd, the HOME and the clones' `.git` fold into the session directory and the environment is the same whatever the cwd.
+  const writable = compactReadRoots(boundary.writable)
   const srt =
     shimRoot === undefined
       ? undefined
       : {
           workspaceRoot: sessionDir!,
           mounts: [
-            ...boundary.writable.map((path) => ({ source: path, target: path, mode: 'writable' as const })),
-            ...boundary.allowRead
-              .filter((path) => !writable.has(path))
+            ...writable.map((path) => ({ source: path, target: path, mode: 'writable' as const })),
+            ...compactReadRoots(boundary.allowRead)
+              .filter((path) => !writable.some((root) => inside(root, path)))
               .map((path) => ({ source: path, target: path, mode: 'readonly' as const }))
           ]
         }

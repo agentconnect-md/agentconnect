@@ -1,8 +1,12 @@
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { HostShim, HostShimInput } from '../src/execution/host-shim.js'
-import { localSrtLauncher, localSrtRootName, localSrtRuntimeRoot } from '../src/execution/srt-local.js'
+import { localSrtRootName, localSrtRuntimeRoot, srtLauncher, SrtWorkspaceFs } from '../src/execution/srt-local.js'
 import type { EnvironmentDescriptor } from '../src/execution/strategies.js'
+import { confinedSessionDirOf } from '../src/workspace/session-layout.js'
+import { localWorkspaceFs, type WorkspaceFs } from '../src/workspace/workspace-fs.js'
 
 // session-executors.md §11: a confined srt session runs in its session directory's SRT-wrapped shim, bound in process.
 const quiet = { trace() {}, debug() {}, info() {}, warn() {}, error() {} }
@@ -20,20 +24,19 @@ function stubbed() {
   const inputs: HostShimInput[] = []
   const stops: string[] = []
   let clock = 1_000
-  const launcher = localSrtLauncher({
-    daemonRoot: DAEMON,
-    agentsRoot: join('/srv', 'agents'),
-    readRoots: () => ['/usr/local/lib/node'],
-    now: () => clock,
-    start: async (input) => {
+  const launcher = srtLauncher(
+    DAEMON,
+    { agentsRoot: join('/srv', 'agents'), readRoots: () => ['/usr/local/lib/node'], now: () => clock },
+    async (input) => {
       inputs.push(input)
       let exit!: () => void
       const exited = new Promise<{ code: number | null; signal: null }>(
         (resolve) => (exit = () => resolve({ code: 0, signal: null }))
       )
+      const leaf = input.runtimeRootName ?? `hosted-${inputs.length}`
       const shim: HostShim = {
-        socketPath: join(DAEMON, 'hs', input.runtimeRootName!, 'shim.sock'),
-        runtimeRoot: join(DAEMON, 'hs', input.runtimeRootName!),
+        socketPath: join(DAEMON, 'hs', leaf, 'shim.sock'),
+        runtimeRoot: join(DAEMON, 'hs', leaf),
         helperRoot: '/opt/example/dist',
         workspaceRoot: input.workspaceRoot,
         token: `token-${inputs.length}`,
@@ -48,7 +51,7 @@ function stubbed() {
       }
       return shim
     }
-  })
+  )
   return { launcher, inputs, stops, advance: (ms: number) => (clock += ms) }
 }
 
@@ -71,19 +74,41 @@ describe('the local srt launcher', () => {
     expect(localSrtRootName('agent-1/session-0123456789abcdef01234567')).toMatch(/^[a-f0-9]{12}$/)
   })
 
-  it('treats a descriptor that mounts anything else as another environment', () => {
+  // A running boundary serves any request it already grants — the session's Git while its runtime is up — and nothing more.
+  it('serves a request the running environment already grants, and treats one that mounts anything more as another', () => {
     const { launcher } = stubbed()
     const same = launcher.sameEnvironment!
-    expect(same(environment(), environment())).toBe(true)
-    const reordered = environment({
+    const host = environment({
       mounts: [
-        { source: '/srv/data', target: '/srv/data', mode: 'readonly' },
-        { source: SESSION, target: SESSION, mode: 'writable' }
+        { source: SESSION, target: SESSION, mode: 'writable' },
+        { source: '/srv/data', target: '/srv/data', mode: 'readonly' }
       ]
     })
-    expect(same(reordered, environment({ mounts: [...reordered.mounts].reverse() }))).toBe(true)
-    expect(same(environment(), reordered)).toBe(false)
-    expect(same(environment(), environment({ id: 'agent-1/session-76543210fedcba9876543210' }))).toBe(false)
+    expect(same(host, environment({ mounts: [...host.mounts].reverse() }))).toBe(true)
+    // Git needs the session directory alone, which the policy grants whatever the mounts name.
+    expect(same(host, environment({ mounts: [] }))).toBe(true)
+    // A writable grant serves a read request, never the other way round.
+    expect(same(host, environment({ mounts: [{ source: SESSION, target: SESSION, mode: 'readonly' }] }))).toBe(true)
+    expect(same(environment({ mounts: [] }), host)).toBe(false)
+    expect(same(host, environment({ mounts: [{ source: '/srv/data', target: '/srv/data', mode: 'writable' }] }))).toBe(
+      false
+    )
+    expect(same(host, environment({ id: 'agent-1/session-76543210fedcba9876543210' }))).toBe(false)
+  })
+
+  it('starts a hosted environment on a random root with its holder seed, outside the local lifecycle', async () => {
+    const { launcher, inputs, stops } = stubbed()
+    const hosted = await launcher.start({
+      environment: { ...environment(), id: 'executor/session-0123456789abcdef01234567', hosted: { env: { A: 'b' } } },
+      log: quiet
+    })
+    expect(inputs[0]).toMatchObject({ seedEnv: { A: 'b' } })
+    expect(inputs[0]!.runtimeRootName).toBeUndefined()
+    expect(inputs[0]!.completeEnv).toBeUndefined()
+    // The pipe proves a hosted peer, so no token is compared in process.
+    expect(hosted.local).toBeUndefined()
+    await launcher.stopAll()
+    expect(stops).toEqual([])
   })
 
   it('stops an idle environment only once nothing holds it and nothing used it since the cutoff', async () => {
@@ -149,5 +174,47 @@ describe('the local srt launcher', () => {
       localSrtRootName(environment().id)
     ])
     expect(started.local?.identity).toBe('token-2')
+  })
+})
+
+describe("a confined session's files", () => {
+  // A path strictly inside the session directory crosses its shim; the directory itself, which the shim runs in, and all else stay here.
+  it('routes a path inside the session directory to its shim, and the directory itself, a path outside and a move across the edge to this disk', async () => {
+    const shimmed: string[] = []
+    const renames: string[] = []
+    const shimFs: WorkspaceFs = Object.assign(Object.create(localWorkspaceFs) as WorkspaceFs, {
+      stat: async (path: string) => (shimmed.push(path), 'dir' as const),
+      rename: async (from: string) => void renames.push(from)
+    })
+    const fs = new SrtWorkspaceFs(
+      (path) => (path.startsWith(SESSION) ? environment() : undefined),
+      () => shimFs
+    )
+    await fs.stat(join(SESSION, 'workspace', 'a.txt'))
+    expect(shimmed).toEqual([join(SESSION, 'workspace', 'a.txt')])
+    // Real paths on this disk are checked here, not over the shim.
+    await fs.stat(SESSION)
+    await fs.stat(join(DAEMON, 'agents', 'a', 'canonical'))
+    expect(shimmed).toHaveLength(1)
+    await fs.rename(join(SESSION, 'workspace.clone-x'), join(SESSION, 'workspace'))
+    expect(renames).toEqual([join(SESSION, 'workspace.clone-x')])
+  })
+
+  it('finds the confined session directory a path is in, and nothing for a path outside one', async () => {
+    const agentRoot = await mkdtemp(join(tmpdir(), 'ac-srt-local-'))
+    try {
+      const session = join(agentRoot, 'sessions', 'session-0123456789abcdef01234567')
+      await mkdir(join(session, 'workspace'), { recursive: true })
+      expect(confinedSessionDirOf(agentRoot, join(session, 'workspace', 'a.txt'))).toBe(session)
+      expect(confinedSessionDirOf(agentRoot, session)).toBe(session)
+      expect(confinedSessionDirOf(agentRoot, join(agentRoot, 'sessions'))).toBeUndefined()
+      expect(
+        confinedSessionDirOf(agentRoot, join(agentRoot, 'sessions', 'session-76543210fedcba9876543210'))
+      ).toBeUndefined()
+      expect(confinedSessionDirOf(agentRoot, join(agentRoot, 'sessions', 'not-a-session', 'x'))).toBeUndefined()
+      expect(confinedSessionDirOf(agentRoot, join(tmpdir(), 'elsewhere'))).toBeUndefined()
+    } finally {
+      await rm(agentRoot, { recursive: true, force: true })
+    }
   })
 })
