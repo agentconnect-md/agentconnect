@@ -225,6 +225,20 @@ describe('a new session selects its repositories once, before its host starts (d
     expect(internal.sessionRepoSelections.has('plain')).toBe(false)
   })
 
+  it('restores a pinned selection after its last by-decision authorization became on demand', async () => {
+    // Decision 19: a restart must hand the resumed session the roots it was pinned to, whatever the rows say now.
+    const { internal, evaluate, repoCandidates, select, run } = await start(
+      scaffold({
+        additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42', materialize: 'on-demand' }],
+        additionalInstallations: [{ accountLogin: 'example-co', access: 'read', materialize: 'on-demand' }]
+      })
+    )
+    await internal.selectSessionRepositories(run('resumed-after-change'), { selectedRepos: JSON.stringify([INFRA]) })
+    expect(select).toHaveBeenCalledWith('resumed-after-change', [INFRA])
+    expect(evaluate).not.toHaveBeenCalled()
+    expect(repoCandidates).not.toHaveBeenCalled()
+  })
+
   it('keeps a roster for the cache’s TTL and drops it when the agent’s authorizations change', async () => {
     const { internal, clock, repoCandidates, run } = await start(scaffold())
     await internal.selectSessionRepositories(run('a'), undefined)

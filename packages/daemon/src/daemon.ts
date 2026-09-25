@@ -14095,12 +14095,14 @@ export class Daemon {
     const { entry, key, plan } = run
     this.sessionRepoSelections.delete(key)
     const agent = this.agents.get(entry.agentId)
-    if (!agent || !hasDecisionAuthorizations(agent)) return
+    if (!agent) return
+    // A pinned selection is restored whatever the rows say now (decision 19): a restart must not drop a root the session was handed.
     const saved = parseSelectedRepositories(persisted?.selectedRepos)
     if (saved) {
       this.workspaces.setSessionSelection(key, saved)
       return
     }
+    if (!hasDecisionAuthorizations(agent)) return
     // The runtime's directories are fixed at session/new (decision 19): a session that already has one, or a seed that opens one with no request to judge, selects nothing.
     if (persisted?.acpSessionId || plan.initializeOnly) {
       this.pinRepoSelection(key, [])
