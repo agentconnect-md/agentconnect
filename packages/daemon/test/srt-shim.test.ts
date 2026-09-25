@@ -15,6 +15,7 @@ import { srtShimBoundary, srtShimPolicy } from '../src/execution/srt-shim.js'
 import { srtLauncher, type SessionEnvironment } from '../src/execution/strategies.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimGitRunner } from '../src/shim/git-exec.js'
+import { SHIM_SUBPROTOCOL, SHIM_WS_PATH } from '../src/shim/protocol.js'
 import { ShimSession } from '../src/shim/session.js'
 import { WAIT } from './wait-support.js'
 
@@ -38,6 +39,7 @@ const entry = {
 const REPO = realpathSync(fileURLToPath(new URL('../../..', import.meta.url)))
 const READ_ROOTS = [REPO, dirname(dirname(realpathSync(process.execPath)))]
 const LAUNCHER = fileURLToPath(new URL('./fixtures/srt-shim-launcher.ts', import.meta.url))
+const WS = createRequire(import.meta.url).resolve('ws')
 
 /** Host pids carrying a shim's mark: pid namespaces renumber what runs inside, so the host finds them the way the sweep does. */
 async function markedPids(mark: string): Promise<number[]> {
@@ -109,6 +111,49 @@ const out = {
   env: { HTTPS_PROXY: process.env.HTTPS_PROXY, NO_PROXY: process.env.NO_PROXY, NODE_USE_ENV_PROXY: process.env.NODE_USE_ENV_PROXY, HOME: process.env.HOME }
 }
 process.stdout.write(JSON.stringify(out) + '\\n')
+`
+
+const INSPECTOR_PROBE = (snapshot: string) => `
+const WebSocket = require(${JSON.stringify(WS)})
+const parent = process.ppid
+process.kill(parent, 'SIGUSR1')
+async function probe() {
+  let endpoint
+  for (let i = 0; i < 50; i++) {
+    try {
+      const response = await fetch('http://127.0.0.1:9229/json/list')
+      endpoint = (await response.json())[0]?.webSocketDebuggerUrl
+      if (endpoint) break
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  if (!endpoint) throw new Error('shim inspector did not open')
+  const ws = new WebSocket(endpoint)
+  await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
+  let id = 0
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const wanted = ++id
+    const timer = setTimeout(() => reject(new Error('inspector timed out')), 10000)
+    const receive = (data) => {
+      const frame = JSON.parse(data.toString())
+      if (frame.id !== wanted) return
+      clearTimeout(timer)
+      ws.off('message', receive)
+      if (frame.error) reject(new Error(frame.error.message))
+      else resolve(frame.result)
+    }
+    ws.on('message', receive)
+    ws.send(JSON.stringify({ id: wanted, method, params }))
+  })
+  const pid = (await request('Runtime.evaluate', { expression: 'process.pid', returnByValue: true })).result.value
+  const saved = await request('Runtime.evaluate', {
+    expression: ${JSON.stringify(`process.getBuiltinModule('node:v8').writeHeapSnapshot(${JSON.stringify(snapshot)})`)},
+    returnByValue: true
+  })
+  ws.close()
+  process.stdout.write(JSON.stringify({ parent, pid, snapshot: saved.result.value }) + '\\n')
+}
+probe().catch((error) => { process.stderr.write(error.stack + '\\n'); process.exit(1) })
 `
 
 describe('the srt boundary around a shim', () => {
@@ -251,6 +296,91 @@ process.stdout.write(JSON.stringify({ up: true }) + '\\n')`
       expect(await markedPids(mark)).toEqual([])
       expect(existsSync(shim.runtimeRoot) || existsSync(`${shim.runtimeRoot}.p`)).toBe(false)
       expect(existsSync(join(workspace, 'repo', '.git', 'config'))).toBe(true)
+    }
+  )
+
+  it.skipIf(!srt)(
+    'lets a runtime read the identity on a reconnect, even though argv and environ omit it',
+    { timeout: 60_000 },
+    async () => {
+      root = await mkdtemp(join(tmpdir(), 'ac-srt-'))
+      const environment = hostedEnvironment(root, LEAF)
+      const shim = await startHostShim({
+        daemonRoot: root,
+        workspaceRoot: environment.workspaceRoot,
+        entry,
+        boundary: srtShimBoundary({ daemonRoot: root, mounts: environment.mounts, readRoots: READ_ROOTS })
+      })
+      shims.push(shim)
+      const { session, dialer } = await bind(() => connect(shim.socketPath), shim.token, 'subject-srt')
+      dialers.push(dialer)
+      const stolen = join(environment.workspaceRoot, 'workspace', 'identity')
+      const script = `
+const fs = require('node:fs')
+const net = require('node:net')
+const WebSocket = require(${JSON.stringify(WS)})
+const parent = process.ppid
+const argv = fs.readFileSync('/proc/' + parent + '/cmdline', 'utf8')
+const environ = fs.readFileSync('/proc/' + parent + '/environ', 'utf8')
+let yama = null
+try { yama = Number(fs.readFileSync('/proc/sys/kernel/yama/ptrace_scope', 'utf8').trim()) }
+catch {}
+let mem
+try { const fd = fs.openSync('/proc/' + parent + '/mem', 'r'); fs.closeSync(fd); mem = 'readable' }
+catch (error) { mem = error.code }
+const candidates = (text) => text.match(/[A-Za-z0-9_-]{43}/g) ?? []
+process.stdout.write(JSON.stringify({
+  argv: candidates(argv), environ: candidates(environ), identityStdin: argv.includes('--identity-stdin'), yama, mem
+}) + '\\n')
+const socketPath = ${JSON.stringify(shim.socketPath)}
+const out = ${JSON.stringify(stolen)}
+async function attempt() {
+  return new Promise((resolve) => {
+    const ws = new WebSocket('ws://localhost${SHIM_WS_PATH}', '${SHIM_SUBPROTOCOL}', {
+      createConnection: () => net.connect(socketPath)
+    })
+    const timer = setTimeout(() => { ws.terminate(); resolve(false) }, 500)
+    const finish = (found) => { clearTimeout(timer); resolve(found) }
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'shim/hello', agentId: 'agent-1', generation: 1 })))
+    ws.on('message', (data) => {
+      const frame = JSON.parse(data.toString())
+      if (frame.type === 'shim/identity') fs.writeFileSync(out, frame.token)
+      ws.close()
+      finish(frame.type === 'shim/identity')
+    })
+    ws.on('close', () => finish(false))
+    ws.on('error', () => finish(false))
+  })
+}
+(async () => {
+  for (let i = 0; i < 100; i++) {
+    if (await attempt()) return
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+})().catch((error) => fs.writeFileSync(out, 'error: ' + error.message))
+`
+      const seen = await runThrough(session, join(environment.workspaceRoot, 'workspace'), script)
+      expect(seen.argv).not.toContain(shim.token)
+      expect(seen.environ).not.toContain(shim.token)
+      expect(seen.identityStdin).toBe(true)
+      if (seen.yama !== null) expect([0, 1, 2, 3]).toContain(seen.yama)
+      if (seen.yama !== null && seen.yama >= 1) expect(seen.mem).not.toBe('readable')
+      expect(existsSync(stolen)).toBe(false)
+
+      const snapshot = join(environment.workspaceRoot, 'workspace', 'shim.heapsnapshot')
+      const inspected = await runThrough(
+        session,
+        join(environment.workspaceRoot, 'workspace'),
+        INSPECTOR_PROBE(snapshot)
+      )
+      expect(inspected.pid).toBe(inspected.parent)
+      expect(inspected.snapshot).toBe(snapshot)
+      expect((await readFile(snapshot)).includes(shim.token)).toBe(true)
+
+      // The runtime keeps trying the writable socket; after the holder leaves, the shim gives its token to its first dialer.
+      dialer.stop()
+      await vi.waitFor(() => expect(existsSync(stolen)).toBe(true), WAIT)
+      expect(await readFile(stolen, 'utf8')).toBe(shim.token)
     }
   )
 
