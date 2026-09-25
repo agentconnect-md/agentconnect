@@ -230,7 +230,11 @@ place to start it.
 `srt` are for trusted work. `srt` contains a runtime's mistakes, not a determined
 adversary: it shares the host's kernel and user, and the daemon's own Git reads the
 trees the runtime writes from outside the boundary
-([git-workspace-model.md](git-workspace-model.md) §11). A session that acts on input
+([git-workspace-model.md](git-workspace-model.md) §11). It isolates environments,
+not trust: a runtime may write its checkout's `.git/config`, and the daemon's
+host-side Git honors the filters, drivers and includes it finds there. The daemon's
+command-scope pins keep its own Git deterministic and its credentials on the
+authorized remote; they are not a boundary against the runtime. A session that acts on input
 its operator does not control — a pull request or issue from outside the
 organization, a public webhook, an external channel — is untrusted because of that
 input, however its trigger was authorized, since a model acts on what it reads. Such
