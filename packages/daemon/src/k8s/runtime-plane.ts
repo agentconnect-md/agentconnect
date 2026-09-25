@@ -65,6 +65,8 @@ export interface K8sRuntimePlaneOptions {
   generations: LaunchGenerations
   /** Per-agent tenant lookup: a pool member serves every org, so the agent names the tenant. */
   orgForAgent?: (agentId: string) => string | undefined
+  /** Whether this member still holds the agent's duty when a launch is published. */
+  servesAgent?: (agentId: string) => boolean
   /** Warm pool the claims reference. v1beta1 requires one; a cold pool is `replicas: 0`. */
   warmPoolName?: string
   /** Namespace shared by agent sandboxes, separate from the daemon pool namespace. */
@@ -349,6 +351,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     api,
     // The runtime probe is the member's own, not any org's, so it claims under `install`.
     orgForAgent: (agentId) => (agentId === runtimeProbeAgentId ? 'install' : options.orgForAgent?.(agentId)),
+    servesAgent: (agentId) => agentId === runtimeProbeAgentId || (options.servesAgent?.(agentId) ?? true),
     warmPoolName: settings.warmPoolName,
     generations: options.generations,
     // The probe runs an ACP runtime through this same driver, whose `launch` binds a channel of its

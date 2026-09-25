@@ -117,7 +117,7 @@ function stubConnection(record: SpawnRecord): ShimConnection {
   } as unknown as ShimConnection
 }
 
-function member(api: SandboxApi, store: LocalStore, clock: FakeClock) {
+function member(api: SandboxApi, store: LocalStore, clock: FakeClock, servesAgent?: (agentId: string) => boolean) {
   const dialed: SpawnRecord[] = []
   const revoked: string[] = []
   const driver = new K8sDriver({
@@ -125,6 +125,7 @@ function member(api: SandboxApi, store: LocalStore, clock: FakeClock) {
     orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
     generations: store,
+    ...(servesAgent ? { servesAgent } : {}),
     clock,
     connectChannel: async (record) => {
       dialed.push(record)
@@ -207,6 +208,28 @@ describe('sandbox launches follow the duty', () => {
     expect(state.claim).toBeDefined()
     expect(driver.launched()).toEqual([])
     expect(dialed).toHaveLength(1)
+    await store.close()
+  })
+
+  it('keeps the successor generation when a revoked member still has a disconnected launch', async () => {
+    const { api, state } = await cluster()
+    const store = await sharedStore()
+    let oldMemberServesAgent = true
+    const oldMember = member(api, store, new FakeClock(), () => oldMemberServesAgent)
+    const successor = member(api, store, new FakeClock(), () => true)
+    await oldMember.driver.ensureBoundChannel(AGENT)
+    oldMember.driver.onChannelLost(AGENT, 'reconnect window elapsed')
+
+    // Revocation closes the duty gate immediately, but host teardown delays release of the launch.
+    oldMemberServesAgent = false
+    expect(oldMember.driver.launched()).toHaveLength(1)
+    await successor.driver.adopt(AGENT)
+    const successorGeneration = successor.driver.currentLaunch(AGENT)?.generation
+    expect(successorGeneration).toBe(2)
+
+    expect(await oldMember.driver.suspendIfIdle(AGENT)).toBe('absent')
+    expect(state.annotations[SANDBOX_LAUNCH_GENERATION]).toBe(String(successorGeneration))
+    expect(oldMember.driver.launched()).toEqual([])
     await store.close()
   })
 

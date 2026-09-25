@@ -1017,9 +1017,11 @@ describe('daemon --k8s mode', () => {
     const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
     const GROUP = '11111111-1111-4111-8111-111111111111'
     const events: string[] = []
+    let servesAgent!: (agentId: string) => boolean
     const k8sDaemon = daemon({
       root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
       k8s: true,
+      onPlaneStart: (options) => (servesAgent = options.servesAgent),
       plane: {
         adoptAgent: async (agentId: string) => void events.push(`adopt:${agentId}`),
         releaseAgent: (agentId: string) => void events.push(`release:${agentId}`)
@@ -1050,6 +1052,7 @@ describe('daemon --k8s mode', () => {
       const grant = { groupId: GROUP, orgId: 'org-1', term: '1', members: [{ kind: 'agent', refId: AGENT }] }
       await (k8sDaemon as any).dutyCoordinator.admitDutyGrants([grant])
       await vi.waitFor(() => expect(events).toEqual([`adopt:${AGENT}`]))
+      expect(servesAgent(AGENT)).toBe(true)
       // A stopped host stands in for the ex-holder's runtime; the release must wait for it to be down.
       let hostDown = false
       ;(k8sDaemon as any).hosts.set(AGENT, {
@@ -1060,6 +1063,7 @@ describe('daemon --k8s mode', () => {
       })
       ;(k8sDaemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP, reason: 'superseded' }])
       expect(events).toEqual([`adopt:${AGENT}`])
+      expect(servesAgent(AGENT)).toBe(false)
       await vi.waitFor(() => expect(events).toEqual([`adopt:${AGENT}`, `release:${AGENT}`]))
       expect(hostDown).toBe(true)
     } finally {

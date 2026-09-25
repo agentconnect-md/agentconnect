@@ -100,13 +100,18 @@ function fakeApi(options: { podName?: string; adopt?: boolean } = {}) {
 }
 
 /** Start a plane whose Kubernetes surface is the fake above, on an ephemeral port. */
-async function planeUnderTest(api: ReturnType<typeof fakeApi>, readyTimeoutMs = 15_000): Promise<K8sRuntimePlane> {
+async function planeUnderTest(
+  api: ReturnType<typeof fakeApi>,
+  readyTimeoutMs = 15_000,
+  servesAgent?: (agentId: string) => boolean
+): Promise<K8sRuntimePlane> {
   const server = new ShimServer()
   const port = await server.start(0, '127.0.0.1')
   servers.push(server)
   serverByPort.set(port, server)
   const plane = await startK8sRuntimePlane({
     orgForAgent: () => 'org-1',
+    ...(servesAgent ? { servesAgent } : {}),
     warmPoolName: 'pool',
     generations: fakeGenerations(),
     sandboxNamespace: 'agent-sandboxes',
@@ -221,7 +226,7 @@ describe('k8s runtime plane assembly', () => {
       ensured.push(claim)
       return ensureClaim(claim)
     }
-    const plane = await planeUnderTest(api)
+    const plane = await planeUnderTest(api, 15_000, () => false)
     const port = shimPort(plane)
 
     const probing = plane.probeRuntimes()

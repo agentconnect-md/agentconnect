@@ -44,6 +44,7 @@ export interface K8sDriverDeps {
   warmPoolName: string
   /** Where a launch's generation comes from — never a process-local counter, see `LaunchRegistry`. */
   generations: LaunchGenerations
+  servesAgent?: (agentId: string) => boolean
   /** Optional claim metadata for host-owned synthetic agents such as runtime probes. */
   claimMetadataForAgent?: (
     agentId: string
@@ -88,7 +89,11 @@ export class K8sDriver implements SpawnDriver {
   constructor(private readonly deps: K8sDriverDeps) {
     this.clock = deps.clock ?? systemClock
     this.metrics = deps.metrics ?? noopClusterMetrics
-    this.registry = new LaunchRegistry({ generations: deps.generations, clock: this.clock })
+    this.registry = new LaunchRegistry({
+      generations: deps.generations,
+      clock: this.clock,
+      ...(deps.servesAgent ? { servesAgent: deps.servesAgent } : {})
+    })
     this.lease = new SandboxLease({
       api: deps.api,
       warmPoolName: deps.warmPoolName,
