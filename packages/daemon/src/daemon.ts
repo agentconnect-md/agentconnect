@@ -4967,18 +4967,18 @@ export class Daemon {
     })
   }
 
-  /** A confined srt session's environment on this machine, launched through an SRT-wrapped shim (§11); undefined for every other host. */
+  /** A local srt host's environment, launched through an SRT-wrapped shim (§11): a confined session's directory, else one agent-scoped environment per host key; undefined for every other host. */
   private localSrtEnvironment(
     agent: LoadedAgent,
-    sessionKey: string | undefined,
+    hostKey: HostKey | undefined,
     strategy: string
   ): { id: string; runtimeRoot: string } | undefined {
     if (this.k8s || strategy !== 'srt' || !this.localSrtExecutor) return undefined
-    if (sessionKey === undefined || this.placedSession(sessionKey)) return undefined
-    // The session's own directory is the record of its tier; an agent's shared host still wraps each runtime alone.
-    const sessionDir = confinedSessionDirIn(agent.dir, sessionKey)
-    if (!sessionDir) return undefined
-    const id = localSrtEnvironmentId(agent.id, sessionDir)
+    const sessionKey = hostKey === undefined ? undefined : hostKeySessionKey(hostKey)
+    if (sessionKey !== undefined && this.placedSession(sessionKey)) return undefined
+    // The session's own directory is the record of its tier; any other host keys its environment as a VM's placement does.
+    const sessionDir = sessionKey === undefined ? undefined : confinedSessionDirIn(agent.dir, sessionKey)
+    const id = sessionDir ? localSrtEnvironmentId(agent.id, sessionDir) : `${agent.id}/${hostKeyDirName(hostKey)}`
     return { id, runtimeRoot: localSrtRuntimeRoot(this.root, id) }
   }
 
@@ -5220,7 +5220,11 @@ export class Daemon {
     const id = localSrtEnvironmentId(agent.id, sessionDir)
     // The session directory alone, which a running launch grants and a runtime launched later starts again with its own roots.
     return {
-      environment: { id, workspaceRoot: sessionDir, mounts: [] },
+      environment: {
+        id,
+        workspaceRoot: sessionDir,
+        mounts: [{ source: sessionDir, target: sessionDir, mode: 'writable' }]
+      },
       runtimeRoot: localSrtRuntimeRoot(this.root, id)
     }
   }
@@ -5270,16 +5274,14 @@ export class Daemon {
     )
   }
 
-  /** A confined srt session's runtimes, Git and files, all in the SRT-wrapped shim of its session directory (§11). */
+  /** Every local srt host's runtimes in its SRT-wrapped shim, and a confined session's Git and files there too (§11). */
   private readonly srtPlane: ExecutionPlane = {
     spawnFor: ({ agent, hostKey, prepared }) => {
       const executor = this.localSrtExecutor
       if (!executor) throw new Error('srt unavailable: this daemon is not running its local shims')
-      const { workspaceRoot, mounts } = prepared.srt!
-      return {
-        driver: executor.driverFor({ id: localSrtEnvironmentId(agent.id, workspaceRoot), workspaceRoot, mounts }),
-        hostKey
-      }
+      const { workspaceRoot, cwd, mounts } = prepared.srt!
+      const { id } = this.localSrtEnvironment(agent, hostKey, 'srt')!
+      return { driver: executor.driverFor({ id, workspaceRoot, ...(cwd ? { cwd } : {}), mounts }), hostKey }
     },
     gitRunnerFor: (agentId, cwd, abort, sessionKey) => this.srtGit(agentId, cwd, abort, sessionKey),
     workspaceFsFor: (agentId, scope) => ({ fs: this.srtWorkspaceFs(agentId, scope?.sessionKey) }),
@@ -5631,6 +5633,19 @@ export class Daemon {
     return sessionHostKey(agentId, dreamExecutionKey(agentId, dreamId))
   }
 
+  /** A one-off dream host's environment goes with it — its VM and runtime home, or its srt shim — rather than waiting for the idle sweep. */
+  private async discardDreamEnvironment(agent: LoadedAgent, dreamHostKey: HostKey): Promise<void> {
+    await this.microsandbox
+      ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
+      .then(() => rm(join(agent.dir, 'runtime-homes', hostKeyDirName(dreamHostKey)), { recursive: true, force: true }))
+      .catch((error: unknown) => {
+        this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
+      })
+    const srt = this.localSrtEnvironment(agent, dreamHostKey, 'srt')
+    if (srt) await this.localSrt?.stopMatching((id) => id === srt.id)
+    removeHostSandboxState(agent.dir, dreamHostKey)
+  }
+
   // The session row an ACP id names for THIS owner. A session-bound owner answers only for its own row —
   // an internal pass with no row (memory/commit) answers nothing, never a sibling that minted the same id.
   private async sessionForAcp(owner: HostKey, acpSessionId: string): Promise<SessionRecord | undefined> {
@@ -5696,7 +5711,7 @@ export class Daemon {
   }
 
   /** That tool server's `session/new` spec, in the coordinates of wherever the runtime runs. */
-  private mcpToolServerSpec(token: string, agent?: Agent, sessionKey?: string): McpStdioServer[] {
+  private mcpToolServerSpec(token: string, agent?: Agent, sessionKey?: string, hostKey?: HostKey): McpStdioServer[] {
     // A session on an executor reaches this daemon through its own environment's `mcp` tunnel, and runs that machine's bridge (§5).
     const remote = sessionKey === undefined ? undefined : this.executorPlane?.rootsFor(sessionKey)
     if (remote) {
@@ -5708,9 +5723,10 @@ export class Daemon {
       if (!bridge) throw new Error('microsandbox image does not provide the AgentConnect MCP bridge')
       return buildSandboxMcpServers({ bridge, token })
     }
-    // A confined srt session's shim serves the `mcp` tunnel under its runtime root; the bridge is this daemon's own (§11).
+    // An srt host's shim serves the `mcp` tunnel under its runtime root; the bridge is this daemon's own (§11).
     const loaded = agent && this.agents.get(agent.id)
-    const srt = loaded && this.localSrtEnvironment(loaded, sessionKey, this.sessionStrategy(loaded, sessionKey))
+    const owner = loaded && (hostKey ?? this.hostKeyFor(loaded.id, sessionKey))
+    const srt = owner && this.localSrtEnvironment(loaded, owner, this.sessionStrategy(loaded, hostKeySessionKey(owner)))
     if (srt) {
       return buildMcpServers({
         socketPath: shimPaths(srt.runtimeRoot).tunnels.mcp,
@@ -6422,10 +6438,8 @@ export class Daemon {
     const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
     // This machine wraps nothing around a placed session: the executor's strategy is its boundary.
     const runInSandbox = !this.k8s && opts.strategy !== 'host' && !remoteSession
-    // A confined srt session runs in its session directory's SRT-wrapped shim, not a runtime wrapped alone (§11).
-    const srtShim = runInSandbox
-      ? this.localSrtEnvironment(agent, hostKeySessionKey(opts.hostKey), opts.strategy)
-      : undefined
+    // An srt host runs in its environment's SRT-wrapped shim, not a runtime wrapped alone (§11).
+    const srtShim = runInSandbox ? this.localSrtEnvironment(agent, opts.hostKey, opts.strategy) : undefined
     // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11), or its executor's.
     const memoryAgent =
       memoryKindOf(agent) === 'native' && (runInSandbox || remoteHome)
@@ -7280,7 +7294,7 @@ export class Daemon {
         })
         this.releaseMemoryExtractionToken(cacheKey)
         this.memoryExtractionTokens.set(cacheKey, mcpToken)
-        const mcpServers = this.mcpToolServerSpec(mcpToken, this.agents.get(agentId))
+        const mcpServers = this.mcpToolServerSpec(mcpToken, this.agents.get(agentId), undefined, owner)
         sessionId = undefined
         try {
           sessionId = await host.newSession(
@@ -7577,15 +7591,7 @@ export class Daemon {
     try {
       host = await this.buildDreamHost(agent, context.inputDir, dreamHostKey, issued)
     } catch (error) {
-      await this.microsandbox
-        ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
-        .then(() =>
-          rm(join(agent.dir, 'runtime-homes', hostKeyDirName(dreamHostKey)), { recursive: true, force: true })
-        )
-        .catch((error: unknown) => {
-          this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
-        })
-      removeHostSandboxState(agent.dir, dreamHostKey)
+      await this.discardDreamEnvironment(agent, dreamHostKey)
       if (issued) await this.modelSessions.revokeKeyQuietly(issued.grant.keyId)
       throw error
     }
@@ -7597,15 +7603,7 @@ export class Daemon {
       // attacker-influenced context never lingers (dreams are rare). Stopping the
       // child also kills a runtime that ignored `session/cancel`.
       await host.stop().catch(() => {})
-      await this.microsandbox
-        ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
-        .then(() =>
-          rm(join(agent.dir, 'runtime-homes', hostKeyDirName(dreamHostKey)), { recursive: true, force: true })
-        )
-        .catch((error: unknown) => {
-          this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
-        })
-      removeHostSandboxState(agent.dir, dreamHostKey)
+      await this.discardDreamEnvironment(agent, dreamHostKey)
       if (issued) {
         await this.modelSessions.revokeKey(issued.grant.keyId)
       }
@@ -7743,7 +7741,7 @@ export class Daemon {
         topicPattern: DREAM_TOPIC_RE
       }
     })
-    const mcpServers = this.mcpToolServerSpec(mcpToken, this.agents.get(agentId))
+    const mcpServers = this.mcpToolServerSpec(mcpToken, this.agents.get(agentId), undefined, owner)
     try {
       const sessionId = trusted
         ? await host.newSession(
@@ -19825,10 +19823,9 @@ export class Daemon {
             this.log.info(`microsandbox: environment ${id} still has executions running — left for the idle sweep`)
           }
         }
-        // A confined srt session's shim goes with its host unless something still holds it (§11).
+        // An srt host's shim goes with it unless something still holds it (§11).
         const agent = this.agents.get(agentId)
-        const sessionKey = hostKeySessionKey(key)
-        const srt = agent && this.localSrtEnvironment(agent, sessionKey, this.sessionStrategy(agent, sessionKey))
+        const srt = agent && this.localSrtEnvironment(agent, key, this.sessionStrategy(agent, hostKeySessionKey(key)))
         if (srt && !(await this.localSrt!.stopUnlessBusy(srt.id))) {
           this.log.info(`srt: environment ${srt.id} is still in use — left for the idle sweep`)
         }

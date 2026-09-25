@@ -574,6 +574,8 @@ describe('prepareRuntimeLaunch', () => {
     })
     expect(launch.sandbox).toBeUndefined()
     expect(launch.srt!.workspaceRoot).toBe(realpathSync(sessionDir))
+    // A confined session starts at its own directory, which it writes whole.
+    expect(launch.srt!.cwd).toBeUndefined()
     const writable = launch.srt!.mounts.filter((mount) => mount.mode === 'writable').map((mount) => mount.source)
     const readonly = launch.srt!.mounts.filter((mount) => mount.mode === 'readonly').map((mount) => mount.source)
     expect(coveredBy(writable, realpathSync(sessionDir))).toBe(true)
@@ -592,22 +594,41 @@ describe('prepareRuntimeLaunch', () => {
     expect(agentFilesystem(launch.env)).toContain(`"${realpathSync(join(sessionDir, 'workspace', '.git'))}" = "write"`)
   })
 
-  it("keeps an agent's shared host on the per-host policy until its shim path lands", () => {
+  // §11: an agent's shared host is rooted at the agent's directory, whose agent.json no mount reopens.
+  it("launches an agent's shared host in an agent-scoped shim environment that mounts its surfaces, not the agent directory", () => {
     const { scopeDir, hostHome } = fixture()
+    const runtimeRoot = join(dirname(scopeDir), 'hs', '0a1b2c3d4e5f')
+    const key = agentHostKey('bot-a')
     const launch = prepareRuntimeLaunch({
       runtimeId: 'claude-acp',
       runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
       scopeDir,
       cwd: join(scopeDir, 'workspace'),
-      hostKey: agentHostKey('bot-a'),
+      hostKey: key,
       runInSandbox: true,
       daemonRoot: dirname(scopeDir),
       sandboxMechanism: 'bwrap',
-      srtShim: { runtimeRoot: join(dirname(scopeDir), 'hs', '0a1b2c3d4e5f') },
+      srtShim: { runtimeRoot },
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })
-    expect(launch.srt).toBeUndefined()
-    expect(launch.sandbox?.settingsPath).toBeDefined()
+    expect(launch.sandbox).toBeUndefined()
+    expect(launch.srt!.workspaceRoot).toBe(realpathSync(scopeDir))
+    expect(launch.srt!.cwd).toBe(realpathSync(join(scopeDir, 'workspace')))
+    const writable = launch.srt!.mounts.filter((mount) => mount.mode === 'writable').map((mount) => mount.source)
+    expect(coveredBy(writable, realpathSync(join(scopeDir, 'workspace')))).toBe(true)
+    expect(coveredBy(writable, realpathSync(join(scopeDir, 'home')))).toBe(true)
+    expect(launch.srt!.mounts.some((mount) => mount.source === realpathSync(scopeDir))).toBe(false)
+    expect(
+      coveredBy(
+        launch.srt!.mounts.map((mount) => mount.source),
+        join(realpathSync(scopeDir), 'agent.json')
+      )
+    ).toBe(false)
+    // The shim's temp root and tunnel; no per-host policy or temp directory is written.
+    expect(launch.env.TMPDIR).toBe(join(runtimeRoot, 't'))
+    expect(launch.env.AC_GITCRED_SOCKET).toBe(join(runtimeRoot, 'gitcred.sock'))
+    expect(existsSync(sandboxTempDirFor(scopeDir, key))).toBe(false)
+    expect(existsSync(join(scopeDir, '.agentconnect', 'sandbox', hostKeyDirName(key)))).toBe(false)
   })
 
   // §11: the session's HOME lives under its leaf, so runtime state, temp and package caches are the session's alone and go with it.

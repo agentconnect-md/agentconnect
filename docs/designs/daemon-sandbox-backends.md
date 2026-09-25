@@ -133,8 +133,8 @@ catalog: the host install for `host` and `srt`, the image's runtimes for
 strategy spreads: an `srt` session lands on a member whose facet offers `srt`
 ([below](#the-srt-strategy-srt-around-the-shim)). A confined `srt` session of this
 machine runs in its session directory's SRT-wrapped shim
-([below](#this-machines-confined-srt-sessions)); the agent's shared host still
-launches each runtime through the per-runtime SRT provider until R1b-2b.
+([below](#this-machines-confined-srt-sessions)), and every other `srt` host of this
+machine in an agent-scoped one (R1b-2b).
 
 The Control Plane half landed first. An agent stores `execution`, a strategy slug,
 beside `runInSandbox`, and the two are written together. The Control Plane checks a
@@ -1207,8 +1207,8 @@ A confined `srt` session — one with its own session directory — launches thr
 the in-process executor entry, as a local VM does
 ([session-executors.md](session-executors.md) §11). A second `LocalExecutor` drives
 the same `srtLauncher`, which starts a local environment at its fixed runtime root and
-a hosted one at a random root with its holder's seed; the agent's shared host is
-unchanged until R1b-2b.
+a hosted one at a random root with its holder's seed. Every other host of an `srt`
+agent runs in an agent-scoped shim (below).
 
 - **One shim per session directory.** The environment's id is
   `<agentId>/session-<leaf>` and its workspace root the session directory, so the
@@ -1246,6 +1246,25 @@ unchanged until R1b-2b.
   the session directory alone. A running shim serves any request its policy already
   grants; the runtime's launch mounts more, so it waits for that Git to end and starts
   the shim again, and only a running runtime refuses a changed descriptor.
+
+Every other `srt` host of this machine — the agent's shared host, a pass's, a session
+host with no directory of its own — runs in an **agent-scoped** shim (R1b-2b):
+
+- **One per host key**, `<agentId>/<host dir>` as a VM's placement names it, its
+  runtime root fixed by that id like a session's.
+- **Rooted at the agent's directory, which stays hidden.** `srtShimPolicy` writes a
+  root only where a mount names it: a session's directory is its own, but an agent's
+  holds its `agent.json`. The mounts are the launch composition's roots — the cwd,
+  the HOME, managed memory, the worktree and secondary-root parents, the `.git`
+  directories — and the runtime-policy and config-file surfaces read-only, as the
+  per-host policy reopened them.
+- **It starts in the host's cwd** (`cwd` in the descriptor), which must be a writable
+  mount. That is where a runtime wrapped alone started, so SRT's own protections are
+  anchored where they were, and the runtime runs there.
+- **The tool bridge dials the host's own tunnel**: the MCP spec follows the host key,
+  a pass's included.
+- **Git and files stay on the host**, as they were for this agent: a runtime wrapped
+  alone could already write its `.git/config`, and `srt` is for trusted work.
 
 ### Sharing a machine with its group
 
@@ -1424,9 +1443,9 @@ Delivery is split into independently reviewable steps:
    model probe (S2c), the console picker (S3), local VMs launched through the
    in-process executor (M4), `srt` as an SRT boundary around the shim on an executor
    (R1a), confined local `srt` sessions through the in-process executor (R1b-1), and
-   their workspace Git and files over the shim (R1b-2a); still designed are shared
-   confined agents and retiring the direct SRT launch (R1b-2b;
-   session-executors.md §5, §11, §12). Local
+   their workspace Git and files over the shim (R1b-2a), and every other `srt` host in
+   an agent-scoped shim (R1b-2b); still designed is retiring the direct SRT launch
+   (R1b-2c; session-executors.md §5, §11, §12). Local
    microsandbox Git and workspace files already cross the shim instead of agentd exec.
 
 Implementation status above does not establish successful end-to-end daemon

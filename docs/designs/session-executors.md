@@ -1303,9 +1303,10 @@ environment and `RemoteShimDriver` drives the shim in it. Each strategy had two 
 local microsandbox VM was keyed, driven and reached for Git differently from a hosted
 one, and a local `srt` session is a direct child with its own policy plumbing — and a
 fix to one did not reach the other. `microsandbox` now has one (step 4). `srt` has its
-launcher on executors (R1a), and a confined local session runs on it too, its
-workspace Git and files included (R1b-1, R1b-2a); the agent's shared host still wraps
-each runtime alone until R1b-2b.
+launcher on executors (R1a), and every local `srt` host runs on it too: a confined
+session in its directory's shim, its workspace Git and files included (R1b-1,
+R1b-2a), and every other host in an agent-scoped one (R1b-2b). The direct launch that
+wrapped each runtime alone is retired in R1b-2c.
 
 The local path reaches the launcher **in process**. It does not relay `prepare`
 through the Control Plane, open a pipe or run the TLS-PSK handshake: a local session
@@ -1375,7 +1376,7 @@ locally went, in four steps that each landed alone:
    executor path: a helper tunnel the shim cannot serve is logged by name and the VM
    still runs, where the bound mode refused the VM.
 
-**`srt` second**, on §5's launcher, in four steps:
+**`srt` second**, on §5's launcher, in five steps:
 
 1. **On executors — landed (R1a).** The launcher, the executor's policy and the
    spread, so a remote `srt` session runs inside an SRT-wrapped shim.
@@ -1399,11 +1400,19 @@ locally went, in four steps that each landed alone:
    `.git` deny relies on. Git before the session's first runtime starts the shim on
    the session directory alone; the runtime's launch, which mounts more, waits for that
    Git to end and starts the shim again, and only a running runtime refuses it.
-4. **The rest — R1b-2b.** A `shared` confined agent in an agent-scoped descriptor,
-   one SRT-wrapped shim per host key as today's local path runs one ACP host per host
-   key; and the local direct SRT launch retires — the provider around each runtime,
-   the per-host settings and temp directories, the host-socket injection for MCP and
-   credentials — so one `srt` policy remains.
+4. **Agent-scoped environments — landed (R1b-2b).** Every other `srt` host — the
+   agent's shared host, a pass's, a session host with no directory of its own — runs
+   in an SRT-wrapped shim of its own, one per host key as the local path runs one ACP
+   host per host key, keyed `<agentId>/<host dir>` as a VM's placement is. Its root is
+   the agent's directory, and the shim's policy writes a root only where a mount names
+   it, so the agent's `agent.json` stays hidden and only the launch composition's
+   roots are reopened; the sandbox starts in the host's cwd, which anchors SRT's own
+   protections where a runtime wrapped alone's did. The MCP spec names the host's own
+   tunnel. The agent's workspace Git and files stay on this host, as they were.
+5. **The direct launch retires — R1b-2c.** No daemon host takes it after R1b-2b;
+   runtime probes, model enumeration and the local `chat` command still do. The
+   provider around each runtime, the per-host settings and temp directories, and the
+   host-socket injection for MCP and credentials go, so one `srt` policy remains.
 
 It costs a shim per environment (§5).
 
@@ -1458,8 +1467,8 @@ About nine hundred of those lines are the generic layer, already extracted and
 reused as is. The shim, at twice the size of that whole path, is reused unchanged.
 
 **The 2026-09-24 revision** adds the following. S1, S2a, S2b, S2c, S3 and M1–M4 have
-landed, and so have R1a, R1b-1 and R1b-2a; R1b-2b has not. Each lands alone; S1–S3 are one
-feature, S2 lands in three parts, M1–M4 precede R1, and R1 lands in four parts.
+landed, and so have R1a, R1b-1, R1b-2a and R1b-2b; R1b-2c has not. Each lands alone; S1–S3
+are one feature, S2 lands in three parts, M1–M4 precede R1, and R1 lands in five parts.
 
 | PR     | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1475,7 +1484,8 @@ feature, S2 lands in three parts, M1–M4 precede R1, and R1 lands in four parts
 | R1a    | The `srt` strategy on executors (§5): the launcher, the three changes the probe found, the executor's policy, and `srt` sessions spread.                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | R1b-1  | A confined local `srt` session launches through the in-process entry, its runtime root fixed by its environment id so MCP and git credentials reach this daemon through the shim's tunnels (§11).                                                                                                                                                                                                                                                                                                                                                        |
 | R1b-2a | Confined sessions' workspace Git and files over the shim (§11).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| R1b-2b | `shared` confined agents in agent-scoped descriptors, and the direct SRT launch retires (§11).                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| R1b-2b | Every other local `srt` host in an agent-scoped shim, one per host key, whose policy leaves the agent's directory hidden (§11).                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| R1b-2c | The direct SRT launch retires (§11).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## 13. Open questions
 

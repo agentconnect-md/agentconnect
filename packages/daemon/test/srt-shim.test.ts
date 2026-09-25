@@ -234,6 +234,46 @@ describe('the srt boundary around a shim', () => {
     }
   )
 
+  // An agent's shared host is rooted at the agent's directory, which holds its agent.json: only what it mounts is reopened.
+  it.skipIf(process.platform !== 'linux')(
+    'keeps an agent-scoped root hidden, writing only its HOME, the shim roots and what it mounts',
+    () => {
+      const agentScoped = (mounts: EnvironmentDescriptor['mounts']) =>
+        srtShimPolicy({
+          cwd: '/srv/agents/a/workspace',
+          daemonRoot: '/srv/ac',
+          agentsRoot: '/srv/agents',
+          layout: {
+            runtimeRoot: '/srv/ac/hs/def',
+            workspaceRoot: '/srv/agents/a',
+            home: '/srv/agents/a/home',
+            helperRoot: '/opt/ac/dist'
+          },
+          tempDir: '/srv/ac/hs/def/t',
+          mounts,
+          readRoots: [],
+          hostEnv: { HOME: '/home/op', PATH: '/usr/bin' }
+        })
+      const { policy, cwd } = agentScoped([
+        { source: '/srv/agents/a/workspace', target: '/srv/agents/a/workspace', mode: 'writable' },
+        { source: '/srv/agents/a/run/config-files', target: '/srv/agents/a/run/config-files', mode: 'readonly' }
+      ])
+      // It starts where its host does, as a runtime wrapped alone does, since the root is no write root.
+      expect(cwd).toBe('/srv/agents/a/workspace')
+      expect(policy.gitSafeDirectories).toEqual(['/srv/agents/a/workspace'])
+      expect(policy.writable).toEqual([
+        '/srv/agents/a/workspace',
+        '/srv/agents/a/home',
+        '/srv/ac/hs/def',
+        '/srv/ac/hs/def/t'
+      ])
+      expect(policy.denyRead).toContain('/srv/agents')
+      expect(policy.allowRead).not.toContain('/srv/agents/a')
+      expect(policy.allowRead).toContain('/srv/agents/a/run/config-files')
+      expect(() => agentScoped([])).toThrow(/is not a writable mount/)
+    }
+  )
+
   it.skipIf(!srt)(
     'runs the shim inside: a dial from outside binds it, the holder’s Git works in its clones, and nothing outside is reachable',
     { timeout: 180_000 },
@@ -525,6 +565,47 @@ process.stdin.resume()`
     }
   )
 
+  // session-executors.md §11: an agent's shared host runs in a shim rooted at the agent's directory, which only its mounts reopen.
+  it.skipIf(!srt)(
+    "keeps an agent-scoped shim's agent.json hidden and its root unwritten, while its workspace takes the runtime's writes",
+    { timeout: 180_000 },
+    async () => {
+      root = await mkdtemp(join(tmpdir(), 'ac-srt-'))
+      const agentDir = join(root, 'agents', 'a')
+      const workspace = join(agentDir, 'workspace')
+      await mkdir(workspace, { recursive: true })
+      await writeFile(join(agentDir, 'agent.json'), '{"secret":"agent state"}')
+      const mounts = [
+        { source: workspace, target: workspace, mode: 'writable' as const },
+        { source: join(agentDir, 'home'), target: join(agentDir, 'home'), mode: 'writable' as const }
+      ]
+      const shim = await startHostShim({
+        daemonRoot: root,
+        workspaceRoot: agentDir,
+        entry,
+        boundary: srtShimBoundary({ daemonRoot: root, mounts, cwd: workspace, readRoots: READ_ROOTS })
+      })
+      shims.push(shim)
+      const { session, dialer } = await bind(() => connect(shim.socketPath), shim.token, 'subject-agent')
+      dialers.push(dialer)
+      const script = `
+const fs = require('fs')
+const attempt = (fn) => { try { fn(); return true } catch { return false } }
+process.stdout.write(JSON.stringify({
+  agentJson: attempt(() => fs.readFileSync(${JSON.stringify(join(agentDir, 'agent.json'))}, 'utf8')),
+  rootWrite: attempt(() => fs.writeFileSync(${JSON.stringify(join(agentDir, 'planted'))}, 'x')),
+  workspaceWrite: attempt(() => fs.writeFileSync(${JSON.stringify(join(workspace, 'made'))}, 'x')),
+  home: process.env.HOME
+}) + '\\n')`
+      const seen = await runThrough(session, workspace, script)
+      expect(seen).toMatchObject({ agentJson: false, workspaceWrite: true, home: join(agentDir, 'home') })
+      // A hidden root is an empty tmpfs inside, so a write there reaches nothing this machine sees.
+      expect(existsSync(join(agentDir, 'planted'))).toBe(false)
+      expect(existsSync(join(workspace, 'made'))).toBe(true)
+      expect(await readFile(join(agentDir, 'agent.json'), 'utf8')).toBe('{"secret":"agent state"}')
+    }
+  )
+
   // session-executors.md §11: a confined session's workspace Git runs in its shim, so what its repository configures runs inside the boundary.
   it.skipIf(!srt)(
     "runs a confined session's Git inside its boundary, where a filter its repository names cannot write outside the session",
@@ -559,7 +640,11 @@ process.stdin.resume()`
         () => launcher.stopAll()
       )
       // The session directory alone, as Git before the session's first runtime asks for it.
-      const environment: EnvironmentDescriptor = { id: `agent-1/${LEAF}`, workspaceRoot: sessionDir, mounts: [] }
+      const environment: EnvironmentDescriptor = {
+        id: `agent-1/${LEAF}`,
+        workspaceRoot: sessionDir,
+        mounts: [{ source: sessionDir, target: sessionDir, mode: 'writable' }]
+      }
       const owned: Record<string, string> = { HOME: join(sessionDir, 'home') }
       shimEnvironment(owned, localSrtRuntimeRoot(root, environment.id))
       const runner = localShimGitRunner({
