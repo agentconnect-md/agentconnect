@@ -17,7 +17,7 @@ interface PullContextPaths {
   description: string
   descriptionField: 'body' | 'description'
   baseShaPath: readonly string[]
-  headShaPath: readonly string[]
+  headShaPaths: readonly (readonly string[])[]
   commits: string
   commitMessagePath: readonly string[]
   diff: string
@@ -97,8 +97,12 @@ export async function readPullRequestContext(
   }
   const revision = (value: unknown) => {
     const baseSha = field(value, paths.baseShaPath)
-    const headSha = field(value, paths.headShaPath)
-    return typeof baseSha === 'string' && baseSha && typeof headSha === 'string' && headSha
+    const [headSha, ...otherHeads] = paths.headShaPaths.map((path) => field(value, path))
+    return typeof baseSha === 'string' &&
+      baseSha &&
+      typeof headSha === 'string' &&
+      headSha &&
+      otherHeads.every((head) => head === headSha)
       ? { baseSha, headSha }
       : undefined
   }

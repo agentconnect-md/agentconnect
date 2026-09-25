@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { DecisionBundle, DecisionEvaluation } from '@agentconnect.md/protocol'
 import { resolveDecisionBundle, type ResolvedDecisionGate } from '../src/decisions/bundle.js'
-import type { DecisionEvaluationInput } from '../src/decisions/evaluator.js'
+import { decisionRequestBody, type DecisionEvaluationInput } from '../src/decisions/evaluator.js'
 import {
   DEFAULT_DECISION_GATE_LIMITS,
   DecisionGate,
@@ -177,9 +177,13 @@ describe('DecisionGate', () => {
     chained.definitions.push({
       ...chained.definitions[0]!,
       id: 'd-2',
-      question: { type: 'boolean', instructions: 'Is execution safe?', criteria: { true: 'Ready', false: 'Wait' } }
+      question: { type: 'boolean', instructions: 'x'.repeat(14_000), criteria: { true: 'Ready', false: 'Wait' } }
     })
     h.state.applied = chained
+    await h.store.recordObservations(AGENT, 'C1', [
+      { ts: 'old-1', thread: 'thread-1', sender: 'U1', text: 'x'.repeat(12_000) },
+      { ts: 'old-2', thread: 'thread-2', sender: 'U1', text: 'y'.repeat(12_000) }
+    ])
     const posted = await h.post()
     await h.candidate(posted)
     await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
@@ -187,7 +191,8 @@ describe('DecisionGate', () => {
     await vi.waitFor(() => expect(h.calls).toHaveLength(2), WAIT)
     expect(h.calls[1]!.input.state).toBe(h.calls[0]!.input.state)
     expect(h.calls[1]!.input.deadlineAt).toBe(h.calls[0]!.input.deadlineAt)
-    expect(h.calls[1]!.input.decision.question.instructions).toBe('Is execution safe?')
+    expect(h.calls[1]!.input.decision.question.instructions).toBe('x'.repeat(14_000))
+    expect(Buffer.byteLength(decisionRequestBody(h.calls[1]!.input))).toBeLessThanOrEqual(32_000)
     h.calls[1]!.resolve(no)
     await h.gate.idle()
     const verdict = await h.store.getDecisionVerdict(posted.record.seq, AGENT)

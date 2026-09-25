@@ -110,7 +110,7 @@ export const githubTurnFinal: CodeHostTurnFinal<'github'> = {
         description: path,
         descriptionField: 'body',
         baseShaPath: ['base', 'sha'],
-        headShaPath: ['head', 'sha'],
+        headShaPaths: [['head', 'sha']],
         commits: `${path}/commits?per_page=${PULL_CONTEXT_COMMIT_LIMIT}&page=1`,
         commitMessagePath: ['commit', 'message'],
         diff: path,

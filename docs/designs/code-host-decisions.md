@@ -212,7 +212,8 @@ with each history text capped at 16 KiB. Issues omit `pullRequest`.
 PR/MR states add `pullRequest: { baseSha?, headSha?, commitMessages, diff }`. The optional API read
 has one 1.5-second budget including credentials. It reads metadata, then one page of at most 10
 commits and a 12 KiB diff prefix concurrently, then metadata again. Both revision reads must agree;
-a known webhook head/base must agree too. A changed or unverifiable revision omits the commits and
+a known webhook head/base must agree too. GitLab's current MR head must also match its generated
+diff head. A changed or unverifiable revision omits the commits and
 diff with `revision_changed`, `revision_mismatch`, or `revision_unverified`. A failed read retains
 the webhook and observed history with `pull_request_unavailable`. The webhook description takes
 precedence over the API description. No checkout, retries or pagination are involved.

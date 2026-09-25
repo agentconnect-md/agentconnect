@@ -153,7 +153,7 @@ export const giteaTurnFinal: CodeHostTurnFinal<'gitea'> = {
         description: path,
         descriptionField: 'body',
         baseShaPath: ['base', 'sha'],
-        headShaPath: ['head', 'sha'],
+        headShaPaths: [['head', 'sha']],
         commits: `${path}/commits?limit=${PULL_CONTEXT_COMMIT_LIMIT}&page=1&verification=false&files=false`,
         commitMessagePath: ['commit', 'message'],
         diff: `${path}.diff`,

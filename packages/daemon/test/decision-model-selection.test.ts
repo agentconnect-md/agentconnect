@@ -32,13 +32,18 @@ const paths = {
   description: '/pulls/42',
   descriptionField: 'body' as const,
   baseShaPath: ['base', 'sha'],
-  headShaPath: ['head', 'sha'],
+  headShaPaths: [['head', 'sha']],
   commits: '/pulls/42/commits',
   commitMessagePath: ['commit', 'message'],
   diff: '/pulls/42.diff'
 }
 const patch = 'diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-old\n+new\n'
-const revision = { base: { sha: 'base' }, head: { sha: 'head' }, diff_refs: { base_sha: 'base', head_sha: 'head' } }
+const revision = {
+  sha: 'head',
+  base: { sha: 'base' },
+  head: { sha: 'head' },
+  diff_refs: { base_sha: 'base', head_sha: 'head' }
+}
 const revisionState = { baseSha: 'base', headSha: 'head' }
 
 describe('session model evaluation', () => {
@@ -313,6 +318,17 @@ describe('session model evaluation', () => {
           redirect: 'error',
           headers: { authorization: `${provider === 'gitlab' ? 'Bearer' : 'token'} fixture-token` }
         })
+      if (provider === 'gitlab') {
+        fetcher.mockImplementation(async () =>
+          Response.json({ ...revision, sha: 'new-head', description: 'Description' })
+        )
+        expect(await codeHostPullRequestContext(source, 'example-agent', host, new AbortController().signal)).toEqual({
+          description: 'Description',
+          commitMessages: [],
+          diff: '',
+          reasons: ['revision_unverified']
+        })
+      }
     }
   )
 
