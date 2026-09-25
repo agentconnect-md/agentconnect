@@ -12,9 +12,9 @@
 > demand or to the repository selector, and reviews a covered repository's pull
 > request at an exact checkout as it does an `on-demand` row's
 > ([multi-repository-workspaces.md](multi-repository-workspaces.md) decision 6).
-> The console lists grant rows with **Authorize an installation** and an
-> **On demand** / **By decision** checkout in Edit workspace and the Workspace
-> card's repository dropdown, and counts covered repositories as authorized in
+> The console lists grant rows with an **On demand** / **By decision** checkout
+> in Edit workspace and the Workspace card's repository dropdown, authorizes a
+> grant from **Authorize repository**'s GitHub picker, and counts covered repositories as authorized in
 > the GitHub hook editor and on the agent page.
 >
 > Scratch workspaces use the same explicit repository allowlist and have no
@@ -579,10 +579,14 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
      dropdown's rows with every control disabled.
    - The same section lists installation grants as "All repositories in
      `<account>`" with the GitHub mark, the access toggle, the checkout menu and
-     a revoke action, and "Authorize an installation" offers the organization's
-     live, unsuspended installations the agent does not hold yet, with the same
-     **Read only** / **Read & write** choice (default read) whose write option
-     names every repository as its reach. The Workspace card's dropdown lists
+     a revoke action. There is no separate installation entry: **Authorize
+     repository**'s GitHub picker lists, first, "All repositories in
+     `<account>`" for each live, unsuspended installation the agent does not
+     hold yet, and picking one keeps the same **Read only** / **Read & write**
+     choice (default read) with a write option that names every repository as
+     its reach, offers **By decision** / **On demand** (default **On
+     demand**), and creates the grant. The Workspace card counts rows and
+     grants apart (`+3 repos · 1 org`). The Workspace card's dropdown lists
      each grant, as the dialog does, with the same controls. Both are
      visible under `canView` and enabled only for an organization `owner`; other
      editors see the rows and disabled controls whose tooltip names the role. A
@@ -688,8 +692,8 @@ invalidates existing tokens, which is stronger.
 **F. Installation grant and an on-demand clone**
 
 An organization owner opens Edit workspace on an agent whose primary is
-`acme/primary-service`, chooses "Authorize an installation", picks the `acme`
-installation at read access, and persists the grant. In a session the agent
+`acme/primary-service`, chooses **Authorize repository**, picks "All
+repositories in `acme`" at read access, and persists the grant. In a session the agent
 runs `git clone https://github.com/acme/tools.git`. The helper sends
 `repoFullName: "acme/tools"`; the Control Plane finds no row, finds the `acme`
 grant, resolves `acme/tools` through that installation, and mints a

@@ -1257,9 +1257,10 @@ scratch workspaces: it lists current grants, sets each one's access and checkout
 another repository, and revokes an existing grant. The Workspace card's repository
 dropdown may also change an additional repository's or installation grant's access and
 checkout, or revoke it. Both surfaces use the same options and vocabulary, and adding a
-repository has one flow: the dropdown and contextual authorization prompts open the
-shared dialog at the additional-repository step and return to the calling flow after
-authorization.
+repository has one flow, **Authorize repository**, whose GitHub picker also offers an
+organization owner "All repositories in `<account>`" for each installation the agent does
+not hold yet: the dropdown and contextual authorization prompts open the shared dialog at
+the additional-repository step and return to the calling flow after authorization.
 
 GitHub workspace settings expose one boolean named `Worktree`. When enabled, each
 logical session runs in its own stable Git worktree under the Agent directory, so one

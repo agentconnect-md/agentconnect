@@ -73,7 +73,6 @@ import {
   type WorkspaceMode
 } from '@/components/console/WorkspaceFormFields'
 import AddAgentRepoModal from '@/components/console/modals/AddAgentRepoModal'
-import AuthorizeInstallationModal from '@/components/console/modals/AuthorizeInstallationModal'
 
 /** Stable empty roster: a fresh literal would re-run the picker's lookups. */
 const NO_INSTALLATIONS: GithubInstallationDto[] = []
@@ -205,7 +204,6 @@ export default function EditWorkspaceModal({
       : null
   )
   const [grants, setGrants] = useState(installationGrants)
-  const [installationEditor, setInstallationEditor] = useState(false)
   const [selector, setSelector] = useState<AgentRepositorySelector | null>(agent.repositorySelector ?? null)
   const [selectorRevealed, setSelectorRevealed] = useState(false)
   const selectorRef = useRef<HTMLDivElement>(null)
@@ -232,13 +230,13 @@ export default function EditWorkspaceModal({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || saving || repositoryEditor !== null || installationEditor) return
+      if (event.key !== 'Escape' || saving || repositoryEditor !== null) return
       event.stopPropagation()
       onClose()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [installationEditor, onClose, repositoryEditor, saving])
+  }, [onClose, repositoryEditor, saving])
 
   useEffect(() => {
     setAuthorizations(authorized)
@@ -654,6 +652,15 @@ export default function EditWorkspaceModal({
         agent={agent}
         workspaceRepo={isGithubApp && githubWorkspace ? githubWorkspace.repo : null}
         authorized={authorizations}
+        installationGrants={grants}
+        canAuthorizeInstallation={isOwner}
+        onInstallationCreated={(grant) => {
+          const next = [...grants, grant]
+          setGrants(next)
+          onInstallationGrantsChange?.(next)
+          if (repositoryEditor.returnToWorkspace) setRepositoryEditor(null)
+          else onClose()
+        }}
         repositorySelector={selector}
         {...(githubWorkspace && githubWorkspace.provider === undefined ? { fixedRepo: githubWorkspace.repo } : {})}
         {...(repositoryEditor.repo ? { initialRepo: repositoryEditor.repo } : {})}
@@ -674,27 +681,6 @@ export default function EditWorkspaceModal({
     )
   }
 
-  if (installationEditor) {
-    return (
-      <AuthorizeInstallationModal
-        agent={agent}
-        installations={gh?.installations ?? NO_INSTALLATIONS}
-        granted={grants}
-        repositorySelector={selector}
-        onClose={() => setInstallationEditor(false)}
-        onExit={onClose}
-        onCreated={(row) => {
-          const next = [...grants, row]
-          setGrants(next)
-          onInstallationGrantsChange?.(next)
-          setInstallationEditor(false)
-        }}
-      />
-    )
-  }
-
-  // Offered wherever the organization has an installation to grant from; enabled for an owner only.
-  const installationEntry = gh?.enabled === true && gh.installations.length > 0
   const usesDecision =
     authorizations.some((row) => repoAuthMaterialize(row) === 'decision') ||
     grants.some((grant) => grant.materialize === 'decision')
@@ -1158,23 +1144,6 @@ export default function EditWorkspaceModal({
                   <Icon name="plus" size={13} />
                   {t('authorizeRepository')}
                 </Button>
-              )}
-              {installationEntry && (
-                <span title={isOwner ? undefined : t('installationOwnerOnly')}>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={!isOwner}
-                    className={isOwner ? undefined : 'pointer-events-none opacity-50'}
-                    onClick={() => {
-                      edits.setError(null)
-                      setInstallationEditor(true)
-                    }}
-                  >
-                    <Icon name="plus" size={13} />
-                    {t('authorizeInstallation')}
-                  </Button>
-                </span>
               )}
             </div>
 

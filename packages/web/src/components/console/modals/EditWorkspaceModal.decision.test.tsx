@@ -155,6 +155,15 @@ const openChoice = async (label: string, name?: string) => {
 const selectorField = () => document.querySelector('[data-repository-selector]')
 const selectorPicker = () => document.querySelector<HTMLButtonElement>('button[aria-label="Repository selector"]')
 
+// A whole installation is picked from Authorize repository's GitHub picker.
+const pickInstallation = async () => {
+  await click(
+    Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('Authorize repository'))
+  )
+  await click(Array.from(document.querySelectorAll('.inp')).find((el) => el.textContent?.includes('Pick a repository')))
+  await click(document.querySelector('[data-installation]'))
+}
+
 describe('EditWorkspaceModal, By decision', () => {
   it('disables By decision while no provider is ready where the agent runs', async () => {
     state.providers = [
@@ -276,14 +285,12 @@ describe('EditWorkspaceModal, By decision', () => {
       grant({ id: 'grant-2', installationId: 23456, accountLogin: 'example-org', materialize: 'decision' })
     )
     await render({ agent: agentWith({ repositorySelector: SELECTOR }), authorized: [] })
-    await click(
-      Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('Authorize an installation'))
-    )
+    await pickInstallation()
 
     const group = checkoutOf(document)
     expect(Array.from(group.querySelectorAll('button')).map((b) => b.textContent)).toEqual(['By decision', 'On demand'])
     await click(button('By decision', group))
-    await click(button('Authorize'))
+    await click(button('Add'))
     expect(mocks.createAgentInstallation).toHaveBeenCalledWith('agent-a', {
       installationId: 23456,
       access: 'read',
@@ -293,9 +300,7 @@ describe('EditWorkspaceModal, By decision', () => {
 
   it('keeps By decision unavailable on the installation step until a selector is set', async () => {
     await render({ authorized: [] })
-    await click(
-      Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('Authorize an installation'))
-    )
+    await pickInstallation()
 
     const byDecision = button('By decision', checkoutOf(document))
     expect(byDecision?.disabled).toBe(true)

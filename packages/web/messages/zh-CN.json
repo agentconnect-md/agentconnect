@@ -1909,7 +1909,6 @@
       "authorizeRepository": "授权仓库",
       "noAdditionalRepositories": "尚未授权其他仓库。",
       "revokeRepositoryAccess": "撤销仓库访问权限",
-      "authorizeInstallation": "授权安装",
       "installationOwnerOnly": "只有组织所有者可以授权或撤销安装",
       "allRepositoriesIn": "<mono>{account}</mono> 中的所有仓库",
       "revokeInstallationAccess": "撤销安装访问权限",
@@ -2018,21 +2017,9 @@
       "add": "添加"
     },
     "installationModal": {
-      "title": "授权安装",
-      "subtitle": "为以下对象授权一个安装覆盖的所有仓库",
-      "backToWorkspace": "返回工作区设置",
-      "installation": "安装",
       "allRepositories": "所有仓库",
       "selectedRepositories": "选定的仓库",
-      "noInstallations": "没有可授权的安装",
-      "access": "访问权限",
-      "readOnly": "只读",
-      "readOnlyDescription": "仅克隆和读取文件",
-      "readWrite": "读写",
-      "writeDescription": "在所有仓库中推送、创建 PR 并运行 GitHub Actions",
-      "cancel": "取消",
-      "authorizing": "授权中…",
-      "authorize": "授权"
+      "writeDescription": "在所有仓库中推送、创建 PR 并运行 GitHub Actions"
     },
     "filters": {
       "all": "全部",
@@ -2684,7 +2671,9 @@
         "viewRemote": "在 {provider} 中查看",
         "editWorkspace": "编辑工作区",
         "additionalRepos": "其他仓库",
-        "repoCount": "{count, plural, =0 {仓库} other {+# 个仓库}}",
+        "repos": "仓库",
+        "repoCount": "{count, plural, other {# 个仓库}}",
+        "orgCount": "{count, plural, other {# 个组织}}",
         "manageRepository": "管理仓库",
         "authorizeRepository": "授权仓库",
         "repositoryGrantsError": "无法加载仓库授权。",

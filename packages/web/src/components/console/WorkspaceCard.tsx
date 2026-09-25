@@ -106,6 +106,12 @@ export function WorkspaceCard({
     mutate: mutateGrants
   } = useSWR(grantsKey, ([, orgId, , agentId]) => fetchAgentInstallations(agentId, orgId))
   const grants = grantsData ?? []
+  // Repositories and whole accounts (installation grants) counted apart: `+3 repos · 1 org`, or `Repos` for neither.
+  const countParts = [
+    ...(repos.length > 0 ? [t('repoCount', { count: repos.length })] : []),
+    ...(grants.length > 0 ? [t('orgCount', { count: grants.length })] : [])
+  ]
+  const repositoryCount = countParts.length === 0 ? t('repos') : `+${countParts.join(' · ')}`
   const loadError = !!((reposData === undefined && reposError) || (grantsData === undefined && grantsError))
   const loading = isLoading && reposData === undefined
   const canEdit = agent.canEdit
@@ -215,7 +221,7 @@ export function WorkspaceCard({
               }}
             >
               <Icon name="key-round" size={13} color="var(--text-tertiary)" className="flex-none" />
-              {t('repoCount', { count: repos.length + grants.length })}
+              {repositoryCount}
             </button>
           )}
         >
