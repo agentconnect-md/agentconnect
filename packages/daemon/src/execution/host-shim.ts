@@ -14,6 +14,7 @@ import {
   SHIM_RUNTIME_MARK_ENV,
   SHIM_RUNTIME_ROOT_ENV,
   SHIM_SEED_ENV,
+  SHIM_STDIN_LIFELINE_ENV,
   SHIM_WORKSPACE_ROOT_ENV
 } from '../shim/protocol.js'
 import { shimPaths, type ShimPaths } from '../shim/sandbox-paths.js'
@@ -71,9 +72,44 @@ export interface HostShimInput {
   /** What seeding the session HOME points a runtime at on this machine; the shim fills it in under a holder's env. */
   seedEnv?: Record<string, string>
   log?: Logger
+  /** A boundary around the shim's process, the `srt` strategy's; absent ⇒ a plain child (§5). */
+  boundary?: HostShimBoundary
   /** Test seam: the shim entry and how to run it; the default is this daemon's built bundle. */
-  entry?: { execArgv: string[]; path: string }
+  entry?: ShimEntry
 }
+
+/** How the shim's bundle is run: its entry and the node flags it needs. */
+export interface ShimEntry {
+  execArgv: string[]
+  path: string
+}
+
+/** Where one host shim lives, which a boundary composes its policy from. */
+export interface HostShimLayout {
+  entry: ShimEntry
+  runtimeRoot: string
+  workspaceRoot: string
+  home: string
+  helperRoot: string
+  /** Beside the runtime root and outside it, for the boundary's own files; removed with the root. */
+  privateDir: string
+}
+
+/** A boundary the shim runs inside, every runtime it starts with it (session-executors.md §5). */
+export interface HostShimBoundary {
+  /** Wrap the shim's command once its runtime root exists. */
+  wrap(shim: { cmd: string; args: string[] }, layout: HostShimLayout): WrappedShim
+}
+
+export interface WrappedShim {
+  cmd: string
+  args: string[]
+  /** Added to the shim's launch env, for the wrapper to read. */
+  env: Record<string, string>
+}
+
+// A runtime root's private sibling: `<root>.p`.
+const PRIVATE_SUFFIX = '.p'
 
 /** The shim's launch environment: its own sockets and roots, the machine facts above and what the HOME seed points at — never the complete-env flag, which is a holder's claim about ITS machine. */
 export function hostShimEnv(input: {
@@ -85,6 +121,8 @@ export function hostShimEnv(input: {
   workspaceRoot: string
   helperRoot: string
   mark: string
+  /** False under a boundary that hands the shim stdio only: stdin is then its lifeline in place of the extra descriptor. */
+  watchesParent?: boolean
 }): Record<string, string> {
   const env: Record<string, string> = {}
   for (const name of INHERITED_ENV) {
@@ -99,7 +137,8 @@ export function hostShimEnv(input: {
   env[SHIM_WORKSPACE_ROOT_ENV] = input.workspaceRoot
   env[SHIM_HELPER_ROOT_ENV] = input.helperRoot
   env[SHIM_RUNTIME_MARK_ENV] = input.mark
-  env[SHIM_PARENT_FD_ENV] = String(PARENT_FD)
+  if (input.watchesParent !== false) env[SHIM_PARENT_FD_ENV] = String(PARENT_FD)
+  else env[SHIM_STDIN_LIFELINE_ENV] = '1'
   return env
 }
 
@@ -112,6 +151,11 @@ export async function sweepStaleHostShims(daemonRoot: string, log?: Pick<Logger,
   for (const name of await readdir(dir).catch(() => [])) {
     const runtimeRoot = join(dir, name)
     if (liveRoots.has(runtimeRoot)) continue
+    if (name.endsWith(PRIVATE_SUFFIX)) {
+      if (!liveRoots.has(runtimeRoot.slice(0, -PRIVATE_SUFFIX.length)))
+        await rm(runtimeRoot, { recursive: true, force: true })
+      continue
+    }
     const mark = (await readFile(join(runtimeRoot, MARK_FILE), 'utf8').catch(() => '')).trim()
     // Only a mark this launcher could have minted is looked for; the sweep itself matches it exactly.
     if (MARK.test(mark)) await sweepMarkedUntilClear(mark)
@@ -144,6 +188,7 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   const longest = Object.values(shimPaths(runtimeRoot).tunnels).reduce((a, b) => (b.length > a.length ? b : a))
   if (Buffer.byteLength(longest) > AF_UNIX_PATH_MAX) throw new Error('daemon root is too long for a host shim socket')
   const socketPath = join(runtimeRoot, 'shim.sock')
+  const privateDir = `${runtimeRoot}${PRIVATE_SUFFIX}`
   const workspaceRoot = input.workspaceRoot
   const home = join(workspaceRoot, 'home')
   const token = randomBytes(32).toString('base64url')
@@ -162,20 +207,34 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
     throw error
   }
   const log = input.log
-  const child: ChildProcess = spawn(process.execPath, [...entry.execArgv, entry.path, '--identity-stdin'], {
+  const shimCommand = { cmd: process.execPath, args: [...entry.execArgv, entry.path, '--identity-stdin'] }
+  let wrapped: WrappedShim | undefined
+  try {
+    wrapped = input.boundary?.wrap(shimCommand, { entry, runtimeRoot, workspaceRoot, home, helperRoot, privateDir })
+  } catch (error) {
+    liveRoots.delete(runtimeRoot)
+    await Promise.all([runtimeRoot, privateDir].map((path) => rm(path, { recursive: true, force: true })))
+    throw error
+  }
+  const launch = wrapped ?? shimCommand
+  const child: ChildProcess = spawn(launch.cmd, launch.args, {
     cwd: workspaceRoot,
-    env: hostShimEnv({
-      machineEnv: input.env ?? process.env,
-      ...(input.seedEnv ? { seedEnv: input.seedEnv } : {}),
-      home,
-      socketPath,
-      runtimeRoot,
-      workspaceRoot,
-      helperRoot,
-      mark
-    }),
-    // The fourth is never written: the kernel closes this end when the daemon dies, however it dies, and the shim reads that as its cue to go.
-    stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+    env: {
+      ...hostShimEnv({
+        machineEnv: input.env ?? process.env,
+        ...(input.seedEnv ? { seedEnv: input.seedEnv } : {}),
+        home,
+        socketPath,
+        runtimeRoot,
+        workspaceRoot,
+        helperRoot,
+        mark,
+        watchesParent: wrapped === undefined
+      }),
+      ...wrapped?.env
+    },
+    // The fourth is never written: the kernel closes this end when the daemon dies, and the shim reads that as its cue to go. A boundary passes stdio alone.
+    stdio: wrapped ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe', 'pipe'],
     // Its own group, so stop can end whatever it spawned in one signal.
     detached: true
   })
@@ -189,7 +248,7 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   const removed = exited.then(async () => {
     await sweepMarkedUntilClear(mark)
     liveRoots.delete(runtimeRoot)
-    await rm(runtimeRoot, { recursive: true, force: true })
+    await Promise.all([runtimeRoot, privateDir].map((path) => rm(path, { recursive: true, force: true })))
   })
   void removed.catch(() => {})
   let resolveReady!: () => void
@@ -227,7 +286,9 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
   let stopping: Promise<void> | undefined
   const stop = (): Promise<void> =>
     (stopping ??= (async () => {
-      signalGroup('SIGTERM')
+      // A boundary forwards no signal inward, so closing the shim's stdin asks it to drain; the group kill below is the fallback.
+      if (wrapped) child.stdin?.end()
+      else signalGroup('SIGTERM')
       const timer = setTimeout(() => signalGroup('SIGKILL'), STOP_TIMEOUT_MS)
       try {
         await exited
@@ -238,8 +299,12 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
       await removed
     })())
   const timer = setTimeout(() => rejectReady(new Error('host shim startup timed out')), READY_TIMEOUT_MS)
+  // A write to a shim that already went is not a failure of its own; the exit reports it.
+  child.stdin!.on('error', () => {})
   try {
-    child.stdin!.end(token)
+    // Under a boundary stdin stays open past the identity line: it is the shim's lifeline.
+    if (wrapped) child.stdin!.write(`${token}\n`)
+    else child.stdin!.end(token)
     await ready
   } catch (error) {
     await stop()

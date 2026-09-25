@@ -12,6 +12,7 @@ import { GitExecPayloadSchema, type GitExecResult } from './git-exec.js'
 import type { ShimCapability } from './protocol.js'
 import { applyWorkspaceFilesPayload } from './workspace-files-channel.js'
 import { applyMemoryFsPayload, isMemoryFsPayload } from './memory-fs-channel.js'
+import { srtGitEnv } from './srt-route.js'
 
 export { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError } from '../workspace/git-command-policy.js'
 import { ExecRefusedError, validateGitArgs } from '../workspace/git-command-policy.js'
@@ -52,6 +53,8 @@ export interface ExecHandlerDeps {
   timeoutMs?: number
   /** Where this shim keeps its staging and finds its bridge; the image's layout unless the entrypoint names another root. */
   paths?: ShimPaths
+  /** Test seam: the shim's own environment, which SRT sets its bridge in; default `process.env`. */
+  shimEnv?: Record<string, string | undefined>
   log?: { info: (m: string) => void; warn: (m: string) => void }
 }
 
@@ -223,6 +226,8 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSign
   // be able to pin a child here indefinitely, and a child outliving the request that asked for
   // it keeps holding index.lock after the caller has given up.
   const timeoutMs = Math.min(parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS, deps.timeoutMs ?? MAX_TIMEOUT_MS)
+  // Inside SRT the holder's empty proxy pins would leave no route out, so they name the boundary's own bridge (session-executors.md §5).
+  const env = srtGitEnv(parsed.env, deps.shimEnv ?? process.env)
   return await new Promise<GitExecResult>((resolvePromise, reject) => {
     execFile(
       'git',
@@ -236,7 +241,7 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSign
         // reach execution. It cannot simply be filtered, because those same mechanisms are how
         // the daemon delivers credential helpers and pins hooksPath; making it untrusted means
         // moving that policy into the shim, which is a design change, not a patch.
-        ...(parsed.env ? { env: parsed.env } : {}),
+        ...(env ? { env } : {}),
         timeout: timeoutMs,
         // The daemon's abort kills the child here, matching what simple-git's signal does locally.
         ...(abort ? { signal: abort } : {}),

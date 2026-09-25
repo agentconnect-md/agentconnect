@@ -11,6 +11,7 @@ import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { seedDshPreset } from './dsh-preset.js'
 import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
 import { SHIM_RUNTIME_MARK_ENV, SHIM_SEED_ENV, type ShimEvent } from './protocol.js'
+import { applySrtProxyEnv } from './srt-route.js'
 
 /** How the runner reports back: many events per opened stream, not one response. */
 export type EmitEvent = (event: ShimEvent['event']) => void
@@ -200,6 +201,7 @@ export class AcpRunner {
     // A local VM's launch gets what a direct spawn of it got: the daemon's environment and its resolved hints, no pod fill-in.
     if (this.deps.completeEnv) {
       const env = { ...payload.env }
+      applySrtProxyEnv(env, this.deps.podEnv ?? {})
       this.fillHints(payload, env)
       return this.spawnChild(this.deps.resolveCommand?.(payload.command, env) ?? payload.command, payload, env)
     }
@@ -210,6 +212,7 @@ export class AcpRunner {
     // credentials from the SandboxTemplate, and those are forwarded deliberately by
     // sandboxProviderEnv, not in bulk.
     const env = { ...podBaseEnv(this.deps.podEnv ?? {}), ...seedEnv(this.deps.podEnv ?? {}), ...payload.env }
+    applySrtProxyEnv(env, this.deps.podEnv ?? {})
     // After the daemon's env, so an agent's `gh` reaches the image's per-repo wrapper even when a PATH travelled.
     const ghPath = ghWrapperPath(env.PATH)
     if (ghPath !== undefined) env.PATH = ghPath

@@ -416,7 +416,7 @@ jobs:
           # Fail loudly rather than letting sandbox-dependent suites silently skip if bwrap cannot start.
           bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc /usr/bin/true
       - name: Core sandbox suite
-        run: pnpm --filter @agentconnect.md/daemon exec vitest run test/sandbox.test.ts
+        run: pnpm --filter @agentconnect.md/daemon exec vitest run test/sandbox.test.ts test/srt-shim.test.ts
       - name: Confined skills suites
         run: >
           pnpm --filter @agentconnect.md/daemon exec vitest run

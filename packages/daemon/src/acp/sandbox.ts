@@ -297,8 +297,14 @@ export function removeHostSandboxState(agentDir: string, hostKey: HostKey | unde
 
 // Atomically publish the trusted SRT policy outside every agent-writable path, one directory per host.
 export function writeSandboxSettings(agentDir: string, hostDir: string, policy: SrtSandboxPolicy): string {
-  const root = canonicalTarget(agentDir)
-  const settingsDir = sandboxSettingsDir(root, hostDir)
+  return writeSandboxSettingsUnder(agentDir, relative(agentDir, sandboxSettingsDir(agentDir, hostDir)), policy)
+}
+
+/** Publish a policy in `relDir` under the trusted `trustedRoot`, a daemon-owned directory no sandbox can write. */
+export function writeSandboxSettingsUnder(trustedRoot: string, relDir: string, policy: SrtSandboxPolicy): string {
+  const root = canonicalTarget(trustedRoot)
+  const settingsDir = resolve(root, relDir)
+  if (!strictlyInside(root, settingsDir)) throw new SandboxError('sandbox settings path escapes the trusted root')
   let current = root
   for (const part of relative(root, settingsDir).split(sep).filter(Boolean)) {
     current = join(current, part)
@@ -309,7 +315,7 @@ export function writeSandboxSettings(agentDir: string, hostDir: string, policy: 
   mkdirSync(settingsDir, { recursive: true, mode: 0o700 })
   chmodSync(settingsDir, 0o700)
   if (!strictlyInside(root, realpathSync(settingsDir))) {
-    throw new SandboxError('sandbox settings path escapes the trusted agent dir')
+    throw new SandboxError('sandbox settings path escapes the trusted root')
   }
 
   const denyRead = canonical(policy.denyRead)
@@ -383,6 +389,8 @@ export function sandboxWrap(
     cwd?: string
     offline?: boolean
     startGated?: boolean
+    /** The provider's own entry; absent ⇒ this daemon's. A shim wrapped whole brings its bundle's (session-executors.md §5). */
+    provider?: { cmd: string; args: string[] }
   }
 ): { cmd: string; args: string[] } {
   if (!opts.settingsPath || !isAbsolute(opts.settingsPath)) {
@@ -391,7 +399,7 @@ export function sandboxWrap(
   if (!opts.cwd || !isAbsolute(opts.cwd)) {
     throw new SandboxError('sandbox cwd is required')
   }
-  const provider = sandboxProviderLauncher()
+  const provider = opts.provider ?? sandboxProviderLauncher()
   return {
     cmd: provider.cmd,
     args: [

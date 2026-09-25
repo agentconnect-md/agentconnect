@@ -5,6 +5,7 @@ import type {
   RuntimeStrategyEntry,
   SessionStayedHomeReason
 } from '@agentconnect.md/protocol'
+import { EXECUTION_STRATEGIES } from './strategies.js'
 
 /** What the holder knows about a session being born, and nothing wider. */
 export interface PlacementAsk {
@@ -32,8 +33,8 @@ export type Placement = { spread: PlacementChoice[] } | { stayedHome: SessionSta
 /** How long the CP must have gone without hearing from an executor before its environment counts as lost (§7, §13). */
 export const EXECUTOR_LOSS_GRACE_MS = 10 * 60_000
 
-/** The strategies a holder drives on another machine; `srt` stays on its holder until R1 gives the facet an srt launcher (§12). */
-const SPREADING_STRATEGIES: ReadonlySet<string> = new Set(['host', 'microsandbox'])
+/** The strategies a holder drives on another machine: every one the facet prepares (§5). */
+const SPREADING_STRATEGIES: ReadonlySet<string> = new Set(EXECUTION_STRATEGIES)
 
 /** Whether a session of this strategy may be placed on another member at all. */
 export function strategySpreads(strategy: string): boolean {
@@ -117,7 +118,7 @@ export function placeSession(input: {
   const { ask, answer, replacing } = input
   if (ask.isolation !== 'session') return { stayedHome: 'shared_session' }
   if (ask.memoryDaemonHomed) return { stayedHome: 'memory_daemon_homed' }
-  // No member can run it elsewhere yet, so no candidate is the honest verdict, whatever the CP would answer.
+  // A strategy no facet prepares cannot run elsewhere, so no candidate is the honest verdict, whatever the CP would answer.
   if (!strategySpreads(ask.strategy)) return { stayedHome: 'no_candidate' }
   if (!answer) return { stayedHome: 'control_plane_unreachable' }
   const holder: Fill = { hosted: input.holderHostedSessions, capacity: Math.max(0, input.holderCapacity) }

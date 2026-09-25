@@ -72,6 +72,16 @@ describe('shim entry options', () => {
     }
   })
 
+  it('takes stdin as its lifeline only on a host socket, and only when told', () => {
+    expect(shimEntryOptions({ AC_SHIM_SOCKET: '/s', AC_SHIM_STDIN_LIFELINE: '1' }).stdinLifeline).toBe(true)
+    expect(shimEntryOptions({ AC_SHIM_SOCKET: '/s' })).not.toHaveProperty('stdinLifeline')
+    // A VM's shim reads its identity from stdin that closes at once; that end-of-file must not stop it.
+    expect(shimEntryOptions({ AC_SHIM_STDIN_LIFELINE: '1' })).not.toHaveProperty('stdinLifeline')
+    expect(shimEntryOptions({ AC_SHIM_SOCKET: '/s', AC_SHIM_STDIN_LIFELINE: 'yes' })).not.toHaveProperty(
+      'stdinLifeline'
+    )
+  })
+
   it('refuses a port that is not one, and ignores it when a socket is named', () => {
     expect(() => shimEntryOptions({ AC_SHIM_PORT: '0' })).toThrow('AC_SHIM_PORT is not a valid port')
     expect(shimEntryOptions({ AC_SHIM_PORT: '0', AC_SHIM_SOCKET: '/s' }).listen).toEqual({ socketPath: '/s' })

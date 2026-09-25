@@ -215,8 +215,8 @@ function loadRecords(dir: string, log: Pick<Logger, 'warn'>): Map<string, Enviro
         launchId: raw.launchId,
         preparedAt: raw.preparedAt!,
         lastUsedAt: raw.lastUsedAt!,
-        // The only strategy an earlier version of this record could describe.
-        strategy: raw.strategy === 'microsandbox' ? 'microsandbox' : 'host'
+        // A record without one predates the field, when `host` was the only strategy.
+        strategy: EXECUTION_STRATEGIES.find((name) => name === raw.strategy) ?? 'host'
       })
     } catch {
       unreadable += 1
@@ -293,7 +293,7 @@ class Facet implements ExecutorFacet {
     const host = this.deps.endpointHost()
     return {
       enabled: true,
-      strategies: { host: this.offered('host'), microsandbox: this.offered('microsandbox') },
+      strategies: Object.fromEntries(EXECUTION_STRATEGIES.map((strategy) => [strategy, this.offered(strategy)])),
       ...(host ? { endpoint: { host, port: this.listener.port } } : {}),
       capacity: this.capacity()
     }

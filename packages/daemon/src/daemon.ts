@@ -88,7 +88,7 @@ import {
   MCP_APP_INLINE_TEMPLATE_MAX_BYTES
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import {
   installMicrosandbox,
@@ -128,7 +128,14 @@ import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.j
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
 import { diffAgents } from './reconciler/reconciler.js'
-import { resolveRoot, statePath, agentRemovalObligationsDir, mcpSocketPath, daemonEntryForShims } from './paths.js'
+import {
+  resolveRoot,
+  statePath,
+  agentRemovalObligationsDir,
+  mcpSocketPath,
+  daemonEntryForShims,
+  runtimeStoreDir
+} from './paths.js'
 import {
   LocalStore,
   sessionKey,
@@ -471,6 +478,7 @@ import {
   isSandboxStrategy,
   machineStrategies,
   SANDBOX_STRATEGIES,
+  srtLauncher,
   StrategyUnavailableError,
   strategyReason,
   type SandboxStrategy,
@@ -3976,9 +3984,14 @@ export class Daemon {
       daemonRoot: root,
       share: cfg.sandbox.share,
       strategies: () => this.executionStrategies(),
-      // Both are offered; the effective table above is what decides which of them a `prepare` may ask for.
+      // All are offered; the effective table above is what decides which of them a `prepare` may ask for.
       launchers: {
         host: hostLauncher(root),
+        // SRT around the shim, its policy this machine's own: the session's directory, its sign-in, and the code it runs (§5).
+        srt: srtLauncher(root, {
+          ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
+          readRoots: () => this.srtShimReadRoots()
+        }),
         // A VM seeds its own HOME from the same admitted runtimes, with their credentials behind placeholders (§8).
         microsandbox: this.vmLauncher
       },
@@ -3992,7 +4005,8 @@ export class Daemon {
       },
       // What a local agent here would start, so a holder never names a path in its own store (§8): a VM its image's adapter, a host process this machine's install.
       runtimeLaunch: async (runtimeId, strategy) => {
-        if (strategy === 'host') await this.ensureRuntimeInstalled(runtimeId, this.localRuntimeCatalog !== undefined)
+        if (strategy !== 'microsandbox')
+          await this.ensureRuntimeInstalled(runtimeId, this.localRuntimeCatalog !== undefined)
         else await this.microsandboxReady()
         const catalog =
           strategy === 'microsandbox' ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
@@ -4893,6 +4907,29 @@ export class Daemon {
       // Called for srt launches alone, which read every mount at its host path.
       readRoots: this.cfg.sandbox.mounts.map((mount) => mount.source)
     })
+  }
+
+  /** What an srt shim reads of this machine's code (§5): node, the runtime store whole — an adapter it installs after the start must be visible — and each admitted runtime's install. */
+  private srtShimReadRoots(): string[] {
+    this.refreshAdmittedRuntimes()
+    const store = runtimeStoreDir(this.root)
+    // SRT binds only a root that exists, so a fresh machine's store is made now, before an install lands in it after the start.
+    mkdirSync(store, { recursive: true })
+    const roots = new Set([store])
+    for (const [runtimeId, runtime] of Object.entries(this.runtimes)) {
+      try {
+        for (const path of trustedRuntimeReadRoots({
+          runtime,
+          hostEnv: process.env,
+          executableCommands: [process.execPath]
+        }))
+          roots.add(path)
+      } catch (error) {
+        // An install that is not there yet reads from the store, which is already open.
+        this.log.debug(`srt: no install of runtime ${runtimeId} to open for a shim (${formatErr(error)})`)
+      }
+    }
+    return [...roots]
   }
 
   private usesMicrosandbox(agent: Agent): boolean {

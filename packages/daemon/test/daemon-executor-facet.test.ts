@@ -97,7 +97,12 @@ describe('daemon wiring of the executor facet', () => {
         // No control connection in this test, so no address to publish until one is stood in for it.
         expect(deps.capabilities().executor).toEqual({
           enabled: true,
-          strategies: { host: { available: true }, microsandbox: { available: false, reason: expect.any(String) } },
+          // `srt` is whatever this host's SRT probe found; it is offered either way.
+          strategies: {
+            host: { available: true },
+            srt: expect.objectContaining({ available: expect.any(Boolean) }),
+            microsandbox: { available: false, reason: expect.any(String) }
+          },
           capacity: 32
         })
         internals.cpClient = { localAddress: () => '192.0.2.10' }
