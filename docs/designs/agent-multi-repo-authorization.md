@@ -575,8 +575,8 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
      `canView` and enabled only for an organization `owner`; other editors see
      the rows and a disabled action whose tooltip names the role. As on a
      repository row there is no inline tier change: lowering or raising a
-     grant's tier is revoke and authorize again (the route accepts a `PATCH`
-     either way). Every row carries its materialization:
+     grant's tier is revoke and authorize again (the route still accepts an
+     upward `PATCH`). Every row carries its materialization:
      **Always**, **By decision** or **On demand** on a repository row, **By
      decision** or **On demand** on a grant (an owner's menu), and the
      authorize step offers the same two, defaulting to **On demand**. **By
