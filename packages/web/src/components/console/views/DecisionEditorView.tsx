@@ -247,7 +247,7 @@ function DecisionEditor() {
           }
         ]
       : []),
-    ...(featureFlagEnabled('daemon-groups') ? memberSets : []).map((group) => ({
+    ...memberSets.map((group) => ({
       value: groupPlacementValue(group.setId),
       label: group.name,
       kind: 'group' as const,

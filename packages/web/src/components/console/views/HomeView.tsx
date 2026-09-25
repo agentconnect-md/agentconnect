@@ -34,7 +34,7 @@ import { Icon } from '@/components/ui'
 import { AgentIconView, LoadingState, LogoMark, Spinner } from '@/components/marks'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { useProfile } from '@/lib/profile'
-import { featureFlagEnabled, type FeatureFlagId } from '@/lib/feature-flags'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
   agentCapabilitySource,
   agentDaemonLabel,
@@ -262,15 +262,12 @@ export default function HomeView() {
   const placementKind = agent ? agentPlacementKind(agent, memberSets) : undefined
   const placementLabel = agent ? agentDaemonLabel(agent, daemons, memberSets) : '—'
   const placementName = placementLabel === '—' ? '' : placementLabel
-  // A set target's own page exists only where the deployment offers that surface — both return
-  // NotFound behind their flag, while a placement made before the flag went off is still named
-  // here. Send those to the Infra list rather than to a dead end.
-  const setHref = (flag: FeatureFlagId, path: string) => orgPath(featureFlagEnabled(flag) ? path : '/daemons')
+  // Existing pool placements fall back to the Infra list when the pool page is hidden.
   const placementHref =
     placementKind === 'pool'
-      ? setHref('daemon-pool', '/daemons/cluster')
+      ? orgPath(featureFlagEnabled('daemon-pool') ? '/daemons/cluster' : '/daemons')
       : placementKind === 'group' && agent?.setId
-        ? setHref('daemon-groups', `/daemons/groups/${agent.setId}`)
+        ? orgPath(`/daemons/groups/${agent.setId}`)
         : owningDaemon
           ? orgPath(`/daemons/${owningDaemon.daemonId}`)
           : null

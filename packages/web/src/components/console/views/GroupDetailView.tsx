@@ -18,7 +18,6 @@ import { useParams, useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { groupFleetStatus, isSetPlacementKind, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useModal } from '@/components/console/ModalProvider'
 import { NotFound } from '@/components/console/NotFound'
 import {
@@ -67,10 +66,8 @@ export default function GroupDetailView() {
     return map
   }, [agents])
 
-  // Flagged for the same reason the Infra section is: the Control Plane serves member sets
-  // either way, so this hides the console entry point, not the feature.
-  if (!featureFlagEnabled('daemon-groups') || !group) {
-    if (memberSetsLoading && featureFlagEnabled('daemon-groups'))
+  if (!group) {
+    if (memberSetsLoading)
       return (
         <div className="wrap max-w-[1240px]">
           <LoadingState fill />

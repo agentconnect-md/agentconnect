@@ -12,26 +12,25 @@ afterEach(() => setEnv())
 
 describe('featureFlagEnabled', () => {
   it('is off unless the deployment asks for it', () => {
-    // A new flag shipping ON is the failure mode this prevents: every environment would
-    // get it the moment it merged.
+    // A new flag must stay off until the deployment enables it.
     setEnv()
-    expect(featureFlagEnabled('daemon-groups')).toBe(false)
+    expect(featureFlagEnabled('billing')).toBe(false)
     expect(featureFlagEnabled('daemon-pool')).toBe(false)
     // `managed` off is the SELF-HOSTED reading, which is what an unconfigured install is.
     expect(featureFlagEnabled('managed')).toBe(false)
     setEnv('')
-    expect(featureFlagEnabled('daemon-groups')).toBe(false)
+    expect(featureFlagEnabled('billing')).toBe(false)
     expect(featureFlagEnabled('daemon-pool')).toBe(false)
   })
 
   it('switches each flag on its own', () => {
-    // One id in the list turns on THAT surface — groups and the pool ship and roll out apart.
+    // Enabling the pool does not enable billing or managed-cloud presentation.
     setEnv('daemon-pool')
     expect(featureFlagEnabled('daemon-pool')).toBe(true)
-    expect(featureFlagEnabled('daemon-groups')).toBe(false)
-    setEnv('daemon-groups,daemon-pool')
+    expect(featureFlagEnabled('billing')).toBe(false)
+    setEnv('billing,daemon-pool')
     expect(featureFlagEnabled('daemon-pool')).toBe(true)
-    expect(featureFlagEnabled('daemon-groups')).toBe(true)
+    expect(featureFlagEnabled('billing')).toBe(true)
     // The pool can be offered without being AgentConnect's: that pair is the self-hoster.
     expect(featureFlagEnabled('managed')).toBe(false)
     setEnv('daemon-pool,managed')
@@ -39,27 +38,26 @@ describe('featureFlagEnabled', () => {
   })
 
   it('reads a comma-separated list, tolerating spacing and case', () => {
-    setEnv(' Daemon-Groups , something-else ')
-    expect(featureFlagEnabled('daemon-groups')).toBe(true)
+    setEnv(' Billing , something-else ')
+    expect(featureFlagEnabled('billing')).toBe(true)
   })
 
   it('ignores ids it does not know', () => {
     setEnv('not-a-feature')
-    expect(featureFlagEnabled('daemon-groups')).toBe(false)
+    expect(featureFlagEnabled('billing')).toBe(false)
   })
 
   it('server and client read the same value, so the gate cannot differ across hydration', () => {
-    // `public-env` injects plain `FEATURE_FLAGS`; a server branch reading only the build-time twin
-    // would render the surface off and hydrate it on.
+    // The browser reads injected FEATURE_FLAGS rather than the server's environment.
     const original = (window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV
     delete (window as unknown as { __AC_ENV?: unknown }).__AC_ENV
-    process.env.FEATURE_FLAGS = 'daemon-groups'
+    process.env.FEATURE_FLAGS = 'billing'
     try {
       // The browser branch, with nothing injected: off, because there is nothing to read.
-      expect(featureFlagEnabled('daemon-groups')).toBe(false)
+      expect(featureFlagEnabled('billing')).toBe(false)
       // And injected, it is the source both sides agree on.
-      ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: 'daemon-groups' }
-      expect(featureFlagEnabled('daemon-groups')).toBe(true)
+      ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: 'billing' }
+      expect(featureFlagEnabled('billing')).toBe(true)
     } finally {
       delete process.env.FEATURE_FLAGS
       ;(window as unknown as { __AC_ENV?: unknown }).__AC_ENV = original

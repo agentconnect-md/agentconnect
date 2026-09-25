@@ -345,9 +345,8 @@ export default function AddAgentModal({
           }
         ]
       : []),
-    // The org's own groups sit with Cloud, not with the machines: they are the same KIND of target
-    // — the server picks which member serves, and the agent survives losing any one of them.
-    ...(featureFlagEnabled('daemon-groups') ? offeredGroups : []).map((group) => ({
+    // Groups are placement targets whose serving member is selected by the server.
+    ...offeredGroups.map((group) => ({
       value: groupPlacementValue(group.setId),
       label: group.name,
       meta: t('daemonSelect.groupMeta', { count: group.memberDaemonIds.length }),

@@ -24,7 +24,6 @@ import {
 } from '@/lib/data'
 import { creatorLabel } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useProfile } from '@/lib/profile'
 import { useModal } from '@/components/console/ModalProvider'
 import { VisibilityValue } from '@/components/console/VisibilityField'
@@ -223,9 +222,8 @@ export default function DaemonDetailView() {
   const maxAgents = Number(daemon.conns)
   const ceiling = !Number.isFinite(maxAgents) || maxAgents <= 0 ? '∞' : String(maxAgents)
   const load = `${daemon.loadAgents} / ${ceiling}`
-  // The group this machine belongs to. The pool is managed infrastructure — its membership is
-  // the CP's, never an operator's — so it offers neither the chip nor the actions.
-  const groupsOffered = !daemon.pool && featureFlagEnabled('daemon-groups')
+  // Only an organization's own daemons offer group membership controls.
+  const groupsOffered = !daemon.pool
   const group = groupsOffered ? memberSets.find((g) => g.setId === daemon.memberSetId) : undefined
   const runGroupOp = async (fn: () => Promise<void>) => {
     setGroupBusy(true)

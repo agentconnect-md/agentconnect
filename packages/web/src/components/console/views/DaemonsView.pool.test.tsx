@@ -215,12 +215,12 @@ describe('DaemonsView pool', () => {
     expect(html).not.toContain('agents on Cloud')
     expect(html).not.toContain('Kubernetes cluster')
     expect(html).toContain('pc.dev')
+    expect(html).toContain('Daemon groups')
   })
 
   it('keeps the groups an org already made when hiding the pool empties the fleet', () => {
-    // The two flags are independent switches. Hiding Cloud must not take the group surface
-    // with it just because the pool rows were the only thing keeping the fleet non-empty.
-    setFlags('daemon-groups')
+    // Groups remain available even when hiding the pool leaves no visible daemon rows.
+    setFlags('')
     mocks.daemons = [member('p1')]
     mocks.memberSets = [{ setId: 'g1', name: 'edge-eu', memberDaemonIds: [], agentCount: 0 }]
 
