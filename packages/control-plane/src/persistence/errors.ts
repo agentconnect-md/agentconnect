@@ -367,26 +367,6 @@ export class AgentWorkspaceIntegrationConflict extends Error {
   }
 }
 
-export const AGENT_REPO_INTEGRATION_CONFLICT_MESSAGE =
-  'This access change conflicts with an enabled GitHub integration that reviews pull requests or reports Checks for this repository. Keep this repository with read & write access or turn those actions off.'
-
-export const AGENT_INSTALLATION_INTEGRATION_CONFLICT_MESSAGE =
-  'This access change conflicts with an enabled GitHub integration that reviews pull requests or reports Checks for a repository this installation grant covers. Keep the grant with read & write access, authorize that repository on its own, or turn those actions off.'
-
-/** The workspace rule for an additional repository or installation grant: its tier must serve the enabled GitHub hooks resolving through it, under the scopes hook writes take. */
-export class AgentRepoIntegrationConflict extends Error {
-  readonly code = 'AGENT_REPO_INTEGRATION_CONFLICT' as const
-  constructor(
-    readonly repoId: bigint,
-    readonly via: 'repository' | 'installation'
-  ) {
-    super(
-      via === 'installation' ? AGENT_INSTALLATION_INTEGRATION_CONFLICT_MESSAGE : AGENT_REPO_INTEGRATION_CONFLICT_MESSAGE
-    )
-    this.name = 'AgentRepoIntegrationConflict'
-  }
-}
-
 /**
  * An agent write touching an external-memory binding lost the fail-fast race
  * for its connection's advisory mutation scope (persistence/memory-connection-lock.ts):

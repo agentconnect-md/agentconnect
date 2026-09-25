@@ -14,7 +14,6 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgAgentRepoAuthorizationRepo } from '../../src/persistence/repositories/agent-repo-auth.repo.js'
-import { PgAgentInstallationAuthorizationRepo } from '../../src/persistence/repositories/agent-installation-auth.repo.js'
 import { PgGithubInstallationRepo } from '../../src/persistence/repositories/github.repo.js'
 import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
@@ -470,88 +469,6 @@ describe('R1/R2a persistence foundation', () => {
       prisma.hookDef.findUnique({ where: { id: hookId } })
     ])
     expect(workspace.gitAccess === 'read' && hook !== null).toBe(false)
-  })
-
-  it('serializes a repository row or installation grant downgrade with write-requiring GitHub hook creation', async () => {
-    const rows = new PgAgentRepoAuthorizationRepo(prisma)
-    const installationGrants = new PgAgentInstallationAuthorizationRepo(prisma)
-    const hooks = new PgHookRepo(prisma)
-    await prisma.githubInstallation.create({
-      data: {
-        orgId: DEFAULT_ORG_ID,
-        installationId: 77_700n,
-        accountLogin: 'acme',
-        accountType: 'Organization',
-        repositorySelection: 'all'
-      }
-    })
-    const reviewHook = (agentId: AgentId, hookId: HookId, repoId: bigint, repoFullName: string) =>
-      hooks.upsert({
-        hookId,
-        orgId: OrgId(DEFAULT_ORG_ID),
-        agentId,
-        kind: 'github',
-        name: 'additional review',
-        sessionMode: 'perThread',
-        repoId,
-        repoFullName,
-        events: ['pull_request:*'],
-        reviewPolicy: 'full',
-        reportingMode: 'off',
-        gateMode: 'informational'
-      })
-
-    for (let i = 0; i < 4; i++) {
-      const agentId = AgentId(randomUUID())
-      const hookId = HookId(randomUUID())
-      const repoId = 77_710n + BigInt(i)
-      await seedAgent(prisma, agentId)
-      const row = await rows.create({
-        agentId,
-        provider: 'github',
-        repoId,
-        repoFullName: `acme/row-${i}`,
-        access: 'write'
-      })
-      const settled = await Promise.allSettled([
-        rows.updateAccess(row.id, 'read'),
-        reviewHook(agentId, hookId, repoId, `acme/row-${i}`)
-      ])
-      expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
-      expect(settled.find((result) => result.status === 'rejected')).toMatchObject({
-        reason: expect.objectContaining({ code: 'AGENT_REPO_INTEGRATION_CONFLICT', via: 'repository' })
-      })
-      const [stored, hook] = await Promise.all([
-        prisma.agentRepoAuthorization.findUniqueOrThrow({ where: { id: row.id } }),
-        prisma.hookDef.findUnique({ where: { id: hookId } })
-      ])
-      expect(stored.access === 'read' && hook !== null).toBe(false)
-    }
-
-    for (let i = 0; i < 4; i++) {
-      const agentId = AgentId(randomUUID())
-      const hookId = HookId(randomUUID())
-      await seedAgent(prisma, agentId)
-      const grant = await installationGrants.create({
-        agentId,
-        installationId: 77_700n,
-        accountLogin: 'acme',
-        access: 'write'
-      })
-      const settled = await Promise.allSettled([
-        installationGrants.update(grant.id, { access: 'read' }),
-        reviewHook(agentId, hookId, 77_720n + BigInt(i), `acme/covered-${i}`)
-      ])
-      expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
-      expect(settled.find((result) => result.status === 'rejected')).toMatchObject({
-        reason: expect.objectContaining({ code: 'AGENT_REPO_INTEGRATION_CONFLICT', via: 'installation' })
-      })
-      const [stored, hook] = await Promise.all([
-        prisma.agentInstallationAuthorization.findUniqueOrThrow({ where: { id: grant.id } }),
-        prisma.hookDef.findUnique({ where: { id: hookId } })
-      ])
-      expect(stored.access === 'read' && hook !== null).toBe(false)
-    }
   })
 
   it('tombstones only the projections covered by a revoked agent/repository grant', async () => {

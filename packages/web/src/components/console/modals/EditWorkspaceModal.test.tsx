@@ -131,7 +131,9 @@ const pick = async (label: string) => {
 }
 
 const accessOf = (title: 'Read only' | 'Read & write', name = 'example-org/example-repo') =>
-  document.querySelector<HTMLButtonElement>(`[role="group"][aria-label="Access for ${name}"] button[title="${title}"]`)
+  document.querySelector<HTMLButtonElement>(
+    `[role="group"][aria-label="Access for ${name}"] button[aria-label="${title}"]`
+  )
 
 describe('EditWorkspaceModal repository access toggle', () => {
   it('replaces the static tier badge, pressing neither segment for a legacy comment row', async () => {
@@ -143,8 +145,8 @@ describe('EditWorkspaceModal repository access toggle', () => {
     expect(document.body.innerHTML).not.toContain('>read<')
   })
 
-  it('raises and lowers a row’s access with an access-only PATCH', async () => {
-    mocks.updateAgentRepo.mockResolvedValueOnce(row({ access: 'write' })).mockResolvedValueOnce(row())
+  it('raises a row’s access with an access-only PATCH, then offers no lowering', async () => {
+    mocks.updateAgentRepo.mockResolvedValueOnce(row({ access: 'write' }))
     const onAuthorizedChange = await render([row()])
 
     await act(async () => accessOf('Read & write')?.click())
@@ -152,18 +154,19 @@ describe('EditWorkspaceModal repository access toggle', () => {
     expect(onAuthorizedChange).toHaveBeenLastCalledWith([row({ access: 'write' })])
     expect(accessOf('Read & write')?.getAttribute('aria-pressed')).toBe('true')
 
+    expect(accessOf('Read only')?.disabled).toBe(true)
+    expect(accessOf('Read only')?.title).toBe('Revoke and authorize again to lower access')
     await act(async () => accessOf('Read only')?.click())
-    expect(mocks.updateAgentRepo).toHaveBeenLastCalledWith('agent-a', 'repo-auth-1', { access: 'read' })
-    expect(onAuthorizedChange).toHaveBeenLastCalledWith([row()])
+    expect(mocks.updateAgentRepo).toHaveBeenCalledOnce()
   })
 
   it('names a refused change in the section’s error line and keeps the tier', async () => {
-    mocks.updateAgentRepo.mockRejectedValue(new Error('turn off formal reviews first'))
-    await render([row({ access: 'write' })])
-    await act(async () => accessOf('Read only')?.click())
+    mocks.updateAgentRepo.mockRejectedValue(new Error('you need write permission on example-org/example-repo'))
+    await render([row()])
+    await act(async () => accessOf('Read & write')?.click())
 
-    expect(document.body.textContent).toContain('turn off formal reviews first')
-    expect(accessOf('Read & write')?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.body.textContent).toContain('you need write permission on example-org/example-repo')
+    expect(accessOf('Read only')?.getAttribute('aria-pressed')).toBe('true')
   })
 })
 

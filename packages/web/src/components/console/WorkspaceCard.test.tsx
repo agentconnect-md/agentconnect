@@ -160,7 +160,7 @@ const menu = () => document.querySelector<HTMLElement>('[role="dialog"][aria-lab
 const open = async () => act(async () => trigger()?.click())
 const within = (selector: string) => document.querySelector<HTMLElement>(selector)
 const segment = (scope: HTMLElement | null, title: 'Read only' | 'Read & write') =>
-  scope?.querySelector<HTMLButtonElement>(`button[title="${title}"]`) ?? null
+  scope?.querySelector<HTMLButtonElement>(`button[aria-label="${title}"]`) ?? null
 const buttonWithText = (text: string) =>
   Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent?.includes(text))
 
@@ -299,35 +299,37 @@ describe('repository dropdown', () => {
     expect(mocks.mutateRepos).toHaveBeenCalledWith([repo({ access: 'write' })], { revalidate: false })
   })
 
-  it('lowers a repository’s access with an access-only PATCH', async () => {
+  it('offers no lowering: a write row’s Read only is disabled and names revoke', async () => {
     repos.rows = [repo({ access: 'write' })]
-    mocks.updateAgentRepo.mockResolvedValue(repo())
     await render(agent({ mode: 'scratch' }))
     await open()
-    await act(async () => segment(within('[data-repository-authorization="r1"]'), 'Read only')?.click())
+    const readOnly = segment(within('[data-repository-authorization="r1"]'), 'Read only')
+    expect(readOnly?.disabled).toBe(true)
+    expect(readOnly?.title).toBe('Revoke and authorize again to lower access')
+    await act(async () => readOnly?.click())
 
-    expect(mocks.updateAgentRepo).toHaveBeenCalledWith('agent-a', 'r1', { access: 'read' })
-    expect(mocks.mutateRepos).toHaveBeenCalledWith([repo()], { revalidate: false })
+    expect(mocks.updateAgentRepo).not.toHaveBeenCalled()
   })
 
   it('names a refused change in the dropdown’s error line', async () => {
-    repos.rows = [repo({ access: 'write' })]
-    mocks.updateAgentRepo.mockRejectedValue(new Error('turn off formal reviews on example-org/tools first'))
+    repos.rows = [repo()]
+    mocks.updateAgentRepo.mockRejectedValue(new Error('you need write permission on example-org/tools'))
     await render(agent({ mode: 'scratch' }))
     await open()
-    await act(async () => segment(within('[data-repository-authorization="r1"]'), 'Read only')?.click())
+    await act(async () => segment(within('[data-repository-authorization="r1"]'), 'Read & write')?.click())
 
-    expect(menu()?.textContent).toContain('turn off formal reviews on example-org/tools first')
+    expect(menu()?.textContent).toContain('you need write permission on example-org/tools')
     expect(mocks.mutateRepos).not.toHaveBeenCalled()
   })
 
-  it('presses neither segment for a legacy comment row, and either one saves', async () => {
+  it('presses neither segment for a legacy comment row, which may only rise', async () => {
     repos.rows = [repo({ access: 'comment' })]
     mocks.updateAgentRepo.mockResolvedValue(repo({ access: 'write' }))
     await render(agent({ mode: 'scratch' }))
     await open()
     const row = within('[data-repository-authorization="r1"]')
     expect(row?.querySelectorAll('button[aria-pressed="true"]').length).toBe(0)
+    expect(segment(row, 'Read only')?.disabled).toBe(true)
     await act(async () => segment(row, 'Read & write')?.click())
     expect(mocks.updateAgentRepo).toHaveBeenCalledWith('agent-a', 'r1', { access: 'write' })
   })

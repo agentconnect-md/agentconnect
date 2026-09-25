@@ -31,12 +31,10 @@ import type {
 } from '../ports.js'
 import { AgentId, type OrgId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
-import { lockHookReviewAgentLifecycleScope, lockHookReviewAgentRepoScope } from '../review-projection-lock.js'
+import { lockHookReviewAgentRepoScope } from '../review-projection-lock.js'
 import { AgentWorkspaceRepoConflict } from '../errors.js'
 import { joinGiteaBindingFence } from './gitea-binding-fence.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
-import { assertRowServesGithubHooks } from './repo-integration-fence.js'
-import { accessBelow } from '../../domain/repo-access.js'
 
 const withCreator = { createdBy: true } as const
 
@@ -45,6 +43,13 @@ type Row = AgentRepoAuthorization & { createdBy: User | null }
 // The wire spells it `on-demand`; the Prisma enum member is `on_demand` (its `@map` keeps the DB value on the wire spelling).
 const toDbMaterialization = (m: RepoMaterialization): DbRepoMaterialization => (m === 'on-demand' ? 'on_demand' : m)
 const fromDbMaterialization = (m: DbRepoMaterialization): RepoMaterialization => (m === 'on_demand' ? 'on-demand' : m)
+
+/** The tiers a write may raise to each tier from; access never falls without revoke and authorize again. */
+export const RAISABLE_FROM: Record<RepoAccess, RepoAccess[]> = {
+  read: [],
+  comment: ['read'],
+  write: ['read', 'comment']
+}
 
 function toRecord(r: Row): AgentRepoAuthorizationRecord {
   return {
@@ -139,29 +144,13 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
     return rows.map(toRecord)
   }
 
+  // Raise-only at the write: the tier condition is re-read after a concurrent raise commits, so a stale request is a no-op.
   async updateAccess(id: string, access: RepoAccess): Promise<AgentRepoAuthorizationRecord | null> {
-    const seen = await this.db.agentRepoAuthorization.findUnique({
-      where: { id },
-      select: { agentId: true, repoId: true }
+    await this.db.agentRepoAuthorization.updateMany({
+      where: { id, access: { in: RAISABLE_FROM[access] } },
+      data: { access }
     })
-    if (!seen) return null
-    return this.transaction(async (tx) => {
-      // The scopes every GitHub hook write takes, in their order: a concurrent enable either lands first and is seen, or re-checks this tier.
-      await lockHookReviewAgentLifecycleScope(tx, AgentId(seen.agentId))
-      await lockHookReviewAgentRepoScope(tx, AgentId(seen.agentId), seen.repoId)
-      const row = await tx.agentRepoAuthorization.findUnique({
-        where: { id },
-        select: { access: true, provider: true }
-      })
-      if (!row) return null
-      if (row.provider === 'github' && accessBelow(access, row.access as RepoAccess)) {
-        await assertRowServesGithubHooks(tx, AgentId(seen.agentId), seen.repoId, access)
-      }
-      // updateMany (not update) so a concurrently deleted row reads null, not a throw.
-      if ((await tx.agentRepoAuthorization.updateMany({ where: { id }, data: { access } })).count === 0) return null
-      const updated = await tx.agentRepoAuthorization.findUnique({ where: { id }, include: withCreator })
-      return updated ? toRecord(updated) : null
-    })
+    return this.get(id)
   }
 
   async updateMaterialize(id: string, materialize: RepoMaterialization): Promise<AgentRepoAuthorizationRecord | null> {

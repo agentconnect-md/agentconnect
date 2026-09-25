@@ -1529,6 +1529,7 @@
         "readOnlyDescription": "Clone & read files only",
         "readWrite": "Read & write",
         "accessFor": "Access for {name}",
+        "lowerAccessRevoke": "Revoke and authorize again to lower access",
         "githubWriteAccess": "Push, open PRs & run GitHub Actions",
         "repositoryAccess": "Repository access",
         "selectRepositoryFirst": "Select repository first",
