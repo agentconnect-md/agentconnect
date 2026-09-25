@@ -2597,7 +2597,7 @@
         "customRule": "自定义规则",
         "loadError": "无法加载 Webhook。",
         "noneTitle": "还没有集成",
-        "noneDescription": "将 {agent} 连接到频道后，它才能读取和发送消息。连接前无法接收消息。",
+        "noneDescription": "将 {agent} 连接到频道后，它才能读取和发送消息。",
         "plusEverythingIn": "另外还包括",
         "workspaceKnowledge": "工作区知识和技能",
         "sharedAcrossAgents": "，对所有 Agent 共享。",
