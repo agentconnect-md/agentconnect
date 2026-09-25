@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
+import { hostKeyDirName, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
 import { localSrtRuntimeRoot } from '../src/execution/srt-local.js'
 import type { GitExecPayload } from '../src/shim/git-exec.js'
@@ -130,6 +130,21 @@ describe.skipIf(process.platform === 'win32')("a confined srt session's workspac
       const pass = sessionHostKey('bot-a', 'internal:bot-a:dream:example')
       expect(specOf(undefined, pass)).toContain(tunnel(`bot-a/${sessionKeyDirName('internal:bot-a:dream:example')}`))
       expect(specOf()).not.toContain(join(root, 'run', 'mcp.sock'))
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  // A dream's host is one-off, so its shim goes when the extraction settles or fails to start, not at the idle sweep.
+  it("stops a dream host's own shim when its environment is retired, and no other", async () => {
+    const { daemon, d, stopMatching } = await started('srt')
+    try {
+      const dream = d.dreamOwnerKey('bot-a', 'dream-1')
+      await d.discardDreamEnvironment(d.agents.get('bot-a'), dream)
+      const matches = stopMatching.mock.calls.at(-1)![0] as (id: string) => boolean
+      expect(matches(`bot-a/${hostKeyDirName(dream)}`)).toBe(true)
+      expect(matches('bot-a/agent')).toBe(false)
+      expect(matches(`bot-a/${sessionKeyDirName(KEY)}`)).toBe(false)
     } finally {
       await daemon.stop()
     }

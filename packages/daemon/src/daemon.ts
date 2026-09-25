@@ -5633,6 +5633,19 @@ export class Daemon {
     return sessionHostKey(agentId, dreamExecutionKey(agentId, dreamId))
   }
 
+  /** A one-off dream host's environment goes with it — its VM and runtime home, or its srt shim — rather than waiting for the idle sweep. */
+  private async discardDreamEnvironment(agent: LoadedAgent, dreamHostKey: HostKey): Promise<void> {
+    await this.microsandbox
+      ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
+      .then(() => rm(join(agent.dir, 'runtime-homes', hostKeyDirName(dreamHostKey)), { recursive: true, force: true }))
+      .catch((error: unknown) => {
+        this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
+      })
+    const srt = this.localSrtEnvironment(agent, dreamHostKey, 'srt')
+    if (srt) await this.localSrt?.stopMatching((id) => id === srt.id)
+    removeHostSandboxState(agent.dir, dreamHostKey)
+  }
+
   // The session row an ACP id names for THIS owner. A session-bound owner answers only for its own row —
   // an internal pass with no row (memory/commit) answers nothing, never a sibling that minted the same id.
   private async sessionForAcp(owner: HostKey, acpSessionId: string): Promise<SessionRecord | undefined> {
@@ -7578,15 +7591,7 @@ export class Daemon {
     try {
       host = await this.buildDreamHost(agent, context.inputDir, dreamHostKey, issued)
     } catch (error) {
-      await this.microsandbox
-        ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
-        .then(() =>
-          rm(join(agent.dir, 'runtime-homes', hostKeyDirName(dreamHostKey)), { recursive: true, force: true })
-        )
-        .catch((error: unknown) => {
-          this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
-        })
-      removeHostSandboxState(agent.dir, dreamHostKey)
+      await this.discardDreamEnvironment(agent, dreamHostKey)
       if (issued) await this.modelSessions.revokeKeyQuietly(issued.grant.keyId)
       throw error
     }
@@ -7598,15 +7603,7 @@ export class Daemon {
       // attacker-influenced context never lingers (dreams are rare). Stopping the
       // child also kills a runtime that ignored `session/cancel`.
       await host.stop().catch(() => {})
-      await this.microsandbox
-        ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
-        .then(() =>
-          rm(join(agent.dir, 'runtime-homes', hostKeyDirName(dreamHostKey)), { recursive: true, force: true })
-        )
-        .catch((error: unknown) => {
-          this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
-        })
-      removeHostSandboxState(agent.dir, dreamHostKey)
+      await this.discardDreamEnvironment(agent, dreamHostKey)
       if (issued) {
         await this.modelSessions.revokeKey(issued.grant.keyId)
       }
