@@ -143,9 +143,15 @@ const click = async (node: Element | null | undefined) => {
 }
 const button = (text: string, scope: ParentNode = document) =>
   Array.from(scope.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent === text)
+// The add and authorize steps' segmented choice; list rows use a menu instead.
 const checkoutOf = (scope: ParentNode) => scope.querySelector('[role="group"][aria-label="Checkout"]')!
-const repositoryRow = () => checkoutOf(document.querySelector('span[title="example-org/example-repo"]')!.parentElement!)
-const grantRow = (id: number) => document.querySelector<HTMLDivElement>(`[data-installation-grant="${id}"]`)!
+const rowCheckout = (name = 'example-org/example-repo') =>
+  document.querySelector<HTMLButtonElement>(`button[aria-label="Checkout for ${name}"]`)
+const choices = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
+const openChoice = async (label: string, name?: string) => {
+  await click(rowCheckout(name))
+  return choices().find((item) => item.textContent === label)
+}
 const selectorField = () => document.querySelector('[data-repository-selector]')
 const selectorPicker = () => document.querySelector<HTMLButtonElement>('button[aria-label="Repository selector"]')
 
@@ -158,8 +164,8 @@ describe('EditWorkspaceModal, By decision', () => {
     ]
     await render({ agent: agentWith({ repositorySelector: SELECTOR }) })
 
-    const byDecision = button('By decision', repositoryRow())
-    expect(byDecision?.disabled).toBe(true)
+    const byDecision = await openChoice('By decision')
+    expect(byDecision?.getAttribute('aria-disabled')).toBe('true')
     expect(byDecision?.title).toBe('No Decision provider is ready where this agent runs')
     await click(byDecision)
     expect(mocks.updateAgentRepo).not.toHaveBeenCalled()
@@ -169,8 +175,7 @@ describe('EditWorkspaceModal, By decision', () => {
     await render()
     expect(selectorField()).toBeNull()
 
-    const byDecision = button('By decision', repositoryRow())
-    expect(byDecision?.disabled).toBe(false)
+    const byDecision = await openChoice('By decision')
     expect(byDecision?.getAttribute('aria-disabled')).toBe('true')
     expect(byDecision?.title).toBe('Set the Repository selector first')
     await click(byDecision)
@@ -219,21 +224,21 @@ describe('EditWorkspaceModal, By decision', () => {
   it('moves a row to By decision with a materialize-only PATCH once a selector is set', async () => {
     mocks.updateAgentRepo.mockResolvedValue(row({ materialize: 'decision' }))
     await render({ agent: agentWith({ repositorySelector: SELECTOR }) })
-    await click(button('By decision', repositoryRow()))
+    await click(await openChoice('By decision'))
 
     expect(mocks.updateAgentRepo).toHaveBeenCalledWith('agent-a', 'repo-auth-1', { materialize: 'decision' })
-    expect(button('By decision', repositoryRow())?.getAttribute('aria-pressed')).toBe('true')
+    expect(rowCheckout()?.textContent).toBe('By decision')
   })
 
   it('switches a grant between By decision and On demand, never Always', async () => {
     mocks.updateAgentInstallation.mockResolvedValue(grant({ materialize: 'decision' }))
     await render({ agent: agentWith({ repositorySelector: SELECTOR }), authorized: [], grants: [grant()] })
 
-    const group = checkoutOf(grantRow(12345))
-    expect(Array.from(group.querySelectorAll('button')).map((b) => b.textContent)).toEqual(['By decision', 'On demand'])
-    await click(button('By decision', group))
+    const byDecision = await openChoice('By decision', 'acme')
+    expect(choices().map((item) => item.textContent)).toEqual(['By decision', 'On demand'])
+    await click(byDecision)
     expect(mocks.updateAgentInstallation).toHaveBeenCalledWith('agent-a', 'grant-1', { materialize: 'decision' })
-    expect(button('By decision', checkoutOf(grantRow(12345)))?.getAttribute('aria-pressed')).toBe('true')
+    expect(rowCheckout('acme')?.textContent).toBe('By decision')
   })
 
   it('shows the Repository selector whenever an entry is By decision, and the refusal to clear it', async () => {
@@ -260,10 +265,10 @@ describe('EditWorkspaceModal, By decision', () => {
       )
     )
     await render({ agent: agentWith({ repositorySelector: SELECTOR }) })
-    await click(button('By decision', repositoryRow()))
+    await click(await openChoice('By decision'))
 
     expect(document.body.textContent).toContain('cannot choose repositories by decision yet')
-    expect(button('On demand', repositoryRow())?.getAttribute('aria-pressed')).toBe('true')
+    expect(rowCheckout()?.textContent).toBe('On demand')
   })
 
   it('authorizes an installation By decision from its step', async () => {

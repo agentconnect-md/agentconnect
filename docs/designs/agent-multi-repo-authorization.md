@@ -553,8 +553,9 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
      App-backed, where the installation makes it implicit; a manual checkout is
      represented solely by its explicit grant, if one exists.
    - The same Edit workspace dialog lists, adds, and deletes additional repository
-     grants, and switches each row's checkout between **Always**, **By
-     decision** and **On demand**. Card and hook-editor shortcuts open that dialog directly at its
+     grants, and sets each row's checkout (**Always**, **By decision** or **On
+     demand**) from a compact menu that shows the current choice, so a long
+     repository name keeps its room. Card and hook-editor shortcuts open that dialog directly at its
      authorization step, so every context keeps the fast path without creating a
      second repository-management surface.
    - "Authorize repository" reuses the installation/repository picker and list
@@ -565,7 +566,7 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
    - The card is visible under `canView`; add, delete, and a checkout change
      require `canEdit` and a non-viewer role.
    - The same section lists installation grants as "All repositories in
-     `<account>`" with the GitHub mark, the tier badge, the checkout badge and a
+     `<account>`" with the GitHub mark, the tier badge, the checkout menu and a
      revoke action, and "Authorize an installation" offers the organization's
      live, unsuspended installations the agent does not hold yet, with the same
      **Read only** / **Read & write** choice (default read) whose write option
@@ -577,7 +578,7 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
      grant's tier is revoke and authorize again (the route still accepts an
      upward `PATCH`). Every row carries its materialization:
      **Always**, **By decision** or **On demand** on a repository row, **By
-     decision** or **On demand** on a grant (an owner's switch), and the
+     decision** or **On demand** on a grant (an owner's menu), and the
      authorize step offers the same two, defaulting to **On demand**. **By
      decision** is disabled, its tooltip naming the reason, while no Decision
      provider is ready on the daemon, group or pool that runs the agent, or

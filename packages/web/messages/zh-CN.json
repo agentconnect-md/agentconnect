@@ -1543,6 +1543,7 @@
         "workingSubdirectoryAriaLabel": "工作子目录",
         "repoRoot": "仓库根目录",
         "checkout": "检出",
+        "checkoutFor": "{name} 的检出",
         "materializeAlways": "始终",
         "materializeOnDemand": "按需",
         "materializeByDecision": "由 Decision 选择",
