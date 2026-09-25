@@ -31,15 +31,15 @@
   },
   "dependencies": {
     "@agentconnect.md/control-plane": "workspace:*",
-    "fastify": "^5.12.4",
+    "fastify": "^5.12.5",
     "jose": "^6.2.12",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^24.13.5",
+    "@types/node": "^24.13.6",
     "json": "^11.0.0",
     "tsdown": "^0.23.0",
-    "tsx": "^4.23.13",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vitest": "^5.0.1"
   },
