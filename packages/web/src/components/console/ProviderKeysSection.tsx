@@ -98,7 +98,8 @@ function ProviderKeysForOrg({ orgId, isOwner }: { orgId: string; isOwner: boolea
       <SectionHeader
         id={`${inputId}-title`}
         label={t('title')}
-        count={entries?.filter((entry) => entry.configured).length}
+        // SWR keeps stale entries after a failed revalidation; the card shows the error, so drop the count too.
+        count={loadError ? undefined : entries?.filter((entry) => entry.configured).length}
       />
       <div className="card">
         <p className="px-4 pt-4 text-[12.5px] text-(--text-secondary)">{t('description')}</p>
