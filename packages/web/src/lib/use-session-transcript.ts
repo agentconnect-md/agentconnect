@@ -64,6 +64,8 @@ export interface UseSessionTranscriptInput {
   conversationRosterPlatform: string | undefined
   /** Live busy flag by ref — reconcile is skipped while the owning session is mid-turn. */
   sessionBusyRef: RefObject<boolean>
+  /** Member sessions this page's live turns went to (conversation mode); their human rows confirm the live prompts too. */
+  promptSessionIds?: readonly string[]
   reconcileLiveSteps: (
     id: string,
     persisted: SessionMessageDto[],
@@ -97,6 +99,17 @@ export interface UseSessionTranscriptResult {
   conversationSourceAgentByMessageRef: RefObject<WeakMap<SessionMessageDto, string>>
 }
 
+/** The rows a live prompt may be confirmed by: the representative's own, plus each session the page sent into. */
+function promptRowsOf(
+  rows: ReadonlyMap<string, SessionMessageDto[]>,
+  representative: string,
+  targets: readonly string[] | undefined
+): SessionMessageDto[] {
+  const own = rows.get(representative) ?? []
+  const others = (targets ?? []).filter((target) => target !== representative)
+  return others.length > 0 ? [...own, ...others.flatMap((target) => rows.get(target) ?? [])] : own
+}
+
 export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessionTranscriptResult {
   const {
     sid,
@@ -108,8 +121,12 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     conversationMembers,
     conversationRosterPlatform,
     sessionBusyRef,
+    promptSessionIds,
     reconcileLiveSteps
   } = input
+  // Read at reconcile time: a new send target must not refetch the conversation.
+  const promptSessionIdsRef = useRef(promptSessionIds)
+  promptSessionIdsRef.current = promptSessionIds
 
   const [msgs, setMsgs] = useState<SessionMessageDto[] | null>(null)
   // Conversation mode: per-member fetched rows + live cursors; the rendered transcript is always
@@ -236,7 +253,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
         tailReadyRef.current = true
         setTailReady(true)
         if (merged.length > 0 && !sessionBusyRef.current)
-          reconcileLiveSteps(sid, merged, aid, rowsBySession.get(sid) ?? [])
+          reconcileLiveSteps(sid, merged, aid, promptRowsOf(rowsBySession, sid, promptSessionIdsRef.current))
       })().catch((e) => {
         if (!active) return
         setMsgErr(e instanceof Error ? e.message : String(e))
@@ -335,7 +352,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
         )
         setMsgs(merged)
         if (tailSessionRef.current === sid && !sessionBusyRef.current)
-          reconcileLiveSteps(sid, merged, aid ?? '', state.rows.get(sid) ?? [])
+          reconcileLiveSteps(sid, merged, aid ?? '', promptRowsOf(state.rows, sid, promptSessionIdsRef.current))
       })()
         .catch(() => {
           // Keep the last good transcript; the next signal retries.

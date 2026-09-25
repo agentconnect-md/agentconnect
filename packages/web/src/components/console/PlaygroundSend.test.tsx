@@ -33,7 +33,8 @@ vi.mock('@/lib/api', () => ({
   // (busy clears, the queue dispatcher runs); the post-frame tests resolve it.
   webchatWsUrl: vi.fn(async () => {
     throw new Error('no relay in this test')
-  })
+  }),
+  webchatSessionWsUrl: vi.fn(async () => 'wss://relay.test/session')
 }))
 
 const { PlaygroundProvider, usePlayground } = await import('./PlaygroundProvider')
@@ -67,6 +68,8 @@ let pgAnswerElicitation: ReturnType<typeof usePlayground>['pgAnswerElicitation']
 let pgAppRpc: ReturnType<typeof usePlayground>['pgAppRpc']
 let getPgSession: ReturnType<typeof usePlayground>['getPgSession']
 let pgStageRuntime: ReturnType<typeof usePlayground>['pgStageRuntime']
+let markSessionTarget: ReturnType<typeof usePlayground>['markSessionTarget']
+let getBusyLaneAgentIds: ReturnType<typeof usePlayground>['getBusyLaneAgentIds']
 
 function Probe() {
   const pg = usePlayground()
@@ -86,6 +89,8 @@ function Probe() {
   pgAppRpc = pg.pgAppRpc
   getPgSession = pg.getPgSession
   pgStageRuntime = pg.pgStageRuntime
+  markSessionTarget = pg.markSessionTarget
+  getBusyLaneAgentIds = pg.getBusyLaneAgentIds
   return null
 }
 
@@ -2040,5 +2045,85 @@ describe('MCP App card lifetime (webchat-mcp-apps.md §7.3)', () => {
     )
     // No throw, and no transcript row: an answer to nothing is not an event the reader sees.
     expect(getLiveSteps('s1').filter((step) => step.kind === 'app')).toHaveLength(1)
+  })
+})
+
+describe('a continuation lane retargeted to another member session', () => {
+  class TargetSocket extends StubSocket {
+    static instances: TargetSocket[] = []
+    onopen?: () => void
+    onmessage?: (event: { data: string }) => void
+    constructor() {
+      super()
+      TargetSocket.instances.push(this)
+    }
+  }
+
+  beforeEach(() => {
+    TargetSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', TargetSocket)
+  })
+
+  it('mints for the member it names while the lane stays keyed by the page session', async () => {
+    const api = await import('@/lib/api')
+    markSessionTarget('s-architect', 's-review')
+    await act(async () => {
+      pgSend('s-architect', 'agent-review', 'please re-review')
+    })
+
+    expect(vi.mocked(api.webchatSessionWsUrl)).toHaveBeenCalledWith('org1', 's-review')
+    expect(getLiveSteps('s-architect')[0]).toMatchObject({ kind: 'msg', text: 'please re-review' })
+  })
+
+  it('drops the socket bound to the previous target so the next send dials the new one', async () => {
+    const api = await import('@/lib/api')
+    markSessionTarget('s-architect')
+    await act(async () => {
+      pgSend('s-architect', 'agent-architect', 'first')
+    })
+    const [first] = TargetSocket.instances
+    expect(vi.mocked(api.webchatSessionWsUrl)).toHaveBeenLastCalledWith('org1', 's-architect')
+    expect(first?.close).not.toHaveBeenCalled()
+
+    act(() => markSessionTarget('s-architect', 's-review'))
+    expect(first?.close).toHaveBeenCalled()
+
+    // Re-marking the same target is a no-op: it must not tear down a socket already bound to it.
+    act(() => markSessionTarget('s-architect', 's-review'))
+    expect(first?.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the next turn on the new target, not on the roster the previous socket verified', async () => {
+    markSessionTarget('s-architect')
+    await act(async () => {
+      pgSend('s-architect', 'agent-architect', 'first')
+    })
+    const [first] = TargetSocket.instances
+    await act(async () => {
+      first!.readyState = 1
+      first!.onopen?.()
+    })
+    const turnId = (JSON.parse(String(first!.send.mock.calls.at(-1)?.[0])) as { turnId: string }).turnId
+    act(() => {
+      first!.onmessage?.({
+        data: JSON.stringify({
+          type: 'ready',
+          conversationId: 'c-architect',
+          participants: [{ agentId: 'agent-architect', primary: true }]
+        })
+      })
+      first!.onmessage?.({
+        data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-architect', lastIndex: -1 } })
+      })
+    })
+    expect(getBusyLaneAgentIds('s-architect')).toEqual([])
+
+    act(() => markSessionTarget('s-architect', 's-review'))
+    await act(async () => {
+      pgSend('s-architect', 'agent-review', 'second')
+    })
+
+    // A lane still keyed to the previous socket's roster would wait on an agent this socket never reaches.
+    expect(getBusyLaneAgentIds('s-architect')).toEqual(['agent-review'])
   })
 })
