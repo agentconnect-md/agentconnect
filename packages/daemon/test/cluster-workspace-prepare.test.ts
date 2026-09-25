@@ -1275,6 +1275,46 @@ describe('secondary roots on the pod volume', () => {
     expect(calls.some((call) => call.args.some((arg) => arg.includes('shared-library')))).toBe(false)
   })
 
+  it('clones a repository only an installation grant covers into a session pod as its review’s cwd, and resumes it there', async () => {
+    const base = 'a'.repeat(40)
+    const head = 'b'.repeat(40)
+    const id = workspaces.sessionWorktreeId('sess-review')
+    revs[`refs/agentconnect/reviews/${id}/base`] = base
+    revs[`refs/agentconnect/reviews/${id}/head`] = head
+    remoteDefaultBranch['example-co/tools'] = 'main'
+    const agent = clusterAgent({
+      additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42', materialize: 'on-demand' }],
+      additionalInstallations: [
+        { provider: 'github', accountLogin: 'example-co', access: 'read', materialize: 'on-demand' }
+      ]
+    } as Partial<Agent['workspace']>)
+    const resumed = { sessionKey: 'sess-review', isolation: 'session' as const }
+    const handed = [sessionCloneOf('sess-review'), `${sessionDirOf('sess-review')}/repos`]
+
+    const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, {
+      ...resumed,
+      reviewRepoFullName: 'example-co/tools',
+      reviewRepoId: '901',
+      review: { pullNumber: 9, baseSha: base, headSha: head }
+    })
+
+    expect(cwd).toBe(sessionCloneOf('sess-review', 'example-co/tools'))
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, resumed)).toEqual(handed)
+    expect(
+      (await workspaces.sessionOnDemandClones(agent, resumed))?.repositories.map((repo) => repo.repoFullName)
+    ).toEqual(['acme/infra'])
+    expect(await pod.stat(`${REPOS}/example-co`)).toBe('missing')
+    // A later turn names no review: the session's record and its clone's attestation answer, from the session pod alone.
+    pod.ownerAsleep = (path) => !path.startsWith(`${SESSIONS}/`)
+    expect(await workspaces.prepareClusterWorkspace(agent, POD_ROOT, resumed)).toBe(cwd)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, resumed)).toEqual(handed)
+    // A grant that is gone leaves the record naming nothing it may prepare.
+    const revoked = clusterAgent({
+      additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42', materialize: 'on-demand' }]
+    } as Partial<Agent['workspace']>)
+    expect(await workspaces.prepareClusterWorkspace(revoked, POD_ROOT, resumed)).toBe(sessionCloneOf('sess-review'))
+  })
+
   it('judges a shared session’s clone directory on the agent pod, keeping one that holds work', async () => {
     const agent = agentWithRoots([
       { repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'on-demand' }
