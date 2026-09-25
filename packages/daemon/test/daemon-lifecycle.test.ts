@@ -390,7 +390,8 @@ describe('Daemon session lifecycle (#118)', () => {
       }
       const list = vi.spyOn(d.workspaces, 'retiredSecondaryRoots').mockResolvedValue([])
       await d.sweepRetiredWorkspaceRoots()
-      if (warm) expect(list).toHaveBeenCalledExactlyOnceWith(agent)
+      // The second argument is what session snapshots still hold, none here.
+      if (warm) expect(list).toHaveBeenCalledExactlyOnceWith(agent, [])
       else expect(list).not.toHaveBeenCalled()
     } finally {
       await daemon.stop()
