@@ -155,6 +155,7 @@ describe('workspace repository identity and additional grants', () => {
 
   it('an access-only change leaves the config revision alone — the tier is not on the spec', async () => {
     const db = {
+      $queryRaw: vi.fn(async () => []),
       agentRepoAuthorization: {
         updateMany: vi.fn(async () => ({ count: 1 })),
         findUnique: vi.fn(async () => ({

@@ -64,12 +64,14 @@ import {
   lockHookReviewOrgProducerScope
 } from '../review-projection-lock.js'
 import { authoritativeHookProjectionState } from '../../github/projection-state.js'
-import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
+import { AgentRepoIntegrationConflict, AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 import { bumpCodeHostRoutingHosts } from './code-host-decision-routing.repo.js'
 import { joinAxisFence } from './gitlab-axis.js'
 import { joinGiteaAxisFence } from './gitea-axis.js'
 import { joinGiteaBindingFence } from './gitea-binding-fence.js'
+import { githubAdditionalTier } from './repo-integration-fence.js'
+import { accessBelow, githubEffectsNeed } from '../../domain/repo-access.js'
 
 type HookWithUsers = HookDef & {
   createdBy: User | null
@@ -586,6 +588,21 @@ export class PgHookRepo implements HookRepo {
                 : owner.gitCredentialProvider === null)
             ) {
               throw new AgentWorkspaceIntegrationConflict(input.repoId)
+            }
+            // Off the workspace, the row or grant the effects resolve through must serve what this write adds to them.
+            const needed = githubEffectsNeed({ reviewPolicy: nextReviewPolicy, reportingMode: nextReportingMode })
+            const held =
+              existing?.enabled && existing.agentId === input.agentId && existing.repoId === input.repoId
+                ? githubEffectsNeed(existing)
+                : 'read'
+            if (
+              accessBelow(held, needed) &&
+              !(owner?.gitCredentialProvider === 'github' && owner.workspaceRepoId === input.repoId)
+            ) {
+              const tier = await githubAdditionalTier(tx, input.orgId, input.agentId, input.repoId, input.repoFullName)
+              if (tier && accessBelow(tier.access, needed)) {
+                throw new AgentRepoIntegrationConflict(input.repoId, tier.via)
+              }
             }
           }
         }

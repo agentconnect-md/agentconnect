@@ -32,7 +32,11 @@ import {
   type RepoAccess,
   type RepoMaterialization
 } from '../../persistence/ports.js'
-import { AgentWorkspaceRepoConflict, GiteaBindingUnavailable } from '../../persistence/errors.js'
+import {
+  AgentRepoIntegrationConflict,
+  AgentWorkspaceRepoConflict,
+  GiteaBindingUnavailable
+} from '../../persistence/errors.js'
 import { GithubApiError } from '../../github/api.js'
 import { GiteaApiError } from '../../gitea/api.js'
 import { GiteaConnectDenied } from '../../gitea/connection.service.js'
@@ -45,6 +49,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, denyNonOwner, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
 import { decisionMaterializeRefusal } from '../repository-selection.js'
+import { accessBelow } from '../../domain/repo-access.js'
 import { codeHostsOf } from '../../codehost/registry.js'
 import { Tag } from '../plugins/openapi.js'
 import { isCanonicalGithubAddress } from '../../domain/git-host.js'
@@ -208,7 +213,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
       const held = await deps.repos.agentRepoAuth.listForAgent(agent.id)
       if (held.some((row) => row.provider === 'gitlab' && row.repoId === projectId)) {
         return conflict(
-          `${binding.projectPath} is already authorized for this agent — upgrade that grant or remove it to lower the tier`
+          `${binding.projectPath} is already authorized for this agent — change that grant’s tier instead`
         )
       }
       // The path comes from the provider's answer INSIDE the lease, never from the
@@ -306,9 +311,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
       }
       const held = await deps.repos.agentRepoAuth.listForAgent(agent.id)
       if (held.some((row) => row.provider === 'gitea' && row.repoId === repoId)) {
-        return conflict(
-          `${binding.repoPath} is already authorized for this agent — upgrade that grant or remove it to lower the tier`
-        )
+        return conflict(`${binding.repoPath} is already authorized for this agent — change that grant’s tier instead`)
       }
       let row: AgentRepoAuthorizationRecord
       try {
@@ -347,6 +350,48 @@ export function agentRepoRoutes(deps: HttpDeps) {
       convergeManagedRepository('gitea', orgId, repoId)
       await replicateUpsert(agent)
       return toDto(row)
+    }
+
+    // Lowering asks no host permission; the repository refuses it while an enabled GitHub review or Checks hook needs the tier.
+    const lowerRepoAuthorization = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agent: AgentRecord,
+      row: AgentRepoAuthorizationRecord,
+      access: RepoAccess
+    ): Promise<AgentRepoAuthDtoT | undefined> => {
+      let updated: AgentRepoAuthorizationRecord | null
+      try {
+        updated = await deps.repos.agentRepoAuth.updateAccess(row.id, access)
+      } catch (e) {
+        if (!(e instanceof AgentRepoIntegrationConflict)) throw e
+        void reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message, code: e.code })
+        return undefined
+      }
+      if (!updated) {
+        void reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
+        return undefined
+      }
+      void deps.repos.audit
+        .append({
+          kind: 'agent_repo_change',
+          orgId: orgOf(req),
+          agentId: agent.id,
+          ...(req.principal ? { actorUserId: req.principal.userId } : {}),
+          frameType: 'gitcred/grant',
+          message: `repo ${updated.repoFullName} authorization lowered (${row.access} → ${updated.access})`,
+          details: {
+            repoAuthId: updated.id,
+            provider: updated.provider,
+            repoFullName: updated.repoFullName,
+            previousAccess: row.access,
+            access: updated.access
+          }
+        })
+        .catch(() => {})
+      // A host that binds a per-consumer role (GitLab) re-derives it from the lowered tier, as on revoke.
+      convergeManagedRepository(row.provider, orgOf(req), row.repoId)
+      return toDto(updated)
     }
 
     r.get(
@@ -475,7 +520,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
-              message: `${ref.fullName} is already authorized for this agent — upgrade that grant or remove it to lower the tier`
+              message: `${ref.fullName} is already authorized for this agent — change that grant’s tier instead`
             })
           }
           // Identity assertion (open question #7 gate, when configured): the AUTHORIZER
@@ -553,7 +598,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update a repository authorization',
           description:
-            'Raise an existing repository grant to a stronger access tier after re-checking the caller’s matching GitHub permission, change how the repository is materialized (`materialize`: `always`, `decision` or `on-demand`; `decision` needs the agent’s `repositorySelector` and daemons serving the agent that advertise `repo-selector-v1`, else 409 with `REPOSITORY_SELECTOR_MISSING` or `DAEMON_FEATURE_MISSING`), or both. At least one field is required. Downgrades still require revoke and reauthorize so review-check cleanup remains explicit; `materialize` moves freely and re-projects the agent’s spec.',
+            'Change an existing repository grant’s access tier, how the repository is materialized (`materialize`: `always`, `decision` or `on-demand`; `decision` needs the agent’s `repositorySelector` and daemons serving the agent that advertise `repo-selector-v1`, else 409 with `REPOSITORY_SELECTOR_MISSING` or `DAEMON_FEATURE_MISSING`), or both. At least one field is required. Raising the tier re-checks the caller’s matching GitHub permission. Lowering it needs no permission and is refused with 409 `AGENT_REPO_INTEGRATION_CONFLICT` while an enabled GitHub integration on the repository still needs the tier for pull request reviews or Checks; the next credential request is served at the lower tier, and already-minted tokens live out their expiry of at most one hour, as on revoke. `materialize` moves freely and re-projects the agent’s spec.',
           operationId: 'updateAgentRepoAuthorization',
           params: AgentRepoAuthParam,
           body: UpdateAgentRepoAuthBody,
@@ -577,31 +622,23 @@ export function agentRepoRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
         }
         if (await refuseDecisionMaterialize(reply, agent, req.body.materialize, row.materialize)) return
-        const rank = { read: 0, comment: 1, write: 2 } as const
-        if (req.body.access !== undefined && rank[req.body.access] < rank[row.access]) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'revoke and reauthorize this repository to lower its access tier'
-          })
-        }
         let dto = toDto(row)
-        // Access first: a denied tier leaves the row untouched. What raising a tier means
-        // is the host's — a re-checked GitHub permission, or a raised project role on the
-        // grant's own §7.2 account.
+        // Access first, so a denied tier leaves the row untouched; what raising means is the host's.
         if (req.body.access !== undefined && req.body.access !== row.access) {
-          const upgraded = await codeHosts[row.provider].upgradeRepoAuthorization({
-            deps,
-            req,
-            reply,
-            orgId: orgOf(req),
-            agent,
-            row,
-            access: req.body.access,
-            toDto
-          })
-          if (!upgraded) return
-          dto = upgraded
+          const changed = accessBelow(req.body.access, row.access)
+            ? await lowerRepoAuthorization(req, reply, agent, row, req.body.access)
+            : await codeHosts[row.provider].upgradeRepoAuthorization({
+                deps,
+                req,
+                reply,
+                orgId: orgOf(req),
+                agent,
+                row,
+                access: req.body.access,
+                toDto
+              })
+          if (!changed) return
+          dto = changed
         }
         // Materialization is projected onto the spec, so the repo bumps the revision and the agent is re-pushed.
         if (req.body.materialize !== undefined && req.body.materialize !== row.materialize) {
@@ -831,7 +868,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
-            message: `the ${installation.accountLogin} installation is already authorized for this agent — upgrade that grant or remove it to lower the tier`
+            message: `the ${installation.accountLogin} installation is already authorized for this agent — change that grant’s tier instead`
           })
         }
         const grant = await deps.repos.agentInstallationAuth.create({
@@ -860,7 +897,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an installation grant',
           description:
-            'Raise an installation grant to a stronger access tier, change how its repositories are materialized (`on-demand` or `decision`; `decision` has the same preconditions as on create, 409 otherwise), or both. At least one field is required. Lowering the tier requires revoking and granting again. Organization owners only; the change re-projects the agent’s spec.',
+            'Change an installation grant’s access tier, how its repositories are materialized (`on-demand` or `decision`; `decision` has the same preconditions as on create, 409 otherwise), or both. At least one field is required. Lowering the tier is refused with 409 `AGENT_REPO_INTEGRATION_CONFLICT` while an enabled GitHub integration still needs it for pull request reviews on a repository the grant covers without an authorization of its own; already-minted tokens live out their expiry of at most one hour. Organization owners only; the change re-projects the agent’s spec.',
           operationId: 'updateAgentInstallationAuthorization',
           params: AgentInstallationAuthParam,
           body: UpdateAgentInstallationAuthBody,
@@ -873,18 +910,17 @@ export function agentRepoRoutes(deps: HttpDeps) {
         const grant = await ownGrant(agent, req.params.id)
         if (!grant) return grantNotFound(reply)
         if (await refuseDecisionMaterialize(reply, agent, req.body.materialize, grant.materialize)) return
-        const rank = { read: 0, comment: 1, write: 2 } as const
-        if (req.body.access !== undefined && rank[req.body.access] < rank[grant.access]) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'revoke and authorize this installation again to lower its access tier'
+        let updated: AgentInstallationAuthorizationRecord | null
+        try {
+          // A lowered tier is refused while an enabled GitHub review or Checks hook on a repository only the grant covers needs it.
+          updated = await deps.repos.agentInstallationAuth.update(grant.id, {
+            ...(req.body.access !== undefined ? { access: req.body.access } : {}),
+            ...(req.body.materialize !== undefined ? { materialize: req.body.materialize } : {})
           })
+        } catch (e) {
+          if (!(e instanceof AgentRepoIntegrationConflict)) throw e
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message, code: e.code })
         }
-        const updated = await deps.repos.agentInstallationAuth.update(grant.id, {
-          ...(req.body.access !== undefined ? { access: req.body.access } : {}),
-          ...(req.body.materialize !== undefined ? { materialize: req.body.materialize } : {})
-        })
         if (!updated) return grantNotFound(reply)
         if (updated.access !== grant.access || updated.materialize !== grant.materialize) {
           auditGrant(
