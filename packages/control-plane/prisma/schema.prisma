@@ -1397,6 +1397,17 @@ model SessionPullRequest {
   @@map("session_pull_request")
 }
 
+// One row per PR feedback delivery key ever received, so a GitHub redelivery of the same event never wakes twice.
+model SessionPullRequestDelivery {
+  orgId       String
+  deliveryKey String
+  receivedAt  DateTime @db.Timestamptz(6)
+
+  @@id([orgId, deliveryKey], map: "session_pull_request_delivery_pkey")
+  @@index([receivedAt], map: "session_pull_request_delivery_received_idx")
+  @@map("session_pull_request_delivery")
+}
+
 // One durable, exact-session obligation to discover the PR created from its isolated worktree.
 model SessionPullRequestCapture {
   sessionId     String    @id

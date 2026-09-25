@@ -463,6 +463,15 @@ moves only that PR's next-attempt time forward, allowing the worker to continue
 with other due PRs in the same pass. Unowned rows expire from the latest
 distinct signal time without ever entering the delivery queue.
 
+Wakes are at most once per delivery key. A GitHub redelivery keeps the original
+GUID and therefore the same key, and redeliveries are routine: the
+reconciliation below re-posts deliveries that landed no `HookRun`, which can
+include a comment the hook matcher deliberately ignored. The CP therefore
+records each received key once, beside the ownership row, and a repeated key
+neither resets the quiet window nor re-dirties a wake that was already
+admitted. Receipts expire with unowned rows, well past GitHub's three-day
+redelivery window.
+
 The relay acknowledges GitHub only after the marker is durable. A transient
 persistence failure returns 503 instead of falsely acknowledging the delivery;
 GitHub records it as a failed webhook delivery for explicit redelivery rather

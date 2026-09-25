@@ -145,6 +145,12 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
     const key = { orgId, repoId: BigInt(signal.repoId), pullNumber: signal.pullNumber }
     const installationId = BigInt(signal.installationId)
     await this.transaction(async (tx) => {
+      // A redelivery reuses the GitHub GUID, so a key already received is the same event and must not wake again.
+      const received = await tx.sessionPullRequestDelivery.createMany({
+        data: [{ orgId, deliveryKey: signal.deliveryKey, receivedAt: signalAt }],
+        skipDuplicates: true
+      })
+      if (received.count === 0) return
       const row = await tx.sessionPullRequest.upsert({
         where: { orgId_repoId_pullNumber: key },
         create: {
@@ -230,6 +236,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
   }
 
   async deleteExpired(unmatchedBefore: Date): Promise<number> {
+    await this.db.sessionPullRequestDelivery.deleteMany({ where: { receivedAt: { lt: unmatchedBefore } } })
     const deleted = await this.db.sessionPullRequest.deleteMany({
       where: { sessionId: null, signalAt: { lt: unmatchedBefore } }
     })

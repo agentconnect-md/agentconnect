@@ -165,6 +165,40 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     ).toMatchObject({ sessionId, deliveryKey: null, nextAttemptAt: null })
   })
 
+  it('never re-dirties a PR for a redelivered key, even after its wake was admitted', async () => {
+    const repo = new PgSessionPullRequestFeedbackRepo(prisma)
+    const sessionId = randomUUID()
+    await seedEligibleSession(sessionId)
+    await expect(link(repo, sessionId, 77)).resolves.toBe(true)
+    const owner = randomUUID()
+    const until = (at: Date) => new Date(at.getTime() + 60_000)
+
+    await repo.enqueue(ORG_ID, signal('delivery-1', 77), NOW, NOW)
+    await repo.complete((await repo.claimNext(owner, NOW, until(NOW)))!, owner)
+
+    const later = new Date(NOW.getTime() + 10 * 60_000)
+    await repo.enqueue(ORG_ID, signal('delivery-1', 77), later, later)
+    await expect(repo.claimNext(owner, later, until(later))).resolves.toBeNull()
+
+    await repo.enqueue(ORG_ID, signal('delivery-2', 77), later, later)
+    await expect(repo.claimNext(owner, later, until(later))).resolves.toMatchObject({ deliveryKey: 'delivery-2' })
+  })
+
+  it('expires delivery receipts with unowned rows', async () => {
+    const repo = new PgSessionPullRequestFeedbackRepo(prisma)
+    const sessionId = randomUUID()
+    await seedEligibleSession(sessionId)
+    await expect(link(repo, sessionId, 77)).resolves.toBe(true)
+    await repo.enqueue(ORG_ID, signal('delivery-1', 77), NOW, NOW)
+    const later = new Date(NOW.getTime() + 60_000)
+    await repo.enqueue(ORG_ID, signal('delivery-2', 77), later, later)
+
+    await expect(repo.deleteExpired(new Date(NOW.getTime() + 1))).resolves.toBe(0)
+    await expect(prisma.sessionPullRequestDelivery.findMany({ select: { deliveryKey: true } })).resolves.toEqual([
+      { deliveryKey: 'delivery-2' }
+    ])
+  })
+
   it('defers one unavailable PR without blocking the next due PR', async () => {
     const repo = new PgSessionPullRequestFeedbackRepo(prisma)
     const firstSessionId = randomUUID()

@@ -26,6 +26,7 @@ const CAPTURE_RETRY_MS = 60_000
 export const CAPTURE_MAX_IDLE_MS = 24 * 60 * 60 * 1000
 const CLAIM_MS = 60_000
 const FEEDBACK_DEBOUNCE_MS = 10_000
+// Also bounds delivery receipts, outliving GitHub's 3-day redelivery window.
 const UNMATCHED_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
 const MAX_PER_TICK = 20
