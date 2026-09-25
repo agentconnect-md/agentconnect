@@ -518,6 +518,11 @@ export default function EditAgentModal({
   const runtimeUnavailable = daemonChanged && reportedRuntimeIds.length > 0 && !reportedRuntimeIds.includes(runtime)
   const modelUnavailable =
     daemonChanged && !!selectedModel && reportedModels.length > 0 && !reportedModels.includes(selectedModel)
+  // A new strategy whose catalog lacks the stored model: Save keeps the one the picker shows in its place.
+  const strategyModel =
+    execution !== initialExecution.current && !!model && !!selectedModel && selectedModel !== model
+      ? selectedModel
+      : undefined
 
   // Agent-call reachability, computed with THIS agent's in-progress policy so the
   // "X of Y" hints track the pending edits (same graph the standalone card built).
@@ -563,13 +568,21 @@ export default function EditAgentModal({
   const secretsChanged = Object.keys(secretsPatch).length > 0
   const modelSelectionChanged = JSON.stringify(modelSelection) !== JSON.stringify(initialModelSelection.current)
   const validateModelSelection =
-    modelSelectionChanged || model !== initialModel.current || runtime !== initialRuntime.current || daemonChanged
+    modelSelectionChanged ||
+    model !== initialModel.current ||
+    runtime !== initialRuntime.current ||
+    daemonChanged ||
+    execution !== initialExecution.current
   const envSecretError = envSecretsError(envRows, secretRows)
   const patch: UpdateAgentInput = {
     ...(normalizedDisplayName !== (initialDisplayName.current.trim() || null)
       ? { displayName: normalizedDisplayName }
       : {}),
-    ...(model !== initialModel.current ? { model: model || (modelSelection ? selectedModel : null) } : {}),
+    ...(strategyModel
+      ? { model: strategyModel }
+      : model !== initialModel.current
+        ? { model: model || (modelSelection ? selectedModel : null) }
+        : {}),
     ...(modelSelectionChanged ? { modelSelection, ...(modelSelection && !model ? { model: selectedModel } : {}) } : {}),
     ...(runtime.trim() !== initialRuntime.current ? { runtime: runtime.trim() } : {}),
     ...(effort !== initialEffort.current ? { reasoningEffort: effort || null } : {}),
