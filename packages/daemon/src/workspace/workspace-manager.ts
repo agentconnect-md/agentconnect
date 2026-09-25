@@ -32,6 +32,7 @@ import {
   type CodeHostSpecHosts
 } from '../codehost/credentials.js'
 import { formatErr } from '../daemon/text.js'
+import { sameSelection, type SelectedRepository } from '../decisions/repo-selection.js'
 import type { ExecutionPlane, PlaneResolver, PlaneScope } from '../execution/plane.js'
 import { makeLogger } from '../log.js'
 import { withStartupPhase } from '../session/startup-progress.js'
@@ -164,16 +165,18 @@ export interface SecondaryWorkspaceRoot extends WorkspaceRoot {
   materialize?: RepoMaterialization
 }
 
-/** Whether preparation checks an authorized repository out for every session (decision 13): an `always` row; `on-demand`, and `decision` until the selector exists, are the agent's to clone. */
-function materializedRow(row: { materialize?: RepoMaterialization }): boolean {
-  return (row.materialize ?? 'always') === 'always'
+/** One session's selection (decision 19), primed before its preparation, and the selected roots that preparation readied for it. */
+interface SessionSelection {
+  repos: readonly SelectedRepository[]
+  ready: SecondaryWorkspaceRoot[]
 }
 
-/** Whether the agent has anything for a session to clone, from the spec alone: a row not checked out, or any installation grant (on demand, `decision` included, until the selector exists). */
-function hasOnDemandAuthorizations(agent: Agent): boolean {
-  if ((agent.workspace.additionalInstallations ?? []).length > 0) return true
-  return (agent.workspace.additionalRepos ?? []).some((row) => !materializedRow(row))
+/** A selected repository as a row of the spec would carry it, so the same placement builds its root (decision 15). */
+function selectedAsRow(repo: SelectedRepository): SecondaryRootRow {
+  return { repoFullName: repo.repoFullName, repoId: repo.repoId, provider: repo.provider, materialize: 'decision' }
 }
+
+type SecondaryRootRow = { repoFullName: string; repoId: string; provider?: string; materialize?: RepoMaterialization }
 
 /** The repository name an installation grant's clone example stands in for. */
 const ON_DEMAND_REPO_PLACEHOLDER = '<repo>'
@@ -299,8 +302,10 @@ export class WorkspaceManager {
   // and two sessions starting together must share one of them. A separate map because the clone it
   // performs keys `cloneInFlight` by the very same path.
   private readonly secondaryInFlight = new Map<string, Promise<SecondaryWorkspaceRoot | undefined>>()
-  /** Secondary roots prepared for an agent's current sessions — what the synchronous hand-out reads. */
+  /** The `always` roots prepared for an agent's current sessions — what the synchronous hand-out reads. */
   private readonly readyRoots = new Map<string, SecondaryWorkspaceRoot[]>()
+  /** Each session's selected repositories (decision 19) beside the selected roots readied for it, keyed by session. */
+  private readonly sessionSelections = new Map<string, SessionSelection>()
   private planeResolver: PlaneResolver | undefined
   // Joins every Git this manager runs; aborted once, when shutdown stops waiting on work it could not otherwise cancel.
   private readonly shutdown = new AbortController()
@@ -573,9 +578,69 @@ export class WorkspaceManager {
 
   /** The same roots addressed in one sandbox mount's coordinates, mirroring {@link primaryRootAt}. */
   secondaryRootsAt(agent: Agent, mount: string | undefined): SecondaryWorkspaceRoot[] {
+    return this.rootsAt(agent, mount, agent.workspace.additionalRepos ?? [])
+  }
+
+  /** Prime one session's selection (decision 19) before its preparation; the same set keeps the roots already readied for it. */
+  setSessionSelection(sessionKey: string, repos: readonly SelectedRepository[]): void {
+    const existing = this.sessionSelections.get(sessionKey)
+    if (existing && sameSelection(existing.repos, repos)) return
+    this.sessionSelections.set(sessionKey, { repos: [...repos], ready: [] })
+  }
+
+  /** What one session selected, if it was primed; empty for a session that selected nothing or was never primed. */
+  private selectedFor(sessionKey: string | undefined): readonly SelectedRepository[] {
+    return sessionKey === undefined ? [] : (this.sessionSelections.get(sessionKey)?.repos ?? [])
+  }
+
+  /** Whether preparation checks a root out for one session (decisions 13, 17): an `always` row, or a repository that session selected; `on-demand`, and `decision` not selected, are the agent's to clone. */
+  private materializedFor(root: SecondaryRootRow, sessionKey?: string): boolean {
+    if ((root.materialize ?? 'always') === 'always') return true
+    const identity = repoIdentity({ provider: root.provider ?? 'github', repoId: root.repoId })
+    return this.selectedFor(sessionKey).some((repo) => repoIdentity(repo) === identity)
+  }
+
+  /** Whether the agent has anything some session may clone, from the spec alone: a row that is not `always`, or any installation grant. */
+  private hasOnDemandAuthorizations(agent: Agent): boolean {
+    if ((agent.workspace.additionalInstallations ?? []).length > 0) return true
+    return (agent.workspace.additionalRepos ?? []).some((row) => !this.materializedFor(row))
+  }
+
+  /** The agent's rows plus the selected repositories `extra` adds beyond them, as roots in one mount's coordinates. */
+  private rootsWith(
+    agent: Agent,
+    mount: string | undefined,
+    extra: readonly SelectedRepository[]
+  ): SecondaryWorkspaceRoot[] {
+    const rows = agent.workspace.additionalRepos ?? []
+    const known = new Set(rows.map((row) => repoIdentity({ provider: row.provider ?? 'github', repoId: row.repoId })))
+    const added = extra.filter((repo) => !known.has(repoIdentity(repo)))
+    return this.rootsAt(agent, mount, [...rows, ...added.map(selectedAsRow)])
+  }
+
+  /** The roots one session addresses (decision 15): the rows, plus the roster repositories it selected, which have no row of their own. */
+  private sessionRootsAt(
+    agent: Agent,
+    mount: string | undefined,
+    sessionKey: string | undefined
+  ): SecondaryWorkspaceRoot[] {
+    return this.rootsWith(agent, mount, this.selectedFor(sessionKey))
+  }
+
+  /** {@link sessionRootsAt} in the coordinates that hold the agent's roots. */
+  private sessionRootsFor(agent: Agent, sessionKey: string | undefined): SecondaryWorkspaceRoot[] {
+    return this.sessionRootsAt(agent, this.sandboxMountFor(agent.id), sessionKey)
+  }
+
+  /** Rows (or selected repositories shaped as rows) as roots under one mount's `repos/`, sorted by name; a row its host cannot place is skipped, fail-closed. */
+  private rootsAt(
+    agent: Agent,
+    mount: string | undefined,
+    rows: readonly SecondaryRootRow[]
+  ): SecondaryWorkspaceRoot[] {
     const parent = this.secondaryRootsDirAt(agent, mount)
     const roots: SecondaryWorkspaceRoot[] = []
-    for (const row of agent.workspace.additionalRepos ?? []) {
+    for (const row of rows) {
       const host = codeHostCredentials(row.provider ?? 'github')
       const placed = host?.placeSecondaryRoot(row)
       if (host === undefined || placed === undefined) {
@@ -673,7 +738,11 @@ export class WorkspaceManager {
    */
   async readySecondaryRoots(agent: Agent, request?: SessionRootScope): Promise<readonly ReadyWorkspaceRoot[]> {
     // The root a review made the cwd is not an additional directory of its own session.
-    const ready = this.sessionSecondaryRoots(agent, await this.sessionCwdSubtreeName(agent, request))
+    const ready = this.sessionSecondaryRoots(
+      agent,
+      await this.sessionCwdSubtreeName(agent, request),
+      request?.sessionKey
+    )
     const id = await this.sessionWorktreeIdFor(agent, request)
     const roots: ReadyWorkspaceRoot[] = []
     for (const root of ready) {
@@ -710,8 +779,8 @@ export class WorkspaceManager {
 
   /** The directory this session clones on-demand repositories into, with what it may clone (decision 20) — the one answer the additional directories and the standing context both read; undefined when it was handed every repository. */
   async sessionOnDemandClones(agent: Agent, request?: SessionRootScope): Promise<OnDemandClones | undefined> {
-    if (request?.sessionKey === undefined || !hasOnDemandAuthorizations(agent)) return undefined
-    const roots = this.onDemandRootsOf(agent, await this.sessionCwdSubtreeName(agent, request))
+    if (request?.sessionKey === undefined || !this.hasOnDemandAuthorizations(agent)) return undefined
+    const roots = this.onDemandRootsOf(agent, await this.sessionCwdSubtreeName(agent, request), request.sessionKey)
     const installations = this.onDemandInstallationsOf(agent)
     if (roots.length === 0 && installations.length === 0) return undefined
     const { dir, fs } = this.onDemandCloneDir(agent, { ...request, sessionKey: request.sessionKey })
@@ -725,9 +794,12 @@ export class WorkspaceManager {
   }
 
   /** Whether a session standing in `cwdSubtreeName` (a reviewed root, else the primary) has anything to clone on demand. */
-  private hasOnDemandFor(agent: Agent, cwdSubtreeName?: string): boolean {
-    if (!hasOnDemandAuthorizations(agent)) return false
-    return this.onDemandInstallationsOf(agent).length > 0 || this.onDemandRootsOf(agent, cwdSubtreeName).length > 0
+  private hasOnDemandFor(agent: Agent, cwdSubtreeName?: string, sessionKey?: string): boolean {
+    if (!this.hasOnDemandAuthorizations(agent)) return false
+    return (
+      this.onDemandInstallationsOf(agent).length > 0 ||
+      this.onDemandRootsOf(agent, cwdSubtreeName, sessionKey).length > 0
+    )
   }
 
   /** The agent's installation grants with a clone example each, sorted by account; a grant its host cannot address is skipped, as a row is. */
@@ -754,10 +826,12 @@ export class WorkspaceManager {
     )
   }
 
-  /** The authorized repositories a session is not handed, sorted: every row preparation does not check out, less the reviewed root the session stands in. */
-  private onDemandRootsOf(agent: Agent, cwdSubtreeName?: string): SecondaryWorkspaceRoot[] {
+  /** The authorized repositories a session is not handed, sorted: every row preparation does not check out for it, less the reviewed root the session stands in. */
+  private onDemandRootsOf(agent: Agent, cwdSubtreeName?: string, sessionKey?: string): SecondaryWorkspaceRoot[] {
     const skip = cwdSubtreeName === undefined ? undefined : repoKey(cwdSubtreeName)
-    return this.secondaryRootsFor(agent).filter((root) => !materializedRow(root) && repoKey(root.subtreeName) !== skip)
+    return this.secondaryRootsFor(agent).filter(
+      (root) => !this.materializedFor(root, sessionKey) && repoKey(root.subtreeName) !== skip
+    )
   }
 
   /** Where one session clones those, and the filesystem holding it: its own directory's `repos/` on the confined tier (§11), else `clones/<id>` beside the agent's roots. */
@@ -784,7 +858,7 @@ export class WorkspaceManager {
     cwdSubtreeName?: string,
     confinedDir?: string
   ): Promise<void> {
-    if (!this.hasOnDemandFor(agent, cwdSubtreeName)) return
+    if (!this.hasOnDemandFor(agent, cwdSubtreeName, sessionKey)) return
     const [dir, fs] =
       confinedDir === undefined
         ? [this.agentOnDemandCloneDir(agent, sessionKey), this.fsFor(agent.id)]
@@ -836,10 +910,17 @@ export class WorkspaceManager {
     return this.sessionWorktreeId(request.sessionKey)
   }
 
-  /** The prepared secondary roots minus the one at a subtree name, compared case-insensitively. */
-  private sessionSecondaryRoots(agent: Agent, excludedSubtreeName?: string): SecondaryWorkspaceRoot[] {
+  /** The prepared roots one session is handed — the agent's `always` roots and the ones readied for its own selection — sorted by name, minus the one at a subtree name, compared case-insensitively. */
+  private sessionSecondaryRoots(
+    agent: Agent,
+    excludedSubtreeName?: string,
+    sessionKey?: string
+  ): SecondaryWorkspaceRoot[] {
     const skip = excludedSubtreeName === undefined ? undefined : repoKey(excludedSubtreeName)
-    return (this.readyRoots.get(agent.id) ?? []).filter((root) => repoKey(root.subtreeName) !== skip)
+    const selected = sessionKey === undefined ? [] : (this.sessionSelections.get(sessionKey)?.ready ?? [])
+    return [...(this.readyRoots.get(agent.id) ?? []), ...selected]
+      .filter((root) => repoKey(root.subtreeName) !== skip)
+      .sort((a, b) => (a.repoFullName < b.repoFullName ? -1 : a.repoFullName > b.repoFullName ? 1 : 0))
   }
 
   /** The subtree of the secondary root holding this session's cwd: named by the request, else by the record its tier keeps. */
@@ -973,11 +1054,13 @@ export class WorkspaceManager {
     await fs.writeFile(marker, JSON.stringify({ repoFullName }, null, 2) + '\n', { mode: 0o600 })
   }
 
-  // Prepare the `always` roots lazily, omitting failures and repositories already present as submodules.
-  async prepareSecondaryRoots(agent: Agent): Promise<SecondaryWorkspaceRoot[]> {
-    const roots = this.secondaryRootsFor(agent).filter(materializedRow)
+  // Prepare the `always` roots, and the ones the session selected, lazily, omitting failures and repositories already present as submodules.
+  async prepareSecondaryRoots(agent: Agent, sessionKey?: string): Promise<SecondaryWorkspaceRoot[]> {
+    const roots = this.sessionRootsFor(agent, sessionKey).filter((root) => this.materializedFor(root, sessionKey))
+    const selection = sessionKey === undefined ? undefined : this.sessionSelections.get(sessionKey)
     if (roots.length === 0) {
       this.readyRoots.delete(agent.id)
+      if (selection) selection.ready = []
       return []
     }
     const submodules =
@@ -998,7 +1081,12 @@ export class WorkspaceManager {
       for (const repo of await this.submoduleReposOf(agent.id, root.path)) submodules.add(repo)
       ready.push(prepared)
     }
-    this.readyRoots.set(agent.id, ready)
+    // The `always` roots are every session's; a selected root is this session's alone (decision 19).
+    this.readyRoots.set(
+      agent.id,
+      ready.filter((root) => this.materializedFor(root))
+    )
+    if (selection) selection.ready = ready.filter((root) => !this.materializedFor(root))
     return ready
   }
 
@@ -1395,9 +1483,9 @@ export class WorkspaceManager {
   }
 
   // Shared sessions and unconfined worktrees discover references from these shared roots.
-  private async prepareWorkspaceRoots(agent: Agent): Promise<string> {
+  private async prepareWorkspaceRoots(agent: Agent, sessionKey?: string): Promise<string> {
     const root = await this.preparePrimaryRoot(agent)
-    await this.prepareSecondaryRoots(agent)
+    await this.prepareSecondaryRoots(agent, sessionKey)
     return root
   }
 
@@ -1635,7 +1723,7 @@ export class WorkspaceManager {
 
   /** Whether one session may own an on-demand clone directory beside the agent's roots (decision 20), even a shared one: the spec says so, or this disk holds one; a pod's volume is asked only once bound. */
   mayOwnOnDemandClones(agent: Agent, sessionKey: string): boolean {
-    if (hasOnDemandAuthorizations(agent)) return true
+    if (this.hasOnDemandAuthorizations(agent)) return true
     if (this.offDisk({ agentId: agent.id })) return false
     return isRealDir(join(onDemandClonesDirIn(this.agentRootFor(agent)), this.sessionWorktreeId(sessionKey)))
   }
@@ -1652,6 +1740,8 @@ export class WorkspaceManager {
     sessionKey: string,
     scope: 'all' | 'clones' | 'worktrees' = 'all'
   ): Promise<SessionWorktreeRemoval> {
+    // Its selection goes with its directories; the next turn primes it again from the row's snapshot.
+    this.sessionSelections.delete(sessionKey)
     const roots = scope === 'clones' ? [] : await this.sessionWorktreeRoots(agent)
     const sessionDir = scope === 'worktrees' ? undefined : this.confinedSessionDir(agent, sessionKey)
     // On the agent's own volume, so judged with the half that judges its roots.
@@ -1797,13 +1887,14 @@ export class WorkspaceManager {
     return canonical
   }
 
-  /** The agent's secondary subtrees whose `.materialization.json` matches no current `always` row, by repository id and by the directory a rename moved it out of (decisions 12, 13). */
-  async retiredSecondaryRoots(agent: Agent): Promise<RetiredWorkspaceRoot[]> {
+  /** The agent's secondary subtrees whose `.materialization.json` matches no current `always` row and no repository a session's snapshot still holds (`held`), by repository id and by the directory a rename moved it out of (decisions 12, 13, 19). */
+  async retiredSecondaryRoots(agent: Agent, held: readonly SelectedRepository[] = []): Promise<RetiredWorkspaceRoot[]> {
     const fs = this.fsFor(agent.id)
+    const heldIds = new Set(held.map(repoIdentity))
     // Where each checked-out repository's subtree IS now: a GitHub rename moves it, a GitLab rename does not.
     const authorized = new Map(
-      this.secondaryRootsFor(agent)
-        .filter(materializedRow)
+      this.rootsWith(agent, this.sandboxMountFor(agent.id), held)
+        .filter((root) => this.materializedFor(root) || heldIds.has(repoIdentity(root)))
         .map((root) => [repoIdentity(root), root.subtreeName])
     )
     const retired: RetiredWorkspaceRoot[] = []
@@ -2173,7 +2264,7 @@ export class WorkspaceManager {
       await this.preparePrimaryRoot(agent, false)
       return this.prepareConfinedSession(agent, this.sandboxMountFor(agent.id), request, cwdRoot, opts)
     }
-    const primary = await this.prepareWorkspaceRoots(agent)
+    const primary = await this.prepareWorkspaceRoots(agent, request.sessionKey)
     if (cwdRoot) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, opts)
     const agentDir = agent.workspace.mode === 'git-repo' ? normalizeRepoSubdir(agent.workspace.agentDir) : undefined
     if (request.isolation === 'shared') {
@@ -2189,7 +2280,7 @@ export class WorkspaceManager {
         agent.workspace.mode === 'git-repo'
           ? await this.prepareRootSessionDirectory(agent, this.primaryRoot(agent), request)
           : primary,
-      this.referenceRootsOf(agent),
+      this.referenceRootsOf(agent, undefined, request.sessionKey),
       request
     )
     await this.prepareOnDemandCloneDir(agent, request.sessionKey)
@@ -2219,15 +2310,16 @@ export class WorkspaceManager {
   ): Promise<string> {
     // Reuse prepared roots; materialize a withheld submodule or a row not checked out only when its own review needs it.
     const prepared =
-      this.sessionSecondaryRoots(agent).find((entry) => repoKey(entry.subtreeName) === repoKey(root.subtreeName)) ??
-      (await this.prepareSecondaryRoot(agent, root))
+      this.sessionSecondaryRoots(agent, undefined, request.sessionKey).find(
+        (entry) => repoKey(entry.subtreeName) === repoKey(root.subtreeName)
+      ) ?? (await this.prepareSecondaryRoot(agent, root))
     if (!prepared) {
       throw new Error(`github review checkout of ${root.repoFullName} is unavailable to agent "${agent.id}"`)
     }
     const cwd = await this.prepareSessionRoots(
       agent,
       () => this.prepareRootSessionDirectory(agent, prepared, request),
-      this.referenceRootsOf(agent, prepared.subtreeName),
+      this.referenceRootsOf(agent, prepared.subtreeName, request.sessionKey),
       request
     )
     await this.prepareOnDemandCloneDir(agent, request.sessionKey, prepared.subtreeName)
@@ -2275,12 +2367,16 @@ export class WorkspaceManager {
   }
 
   /** The roots that ride along this session, with the label their per-root failure is reported under. */
-  private referenceRootsOf(agent: Agent, cwdSubtreeName?: string): { root: WorkspaceRoot; label: string }[] {
+  private referenceRootsOf(
+    agent: Agent,
+    cwdSubtreeName?: string,
+    sessionKey?: string
+  ): { root: WorkspaceRoot; label: string }[] {
     return [
       ...(cwdSubtreeName !== undefined && agent.workspace.mode === 'git-repo'
         ? [{ root: this.primaryRoot(agent), label: 'the workspace repository' }]
         : []),
-      ...this.sessionSecondaryRoots(agent, cwdSubtreeName).map((root) => ({
+      ...this.sessionSecondaryRoots(agent, cwdSubtreeName, sessionKey).map((root) => ({
         root,
         label: `additional repository ${root.repoFullName}`
       }))
@@ -2826,12 +2922,14 @@ export class WorkspaceManager {
     opts: PrepareWorkspaceOptions,
     reach: AgentVolumeReach = reachInPlace
   ): Promise<string> {
-    // The `always` rows, plus the reviewed root the session stands in whatever its row says (decision 17).
-    const secondaries = this.secondaryRootsAt(agent, mount).filter(
-      (root) => materializedRow(root) || repoKey(root.subtreeName) === repoKey(cwdRoot?.subtreeName ?? '')
+    // The `always` rows and the session's selected repositories, plus the reviewed root the session stands in whatever its row says (decision 17).
+    const secondaries = this.sessionRootsAt(agent, mount, request.sessionKey).filter(
+      (root) =>
+        this.materializedFor(root, request.sessionKey) ||
+        repoKey(root.subtreeName) === repoKey(cwdRoot?.subtreeName ?? '')
     )
     // The agent's own roots, in its coordinates, only to name what `readyRoots` hands a shared reader; nothing here reads or writes them.
-    const references = this.secondaryRootsFor(agent)
+    const references = this.sessionRootsFor(agent, request.sessionKey)
     const referenceOf = (root: SecondaryWorkspaceRoot): SecondaryWorkspaceRoot =>
       references.find((entry) => repoKey(entry.subtreeName) === repoKey(root.subtreeName)) ?? root
     const plans = [
@@ -2901,11 +2999,17 @@ export class WorkspaceManager {
       await discovery
     }
     await Promise.all(active)
-    // A reviewed root the rows do not check out is this session's alone, never another's reference.
+    // A reviewed root the rows do not check out is this session's alone, never another's reference; so is a selected root (decision 19).
     this.readyRoots.set(
       agent.id,
-      secondaries.filter(materializedRow).flatMap((root) => ready.get(root.subtreeName) ?? [])
+      secondaries.filter((root) => this.materializedFor(root)).flatMap((root) => ready.get(root.subtreeName) ?? [])
     )
+    const selection = this.sessionSelections.get(request.sessionKey)
+    if (selection) {
+      selection.ready = secondaries
+        .filter((root) => !this.materializedFor(root) && this.materializedFor(root, request.sessionKey))
+        .flatMap((root) => ready.get(root.subtreeName) ?? [])
+    }
     if (failures.length) throw failures[0]
     const agentDir =
       !cwdRoot && agent.workspace.mode === 'git-repo' ? normalizeRepoSubdir(agent.workspace.agentDir) : undefined
@@ -2954,8 +3058,8 @@ export class WorkspaceManager {
     // Resolved before anything is materialized, as locally: a review naming a repository this agent
     // has no root for leaves no worktree behind for the caller's revision-only fallback.
     const reviewRoot = request ? this.reviewedSecondaryRoot(agent, request) : undefined
-    // The volume's own `always` roots, in the pod's coordinates: the pass `prepareWorkspace` makes locally, where a root that left the set stops being handed out (decision 12).
-    await this.prepareSecondaryRoots(agent)
+    // The volume's own `always` roots and the session's selected ones, in the pod's coordinates: the pass `prepareWorkspace` makes locally, where a root that left the set stops being handed out (decision 12).
+    await this.prepareSecondaryRoots(agent, request?.sessionKey)
     const cwdRoot = reviewRoot ?? (request ? await this.resumedReviewedRoot(agent, request) : undefined)
     if (cwdRoot && request) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, {})
     if (request) await this.prepareOnDemandCloneDir(agent, request.sessionKey)
@@ -3450,8 +3554,8 @@ function parseSessionCwdRecord(text: string): string | undefined {
   }
 }
 
-/** The identity a root is compared to an attestation by: the numeric id under the host that issued it. */
-function repoIdentity(entry: { provider: CodeHostProvider; repoId: string }): string {
+/** The identity a root is compared to an attestation, a row or a selection by: the numeric id under the host that issued it. */
+function repoIdentity(entry: { provider: string; repoId: string }): string {
   return `${entry.provider}:${entry.repoId}`
 }
 

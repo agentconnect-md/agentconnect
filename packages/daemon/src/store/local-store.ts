@@ -33,6 +33,11 @@ import { AsyncMutex } from './async-mutex.js'
 import { STORE_RETENTION_SCAN_LIMIT, type StoreRetentionCandidate, type StoreRetentionRule } from './retention.js'
 import { DECISION_VERDICT_PENDING_STATES, DECISION_VERDICT_TERMINAL_STATES, sqlStates } from './decision-states.js'
 import {
+  parseSelectedRepositories,
+  selectedRepoIdentity,
+  type SelectedRepository
+} from '../decisions/repo-selection.js'
+import {
   ClusterSkillLedgerSchema,
   type ClusterSkillLedger,
   type ClusterSkillLedgerRecord,
@@ -309,6 +314,8 @@ export interface SessionRecord {
   onDemandClones?: number | null
   // The strategy the session was born with (§5); null on a verdict from before it was recorded.
   birthStrategy?: string | null
+  // The repositories the selector chose for this session (multi-repository-workspaces.md decision 19), a JSON array pinned once by `pinSelectedRepos`; null until then and on a session born before the selector.
+  selectedRepos?: string | null
 }
 
 /** A session's birth verdict (session-executors.md §5, §7): where it executes or why it stayed home, and the strategy it was born with. */
@@ -1211,7 +1218,7 @@ const DECISION_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 29
+export const SCHEMA_VERSION = 30
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1537,6 +1544,16 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
     if (!columns.some((c) => c.name === 'birthStrategy'))
       await db.exec('ALTER TABLE sessions ADD COLUMN birthStrategy TEXT')
+  },
+  // v30: the repositories the selector chose for a session (multi-repository-workspaces.md decision 19); null on every existing row, added only where it is missing, as v28 does.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS selectedRepos TEXT')
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
+    if (!columns.some((c) => c.name === 'selectedRepos'))
+      await db.exec('ALTER TABLE sessions ADD COLUMN selectedRepos TEXT')
   }
 ]
 
@@ -1676,7 +1693,7 @@ export class LocalStore {
         conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT,
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
-        onDemandClones INTEGER, birthStrategy TEXT
+        onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -3601,6 +3618,25 @@ export class LocalStore {
     await this.db
       .prepare('UPDATE sessions SET decisionModel = ? WHERE key = ? AND decisionModel IS NULL')
       .run(JSON.stringify(target), key)
+  }
+
+  /** Pin the repositories the selector chose for a session (multi-repository-workspaces.md decision 19), first-wins like the model; an unknown key is a no-op. */
+  async pinSelectedRepos(key: string, repos: readonly SelectedRepository[]): Promise<void> {
+    await this.db
+      .prepare('UPDATE sessions SET selectedRepos = ? WHERE key = ? AND selectedRepos IS NULL')
+      .run(JSON.stringify(repos), key)
+  }
+
+  /** Every repository a session of the agent still holds by its snapshot, deduplicated — what the retire sweep must not treat as retired. */
+  async listSelectedRepos(agentId: string): Promise<SelectedRepository[]> {
+    const rows = (await this.db
+      .prepare('SELECT selectedRepos FROM sessions WHERE agentId = ? AND selectedRepos IS NOT NULL')
+      .all(agentId)) as { selectedRepos: string | null }[]
+    const held = new Map<string, SelectedRepository>()
+    for (const row of rows) {
+      for (const repo of parseSelectedRepositories(row.selectedRepos) ?? []) held.set(selectedRepoIdentity(repo), repo)
+    }
+    return [...held.values()]
   }
 
   /** The session-scoped reasoning-effort override (set via the status-bar effort picker),

@@ -49,6 +49,11 @@ import {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
+  REPO_CANDIDATES_V1_FEATURE,
+  REPO_SELECTOR_V1_FEATURE,
+  supportsRepositorySelector,
+  type RepoCandidatesReply,
+  type DecisionToolDefinition,
   type ExecutorCandidatesResult,
   type DecisionRuntimeTarget,
   type SessionStayedHomeReason,
@@ -118,6 +123,7 @@ import { IMPLICIT_CREDENTIAL_PROVIDER, parseManagedBaseUrl, stripHostPathPrefix 
 import { codeHostCredentials, credentialProviderOf, type ManagedWorkspaceRepo } from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { setTimeout as sleepFor } from 'node:timers/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
@@ -574,6 +580,20 @@ import {
   pullRequestModelSelectionState,
   pinnedDecisionModel
 } from './decisions/model-selection.js'
+import {
+  evaluateChunks,
+  evaluateWithCapacityWait,
+  hasDecisionAuthorizations,
+  hasDecisionGrants,
+  parseSelectedRepositories,
+  repoSelectionCandidates,
+  repoSelectionChunks,
+  repoSelectionConfiguration,
+  repoSelectionState,
+  selectRepositories,
+  REPO_CANDIDATES_CACHE_MS,
+  type SelectedRepository
+} from './decisions/repo-selection.js'
 import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost } from './key-server/session-hosts.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { RuntimeFactsRegistry, PROBE_TTL_MS, type RuntimeFactsHost } from './runtimes/facts-registry.js'
@@ -5295,6 +5315,13 @@ export class Daemon {
   }
 
   private readonly sessionRuntimes = new Map<string, DecisionRuntimeTarget>()
+  /** A new session's repository selection (multi-repository-workspaces.md decision 19), held until `openSession` pins it on the row. */
+  private readonly sessionRepoSelections = new Map<string, readonly SelectedRepository[]>()
+  /** The last roster the CP answered per agent, kept for the CP page cache's TTL under the authorizations it was read for. */
+  private readonly repoCandidateCache = new Map<
+    string,
+    { configuration: string; expiresAt: number; reply: RepoCandidatesReply }
+  >()
 
   private sessionAgent(agentId: string, key?: string): LoadedAgent | undefined {
     const agent = this.agents.get(agentId)
@@ -6680,7 +6707,9 @@ export class Daemon {
       // dual-encodes the legacy host-shaped arms to peers without this bit.
       WORKSPACE_GIT_V1_FEATURE,
       // This daemon answers a relayed `executor/prepare`; whether it hosts anything is the executor facts' `enabled`, not this bit. Static.
-      SESSION_EXECUTORS_V1_FEATURE
+      SESSION_EXECUTORS_V1_FEATURE,
+      // multi-repository-workspaces.md decisions 15–19: this daemon selects a session's `decision` repositories before it starts; the CP refuses `decision` for a daemon without it. Static.
+      REPO_SELECTOR_V1_FEATURE
     ]
   }
 
@@ -13781,6 +13810,8 @@ export class Daemon {
       // One `executor/candidates` per birth: model selection judges its targets by it, and placement reuses it (session-executors.md §5).
       const candidates = this.birthCandidates(agentId, key)
       await this.selectSessionModel(run, persisted, candidates)
+      // Before placement and every preparation below, so a session pod or an executor clones only the selected roots (decision 15).
+      await this.selectSessionRepositories(run, persisted)
       agent = run.agent = this.sessionAgent(agentId, key) ?? agent
       await this.placeSessionOnExecutor(agent, key, candidates)
       const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
@@ -13865,6 +13896,11 @@ export class Daemon {
       )
       const target = this.sessionRuntimes.get(key)
       if (target) await this.store.pinDecisionModel(key, target)
+      const selectedRepos = this.sessionRepoSelections.get(key)
+      if (selectedRepos) {
+        await this.store.pinSelectedRepos(key, selectedRepos)
+        this.sessionRepoSelections.delete(key)
+      }
       if (remoteMcpServer && handled.additionalMcpServersAttached === false) {
         this.log.warn('remote MCP descriptor was rejected by the runtime; ordinary webchat continued without it')
       }
@@ -13996,41 +14032,7 @@ export class Daemon {
             decisionId,
             purpose: 'model_selection'
           }),
-        state: async (decision) => {
-          if (entry.hookContext) {
-            const context = await this.githubReviews.pullRequestContext(
-              entry.hookContext,
-              AbortSignal.any([entry.initAbort.signal, AbortSignal.timeout(5_000)])
-            )
-            return context === undefined ? undefined : pullRequestModelSelectionState(context, decision)
-          }
-          const msg = entry.msg
-          if (msg.source !== 'user') return undefined
-          const channel = transcriptChannelKey(msg.channel, msg.transportScope)
-          const record = await this.store.channelRecordRef(channel, transcriptCoords(msg).ts, agent.id)
-          if (!record) return modelSelectionState('chat', msg.text)
-          const window = await this.store.decisionWindow(
-            record.orgId,
-            channel,
-            record.seq,
-            undefined,
-            threadRootResolver(msg.platform, msg.isDm)
-          )
-          if (!window.current) return modelSelectionState('chat', msg.text)
-          const built = buildDecisionState({
-            source: 'chat',
-            ...window,
-            current: window.current,
-            addressing: {
-              mentions: msg.mentionedBots,
-              target: { agentId: agent.id, via: msg.trigger === 'mention' ? 'mention' : 'implicit' }
-            },
-            forwardedHistory: msg.forwardedHistory,
-            question: decision.question,
-            model: decision.model
-          })
-          return built.unsupported ? modelSelectionState('chat', msg.text) : built.state
-        },
+        state: (decision) => this.sessionDecisionState(entry, agent, decision),
         evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal)
       })
     }
@@ -14045,6 +14047,152 @@ export class Daemon {
       permissionMode: selected.permissionMode,
       fastMode: selected.fastMode ?? false
     })
+  }
+
+  /** The once-per-session Decision input (decisions.md §10.6): a PR/MR hook's description, commits and diff prefix, else the chat opening with its bounded history; undefined when there is nothing recorded to judge. */
+  private async sessionDecisionState(
+    entry: QueueEntry,
+    agent: LoadedAgent,
+    decision: Pick<DecisionToolDefinition, 'question' | 'model'>
+  ): Promise<Record<string, unknown> | undefined> {
+    if (entry.hookContext) {
+      const context = await this.githubReviews.pullRequestContext(
+        entry.hookContext,
+        AbortSignal.any([entry.initAbort.signal, AbortSignal.timeout(5_000)])
+      )
+      return context === undefined ? undefined : pullRequestModelSelectionState(context, decision)
+    }
+    const msg = entry.msg
+    if (msg.source !== 'user') return undefined
+    const channel = transcriptChannelKey(msg.channel, msg.transportScope)
+    const record = await this.store.channelRecordRef(channel, transcriptCoords(msg).ts, agent.id)
+    if (!record) return modelSelectionState('chat', msg.text)
+    const window = await this.store.decisionWindow(
+      record.orgId,
+      channel,
+      record.seq,
+      undefined,
+      threadRootResolver(msg.platform, msg.isDm)
+    )
+    if (!window.current) return modelSelectionState('chat', msg.text)
+    const built = buildDecisionState({
+      source: 'chat',
+      ...window,
+      current: window.current,
+      addressing: {
+        mentions: msg.mentionedBots,
+        target: { agentId: agent.id, via: msg.trigger === 'mention' ? 'mention' : 'implicit' }
+      },
+      forwardedHistory: msg.forwardedHistory,
+      question: decision.question,
+      model: decision.model
+    })
+    return built.unsupported ? modelSelectionState('chat', msg.text) : built.state
+  }
+
+  /** Choose a new session's `decision` repositories once, before placement and preparation (multi-repository-workspaces.md decisions 15–19), and prime the workspace manager with them; an existing session reuses its snapshot, and a failed precondition fails the start visibly (decision 18). */
+  private async selectSessionRepositories(run: TurnRun, persisted: SessionRecord | undefined): Promise<void> {
+    const { entry, key, plan } = run
+    this.sessionRepoSelections.delete(key)
+    const agent = this.agents.get(entry.agentId)
+    if (!agent) return
+    // A pinned selection is restored whatever the rows say now (decision 19): a restart must not drop a root the session was handed.
+    const saved = parseSelectedRepositories(persisted?.selectedRepos)
+    if (saved) {
+      this.workspaces.setSessionSelection(key, saved)
+      return
+    }
+    if (!hasDecisionAuthorizations(agent)) return
+    // The runtime's directories are fixed at session/new (decision 19): a session that already has one, or a seed that opens one with no request to judge, selects nothing.
+    if (persisted?.acpSessionId || plan.initializeOnly) {
+      this.pinRepoSelection(key, [])
+      return
+    }
+    const selector = agent.repositorySelector
+    if (!selector) {
+      throw new Error(
+        'Repository selection is not configured: a repository is marked "By decision" but the agent has no repository selector.'
+      )
+    }
+    if (!supportsRepositorySelector(selector)) {
+      throw new Error(
+        `Repository selection is unavailable: evaluator ${selector.providerId} / ${selector.model} does not answer Choice questions.`
+      )
+    }
+    const signal = entry.initAbort.signal
+    const roster = await this.repoCandidatesFor(agent, signal)
+    const { candidates, partial } = repoSelectionCandidates(agent.workspace.additionalRepos ?? [], roster)
+    const chunks = repoSelectionChunks(candidates)
+    let selected: SelectedRepository[] = []
+    if (chunks.length > 0) {
+      const decision = { providerId: selector.providerId, model: selector.model }
+      // Trimmed against the largest chunk, so the one state fits every request (decision 16).
+      const largest = chunks.reduce((a, b) =>
+        JSON.stringify(b.question).length > JSON.stringify(a.question).length ? b : a
+      ).question
+      const opening = modelSelectionState('chat', entry.msg.text)
+      const base = (await this.sessionDecisionState(entry, agent, { ...decision, question: largest })) ?? opening
+      const primary = agent.workspace.gitRepo ? gitRepoLabel(agent.workspace.gitRepo) : undefined
+      const state = repoSelectionState(base, opening, { primary, partial }, { ...decision, question: largest })
+      signal.throwIfAborted()
+      const evaluationId = randomUUID()
+      // Other Decision consumers share the evaluator's slots, so a chunk waits out `capacity` rather than failing the start on it.
+      const waitDeps = {
+        now: () => this.clock.now(),
+        sleep: (ms: number) => sleepFor(ms, undefined, { signal })
+      }
+      const evaluations = await evaluateChunks(chunks, (chunk, index) =>
+        evaluateWithCapacityWait(
+          () =>
+            this.decisionEvaluator.evaluate(
+              {
+                agentId: agent.id,
+                evaluationId: `${evaluationId}:${index}`,
+                decision: { ...decision, question: chunk.question },
+                state
+              },
+              signal
+            ),
+          waitDeps
+        )
+      )
+      const result = selectRepositories(chunks, evaluations)
+      if ('unavailable' in result) {
+        throw new Error(`Repository selection failed: the evaluation was unavailable (${result.unavailable}).`)
+      }
+      selected = result.selected
+    }
+    // Evidence (decision 19) is this line for now: the verdict store is keyed by conversation lane, which a session start has none of.
+    this.log.info(
+      `repository selection for session ${key}: ${candidates.length} candidate(s) in ${chunks.length} chunk(s)` +
+        `${partial ? ' (partial)' : ''}; selected ${selected.length ? selected.map((repo) => repo.repoFullName).join(', ') : 'none'}`
+    )
+    this.pinRepoSelection(key, selected)
+  }
+
+  /** Hold a new session's selection for the pin after `handle`, and prime preparation with it now. */
+  private pinRepoSelection(key: string, selected: readonly SelectedRepository[]): void {
+    this.sessionRepoSelections.set(key, selected)
+    this.workspaces.setSessionSelection(key, selected)
+  }
+
+  /** The rosters of the agent's installation grants marked `decision`, from the CP that advertises them, reused for the CP page cache's own TTL while the agent's authorizations stand; undefined when no grant asks for them. */
+  private async repoCandidatesFor(agent: LoadedAgent, signal: AbortSignal): Promise<RepoCandidatesReply | undefined> {
+    if (!hasDecisionGrants(agent)) return undefined
+    const configuration = repoSelectionConfiguration(agent)
+    const now = this.clock.now()
+    const cached = this.repoCandidateCache.get(agent.id)
+    if (cached && cached.configuration === configuration && cached.expiresAt > now) return cached.reply
+    this.repoCandidateCache.delete(agent.id)
+    const client = this.cpClient
+    if (!client?.supportsServerFeature(REPO_CANDIDATES_V1_FEATURE)) {
+      throw new Error(
+        'Repository selection failed: the control plane does not answer repository candidates, which an installation grant marked "By decision" needs.'
+      )
+    }
+    const reply = await client.repoCandidates({ agentId: agent.id }, signal)
+    this.repoCandidateCache.set(agent.id, { configuration, expiresAt: now + REPO_CANDIDATES_CACHE_MS, reply })
+    return reply
   }
 
   /** A target is usable where the session could land: this machine, or a candidate the birth's answer lists, in the strategy's own catalog (§5). */
@@ -20602,12 +20750,14 @@ export class Daemon {
         !this.microsandbox?.environment(this.microsandboxPlacement(agent, agent.workspace.path).id)
       )
         continue
-      const pending = await this.withSandboxVolume(agent.id, () => this.workspaces.retiredSecondaryRoots(agent)).catch(
-        (err: unknown) => {
-          failures.push((err as Error).message)
-          return []
-        }
-      )
+      // A root a session's snapshot still selects is held by that session, whatever the rows say now (decision 19).
+      const held = () => this.store.listSelectedRepos(agent.id)
+      const pending = await this.withSandboxVolume(agent.id, async () =>
+        this.workspaces.retiredSecondaryRoots(agent, await held())
+      ).catch((err: unknown) => {
+        failures.push((err as Error).message)
+        return []
+      })
       if (pending.length === 0) continue
       if (await this.agentWorkspaceActive(agent.id)) {
         active += pending.length
@@ -20622,7 +20772,7 @@ export class Daemon {
           // Re-listed inside the fence: the spec may have re-authorized a repository while this pass
           // waited for the queue, which un-retires its root in place.
           const results: RetiredRootRemoval[] = []
-          for (const root of await this.workspaces.retiredSecondaryRoots(current)) {
+          for (const root of await this.workspaces.retiredSecondaryRoots(current, await held())) {
             results.push(await this.workspaces.removeRetiredSecondaryRoot(current, root))
           }
           return results

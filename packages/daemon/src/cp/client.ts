@@ -104,6 +104,9 @@ import {
   ExecutorCandidatesResult,
   ExecutorPrepareResult,
   ExecutorReleaseResult,
+  REPO_CANDIDATES_V1_FEATURE,
+  RepoCandidatesReply,
+  type RepoCandidatesRequest,
   SESSION_EXECUTORS_V1_FEATURE,
   type ExecutorCandidatesReq,
   type ExecutorPrepareReq,
@@ -1217,6 +1220,30 @@ export class CpClient {
   async executorRelease(payload: ExecutorReleaseReq, orgId?: string): Promise<ExecutorReleaseResult> {
     const rep = await this.executorRequest('executor/release', payload, orgId)
     return ExecutorReleaseResult.parse(rep.payload)
+  }
+
+  /** The selector's installation rosters for one agent (multi-repository-workspaces.md, The selector): one send, a 10 s wait since the CP may walk pages, and only of a CP that advertises the pair. */
+  async repoCandidates(payload: RepoCandidatesRequest, signal?: AbortSignal): Promise<RepoCandidatesReply> {
+    signal?.throwIfAborted()
+    this.requireReady('repo-candidates/request')
+    if (!this.supportsServerFeature(REPO_CANDIDATES_V1_FEATURE)) {
+      throw new WireError('UNKNOWN_FRAME', 'this control plane does not answer repo-candidates/request', false)
+    }
+    const frame = this.scopedFrame('repo-candidates/request', payload)
+    const abort = () => this.correlator.reject(frame.id, signal!.reason)
+    signal?.addEventListener('abort', abort, { once: true })
+    try {
+      const rep = await this.correlator.request(frame, (encoded) => this.transport!.send(encoded), {
+        maxTries: 1,
+        ackTimeoutMs: 10_000
+      })
+      if (rep.type !== 'repo-candidates/reply') {
+        throw new WireError('INTERNAL', `expected repo-candidates/reply, got ${rep.type}`, false)
+      }
+      return RepoCandidatesReply.parse(rep.payload)
+    } finally {
+      signal?.removeEventListener('abort', abort)
+    }
   }
 
   private async executorRequest(type: string, payload: unknown, orgId?: string): Promise<AnyFrame> {

@@ -882,7 +882,7 @@ describe('materialization modes (decisions 13 and 20)', () => {
     expect(await workspaces.additionalWorkspaceDirectories(legacy, cwd, request)).toEqual(handed)
   })
 
-  it('treats a `decision` row as on demand until the selector exists', async () => {
+  it('treats a `decision` row as on demand for a session that selected nothing', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42', materialize: 'decision' }], {
       mode: 'from-scratch'
     })
@@ -895,6 +895,90 @@ describe('materialization modes (decisions 13 and 20)', () => {
     expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
       realpathSync(clonesOf(agent, 'session-a'))
     ])
+  })
+})
+
+describe('the repository selector’s roots (decisions 15, 17 and 19)', () => {
+  const ROWS: AdditionalRepoRow[] = [
+    { repoFullName: 'acme/infra', repoId: '42', materialize: 'decision' },
+    { repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'decision' }
+  ]
+  const INFRA = { provider: 'github' as const, repoFullName: 'acme/infra', repoId: '42' }
+  const onDemandNames = async (agent: Agent, scope: { sessionKey: string; isolation: 'shared' | 'session' }) =>
+    (await workspaces.sessionOnDemandClones(agent, scope))?.repositories.map((repo) => repo.repoFullName)
+
+  it('checks a selected row out for the session that selected it alone, on the shared and worktree tiers, and lists the rest on demand', async () => {
+    const agent = agentFixture(ROWS)
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    const home = workspaces.agentRootFor(agent)
+    const shared = { sessionKey: 'session-selected-shared', isolation: 'shared' as const }
+    const plain = { sessionKey: 'session-selected-plain', isolation: 'shared' as const }
+    const isolated = { sessionKey: 'session-selected-own', isolation: 'session' as const }
+    workspaces.setSessionSelection(shared.sessionKey, [INFRA])
+    workspaces.setSessionSelection(isolated.sessionKey, [INFRA])
+
+    const sharedCwd = await workspaces.prepareSessionWorkspace(agent, shared)
+    const handedShared = [
+      realpathSync(join(home, 'repos', 'acme', 'infra', 'checkout')),
+      realpathSync(clonesOf(agent, shared.sessionKey))
+    ]
+    expect(await workspaces.additionalWorkspaceDirectories(agent, sharedCwd, shared)).toEqual(handedShared)
+    expect(await onDemandNames(agent, shared)).toEqual(['example-co/shared-library'])
+    // The prompt names the selected root as a root and the other row by name, on demand.
+    const block = buildWorkspaceRootsAppend(
+      await workspaces.sessionAdditionalRoots(agent, shared),
+      await workspaces.sessionOnDemandClones(agent, shared)
+    )
+    expect(block).toContain(`${handedShared[0]} — acme/infra (trunk)`)
+    expect(block).toContain('Authorized but not checked out: example-co/shared-library.')
+
+    // A session that selected nothing shares the agent, not the root: both rows stay on demand for it.
+    restoreAuthorizedOrigins(agent)
+    const plainCwd = await workspaces.prepareSessionWorkspace(agent, plain)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, plainCwd, plain)).toEqual([
+      realpathSync(clonesOf(agent, plain.sessionKey))
+    ])
+    expect(await onDemandNames(agent, plain)).toEqual(['acme/infra', 'example-co/shared-library'])
+    // ...and its preparation did not take the first session's root away from it.
+    expect(await workspaces.additionalWorkspaceDirectories(agent, sharedCwd, shared)).toEqual(handedShared)
+
+    restoreAuthorizedOrigins(agent)
+    const isolatedCwd = await workspaces.prepareSessionWorkspace(agent, isolated)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, isolatedCwd, isolated)).toEqual([
+      realpathSync(
+        join(home, 'repos', 'acme', 'infra', 'worktrees', workspaces.sessionWorktreeId(isolated.sessionKey))
+      ),
+      realpathSync(clonesOf(agent, isolated.sessionKey))
+    ])
+    expect(await onDemandNames(agent, isolated)).toEqual(['example-co/shared-library'])
+    expect(existsSync(join(home, 'repos', 'example-co'))).toBe(false)
+  })
+
+  it('builds a selected roster repository’s root without a row, through the host’s own placement', async () => {
+    const agent = agentFixture(ROWS)
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    serve('https://github.com/example-co/tools', bareRepo('example-co-tools', 'main'))
+    const scope = { sessionKey: 'session-selected-roster', isolation: 'shared' as const }
+    workspaces.setSessionSelection(scope.sessionKey, [
+      { provider: 'github', repoFullName: 'example-co/tools', repoId: '900' }
+    ])
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, scope)
+
+    const home = workspaces.agentRootFor(agent)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([
+      realpathSync(join(home, 'repos', 'example-co', 'tools', 'checkout')),
+      realpathSync(clonesOf(agent, scope.sessionKey))
+    ])
+    expect(materialization(agent, 'example-co/tools')).toEqual({
+      provider: 'github',
+      repoId: '900',
+      repoFullName: 'example-co/tools',
+      branch: 'main'
+    })
+    expect(preWarms).toContain('clone github:900 example-co/tools')
+    // The rows it did not select stay on demand by name; a roster repository has no row to list.
+    expect(await onDemandNames(agent, scope)).toEqual(['acme/infra', 'example-co/shared-library'])
   })
 })
 
@@ -1426,6 +1510,32 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     // The daemon-owned review refs are per root, and they go with that root's worktree.
     expect(git(checkout, ['for-each-ref', '--format=%(refname)', `refs/agentconnect/reviews/${id}`]).trim()).toBe('')
   })
+
+  it('keeps the reviewed root the cwd whatever the selection says, with the selected root a reference beside the primary', async () => {
+    const agent = agentFixture([
+      { repoFullName: 'acme/infra', repoId: '42', materialize: 'decision' },
+      { repoFullName: 'example-co/shared-library', repoId: '815', materialize: 'decision' }
+    ])
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    const pull = seedPullRequest(remoteOf('acme/infra'), 'trunk', 41)
+    const scope = { sessionKey: 'session-selected-review', isolation: 'session' as const }
+    // The selector picked the other row, not the reviewed repository (decision 17).
+    workspaces.setSessionSelection(scope.sessionKey, [
+      { provider: 'github', repoFullName: 'example-co/shared-library', repoId: '815' }
+    ])
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, reviewRequest(scope.sessionKey, 'acme/infra', 41, pull))
+
+    expect(cwd).toBe(realpathSync(worktreeOf(agent, 'acme/infra', scope.sessionKey)))
+    expect(git(cwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([
+      realpathSync(workspaces.sessionWorktreePath(agent, scope.sessionKey)),
+      realpathSync(worktreeOf(agent, 'example-co/shared-library', scope.sessionKey))
+    ])
+    // Every row is either the cwd or selected, so there is nothing on demand and no clone directory.
+    expect(await workspaces.sessionOnDemandClones(agent, scope)).toBeUndefined()
+    expect(existsSync(clonesOf(agent, scope.sessionKey))).toBe(false)
+  })
 })
 
 describe('removeSessionWorktree across every root (decision 4)', () => {
@@ -1520,6 +1630,22 @@ describe('retire → sweep → remove (decision 12)', () => {
   function reauthorized(agent: Agent, rows: AdditionalRepoRow[]): Agent {
     return { ...agent, workspace: { ...agent.workspace, additionalRepos: rows } } as Agent
   }
+
+  it('leaves a subtree a session’s snapshot still selects, and retires it once no session holds it (decision 19)', async () => {
+    const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42', materialize: 'decision' }])
+    serveAll(agent, { 'acme/infra': 'trunk' })
+    const selected = [{ provider: 'github' as const, repoFullName: 'acme/infra', repoId: '42' }]
+    workspaces.setSessionSelection('session-selected-held', selected)
+    await workspaces.prepareSessionWorkspace(agent, { sessionKey: 'session-selected-held', isolation: 'shared' })
+
+    // Not an `always` row, so the rows alone would retire it; a session's snapshot holds it.
+    expect((await workspaces.retiredSecondaryRoots(agent)).map((root) => root.subtreeName)).toEqual(['acme/infra'])
+    expect(await workspaces.retiredSecondaryRoots(agent, selected)).toEqual([])
+    // Once nothing holds it, the ordinary rules apply: clean and pushed, it goes.
+    const [retired] = await workspaces.retiredSecondaryRoots(agent)
+    expect(await workspaces.removeRetiredSecondaryRoot(agent, retired!)).toEqual({ outcome: 'removed' })
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra'))).toBe(false)
+  })
 
   it('retires a subtree whose repository id is no longer authorized', async () => {
     const agent = agentFixture([
