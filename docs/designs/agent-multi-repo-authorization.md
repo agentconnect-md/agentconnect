@@ -9,10 +9,13 @@
 > the table, the owner-only routes, the projected `additionalInstallations`, the
 > mint and hook gates, the refusal that names the grant, and the roster request
 > for a grant marked `decision`. The daemon offers a grant's repositories on
-> demand or to the repository selector, and the console lists grant rows with
-> **Authorize an installation** and an **On demand** / **By decision** checkout
-> in Edit workspace and the Workspace card's repository dropdown, and counts covered
-> repositories as authorized in the GitHub hook editor and on the agent page.
+> demand or to the repository selector, and reviews a covered repository's pull
+> request at an exact checkout as it does an `on-demand` row's
+> ([multi-repository-workspaces.md](multi-repository-workspaces.md) decision 6).
+> The console lists grant rows with **Authorize an installation** and an
+> **On demand** / **By decision** checkout in Edit workspace and the Workspace
+> card's repository dropdown, and counts covered repositories as authorized in
+> the GitHub hook editor and on the agent page.
 >
 > Scratch workspaces use the same explicit repository allowlist and have no
 > implicit repository. Converting a scratch workspace to GitHub makes the target

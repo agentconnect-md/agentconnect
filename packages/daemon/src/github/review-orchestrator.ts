@@ -13,6 +13,7 @@ import { WireError } from '@agentconnect.md/connection'
 import {
   HOOK_REPORT_REASON_NOTICE_ALREADY_POSTED,
   HOOK_REPORT_REASON_NOTICE_POSTED,
+  gitRepoLabel,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   pickCodeHostHookMembers,
@@ -572,12 +573,11 @@ export class GithubReviewOrchestrator {
     }
   }
 
-  /**
-   * The workspace root a hook's repository resolves to: the primary, one of the agent's authorized
-   * additional repositories, or none at all — which is what keeps the revision-only fallback a
-   * safety net rather than the ordinary path (multi-repository-workspaces.md decision 6).
-   */
-  reviewRootFor(agent: Agent, github: GithubHookMetadata): 'primary' | { repoFullName: string } | undefined {
+  /** The root a hook's repository reviews in (multi-repository-workspaces.md decision 6): the primary, a row's, the root a GitHub installation grant covers (named by the hook's id), else none and revision-only. */
+  reviewRootFor(
+    agent: Agent,
+    github: GithubHookMetadata
+  ): 'primary' | { repoFullName: string; repoId?: string } | undefined {
     if (this.githubWorkspaceMatches(agent, github)) return 'primary'
     const hookRepo = githubRepoKey(github.repoFullName)
     if (hookRepo === undefined) return undefined
@@ -585,7 +585,12 @@ export class GithubReviewOrchestrator {
     const row = (agent.workspace.additionalRepos ?? []).find(
       (entry) => (entry.provider ?? 'github') === 'github' && githubRepoKey(entry.repoFullName) === hookRepo
     )
-    return row ? { repoFullName: row.repoFullName } : undefined
+    if (row) return { repoFullName: row.repoFullName }
+    const owner = gitRepoLabel(hookRepo).split('/')[0]
+    const granted = (agent.workspace.additionalInstallations ?? []).some(
+      (grant) => (grant.provider ?? 'github') === 'github' && grant.accountLogin.toLowerCase() === owner
+    )
+    return granted ? { repoFullName: gitRepoLabel(github.repoFullName), repoId: github.repoId } : undefined
   }
 
   private githubWorkspaceMatches(agent: Agent, github: GithubHookMetadata): boolean {
@@ -700,8 +705,7 @@ export class GithubReviewOrchestrator {
         return {}
       }
     }
-    // A secondary root reviews exactly like the primary, with the root swapped (decision 6); no root
-    // at all is what the revision-only fallback exists for.
+    // A secondary root reviews like the primary with the root swapped (decision 6); no root at all is the revision-only fallback's case.
     const reviewRoot = this.reviewRootFor(agent, github)
     if (reviewRoot === undefined) {
       return useRevisionOnlyWorkspace()
@@ -712,7 +716,12 @@ export class GithubReviewOrchestrator {
         sessionKey: key,
         isolation: 'session',
         initiatedBy: await this.sessionInitiatorLabel(entry.msg),
-        ...(reviewRoot === 'primary' ? {} : { reviewRepoFullName: reviewRoot.repoFullName }),
+        ...(reviewRoot === 'primary'
+          ? {}
+          : {
+              reviewRepoFullName: reviewRoot.repoFullName,
+              ...(reviewRoot.repoId === undefined ? {} : { reviewRepoId: reviewRoot.repoId })
+            }),
         review: {
           pullNumber: github.pullNumber,
           baseSha: github.baseSha,

@@ -595,6 +595,38 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(revision.head)
   })
 
+  it('reviews a repository only an installation grant covers in its own clone, and resumes that cwd in a fresh manager', async () => {
+    const agent = agentFixture({ additionalInstallations: [{ accountLogin: 'example-co', materialize: 'on-demand' }] })
+    serveAll(agent)
+    const tools = bareRepo('main')
+    serve('https://github.com/example-co/tools', tools.url)
+    const revision = publishPullRequest(tools.seed, 'grant review\n')
+    const scope = { sessionKey: KEY, isolation: 'session' as const }
+
+    const cwd = await workspaces.prepareSessionWorkspace(
+      agent,
+      confined({
+        reviewRepoFullName: 'example-co/tools',
+        reviewRepoId: '901',
+        review: { pullNumber: 7, baseSha: revision.base, headSha: revision.head }
+      })
+    )
+
+    expect(cwd).toBe(realpathSync(join(leafOf(agent), 'repos', 'example-co', 'tools')))
+    expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(revision.head)
+    // The primary rides along beside the session's clone directory; the reviewed clone is the cwd, nobody's reference.
+    const handed = [realpathSync(join(leafOf(agent), 'workspace')), realpathSync(join(leafOf(agent), 'repos'))]
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual(handed)
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'repos'))).toBe(false)
+    git(cwd, ['remote', 'set-url', 'origin', 'https://github.com/example-co/tools'])
+    const fresh = new WorkspaceManager()
+    wireTestPlane(fresh, { gitRunnerFor: (_agentId, path, abort) => new SeamRunner(path, abort) })
+
+    expect(await fresh.prepareSessionWorkspace(agent, scope)).toBe(cwd)
+    expect(await fresh.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual(handed)
+    expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(revision.head)
+  })
+
   it('pins the credential helper in a github-app clone and converges its origin on resume', async () => {
     const agent = agentFixture({ githubApp: true })
     serveAll(agent)

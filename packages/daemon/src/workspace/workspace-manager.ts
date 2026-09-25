@@ -178,6 +178,8 @@ function selectedAsRow(repo: SelectedRepository): SecondaryRootRow {
 
 type SecondaryRootRow = { repoFullName: string; repoId: string; provider?: string; materialize?: RepoMaterialization }
 
+type InstallationGrant = Agent['workspace']['additionalInstallations'][number]
+
 /** The repository name an installation grant's clone example stands in for. */
 const ON_DEMAND_REPO_PLACEHOLDER = '<repo>'
 
@@ -219,9 +221,11 @@ export type RetiredRootRemoval =
   | { outcome: 'retained'; reason: 'worktrees' | 'dirty' | 'unique-commits' }
   | { outcome: 'failed'; error: string }
 
-/** How one session addresses the agent's roots: the isolation, the key that names its worktrees, and
- *  the secondary root a review made the working directory. */
-export type SessionRootScope = Pick<PrepareSessionWorkspaceRequest, 'isolation' | 'reviewRepoFullName'> & {
+/** How one session addresses the agent's roots: the isolation, the key naming its worktrees, and the secondary root a review made its cwd. */
+export type SessionRootScope = Pick<
+  PrepareSessionWorkspaceRequest,
+  'isolation' | 'reviewRepoFullName' | 'reviewRepoId'
+> & {
   sessionKey?: string
 }
 
@@ -252,10 +256,10 @@ export interface PrepareSessionWorkspaceRequest {
    * worktree's branch. Presentation only; never an identity or auth input. */
   initiatedBy?: string
   review?: GithubReviewWorkspaceRevision
-  /** `owner/repo` the review is about — only meaningful with `review`. When it names a secondary
-   * root, that root's exact worktree is this session's cwd and every other root rides along at its
-   * default branch (decisions 5 and 6). Absent, or the primary, is the ordinary review. */
+  /** `owner/repo` the review is about, only with `review`: a secondary root's exact worktree becomes the cwd, the others ride along at their default branches (decisions 5, 6); absent or the primary is the ordinary review. */
   reviewRepoFullName?: string
+  /** The reviewed repository's numeric id, which names the root of a repository only an installation grant covers (agent-multi-repo-authorization.md decision 10). */
+  reviewRepoId?: string
   /** Use an empty daemon-owned cwd when an exact local review checkout is
    * unavailable. The model must inspect the trusted revision through GitHub. */
   githubReviewRevisionOnly?: true
@@ -700,14 +704,7 @@ export class WorkspaceManager {
     return label.split('/').length === 2 ? label : undefined
   }
 
-  /**
-   * The secondary root a review names, or undefined when it names the primary (or names nothing) and
-   * the session is the ordinary one.
-   *
-   * A name that matches no root at all THROWS: the caller asked for an exact checkout of a repository
-   * this agent has no root for, which is precisely the case the review orchestrator degrades to
-   * revision-only inspection.
-   */
+  /** The secondary root a review names — a row's, else the one a GitHub installation grant covers — or undefined for the primary or no review; a name with no root throws, the orchestrator's revision-only case. */
   reviewedSecondaryRoot(agent: Agent, scope: SessionRootScope): SecondaryWorkspaceRoot | undefined {
     const name = scope.reviewRepoFullName
     if (name === undefined) return undefined
@@ -715,6 +712,11 @@ export class WorkspaceManager {
     if (root) return root
     const primary = this.primaryRepoFullName(agent)
     if (primary !== undefined && repoKey(primary) === repoKey(name)) return undefined
+    const granted =
+      scope.reviewRepoId === undefined
+        ? undefined
+        : this.grantReviewRootAt(agent, this.sandboxMountFor(agent.id), name, scope.reviewRepoId)
+    if (granted) return granted
     throw new Error(`github review repository "${name}" is not a workspace root of agent "${agent.id}"`)
   }
 
@@ -724,6 +726,48 @@ export class WorkspaceManager {
     return this.secondaryRootsFor(agent).find(
       (entry) => entry.provider === 'github' && repoKey(entry.repoFullName) === wanted
     )
+  }
+
+  /** The GitHub installation grant whose account owns a repository; asked only after a row and the primary did not answer, which keep precedence (decision 10). */
+  private reviewGrantFor(agent: Agent, repoFullName: string): InstallationGrant | undefined {
+    const [owner, repo, ...rest] = repoKey(repoFullName).split('/')
+    if (!owner || !repo || rest.length > 0) return undefined
+    return (agent.workspace.additionalInstallations ?? []).find(
+      (grant) => (grant.provider ?? 'github') === 'github' && grant.accountLogin.toLowerCase() === owner
+    )
+  }
+
+  /** A grant-covered repository's review root, placed in one mount's coordinates as a row's is; it serves only that review's cwd, never the agent's root set. */
+  private grantReviewRootAt(
+    agent: Agent,
+    mount: string | undefined,
+    repoFullName: string,
+    repoId: string
+  ): SecondaryWorkspaceRoot | undefined {
+    const grant = this.reviewGrantFor(agent, repoFullName)
+    if (grant === undefined) return undefined
+    return this.rootsAt(agent, mount, [{ repoFullName, repoId, provider: 'github', materialize: grant.materialize }])[0]
+  }
+
+  /** The grant-covered root a placed session's recorded cwd names, by the attestation its checkout was written with: the session's own clone in `sessionDir`, else the agent's subtree. */
+  private async attestedGrantReviewRoot(
+    agent: Agent,
+    sessionKey: string,
+    subtreeName: string,
+    sessionDir: string | undefined
+  ): Promise<SecondaryWorkspaceRoot | undefined> {
+    if (this.reviewGrantFor(agent, subtreeName) === undefined) return undefined
+    const key = repoKey(subtreeName)
+    let recorded: SecondaryMaterialization | undefined
+    if (sessionDir !== undefined) {
+      const clone = sessionRootCloneIn(sessionDir, subtreeName)
+      recorded = await this.sessionRootAttestation(this.fsFor(agent.id, { sessionKey }), clone)
+    } else {
+      const entry = (await this.secondarySubtreesFor(agent)).find((held) => repoKey(held.subtreeName) === key)
+      if (entry) recorded = await readSecondaryMaterialization(this.fsFor(agent.id), entry.subtree)
+    }
+    if (!recorded || recorded.provider !== 'github' || repoKey(recorded.repoFullName) !== key) return undefined
+    return this.grantReviewRootAt(agent, this.sandboxMountFor(agent.id), recorded.repoFullName, recorded.repoId)
   }
 
   /**
@@ -2363,7 +2407,10 @@ export class WorkspaceManager {
     })
     if (recorded === undefined) return undefined
     const key = repoKey(recorded)
-    return this.secondaryRootsFor(agent).find((entry) => repoKey(entry.subtreeName) === key)
+    const row = this.secondaryRootsFor(agent).find((entry) => repoKey(entry.subtreeName) === key)
+    if (row) return row
+    const own = this.sessionCwdRecordDir(agent, request, request.confined === true)
+    return await this.attestedGrantReviewRoot(agent, request.sessionKey, recorded, own)
   }
 
   /** The roots that ride along this session, with the label their per-root failure is reported under. */
@@ -2922,12 +2969,13 @@ export class WorkspaceManager {
     opts: PrepareWorkspaceOptions,
     reach: AgentVolumeReach = reachInPlace
   ): Promise<string> {
-    // The `always` rows and the session's selected repositories, plus the reviewed root the session stands in whatever its row says (decision 17).
-    const secondaries = this.sessionRootsAt(agent, mount, request.sessionKey).filter(
-      (root) =>
-        this.materializedFor(root, request.sessionKey) ||
-        repoKey(root.subtreeName) === repoKey(cwdRoot?.subtreeName ?? '')
-    )
+    // The `always` rows and the session's selected repositories, plus the reviewed root the session stands in whatever its row says (decision 17), a grant-covered one placed here alone.
+    const rooted = this.sessionRootsAt(agent, mount, request.sessionKey)
+    const isCwd = (root: SecondaryWorkspaceRoot) => repoKey(root.subtreeName) === repoKey(cwdRoot?.subtreeName ?? '')
+    const secondaries = [
+      ...rooted.filter((root) => this.materializedFor(root, request.sessionKey) || isCwd(root)),
+      ...(cwdRoot && !rooted.some(isCwd) ? this.rootsAt(agent, mount, [cwdRoot]) : [])
+    ]
     // The agent's own roots, in its coordinates, only to name what `readyRoots` hands a shared reader; nothing here reads or writes them.
     const references = this.sessionRootsFor(agent, request.sessionKey)
     const referenceOf = (root: SecondaryWorkspaceRoot): SecondaryWorkspaceRoot =>
@@ -3182,8 +3230,7 @@ export class WorkspaceManager {
     return (await this.sessionCwdSubtreeName(agent, request)) === undefined ? root : undefined
   }
 
-  /** The directory this session's cwd must sit under: the reviewed secondary root's, else the
-   *  primary's. Undefined when the agent has no primary checkout and no review named a root. */
+  /** The directory this session's cwd must sit under: the reviewed secondary root's, else the primary's; undefined with neither. */
   private async sessionCwdRootPath(agent: Agent, request?: SessionRootScope): Promise<string | undefined> {
     // The session's own mount: the machine it runs on is not always the one its agent is held by (session-executors.md §7).
     const mount = this.sandboxMountFor(
@@ -3193,11 +3240,15 @@ export class WorkspaceManager {
     const reviewed = await this.sessionCwdSubtreeName(agent, request)
     if (reviewed !== undefined) {
       const key = repoKey(reviewed)
-      // A confined session's clone is its own, so the rows name its root; on the worktree tier only a subtree still on disk vouches, else the primary answers and the containment check refuses.
-      const confined =
-        request?.sessionKey !== undefined && this.confinedSessionDir(agent, request.sessionKey) !== undefined
-      const roots = confined ? this.secondaryRootsFor(agent) : await this.secondarySubtreesFor(agent)
-      const root = roots.find((entry) => repoKey(entry.subtreeName) === key)
+      // A confined session's clone is its own, so a row or the grant covering it names its root; on the worktree tier only a subtree still on disk vouches, else the primary answers and the containment check refuses.
+      const sessionKey = request?.sessionKey
+      const sessionDir = sessionKey === undefined ? undefined : this.confinedSessionDir(agent, sessionKey)
+      const roots = sessionDir !== undefined ? this.secondaryRootsFor(agent) : await this.secondarySubtreesFor(agent)
+      const root =
+        roots.find((entry) => repoKey(entry.subtreeName) === key) ??
+        (sessionKey === undefined || sessionDir === undefined
+          ? undefined
+          : await this.attestedGrantReviewRoot(agent, sessionKey, reviewed, sessionDir))
       if (root) return await this.sessionRootPath(agent, root, request)
     }
     if (agent.workspace.mode !== 'git-repo') return undefined

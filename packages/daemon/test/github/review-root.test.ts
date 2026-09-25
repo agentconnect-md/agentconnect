@@ -78,6 +78,65 @@ describe('reviewRootFor', () => {
     expect(orchestrator.reviewRootFor(agent, hook('acme/primary-service'))).toBeUndefined()
   })
 
+  it('resolves a repository only an installation grant covers to its own root, named by the hook’s id', () => {
+    const agent = agentFixture({
+      additionalInstallations: [
+        { provider: 'github', accountLogin: 'Example-Co', access: 'read', materialize: 'on-demand' }
+      ]
+    })
+
+    expect(orchestrator.reviewRootFor(agent, hook('example-co/tools'))).toEqual({
+      repoFullName: 'example-co/tools',
+      repoId: '123'
+    })
+    expect(orchestrator.reviewRootFor(agent, hook('example-co/tools.git'))).toEqual({
+      repoFullName: 'example-co/tools',
+      repoId: '123'
+    })
+  })
+
+  it('keeps a row’s root and the primary ahead of a grant covering the same account', () => {
+    const agent = agentFixture(
+      {
+        additionalInstallations: [
+          { provider: 'github', accountLogin: 'acme', access: 'read', materialize: 'on-demand' },
+          { provider: 'github', accountLogin: 'example-co', access: 'read', materialize: 'decision' }
+        ]
+      },
+      [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
+    )
+
+    expect(orchestrator.reviewRootFor(agent, hook('example-co/shared-library'))).toEqual({
+      repoFullName: 'example-co/shared-library'
+    })
+    expect(orchestrator.reviewRootFor(agent, hook('acme/primary-service'))).toBe('primary')
+  })
+
+  it('resolves no root for another account’s repository, a GitLab grant, or a revoked grant', () => {
+    const grant = (provider: string, accountLogin: string) => ({
+      provider,
+      accountLogin,
+      access: 'read' as const,
+      materialize: 'on-demand' as const
+    })
+
+    expect(
+      orchestrator.reviewRootFor(
+        agentFixture({ additionalInstallations: [grant('github', 'example-co')] }),
+        hook('example-org/tools')
+      )
+    ).toBeUndefined()
+    expect(
+      orchestrator.reviewRootFor(
+        agentFixture({ additionalInstallations: [grant('gitlab', 'example-co')] }),
+        hook('example-co/tools')
+      )
+    ).toBeUndefined()
+    expect(
+      orchestrator.reviewRootFor(agentFixture({ additionalInstallations: [] }), hook('example-co/tools'))
+    ).toBeUndefined()
+  })
+
   it('resolves nothing for a workspace that is not a repository at all', () => {
     const agent = agentFixture({ mode: 'from-scratch', gitRepo: undefined }, [
       { repoFullName: 'acme/infra', repoId: '42' }

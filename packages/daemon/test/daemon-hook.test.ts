@@ -1407,6 +1407,86 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   })
 
+  it('reviews a repository only an installation grant covers against its own root, named by the hook’s id', async () => {
+    const root = scaffold({
+      workspace: {
+        mode: 'git-repo',
+        path: join(tmpdir(), 'agentconnect-grant-review-workspace'),
+        gitRepo: 'https://github.com/acme/primary-service',
+        gitBranch: 'main',
+        gitCredential: 'github-app',
+        pullOnNewSession: true,
+        additionalInstallations: [
+          { provider: 'github', accountLogin: 'example-co', access: 'comment', materialize: 'on-demand' }
+        ]
+      }
+    })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await daemon.start()
+    const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+    const prepare = vi
+      .spyOn(daemon as any, 'prepareAgentWorkspace')
+      .mockResolvedValue('/agent/repos/example-co/tools/worktrees/review')
+    const headSha = 'a'.repeat(40)
+    const baseSha = 'b'.repeat(40)
+    const entry = {
+      msg: { text: 'Review this pull request.' },
+      hookContext: {
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'grant-review',
+        firedAt: new Date().toISOString(),
+        event: 'pull_request:synchronize',
+        // What the hook gate lets a comment-tier grant configure: formal comments, no CP-owned Checks.
+        snapshot: {
+          configRevision: '1',
+          dispatchRevision: '1',
+          dispatchDaemonId,
+          reviewPolicy: 'comment',
+          reportingMode: 'off',
+          gateMode: 'informational'
+        },
+        github: {
+          repoId: '901',
+          repoFullName: 'example-co/tools',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 462,
+          headSha,
+          baseSha,
+          reportSha: headSha
+        }
+      }
+    }
+
+    await expect(
+      (daemon as any).githubReviews.prepareGithubReviewWorkspace(
+        entry,
+        'hook:example-co/tools#462',
+        (daemon as any).agents.get(AGENT_ID)
+      )
+    ).resolves.toEqual({
+      workspaceIsolation: 'session',
+      forceWorkspaceIsolation: true,
+      preparedWorkspaceCwd: '/agent/repos/example-co/tools/worktrees/review'
+    })
+    expect(prepare).toHaveBeenCalledTimes(1)
+    expect(prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ id: AGENT_ID }),
+      undefined,
+      expect.objectContaining({
+        sessionKey: 'hook:example-co/tools#462',
+        isolation: 'session',
+        reviewRepoFullName: 'example-co/tools',
+        reviewRepoId: '901',
+        review: { pullNumber: 462, baseSha, headSha }
+      })
+    )
+    expect(entry.msg.text).toContain('Trusted review workspace')
+    expect(entry.msg.text).not.toContain('No trusted local pull-request checkout is available')
+    await daemon.stop()
+  })
+
   it('falls back to revision-only inspection for a repository that is no root of this agent', async () => {
     const root = scaffold({
       workspace: {

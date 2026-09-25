@@ -1536,6 +1536,152 @@ describe('review of a secondary root (decisions 5, 6 and 11)', () => {
     expect(await workspaces.sessionOnDemandClones(agent, scope)).toBeUndefined()
     expect(existsSync(clonesOf(agent, scope.sessionKey))).toBe(false)
   })
+
+  describe('of a repository only an installation grant covers (agent-multi-repo-authorization.md decision 10)', () => {
+    const TOOLS = 'example-co/tools'
+    const TOOLS_URL = 'https://github.com/example-co/tools'
+
+    /** An agent with one `always` row and a grant over the account the reviewed repository belongs to. */
+    function grantAgent(rows: AdditionalRepoRow[] = [{ repoFullName: 'acme/infra', repoId: '42' }]): Agent {
+      return agentFixture(rows, { additionalInstallations: [{ accountLogin: 'example-co' }] })
+    }
+
+    /** Serve the rows, plus the grant-covered repository no row names. */
+    function serveGrant(agent: Agent, branches: Record<string, string> = { 'acme/infra': 'trunk' }): void {
+      serveAll(agent, branches)
+      if (!remotes.has(TOOLS_URL)) serve(TOOLS_URL, bareRepo('example-co-tools', 'main'))
+    }
+
+    /** The review the orchestrator asks for: the hook's repository, named by the hook's id since no row names it. */
+    function grantReview(sessionKey: string, pullNumber: number, pull: { base: string; head: string; merge?: string }) {
+      return { ...reviewRequest(sessionKey, TOOLS, pullNumber, pull), reviewRepoId: '901' }
+    }
+
+    it('checks the repository out for its own review alone, at the exact merge, handing it to no session', async () => {
+      const agent = grantAgent()
+      serveGrant(agent)
+      const pull = seedPullRequest(remoteOf(TOOLS), 'main', 51)
+      const scope = { sessionKey: 'session-grant', isolation: 'session' as const }
+
+      const cwd = await workspaces.prepareSessionWorkspace(agent, grantReview(scope.sessionKey, 51, pull))
+
+      expect(cwd).toBe(realpathSync(worktreeOf(agent, TOOLS, scope.sessionKey)))
+      expect(git(cwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+      // Placed and attested exactly as a row's root, under the hook's own repository id.
+      expect(materialization(agent, TOOLS)).toEqual({
+        provider: 'github',
+        repoId: '901',
+        repoFullName: TOOLS,
+        branch: 'main'
+      })
+      expect(preWarms).toContain('clone github:901 example-co/tools')
+      // The primary and the row ride along; the reviewed root is the cwd, and the grant still lists by account.
+      expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([
+        realpathSync(workspaces.sessionWorktreePath(agent, scope.sessionKey)),
+        realpathSync(worktreeOf(agent, 'acme/infra', scope.sessionKey)),
+        realpathSync(clonesOf(agent, scope.sessionKey))
+      ])
+      expect((await workspaces.sessionAdditionalRoots(agent, scope)).map((root) => root.repoFullName)).toEqual([
+        'acme/primary-service',
+        'acme/infra'
+      ])
+      const onDemand = await workspaces.sessionOnDemandClones(agent, scope)
+      expect(onDemand?.repositories).toEqual([])
+      expect(onDemand?.installations?.map((grant) => grant.accountLogin)).toEqual(['example-co'])
+      // Never one of the agent's roots: an ordinary session is handed the row and its clone directory alone.
+      expect(workspaces.secondaryRoots(agent).map((root) => root.repoFullName)).toEqual(['acme/infra'])
+      restoreAuthorizedOrigins(agent)
+      const ordinary = { sessionKey: 'session-plain', isolation: 'session' as const }
+      const plainCwd = await workspaces.prepareSessionWorkspace(agent, ordinary)
+      expect(await workspaces.additionalWorkspaceDirectories(agent, plainCwd, ordinary)).toEqual([
+        realpathSync(worktreeOf(agent, 'acme/infra', ordinary.sessionKey)),
+        realpathSync(clonesOf(agent, ordinary.sessionKey))
+      ])
+    })
+
+    it('keeps a resumed session in that root, in a process that never prepared it', async () => {
+      const agent = grantAgent()
+      serveGrant(agent)
+      const pull = seedPullRequest(remoteOf(TOOLS), 'main', 53)
+      const cwd = await workspaces.prepareSessionWorkspace(agent, grantReview('session-grant-resume', 53, pull))
+      restoreAuthorizedOrigins(agent)
+      git(join(workspaces.agentRootFor(agent), 'repos', 'example-co', 'tools', 'checkout'), [
+        'remote',
+        'set-url',
+        'origin',
+        TOOLS_URL
+      ])
+
+      // A restart re-prepares the session from a request naming no review, with only the record and attestation to go on.
+      const restarted = new WorkspaceManager()
+      wireTestPlane(restarted, { gitRunnerFor: (_agentId, dir, abort) => new SeamRunner(dir, abort) })
+      const resumed = { sessionKey: 'session-grant-resume', isolation: 'session' as const }
+
+      const resumedCwd = await restarted.prepareSessionWorkspace(agent, resumed)
+
+      expect(resumedCwd).toBe(cwd)
+      expect(git(resumedCwd, ['rev-parse', 'HEAD']).trim()).toBe(pull.merge)
+      expect(await restarted.additionalWorkspaceDirectories(agent, resumedCwd, resumed)).toEqual([
+        realpathSync(restarted.sessionWorktreePath(agent, resumed.sessionKey)),
+        realpathSync(worktreeOf(agent, 'acme/infra', resumed.sessionKey)),
+        realpathSync(clonesOf(agent, resumed.sessionKey))
+      ])
+    })
+
+    it('keeps a row’s own root ahead of the grant covering its account', async () => {
+      const agent = grantAgent([{ repoFullName: TOOLS, repoId: '77', materialize: 'on-demand' }])
+      serveGrant(agent, { [TOOLS]: 'main' })
+      const pull = seedPullRequest(remoteOf(TOOLS), 'main', 55)
+
+      const cwd = await workspaces.prepareSessionWorkspace(agent, grantReview('session-row-wins', 55, pull))
+
+      expect(cwd).toBe(realpathSync(worktreeOf(agent, TOOLS, 'session-row-wins')))
+      // The row's id attests the checkout, not the hook's.
+      expect(materialization(agent, TOOLS)).toMatchObject({ repoId: '77' })
+    })
+
+    it('refuses another account’s repository, a grant that is gone, and a name with no id, leaving nothing behind', async () => {
+      const agent = grantAgent()
+      serveGrant(agent)
+      const pull = { base: 'a'.repeat(40), head: 'b'.repeat(40) }
+      const revoked = { ...agent, workspace: { ...agent.workspace, additionalInstallations: [] } } as Agent
+
+      await expect(
+        workspaces.prepareSessionWorkspace(agent, {
+          ...reviewRequest('session-elsewhere', 'example-org/tools', 57, pull),
+          reviewRepoId: '903'
+        })
+      ).rejects.toThrow('is not a workspace root')
+      await expect(
+        workspaces.prepareSessionWorkspace(revoked, grantReview('session-revoked', 57, pull))
+      ).rejects.toThrow('is not a workspace root')
+      await expect(
+        workspaces.prepareSessionWorkspace(agent, reviewRequest('session-unnamed', TOOLS, 57, pull))
+      ).rejects.toThrow('is not a workspace root')
+
+      expect(existsSync(join(workspaces.agentRootFor(agent), 'repos', 'example-org'))).toBe(false)
+      expect(existsSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co'))).toBe(false)
+    })
+
+    it('retires the checkout as an on-demand row’s: kept while its session’s worktree lives, removed once that goes', async () => {
+      const agent = grantAgent()
+      serveGrant(agent)
+      const pull = seedPullRequest(remoteOf(TOOLS), 'main', 59)
+      await workspaces.prepareSessionWorkspace(agent, grantReview('session-grant-gc', 59, pull))
+
+      // No `always` row names it, so it is retired from the start, like an on-demand row's review checkout.
+      const retired = (await workspaces.retiredSecondaryRoots(agent)).find((root) => root.subtreeName === TOOLS)
+      expect(retired).toMatchObject({ repoId: '901' })
+      expect(await workspaces.removeRetiredSecondaryRoot(agent, retired!)).toEqual({
+        outcome: 'retained',
+        reason: 'worktrees'
+      })
+
+      expect(await workspaces.removeSessionWorktree(agent, 'session-grant-gc')).toEqual({ outcome: 'removed' })
+      expect(await workspaces.removeRetiredSecondaryRoot(agent, retired!)).toEqual({ outcome: 'removed' })
+      expect(existsSync(join(workspaces.agentRootFor(agent), 'repos', 'example-co', 'tools'))).toBe(false)
+    })
+  })
 })
 
 describe('removeSessionWorktree across every root (decision 4)', () => {
