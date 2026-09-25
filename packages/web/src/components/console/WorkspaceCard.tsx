@@ -127,7 +127,7 @@ export function WorkspaceCard({
   // A code host is named by its projection; everything else is just "remote".
   const remoteLabel =
     header?.remoteLabel ?? (isCodeHostProvider(source) ? CODE_HOST_PROJECTION[source].label : 'remote')
-  // The name links to the source itself, never to an additional root the file browser may be reading.
+  // The name links to the source's own address; the file browser's remote only covers an address the console cannot parse.
   const sourceUrl = ws.mode === 'git' ? (ws.repoUrl ?? header?.repoUrl ?? null) : null
   const nameClass = 'mono min-w-0 truncate text-[13px] font-semibold text-(--text-primary)'
 
