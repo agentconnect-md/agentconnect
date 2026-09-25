@@ -2597,7 +2597,7 @@
         "customRule": "custom rule",
         "loadError": "Couldn’t load webhooks.",
         "noneTitle": "No integration yet",
-        "noneDescription": "Connect {agent} to a channel so it can read and post. It can't receive messages until you do.",
+        "noneDescription": "Connect {agent} to a channel so it can read and post.",
         "plusEverythingIn": "Plus everything in",
         "workspaceKnowledge": "workspace knowledge & skills",
         "sharedAcrossAgents": ", shared across all agents.",
