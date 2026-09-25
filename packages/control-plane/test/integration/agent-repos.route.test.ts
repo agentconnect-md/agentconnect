@@ -54,6 +54,7 @@ import type { DaemonLiveness } from '../../src/ports.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { AgentId, OrgId } from '../../src/domain/ids.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const RELAY_URL = 'https://relay.test'
@@ -922,7 +923,7 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     expect((additional.json() as { message: string }).message).toMatch(/only its workspace repository/)
   })
 
-  it('PATCH upgrades an existing grant in place and rejects a downgrade', async () => {
+  it('PATCH raises an existing grant in place and lowers it again', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await workspaceAgent()
     await seedInstallation()
@@ -935,9 +936,102 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     expect(upgraded.statusCode).toBe(200)
     expect(upgraded.json()).toMatchObject({ id: created.id, repoFullName: 'acme/tools', access: 'write' })
 
-    const downgrade = await patch(a, agentId, created.id, { access: 'comment' })
-    expect(downgrade.statusCode).toBe(409)
-    expect((downgrade.json() as { message: string }).message).toMatch(/revoke and reauthorize/)
+    const lowered = await patch(a, agentId, created.id, { access: 'comment' })
+    expect(lowered.statusCode).toBe(200)
+    expect(lowered.json()).toMatchObject({ id: created.id, repoFullName: 'acme/tools', access: 'comment' })
+  })
+
+  it('PATCH lowers write to read in place: persisted, audited, minted read, and nothing re-pushed', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+    const created = (await post(a, agentId, { repoFullName: 'acme/tools', access: 'write' })).json() as { id: string }
+    const agent = async () => (await a.deps.repos.agent.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+    const mint = async () => a.deps.github!.mintForAgent(await agent(), [randomUUID()], ['contents'], 'acme/tools')
+    // A write token already minted and cached must not be served once the row is lowered.
+    expect((await mint()).access).toBe('write')
+    const revision = (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).configRevision
+
+    const lowered = await patch(a, agentId, created.id, { access: 'read' })
+
+    expect(lowered.statusCode).toBe(200)
+    expect(lowered.json()).toMatchObject({ id: created.id, access: 'read', materialize: 'always' })
+    expect(await prisma.agentRepoAuthorization.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+      access: 'read'
+    })
+    expect((await mint()).access).toBe('read')
+    expect(await a.deps.github!.resolveAgentRepoAuthorization(await agent(), 111n, 'acme/tools')).toMatchObject({
+      kind: 'additional',
+      access: 'read'
+    })
+    // The tier is off the spec, as for a raise: no revision bump and no re-push.
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).configRevision).toBe(revision)
+    expect(spy.upserts).toHaveLength(1)
+    await vi.waitFor(async () => {
+      const audits = await prisma.auditEvent.findMany({ where: { kind: 'agent_repo_change', agentId } })
+      expect(audits.map((e) => e.details)).toContainEqual({
+        repoAuthId: created.id,
+        provider: 'github',
+        repoFullName: 'acme/tools',
+        previousAccess: 'write',
+        access: 'read'
+      })
+    })
+  })
+
+  it('PATCH refuses to lower a row while an enabled review or Checks hook on the repository needs the tier', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const a = app()
+    const created = (await post(a, agentId, { repoFullName: 'acme/tools', access: 'write' })).json() as { id: string }
+    const hook = await prisma.hookDef.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        kind: 'github',
+        name: 'tools-review',
+        enabled: true,
+        sessionMode: 'perThread',
+        repoId: 111n,
+        repoFullName: 'acme/tools',
+        family: 'pull_request',
+        events: ['pull_request:*'],
+        reviewPolicy: 'full',
+        targetPlatform: 'slack'
+      }
+    })
+    const access = async () =>
+      (await prisma.agentRepoAuthorization.findUniqueOrThrow({ where: { id: created.id } })).access
+
+    for (const tier of ['comment', 'read']) {
+      const refused = await patch(a, agentId, created.id, { access: tier, materialize: 'on-demand' })
+      expect(refused.statusCode).toBe(409)
+      expect(refused.json()).toMatchObject({
+        code: 'AGENT_REPO_INTEGRATION_CONFLICT',
+        message: expect.stringContaining('enabled GitHub integration')
+      })
+    }
+    // A refused tier leaves the whole row untouched.
+    expect(await prisma.agentRepoAuthorization.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+      access: 'write',
+      materialize: 'always'
+    })
+
+    // Checks need write as well; a comment review is served by the comment tier but not by read.
+    await prisma.hookDef.update({ where: { id: hook.id }, data: { reviewPolicy: 'off', reportingMode: 'check' } })
+    expect((await patch(a, agentId, created.id, { access: 'comment' })).statusCode).toBe(409)
+    await prisma.hookDef.update({ where: { id: hook.id }, data: { reviewPolicy: 'comment', reportingMode: 'off' } })
+    expect((await patch(a, agentId, created.id, { access: 'comment' })).statusCode).toBe(200)
+    expect((await patch(a, agentId, created.id, { access: 'read' })).statusCode).toBe(409)
+    expect(await access()).toBe('comment')
+
+    // A disabled hook needs nothing.
+    await prisma.hookDef.update({ where: { id: hook.id }, data: { enabled: false } })
+    expect((await patch(a, agentId, created.id, { access: 'read' })).statusCode).toBe(200)
+    expect(await access()).toBe('read')
   })
 
   it('materialize defaults to `always`, is chosen on POST, and rides the spec beside each entry', async () => {
@@ -1528,7 +1622,7 @@ describe('agent installation grants REST (agent-multi-repo-authorization.md deci
     })
   })
 
-  it('PATCH raises the tier and re-projects; it refuses a downgrade, `always`, `decision` without a selector and an empty body', async () => {
+  it('PATCH raises the tier and re-projects; it refuses `always`, `decision` without a selector and an empty body', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await workspaceAgent()
     await seedInstallation()
@@ -1547,7 +1641,6 @@ describe('agent installation grants REST (agent-multi-repo-authorization.md deci
     expect(spy.upserts[1]!.spec.workspace).toMatchObject({ additionalInstallations: [{ access: 'write' }] })
     expect(BigInt(spy.upserts[1]!.spec.configRevision!)).toBeGreaterThan(BigInt(spy.upserts[0]!.spec.configRevision!))
 
-    expect((await patchGrant({ access: 'read' })).statusCode).toBe(409)
     expect((await patchGrant({ materialize: 'decision' })).statusCode).toBe(409)
     expect((await patchGrant({ materialize: 'always' })).statusCode).toBe(400)
     expect((await patchGrant({})).statusCode).toBe(400)
@@ -1565,6 +1658,100 @@ describe('agent installation grants REST (agent-multi-repo-authorization.md deci
       )
       expect(audits).toHaveLength(2)
     })
+  })
+
+  it('PATCH lowers a grant in place: persisted, re-projected at the lower tier, and audited', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+    const { id } = (await grantInstallation(a, agentId, { installationId: CLAIMED, access: 'write' })).json() as {
+      id: string
+    }
+
+    const lowered = await a.app.inject({
+      method: 'PATCH',
+      url: `${grants(agentId)}/${id}`,
+      payload: { access: 'read' }
+    })
+
+    expect(lowered.statusCode).toBe(200)
+    expect(lowered.json()).toMatchObject({ id, access: 'read', materialize: 'on-demand' })
+    expect(await prisma.agentInstallationAuthorization.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      access: 'read'
+    })
+    // The tier rides the spec, so the lower one replicates at an advanced revision.
+    expect(spy.upserts).toHaveLength(2)
+    expect(spy.upserts[1]!.spec.workspace).toMatchObject({
+      additionalInstallations: [{ accountLogin: 'acme', access: 'read' }]
+    })
+    expect(BigInt(spy.upserts[1]!.spec.configRevision!)).toBeGreaterThan(BigInt(spy.upserts[0]!.spec.configRevision!))
+    await vi.waitFor(async () => {
+      const audits = await prisma.auditEvent.findMany({ where: { kind: 'agent_repo_change', agentId } })
+      expect(audits.map((e) => e.details)).toContainEqual(
+        expect.objectContaining({ installationAuthId: id, previousAccess: 'write', access: 'read' })
+      )
+    })
+  })
+
+  it('PATCH refuses to lower a grant while a hook needs it on a repository only the grant covers', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    await seedInstallation()
+    const spy = new UpsertSpy()
+    const a = replicatingApp(spy)
+    const { id } = (await grantInstallation(a, agentId, { installationId: CLAIMED, access: 'write' })).json() as {
+      id: string
+    }
+    const patchGrant = (payload: Record<string, unknown>) =>
+      a.app.inject({ method: 'PATCH', url: `${grants(agentId)}/${id}`, payload })
+    const reviewHook = (name: string, repoId: bigint, repoFullName: string) =>
+      prisma.hookDef.create({
+        data: {
+          orgId: DEFAULT_ORG_ID,
+          agentId,
+          kind: 'github',
+          name,
+          enabled: true,
+          sessionMode: 'perThread',
+          repoId,
+          repoFullName,
+          family: 'pull_request',
+          events: ['pull_request:*'],
+          reviewPolicy: 'full',
+          targetPlatform: 'slack'
+        }
+      })
+    // Another account's repository is not the grant's to serve.
+    await reviewHook('elsewhere-review', 222n, 'other-org/elsewhere')
+    expect((await patchGrant({ access: 'comment' })).statusCode).toBe(200)
+    expect((await patchGrant({ access: 'write' })).statusCode).toBe(200)
+
+    const hook = await reviewHook('tools-review', 111n, 'ACME/tools')
+    const refused = await patchGrant({ access: 'read', materialize: 'on-demand' })
+
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({
+      code: 'AGENT_REPO_INTEGRATION_CONFLICT',
+      message: expect.stringContaining('this installation grant covers')
+    })
+    expect(await prisma.agentInstallationAuthorization.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      access: 'write'
+    })
+    const pushed = spy.upserts.length
+
+    // A repository row of its own keeps its tier, so the grant no longer serves that hook.
+    expect((await post(a, agentId, { repoFullName: 'acme/tools', access: 'write' })).statusCode).toBe(200)
+    expect((await patchGrant({ access: 'read' })).statusCode).toBe(200)
+    expect(spy.upserts.length).toBeGreaterThan(pushed + 1)
+    expect(spy.upserts.at(-1)!.spec.workspace).toMatchObject({ additionalInstallations: [{ access: 'read' }] })
+    // The row itself now carries the hook's need.
+    const row = (await prisma.agentRepoAuthorization.findFirstOrThrow({ where: { agentId, repoId: 111n } })).id
+    expect((await patch(a, agentId, row, { access: 'read' })).statusCode).toBe(409)
+    await prisma.hookDef.delete({ where: { id: hook.id } })
+    expect((await patch(a, agentId, row, { access: 'read' })).statusCode).toBe(200)
   })
 
   it('DELETE revokes and re-projects; another agent’s or an unknown grant reads 404', async () => {
