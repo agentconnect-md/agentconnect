@@ -478,10 +478,10 @@ the shim requires:
   `NODE_USE_ENV_PROXY` for its bridge. The shim's base-environment allowlist drops
   them and the runtime has no network; forwarded, egress works.
 - **The shim's socket is inside what the runtime can write.** A host shim
-  authenticates nobody who dials it, so a runtime can reach and replace the socket,
-  and at worst take its own session's channel during a re-dial. That is the exposure
-  a pod's loopback port and a VM's guest listener already have. Impersonating the
-  shim to the holder needs the identity token, which exists only in the shim's memory.
+  authenticates nobody who dials it, so a runtime can reach and replace the socket.
+  On a reconnect, the first caller to send `shim/hello` receives the identity token
+  in `shim/identity`, before proving it is the daemon. A runtime can therefore take
+  its own session's channel and learn the token.
 
 **Landed on executors (R1a).** `srtLauncher` wraps the shim with the provider from
 the shim's own bundle, and the changes the probe found are in:
@@ -507,8 +507,29 @@ write outside the session reaches the host; SRT's proxy reaches the runtime; the
 holder's `git config` and `git remote add` succeed and its proxy pin names the bridge;
 a stop drains a runtime before the boundary goes; and killing the daemon ends the
 sandbox, runtimes included. The identity token arrives on stdin, so the shim's
-command line and environment never carry it. Whether a runtime inside the boundary
-can reach the token some other way is still an open check, not a measured result.
+command line and environment never carry it. The Linux test also proves the token
+is **not secret from a runtime in this SRT boundary**: during a live connection,
+the runtime sends `SIGUSR1` to its parent shim, connects to Node's inspector on
+the shared network namespace's loopback interface, and finds the token in a heap
+snapshot. After the holder disconnects, it obtains the same token directly from
+the shim's unauthenticated socket. Both paths work without `ptrace`.
+
+The kernel's Yama `kernel.yama.ptrace_scope` changes only the separate process-memory
+path: at `0`, a same-UID process can inspect a dumpable shim through `ptrace` or
+`/proc/<pid>/mem` (subject to other LSMs); at `1`, a child runtime cannot trace
+its parent; at `2` or `3`, tracing is restricted further. SRT drops capabilities,
+so its runtime has no `CAP_SYS_PTRACE` exception. These settings do not block
+the socket or Node inspector paths. Ubuntu's
+`kernel.apparmor_restrict_unprivileged_userns=0` permits SRT to start and is not
+a protection for this token.
+
+For R1b, `LocalExecutor` may compare the token to reject a different session's
+shim, but the comparison does not authenticate a shim against a hostile runtime
+inside the same `srt` session. This matches §5's trusted-work policy: run untrusted
+work in a stronger isolation strategy. Making this token a boundary against that
+runtime would require separating the shim and its socket from the runtime's UID,
+PID and network access; disabling Node's `SIGUSR1` inspector or tightening Yama
+alone leaves the socket disclosure intact.
 
 Costs, from the same probe on built bundles with an echo runtime — relative, not
 absolute:
