@@ -3369,7 +3369,7 @@
       "cpu": "CPU",
       "memory": "内存"
     },
-    "description": "你的 AgentConnect Daemon。每个 Daemon 通过 ACP 承载 Agent 并管理平台连接。",
+    "description": "管理运行 Agent 的 Daemon，以及每个 AI 服务商的一份组织默认连接。",
     "addDaemon": "添加 Daemon",
     "online": "{count} 个在线",
     "paused": "{count} 个已暂停",
@@ -4842,7 +4842,6 @@
   },
   "ProviderKeys": {
     "title": "Provider keys",
-    "description": "组织全局的 AI provider 连接配置。每个 provider 保存一份默认配置。",
     "ownerOnly": "只有组织 owner 可以添加、替换或移除 key。",
     "configured": "已配置",
     "notConfigured": "未配置",
