@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   POOL_LABEL,
@@ -24,6 +24,7 @@ import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import ProviderKeysSection from '../ProviderKeysSection'
+import { SectionHeader } from '../SectionHeader'
 import { useTranslations } from 'next-intl'
 
 export default function DaemonsView() {
@@ -156,33 +157,6 @@ const FLEET_GRID =
 
 // One height for every card here, floored at the tallest of them (the pool entry's capacity strip), so the page is one stack.
 const FLEET_ROW = 'desktop:min-h-[77px]'
-
-/** The label + count that separates the page's lists, with an optional action on the right. */
-function SectionHeader({
-  label,
-  count,
-  action,
-  first = false
-}: {
-  label: string
-  count: number
-  action?: ReactNode
-  /** Nothing renders above it — drop the separating margin so it does not float. */
-  first?: boolean
-}) {
-  return (
-    <div className={`${first ? '' : 'mt-6 '}mb-[9px] flex min-h-[26px] items-center gap-[9px]`}>
-      <span className="font-sans text-[13px] font-semibold leading-normal">{label}</span>
-      <span className="mono text-[11.5px] text-(--text-tertiary)">{count}</span>
-      {action && (
-        <>
-          <div className="flex-1" />
-          {action}
-        </>
-      )}
-    </div>
-  )
-}
 
 // Daemon groups (daemon-groups.md §2) drawn as a daemon's card — no telemetry, a group has no CPU of its own to quote.
 function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: DaemonRow[] }) {
