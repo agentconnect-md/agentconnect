@@ -10,6 +10,7 @@ import type { SecretBuilder } from 'microsandbox/native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   MicrosandboxManager,
+  recordedImageModels,
   type MicrosandboxEnvironment,
   type MicrosandboxManagerOptions
 } from '../src/microsandbox/driver.js'
@@ -923,7 +924,7 @@ describe('microsandbox process and VM ownership', () => {
     expect(await new MicrosandboxManager(other).cachedTable()).toBeUndefined()
   })
 
-  it('records what each runtime advertised in an environment against the image, and reads it back without a VM', async () => {
+  it('records what each runtime advertised in a VM, and carries it across an image change until replaced', async () => {
     const { options, imageDigests, created } = await fixture()
     await new MicrosandboxManager(options).prepare()
     const booted = created.length
@@ -933,12 +934,15 @@ describe('microsandbox process and VM ownership', () => {
     await manager.recordModels('other', ['model-c'])
     await manager.recordModels('test', ['model-b'])
     expect(await new MicrosandboxManager(options).cachedModels()).toEqual({ test: ['model-b'], other: ['model-c'] })
+    expect(await recordedImageModels(options.root)).toEqual({ test: ['model-b'], other: ['model-c'] })
     expect(created).toHaveLength(booted)
-    // Another build behind the same tag has advertised nothing yet, and neither has another image.
+    // Another build behind the same tag, or another image, starts from the previous lists, and replaces one at a time.
     imageDigests.set('test-image', 'sha256:moved')
-    expect(await new MicrosandboxManager(options).cachedModels()).toEqual({})
-    const other = { ...options, config: { ...options.config, image: 'next-image' } }
-    expect(await new MicrosandboxManager(other).cachedModels()).toEqual({})
+    expect(await new MicrosandboxManager(options).cachedModels()).toEqual({ test: ['model-b'], other: ['model-c'] })
+    const next = new MicrosandboxManager({ ...options, config: { ...options.config, image: 'next-image' } })
+    expect(await next.cachedModels()).toEqual({ test: ['model-b'], other: ['model-c'] })
+    await next.recordModels('test', ['model-d'])
+    expect(await next.cachedModels()).toEqual({ test: ['model-d'], other: ['model-c'] })
   })
 
   it('tries a failed preparation again at the next use', async () => {

@@ -103,7 +103,8 @@ import {
 } from './microsandbox/install.js'
 import { resolveMicrosandboxImage } from './release-image.js'
 import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
-import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
+import { recordedImageModels, type MicrosandboxManager, type MicrosandboxEnvironment } from './microsandbox/driver.js'
+import { probeImageModels } from './microsandbox/model-probe.js'
 import { localShimGitRunner } from './execution/local-git.js'
 import type { GitRunner } from './workspace/git-runner.js'
 import {
@@ -1533,10 +1534,12 @@ export class Daemon {
     ready: async () => void (await this.microsandboxReady())
   })
   private microsandboxTable?: K8sRuntimeTable
-  // Why the microsandbox probe failed; absent ⇒ available, its msb and image prepared by the first use (session-executors.md §5).
+  // Why the microsandbox probe failed; absent ⇒ available, its msb and image prepared by the model probe or the first use (session-executors.md §5).
   private microsandboxFailure?: string
   // The first use's install and image preparation, shared by every caller that needs the VM table.
   private microsandboxReadiness?: Promise<MicrosandboxManager>
+  // This run's background model probe of the image, which shutdown aborts (§5).
+  private vmModelProbe?: AbortController
   // Why `sandbox.mounts` cannot be honored by a strategy, which makes that strategy unavailable rather than the daemon.
   private mountFailures: Partial<Record<'srt' | 'microsandbox', string>> = {}
   private readonly localSkillAuthorities = new Map<
@@ -1544,9 +1547,9 @@ export class Daemon {
     Promise<{ groupId: string; term: string; daemonId: string }>
   >()
   private microsandboxCatalog?: ResolvedRuntimeCatalog
-  // What each runtime advertised in an environment of the current image; a recorded list is `cached` until this run's own session confirms it (§5).
+  // What each runtime advertised in this machine's VM; a recorded list, whichever image wrote it, is `cached` until this run's probe or a session replaces it (§5).
   private microsandboxModels = new Map<string, { models: string[]; source: 'cached' | 'probed' }>()
-  // The runtime each host running in this machine's own VM starts, so its first session can serve as the image's model probe.
+  // The runtime each host running in this machine's own VM starts, so its sessions refresh the image's models.
   private readonly imageRuntimeHosts = new WeakMap<AcpHost, string>()
   // What discovery resolved, kept so the image's table can be projected onto it when the first VM use reads it (§5).
   private resolvedRuntimeCatalog?: ResolvedRuntimeCatalog
@@ -2463,15 +2466,16 @@ export class Daemon {
       // A source build without an image cannot run a VM, so it says so now rather than at a session.
       resolveMicrosandboxImage(cfg.sandbox.microsandbox === false ? undefined : cfg.sandbox.microsandbox.image)
       const tree = installedMicrosandbox(root)
-      // Nothing installed means this machine never ran a VM; the first session installs msb and prepares the image.
+      // Nothing installed means this machine never ran a VM; the model probe or the first session installs msb and prepares the image.
       if (tree) {
         this.microsandbox = await openMicrosandbox(tree, this.microsandboxInstallOptions(cfg, root))
         // State collection runs whenever the strategy is on, not only once a session used it this run.
         await this.microsandbox.recover()
         await this.microsandbox.collectImages()
         this.microsandboxTable = await this.microsandbox.cachedTable()
-        await this.loadMicrosandboxModels()
       }
+      // Whichever image wrote them, and before msb is installed: an upgrade starts from the lists its predecessor learned.
+      await this.loadMicrosandboxModels(root)
       this.wirePlaneResolver(this.microsandboxPlane)
     } catch (error) {
       await this.microsandbox?.stopAll().catch((stopError: unknown) => this.log.warn(formatErr(stopError)))
@@ -2501,8 +2505,6 @@ export class Daemon {
         this.microsandbox ??= await installMicrosandbox(this.microsandboxInstallOptions(this.cfg, this.root))
         await this.microsandbox.recover()
         const table = await this.microsandbox.prepare()
-        // The preparation may have pulled another image, whose models nothing has read yet.
-        await this.loadMicrosandboxModels()
         this.adoptMicrosandboxTable(table)
         return this.microsandbox
       })()
@@ -2986,19 +2988,25 @@ export class Daemon {
     }
   }
 
-  /** The models recorded against the configured image's identity, read without booting anything (§5). */
-  private async loadMicrosandboxModels(): Promise<void> {
-    const recorded = (await this.microsandbox?.cachedModels()) ?? {}
+  /** The VM models last recorded, whichever image wrote them, each `cached` until this run's probe replaces it (§5); it boots nothing. */
+  private async loadMicrosandboxModels(root: string): Promise<void> {
+    const recorded = await recordedImageModels(root)
     this.microsandboxModels = new Map(
       Object.entries(recorded).map(([runtime, models]) => [runtime, { models, source: 'cached' as const }])
     )
   }
 
-  /** The image's model probe (§5): the selector of a session this machine's VM opens for a runtime, recorded against the image when it changes. */
+  /** A real session's refresh of the VM entry (§5): the selector a runtime advertises in this machine's own VM. */
   private noteImageModels(runtime: string, models: string[]): void {
-    const manager = this.microsandbox
     // A runtime with no selector leaves the entry permissive rather than refusing every model.
-    if (!manager || models.length === 0) return
+    if (models.length === 0) return
+    this.adoptImageModels(runtime, models)
+  }
+
+  /** Make a live answer the runtime's VM entry, recorded when it changed, and report it. */
+  private adoptImageModels(runtime: string, models: string[]): void {
+    const manager = this.microsandbox
+    if (!manager) return
     const known = this.microsandboxModels.get(runtime)
     const same =
       known !== undefined && known.models.length === models.length && known.models.every((m, i) => m === models[i])
@@ -3010,6 +3018,58 @@ export class Daemon {
     } catch (err) {
       this.log.debug(`microsandbox: emitting the image's models for ${runtime} failed: ${formatErr(err)}`)
     }
+  }
+
+  /** Probe the image's runtimes in a VM, as the host sweep probes the host install, whenever the strategy is available here; in the background, once a run (§5). */
+  private startMicrosandboxModelProbe(): void {
+    if (this.k8s || this.vmModelProbe || !this.localExecutor || !this.strategyTable().microsandbox.available) return
+    // As for the host sweep, fake hosts spawn nothing unless a probe seam is injected.
+    if (this.opts.hostFactory && !this.opts.probeHostFactory) return
+    const probe = new AbortController()
+    this.vmModelProbe = probe
+    void this.probeMicrosandboxModels(probe.signal).catch((error: unknown) => {
+      if (!probe.signal.aborted) this.log.warn(`microsandbox: the image's model probe failed — ${formatErr(error)}`)
+    })
+  }
+
+  private async probeMicrosandboxModels(signal: AbortSignal): Promise<void> {
+    // Installs msb and prepares the image where this machine never did, as a first session would.
+    const manager = await this.microsandboxReady()
+    const catalog = this.microsandboxCatalog
+    if (signal.aborted || !catalog) return
+    const runtimes = Object.fromEntries(
+      Object.entries(catalog.entries)
+        .filter(([, entry]) => !entry.aliasOf)
+        .map(([id, entry]) => [id, entry.runtime])
+    )
+    if (!Object.keys(runtimes).length) return
+    this.log.info(`probe: reading the image's models in a VM for ${Object.keys(runtimes).join(', ')}`)
+    const results = await probeImageModels({
+      runtimes,
+      root: join(this.root, 'run', 'vm-probe'),
+      daemonRoot: this.root,
+      ...(this.cfg.agentsDir ? { agentsRoot: this.cfg.agentsDir } : {}),
+      sandboxEnv: this.cfg.sandbox.env,
+      start: (environment) => this.localVms().withEnvironment(environment, async () => {}),
+      driverFor: (environment) => this.localVms().driverFor(environment),
+      // Drained first: a runtime's hold can outlive its stop by a moment.
+      discard: async (id) => {
+        await manager.suspend(id, { drain: true })
+        await manager.discard(id)
+      },
+      hostFactory: (driver) =>
+        this.opts.probeHostFactory ??
+        clusterProbeHostFactory({ driver, log: this.log, isolateAccountApps: this.cfg.security.isolateAccountApps }),
+      log: this.log,
+      signal,
+      // A failure keeps the carried list: it says nothing about which models the image offers.
+      onResult: (result) => {
+        if (result.ok) this.adoptImageModels(result.runtime, result.models)
+      }
+    })
+    if (signal.aborted) return
+    const withModels = results.filter((result) => result.ok && result.models.length > 0).length
+    this.log.info(`probe: VM sweep complete — ${withModels}/${results.length} runtime(s) advertised models`)
   }
 
   /** The image's runtime table, first read by the first VM use of this run (§5): its runtimes join the catalog where this host has none. */
@@ -4505,6 +4565,7 @@ export class Daemon {
     // Curated admission belongs to local runtime resolution, not CP readiness.
     // Start it even when the control plane is disabled or still unreachable.
     void this.runtimeFacts.probeAndEmit(false).finally(() => this.runtimeFacts.armProbeRefresh())
+    this.startMicrosandboxModelProbe()
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
     this.armStoreRetentionSweep()
@@ -23099,7 +23160,7 @@ export class Daemon {
       if (!machine.available) {
         entries[strategy] = { available: false, unavailableReason: machine.reason }
       } else if (strategy === 'microsandbox') {
-        // An image not read yet stays permissive; one that was read answers for itself, with the models its sessions advertised.
+        // An image not read yet stays permissive; one that was read answers for itself, with the models its probe or sessions advertised.
         const models = this.microsandboxModels.get(runtimeId)
         entries[strategy] =
           this.microsandboxCatalog && !this.microsandboxCatalog.entries[runtimeId]
@@ -23571,6 +23632,8 @@ export class Daemon {
     }
     this.runtimeFacts.dispose()
     this.k8sProbeSchedule?.stop()
+    // Not awaited: an image pull in flight must not hold the drain; the manager refuses the VM once it closes.
+    this.vmModelProbe?.abort()
     this.dutyCoordinator.dispose()
     for (const t of this.bgWakeTimers) this.clock.clearTimeout(t)
     this.bgWakeTimers.clear()

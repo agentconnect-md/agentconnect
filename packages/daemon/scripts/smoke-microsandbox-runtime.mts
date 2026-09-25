@@ -17,7 +17,9 @@ import type { PlaneLaunch } from '../src/execution/plane.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { makeLogger } from '../src/log.js'
 import { localShimGitRunner } from '../src/execution/local-git.js'
+import { clusterProbeHostFactory } from '../src/acp/probe-host-factory.js'
 import { installMicrosandbox } from '../src/microsandbox/install.js'
+import { probeImageModels, VM_PROBE_ENVIRONMENT_ID } from '../src/microsandbox/model-probe.js'
 import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
@@ -495,6 +497,31 @@ try {
   assert.equal(existsSync(hostedDir), false, 'the released session directory was kept')
   step('the-release-took-the-vm-its-disks-and-the-session-directory')
 
+  // The VM strategy's model probe (session-executors.md §5): the host's runtime probe, for the image's runtime, in one probe VM.
+  const probeStarted = performance.now()
+  const [probed] = await probeImageModels({
+    runtimes: { 'claude-acp': { command: 'claude-agent-acp', args: [], env: [] } as never },
+    root: join(root, 'run', 'vm-probe'),
+    daemonRoot: root,
+    hostEnv: { HOME: hostHome, PATH: process.env.PATH },
+    start: (probeVm) => local.withEnvironment(probeVm, async () => {}),
+    driverFor: (probeVm) => local.driverFor(probeVm),
+    discard: async (id) => {
+      await manager.suspend(id, { drain: true })
+      await manager.discard(id)
+    },
+    hostFactory: (driver) => clusterProbeHostFactory({ driver }),
+    log: makeLogger('info')
+  })
+  summary.modelProbeMs = elapsed(probeStarted)
+  // Signed out, the runtime still answers over ACP through the probe VM's shim: with a session, or with its login requirement.
+  assert.ok(probed?.ok || probed?.authRequired, `the VM model probe reached no runtime: ${probed?.error}`)
+  assert.ok(!(await manager.environmentIds()).includes(VM_PROBE_ENVIRONMENT_ID), 'the probe VM was kept')
+  step('image-models-probed-in-one-vm-and-the-vm-removed', {
+    ms: summary.modelProbeMs,
+    models: probed.models.length
+  })
+
   passed = true
 } finally {
   await plane.stop().catch((error: unknown) => console.error(error))
@@ -502,6 +529,7 @@ try {
   await facet.stop().catch((error: unknown) => console.error(error))
   await manager.discard(environmentId).catch((error: unknown) => console.error(error))
   await manager.discard(`executor/${LEAF}`).catch((error: unknown) => console.error(error))
+  await manager.discard(VM_PROBE_ENVIRONMENT_ID).catch((error: unknown) => console.error(error))
   await manager.stopAll().catch((error: unknown) => console.error(error))
   await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
   if (passed) await rm(root, { recursive: true, force: true })

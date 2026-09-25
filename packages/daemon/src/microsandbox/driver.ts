@@ -144,7 +144,7 @@ const ImageRuntimesRecordSchema = z.object({
   identity: z.string().min(1),
   table: K8sRuntimeTableSchema
 })
-// The models each runtime's selector advertised in an environment of an image, the VM's entry in the per-strategy catalog (session-executors.md §5).
+// The models each runtime's selector last advertised in a VM, the VM's entry in the per-strategy catalog (session-executors.md §5); `image` and `identity` name the image that wrote it.
 const ImageModelsRecordSchema = z.object({
   version: z.literal(1),
   image: z.string().min(1),
@@ -207,10 +207,9 @@ export class MicrosandboxManager {
     return join(this.options.root, 'microsandbox', 'image-runtimes.json')
   }
 
-  /** The models earlier environments of the configured image advertised, per runtime; empty once the cache holds another image. It boots nothing. */
-  async cachedModels(): Promise<Record<string, string[]>> {
-    const identity = await this.imageIdentity(this.options.config.image)
-    return (identity && (await this.readModels(identity))?.models) || {}
+  /** The models each runtime last advertised in a VM, whichever image that was: carried across an upgrade until a probe of the new image replaces them. It boots nothing. */
+  cachedModels(): Promise<Record<string, string[]>> {
+    return recordedImageModels(this.options.root)
   }
 
   /** Record what a runtime's selector advertised in an environment of the configured image; best effort, as the table's record is. */
@@ -218,7 +217,7 @@ export class MicrosandboxManager {
     const write = this.modelWrites.then(async () => {
       const identity = await this.imageIdentity(this.options.config.image)
       if (!identity) return
-      const recorded = (await this.readModels(identity))?.models
+      const recorded = await recordedImageModels(this.options.root)
       await writeFileAtomic(
         this.imageModelsPath(),
         JSON.stringify({
@@ -235,16 +234,8 @@ export class MicrosandboxManager {
     return this.modelWrites
   }
 
-  private async readModels(identity: string): Promise<z.infer<typeof ImageModelsRecordSchema> | undefined> {
-    const record = ImageModelsRecordSchema.safeParse(
-      parseJson(await readFile(this.imageModelsPath(), 'utf8').catch(() => ''))
-    )
-    if (!record.success || record.data.image !== this.options.config.image) return undefined
-    return record.data.identity === identity ? record.data : undefined
-  }
-
   private imageModelsPath(): string {
-    return join(this.options.root, 'microsandbox', 'image-models.json')
+    return imageModelsPath(this.options.root)
   }
 
   async prepareImage(): Promise<void> {
@@ -1501,6 +1492,18 @@ class MicrosandboxProcess implements SpawnedRuntime {
     await this.handle.kill()
     if (!(await this.waitExit(STOP_TIMEOUT_MS))) throw new Error('microsandbox process did not exit after SIGKILL')
   }
+}
+
+function imageModelsPath(root: string): string {
+  return join(root, 'microsandbox', 'image-models.json')
+}
+
+/** The VM models a daemon rooted here recorded, read without msb, an image or a VM: an upgrade that also moves the msb pin starts from them too. */
+export async function recordedImageModels(root: string): Promise<Record<string, string[]>> {
+  const record = ImageModelsRecordSchema.safeParse(
+    parseJson(await readFile(imageModelsPath(root), 'utf8').catch(() => ''))
+  )
+  return record.success ? record.data.models : {}
 }
 
 function stableJson(value: unknown): string {

@@ -312,14 +312,15 @@ The single-valued `sandbox.backend` becomes a table:
 Each value is `false | true | {…}`; a strategy with parameters takes an object, and
 `true` means its defaults. The default is all three on. Configuring a strategy offers
 it; its startup probe makes it available or records why not, and placement reads only
-the effective table. On-by-default is safe only because every probe is cheap and has
-no side effects: the microsandbox probe checks a usable `/dev/kvm`, and msb and
-libkrunfw where the daemon's store already holds them, and installs and pulls
-nothing — msb and the image are prepared by the first session that uses the strategy,
-and the runtime table that preparation reads is recorded against the image's identity,
-so a restart on the same image boots no preparation VM — and the backend's state
-collection runs whenever the strategy is enabled, not only when it was the selected
-backend. A mount layout a strategy cannot honor makes that strategy unavailable with
+the effective table. On-by-default is safe only because every availability probe is
+cheap and has no side effects: the microsandbox probe checks a usable `/dev/kvm`, and
+msb and libkrunfw where the daemon's store already holds them, and installs, pulls and
+boots nothing. A machine without KVM stops there. Only when it passes does the daemon,
+in the background and after it is ready, install msb when needed, prepare the image and
+probe the image's models (below); the runtime table that preparation reads is recorded
+against the image's identity, so a restart on the same image boots no preparation VM.
+The backend's state collection runs whenever the strategy is enabled, not only when it
+was the selected backend. A mount layout a strategy cannot honor makes that strategy unavailable with
 the validation error rather than refusing startup. `sandbox.env` and `sandbox.mounts`
 stay where they are and apply to every sandboxing strategy.
 
@@ -433,19 +434,23 @@ So the catalog is **per strategy**. Each runtime profile in the snapshot carries
 entry per strategy the machine offers — available or unavailable with a reason, the
 advertised `models`, and their `modelsSource` — and each entry comes from the install
 that strategy starts: the host store's probe for `host` and `srt`, and for
-`microsandbox` a probe of the image's runtime, since the on-by-default probe boots no
-VM. That probe is the first session an environment of the image opens for the
-runtime: the model selector the runtime advertises there, in the guest and with the
-session's own credentials, is what a separate probe session would read. The list is
-recorded against the image's identity beside its runtime table
-(`microsandbox/image-models.json`), so another build behind the same tag starts
-without one. A recorded list reads as `cached` after a restart until that run's first
-such session confirms it. Only this machine's own VM sessions contribute: an
-environment it hosts for another member carries the holder's ACP stream, which the
-executor never reads. An entry with no probe yet has no model list and stays
-permissive, as a `cached` one already does in the activation check; so does an empty
-list, which a runtime without a model selector advertises, and a member that reports
-no entries at all. `authRequired` stays per runtime, because the
+`microsandbox` the same runtime probe run in the image. Whenever the strategy is
+available, the daemon boots one probe VM in the background, once a run and after the
+image is prepared, and probes the image's runtimes through its shim one at a time:
+spawn, `initialize` and a throwaway `session/new` within the host probe's per-runtime
+budget, each runtime launched as a local VM session of it would be, with this
+machine's credential step. The probe VM starts through the manager's serialized start
+like every other VM, is removed when the sweep ends, and is stopped with the rest at
+shutdown rather than waited for; a run that dies holding it leaves it to the next
+probe. A real session's selector in this machine's own VM refreshes the entry
+afterwards; an environment the machine hosts for another member carries the holder's
+ACP stream, which the executor never reads. The lists are recorded beside the runtime
+table (`microsandbox/image-models.json`) and read back as `cached` at startup. An image
+change does not discard them: each runtime's last list is carried over, still
+`cached`, until the new image's probe replaces it, and a probe that fails keeps it. An
+entry with no list yet stays permissive, as a `cached` one already does in the
+activation check; so does an empty list, which a runtime without a model selector
+advertises, and a member that reports no entries at all. `authRequired` stays per runtime, because the
 sign-in is the machine's whichever install reads it. The Control Plane copies, for
 each candidate, the entries of the strategies its effective table offers, from the
 same snapshot it already reads for `authRequired`; the holder's own entries come from

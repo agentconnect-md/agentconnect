@@ -10,7 +10,7 @@ import { mcpSocketPath, resolveRoot } from './paths.js'
 const { values } = parseArgs({ options: { root: { type: 'string' }, config: { type: 'string' } } })
 const root = resolveRoot(values.root)
 const config = loadConfig({ root, configPath: values.config, optional: true })
-// Only a machine whose sessions have used the image pre-pulls the next one; an unused default strategy pulls nothing (session-executors.md §5).
+// Only a machine that pulled the image pre-pulls the next one: one where the strategy was never available pulls nothing (session-executors.md §5).
 if (config.sandbox.microsandbox !== false && existsSync(join(root, 'microsandbox', 'pulled-image'))) {
   const manager = await installMicrosandbox({
     root,

@@ -97,7 +97,7 @@ strategy's defaults and `false` withdraws it; `sandbox.env` and `sandbox.mounts`
 apply to every sandboxing strategy. Configured is what a machine offers, and each
 startup probe decides whether an offered strategy is available or records why not.
 
-Every probe is cheap and has no side effects. `srt` is the existing live SRT
+Every availability probe is cheap and has no side effects. `srt` is the existing live SRT
 probe. When it fails on a user-namespace error and
 `kernel.apparmor_restrict_unprivileged_userns` reads `1` (the Ubuntu 23.10+
 default), its reason names that restriction, the host fix (an AppArmor `userns`
@@ -105,9 +105,11 @@ profile for `/usr/bin/bwrap` or the sysctl set to `0`) and the user docs, then
 keeps bwrap's own text; the daemon never changes the host setting.
 `microsandbox` opens `/dev/kvm`, resolves the image reference, and, when the
 daemon's runtime store already holds the pinned msb, checks that msb and its
-libkrunfw are there. It installs nothing, pulls no image and boots no VM: the
-first session that uses the strategy installs msb when needed, prepares the image
-and reads its runtime table. A mount layout a strategy cannot honor, such as a
+libkrunfw are there. It installs nothing, pulls no image and boots no VM, and a
+machine without KVM stops there. Once it passes, the daemon installs msb when needed,
+prepares the image, reads its runtime table and probes the image's models in the
+background, after it is ready; a session that needs the image first prepares it
+itself. A mount layout a strategy cannot honor, such as a
 renamed target for SRT, makes that strategy unavailable with the validation error
 rather than refusing startup. An `overlay` mount is not one of them: SRT mounts its
 base read-only. A table with no available
@@ -118,11 +120,12 @@ executor facet reports the same table with `host` limited to Linux. Each runtime
 `facts/daemon-runtimes` carries one entry per offered strategy (`strategies`):
 availability with a reason, and for `host` and `srt` the models and `modelsSource`
 of the host probe. A `microsandbox` entry names a runtime the image lacks once the
-image has been read. Its models are what the runtime's selector advertised to the
-first session this machine's own VM opened for it, recorded against the image's
-identity in `microsandbox/image-models.json`; a recorded list is `cached` after a
-restart until that run's first such session confirms it, and before any session an
-entry carries no models.
+image has been read. Its models come from the host's own runtime probe run in one
+probe VM ([below](#vm-availability-and-configuration-changes)) and are refreshed by
+the selector a session in this machine's own VM advertises. They are recorded in
+`microsandbox/image-models.json` and read back as `cached` at startup; an image
+change carries each runtime's last list over, still `cached`, until the new image's
+probe replaces it. An entry with no list yet carries no models.
 
 A session launches in its agent's strategy. One whose strategy is unavailable here
 is refused with the probe's reason, and nothing falls back to a weaker boundary;
@@ -306,15 +309,28 @@ The current microsandbox integration supports Linux with usable KVM. The startup
 probe is the cheap one of the [strategy table](#strategy-table-implemented-on-the-daemon):
 it opens `/dev/kvm` and, when the runtime store already holds the pinned
 `microsandbox@0.7.2` package, checks its msb and libkrunfw, then recovers the
-state an earlier run left and collects the cached images no binding needs. The
-first session that uses the strategy installs the package through the daemon's
-RuntimeStore when needed, preserving its native platform package, prepares the
-image, boots a temporary VM, validates the runtime table, and checks stop/start.
+state an earlier run left and collects the cached images no binding needs. It boots
+no VM; that rule is the availability probe's alone. Once it passes, a background task
+of the ready daemon, or a session that needs the image first, installs the package
+through the daemon's RuntimeStore when needed, preserving its native platform
+package, prepares the image, boots a temporary VM, validates the runtime table, and
+checks stop/start.
 The table it read is recorded against the image's platform identity under the
 state directory, so a restart on an image the cache still holds boots no
 preparation VM; an image not read yet in this run fails a Console read of a
 retained VM once, and starts its preparation. A failed install or pull fails the
-session that asked and is retried by the next. A session in the strategy while it
+session that asked and is retried by the next.
+
+The same background task then probes the image's models. It boots one probe VM,
+`probe/models`, whose mounts and credential bindings are the union of each runtime's
+local VM launch in a scope of its own under `run/vm-probe`, and runs the host's
+runtime probe for every image runtime through the VM's shim, serially and within the
+host probe's per-runtime budget. A runtime whose launch disagrees with those already
+in the VM on a binding name, a mount, or another runtime's protected credential file
+is left out with a warning. The VM starts through the manager's serialized start, is
+drained and removed when the sweep ends, and a shutdown aborts the sweep without
+waiting on it; the next probe removes a probe VM an earlier run left behind. The task
+runs once a run, only where the strategy is available. A session in the strategy while it
 is unavailable is refused, with no fallback to SRT or a host process. The
 standalone `chat` command refuses an agent that runs in microsandbox; use daemon
 sessions.
@@ -383,7 +399,10 @@ session used it. A daemon on which it is withdrawn or unavailable keeps its
 microsandbox state, including stopped VMs and their disks, in case it becomes
 available again, and logs a startup warning with the number of retained
 environments, why the strategy is out, and how to reclaim the space. An upgrade
-pre-pulls the next release's image only on a machine that has pulled one before.
+pre-pulls the next release's image only on a machine that has pulled one before. The
+pre-pull probes no models: it is a separate short-lived process with no runtime
+catalog or VM of its own, and the carried-over lists cover the new daemon until its
+own probe replaces them.
 
 The ACP runtime, its two helper endpoints, daemon-run Git, workspace filesystem
 operations and skill publication use the same persistent Node shim and WebSocket
