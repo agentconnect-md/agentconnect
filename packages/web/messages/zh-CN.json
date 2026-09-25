@@ -4813,7 +4813,6 @@
           "access_revoked": "已保存的决策不再可用，因此新的 {subject, select, pull_request {Pull request} merge_request {Merge request} other {Issue}} 会被暂缓。请选择其他决策，或停止使用决策。"
         },
         "stop": "停止使用按决策——每个 {subject, select, pull_request {PR} merge_request {MR} other {Issue}} 都会发给所有 Agent",
-        "stopMenu": "停止使用决策",
         "stopError": "无法停止使用决策。{message}",
         "hidden": "你无法查看的决策",
         "forbidden": "你的角色无法修改该仓库的路由：需要对关注该仓库的每个 agent 都有编辑权限。",

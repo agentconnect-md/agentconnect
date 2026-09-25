@@ -8,14 +8,12 @@ import type { Icon } from '@/components/ui'
 import type { TriggerOption } from '@/components/console/TriggerSelect'
 import { DecisionEvaluationsDrawer } from '@/components/console/decisions/DecisionEvaluationsDrawer'
 import type { CodeHostRoutingDto, HookDto } from '@/lib/api'
-import { useOrgs } from '@/lib/org-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import {
   codeHostRouted,
   codeHostRoutingScopeOf,
   codeHostScopeId,
   routingTargets,
-  useCodeHostRoutingActions,
   useCodeHostRoutings,
   type CodeHostRoutingMember
 } from '@/lib/decisions/code-host-routing'
@@ -43,7 +41,6 @@ export interface CodeHostRowRouting {
   /** A routed row's options are locked and read `anyUpdate`, because the Decision judges every update. */
   trigger<T extends string>(props: TriggerProps<T>, anyUpdate: T): TriggerProps<T>
   menuItems: RoutingMenuItem[]
-  error: ReactNode
 }
 
 type AgentLookup = Parameters<typeof routingTargets>[1]
@@ -68,15 +65,12 @@ export function useCodeHostRowRouting({
   mockMembers: readonly CodeHostRoutingMember[]
 }): { rowOf: (hook: HookDto) => CodeHostRowRouting; drawer: ReactNode } {
   const t = useTranslations('Decisions.routing')
-  const { myRole } = useOrgs()
   const decisions = useOptionalDecisionsPrototype()
   const scopeOf = (hook: HookDto) => codeHostRoutingScopeOf(hook, familyOf(hook))
   const { routings } = useCodeHostRoutings(
     hooks.flatMap((hook) => scopeOf(hook) ?? []),
     mockMembers
   )
-  const { remove } = useCodeHostRoutingActions()
-  const [error, setError] = useState<{ hookId: string; message: string } | null>(null)
   const [evaluationsFor, setEvaluationsFor] = useState<{ routing: CodeHostRoutingDto; subtitle: string } | null>(null)
 
   const rowOf = (hook: HookDto): CodeHostRowRouting => {
@@ -85,18 +79,6 @@ export function useCodeHostRowRouting({
     const routed = codeHostRouted(routing)
     const openEvaluations = () => {
       if (routing) setEvaluationsFor({ routing, subtitle: `${routing.repoFullName} · ${pillOf(hook)}` })
-    }
-    const stop = async () => {
-      if (!routing) return
-      setError(null)
-      try {
-        await remove(routing)
-      } catch (cause) {
-        setError({
-          hookId: hook.id,
-          message: t('codeHost.stopError', { message: cause instanceof Error ? cause.message : String(cause) })
-        })
-      }
     }
     const locked = t('codeHost.triggerLocked')
     return {
@@ -123,21 +105,8 @@ export function useCodeHostRowRouting({
           : props,
       menuItems:
         routing?.config && decisions
-          ? [
-              { icon: 'list-checks', label: t('recentEvaluations'), onClick: openEvaluations },
-              ...(myRole !== 'viewer'
-                ? [{ icon: 'split' as const, label: t('codeHost.stopMenu'), onClick: () => void stop() }]
-                : [])
-            ]
-          : [],
-      error: error?.hookId === hook.id && (
-        <div
-          role="alert"
-          className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)"
-        >
-          {error.message}
-        </div>
-      )
+          ? [{ icon: 'list-checks', label: t('recentEvaluations'), onClick: openEvaluations }]
+          : []
     }
   }
 

@@ -4813,7 +4813,6 @@
           "access_revoked": "The saved decision is no longer available, so new {subject, select, pull_request {pull requests} merge_request {merge requests} other {issues}} are held. Choose another decision, or stop using one."
         },
         "stop": "Stop using By decision — every {subject, select, pull_request {PR} merge_request {MR} other {issue}} goes to all agents",
-        "stopMenu": "Stop using decision",
         "stopError": "Couldn't stop using the decision. {message}",
         "hidden": "A decision you cannot see",
         "forbidden": "Your role cannot change this repository's routing: it needs edit access to every agent watching it.",
