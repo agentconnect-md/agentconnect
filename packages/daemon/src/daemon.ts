@@ -88,7 +88,7 @@ import {
   MCP_APP_INLINE_TEMPLATE_MAX_BYTES
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import {
   installMicrosandbox,
@@ -4912,7 +4912,10 @@ export class Daemon {
   /** What an srt shim reads of this machine's code (§5): node, the runtime store whole — an adapter it installs after the start must be visible — and each admitted runtime's install. */
   private srtShimReadRoots(): string[] {
     this.refreshAdmittedRuntimes()
-    const roots = new Set([runtimeStoreDir(this.root)])
+    const store = runtimeStoreDir(this.root)
+    // SRT binds only a root that exists, so a fresh machine's store is made now, before an install lands in it after the start.
+    mkdirSync(store, { recursive: true })
+    const roots = new Set([store])
     for (const [runtimeId, runtime] of Object.entries(this.runtimes)) {
       try {
         for (const path of trustedRuntimeReadRoots({
