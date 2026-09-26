@@ -53,6 +53,7 @@ const row = (seq: number, channel: string): DecisionRoutingEvaluationRecord => (
   at: '2026-01-01T00:00:00.000Z',
   channel,
   messageId: null,
+  title: 'Where is my invoice?',
   decisionId: 'd-1',
   outcome: 'partially_routed',
   reason: null,
@@ -211,7 +212,14 @@ describe('GET /bots/:id/decision-routing/evaluations', () => {
     const { app, spy } = appWith({ userId: await member('viewer') })
     const res = await list(app, botId, '?limit=5')
     expect(res.statusCode, res.body).toBe(200)
-    expect(res.json()).toEqual({ items: [row(14, 'C2'), row(13, 'C1')], nextCursor: 13 })
+    // No session names an audience yet, so a viewer reads summaries without their titles.
+    expect(res.json()).toEqual({
+      items: [
+        { ...row(14, 'C2'), title: null },
+        { ...row(13, 'C1'), title: null }
+      ],
+      nextCursor: 13
+    })
     expect(spy.lists[0]).toMatchObject({ daemonId: DAEMON, req: { agentId: a.agentId, botId, limit: 5 } })
     expect([...spy.lists[0]!.req.channels].sort()).toEqual(['C1', 'C2'])
     const one = await list(app, botId, '?channelId=C1&cursor=40')
@@ -256,9 +264,17 @@ describe('GET /bots/:id/decision-routing/evaluations', () => {
     const shown = await get(collaborator.app, botId, 12)
     expect(shown.statusCode, shown.body).toBe(200)
     expect(shown.json()).toEqual(detail('C1'))
+    expect((await list(collaborator.app, botId, '?channelId=C1')).json()).toEqual({
+      items: [row(14, 'C2'), row(13, 'C1')],
+      nextCursor: 13
+    })
     // A session held by the routed agent, not the channel owner, names the audience.
     await seedSessionMeta(prisma, 'c1-open', b.agentId, { channel: 'C1' })
     expect((await get(viewer.app, botId, 12)).statusCode).toBe(200)
+    expect((await list(viewer.app, botId)).json()).toEqual({
+      items: [{ ...row(14, 'C2'), title: null }, row(13, 'C1')],
+      nextCursor: 13
+    })
     collaborator.spy.get = async () => ({ evaluation: null, conversation: UNSCOPED })
     expect((await get(collaborator.app, botId, 12)).statusCode).toBe(404)
   })

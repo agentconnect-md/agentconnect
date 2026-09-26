@@ -18,6 +18,7 @@ const row = (seq: number, messageId: string | null = null) => ({
   seq,
   at: '2026-01-01T00:00:00.000Z',
   messageId,
+  title: null,
   decisionId: 'd1',
   outcome: 'skipped' as const,
   reason: null,

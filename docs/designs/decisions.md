@@ -1454,6 +1454,13 @@ target is unavailable, the outcome is Unavailable rather than Routed/Fallback.
 For Choice fan-out, show admission status per target; Partially routed means at least
 one target was admitted and at least one was rejected or unavailable.
 
+Each summary row carries a one-line title of what was judged, derived on read from
+the frozen input the way a session title reads: a code-host subject by kind, number,
+and title (`PR #42: Fix the parser`), otherwise the current message's first line,
+capped at 80 characters. It leaves with the input when retention strips the bodies,
+and the CP returns it only to a caller who could also read that evaluation's detail;
+other summary readers get the row without it.
+
 Details display the evaluated Decision and consumer snapshots, input/history,
 requested/actual model, all matched actions, and effective targets. Mention/thread
 evaluations include their target constraint and real model usage. Ineligible or

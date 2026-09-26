@@ -360,7 +360,7 @@ function mockEvaluations(decisions: DecisionDefinition[]): DecisionEvaluationRec
     usage: { inputTokens: 412, outputTokens: 3 },
     detailsExpired: false
   }
-  return [
+  const rows: Array<Omit<DecisionEvaluationRecordDetail, 'title'>> = [
     {
       ...base,
       seq: 106,
@@ -457,6 +457,7 @@ function mockEvaluations(decisions: DecisionDefinition[]): DecisionEvaluationRec
       evidence: { snapshotSeq: 101, suppliedBackground: null }
     }
   ]
+  return rows.map((row) => ({ ...row, title: row.input?.currentMessage.text ?? null }))
 }
 
 // One routing row per outcome (decisions.md §9.5), plus one whose bodies retention already stripped.
@@ -517,7 +518,7 @@ function mockRoutingEvaluations(
   const partial = choice(0.5, 0.35, 0.15)
   const sales = choice(0.1, 0.1, 0.8)
   const pending = choice(0.6, 0.2, 0.2)
-  return [
+  const rows: Array<Omit<DecisionRoutingEvaluationRecordDetail, 'title'>> = [
     {
       ...base,
       seq: 208,
@@ -633,4 +634,5 @@ function mockRoutingEvaluations(
       fullAnswer: null
     }
   ]
+  return rows.map((row) => ({ ...row, title: row.input?.currentMessage.text ?? null }))
 }

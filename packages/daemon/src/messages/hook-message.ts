@@ -157,7 +157,7 @@ function gitlabSubjectRef(c: HookContext, gitlab: GitlabHookMetadata): string {
 const MESSAGE_FIELDS = ['prompt', 'text', 'message'] as const
 const SESSION_TITLE_MAX_CHARS = 80
 
-function clampSessionTitle(title: string): string {
+export function clampSessionTitle(title: string): string {
   const chars = [...title]
   return chars.length > SESSION_TITLE_MAX_CHARS
     ? `${chars

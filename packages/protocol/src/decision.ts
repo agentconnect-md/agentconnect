@@ -494,11 +494,15 @@ export const DecisionRawJson = z.strictObject({
 })
 export type DecisionRawJson = z.infer<typeof DecisionRawJson>
 
+// What an evaluation judged in one line, like a session title; null once retention strips the input.
+export const DecisionEvaluationTitle = z.string().max(256).nullable()
+
 // A Recent evaluations summary row, read from the daemon's decision_verdict (decisions.md §9.5).
 export const DecisionEvaluationRecord = z.strictObject({
   seq: z.number().int().nonnegative(),
   at: z.string().max(64),
   messageId: z.string().max(256).nullable(),
+  title: DecisionEvaluationTitle,
   decisionId: Id,
   outcome: DecisionEvaluationOutcome,
   reason: z.string().max(128).nullable(),
@@ -629,6 +633,7 @@ export const DecisionRoutingEvaluationRecord = z.strictObject({
   at: z.string().max(64),
   channel: z.string().max(512),
   messageId: z.string().max(256).nullable(),
+  title: DecisionEvaluationTitle,
   decisionId: Id,
   outcome: DecisionRoutingEvaluationOutcome,
   reason: z.string().max(128).nullable(),

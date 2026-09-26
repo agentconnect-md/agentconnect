@@ -373,7 +373,7 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
           summary: 'List repository routing evaluations',
           operationId: 'listCodeHostDecisionRoutingEvaluations',
           description:
-            "Recent evaluations of one repository routing, newest first, read from the evaluation agent's serving daemon and proxied without being stored or logged. `decisionId` optionally filters by the recorded root Decision before paging. Needs view access to one member. Pages by `cursor` (the previous page's `nextCursor`) up to 50 rows and 32 KiB. Returns 503 when the host daemon is offline (`DAEMON_OFFLINE`) or must be upgraded (`DAEMON_UPGRADE_REQUIRED`).",
+            "Recent evaluations of one repository routing, newest first, read from the evaluation agent's serving daemon and proxied without being stored or logged. `decisionId` optionally filters by the recorded root Decision before paging. Needs view access to one member; each row's `title` names what was judged in one line and is null without the edit access to every member agent that its details need. Pages by `cursor` (the previous page's `nextCursor`) up to 50 rows and 32 KiB. Returns 503 when the host daemon is offline (`DAEMON_OFFLINE`) or must be upgraded (`DAEMON_UPGRADE_REQUIRED`).",
           params: ScopeParams,
           querystring: z.object({
             cursor: z.coerce.number().int().positive().optional(),
@@ -408,7 +408,9 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
         if (!result.ok) return reply
         if (!sameLane(asked, await lane(req))) return reply.code(404).send(notFound(REPOSITORY_NOT_FOUND))
         const { conversation: _namespace, ...page } = result.value
-        return page
+        // A title quotes the frozen input, so it shows only to a caller the detail would admit.
+        if (sameLane(asked, await lane(req, { bodies: true }))) return page
+        return { ...page, items: page.items.map((item) => ({ ...item, title: null })) }
       }
     )
 

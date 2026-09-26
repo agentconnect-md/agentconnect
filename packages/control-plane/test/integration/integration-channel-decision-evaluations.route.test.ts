@@ -34,6 +34,7 @@ const row = {
   seq: 12,
   at: '2026-01-01T00:00:00.000Z',
   messageId: '1700000000.0001',
+  title: 'Our invoice charged us twice',
   decisionId: 'd-1',
   outcome: 'triggered' as const,
   reason: null,
@@ -214,16 +215,20 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
     expect(JSON.stringify(await prisma.integrationChannel.findMany())).not.toContain('SECRET-BODY')
   })
 
-  it('lists summaries to a viewer before any session exists but keeps the bodies behind agent edit access', async () => {
+  it('lists summaries to a viewer before any session exists but keeps the bodies and titles behind agent edit access', async () => {
     const { integrationId, agentId } = await seedInstall()
     const viewer = appWith({ userId: await member('viewer') })
-    expect((await list(viewer.app, integrationId)).statusCode).toBe(200)
+    const untitled = await list(viewer.app, integrationId)
+    expect(untitled.statusCode).toBe(200)
+    expect(untitled.json()).toEqual({ ...page, items: [{ ...row, title: null }] })
     const denied = await get(viewer.app, integrationId, 12)
     expect(denied.statusCode).toBe(404)
     expect(denied.body).not.toContain('SECRET-BODY')
     const collaborator = appWith({ userId: await member('collaborator') })
+    expect((await list(collaborator.app, integrationId)).json()).toEqual(page)
     expect((await get(collaborator.app, integrationId, 12)).statusCode).toBe(200)
     await seedSessionMeta(prisma, 'audience', agentId, { channel: 'C1' })
+    expect((await list(viewer.app, integrationId)).json()).toEqual(page)
     expect((await get(viewer.app, integrationId, 12)).statusCode).toBe(200)
   })
 
@@ -357,5 +362,21 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
       return { ...page, conversation: UNSCOPED }
     }
     expect((await list(collaborator.app, integrationId)).statusCode).toBe(404)
+  })
+
+  it('withholds titles from a caller who loses edit access while the daemon reads', async () => {
+    const { integrationId } = await seedInstall()
+    const userId = await member('collaborator')
+    const demoted = appWith({ userId })
+    demoted.spy.list = async () => {
+      await prisma.membership.update({
+        where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId } },
+        data: { role: 'viewer' }
+      })
+      return { ...page, conversation: UNSCOPED }
+    }
+    const res = await list(demoted.app, integrationId)
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json()).toEqual({ ...page, items: [{ ...row, title: null }] })
   })
 })

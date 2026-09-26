@@ -305,25 +305,25 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
       asked: ReadableConversation,
       namespace: DecisionEvaluationConversation | undefined,
       opts: { bodies?: boolean } = {}
-    ): Promise<boolean> => {
+    ): Promise<{ fresh: ReadableConversation; namespace: DecisionEvaluationConversation } | null> => {
       const fresh = await readableConversation(deps, req, req.params.id, req.params.channelId)
       const sameLane =
         fresh?.consumer.agent.id === asked.consumer.agent.id &&
         fresh.consumer.integration.id === asked.consumer.integration.id
       if (!fresh || !sameLane) {
         await reply.code(404).send(notFound('conversation not found'))
-        return false
+        return null
       }
       // A reply that names no namespace cannot be scoped to its install, so it fails closed as an upgrade.
       if (!namespace) {
         await reply.code(503).send(unavailable(UNSUPPORTED, 'DAEMON_UPGRADE_REQUIRED'))
-        return false
+        return null
       }
       if (!(await conversationAudienceAllows(deps, req, fresh, namespace, opts))) {
         await reply.code(404).send(notFound('conversation not found'))
-        return false
+        return null
       }
-      return true
+      return { fresh, namespace }
     }
 
     r.get(
@@ -334,7 +334,7 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
           summary: 'List recent conversation evaluations',
           operationId: 'listIntegrationChannelDecisionEvaluations',
           description:
-            "Recent By decision evaluations for one conversation, newest first, read from the serving daemon and proxied without being stored or logged. `decisionId` optionally filters by the recorded root Decision before paging. The caller must be able to read the conversation: the audience of its newest session in the namespace (platform and tenant scope) the serving daemon names for the install, or, before any session exists there, the organization baseline (closed while an external-access policy is active); the check runs on the reply before anything is returned. Pages by `cursor` (the previous page's `nextCursor`) up to 50 rows and 32 KiB. Returns 503 when the serving daemon is offline, including while its connection to the install has not yet reported the tenant scope, or must be upgraded, including a reply that names no namespace.",
+            "Recent By decision evaluations for one conversation, newest first, read from the serving daemon and proxied without being stored or logged. `decisionId` optionally filters by the recorded root Decision before paging. The caller must be able to read the conversation: the audience of its newest session in the namespace (platform and tenant scope) the serving daemon names for the install, or, before any session exists there, the organization baseline (closed while an external-access policy is active); the check runs on the reply before anything is returned. Each row's `title` names what was judged in one line and is null unless the caller could also read that evaluation's bodies. Pages by `cursor` (the previous page's `nextCursor`) up to 50 rows and 32 KiB. Returns 503 when the serving daemon is offline, including while its connection to the install has not yet reported the tenant scope, or must be upgraded, including a reply that names no namespace.",
           params: ConversationParams,
           querystring: z.object({
             cursor: z.coerce.number().int().positive().optional(),
@@ -364,8 +364,11 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
         )
         if (!result.ok) return reply
         const { conversation: namespace, ...page } = result.value
-        if (!(await audienceAllows(req, reply, conversation, namespace))) return reply
-        return page
+        const allowed = await audienceAllows(req, reply, conversation, namespace)
+        if (!allowed) return reply
+        // A title quotes the frozen input, so it shows only to a caller the detail would admit now.
+        if (await conversationAudienceAllows(deps, req, allowed.fresh, allowed.namespace, { bodies: true })) return page
+        return { ...page, items: page.items.map((item) => ({ ...item, title: null })) }
       }
     )
 
