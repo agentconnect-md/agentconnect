@@ -416,6 +416,10 @@ a maintainer request. Nothing about the resulting turn differs; the vouch is the
 same human decision as granting `triage` on GitHub, made without touching the
 repository's own permission model, and it is the only path on GitLab and Gitea
 — whose role bars are push permissions — to let a non-committer fire an agent.
+An installation-wide row has no list of its own: it reads the event
+repository's list, which only a repository row manages, so the console offers
+none on an installation row and a repository covered by installation rows alone
+has none.
 
 Entries are matched by the host's numeric user id, never by login: the console
 takes a login, the Control Plane resolves it through the repository's own

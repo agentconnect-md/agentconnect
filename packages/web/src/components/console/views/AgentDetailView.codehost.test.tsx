@@ -374,6 +374,7 @@ describe('AgentDetailView, code-host repository blocks', () => {
     expect(prDialog.textContent).toContain('Pull requests settings')
     expect(prDialog.textContent).toContain('PR review')
     expect(prDialog.textContent).toContain('Only with labels')
+    expect(prDialog.textContent).toContain('Trusted users')
     await act(async () => byTitle(prDialog, 'Close')[0]!.click())
 
     const deployMore = scope.querySelector<HTMLElement>('[aria-label="More for acme/api Deploys"]')!
@@ -453,6 +454,8 @@ describe('AgentDetailView, an installation-wide row', () => {
     await act(async () => scope.querySelector<HTMLElement>('[aria-label="More for acme/* PRs"]')!.click())
     await act(async () => menuItem('Settings…')!.click())
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    // No repository to keep a trusted-users list on, so the dialog offers none.
+    expect(dialog.textContent).not.toContain('Trusted users')
     const save = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(
       (b) => b.textContent?.trim() === 'Save'
     )!
