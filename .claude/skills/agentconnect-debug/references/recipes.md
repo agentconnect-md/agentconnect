@@ -44,31 +44,7 @@ Each recipe names a symptom, the smallest read-only check, the observation that 
 
 **What it does not establish.** Pool membership or the agent's current form does not show which image, adapter, CLI, or settings an existing session used. An observed pair is a last-turn observation. `runtimes ready:` at start lists what the daemon could launch, not what a given session launched.
 
-## 3. Git works but PR creation returns 403: identify the credential route before touching permissions
-
-**Symptom.** `git clone`/`push` succeed, but creating or updating a pull request fails with `Resource not accessible by integration`, or a comment/review call is refused, and the first instinct is to widen the GitHub App's permissions.
-
-**The three routes.** The daemon serves credentials on distinct planes with distinct capability sets (`packages/daemon/src/cp/git-credential.ts`), and the console applies a separate authorization before any of them exists:
-
-| Route                      | Who calls it                                                                              | Capability set                                                                                                                                                              | How the target is chosen                                                                                                                                                                                                                      |
-| -------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Git credential helper      | git itself, through the helper line in the checkout's `.git/config` (`git-credential`)    | `contents` only, one token per repository                                                                                                                                   | The remote git is talking to                                                                                                                                                                                                                  |
-| `gh` wrapper               | the agent's `gh` calls, via `run/bin/gh` → hidden `gh-token` → the daemon's helper socket | `contents` + `issues` + `pull_requests` (+ `actions` when the Control Plane advertises it); the Control Plane clamps each capability to the repository's authorization tier | gh's own precedence (`packages/daemon/src/cp/gh-target.ts`): last `-R/--repo`, then the target the command names (a repo positional, a `gh api` path, a PR or issue URL), then `GH_REPO`, then the cwd origin remote, else the workspace repo |
-| Console user authorization | the Control Plane, when a user attaches a repository to an agent                          | the user's own access to that repository (`…/github/installations/:id/repositories/:owner/:repo/access`; 403 codes `GITHUB_IDENTITY_REQUIRED`, `USER_NO_ACCESS`)            | The repository being attached                                                                                                                                                                                                                 |
-
-Two things follow. A token minted on the git plane carries `contents` alone, so a REST request to the pulls endpoint made with it (an agent that ran `git credential fill` and passed the result to `curl`, or exported it as `GH_TOKEN`) fails with exactly this 403 while the installation is perfectly able to open PRs through the gh plane. And a `GH_TOKEN` already in the environment makes the wrapper `exec` the real `gh` untouched, so the daemon never sees that call at all.
-
-**Smallest check.** Record, without printing any credential: the caller (git, `gh` through the wrapper, or a hand-built REST call), the exact command from the transcript tool row (metadata first, `--seq <n> --raw` for that one row), the target repository, the route, and the denied capability. Then read the daemon log around that timestamp for the helper socket's audit line:
-
-```
-gitcred: local credential outcome=<served|denied|rejected|erased> agent="…" repo="<owner/repo>|workspace" plane=<git|gh|glab>
-```
-
-**What supports the hypothesis.** `outcome=served plane=git` immediately before a pulls or issues REST call that returned 403 is the route problem, not a permission problem. `outcome=denied` carries the Control Plane's reason: an agent-level refusal is terminal until the agent's configuration changes; a repository-level refusal is cached for 60 s, so an operator's authorization in the console takes effect on the next call without a restart. `outcome=rejected` (a warning) means the caller presented no valid local capability — the case of a stale agent id left in the checkout's helper line after an agent was recreated under the same name (PR #898 pinned the env identity). The wrapper's exit code says which branch it took: 2 = not a GitHub target, real `gh` ran; 3 = refused, and the reason went to the agent's stderr.
-
-**What it does not establish.** A 403 from GitHub does not show which token was used, and a served token does not show what the agent did with it. Read the App's installation permissions only after the route is known; widening them for a git-plane token changes nothing.
-
-## 4. A turn disappears or repeats after a restart: separate admission, resume, execution, and completion
+## 3. A turn disappears or repeats after a restart: separate admission, resume, execution, and completion
 
 **Symptom.** After a daemon restart or upgrade, a message that was acknowledged never produced a reply, or the same work happened twice, or a hook's Check reports a handover.
 

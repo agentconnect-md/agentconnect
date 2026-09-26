@@ -75,9 +75,6 @@ Under `<root>`:
 | `hs/<12hex>/`                                             | One Linux host-shim run root per session                                                                         |
 | `runtimes/`                                               | Daemon-owned ACP adapter installs                                                                                |
 | `current/dist/index.js`                                   | The version the shims point at; `agentconnect version list` shows what is installed                              |
-| `logs/daemon.log`                                         | The process log when the service is launchd-managed (macOS)                                                      |
-| `run/*.sock`                                              | The MCP and git-credential IPC sockets                                                                           |
-| `daemon.lock`                                             | Held by the running daemon                                                                                       |
 
 The leaf is `session-<sha256(sessionKey)[:24]>`; compute it with `scripts/daemon-store.cjs leaf <sessionKey>` and compare against `ls`. A leaf with no `sessions` row, or a row with no leaf, is a finding in itself.
 
@@ -97,7 +94,6 @@ cat /proc/PID/cgroup               # which unit owns it: system, user, or none
 Then read the log where that supervisor put it:
 
 - **systemd** (`agentconnect.service`, or `agentconnect@<instance>.service`): the unit writes no file; read `journalctl -u agentconnect` for a system unit, `journalctl --user -u agentconnect` for a user unit. A `not-found` or stale user unit next to a running system unit is a leftover; trust the cgroup.
-- **launchd**: `<root>/logs/daemon.log`.
 - **Foreground** (`agentconnect run` in a shell or tmux): stdout goes to the pane. `tmux list-panes -a -F "#{pane_id} #{pane_tty}"` finds it; `tmux capture-pane -p -J -t <pane> -S -20000` reads it, without timestamps. The journal then holds only the previous process.
 - **Pool member**: `kubectl logs` on the pod in the deployment's namespace.
 
@@ -114,13 +110,3 @@ The relay terminates Slack callbacks, code-host webhooks, and webchat, then forw
 ## 7. The console and its BFF
 
 The console reads session metadata from the Control Plane and proxies transcript, tool bodies, workspace files, and memory from the owning daemon on demand. An empty or unavailable transcript therefore means the daemon cannot serve it now — offline, on another root, or the session retired — not that the turn produced nothing. Deep links, check details, and footers use the outward session id; a 404 on a link is an id problem before it is a visibility problem (hook sessions are org-visible).
-
-## 8. Pinning code to a release
-
-Tags are `v<semver>` and `v<semver>-rc.<n>`. Read a file as the daemon under investigation ran it:
-
-```bash
-git show v1.61.0-rc.170:packages/daemon/src/store/local-store.ts | sed -n '1,80p'
-```
-
-A Control Plane rollout leaves a window where daemons are reconnecting; when a symptom's timestamp is within a minute of a release, read the deployment's rollout times before reading code.

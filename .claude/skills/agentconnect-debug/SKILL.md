@@ -27,7 +27,7 @@ Read the writer's version first (`daemon`: `name`, `agentVersion`, `lastSeenAt`,
 git show v<agentVersion>:packages/daemon/src/<file>
 ```
 
-To test what `main` does, use an agent placed on the pool, not a self-hosted daemon.
+To test what `main` does, use an agent placed on the pool, not a self-hosted daemon. When a symptom's timestamp is within a minute of a release, read the deployment's rollout times before reading code: a Control Plane rollout leaves a window where daemons are reconnecting.
 
 ## 2. Locate the artifact
 
@@ -40,7 +40,7 @@ Decide where the thing must be before looking for it. "The place I know is empty
 
 ## 3. Pick the evidence source by symptom
 
-Start with [references/symptoms.md](references/symptoms.md): it maps a reported symptom to the first query, what the result usually means, and where the fix landed. Then read [references/evidence-sources.md](references/evidence-sources.md) for how to read the source you need. Four investigations that went to the wrong component first have a worked recipe in [references/recipes.md](references/recipes.md): slow starts, the code that actually served a turn, a 403 with working git, and a turn lost or repeated across a restart. Work outward in this order and stop when the evidence explains the report:
+Start with [references/symptoms.md](references/symptoms.md): it maps a reported symptom to the first query, what the result usually means, and where the fix landed. Then read [references/evidence-sources.md](references/evidence-sources.md) for how to read the source you need. Three investigations that went to the wrong component first have a worked recipe in [references/recipes.md](references/recipes.md): slow starts, the code that actually served a turn, and a turn lost or repeated across a restart. Work outward in this order and stop when the evidence explains the report:
 
 1. Control Plane tables — what was dispatched, to whom, and what state the orchestrator believes.
 2. The daemon store — what the daemon believed and did (`sessions`, `transcript`, `inbox`, outboxes).
@@ -67,7 +67,7 @@ Before you write a cause down, run it past these. Each one has cost a wrong conc
 
 ## 5. Report
 
-Lead with the cause, or the open hypotheses and the next check for each. Then give the timeline in UTC, and for every claim the source and the query or file it came from. Separate what is already fixed (name the PR) from what is a product gap. When the report becomes public text — an issue, a PR, a commit — refer to private hosts, ids, clusters, and hostnames by category, never by value; use reserved example names where a literal is unavoidable.
+For every claim, name the source and the query or file it came from, and separate what is already fixed (name the PR) from what is a product gap. When the report becomes public text — an issue, a PR, a commit — refer to private hosts, ids, clusters, and hostnames by category, never by value; use reserved example names where a literal is unavoidable.
 
 ## Safety rails
 
