@@ -241,6 +241,13 @@ describe('DecisionEditorView', () => {
     const example = decisionExample('prAuthor')!
     await render()
     expect(document.body.querySelector<HTMLInputElement>('input[placeholder="Request type"]')?.value).toBe('PR author')
+    const currentMessage = () =>
+      document.body.querySelector<HTMLTextAreaElement>('textarea[placeholder="The message being evaluated"]')?.value
+    expect(currentMessage()).toBe(example.sample.current)
+    // Load example restores this example's own sample, not the generic Choice one.
+    await type('textarea[placeholder="The message being evaluated"]', 0, 'edited')
+    await click(byText('Load example'))
+    expect(currentMessage()).toBe(example.sample.current)
     const create = vi.spyOn(store.api, 'createDecision')
     await click(byText('Create'))
     await act(async () => {})

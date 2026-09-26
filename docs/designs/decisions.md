@@ -1263,7 +1263,8 @@ in consumer editors.
 An organization with no Decisions sees editable examples in place of the list, one
 per shipped consumer: a reply gate, spam scoring, support routing, issue type, PR
 focus, PR author (for cross-model review), and task complexity for runtime selection.
-**Add** opens the editor prefilled from one example and saves nothing until Create;
+**Add** opens the editor prefilled from one example, with a sample conversation in
+**Try with an example** that **Load example** restores, and saves nothing until Create;
 **Add all examples** creates every example with the first available model. The
 examples carry the question only; each row's hint names the consumer it suits.
 

@@ -180,8 +180,10 @@ function DecisionEditor() {
   // Set by an authoritative 409 in-use refusal, so nothing reads as unused even when every usage is hidden.
   const [refusedInUse, setRefusedInUse] = useState(false)
   const [confirmAgentAnswerChange, setConfirmAgentAnswerChange] = useState(false)
-  const [history, setHistory] = useState<Array<{ sender: string; text: string }>>([])
-  const [current, setCurrent] = useState('')
+  const [history, setHistory] = useState<Array<{ sender: string; text: string }>>(
+    () => example?.sample.history.map((message) => ({ ...message })) ?? []
+  )
+  const [current, setCurrent] = useState(example?.sample.current ?? '')
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<{
     signature: string
@@ -929,7 +931,8 @@ function DecisionEditor() {
                 type="button"
                 className="lnk gap-[6px] text-[12px] font-medium"
                 onClick={() => {
-                  const demo = EXAMPLES[draft.type]
+                  // An example's own sample fits only while its question type is kept.
+                  const demo = example?.question.type === draft.type ? example.sample : EXAMPLES[draft.type]
                   setHistory(demo.history.map((message) => ({ ...message })))
                   setCurrent(demo.current)
                   setResult(null)
