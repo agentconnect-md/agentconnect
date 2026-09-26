@@ -111,6 +111,7 @@ export const canonicalColumns = [
   'observedAt',
   'observedModel',
   'observedModelSet',
+  'observedRuntime',
   'oldestActiveAt',
   'onDemandClones',
   'selectedRepos',

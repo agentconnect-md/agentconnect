@@ -604,6 +604,53 @@ describe('session-pinned Decision model', () => {
   )
 })
 
+describe('a session’s reported runtime and model stay one pair', () => {
+  const emitted = (internal: any) => internal.cpClient.emitEventSession.mock.calls.map(([event]: [any]) => event)
+
+  it('never pairs the last turn’s model with a runtime the agent switched to, until a turn runs there', async () => {
+    const { internal, turn } = await start(scaffold())
+    const configured = internal.agents.get(agentId)
+    configured.modelSelection = undefined
+    await turn('first')
+    const row = (await internal.store.listSessions(agentId))[0]
+    expect(await internal.store.getObservedTurn(row.key)).toEqual({ runtime: 'test', model: 'model-standard' })
+    expect(emitted(internal).at(-1)).toMatchObject({ runtime: 'test', observedModel: 'model-standard' })
+
+    Object.assign(configured, { runtime: 'alternative', runtimeOverrides: { model: 'model-capable' } })
+    await internal.reportSessionStatus(row)
+    expect(emitted(internal).at(-1)).toMatchObject({ runtime: 'alternative', model: 'model-capable' })
+    expect(emitted(internal).at(-1)).not.toHaveProperty('observedModel')
+    configured.runtimeOverrides = {}
+    await internal.reportSessionStatus(row)
+    expect(emitted(internal).at(-1)).toMatchObject({ runtime: 'alternative', observedModel: null })
+    expect(emitted(internal).at(-1)).not.toHaveProperty('model')
+
+    const before = emitted(internal).length
+    await turn('first', 'A follow-up')
+    const followUp = emitted(internal).slice(before)
+    // The turn-start snapshot goes out before the turn observes its model.
+    expect(followUp.find((event: any) => event.phase === 'start')).toMatchObject({
+      runtime: 'alternative',
+      observedModel: null
+    })
+    expect(await internal.store.getObservedTurn(row.key)).toEqual({ runtime: 'alternative', model: 'model-standard' })
+    expect(followUp.at(-1)).toMatchObject({ runtime: 'alternative', observedModel: 'model-standard' })
+  })
+
+  it('keeps a pinned Decision session’s observed pair when the agent’s own runtime settings change', async () => {
+    const { internal, turn } = await start(scaffold())
+    const configured = internal.agents.get(agentId)
+    configured.modelSelection.rules[0].runtime = 'alternative'
+    await turn('first')
+    const row = (await internal.store.listSessions(agentId))[0]
+    const pair = { runtime: 'alternative', model: 'model-capable', observedModel: 'model-capable' }
+    expect(emitted(internal).at(-1)).toMatchObject(pair)
+    Object.assign(configured, { modelSelection: undefined, runtimeOverrides: { model: 'model-manual' } })
+    await internal.reportSessionStatus(row)
+    expect(emitted(internal).at(-1)).toMatchObject(pair)
+  })
+})
+
 it('judges a resumed session’s targets in the strategy its verdict recorded, loaded before model selection', async () => {
   const root = scaffold()
   const first = await start(root)

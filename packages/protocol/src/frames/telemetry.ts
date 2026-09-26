@@ -139,9 +139,7 @@ export const EventSession = z.object({
   // NOT echoed here — the CP stamps it from the authenticated WS connection.
   runtime: z.string().optional(),
   model: z.string().optional(),
-  // Runtime observation for this milestone. `null` means the runtime exposed
-  // only an opaque/default model; absent is a legacy/config-only snapshot. New
-  // readers prioritize this over `model`, while old readers safely ignore it.
+  // Outranks `model` for new readers: the model observed with `runtime`, `null` for that runtime's own default; absent on a config-only snapshot.
   observedModel: z.string().nullable().optional(),
   effort: z.string().optional(), // reasoning effort level (runtime-owned vocabulary)
   fastMode: z.boolean().optional(),

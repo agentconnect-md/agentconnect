@@ -66,6 +66,31 @@ it('pins a Decision model once, independently of manual overrides and subsequent
   await s.close()
 })
 
+// A turn's model is recorded with the runtime it ran on, so a later runtime change cannot re-pair it.
+it('records a turn’s runtime and observed model as one pair, which later upserts keep', async () => {
+  const s = await store()
+  const row = {
+    key: 'observed-turn',
+    agentId: 'bot-a',
+    platform: 'webchat',
+    channel: 'conversation',
+    thread: 'thread',
+    acpSessionId: 'acp-1',
+    state: 'idle' as const,
+    lastDeliveredTs: null,
+    updatedAt: 1
+  }
+  await s.upsertSession(row)
+  expect(await s.getObservedTurn(row.key)).toBeUndefined()
+  await s.setObservedTurn(row.key, 'runtime-a', 'model-a')
+  await s.upsertSession({ ...row, updatedAt: 2 })
+  expect(await s.getObservedTurn(row.key)).toEqual({ runtime: 'runtime-a', model: 'model-a' })
+  await s.setObservedTurn(row.key, 'runtime-b', null)
+  expect(await s.getObservedTurn(row.key)).toEqual({ runtime: 'runtime-b', model: null })
+  expect(await s.getObservedModel(row.key)).toBeNull()
+  await s.close()
+})
+
 // multi-repository-workspaces.md decision 20: what lets retention judge a session's on-demand clones whatever the rows say later.
 it('records once that a session was handed an on-demand clone directory, which later upserts keep', async () => {
   const s = await store()
@@ -3795,7 +3820,7 @@ describe.skipIf(pg)('the v25 → v26 decision tables', () => {
   }
 
   it('creates both tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(30)
+    expect(SCHEMA_VERSION).toBe(31)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
@@ -3900,6 +3925,43 @@ describe.skipIf(pg)('the v29 → v30 selected repositories column', () => {
     const selected = [{ provider: 'github' as const, repoFullName: 'acme/infra', repoId: '42' }]
     await upgraded.pinSelectedRepos(row.key, selected)
     expect(await upgraded.listSelectedRepos('bot-a')).toEqual(selected)
+    await upgraded.close()
+
+    const check = new DatabaseSync(path)
+    const version = (check.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+    check.close()
+    expect(version).toBe(SCHEMA_VERSION)
+  })
+})
+
+// v31 records the runtime beside the observed model; an observation made before it keeps no runtime.
+describe.skipIf(pg)('the v30 → v31 observed runtime column', () => {
+  it('adds observedRuntime to a v30 store, leaving an earlier observation without a runtime', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v30-')), 'local.sqlite')
+    const first = await LocalStore.open(path)
+    const row = {
+      key: 'held',
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: null,
+      state: 'idle' as const,
+      lastDeliveredTs: null,
+      updatedAt: 1
+    }
+    await first.upsertSession(row)
+    await first.close()
+    const old = new DatabaseSync(path)
+    old.exec(
+      "ALTER TABLE sessions DROP COLUMN observedRuntime; UPDATE sessions SET observedModel = 'model-a', observedModelSet = 1; PRAGMA user_version = 30"
+    )
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    expect(await upgraded.getObservedTurn(row.key)).toEqual({ model: 'model-a' })
+    await upgraded.setObservedTurn(row.key, 'runtime-a', 'model-b')
+    expect(await upgraded.getObservedTurn(row.key)).toEqual({ runtime: 'runtime-a', model: 'model-b' })
     await upgraded.close()
 
     const check = new DatabaseSync(path)

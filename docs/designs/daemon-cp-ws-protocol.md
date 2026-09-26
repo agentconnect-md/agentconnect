@@ -487,7 +487,11 @@ const EventSession = z.object({
 
 The exact schema in `packages/protocol/src/frames/telemetry.ts` also carries
 the dashboard metadata and effective execution configuration. It remains
-metadata-only. The reporting daemon is not echoed; CP stamps `daemonId` from
+metadata-only. Its `runtime` and model are always one pair: the runtime and
+model the session's last turn observed while its next turn stays on that
+runtime, otherwise the next turn's runtime with its configured model, or
+`observedModel: null` (that runtime's default) when none is configured. The
+reporting daemon is not echoed; CP stamps `daemonId` from
 the authenticated WebSocket connection. CP accepts `event/session` and
 `usage/report` only when the reported agent is currently placed on that daemon,
 with placement moves excluded while the write runs. A `sessionId` is bound to
