@@ -357,6 +357,20 @@ export const RcGithubHookRule = z.object({
 })
 export type RcGithubHookRule = z.infer<typeof RcGithubHookRule>
 
+/** Relays that fill an installation rule's repository in from each event advertise this (webhook-triggers-and-github-events.md, Installation-Wide Rows). */
+export const HOOK_GITHUB_INSTALLATION_V1_FEATURE = 'hook-github-installation-v1'
+
+/** An installation-wide github rule: every repository of one App installation, the event naming the repository; its session prefix is `github:<repoId>`. */
+export const RcGithubInstallationHookRule = RcGithubHookRule.omit({
+  repoId: true,
+  repoFullName: true,
+  sessionKeyPrefix: true
+}).extend({
+  installationId: z.string().regex(/^[1-9]\d*$/), // the covered installation (BigInt as string) — the match key
+  accountLogin: z.string().min(1) // display/logs only; never matched on
+})
+export type RcGithubInstallationHookRule = z.infer<typeof RcGithubInstallationHookRule>
+
 /** The gitlab member of a compiled rule (gitlab-com-integration.md §11.3); it carries the signing token inline, so the rule is NEVER logged. */
 export const RcGitlabHookRule = z.object({
   projectId: z.string().regex(/^[1-9]\d*$/), // numeric project id — the match key
@@ -444,14 +458,23 @@ export const RcHookAssign = z
         hmacSecret: z.string().optional() // optional X-AC-Signature key
       })
       .optional(),
-    // kind=github (P2) — required for that kind
+    // kind=github (P2) — required for that kind, unless the rule is installation-wide
     github: RcGithubHookRule.optional(),
+    // kind=github installation row — only to relays advertising HOOK_GITHUB_INSTALLATION_V1_FEATURE
+    githubInstallation: RcGithubInstallationHookRule.optional(),
     // kind=gitlab (gitlab-com-integration.md §11.3) — required for that kind
     gitlab: RcGitlabHookRule.optional(),
     // kind=gitea (gitea-integration.md §7) — required for that kind
     gitea: RcGiteaHookRule.optional()
   })
   .superRefine((rule, ctx) => {
+    if (rule.github !== undefined && rule.githubInstallation !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['githubInstallation'],
+        message: 'a rule watches a repository or an installation, not both'
+      })
+    }
     if (rule.dispatchDaemonId !== undefined && rule.dispatchDaemonId !== rule.daemonId) {
       ctx.addIssue({
         code: 'custom',

@@ -93,6 +93,8 @@ function toRecord(h: HookWithUsers): HookRecord {
     hmacConfigured: h.secret !== null,
     repoId: h.repoId,
     repoFullName: h.repoFullName,
+    installationId: h.installationId,
+    installationAccount: h.installationAccount,
     githubSessionKey: h.githubSessionKey,
     family: h.family,
     events: h.events,
@@ -513,6 +515,8 @@ export class PgHookRepo implements HookRepo {
       // re-target allowed); webhook kind never sends it, and these stay null/[].
       repoId: input.repoId ?? null,
       repoFullName: input.repoFullName ?? null,
+      installationId: input.installationId ?? null,
+      installationAccount: input.installationAccount ?? null,
       // Immutable: an update never carries it, so omission must preserve the row's own.
       ...(input.family !== undefined ? { family: input.family } : {}),
       events: input.events ?? [],
@@ -618,6 +622,7 @@ export class PgHookRepo implements HookRepo {
           existing !== null &&
           (existing.agentId !== input.agentId ||
             existing.repoId !== (input.repoId ?? null) ||
+            existing.installationId !== (input.installationId ?? null) ||
             existing.enabled !== (input.enabled ?? true) ||
             existing.reportingMode !== nextReportingMode ||
             existing.gateMode !== nextGateMode)

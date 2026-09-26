@@ -761,7 +761,9 @@ export class GithubService {
     repoFullName: string,
     repoId: bigint | undefined,
     bucketKeys: string[],
-    forceRefresh = false
+    forceRefresh = false,
+    // An installation row's own installation: the repository must be one of it.
+    installationId?: bigint
   ): Promise<MintedGitCred> {
     const [owner, repo] = repoFullName.split('/')
     if (!owner || !repo) {
@@ -778,6 +780,13 @@ export class GithubService {
     }
     if (ins.suspendedAt) {
       throw new GitCredDeniedError('github installation is suspended', 'LEASE_DENIED', false)
+    }
+    if (installationId !== undefined && ins.installationId !== installationId) {
+      throw new GitCredDeniedError(
+        `${repoFullName} is not in the installation this hook watches`,
+        'SCOPE_DENIED',
+        false
+      )
     }
     try {
       return await this.tokens.mintLevels(
@@ -1004,9 +1013,13 @@ export class GithubService {
   async mintChecksForAgent(
     agent: AgentRecord,
     repoId: bigint,
-    repoFullName: string
+    repoFullName: string,
+    // True for an installation row's Checks, which its grant carries because the grant outlives no row.
+    opts: { installationGrants?: boolean } = {}
   ): Promise<{ cred: MintedGitCred; resolved: ResolvedAgentRepoAuthorization }> {
-    let resolved = await this.resolveAgentRepoAuthorization(agent, repoId, repoFullName, { installationGrants: false })
+    let resolved = await this.resolveAgentRepoAuthorization(agent, repoId, repoFullName, {
+      installationGrants: opts.installationGrants === true
+    })
     if (resolved.access !== 'write') {
       throw new GitCredDeniedError('informational Checks require write repository authorization', 'SCOPE_DENIED', false)
     }

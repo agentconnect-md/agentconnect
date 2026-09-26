@@ -1937,10 +1937,13 @@ model HookDef {
   urlToken                           String?           @unique // ≥128-bit random ingress routing key (capability URL; canEdit-visible)
   // hmacSecret lives in HookSecret — never on this row (accidental-serialization guard)
   // ── kind=github (P2) ──
-  repoId                             BigInt? // GitHub numeric repo id — the match key (rename-proof)
+  repoId                             BigInt? // GitHub numeric repo id — the match key (rename-proof); null on an installation row
   repoFullName                       String? // "owner/repo" — display + create-time validation; never matched on
   githubSessionKey                   String? // immutable per-thread namespace; existing rows keep their pre-rename owner/repo
   family                             String? // subject family of this row; a github/gitlab hook row covers exactly one family (webhook kind: null)
+  // ── kind=github installation row: every repository of one App installation; never with repoId (DB CHECK) ──
+  installationId                     BigInt?
+  installationAccount                String? // the installation's account login — display only, never matched on
   events                             String[]          @default([]) // "issues:opened" / "pull_request:*" / "issue_comment:created"
   commentFamilies                    String[]          @default([]) // empty = legacy repo-wide comments; otherwise issues/pull_request scope
   labelFilter                        String[]          @default([]) // non-empty ⇒ issue/PR must carry one of these labels
@@ -1986,9 +1989,11 @@ model HookDef {
   // the rule, so the routes need no duplicate probe. Postgres skips rows with a
   // NULL member, so webhook-kind and legacy inert rows never conflict.
   @@unique([agentId, kind, repoId, family], map: "hook_def_agent_repo_family_key")
+  @@unique([agentId, kind, installationId, family], map: "hook_def_agent_installation_family_key")
   @@index([orgId])
   @@index([agentId])
   @@index([kind, repoId]) // github rule-compile main query (P2)
+  @@index([kind, installationId])
   @@map("hook_def")
 }
 

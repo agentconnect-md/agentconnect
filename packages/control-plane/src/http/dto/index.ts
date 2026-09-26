@@ -2884,12 +2884,14 @@ export const CreateGithubHookBody = HookBodyBase.extend({
   family: GithubHookFamily,
   // No sessionMode: github is perThread by definition (same issue/PR continues
   // one session). No hmac: the App webhook secret signs deliveries pool-wide.
-  // The repo must sit inside one of the org's App installations; the CP resolves
-  // it to the numeric repoId (the rename-immune match key — never client-supplied).
+  // Resolved server-side to the numeric repoId through the org's installation; exactly one of repoFullName and githubAccount.
   repoFullName: z
     .string()
     .trim()
-    .regex(/^[^/\s]+\/[^/\s]+$/, 'expected "owner/repo"'),
+    .regex(/^[^/\s]+\/[^/\s]+$/, 'expected "owner/repo"')
+    .optional(),
+  // An installation row: every repository of the account's App installation, gated on the agent's installation grant.
+  githubAccount: z.string().trim().min(1).max(100).optional(),
   // Every pattern must belong to `family`; `issue_comment` and
   // `pull_request_review_comment` ride the thread families that own them.
   events: z.array(z.string().regex(HookEventPattern)).min(1).max(20),
@@ -3015,8 +3017,11 @@ export const HookDto = z.object({
   url: z.string().nullable(),
   hmacConfigured: z.boolean(), // a signing secret exists (the secret itself is never returned)
   // ── github kind (P2; read-side seats) ──
-  repoId: z.string().nullable(), // rename-proof GitHub numeric id; null for webhook kind
+  repoId: z.string().nullable(), // rename-proof GitHub numeric id; null for webhook kind and an installation row
   repoFullName: z.string().nullable(),
+  // An installation row's App installation and account login; null on every other row.
+  installationId: z.string().nullable(),
+  installationAccount: z.string().nullable(),
   // The one subject family this row covers; null for webhook kind and for a
   // legacy row the split could not place.
   family: z.string().nullable(),

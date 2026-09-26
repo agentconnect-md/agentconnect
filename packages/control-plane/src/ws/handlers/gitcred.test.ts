@@ -112,7 +112,8 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
       'acme/infra-renamed',
       501n,
       [`daemon:${DAEMON_ID}`, `org:org-a`],
-      true
+      true,
+      undefined
     )
     expect(mintForAgent).not.toHaveBeenCalled()
     expect(conn.replyTo).toHaveBeenCalledWith(
@@ -590,12 +591,44 @@ describe('handleGitCredRequest — explicit provider=github (§17.3)', () => {
     const qualified = fakeConn()
     await handleGitCredRequest(gitcredFrame({ ...payload, provider: 'github', externalRepoId: '501' }), qualified, deps)
 
-    expect(mintForHookReply).toHaveBeenNthCalledWith(1, PLACED_AGENT, 'acme/infra', 501n, BUCKETS, false)
-    expect(mintForHookReply).toHaveBeenNthCalledWith(2, PLACED_AGENT, 'acme/infra', 501n, BUCKETS, false)
+    expect(mintForHookReply).toHaveBeenNthCalledWith(1, PLACED_AGENT, 'acme/infra', 501n, BUCKETS, false, undefined)
+    expect(mintForHookReply).toHaveBeenNthCalledWith(2, PLACED_AGENT, 'acme/infra', 501n, BUCKETS, false, undefined)
     const v1Grant = v1.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
     const qualifiedGrant = qualified.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
     expect(v1Grant.provider).toBeUndefined()
     expect(qualifiedGrant).toEqual({ ...v1Grant, provider: 'github', externalRepoId: '501' })
+  })
+
+  it("pins an installation row's reply to the named repository within its own installation", async () => {
+    const mintForHookReply = vi.fn(async () => ({
+      token: 'ghs_comment',
+      ttlSec: 3540,
+      expiresAt: '2026-07-11T01:00:00.000Z',
+      repoFullName: 'acme/tools',
+      access: 'read' as const,
+      repoId: 777n
+    }))
+    const { deps } = githubDeps({
+      hook: {
+        get: async () => ({ agentId: AGENT_ID, kind: 'github', enabled: true, repoId: null, installationId: 1234567n })
+      },
+      github: { mintForAgent: vi.fn(), mintForHookReply }
+    })
+    const conn = fakeConn()
+    const frame = gitcredFrame({
+      purpose: 'github_hook_reply',
+      hookId: HOOK_ID,
+      capabilities: ['issues', 'pull_requests'],
+      repoFullName: 'acme/tools',
+      provider: 'github',
+      externalRepoId: '777'
+    })
+
+    await handleGitCredRequest(frame, conn, deps)
+
+    // No repository of its own to disagree with: the mint pins the named id inside the row's installation.
+    expect(mintForHookReply).toHaveBeenCalledWith(PLACED_AGENT, 'acme/tools', 777n, BUCKETS, false, 1234567n)
+    expect(conn.sendError).not.toHaveBeenCalled()
   })
 
   it('refuses a numeric identity the request named but the resolution disagrees with', async () => {

@@ -19,16 +19,22 @@ import type {
   RcMemoryConnectionAssign,
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
-import { HOOK_DECISION_ROUTING_V1_FEATURE, codeHostHookRuleOf } from '@agentconnect.md/protocol'
+import {
+  HOOK_DECISION_ROUTING_V1_FEATURE,
+  HOOK_GITHUB_INSTALLATION_V1_FEATURE,
+  codeHostHookRuleOf
+} from '@agentconnect.md/protocol'
 import { advertises } from '../domain/daemon-features.js'
 import { codeHostProviders } from '../codehost/registry.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 
 /** Whether a relay may hold this rule: a routed rule only where the relay routes its provider (code-host-decisions.md §3.3). */
 export function hookRuleSupported(
-  rule: Pick<RcHookAssign, 'routing' | 'kind' | 'github' | 'gitlab' | 'gitea'>,
+  rule: Pick<RcHookAssign, 'routing' | 'kind' | 'github' | 'githubInstallation' | 'gitlab' | 'gitea'>,
   features: readonly string[] | undefined
 ) {
+  // A relay that cannot fill an installation rule's repository in never holds one.
+  if (rule.githubInstallation && !advertises(features, [HOOK_GITHUB_INSTALLATION_V1_FEATURE])) return false
   if (rule.routing === undefined) return true
   const host = codeHostHookRuleOf(rule)
   return advertises(

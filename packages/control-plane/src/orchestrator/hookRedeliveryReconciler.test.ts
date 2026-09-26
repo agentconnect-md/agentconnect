@@ -162,6 +162,48 @@ describe('HookRedeliveryReconciler', () => {
     expect(h.claimMock).toHaveBeenCalledWith('guid-1', [ghHook().id], new Date(NOW), FAILED_DELIVERY_BACKOFF_MS)
   })
 
+  describe('installation-wide rows', () => {
+    const OTHER_AGENT = AgentId('44444444-4444-4444-8444-444444444444')
+    const installationRow = (over: Partial<HookRecord> = {}) =>
+      ghHook({
+        id: HookId('55555555-5555-4555-8555-555555555555'),
+        agentId: OTHER_AGENT,
+        repoId: null,
+        repoFullName: null,
+        installationId: 1234567n,
+        installationAccount: 'acme',
+        ...over
+      })
+
+    it('expects an installation row for any repository of its installation', async () => {
+      const row = installationRow()
+      const h = make({
+        hooks: [row],
+        deliveries: [delivery({ repository_id: 42 })],
+        landed: ['guid-1'],
+        claim: true
+      })
+      await h.reconciler.tick()
+      expect(h.claimMock).toHaveBeenCalledWith('guid-1', [row.id], new Date(NOW), FAILED_DELIVERY_BACKOFF_MS)
+      expect(h.redelivered).toEqual(['1234567890123456789'])
+    })
+
+    it('does not expect it for another installation’s delivery', async () => {
+      const h = make({ hooks: [installationRow()], deliveries: [delivery({ installation_id: 7654321 })] })
+      await h.reconciler.tick()
+      expect(h.redelivered).toEqual([])
+    })
+
+    it('does not expect it where its agent has a row of the repository and family', async () => {
+      const own = ghHook({ id: HookId('66666666-6666-4666-8666-666666666666'), agentId: OTHER_AGENT, family: 'issues' })
+      const row = installationRow({ family: 'issues' })
+      const other = ghHook({ family: 'issues' })
+      const h = make({ hooks: [own, row, other], landed: ['guid-1'], claim: true })
+      await h.reconciler.tick()
+      expect(h.claimMock).toHaveBeenCalledWith('guid-1', [own.id, other.id], new Date(NOW), FAILED_DELIVERY_BACKOFF_MS)
+    })
+  })
+
   it('repairs a partially persisted review-request fan-out with one durable redelivery claim', async () => {
     const hook2 = ghHook({ id: HookId('33333333-3333-4333-8333-333333333333') })
     const h = make({

@@ -8,6 +8,7 @@ import type {
   HookRepo
 } from '../persistence/ports.js'
 import type { GithubRepoRole, GithubService } from './service.js'
+import { githubHookCovers } from '../hooks/installation-row.js'
 
 export interface GithubCommentAuthzDeps {
   hooks: Pick<HookRepo, 'getManyUnscoped'>
@@ -69,7 +70,7 @@ export class GithubCommentAuthzService {
     const currentById = new Map<string, HookRecord>(hooks.map((hook) => [hook.id, hook]))
     const authorized = fences.map((fence) => {
       const hook = currentById.get(fence.hookId) ?? null
-      return this.matchesAuthorizedHook(hook, req.repoId, fence) ? hook : null
+      return this.matchesAuthorizedHook(hook, req.repoId, req.installationId, fence) ? hook : null
     })
     const authorizedHooks = authorized.filter((hook): hook is HookRecord => hook !== null)
     if (authorizedHooks.length !== fences.length) return false
@@ -90,11 +91,9 @@ export class GithubCommentAuthzService {
     if (!/^[^/\s]+\/[^/\s]+$/.test(req.repoFullName)) return false
     const [owner, repo] = req.repoFullName.split('/') as [string, string]
 
-    // Resolve the supplied name through this exact installation, then pin it
-    // back to the numeric hook identity. This permits legitimate renames while
-    // rejecting a stale-name collision with a different repository.
+    // Resolve the name through this exact installation and pin it to the event's numeric id, which every fence's hook covers.
     const resolved = await this.deps.github.repoRefForCommentAuthz(installation, owner, repo)
-    if (!resolved || resolved.repoId !== hook.repoId) return false
+    if (!resolved || resolved.repoId !== BigInt(req.repoId)) return false
 
     const actorLogins = [...new Set([req.senderLogin, req.subjectAuthorLogin].filter((login) => login !== undefined))]
     const permissions = await Promise.all(
@@ -103,7 +102,7 @@ export class GithubCommentAuthzService {
     // Triage is GitHub's role for a trusted non-committer: requesting a pull request review is one
     // of its listed permissions, so it authorizes a trigger even though it grants no push access.
     const belowBar = actorLogins.filter((_login, index) => !TRIGGER_ROLES.has(permissions[index]!))
-    if (belowBar.length > 0 && !(await this.everyTrusted(hook, installation, belowBar))) return false
+    if (belowBar.length > 0 && !(await this.everyTrusted(hook, resolved.repoId, installation, belowBar))) return false
 
     // The GitHub calls above can take seconds. Re-read immediately before the
     // allow verdict so a concurrent disable, retarget, or reassignment cannot
@@ -114,7 +113,7 @@ export class GithubCommentAuthzService {
       const expected = authorizedHooks[index]
       return (
         expected !== undefined &&
-        this.matchesAuthorizedHook(refreshedById.get(fence.hookId) ?? null, req.repoId, fence, {
+        this.matchesAuthorizedHook(refreshedById.get(fence.hookId) ?? null, req.repoId, req.installationId, fence, {
           orgId: expected.orgId,
           agentId: expected.agentId
         })
@@ -130,11 +129,12 @@ export class GithubCommentAuthzService {
    */
   private async everyTrusted(
     hook: HookRecord,
+    repoId: bigint,
     installation: GithubInstallationRecord,
     logins: readonly string[]
   ): Promise<boolean> {
-    if (hook.repoId === null) return false
-    const trusted = await this.deps.trustedActors.actorIdsForRepo(hook.orgId, 'github', hook.repoId)
+    // The event's repository: an installation row's list is the one of the repository the event came from.
+    const trusted = await this.deps.trustedActors.actorIdsForRepo(hook.orgId, 'github', repoId)
     if (trusted.size === 0) return false
     const users = await Promise.all(logins.map((login) => this.deps.github.userByLogin(installation, login)))
     return users.every((user) => user !== null && trusted.has(user.id.toString()))
@@ -143,6 +143,7 @@ export class GithubCommentAuthzService {
   private matchesAuthorizedHook(
     hook: HookRecord | null,
     repoId: string,
+    installationId: string,
     fence: Pick<RcGithubCommentAuthz, 'hookId' | 'configRevision' | 'dispatchRevision'>,
     expected?: Pick<HookRecord, 'orgId' | 'agentId'>
   ): hook is HookRecord {
@@ -152,7 +153,7 @@ export class GithubCommentAuthzService {
       hook.kind === 'github' &&
       hook.agentId !== null &&
       hook.id === fence.hookId &&
-      hook.repoId === BigInt(repoId) &&
+      githubHookCovers(hook, BigInt(repoId), BigInt(installationId)) &&
       hook.configRevision === BigInt(fence.configRevision) &&
       hook.dispatchRevision === BigInt(fence.dispatchRevision) &&
       (expected === undefined || (hook.orgId === expected.orgId && hook.agentId === expected.agentId))

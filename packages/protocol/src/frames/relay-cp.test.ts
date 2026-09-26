@@ -883,6 +883,28 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
       RcHookAssign.safeParse({ ...github, github: { ...github.github, commentFamilies: ['discussions'] } }).success
     ).toBe(false)
 
+    // An installation rule names its installation instead of a repository, and never both.
+    const { repoId: _repoId, repoFullName: _repoFullName, sessionKeyPrefix: _prefix, ...matching } = github.github
+    void [_repoId, _repoFullName, _prefix]
+    const installation = {
+      ...github,
+      github: undefined,
+      githubInstallation: { ...matching, installationId: '1234567', accountLogin: 'acme' }
+    }
+    const decoded = decodeRelayCpFrame(envelope('rc/hook-assign', installation))
+    expect(decoded.ok).toBe(true)
+    if (decoded.ok && decoded.frame.type === 'rc/hook-assign') {
+      expect(decoded.frame.payload.githubInstallation?.installationId).toBe('1234567')
+      expect(decoded.frame.payload.githubInstallation).not.toHaveProperty('repoId')
+    }
+    expect(RcHookAssign.safeParse({ ...installation, github: github.github }).success).toBe(false)
+    expect(
+      RcHookAssign.safeParse({
+        ...installation,
+        githubInstallation: { ...installation.githubInstallation, installationId: 'acme' }
+      }).success
+    ).toBe(false)
+
     // rule shape is enforced: sessionMode enum, uuid ids
     expect(RcHookAssign.safeParse({ ...base, kind: 'webhook', sessionMode: 'sticky' }).success).toBe(false)
     expect(RcHookAssign.safeParse({ ...webhook, daemonId: 'nope' }).success).toBe(false)

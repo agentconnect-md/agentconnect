@@ -255,16 +255,22 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
         return
       }
       // The hook already carries the numeric identity, so a disagreeing ask is refused before any mint.
-      if (githubRepoIdMismatch(externalRepoId, hook.repoId)) {
+      if (hook.installationId == null && githubRepoIdMismatch(externalRepoId, hook.repoId)) {
         conn.sendError(frame.id, 'SCOPE_DENIED', 'the named repository is not the one this hook watches', false)
         return
       }
+      // An installation row answers any repository of its installation, which the mint pins to the named one.
       const cred = await deps.github!.mintForHookReply(
         agent,
         repoFullName,
-        hook.repoId ?? undefined,
+        hook.installationId != null
+          ? externalRepoId !== undefined
+            ? BigInt(externalRepoId)
+            : undefined
+          : (hook.repoId ?? undefined),
         [`daemon:${conn.daemonId}`, `org:${agent.orgId}`],
-        forceRefresh === true
+        forceRefresh === true,
+        hook.installationId ?? undefined
       )
       conn.replyTo(frame, 'gitcred/grant', {
         username: 'x-access-token',

@@ -322,6 +322,7 @@ export interface GithubRunReporterDeps {
     | 'synchronizeReviewSubjects'
     | 'refreshReviewProjectionTarget'
     | 'getRunById'
+    | 'getUnscoped'
   >
   agents: Pick<AgentRepo, 'getUnscoped'>
   orgs?: Pick<OrgRepo, 'slugById'>
@@ -543,7 +544,11 @@ export class GithubRunReporter {
         resolvedRepoId = minted.repoId
         installationId = minted.installation.installationId
       } else if (agent && agent.orgId === projection.orgId) {
-        const minted = await this.deps.github.mintChecksForAgent(agent, projection.repoId, projection.repoFullName)
+        // An installation row publishes at its grant's tier: the grant cannot be revoked while the row exists.
+        const hook = await this.deps.hooks.getUnscoped(projection.hookId)
+        const minted = await this.deps.github.mintChecksForAgent(agent, projection.repoId, projection.repoFullName, {
+          installationGrants: hook?.installationId != null
+        })
         token = minted.cred.token
         repoFullName = minted.resolved.repoFullName
         resolvedRepoId = minted.resolved.repoId

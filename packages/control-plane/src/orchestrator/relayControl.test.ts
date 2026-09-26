@@ -74,6 +74,33 @@ describe('RelayControlSender.hookAssign — Decision routing (code-host-decision
     expect(olderRelay).toHaveBeenCalledWith('rc/hook-remove', { hookId: rule.hookId })
   })
 
+  it('sends an installation rule only to a relay that fills its repository in, and removes it elsewhere', () => {
+    const reg = new RelayRegistry()
+    const filling = vi.fn()
+    const older = vi.fn()
+    reg.add({ relayId: 'new', features: ['hook-github-installation-v1'], send: filling, close: vi.fn() })
+    reg.add({ relayId: 'old', features: ['hook-decision-routing-v1'], send: older, close: vi.fn() })
+    const installationRule = {
+      ...rule,
+      kind: 'github',
+      sessionMode: 'perThread',
+      webhook: undefined,
+      githubInstallation: {
+        installationId: '2345678',
+        accountLogin: 'example-org',
+        events: ['pull_request:opened'],
+        labelFilter: [],
+        mentionOnly: false,
+        installationIds: ['2345678']
+      }
+    }
+
+    new RelayControlSender(reg).hookAssign(installationRule as never)
+
+    expect(filling).toHaveBeenCalledWith('rc/hook-assign', installationRule)
+    expect(older).toHaveBeenCalledWith('rc/hook-remove', { hookId: rule.hookId })
+  })
+
   it('leaves an unrouted rule on every relay', () => {
     const reg = new RelayRegistry()
     const olderRelay = vi.fn()

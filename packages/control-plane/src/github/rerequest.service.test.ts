@@ -207,6 +207,21 @@ describe('GithubRerequestService', () => {
     })
   })
 
+  it("resolves an installation row's Check by the installation that signed its current run", async () => {
+    const row = hook({ repoId: null, repoFullName: null, installationId: INSTALLATION_ID, installationAccount: 'acme' })
+    await expect(make({ hook: row }).service.resolve(request)).resolves.toMatchObject({
+      allowed: true,
+      hookId: HOOK_ID
+    })
+    const other = hook({
+      repoId: null,
+      repoFullName: null,
+      installationId: INSTALLATION_ID + 1n,
+      installationAccount: 'acme'
+    })
+    await expect(make({ hook: other }).service.resolve(request)).resolves.toEqual({ allowed: false })
+  })
+
   it('keeps replies compatible when an older relay does not request the stored base SHA', async () => {
     const { includeBaseSha: _, ...legacyRequest } = request
     await expect(make().service.resolve(legacyRequest)).resolves.toEqual({

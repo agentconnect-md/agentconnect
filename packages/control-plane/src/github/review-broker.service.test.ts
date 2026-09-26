@@ -456,6 +456,26 @@ describe('GithubReviewBrokerService', () => {
     })
   })
 
+  it('authorizes an installation row whose installation signed the accepted run', async () => {
+    const { service, hookRepo } = setup()
+    hookRepo.getUnscoped.mockResolvedValue(
+      hook({ repoId: null, repoFullName: null, installationId: 456n, installationAccount: 'acme' })
+    )
+
+    await service.authorize(authorizeInput(), DAEMON).catch(() => undefined)
+    expect(hookRepo.reserveReviewAttempt).toHaveBeenCalled()
+  })
+
+  it('rejects an installation row of another installation than the accepted run', async () => {
+    const { service, hookRepo } = setup()
+    hookRepo.getUnscoped.mockResolvedValue(
+      hook({ repoId: null, repoFullName: null, installationId: 789n, installationAccount: 'acme' })
+    )
+
+    await expect(service.authorize(authorizeInput(), DAEMON)).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+    expect(hookRepo.reserveReviewAttempt).not.toHaveBeenCalled()
+  })
+
   it('rejects an accepted turn after its hook is retargeted to another repository', async () => {
     const { service, hookRepo } = setup()
     hookRepo.getUnscoped.mockResolvedValue(hook({ repoId: 999n, repoFullName: 'acme/other' }))
