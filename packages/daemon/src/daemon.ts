@@ -5566,16 +5566,24 @@ export class Daemon {
     return agent ? agentWithRuntime(agent, key ? this.sessionRuntimes.get(key) : undefined) : undefined
   }
 
-  // Session-selected runtimes, confined workspaces, microsandbox sessions and sessions of a runtime whose session MCP servers are per-process own their host.
+  // Session-selected runtimes, confined workspaces, isolated sessions born in another strategy, microsandbox sessions and sessions of a per-process MCP runtime own their host.
   private hostKeyFor(agentId: string, sessionKey?: string): HostKey {
     const agent = this.agents.get(agentId)
     if (sessionKey === undefined || !agent) return agentHostKey(agentId)
     const key = sessionHostKey(agentId, sessionKey)
     if (this.sessionRuntimes.has(sessionKey) || this.confinedSession(agent, sessionKey)) return key
+    // An isolated session born in another strategy than the agent's now keeps its own host in its birth strategy (session-executors.md §5).
+    if (this.bornInOtherStrategy(agent, sessionKey)) return key
     // Process-local MCP registrations cannot share a host, even inside a legacy shared VM.
     if (sessionMcpServersScope(agent.runtime, this.runtimes[agent.runtime]) === 'per-process') return key
     if (this.usesMicrosandbox(agent)) return this.legacyMicrosandboxSessions.has(key) ? agentHostKey(agentId) : key
     return agentHostKey(agentId)
+  }
+
+  /** Whether an isolated session's recorded strategy differs from the one the agent's shared host now runs; a pool session's boundary is its pod. */
+  private bornInOtherStrategy(agent: Agent, sessionKey: string): boolean {
+    if (this.k8s || !this.sessionIsolated(agent, sessionKey)) return false
+    return this.sessionStrategy(agent, sessionKey) !== this.agentStrategy(agent)
   }
 
   /** {@link hostKeyFor} for a caller holding the session's workspace request, which is where its isolation is learned. */

@@ -360,7 +360,8 @@ the field rides the spec.
 **No silent downgrade.** A session whose strategy is unavailable where it would run is
 refused with the probe's reason; it never falls back to a weaker boundary. A session
 keeps the strategy it was born with, as the workspace model's tier rule already
-works: changing an agent's `execution` reaches only sessions created afterwards.
+works: changing an agent's `execution` reaches only sessions created afterwards. The
+one exception is a shared session, which the agent's shared host serves (below).
 
 **The birth strategy is durable, on both sides.** Nothing reconstructs it from the
 agent's current setting, which may have changed since:
@@ -372,8 +373,12 @@ agent's current setting, which may have changed since:
   launch — a restart, a re-dial, a move after executor loss — uses the recorded
   strategy and never asks the agent: a placed session's `prepare` names it, and a
   local session's own host launches in it, with the tier it gets while nothing stands
-  on disk for it. A session its agent's shared host serves has no host of its own, so
-  it runs in whatever that host runs. Until the in-process executor entry (§11 step 4)
+  on disk for it. An isolated session born in a strategy the agent no longer names
+  gets a host of its own in its birth strategy, so one born on the host keeps its
+  worktree, its runtime's home and its history when the agent moves to srt or a VM.
+  A shared session has no host of its own and runs in whatever the agent's shared
+  host runs; after a switch its runtime session starts again and the thread is
+  replayed. Until the in-process executor entry (§11 step 4)
   routes a local VM's Git and file reads per environment, they still follow the
   agent's strategy. A successor holder has no such row without a shared store, so the
   Control Plane keeps the strategy beside the executor in its hint of where the
