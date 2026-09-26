@@ -305,25 +305,25 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
       asked: ReadableConversation,
       namespace: DecisionEvaluationConversation | undefined,
       opts: { bodies?: boolean } = {}
-    ): Promise<boolean> => {
+    ): Promise<{ fresh: ReadableConversation; namespace: DecisionEvaluationConversation } | null> => {
       const fresh = await readableConversation(deps, req, req.params.id, req.params.channelId)
       const sameLane =
         fresh?.consumer.agent.id === asked.consumer.agent.id &&
         fresh.consumer.integration.id === asked.consumer.integration.id
       if (!fresh || !sameLane) {
         await reply.code(404).send(notFound('conversation not found'))
-        return false
+        return null
       }
       // A reply that names no namespace cannot be scoped to its install, so it fails closed as an upgrade.
       if (!namespace) {
         await reply.code(503).send(unavailable(UNSUPPORTED, 'DAEMON_UPGRADE_REQUIRED'))
-        return false
+        return null
       }
       if (!(await conversationAudienceAllows(deps, req, fresh, namespace, opts))) {
         await reply.code(404).send(notFound('conversation not found'))
-        return false
+        return null
       }
-      return true
+      return { fresh, namespace }
     }
 
     r.get(
@@ -364,9 +364,10 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
         )
         if (!result.ok) return reply
         const { conversation: namespace, ...page } = result.value
-        if (!(await audienceAllows(req, reply, conversation, namespace))) return reply
-        // A title quotes the frozen input, so it shows only to a caller the detail would admit.
-        if (await conversationAudienceAllows(deps, req, conversation, namespace!, { bodies: true })) return page
+        const allowed = await audienceAllows(req, reply, conversation, namespace)
+        if (!allowed) return reply
+        // A title quotes the frozen input, so it shows only to a caller the detail would admit now.
+        if (await conversationAudienceAllows(deps, req, allowed.fresh, allowed.namespace, { bodies: true })) return page
         return { ...page, items: page.items.map((item) => ({ ...item, title: null })) }
       }
     )

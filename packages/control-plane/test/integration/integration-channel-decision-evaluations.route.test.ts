@@ -363,4 +363,20 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
     }
     expect((await list(collaborator.app, integrationId)).statusCode).toBe(404)
   })
+
+  it('withholds titles from a caller who loses edit access while the daemon reads', async () => {
+    const { integrationId } = await seedInstall()
+    const userId = await member('collaborator')
+    const demoted = appWith({ userId })
+    demoted.spy.list = async () => {
+      await prisma.membership.update({
+        where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId } },
+        data: { role: 'viewer' }
+      })
+      return { ...page, conversation: UNSCOPED }
+    }
+    const res = await list(demoted.app, integrationId)
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json()).toEqual({ ...page, items: [{ ...row, title: null }] })
+  })
 })
