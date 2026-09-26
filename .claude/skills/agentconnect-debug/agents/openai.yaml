@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Debug AgentConnect'
+  short_description: 'Diagnose a live AgentConnect incident from evidence'
+  default_prompt: 'Use $agentconnect-debug to investigate this AgentConnect incident, starting from the environment, the daemon version, and where the artifact lives.'
