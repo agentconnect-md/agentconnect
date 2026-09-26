@@ -218,22 +218,25 @@ diff with `revision_changed`, `revision_mismatch`, or `revision_unverified`. A f
 the webhook and observed history with `pull_request_unavailable`. The webhook description takes
 precedence over the API description. No checkout, retries or pagination are involved.
 
-Commit messages contribute at most 4 KiB. The shared request fitter measures the actual serialized
-question, model and state, including JSON escaping, against both 8,000 estimated tokens at four
+Commit messages contribute at most 4 KiB. The code-host builder supplies its ordered optional text
+fields to the shared request fitter, which measures the actual serialized question, model and
+state, including JSON escaping, against both 8,000 estimated tokens at four
 bytes each (32,000 bytes) and the 32 KiB hard limit. It drops oldest history, then shortens diff,
 commit messages and subject body in that order. It preserves the trigger and required identity;
 an input that still cannot fit is `unsupported_input`, handled by each consumer's fallback policy.
 `context.reasons` records missing and trimmed data; `omittedMessages` counts budget-dropped rows
 within the observed window. Chains budget against their largest request envelope and keep one
-state for all steps. Repository selection adds `workspace` before the final budget check.
+state for all steps. Repository selection adds `workspace` before refitting with the same code-host
+trim rules. A routing deadline reached during context collection is recorded as `timeout`.
 
 History begins when routing was enabled and has gaps while the host was offline; a new host on a
 separate SQLite store starts with partial history. GitLab and Gitea record a thread under the host
 agent's hook, so a host change also starts that scope's history afresh. `observed_history` marks
 these windows partial; comments outside the observed window are not fetched from the provider.
 The runtime and repository selectors reuse one collected snapshot per session birth, while a
-routing host can have a different observation window. The bounded ingress envelope is retained
-in the daemon's durable inbox for restart replay; it is not sent to the Control Plane.
+routing host can have a different observation window. Both call the code-host context reader
+directly, using the same provider host dependencies as review orchestration. The bounded ingress
+envelope is retained in the daemon's durable inbox for restart replay; it is not sent to the Control Plane.
 
 ## 6. Linear
 

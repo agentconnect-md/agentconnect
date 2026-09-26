@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DecisionQuestion, REPO_CANDIDATES_MAX, type DecisionEvaluation } from '@agentconnect.md/protocol'
 import { DECISION_REQUEST_MAX_BYTES, decisionRequestBody } from '../src/decisions/evaluator.js'
 import { modelSelectionState } from '../src/decisions/model-selection.js'
+import { fitCodeHostDecisionState } from '../src/codehost/decision-state.js'
 import {
   evaluateChunks,
   evaluateWithCapacityWait,
@@ -156,6 +157,34 @@ describe('questions (decision 15)', () => {
 describe('state (decision 16)', () => {
   const question = repoSelectionChunks(many(3))[0]!.question
   const decision = { model: 'jev-latest', question }
+
+  it('keeps the code-host trim order when workspace context pushes a fitted state over budget', () => {
+    const base = {
+      source: 'github',
+      currentMessage: { text: '' },
+      history: [],
+      pullRequest: { diff: 'd'.repeat(12_000), commitMessages: 'c'.repeat(4_000) },
+      subject: { body: 's'.repeat(8_000) },
+      context: { partial: false, reasons: [], omittedMessages: 0 }
+    }
+    base.currentMessage.text = 't'.repeat(31_999 - Buffer.byteLength(decisionRequestBody({ decision, state: base })))
+    const state = repoSelectionState(
+      base,
+      { primary: 'example-org/primary-service', partial: false },
+      decision,
+      fitCodeHostDecisionState
+    )!
+    expect(Buffer.byteLength(decisionRequestBody({ decision, state }))).toBeLessThanOrEqual(32_000)
+    expect(state).toMatchObject({
+      currentMessage: base.currentMessage,
+      subject: base.subject,
+      pullRequest: { commitMessages: base.pullRequest.commitMessages },
+      context: { partial: true, reasons: ['budget_trimmed', 'diff_truncated'], omittedMessages: 0 }
+    })
+    expect((state.pullRequest as { diff: string }).diff.length).toBeLessThan(base.pullRequest.diff.length)
+    expect(base.pullRequest.diff).toHaveLength(12_000)
+    expect(base.context.reasons).toEqual([])
+  })
 
   it('adds the primary and the candidates’ partial mark to the model-selection state', () => {
     const base = { source: 'chat', currentMessage: { text: 'Fix the deploy' }, history: [], truncated: false }

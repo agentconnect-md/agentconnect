@@ -148,16 +148,17 @@ function questionFor(chunk: readonly RepoSelectionCandidate[]): DecisionQuestion
   }
 }
 
-// Append workspace context, then apply the same budget as every other Decision consumer.
+// Append workspace context, then refit with the source's trim rules and the shared request budget.
 export function repoSelectionState(
   base: Record<string, unknown>,
   options: { primary?: string; partial: boolean },
-  decision: { model: string; question: DecisionQuestion }
+  decision: { model: string; question: DecisionQuestion },
+  fit = fitDecisionState
 ): Record<string, unknown> | undefined {
   const context = record(base.context)
   const reasons = Array.isArray(context?.reasons) ? [...(context.reasons as string[])] : []
   if (options.partial && !reasons.includes('candidates_truncated')) reasons.push('candidates_truncated')
-  const built = fitDecisionState(
+  const built = fit(
     {
       ...base,
       workspace: options.primary === undefined ? {} : { primary: options.primary },
