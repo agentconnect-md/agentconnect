@@ -38,16 +38,11 @@ export function promptEchoPrefix(texts: readonly string[]): string {
   return collapse(texts.join(' ')).slice(0, PROMPT_ECHO_PREFIX_CHARS)
 }
 
-/**
- * True when a runtime-pushed title is only this turn's prompt read back. codex-acp auto-titles an
- * untitled session from its raw prompt text — every text block joined, whitespace collapsed, no
- * length bound — so a session it re-titles after `session/load` (which carries no leading
- * standing-context block) surfaces the caller's whole message as the title. Prefix, not equality:
- * the echo is the WHOLE prompt while the fingerprint is bounded.
- */
+/** True when a runtime-pushed title is only this turn's prompt read back: the whole prompt (codex-acp) or just its opening, such as a fallback title cut at the first line. */
 export function isPromptEchoTitle(title: string, promptPrefix: string): boolean {
   if (promptPrefix.length < MIN_PROMPT_ECHO_CHARS) return false
-  return collapse(title).startsWith(promptPrefix)
+  const line = collapse(title)
+  return line.startsWith(promptPrefix) || (line.length >= MIN_PROMPT_ECHO_CHARS && promptPrefix.startsWith(line))
 }
 
 /** A runtime-pushed title reduced to the one-line, {@link TITLE_MAX_CHARS} shape every other title

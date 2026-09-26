@@ -17,6 +17,7 @@ import type { McpServer } from '@agentclientprotocol/sdk'
 import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 import { localMemoryHome } from '../src/memory/home.js'
 import { buildParentReplyAppend } from '../src/session/turn/standing-context.js'
+import { planReplay } from '../src/session/turn/replay-plan.js'
 
 /** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
  *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
@@ -977,6 +978,25 @@ describe('SessionManager', () => {
     // A real runtime title on the same turn still gets through.
     expect(isPromptEchoTitle('Review the Linear transcript change', promptEchoPrefix(promptTexts))).toBe(false)
     await (await store).close()
+  })
+
+  it('treats a fallback title cut at the prompt’s first line as an echo, such as a history-lost replay heading', () => {
+    const { head } = planReplay({
+      gap: [],
+      agentId: 'bot-a',
+      triggerTs: 't-2',
+      thread: 't-1',
+      markerBefore: null,
+      ordering: undefined,
+      firstPromptAfterOwnRootInitialization: false,
+      historyLost: true
+    })
+    const promptTexts = [`${head}\n[user-1] Invent a word and remember it.\n[you] Zephrix`, '[user-1] Which word?']
+    const prefix = promptEchoPrefix(promptTexts)
+    expect(isPromptEchoTitle(head, prefix)).toBe(true)
+    // A title too short to carry signal, and a real summary, both stay titles.
+    expect(isPromptEchoTitle(head.slice(0, 30), prefix)).toBe(false)
+    expect(isPromptEchoTitle('Recall the invented word', prefix)).toBe(false)
   })
 
   it('continues one session across every webhook delivery naming the same subject', async () => {
