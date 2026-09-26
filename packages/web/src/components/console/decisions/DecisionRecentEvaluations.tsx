@@ -13,7 +13,7 @@ import { codeHostRoutingEvaluations } from '@/lib/decisions/evaluation-source'
 import { ruleNumbers } from '@/lib/decisions/routing-draft'
 import { formatEvaluationTime } from './EvaluationParts'
 import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
-import { ModelSelectionEvaluationsDrawer } from './ModelSelectionEvaluationsDrawer'
+import { ModelSelectionEvaluationsDrawer } from './ModelSelectionEvaluations'
 import { DecisionRoutingEvaluationsDrawer } from './routing/DecisionRoutingEvaluationsDrawer'
 
 type RecordedUsage = DecisionUsage & { kind: 'gate' | 'shared_bot_routing' | 'code_host_routing' | 'model_selection' }
@@ -46,7 +46,7 @@ export function DecisionRecentEvaluations({
   usages: DecisionUsage[]
 }) {
   const t = useTranslations('Decisions')
-  const modelT = useTranslations('Agents.detail.modelEvaluations')
+  const modelT = useTranslations('Agents.dialog.modelSelection.evaluations')
   const locale = useLocale()
   const { api, orgId } = useDecisionsPrototype()
   const sources = recorded(usages)
@@ -249,9 +249,7 @@ export function DecisionRecentEvaluations({
       )}
       {drawerSource?.kind === 'model_selection' && (
         <ModelSelectionEvaluationsDrawer
-          agentId={drawerSource.id}
-          agentName={drawerSource.label}
-          orgId={orgId}
+          target={{ agentId: drawerSource.id, agentName: drawerSource.label, live: true }}
           decisionId={drawerDecisionId}
           initialSeq={opened?.seq}
           onClose={() => setOpened(null)}

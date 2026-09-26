@@ -74,6 +74,7 @@ import { useConsoleData } from '@/lib/data-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
 import { ruleSummaries } from '@/components/console/decisions/rule-summary'
+import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { agentToneColor } from '@/lib/agent-tone'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
@@ -6012,6 +6013,10 @@ export default function SessionDetailView() {
                                         selected: byDecision,
                                         rules: ruleSummaries(owner.modelSelection, runtimeDecision?.question),
                                         fallback: pgModel || agentRuntime,
+                                        decisionHref:
+                                          runtimeDecision &&
+                                          orgPath(`/decisions/${encodeURIComponent(runtimeDecision.id)}`),
+                                        evaluations: modelEvaluationsTarget(owner),
                                         onSelect: () => {
                                           setRuntimeSelections((current) => ({
                                             ...current,

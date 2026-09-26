@@ -20,6 +20,7 @@ import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useOrgs } from '@/lib/org-context'
 import { RuntimeModelSelect, type RuntimeModelSource } from '@/components/console/RuntimeModelSelect'
 import { RuntimeSelectionSample } from './RuntimeSelectionSample'
+import { ModelSelectionEvaluations } from './ModelSelectionEvaluations'
 import { DecisionPicker } from './DecisionPicker'
 import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
@@ -651,6 +652,7 @@ export function ModelSelectionField({
               valid={valid}
             />
           )}
+          {agentId && <ModelSelectionEvaluations agentId={agentId} orgId={orgId} live={api?.mode === 'live'} />}
           {issues.length > 0 && (
             <div role="alert" className="text-[12px] text-(--status-error)">
               {t('invalidRules')}
