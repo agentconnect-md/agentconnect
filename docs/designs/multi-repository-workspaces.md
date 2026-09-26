@@ -170,6 +170,18 @@ fence), its worktrees go through the existing dirty/unique-commit rules (with
 the review-snapshot exemption those rules carry); the
 checkout is removed only once no worktree remains and it is itself clean,
 otherwise retained and reported. Re-adding the row un-retires the root in place.
+No change to the additional repositories or installation grants (adding,
+removing, or moving a row's or grant's checkout) interrupts a running turn or
+restarts the runtime: sessions started afterwards read the new lists, and the
+daemon drops only its cached repository tokens, so the next credential request
+is minted under the new authorization. One exception: Codex's `:workspace`
+permission profile protects `.git` and reopens only the directories listed when
+the runtime launches, so when a row joins the `always` set, a Codex runtime
+shared by the agent's sessions is stopped at the first idle sweep with no turn
+in flight, and the next session relaunches it with the new checkout's `.git`
+writable. Sessions that start before then cannot write that `.git`. Other
+runtimes, and a session with a runtime of its own, need no relaunch. Only a
+change to the workspace's own checkout takes the cold path.
 
 ## Implementation sketch
 

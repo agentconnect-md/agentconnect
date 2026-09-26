@@ -1139,6 +1139,8 @@ export class Daemon {
   private hostLaunch = new Map<HostKey, { agentDir: string; cwd: string }>()
   // host → when it was (re)built (clock ms), so the idle reaper gives a host with no recorded activity yet a full window.
   private hostStartedAt = new Map<HostKey, number>()
+  // Shared Codex hosts launched before an `always` root joined: their `.git` write roots are fixed at spawn, so the idle sweep reclaims them at its first tick with nothing in flight.
+  private readonly staleRootHosts = new WeakSet<AcpHost>()
   // The daemon's own passes on its hosts, which hold one against the idle reaper and restart its clock; no session row records them.
   private readonly hostPasses = new HostPasses()
   // agentId → config-file secret state (shim/config-file-env.ts); the files are shared by the agent's hosts and go with its last one.
@@ -4791,6 +4793,7 @@ export class Daemon {
                 c.hostRespawn && 'host',
                 c.workspace && 'workspace',
                 c.workspaceRepoRename && 'workspace-origin',
+                c.additionalRepos && 'additional-repos',
                 c.integrations && 'integrations'
               ]
                 .filter(Boolean)
@@ -4917,6 +4920,14 @@ export class Daemon {
         } finally {
           if (!wasDraining && !this.agentDestructivePending(a.id)) this.drainingAgents.delete(a.id)
         }
+      }
+      // Additional repositories and grants reach sessions started from now (decision 19): running turns keep their roots, and the next credential request mints at the new authorization.
+      if (change.additionalRepos && !workspaceNeedsColdRecovery) {
+        this.gitCreds.remove(a.id)
+        // Codex's `:workspace` profile reopens only the `.git` that existed at launch, so its shared process is reclaimed once idle.
+        const shared =
+          change.alwaysRootAdded && this.isCodexRuntime(a.id) ? this.hosts.get(agentHostKey(a.id)) : undefined
+        if (shared) this.staleRootHosts.add(shared)
       }
       // workspace change → eagerly (re-)materialize the checkout in the background so
       // a re-pointed git-repo is warm before the next message, instead of paying the
@@ -21383,7 +21394,8 @@ export class Daemon {
           ? await this.sharedHostLastActivityTs(agentId)
           : await this.store.sessionLastActivityTs(sessionKey)
       const last = Math.max(activity ?? 0, this.hostStartedAt.get(key) ?? 0, this.hostPasses.settledAt(key) ?? 0)
-      if (now - last <= ttl) continue
+      const staleRoots = this.staleRootHosts.has(host)
+      if (now - last <= ttl && !staleRoots) continue
       // Read admission after the store round trip; only this session's work holds its host.
       if (this.hosts.get(key) !== host || this.hostStopping.has(key) || this.drainingAgents.has(agentId)) continue
       if (
@@ -21414,7 +21426,9 @@ export class Daemon {
             `in flight — force-reclaiming (a wedged/long-lived background task may be terminated)`
         )
       }
-      this.log.info(`idle: reclaiming host "${label}" (idle ${Math.round((now - last) / 1000)}s) → provisioned`)
+      this.log.info(
+        `idle: reclaiming host "${label}" (${staleRoots ? 'launched before a new always root' : `idle ${Math.round((now - last) / 1000)}s`}) → provisioned`
+      )
       void this.stopHostByKey(key).catch((err) =>
         this.log.error(`idle: stop host "${label}" failed: ${formatErr(err)}`)
       )

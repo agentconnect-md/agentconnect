@@ -181,6 +181,79 @@ describe('diffAgents', () => {
     })
   })
 
+  it('keeps the host for an additional repository or installation grant change, which reaches later sessions only', () => {
+    const repo = { repoFullName: 'example-org/tools', repoId: '42', provider: 'github', materialize: 'always' }
+    const before = { ...a('x'), workspace: { ...a('x').workspace, additionalRepos: [repo] } } as unknown as Agent
+    const cases = [
+      { additionalRepos: [{ ...repo, materialize: 'on-demand' }] },
+      { additionalRepos: [] },
+      {
+        additionalInstallations: [
+          { provider: 'github', accountLogin: 'example-org', access: 'read', materialize: 'decision' }
+        ]
+      }
+    ]
+    for (const change of cases) {
+      const after = { ...before, workspace: { ...before.workspace, ...change } } as unknown as Agent
+      const { toChange } = diffAgents([after], actual(before))
+      expect(toChange[0]).toMatchObject({
+        hostRespawn: false,
+        workspace: false,
+        workspaceRepoRename: false,
+        additionalRepos: true,
+        alwaysRootAdded: false,
+        integrations: false
+      })
+    }
+  })
+
+  it('flags a repository joining the always set, which a shared process can only write after a relaunch', () => {
+    const repo = { repoFullName: 'example-org/tools', repoId: '42', provider: 'github', materialize: 'on-demand' }
+    const before = { ...a('x'), workspace: { ...a('x').workspace, additionalRepos: [repo] } } as unknown as Agent
+    const joined = [
+      [{ ...repo, materialize: 'always' }],
+      [repo, { repoFullName: 'example-org/docs', repoId: '43', provider: 'github', materialize: 'always' }]
+    ]
+    for (const additionalRepos of joined) {
+      const after = { ...before, workspace: { ...before.workspace, additionalRepos } } as unknown as Agent
+      expect(diffAgents([after], actual(before)).toChange[0]).toMatchObject({
+        additionalRepos: true,
+        alwaysRootAdded: true
+      })
+    }
+    // A rename keeps the id, so the checkout it names is the one the process already writes.
+    const always = {
+      ...before,
+      workspace: { ...before.workspace, additionalRepos: [{ ...repo, materialize: 'always' }] }
+    }
+    const renamed = {
+      ...always,
+      workspace: {
+        ...always.workspace,
+        additionalRepos: [{ ...repo, materialize: 'always', repoFullName: 'example-org/tooling' }]
+      }
+    }
+    expect(diffAgents([renamed as unknown as Agent], actual(always as unknown as Agent)).toChange[0]).toMatchObject({
+      additionalRepos: true,
+      alwaysRootAdded: false
+    })
+  })
+
+  it('still evicts the host when the workspace’s own checkout moves beside an additional repository change', () => {
+    const after = {
+      ...a('x'),
+      workspace: {
+        ...a('x').workspace,
+        gitBranch: 'release',
+        additionalRepos: [
+          { repoFullName: 'example-org/tools', repoId: '42', provider: 'github', materialize: 'always' }
+        ]
+      }
+    } as unknown as Agent
+    const { toChange } = diffAgents([after], actual(a('x')))
+    expect(toChange[0]).toMatchObject({ workspace: true, additionalRepos: true })
+  })
+
   it('classifies an App-backed URL-only rename as non-destructive origin convergence', () => {
     const before = {
       ...a('x'),

@@ -15,7 +15,7 @@ const CONV = '11111111-1111-4111-8111-111111111111'
 const REPLAYED = '⚠️ The agent is restarting to apply its new configuration — this message will be picked up again.'
 const LOST = '⚠️ The agent restarted to apply its new configuration — this turn was stopped; send your message again.'
 
-function scaffold(): string {
+function scaffold(runtime = 'claude'): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-config-respawn-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -23,7 +23,7 @@ function scaffold(): string {
       version: 1,
       controlPlane: { enabled: false },
       features: { turnFinalContextRefresh: false },
-      runtimes: { claude: { command: 'node', args: ['unused'] } }
+      runtimes: { [runtime]: { command: 'node', args: ['unused'] } }
     })
   )
   const agentDir = join(root, 'agents', AGENT_ID)
@@ -34,7 +34,7 @@ function scaffold(): string {
       id: AGENT_ID,
       name: AGENT_ID,
       status: 'active',
-      runtime: 'claude',
+      runtime,
       workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
       integrations: [],
       output: { mode: 'low' }
@@ -168,6 +168,87 @@ describe('config change respawn', () => {
       await daemon.stop()
     }
   })
+
+  it('keeps a running turn and its process when only the additional repositories or grants change', async () => {
+    const old = blockingHost('old')
+    const root = scaffold()
+    const daemon = await boot(root, [old.host])
+    const dropped = vi.spyOn((daemon as any).gitCreds, 'remove')
+    const running = (daemon as any).dispatch(AGENT_ID, msg('100', 'long question', 'T1'), 'int-a')
+
+    try {
+      await vi.waitFor(() => expect(old.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      const workspace = { mode: 'from-scratch', path: join(root, 'agents', AGENT_ID, 'workspace') }
+      updateAgent(root, {
+        workspace: {
+          ...workspace,
+          additionalInstallations: [
+            { provider: 'github', accountLogin: 'example-org', access: 'read', materialize: 'decision' }
+          ]
+        }
+      })
+      await daemon.reconcile()
+
+      // Only later sessions see the grant; the cached tokens go so the next request mints under it.
+      expect(old.host.cancel).not.toHaveBeenCalled()
+      expect(old.host.stop).not.toHaveBeenCalled()
+      expect((daemon as any).respawnHeldEntries.size).toBe(0)
+      expect(dropped).toHaveBeenCalledWith(AGENT_ID)
+
+      old.release()
+      await expect(running).resolves.toBe('acp-old')
+      await (daemon as any).sweepIdle()
+      expect(old.host.stop).not.toHaveBeenCalled()
+    } finally {
+      old.release()
+      await Promise.allSettled([running])
+      await daemon.stop()
+    }
+  })
+
+  it.each([
+    { runtime: 'codex-acp', reclaimed: 1 },
+    { runtime: 'claude', reclaimed: 0 }
+  ])(
+    'when an always repository joins, a shared $runtime process is reclaimed once idle $reclaimed time(s), with no turn cut',
+    async ({ runtime, reclaimed }) => {
+      const old = blockingHost('old')
+      const root = scaffold(runtime)
+      const daemon = await boot(root, [old.host])
+      const running = (daemon as any).dispatch(AGENT_ID, msg('100', 'long question', 'T1'), 'int-a')
+
+      try {
+        await vi.waitFor(() => expect(old.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+        const workspace = { mode: 'from-scratch', path: join(root, 'agents', AGENT_ID, 'workspace') }
+        updateAgent(root, {
+          workspace: {
+            ...workspace,
+            additionalRepos: [
+              { repoFullName: 'example-org/tools', repoId: '42', provider: 'github', materialize: 'always' }
+            ]
+          }
+        })
+        await daemon.reconcile()
+
+        // The turn keeps its process, which no sweep takes while it runs.
+        await (daemon as any).sweepIdle()
+        expect(old.host.cancel).not.toHaveBeenCalled()
+        expect(old.host.stop).not.toHaveBeenCalled()
+        expect((daemon as any).respawnHeldEntries.size).toBe(0)
+
+        old.release()
+        await expect(running).resolves.toBe('acp-old')
+        // Idle well inside the reclaim window, a Codex process goes so the next launch writes the new checkout's `.git`.
+        await (daemon as any).sweepIdle()
+        await vi.waitFor(() => expect(old.host.stop).toHaveBeenCalledTimes(reclaimed), WAIT)
+        expect(old.host.cancel).not.toHaveBeenCalled()
+      } finally {
+        old.release()
+        await Promise.allSettled([running])
+        await daemon.stop()
+      }
+    }
+  )
 
   it('serves a new session at once when each session has its own process', async () => {
     const old = blockingHost('old')

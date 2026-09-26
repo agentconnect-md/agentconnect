@@ -56,11 +56,31 @@ function hostSpawnSig(a: Agent): string {
   })
 }
 
-/** Sub-signature over the workspace dimension — cwd is materialized per session by
- *  prepareWorkspace(agent), so a workspace change must also evict the host so the
- *  next session re-materializes the (possibly re-pointed/re-cloned) checkout. */
+/** The workspace's own checkout, without the additional repositories and installation grants each session reads when it starts. */
+function ownWorkspace(a: Agent): Omit<Agent['workspace'], 'additionalRepos' | 'additionalInstallations'> {
+  const { additionalRepos, additionalInstallations, ...own } = a.workspace
+  void additionalRepos
+  void additionalInstallations
+  return own
+}
+
+/** Sub-signature over the workspace's own checkout: a change re-points or re-clones it, so the host is evicted and the next session re-materializes it. */
 function workspaceSig(a: Agent): string {
-  return JSON.stringify(a.workspace)
+  return JSON.stringify(ownWorkspace(a))
+}
+
+/** The additional repositories and installation grants: fixed per session at `session/new` (multi-repository-workspaces.md decision 19), so a change reaches only later sessions. */
+function additionalReposSig(a: Agent): string {
+  return JSON.stringify([a.workspace.additionalRepos, a.workspace.additionalInstallations])
+}
+
+/** The `always` rows by host and id: the roots the agent's workspace preparation checks out before a process launches. */
+function alwaysRoots(a: Agent): Set<string> {
+  return new Set(
+    (a.workspace.additionalRepos ?? [])
+      .filter((row) => row.materialize === 'always')
+      .map((row) => `${row.provider}:${row.repoId}`)
+  )
 }
 
 function isGithubRepoLocation(input: string): boolean {
@@ -82,8 +102,8 @@ function isGithubRepoLocation(input: string): boolean {
  * therefore treat this one-field canonical URL convergence as non-destructive.
  */
 function isGithubAppRepoRename(before: Agent, after: Agent): boolean {
-  const left = before.workspace
-  const right = after.workspace
+  const left = ownWorkspace(before)
+  const right = ownWorkspace(after)
   if (
     left.mode !== 'git-repo' ||
     right.mode !== 'git-repo' ||
@@ -128,6 +148,10 @@ export interface AgentChange {
   workspace: boolean
   /** App-backed canonical repo URL refresh: update origin without interrupting turns. */
   workspaceRepoRename: boolean
+  /** The additional repositories or installation grants moved: later sessions read them, running ones keep their roots. */
+  additionalRepos: boolean
+  /** A repository joined the `always` set: a shared Codex process fixes its writable `.git` roots at launch, so it is reclaimed once idle. */
+  alwaysRootAdded: boolean
   integrations: boolean
 }
 
@@ -162,6 +186,8 @@ export function diffAgents(desired: Agent[], actual: Map<string, Agent>): AgentD
         hostRespawn: hostSpawnSig(cur) !== hostSpawnSig(a),
         workspace: workspaceSig(cur) !== workspaceSig(a) && !workspaceRepoRename,
         workspaceRepoRename,
+        additionalRepos: additionalReposSig(cur) !== additionalReposSig(a),
+        alwaysRootAdded: [...alwaysRoots(a)].some((root) => !alwaysRoots(cur).has(root)),
         integrations: integrationsSig(cur) !== integrationsSig(a)
       })
     }
