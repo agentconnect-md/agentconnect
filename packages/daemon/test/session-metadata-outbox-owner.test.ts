@@ -10,7 +10,8 @@ const DAEMON = 'd1'
 
 /** git-workspace-model §11: one host per session, so two sessions of one agent can share a runtime-local ACP id. */
 async function world() {
-  const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
+  const database = new DatabaseSync(':memory:')
+  const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(database) })
   const now = 1_000_000
   const sync = vi.fn<(event: EventSession) => Promise<'acknowledged' | 'unsupported'>>(async () => 'acknowledged')
   const cp = { state: 'READY', supportsServerFeature: () => true, syncEventSession: sync }
@@ -69,7 +70,7 @@ async function world() {
     await outbox.drainSessionMetadataSnapshots()
     return new Map(sync.mock.calls.map(([event]) => [event.sessionId, event]))
   }
-  return { store, outbox, sync, cp, dm, channel, classify, start, events }
+  return { database, agent, store, outbox, sync, cp, dm, channel, classify, start, events }
 }
 
 describe('session metadata names its classification by the logical session', () => {
@@ -89,6 +90,20 @@ describe('session metadata names its classification by the logical session', () 
     const seen = await w.events()
     expect(seen.get(w.dm.outward)).toMatchObject(dmTarget)
     expect(seen.get(w.channel.outward)).toMatchObject(channelTarget)
+    w.outbox.dispose()
+    await w.store.close()
+  })
+
+  it('names no model for an observation recorded without its runtime, once the next runtime is known', async () => {
+    const w = await world()
+    w.database
+      .prepare('UPDATE sessions SET observedModel = ?, observedModelSet = 1 WHERE key = ?')
+      .run('model-a', w.dm.key)
+    Object.assign(w.agent, { runtime: 'runtime-a' })
+    await w.start()
+    const seen = await w.events()
+    expect(seen.get(w.dm.outward)).toMatchObject({ runtime: 'runtime-a', observedModel: null })
+    expect(seen.get(w.dm.outward)).not.toHaveProperty('model')
     w.outbox.dispose()
     await w.store.close()
   })

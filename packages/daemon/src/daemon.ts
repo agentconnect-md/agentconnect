@@ -7920,7 +7920,7 @@ export class Daemon {
       triggeredBy: context.trigger,
       memoryProvider: 'managed'
     })
-    await this.store.setObservedModel(executionKey, model ?? null)
+    await this.store.setObservedTurn(executionKey, agent.runtime, model ?? null)
     await this.store.setSessionTitle(executionKey, 'Memory dream')
     const dream = await this.store.getDream(agentId, context.dreamId)
     if (dream) {
@@ -15056,7 +15056,7 @@ export class Daemon {
         : advertisedModel === 'default'
           ? undefined
           : advertisedModel
-    await this.store.setObservedModel(run.key, turnModel ?? null)
+    await this.store.setObservedTurn(run.key, run.agent.runtime, turnModel ?? null)
     return turnModel
   }
 

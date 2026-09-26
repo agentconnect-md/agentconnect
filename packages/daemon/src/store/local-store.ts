@@ -1218,7 +1218,7 @@ const DECISION_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 30
+export const SCHEMA_VERSION = 31
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1554,6 +1554,16 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
     if (!columns.some((c) => c.name === 'selectedRepos'))
       await db.exec('ALTER TABLE sessions ADD COLUMN selectedRepos TEXT')
+  },
+  // v31: the runtime beside the observed model, so the pair never splits; null on rows observed earlier, added only where it is missing, as v30 does.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS observedRuntime TEXT')
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
+    if (!columns.some((c) => c.name === 'observedRuntime'))
+      await db.exec('ALTER TABLE sessions ADD COLUMN observedRuntime TEXT')
   }
 ]
 
@@ -1681,7 +1691,7 @@ export class LocalStore {
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
         usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, threadUrl TEXT, modelOverride TEXT,
-        observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0, decisionModel TEXT,
+        observedRuntime TEXT, observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0, decisionModel TEXT,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
         outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT, workspaceIsolation TEXT,
         originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER,
@@ -3603,10 +3613,21 @@ export class LocalStore {
     return row.observedModel
   }
 
-  /** Persist the runtime observation so late usage corrections and metadata
-   *  re-emits retain a named model or an explicit unknown across turn teardown. */
-  async setObservedModel(key: string, model: string | null): Promise<void> {
-    await this.db.prepare('UPDATE sessions SET observedModel = ?, observedModelSet = 1 WHERE key = ?').run(model, key)
+  /** The runtime and model the session's last turn ran; a row observed before v31 carries no runtime. */
+  async getObservedTurn(key: string): Promise<{ runtime?: string; model: string | null } | undefined> {
+    const row = (await this.db
+      .prepare('SELECT observedRuntime, observedModel, observedModelSet FROM sessions WHERE key = ?')
+      .get(key)) as
+      { observedRuntime: string | null; observedModel: string | null; observedModelSet: number } | undefined
+    if (!row || row.observedModelSet !== 1) return undefined
+    return { ...(row.observedRuntime ? { runtime: row.observedRuntime } : {}), model: row.observedModel }
+  }
+
+  /** Persist a turn's runtime and observed model as one pair, kept across teardown for usage corrections and metadata re-emits. */
+  async setObservedTurn(key: string, runtime: string, model: string | null): Promise<void> {
+    await this.db
+      .prepare('UPDATE sessions SET observedRuntime = ?, observedModel = ?, observedModelSet = 1 WHERE key = ?')
+      .run(runtime, model, key)
   }
 
   /** Persist the session-scoped model override. No-op on an unknown key. */

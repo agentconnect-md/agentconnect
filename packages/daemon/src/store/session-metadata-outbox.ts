@@ -179,9 +179,8 @@ export class SessionMetadataOutbox {
     const agent = this.host.agents().get(input.agentId)
     const selected = pinnedDecisionTarget(slot?.decisionModel)
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
-    if (input.runtime !== undefined) event.runtime = input.runtime
-    else if (selected) event.runtime = selected.runtime
-    else if (agent?.runtime) event.runtime = agent.runtime
+    // The runtime the session's next turn uses.
+    const runtime = input.runtime ?? selected?.runtime ?? agent?.runtime
     const sessionRecord = slot
     if (sessionRecord?.workspaceIsolation) event.workspaceIsolation = sessionRecord.workspaceIsolation
     const storeKey = sessionRecord?.key
@@ -189,13 +188,22 @@ export class SessionMetadataOutbox {
       (allowRuntimeChangesInChat && storeKey ? await store.getModelOverride(storeKey) : undefined) ??
       selected?.model ??
       agent?.runtimeOverrides?.model
-    const observedModel =
-      input.model !== undefined ? input.model : storeKey ? await store.getObservedModel(storeKey) : undefined
-    if (observedModel !== undefined) {
-      event.observedModel = observedModel
-      if (observedModel !== null) event.model = observedModel
-    } else if (configuredModel !== undefined) {
-      event.model = configuredModel
+    // A caller's explicit model was observed on its own runtime; otherwise the last turn's recorded pair.
+    const observed =
+      input.model !== undefined
+        ? { runtime, model: input.model }
+        : storeKey
+          ? await store.getObservedTurn(storeKey)
+          : undefined
+    if (observed && (runtime === undefined || observed.runtime === runtime)) {
+      if (observed.runtime !== undefined) event.runtime = observed.runtime
+      event.observedModel = observed.model
+      if (observed.model !== null) event.model = observed.model
+    } else if (runtime !== undefined) {
+      // Another runtime's observation never names this one's model: its configured model, else its own default.
+      event.runtime = runtime
+      if (configuredModel !== undefined) event.model = configuredModel
+      else event.observedModel = null
     }
     const effort =
       (allowRuntimeChangesInChat && storeKey ? await store.getEffortOverride(storeKey) : undefined) ??
