@@ -197,7 +197,46 @@ describe('config change respawn', () => {
 
       old.release()
       await expect(running).resolves.toBe('acp-old')
+      await (daemon as any).sweepIdle()
       expect(old.host.stop).not.toHaveBeenCalled()
+    } finally {
+      old.release()
+      await Promise.allSettled([running])
+      await daemon.stop()
+    }
+  })
+
+  it('reclaims the shared process once idle when an always repository joins, without cutting its turn', async () => {
+    const old = blockingHost('old')
+    const root = scaffold()
+    const daemon = await boot(root, [old.host])
+    const running = (daemon as any).dispatch(AGENT_ID, msg('100', 'long question', 'T1'), 'int-a')
+
+    try {
+      await vi.waitFor(() => expect(old.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      const workspace = { mode: 'from-scratch', path: join(root, 'agents', AGENT_ID, 'workspace') }
+      updateAgent(root, {
+        workspace: {
+          ...workspace,
+          additionalRepos: [
+            { repoFullName: 'example-org/tools', repoId: '42', provider: 'github', materialize: 'always' }
+          ]
+        }
+      })
+      await daemon.reconcile()
+
+      // The turn keeps its process, which no sweep takes while it runs.
+      await (daemon as any).sweepIdle()
+      expect(old.host.cancel).not.toHaveBeenCalled()
+      expect(old.host.stop).not.toHaveBeenCalled()
+      expect((daemon as any).respawnHeldEntries.size).toBe(0)
+
+      old.release()
+      await expect(running).resolves.toBe('acp-old')
+      // Idle well inside the reclaim window, the process goes so the next launch writes the new checkout's `.git`.
+      await (daemon as any).sweepIdle()
+      await vi.waitFor(() => expect(old.host.stop).toHaveBeenCalledTimes(1), WAIT)
+      expect(old.host.cancel).not.toHaveBeenCalled()
     } finally {
       old.release()
       await Promise.allSettled([running])

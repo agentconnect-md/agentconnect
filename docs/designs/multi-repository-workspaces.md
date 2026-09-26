@@ -174,8 +174,12 @@ No change to the additional repositories or installation grants (adding,
 removing, or moving a row's or grant's checkout) interrupts a running turn or
 restarts the runtime: sessions started afterwards read the new lists, and the
 daemon drops only its cached repository tokens, so the next credential request
-is minted under the new authorization. Only a change to the workspace's own
-checkout takes the cold path.
+is minted under the new authorization. One exception: a runtime shared by the
+agent's sessions fixes its writable `.git` directories when it launches, so when
+a row joins the `always` set, that runtime is stopped at the first idle sweep
+with no turn in flight, and the next session relaunches it with the new
+checkout's `.git` writable. A session with a runtime of its own launches one
+anyway. Only a change to the workspace's own checkout takes the cold path.
 
 ## Implementation sketch
 

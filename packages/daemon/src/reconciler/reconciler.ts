@@ -74,6 +74,15 @@ function additionalReposSig(a: Agent): string {
   return JSON.stringify([a.workspace.additionalRepos, a.workspace.additionalInstallations])
 }
 
+/** The `always` rows by host and id: the roots the agent's workspace preparation checks out before a process launches. */
+function alwaysRoots(a: Agent): Set<string> {
+  return new Set(
+    (a.workspace.additionalRepos ?? [])
+      .filter((row) => row.materialize === 'always')
+      .map((row) => `${row.provider}:${row.repoId}`)
+  )
+}
+
 function isGithubRepoLocation(input: string): boolean {
   try {
     const normalized = normalizeGitCloneUrl(input)
@@ -141,6 +150,8 @@ export interface AgentChange {
   workspaceRepoRename: boolean
   /** The additional repositories or installation grants moved: later sessions read them, running ones keep their roots. */
   additionalRepos: boolean
+  /** A repository joined the `always` set: a shared process fixes its writable `.git` roots at launch, so it is reclaimed once idle. */
+  alwaysRootAdded: boolean
   integrations: boolean
 }
 
@@ -176,6 +187,7 @@ export function diffAgents(desired: Agent[], actual: Map<string, Agent>): AgentD
         workspace: workspaceSig(cur) !== workspaceSig(a) && !workspaceRepoRename,
         workspaceRepoRename,
         additionalRepos: additionalReposSig(cur) !== additionalReposSig(a),
+        alwaysRootAdded: [...alwaysRoots(a)].some((root) => !alwaysRoots(cur).has(root)),
         integrations: integrationsSig(cur) !== integrationsSig(a)
       })
     }
