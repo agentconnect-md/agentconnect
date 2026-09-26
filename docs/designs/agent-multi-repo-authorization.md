@@ -435,8 +435,9 @@ installation grants (decision 10) passes: the gate resolves the repository's
 installation and matches it against the grants after the explicit rows. A hook
 that reports Checks on such a repository is 409 until the repository itself is
 authorized. An installation-wide hook row is the exception: it needs the grant
-itself, may report Checks at the grant's `write` tier, and revoking the grant
-retires those Checks through the row
+itself and may report Checks at the grant's `write` tier. Revoking the grant is
+409 while the agent still has such a row for that installation, so those Checks
+are retired only through the row
 ([webhook-triggers-and-github-events.md](webhook-triggers-and-github-events.md),
 Installation-Wide Rows).
 
