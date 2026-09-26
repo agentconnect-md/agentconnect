@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRepoAuthDto } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -93,7 +93,13 @@ const row = (over: Partial<AgentRepoAuthDto> = {}): AgentRepoAuthDto => ({
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 
+beforeEach(() => {
+  // By decision is behind its console flag.
+  window.__AC_ENV = { FEATURE_FLAGS: 'repository-decision' }
+})
+
 afterEach(async () => {
+  window.__AC_ENV = {}
   if (root) await act(async () => root?.unmount())
   host?.remove()
   root = undefined

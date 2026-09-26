@@ -53,6 +53,15 @@ const MATERIALIZE_COPY = {
   'on-demand': { label: 'materializeOnDemand', title: 'materializeOnDemandTitle' }
 } as const satisfies Record<RepoMaterialize, { label: string; title: string }>
 
+/** The checkouts a control offers: By decision is behind its flag, read at mount so a value already By decision keeps its option. */
+function useOfferedMaterialize(
+  options: readonly RepoMaterialize[],
+  value: RepoMaterialize
+): readonly RepoMaterialize[] {
+  const [withDecision] = useState(() => featureFlagEnabled('repository-decision') || value === 'decision')
+  return withDecision ? options : options.filter((option) => option !== 'decision')
+}
+
 // The console's two grant tiers (AddAgentRepoModal's TIERS), each an icon segment of a list row's access toggle.
 const ACCESS_TOGGLE = [
   { value: 'read', icon: 'eye', label: 'readOnly' },
@@ -137,9 +146,10 @@ function RepositoryMaterializeSwitch({
   onChange: (value: RepoMaterialize) => void
 }) {
   const t = useTranslations('Integrations.dialog.workspaceFields')
+  const offered = useOfferedMaterialize(options, value)
   return (
     <span className="pillbar self-start" role="group" aria-label={t('checkout')}>
-      {options.map((option) => {
+      {offered.map((option) => {
         const blocked = option === 'decision' && value !== 'decision' ? decisionBlock : null
         return (
           <button
@@ -184,12 +194,13 @@ export function RepositoryMaterializeSelect({
 }) {
   const t = useTranslations('Integrations.dialog.workspaceFields')
   const ariaLabel = t('checkoutFor', { name })
+  const offered = useOfferedMaterialize(options, value)
   return (
     <AnchoredFlyout
       ariaLabel={ariaLabel}
       align="end"
       width={180}
-      estimatedHeight={10 + options.length * 34}
+      estimatedHeight={10 + offered.length * 34}
       triggerClassName="flex flex-none"
       trigger={({ open, menuId, toggle }) => (
         <button
@@ -214,7 +225,7 @@ export function RepositoryMaterializeSelect({
       )}
     >
       {({ close }) =>
-        options.map((option) => {
+        offered.map((option) => {
           const blocked = option === 'decision' && value !== 'decision' ? decisionBlock : null
           const reveals = blocked === 'selector' && !!onDecisionBlocked
           return (

@@ -66,6 +66,8 @@ let root: Root | undefined
 let host: HTMLDivElement | undefined
 
 beforeEach(() => {
+  // By decision is behind its console flag.
+  window.__AC_ENV = { FEATURE_FLAGS: 'repository-decision' }
   role.value = 'owner'
   installations.rows = [
     installation({ id: 'inst-acme', installationId: 12345, accountLogin: 'acme' }),
@@ -85,6 +87,7 @@ afterEach(async () => {
   root = undefined
   host = undefined
   for (const mock of Object.values(mocks)) mock.mockReset()
+  window.__AC_ENV = {}
 })
 
 async function render(grants: AgentInstallationAuthDto[], onInstallationGrantsChange = vi.fn()) {
