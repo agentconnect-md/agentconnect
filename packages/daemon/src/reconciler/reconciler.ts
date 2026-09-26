@@ -150,7 +150,7 @@ export interface AgentChange {
   workspaceRepoRename: boolean
   /** The additional repositories or installation grants moved: later sessions read them, running ones keep their roots. */
   additionalRepos: boolean
-  /** A repository joined the `always` set: a shared process fixes its writable `.git` roots at launch, so it is reclaimed once idle. */
+  /** A repository joined the `always` set: a shared Codex process fixes its writable `.git` roots at launch, so it is reclaimed once idle. */
   alwaysRootAdded: boolean
   integrations: boolean
 }

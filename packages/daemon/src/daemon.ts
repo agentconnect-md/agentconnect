@@ -1138,7 +1138,7 @@ export class Daemon {
   private hostLaunch = new Map<HostKey, { agentDir: string; cwd: string }>()
   // host → when it was (re)built (clock ms), so the idle reaper gives a host with no recorded activity yet a full window.
   private hostStartedAt = new Map<HostKey, number>()
-  // Shared hosts launched before an `always` root joined: their `.git` write roots are fixed at spawn, so the idle sweep reclaims them at its first tick with nothing in flight.
+  // Shared Codex hosts launched before an `always` root joined: their `.git` write roots are fixed at spawn, so the idle sweep reclaims them at its first tick with nothing in flight.
   private readonly staleRootHosts = new WeakSet<AcpHost>()
   // The daemon's own passes on its hosts, which hold one against the idle reaper and restart its clock; no session row records them.
   private readonly hostPasses = new HostPasses()
@@ -4922,8 +4922,9 @@ export class Daemon {
       // Additional repositories and grants reach sessions started from now (decision 19): running turns keep their roots, and the next credential request mints at the new authorization.
       if (change.additionalRepos && !workspaceNeedsColdRecovery) {
         this.gitCreds.remove(a.id)
-        // A new `always` root's `.git` is writable only to a process launched after its checkout, so the shared one is reclaimed once idle.
-        const shared = change.alwaysRootAdded ? this.hosts.get(agentHostKey(a.id)) : undefined
+        // Codex's `:workspace` profile reopens only the `.git` that existed at launch, so its shared process is reclaimed once idle.
+        const shared =
+          change.alwaysRootAdded && this.isCodexRuntime(a.id) ? this.hosts.get(agentHostKey(a.id)) : undefined
         if (shared) this.staleRootHosts.add(shared)
       }
       // workspace change → eagerly (re-)materialize the checkout in the background so
