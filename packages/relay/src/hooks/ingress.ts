@@ -51,6 +51,7 @@ import type { HookRateLimiter } from './rate-limit.js'
 import { verifySha256Header } from './signature.js'
 import { hookSnapshotForDelivery } from './hook-snapshot.js'
 import type { Logger } from '../log.js'
+import { githubRuleByHookId } from './github-installation.js'
 
 /** Raw-body cap for the generic endpoint (design: 128 KiB). */
 export const HOOK_BODY_LIMIT = 128 * 1024
@@ -274,9 +275,13 @@ export async function dispatchHookFire(
     let attemptIndex = 0
 
     const attempt = (): void => {
-      // Re-read on every attempt. A remove/config change revokes the captured
-      // fire; a complete revision fence alone can authorize a placement move.
-      const rule = deps.table.getByHookId(capturedRule.hookId)
+      // Re-read every attempt, an installation rule as this fire's filled-in rule: a change revokes, a complete fence may move it.
+      const rule = capturedRule.github
+        ? githubRuleByHookId(deps.table, capturedRule.hookId, {
+            repoId: capturedRule.github.repoId,
+            repoFullName: capturedRule.github.repoFullName
+          })
+        : deps.table.getByHookId(capturedRule.hookId)
       if (!rule || !retryRuleIsAuthorized(capturedRule, rule)) {
         deps.log.info(`hook dispatch: cancelled changed rule ${capturedRule.hookId}:${msg.deliveryKey}`)
         resolve()

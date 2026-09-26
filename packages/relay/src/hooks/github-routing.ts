@@ -28,7 +28,9 @@ export function githubEventFamily(ctx: GithubMatchCtx): GithubThreadFamily | und
 }
 
 /** The thread families a rule's events name; a shared `issue_comment` pattern is narrowed by `commentFamilies`. */
-export function githubRuleFamilies(github: NonNullable<RcHookAssign['github']>): Set<GithubThreadFamily> {
+export function githubRuleFamilies(
+  github: Pick<NonNullable<RcHookAssign['github']>, 'events' | 'commentFamilies'>
+): Set<GithubThreadFamily> {
   const families = new Set<GithubThreadFamily>()
   for (const pattern of github.events) {
     const prefix = pattern.split(':', 1)[0]

@@ -28,6 +28,8 @@ export class HookTable {
   private byToken = new Map<string, RcHookAssign>()
   /** (provider, externalId) → hookId → rule (fan-out: several hooks may watch one repository). */
   private byCodeHostRepo = new Map<string, Map<string, RcHookAssign>>()
+  /** GitHub installation id → hookId → installation-wide rule. */
+  private byGithubInstallation = new Map<string, Map<string, RcHookAssign>>()
 
   upsert(rule: RcHookAssign): void {
     // Re-index: if the hook's token/repository changed (or the kind did), drop the old key.
@@ -39,6 +41,19 @@ export class HookTable {
     const repoKey = ruleRepoIndexKey(rule)
     if (priorRepoKey !== undefined && priorRepoKey !== repoKey) {
       this.dropFromRepoIndex(priorRepoKey, rule.hookId)
+    }
+    const priorInstallation = prior?.githubInstallation?.installationId
+    const installation = rule.githubInstallation?.installationId
+    if (priorInstallation !== undefined && priorInstallation !== installation) {
+      this.dropFromInstallationIndex(priorInstallation, rule.hookId)
+    }
+    if (installation !== undefined) {
+      let bucket = this.byGithubInstallation.get(installation)
+      if (!bucket) {
+        bucket = new Map()
+        this.byGithubInstallation.set(installation, bucket)
+      }
+      bucket.set(rule.hookId, rule)
     }
     this.byHookId.set(rule.hookId, rule)
     if (rule.kind === 'webhook' && rule.webhook) this.byToken.set(rule.webhook.urlToken, rule)
@@ -59,6 +74,7 @@ export class HookTable {
     if (rule.webhook) this.byToken.delete(rule.webhook.urlToken)
     const repoKey = ruleRepoIndexKey(rule)
     if (repoKey !== undefined) this.dropFromRepoIndex(repoKey, hookId)
+    if (rule.githubInstallation) this.dropFromInstallationIndex(rule.githubInstallation.installationId, hookId)
   }
 
   /** The generic-ingress lookup: URL token → rule (undefined = uniform 404). */
@@ -78,8 +94,21 @@ export class HookTable {
     return bucket ? [...bucket.values()] : []
   }
 
+  /** Every installation-wide GitHub rule of one installation, before it is filled in for an event's repository. */
+  getByGithubInstallation(installationId: string): RcHookAssign[] {
+    const bucket = this.byGithubInstallation.get(installationId)
+    return bucket ? [...bucket.values()] : []
+  }
+
   size(): number {
     return this.byHookId.size
+  }
+
+  private dropFromInstallationIndex(installationId: string, hookId: string): void {
+    const bucket = this.byGithubInstallation.get(installationId)
+    if (!bucket) return
+    bucket.delete(hookId)
+    if (bucket.size === 0) this.byGithubInstallation.delete(installationId)
   }
 
   private dropFromRepoIndex(repoKey: string, hookId: string): void {
