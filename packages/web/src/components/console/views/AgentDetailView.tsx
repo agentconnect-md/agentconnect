@@ -175,6 +175,7 @@ import {
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { CODE_HOST_PROJECTION, codeHostRecord } from '@/lib/code-hosts'
+import { githubHookScope, githubHookScopeKey } from '@/lib/github-hook-scope'
 
 type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'tools'
 const HOOK_REFRESH_MS = 30_000
@@ -461,7 +462,7 @@ function AgentDetail() {
     (installationGrantsData !== undefined || installationGrantsError !== undefined) &&
     effectiveRepoAccess({
       repoId: h.repoId,
-      repoFullName: h.repoFullName,
+      repoFullName: githubHookScopeKey(h),
       workspace: wsForRepos ?? { mode: 'scratch' },
       authorizations: agentReposData,
       installationGrants: installationGrantsData
@@ -539,18 +540,19 @@ function AgentDetail() {
               reportingMode
             })
         : null,
-      github: hook.repoFullName
-        ? () =>
-            updateGithubHook(hook.id, {
-              ...common,
-              repoFullName: hook.repoFullName!,
-              commentFamilies: githubCommentFamilies(hook.commentFamilies),
-              mentionOnly: hook.mentionOnly,
-              reviewPolicy,
-              reportingMode,
-              gateMode: 'informational'
-            })
-        : null,
+      github:
+        hook.repoFullName || hook.installationAccount
+          ? () =>
+              updateGithubHook(hook.id, {
+                ...common,
+                ...githubHookScope(hook),
+                commentFamilies: githubCommentFamilies(hook.commentFamilies),
+                mentionOnly: hook.mentionOnly,
+                reviewPolicy,
+                reportingMode,
+                gateMode: 'informational'
+              })
+          : null,
       gitlab: hook.repoId
         ? () =>
             updateGitlabHook(hook.id, {
@@ -647,14 +649,14 @@ function AgentDetail() {
   // absent from the body; only the create/update/@-mention trigger moves.
   const [hookBusy, setHookBusy] = useState<string | null>(null)
   const saveHookEvents = async (h: HookDto, fam: GhFamily, mode: GhTriggerMode) => {
-    if (hookBusy || !h.agentId || !h.repoFullName) return
+    if (hookBusy || !h.agentId || !githubHookScopeKey(h)) return
     setHookBusy(h.id)
     try {
       const updated = await updateGithubHook(h.id, {
         agentId: h.agentId,
         name: h.name,
         enabled: h.enabled,
-        repoFullName: h.repoFullName,
+        ...githubHookScope(h),
         ...githubFamilySubscription(fam, mode),
         labelFilter: h.labelFilter,
         reviewPolicy: h.reviewPolicy,

@@ -1584,6 +1584,7 @@
       "agentWorkspaceRepository": "The agent’s workspace repository",
       "authorizedForAgent": "Authorized for this agent",
       "askEditorToAuthorize": "Ask an editor to authorize this repository",
+      "askOwnerToAuthorizeInstallation": "Ask an organization owner to authorize all its repositories",
       "notAuthorizedReviewAccess": "Not yet authorized — review settings will request access",
       "added": "added",
       "authorize": "authorize",

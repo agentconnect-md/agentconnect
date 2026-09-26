@@ -1584,6 +1584,7 @@
       "agentWorkspaceRepository": "agent 的工作区仓库",
       "authorizedForAgent": "已授权给此 agent",
       "askEditorToAuthorize": "请让编辑者授权此仓库",
+      "askOwnerToAuthorizeInstallation": "请让组织 owner 授权它的所有仓库",
       "notAuthorizedReviewAccess": "尚未授权，审核设置会请求访问权限",
       "added": "已添加",
       "authorize": "授权",
