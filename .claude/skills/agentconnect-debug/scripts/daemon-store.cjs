@@ -35,15 +35,6 @@ function open(target) {
   return new DatabaseSync(path, { readOnly: true })
 }
 
-function columnsOf(db, table) {
-  return new Set(
-    db
-      .prepare(`pragma table_info(${table})`)
-      .all()
-      .map((column) => column.name)
-  )
-}
-
 function clip(value) {
   if (typeof value !== 'string' || value.length <= MAX_STRING) return value
   return `${value.slice(0, MAX_STRING)}…[truncated ${value.length - MAX_STRING} chars]`
@@ -125,34 +116,13 @@ function main(argv) {
   const db = open(rest[0])
   if (command === 'sessions') {
     const needle = rest[1] ?? null
-    // An older daemon's store predates some of these columns; read what is there and say what is not.
-    const wanted = [
-      'key',
-      'agentId',
-      'platform',
-      'channel',
-      'thread',
-      'sessionId',
-      'acpSessionId',
-      'state',
-      'executorDaemonId',
-      'stayedHomeReason',
-      'lastTurnOutcome',
-      'workspaceIsolation',
-      'birthStrategy',
-      'observedRuntime',
-      'observedModel',
-      'updatedAt'
-    ]
-    const present = columnsOf(db, 'sessions')
-    const missing = wanted.filter((c) => !present.has(c))
-    if (missing.length) console.error(`older store: sessions has no ${missing.join(', ')}`)
-    const matchers = ['key', 'sessionId', 'acpSessionId'].filter((c) => present.has(c))
     const rows = db
       .prepare(
-        `select ${wanted.filter((c) => present.has(c)).join(', ')} from sessions
-         where ?1 is null or ${matchers.map((c) => `${c} like '%' || ?1 || '%'`).join(' or ')}
-         order by ${present.has('updatedAt') ? 'updatedAt desc' : 'key'} limit 50`
+        `select key, agentId, platform, channel, thread, sessionId, acpSessionId, state, executorDaemonId, stayedHomeReason,
+                lastTurnOutcome, workspaceIsolation, birthStrategy, observedRuntime, observedModel, updatedAt
+         from sessions
+         where ?1 is null or key like '%' || ?1 || '%' or sessionId like '%' || ?1 || '%' or acpSessionId like '%' || ?1 || '%'
+         order by updatedAt desc limit 50`
       )
       .all(needle)
     printJson(rows.map((row) => ({ ...row, updatedAt: isoIfEpoch(row.updatedAt), leaf: leaf(row.key) })))
@@ -164,16 +134,14 @@ function main(argv) {
     if (!channel) fail(USAGE)
     if (options.raw && options.seq === undefined) fail('--raw shows one row at a time: pass --seq <n> with it')
     // Rows of one thread are shared by every agent in it; sessionScope is the admitting session's key.
-    const hasScope = columnsOf(db, 'transcript').has('sessionScope')
-    if (options.session && !hasScope) fail('older store: transcript has no sessionScope, so --session cannot filter it')
     const filter = `channel = ?1 and (?2 is null or thread = ?2) and kind = 'tool'
-           and (?3 is null${hasScope ? ' or sessionScope = ?3' : ''}) and (?4 is null or seq = ?4)`
+           and (?3 is null or sessionScope = ?3) and (?4 is null or seq = ?4)`
     const params = [channel, thread ?? null, options.session ?? null, options.seq ?? null]
     const total = db.prepare(`select count(*) as n from transcript where ${filter}`).get(...params).n
     const limit = options.limit ?? 200
     const rows = db
       .prepare(
-        `select seq, ts, sender, ${hasScope ? 'sessionScope' : "'' as sessionScope"}, text, body from transcript
+        `select seq, ts, sender, sessionScope, text, body from transcript
          where ${filter} order by seq ${options.tail ? 'desc' : 'asc'} limit ?5`
       )
       .all(...params, limit)
