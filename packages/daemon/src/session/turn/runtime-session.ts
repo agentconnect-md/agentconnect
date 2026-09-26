@@ -80,6 +80,8 @@ export interface OpenRuntimeSessionResult {
   rec: SessionRecord
   /** Whether THIS call created a brand-new ACP session (vs. resuming a known one). */
   created: boolean
+  /** True only when a persisted runtime session could not be resumed and a fresh one replaced it. */
+  historyLost: boolean
   /** False when the runtime rejected the trusted additional descriptors and only the
    *  ordinary server set succeeded. Absent when no additional descriptors existed. */
   additionalMcpAttached?: boolean
@@ -96,6 +98,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
   let rec = input.rec
   let additionalMcpAttached: boolean | undefined = input.additionalMcpServers?.length ? true : undefined
   let created = false
+  let historyLost = false
 
   const sessionStartEffort = async (): Promise<{ value?: string; chatSelected: boolean }> => {
     if (!input.chatRuntimeChangesAllowed()) return { chatSelected: false }
@@ -251,10 +254,9 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     }
     if (!resumed) {
       const acpSessionId = await newRuntimeSession(cwd, mcpServers, await input.metaContext?.(), fallbackMcpServers)
-      // A fresh ACP id the CP has never seen (the persisted one couldn't be resumed),
-      // so this counts as a create for `event/session`. A resumed session (loadSession
-      // above) keeps its id — the CP already knows it — so `created` stays false there.
+      // A fresh ACP id counts as a create for `event/session`, and it holds none of the thread's history.
       created = true
+      historyLost = true
       rec = { ...rec, acpSessionId, state: 'idle', lastDeliveredTs: null, updatedAt: Date.now() }
       await store.upsertSession(rec)
     }
@@ -264,6 +266,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     sessionId: rec.acpSessionId!,
     rec,
     created,
+    historyLost,
     ...(additionalMcpAttached !== undefined ? { additionalMcpAttached } : {})
   }
 }

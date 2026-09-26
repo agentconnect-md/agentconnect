@@ -1659,6 +1659,50 @@ describe('SessionManager', () => {
     await (await store).close()
   })
 
+  // Turn 1 is answered under acp-1; a new process then either loads it back or fails to.
+  const afterOwnReply = async (loadSession: () => Promise<void>) => {
+    const store = await newStore()
+    const host1 = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle('bot-a', msg({ ts: '100.1', text: 'invent a word' }))
+    await store.appendTranscript({
+      channel: 'C1',
+      thread: '100.1',
+      ts: '100.2',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'Zephrix'
+    })
+    const host2 = {
+      newSession: vi.fn(async () => 'acp-2'),
+      hasSession: () => false,
+      loadSupported: () => true,
+      loadSession: vi.fn(loadSession)
+    } as any
+    const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
+    const handled = await sm2.handle('bot-a', msg({ ts: '100.3', text: 'which word did you invent?' }))
+    await store.close()
+    return { ...handled, host2, joined: handled.blocks.map((b: any) => b.text).join('\n') }
+  }
+
+  it('replays the agent own replies, labelled as its own, when a failed resume recreates the session', async () => {
+    const { sessionId, joined, host2 } = await afterOwnReply(async () => {
+      throw new Error('Resource not found')
+    })
+    expect(host2.loadSession).toHaveBeenCalledOnce()
+    expect(sessionId).toBe('acp-2')
+    expect(joined).toContain('your runtime session restarted and could not restore its history')
+    expect(joined).toContain('[U1] invent a word\n[you] Zephrix')
+    expect(joined.endsWith('[U1] which word did you invent?')).toBe(true)
+  })
+
+  it('keeps the agent own replies out of the replay when the session loads back', async () => {
+    const { sessionId, joined } = await afterOwnReply(async () => {})
+    expect(sessionId).toBe('acp-1')
+    expect(joined).not.toContain('Zephrix')
+    expect(joined).not.toContain('[you]')
+  })
+
   it('retries session/load without trusted additional MCP descriptors when the runtime rejects them', async () => {
     const store = await newStore()
     const host1 = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
@@ -2977,7 +3021,7 @@ describe('SessionManager — quoted reply source', () => {
     await (await store).close()
   })
 
-  it('injects the quoted bot message when the runtime session had to be recreated', async () => {
+  it('carries the quoted bot message in the replay when the runtime session had to be recreated', async () => {
     const store = await newStore()
     // Turn 1 mints acp-1 and the bot answers; the reply is recorded under the agent's own id.
     const host1 = { newSession: vi.fn(async () => 'acp-1') } as any
@@ -2993,9 +3037,7 @@ describe('SessionManager — quoted reply source', () => {
       kind: 'text',
       text: 'staging is down because the migration job is stuck'
     })
-    // The persisted ACP session cannot be resumed, so handle mints a fresh one whose context
-    // is empty. Replay cannot cover the gap: it filters the agent's OWN rows. Without the
-    // quote the recreated session would receive a bare "why?" about nothing.
+    // A fresh session has no history, so the replay carries the agent's own reply and the quote would only repeat it.
     const host2 = { newSession: vi.fn(async () => 'acp-2'), hasSession: () => false, loadSupported: () => false } as any
     const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
     const { blocks, created } = await sm2.handle(
@@ -3009,8 +3051,8 @@ describe('SessionManager — quoted reply source', () => {
     )
     expect(created).toBe(true)
     const texts = blocks.map((b: any) => b.text as string)
-    expect(texts.some((t) => t.includes('the message this reply quotes'))).toBe(true)
-    expect(texts.join('\n')).toContain('the migration job is stuck')
+    expect(texts.some((t) => t.includes('the message this reply quotes'))).toBe(false)
+    expect(texts.join('\n')).toContain('[you] staging is down because the migration job is stuck')
     await (await store).close()
   })
 

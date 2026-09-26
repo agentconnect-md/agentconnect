@@ -837,10 +837,11 @@ export class SessionManager {
         markerBefore,
         ordering,
         firstPromptAfterOwnRootInitialization,
-        retryAdmittedTurn: options.retryAdmittedTurn
+        retryAdmittedTurn: options.retryAdmittedTurn,
+        historyLost: opened.historyLost
       })
       const renderContext = (entries: readonly TranscriptEntry[]): string =>
-        renderReplayContext(entries, this.deps.quoteForContextEvent)
+        renderReplayContext(entries, this.deps.quoteForContextEvent, opened.historyLost ? agentId : undefined)
       if (plan.shape === 'skip') {
         rec.lastDeliveredTs = plan.deliveredThrough
         rec.state = 'idle'

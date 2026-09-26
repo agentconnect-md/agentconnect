@@ -175,6 +175,68 @@ describe('planReplay — batch and skip', () => {
   })
 })
 
+describe('planReplay — runtime session recreated without its history', () => {
+  const LOST_HEAD =
+    '(your runtime session restarted and could not restore its history — the conversation so far, oldest to newest, with your own replies as [you])'
+
+  it('replays the agent own rows in order, without controls, under the restart heading', () => {
+    const gap = [
+      entry(at(3), 'bot', 'Zephrix'),
+      entry(at(1), 'u1', 'invent a word'),
+      entry(at(4), 'u1', '!stop'),
+      entry(at(10), 'u1', 'which word?')
+    ]
+    const p = plan({ gap, historyLost: true })
+    expect(p.shape).toBe('inorder')
+    expect(p.context.map((e) => e.text)).toEqual(['invent a word', 'Zephrix'])
+    expect(p.head).toBe(LOST_HEAD)
+    expect(renderReplayContext(p.context, undefined, 'bot')).toBe('[u1] invent a word\n[you] Zephrix')
+  })
+
+  it('keeps the agent own rows filtered when the session was not recreated', () => {
+    const gap = [entry(at(1), 'u1', 'invent a word'), entry(at(3), 'bot', 'Zephrix'), entry(at(10), 'u1')]
+    const p = plan({ gap, historyLost: false })
+    expect(p.context.map((e) => e.text)).toEqual(['invent a word'])
+    expect(p.head).toBe('(thread context you may have missed)')
+  })
+
+  it('bounds own and participant rows by one cap', () => {
+    const gap = Array.from({ length: 5 }, (_, i) => entry(at(1, i + 1), i % 2 ? 'bot' : 'u1'))
+    const p = plan({ gap, triggerTs: at(99), historyLost: true, maxReplayEntries: 3 })
+    expect(p.context.map((e) => e.ts)).toEqual([at(1, 3), at(1, 4), at(1, 5)])
+    expect(p.elided).toBe(2)
+    expect(p.head).toBe(`${LOST_HEAD.slice(0, -1)}; 2 earlier message(s) elided)`)
+  })
+
+  it('interleaves own rows into a batch without letting them decide the shape or cursor', () => {
+    const gap = [entry(at(10), 'u1', 'old'), entry(at(15), 'bot', 'mine'), entry(at(20), 'u2', 'new')]
+    const p = plan({ gap, triggerTs: at(10), historyLost: true })
+    expect(p.shape).toBe('batch')
+    expect(p.context.map((e) => e.text)).toEqual(['old', 'mine', 'new'])
+    expect(p.head).toBe(LOST_HEAD)
+    // A newer own row alone is not a newer message: the shape stays in-order.
+    const own = plan({ gap: [entry(at(10), 'u1'), entry(at(15), 'bot', 'mine')], triggerTs: at(10), historyLost: true })
+    expect(own.shape).toBe('inorder')
+    expect(own.context.map((e) => e.text)).toEqual(['mine'])
+    // Only own rows left unread after a delivered trigger still skip.
+    const skip = plan({ gap: [entry(at(5), 'bot')], triggerTs: at(3), markerBefore: at(4), historyLost: true })
+    expect(skip.shape).toBe('skip')
+  })
+
+  it('keeps the initialized root ahead of the suffix alongside the other own rows', () => {
+    const gap = [entry(THREAD, 'bot', 'root post'), entry(at(1), 'u1', 'q'), entry(at(2), 'bot', 'a')]
+    const p = plan({
+      gap,
+      triggerTs: at(10),
+      firstPromptAfterOwnRootInitialization: true,
+      historyLost: true,
+      maxReplayEntries: 1
+    })
+    expect(p.context.map((e) => e.text)).toEqual(['root post', 'a'])
+    expect(p.elided).toBe(1)
+  })
+})
+
 describe('planReplay — snapshot cutoff exclusion', () => {
   it('is confined to the rows the caller admitted through its cutoff', () => {
     const cutoff = at(15)

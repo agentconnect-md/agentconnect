@@ -11,7 +11,7 @@ export const MAX_REPLAY_ENTRIES = 50
 export type ReplayPlanInput = {
   /** The unread transcript rows since the read cursor, already snapshot-filtered. */
   gap: readonly TranscriptEntry[]
-  /** The agent whose turn this is; its own rows are never replayed back to it. */
+  /** The agent whose turn this is; its own rows are replayed back to it only when `historyLost`. */
   agentId: string
   /** The activating message's id. */
   triggerTs: string
@@ -25,6 +25,8 @@ export type ReplayPlanInput = {
   firstPromptAfterOwnRootInitialization: boolean
   /** A durable inbox row still owns this turn even if the read cursor passed its trigger. */
   retryAdmittedTurn?: boolean
+  /** The runtime session was recreated after a failed resume, so it holds none of its own replies. */
+  historyLost?: boolean
   /** Replay cap override, for tests. */
   maxReplayEntries?: number
 }
@@ -73,6 +75,8 @@ export function planReplay(input: ReplayPlanInput): ReplayPlan {
   const initializedRoot = firstPromptAfterOwnRootInitialization
     ? participantGap.find((e) => e.sender === agentId && e.ts === thread)
     : undefined
+  // A recreated runtime session replays its own replies too; they are context only and never decide the shape or cursor.
+  const replayGap = input.historyLost ? gap.filter((e) => !isControlCommandText(e.text)) : participantGap
   const boundedReplay = (entries: readonly TranscriptEntry[]) => {
     const includesInitializedRoot = initializedRoot !== undefined && entries.some((e) => e.ts === initializedRoot.ts)
     const remainder = includesInitializedRoot ? entries.filter((e) => e.ts !== initializedRoot.ts) : entries
@@ -106,35 +110,47 @@ export function planReplay(input: ReplayPlanInput): ReplayPlan {
     (hasMessageAfterTrigger || triggerWasAlreadyDelivered) &&
     !(input.retryAdmittedTurn && triggerWasAlreadyDelivered)
   ) {
-    const { context, elided } = boundedReplay(participantGap)
-    if (context.length === 0) return { shape: 'skip', context: [], elided: 0, head: '', deliveredThrough }
-    const head =
-      elided > 0
+    // Own rows alone leave nothing to answer, so they never turn a skip into a turn.
+    if (participantGap.length === 0) return { shape: 'skip', context: [], elided: 0, head: '', deliveredThrough }
+    const { context, elided } = boundedReplay(replayGap)
+    const head = input.historyLost
+      ? historyLostHead(elided)
+      : elided > 0
         ? `(unread thread messages, oldest to newest — ${elided} earlier message(s) elided)`
         : '(unread thread messages, oldest to newest)'
     return { shape: 'batch', context, elided, head, deliveredThrough }
   }
 
-  // Normal in-order activation: preserve the established context-prefix + current
-  // prompt shape, while never replaying this agent's own recorded messages.
-  const { context, elided } = boundedReplay(participantGap.filter((e) => e.ts !== ts))
-  const head =
-    elided > 0
+  // Normal in-order activation: the established context-prefix + current-prompt shape.
+  const { context, elided } = boundedReplay(replayGap.filter((e) => e.ts !== ts))
+  const head = input.historyLost
+    ? historyLostHead(elided)
+    : elided > 0
       ? `(thread context you may have missed — ${elided} earlier message(s) elided)`
       : '(thread context you may have missed)'
   return { shape: 'inorder', context, elided, head, deliveredThrough }
+}
+
+/** Heading for a replay into a runtime session that restarted without its history. */
+function historyLostHead(elided: number): string {
+  const base =
+    'your runtime session restarted and could not restore its history — the conversation so far, oldest to newest, with your own replies as [you]'
+  return elided > 0 ? `(${base}; ${elided} earlier message(s) elided)` : `(${base})`
 }
 
 /** Render replayed entries as the `[sender] text` lines the prompt carries, with each
  * entry's optional quote line ahead of it. */
 export function renderReplayContext(
   entries: readonly TranscriptEntry[],
-  quoteFor?: (event: TranscriptEntry, replayed: readonly TranscriptEntry[]) => string | undefined
+  quoteFor?: (event: TranscriptEntry, replayed: readonly TranscriptEntry[]) => string | undefined,
+  /** The sender whose rows render as `[you]`, set when the agent's own replies are replayed. */
+  ownSender?: string
 ): string {
   return entries
     .flatMap((event) => {
       const quote = quoteFor?.(event, entries)
-      return [...(quote ? [quote] : []), `[${event.sender}] ${transcriptPromptText(event)}`]
+      const sender = ownSender !== undefined && event.sender === ownSender ? 'you' : event.sender
+      return [...(quote ? [quote] : []), `[${sender}] ${transcriptPromptText(event)}`]
     })
     .join('\n')
 }
