@@ -4,6 +4,7 @@ import {
   type CodeHostReviewOpKind,
   type CodeHostReviewOpOutcome,
   type CodeHostReviewState,
+  type HookReviewAmendment,
   type HookReviewEvent,
   type HookReviewVerdict,
   type GithubHookMetadata,
@@ -291,6 +292,8 @@ export interface ActiveGithubTurnMeta {
   reportSha: string
   /** ACP session owning this turn, used only to build daemon-authored review attribution. */
   sessionId: string
+  /** Present on a conversation turn: the sealed verdict the CP named at `hook/start`, its only review authority. */
+  amendment?: HookReviewAmendment
   reviewState: 'idle' | 'submitting' | 'done'
 }
 
@@ -300,9 +303,8 @@ export interface ActiveGithubReplyBatchMeta {
   called: boolean
 }
 
-/** Review-comment follow-ups already belong to one existing inline thread.
- * They may receive exactly one daemon-owned inline reply, but must never gain
- * authority to create a second, top-level formal PR review. */
+/** Review-comment follow-ups already belong to one existing inline thread: they receive exactly one
+ *  daemon-owned inline reply, and hold formal-review authority only as an amendment of a sealed verdict. */
 export function isGithubReviewCommentHook(hook: HookDispatchContext): boolean {
   return (
     hook.event?.split(':', 1)[0] === 'pull_request_review_comment' ||

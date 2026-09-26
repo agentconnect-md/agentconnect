@@ -440,7 +440,11 @@ export const HookReport = z
         message: 'reviewAttemptId and reviewResult must be reported together'
       })
     }
-    if ((report.publishedComment || report.publishedOutput) && report.reviewResult?.state === 'submitted') {
+    // An inline thread reply is not the top-level fallback: a verdict amendment may ride beside it.
+    if (
+      (report.publishedComment?.kind === 'issue_comment' || report.publishedOutput) &&
+      report.reviewResult?.state === 'submitted'
+    ) {
       ctx.addIssue({
         code: 'custom',
         path: [report.publishedComment ? 'publishedComment' : 'publishedOutput'],
@@ -507,7 +511,16 @@ export const HookStart = z
   })
 export type HookStart = z.infer<typeof HookStart>
 
-export const HookStartOk = z.object({ accepted: z.literal(true) })
+/** The sealed verdict a conversation turn may amend: this hook's latest on the turn's own revision. */
+export const HookReviewAmendment = z.object({
+  reportSha: z.string().min(1),
+  event: HookReviewEvent,
+  verdict: HookReviewVerdict
+})
+export type HookReviewAmendment = z.infer<typeof HookReviewAmendment>
+
+// `amendment` names the one formal-review authority a `review_action_only` turn can hold; an older CP omits it.
+export const HookStartOk = z.object({ accepted: z.literal(true), amendment: HookReviewAmendment.optional() })
 export type HookStartOk = z.infer<typeof HookStartOk>
 
 /** D→C action-time authorization for one formal GitHub review attempt. */

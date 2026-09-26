@@ -113,6 +113,7 @@ function setup(overrides: Partial<GithubReviewBrokerDeps> = {}) {
   const hookRepo = {
     getUnscoped: vi.fn(async () => hook()),
     getRun: vi.fn(async () => currentRun),
+    latestReviewVerdictRun: vi.fn<HookRepo['latestReviewVerdictRun']>(async () => null),
     recordPreparing: vi.fn<HookRepo['recordPreparing']>(async () => true),
     recordStart: vi.fn<HookRepo['recordStart']>(async () => true),
     reserveReviewAttempt: vi.fn<HookRepo['reserveReviewAttempt']>(async (_hookId, _daemonId, input) => {
@@ -643,5 +644,168 @@ describe('GithubReviewBrokerService', () => {
       )
     ).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
     expect(hookRepo.recordReviewResult).not.toHaveBeenCalled()
+  })
+
+  describe('verdict amendment by a conversation turn', () => {
+    const startInput = {
+      hookId: HOOK,
+      agentId: AGENT,
+      deliveryKey: 'delivery-1',
+      event: 'pull_request_review_comment:created',
+      ...snapshot,
+      github: {
+        repoId: '123',
+        repoFullName: 'acme/widgets',
+        sourceInstallationId: '456',
+        subjectKind: 'pull_request' as const,
+        pullNumber: 42,
+        headSha: 'head-sha',
+        baseSha: 'base-sha',
+        reportSha: 'head-sha',
+        isDraft: false,
+        baseChanged: false
+      }
+    }
+    const conversation = (overrides: Partial<HookRunRecord> = {}) =>
+      run({
+        id: 'run-reply',
+        event: 'pull_request_review_comment:created',
+        projectionIntent: 'review_action_only',
+        startedAt: new Date(5_000),
+        turnStartedAt: null,
+        ...overrides
+      })
+    // The generation this hook sealed on the same head: REQUEST_CHANGES, its turn over.
+    const sealed = (overrides: Partial<HookRunRecord> = {}) =>
+      run({
+        id: 'run-generation',
+        status: 'success',
+        reviewAttemptId: '66666666-6666-4666-8666-666666666666',
+        reviewAttemptState: 'submitted',
+        reviewEvent: 'REQUEST_CHANGES',
+        verdict: 'fail',
+        ...overrides
+      })
+
+    it('names the sealed verdict at hook/start only for a conversation turn on the same head', async () => {
+      const { service, hookRepo, setRun } = setup()
+      setRun(conversation())
+      hookRepo.latestReviewVerdictRun.mockResolvedValue(sealed())
+      await expect(service.start(startInput, DAEMON)).resolves.toEqual({
+        amendment: { reportSha: 'head-sha', event: 'REQUEST_CHANGES', verdict: 'fail' }
+      })
+      // Scoped to the run's own binding and epoch, not the hook's whole history.
+      expect(hookRepo.latestReviewVerdictRun).toHaveBeenCalledWith(HOOK, {
+        repoId: 123n,
+        projectionEpoch: 1n,
+        pullNumber: 42,
+        reportSha: 'head-sha'
+      })
+
+      // A generation names nothing: it will produce the verdict itself.
+      hookRepo.latestReviewVerdictRun.mockClear()
+      setRun(run({ turnStartedAt: null }))
+      await expect(service.start({ ...startInput, event: 'pull_request:synchronize' }, DAEMON)).resolves.toEqual({})
+      expect(hookRepo.latestReviewVerdictRun).not.toHaveBeenCalled()
+    })
+
+    it('judges the started row, so a PR comment whose accepted row carried no revision still gets its amendment', async () => {
+      const { service, hookRepo, setRun } = setup()
+      // The relay accepts an issue_comment without head/base/report SHA; hook/start is what writes them.
+      const accepted = conversation({ event: 'issue_comment:created', headSha: null, baseSha: null, reportSha: null })
+      setRun(accepted)
+      hookRepo.recordStart.mockImplementation(async () => {
+        setRun(conversation({ event: 'issue_comment:created' }))
+        return true
+      })
+      hookRepo.latestReviewVerdictRun.mockResolvedValue(sealed())
+      await expect(service.start({ ...startInput, event: 'issue_comment:created' }, DAEMON)).resolves.toEqual({
+        amendment: { reportSha: 'head-sha', event: 'REQUEST_CHANGES', verdict: 'fail' }
+      })
+      expect(hookRepo.latestReviewVerdictRun).toHaveBeenCalledWith(
+        HOOK,
+        expect.objectContaining({ reportSha: 'head-sha' })
+      )
+    })
+
+    it.each([
+      ['nothing was reviewed on this head', null],
+      ['the latest generation is still running', sealed({ status: 'running' })],
+      [
+        'the latest generation ended without a verdict',
+        sealed({ reviewAttemptState: null, reviewEvent: null, verdict: null })
+      ],
+      ['the latest generation is the turn itself', sealed({ id: 'run-reply' })]
+    ])('names no amendment when %s', async (_case, latest) => {
+      const { service, hookRepo, setRun } = setup()
+      setRun(conversation())
+      hookRepo.latestReviewVerdictRun.mockResolvedValue(latest)
+      await expect(service.start(startInput, DAEMON)).resolves.toEqual({})
+    })
+
+    it('names no amendment when the hook does not review at all', async () => {
+      const { service, hookRepo, setRun } = setup()
+      setRun(conversation({ reviewPolicySnapshot: 'off' }))
+      hookRepo.getUnscoped.mockResolvedValue(hook({ reviewPolicy: 'off' }))
+      hookRepo.latestReviewVerdictRun.mockResolvedValue(sealed())
+      await expect(service.start({ ...startInput, reviewPolicy: 'off' }, DAEMON)).resolves.toEqual({})
+      expect(hookRepo.latestReviewVerdictRun).not.toHaveBeenCalled()
+    })
+
+    it('authorizes a conversation turn only to change the sealed verdict', async () => {
+      const { service, hookRepo, setRun } = setup()
+      setRun(conversation({ turnStartedAt: new Date(6_000) }))
+      hookRepo.latestReviewVerdictRun.mockResolvedValue(sealed())
+
+      await expect(service.authorize(authorizeInput('REQUEST_CHANGES', 'fail'), DAEMON)).rejects.toMatchObject({
+        code: 'SCOPE_DENIED',
+        message: expect.stringContaining('must change the current fail verdict')
+      })
+      await expect(service.authorize(authorizeInput('COMMENT', 'neutral'), DAEMON)).rejects.toMatchObject({
+        code: 'SCOPE_DENIED'
+      })
+      expect(hookRepo.reserveReviewAttempt).not.toHaveBeenCalled()
+
+      await expect(service.authorize(authorizeInput('APPROVE', 'pass'), DAEMON)).resolves.toMatchObject({
+        attemptId: ATTEMPT,
+        expectedHeadSha: 'head-sha'
+      })
+      expect(hookRepo.reserveReviewAttempt).toHaveBeenCalledOnce()
+    })
+
+    it('refuses a conversation turn with no sealed verdict, and never consults one for a generation', async () => {
+      const { service, hookRepo, setRun } = setup()
+      setRun(conversation({ turnStartedAt: new Date(6_000) }))
+      await expect(service.authorize(authorizeInput('APPROVE', 'pass'), DAEMON)).rejects.toMatchObject({
+        code: 'SCOPE_DENIED',
+        message: expect.stringContaining('no sealed review verdict to amend')
+      })
+      expect(hookRepo.reserveReviewAttempt).not.toHaveBeenCalled()
+
+      hookRepo.latestReviewVerdictRun.mockClear()
+      setRun(run())
+      await expect(service.authorize(authorizeInput('APPROVE', 'pass'), DAEMON)).resolves.toMatchObject({
+        attemptId: ATTEMPT
+      })
+      expect(hookRepo.latestReviewVerdictRun).not.toHaveBeenCalled()
+    })
+
+    it('lets a conversation turn reconcile its own reserved attempt without repeating the gate', async () => {
+      const { service, hookRepo, setRun } = setup()
+      setRun(
+        conversation({
+          turnStartedAt: new Date(6_000),
+          reviewAttemptId: ATTEMPT,
+          reviewAttemptState: 'blocked',
+          reviewEvent: 'APPROVE',
+          verdict: 'pass'
+        })
+      )
+      hookRepo.reserveReviewAttempt.mockResolvedValue('idempotent')
+      await expect(service.authorize(authorizeInput('APPROVE', 'pass'), DAEMON)).resolves.toMatchObject({
+        attemptId: ATTEMPT
+      })
+      expect(hookRepo.latestReviewVerdictRun).not.toHaveBeenCalled()
+    })
   })
 })

@@ -569,7 +569,7 @@ import {
   fitCodeHostDecisionState,
   loadCodeHostDecisionContext
 } from './codehost/decision-state.js'
-import { hookDecisionFacts } from './messages/hook-message.js'
+import { githubAmendmentPrompt, hookDecisionFacts } from './messages/hook-message.js'
 import { HookRouter } from './codehost/hook-routing.js'
 import {
   DecisionGate,
@@ -697,6 +697,7 @@ import { estimateOpenAiTurnCost } from './usage/openai-public-pricing.js'
 import type { McpServer } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
 import {
+  appendTurnPrompt,
   fromPlatformMessage,
   stableMessageId,
   stableTurnId,
@@ -806,6 +807,7 @@ import {
   foreignHookDispatch,
   githubDeletedHookEvent,
   hookOutputFallbackAllowed,
+  isGithubReviewCommentHook,
   githubReviewResultForCompletion,
   hookOutcomeFailure,
   MAX_HOOK_REPORT_INFLIGHT,
@@ -13875,7 +13877,10 @@ export class Daemon {
       const storedTitle = (await this.store.getSession(run.plan.sessionKey))?.title?.trim()
       if (storedTitle) p.chrome.sessionTitleToPush = await this.displayTitle(storedTitle)
     }
-    const activeTurn = await this.installActiveTurnContext(run, sessionId, outwardSessionId)
+    // Prompt assembly ran before the hook/start barrier, so a block learned there is seated on the model's copy too.
+    const activeTurn = await this.installActiveTurnContext(run, sessionId, outwardSessionId, (block) =>
+      handled.blocks.push({ type: 'text', text: block })
+    )
     this.activeMemorySourceTurns.set(
       key,
       memorySourceTurnId(agentId, p.webchat?.turnId ?? handled.turnId ?? stableTurnId(agentId, msg))
@@ -14801,7 +14806,9 @@ export class Daemon {
   private async installActiveTurnContext(
     run: TurnRun,
     sessionId: string,
-    outwardSessionId: string
+    outwardSessionId: string,
+    /** Seats a per-turn block on the already-assembled prompt; the durable message gets it through `appendTurnPrompt`. */
+    seatPromptBlock?: (block: string) => void
   ): Promise<{
     github?: ActiveGithubTurnMeta
     githubReplyBatch?: ActiveGithubReplyBatchMeta
@@ -14860,6 +14867,12 @@ export class Daemon {
       return undefined
     })
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
+    // A verdict amendment is known only past the GitHub barrier: its block reaches the model and the record here.
+    if (activeGithub?.amendment) {
+      const block = githubAmendmentPrompt(activeGithub.amendment, activeGithub.snapshot.reviewPolicy)
+      appendTurnPrompt(entry.msg, block)
+      seatPromptBlock?.(block)
+    }
     // §17.2: the provider-neutral start barrier attaches the head this turn runs on to the accepted
     // run before the prompt, which is what a review authorization fences and §16 opens `running` on.
     const barrier = await this.startCodeHostHookTurn(hookContext, outwardSessionId)
@@ -15924,7 +15937,11 @@ export class Daemon {
     // Anything other than no attempt or a correlated definite no-effect result is
     // fail-closed: the code host may already own the public response. Both providers'
     // durable attempt records are consulted, so a GitLab review blocks the note too.
-    const formalReviewOwnsResponse = githubReply !== undefined && !hookOutputFallbackAllowed(hookContext)
+    // An inline thread reply is not that response: a verdict amendment leaves the thread answered.
+    const formalReviewOwnsResponse =
+      githubReply !== undefined &&
+      !hookOutputFallbackAllowed(hookContext) &&
+      !(hookContext !== undefined && isGithubReviewCommentHook(hookContext))
     if (formalReviewOwnsResponse) {
       try {
         await this.persistHookState(entry, 'settled', true)

@@ -207,4 +207,25 @@ describe('hook/start provider one-of (gitlab-com-integration.md §17.2)', () => 
     expect(deps.codeHostNoteProjection!.afterStart).not.toHaveBeenCalled()
     expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'hook/start/ok', { accepted: true })
   })
+
+  it('hands a conversation turn the sealed verdict the github broker says it may amend', async () => {
+    const conn = fakeConn()
+    const amendment = { reportSha: 'head', event: 'REQUEST_CHANGES' as const, verdict: 'fail' as const }
+    const deps = gitlabDeps({ githubReviewBroker: { start: vi.fn(async () => ({ amendment })) } })
+    const github = {
+      repoId: '42',
+      repoFullName: 'acme/repo',
+      sourceInstallationId: '77',
+      subjectKind: 'pull_request',
+      pullNumber: 9,
+      headSha: 'head',
+      baseSha: 'base',
+      reportSha: 'head'
+    }
+
+    await handleHookStart(startFrame({ event: 'pull_request_review_comment:created', github }), conn, deps)
+
+    expect(deps.githubRunCoordinator!.afterStart).toHaveBeenCalledWith(HOOK_ID, 'delivery-1')
+    expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'hook/start/ok', { accepted: true, amendment })
+  })
 })

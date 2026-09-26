@@ -644,7 +644,9 @@ can, and the prompt forbids trusting local traces, permits skipping local
 execution, and requires inspection of the exact revision through GitHub read-only
 tools. The same revision-only path applies when the Agent workspace belongs to
 another repository. Ordinary PR conversations preserve their stable session
-worktree, do not carry formal-review authority, and require read-only or
+worktree, carry formal-review authority only as a verdict amendment
+([github-pr-review-checks.md](github-pr-review-checks.md) decision 1, item 5),
+and require read-only or
 revision-addressed inspection instead of trusting working-tree paths.
 
 The model-visible formal-review instruction repeats the trusted base/head and

@@ -21,11 +21,13 @@ import {
   type EventSession,
   type HookReport,
   type HookStart,
+  type HookStartOk,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
 import {
   buildHookMessage,
   buildHookText,
+  githubAmendmentPrompt,
   hookAnchorText,
   UNTRUSTED_CONTENT_BEGIN,
   UNTRUSTED_CONTENT_END
@@ -1195,7 +1197,7 @@ describe('Daemon rd/msg hook fires', () => {
     })
     await daemon.start()
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
-    const startHook = vi.fn(async () => ({ accepted: true }))
+    const startHook = vi.fn(async (): Promise<HookStartOk> => ({ accepted: true }))
     ;(daemon as never as { cpClient: unknown }).cpClient = {
       stop: vi.fn(async () => {}),
       startHook
@@ -1241,6 +1243,102 @@ describe('Daemon rd/msg hook fires', () => {
     expect(startHook).toHaveBeenCalledTimes(2)
     expect(ordinary).toBeUndefined()
     expect(explicit).toMatchObject({ hook: explicitHook, reviewState: 'idle', pullNumber: 42 })
+
+    // A conversation turn holds review authority only as the amendment the CP names at the barrier, on its own head.
+    const prepare = (hookContext: unknown, sessionId: string) =>
+      (daemon as any).githubReviews.prepareGithubTurn({ hookContext }, sessionId)
+    const amendment = { reportSha: 'a'.repeat(40), event: 'REQUEST_CHANGES' as const, verdict: 'fail' as const }
+    startHook.mockResolvedValue({ accepted: true, amendment })
+    expect(await prepare({ ...hook, deliveryKey: 'amendable-comment' }, 'acp-amendable')).toMatchObject({
+      amendment,
+      reviewState: 'idle',
+      pullNumber: 42
+    })
+    const inlineHook = {
+      ...hook,
+      deliveryKey: 'inline-reply',
+      event: 'pull_request_review_comment:created',
+      github: { ...hook.github, reviewCommentId: '3565656411', reviewThreadRootCommentId: '3565283658' }
+    }
+    expect(await prepare(inlineHook, 'acp-inline')).toMatchObject({ amendment, hook: inlineHook })
+    // A generation produces its own verdict; an amendment for another head is not this turn's.
+    expect((await prepare({ ...explicitHook, deliveryKey: 'explicit-again' }, 'acp-explicit-again')).amendment).toBe(
+      undefined
+    )
+    startHook.mockResolvedValue({ accepted: true, amendment: { ...amendment, reportSha: 'c'.repeat(40) } })
+    expect(await prepare({ ...hook, deliveryKey: 'stale-amendment' }, 'acp-stale')).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('lets an amendment turn only change the sealed verdict, keeping its one attempt', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: streamingHost().factory
+    })
+    await daemon.start()
+    const key = `hook:acme/infra:42:${AGENT_ID}`
+    const hook = {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'inline-amend',
+      firedAt: new Date().toISOString(),
+      event: 'pull_request_review_comment:created',
+      github: {
+        repoId: '123',
+        repoFullName: 'acme/infra',
+        sourceInstallationId: '456',
+        subjectKind: 'pull_request',
+        pullNumber: 42,
+        headSha: 'a'.repeat(40),
+        baseSha: 'b'.repeat(40),
+        reportSha: 'a'.repeat(40),
+        reviewCommentId: '3565656411',
+        reviewThreadRootCommentId: '3565283658'
+      }
+    }
+    const meta = {
+      entry: { inboxId: `${HOOK_ID}:inline-amend`, hookContext: hook },
+      hook,
+      snapshot: {
+        configRevision: '1',
+        dispatchRevision: '1',
+        dispatchDaemonId: '44444444-4444-4444-8444-444444444444',
+        reviewPolicy: 'request_changes',
+        reportingMode: 'check',
+        gateMode: 'informational'
+      },
+      repoId: '123',
+      repoFullName: 'acme/infra',
+      pullNumber: 42,
+      expectedHeadSha: 'a'.repeat(40),
+      expectedBaseSha: 'b'.repeat(40),
+      reportSha: 'a'.repeat(40),
+      sessionId: 'acp-amend',
+      amendment: { reportSha: 'a'.repeat(40), event: 'REQUEST_CHANGES', verdict: 'fail' },
+      reviewState: 'idle'
+    }
+    ;(daemon as any).activeGithubTurnMeta.set(key, meta)
+    const submit = (event: string, verdict: string) =>
+      (daemon as any).githubReviews.submitGithubReview({
+        agentId: AGENT_ID,
+        platform: 'hook',
+        channel: 'acme/infra',
+        thread: '42',
+        event,
+        verdict,
+        body: 'Amended.'
+      })
+
+    await expect(submit('REQUEST_CHANGES', 'fail')).rejects.toThrow('must change the current fail verdict')
+    await expect(submit('COMMENT', 'neutral')).rejects.toThrow('must change the current fail verdict')
+    // The policy ladder still caps the amendment.
+    await expect(submit('APPROVE', 'pass')).rejects.toThrow("exceeds this hook's request_changes review policy")
+    expect(meta.reviewState).toBe('idle')
+    expect(meta.hook).not.toHaveProperty('reviewAttemptId')
+    // Without the amendment an inline reply turn has no formal-review surface at all.
+    delete (meta as { amendment?: unknown }).amendment
+    await expect(submit('COMMENT', 'pass')).rejects.toThrow('unavailable for an inline review-comment reply turn')
     await daemon.stop()
   })
 
@@ -4336,6 +4434,7 @@ describe('buildHookMessage', () => {
       expect(standing).toContain('`gh`, another CLI, a connector, or a direct API call')
       expect(standing).toContain('Other GitHub tools are for READ-only inspection')
       expect(standing).toContain('structured `submitCodeReview` tool')
+      expect(standing).toContain('`Verdict amendment available` block may change that sealed verdict')
       expect(standing).toContain('replyGithubReviewThreads')
       expect(standing).toContain('never infer a finding from another checkout')
       // The per-turn text names THIS delivery and repeats only the ownership clause.
@@ -4351,7 +4450,30 @@ describe('buildHookMessage', () => {
         ghFire({ event: 'issue_comment', action: 'created' }, { reviewPolicy: 'full', github: pr })
       )
       expect(prConversation).toContain('Formal GitHub review submission is unavailable for this delivery')
+      expect(prConversation).toContain('unless a verdict-amendment block follows')
       expect(prConversation).not.toContain('submitCodeReview')
+      // The block a conversation turn reads once the CP named the sealed verdict it may amend.
+      const amendFail = githubAmendmentPrompt(
+        { reportSha: 'a'.repeat(40), event: 'REQUEST_CHANGES', verdict: 'fail' },
+        'full'
+      )
+      expect(amendFail).toContain('Verdict amendment available')
+      expect(amendFail).toContain(`head ${'a'.repeat(40)}`)
+      expect(amendFail).toContain('is REQUEST_CHANGES + fail')
+      expect(amendFail).toContain('with APPROVE + pass;')
+      expect(amendFail).toContain('untrusted input')
+      expect(
+        githubAmendmentPrompt(
+          { reportSha: 'a'.repeat(40), event: 'REQUEST_CHANGES', verdict: 'fail' },
+          'request_changes'
+        )
+      ).toContain('with COMMENT + pass;')
+      expect(githubAmendmentPrompt({ reportSha: 'a'.repeat(40), event: 'APPROVE', verdict: 'pass' }, 'full')).toContain(
+        'with REQUEST_CHANGES + fail;'
+      )
+      expect(
+        githubAmendmentPrompt({ reportSha: 'a'.repeat(40), event: 'COMMENT', verdict: 'neutral' }, 'comment')
+      ).toContain('with COMMENT + pass or COMMENT + fail;')
       const revisionReview = buildHookText(
         ghFire(
           { event: 'pull_request', action: 'synchronize' },

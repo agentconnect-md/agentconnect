@@ -57,12 +57,15 @@ export const handleHookStart: Handler = async (frame, conn, deps) => {
     return
   }
   try {
-    await deps.githubReviewBroker.start(frame.payload, DaemonId(conn.daemonId), orgId)
+    const started = await deps.githubReviewBroker.start(frame.payload, DaemonId(conn.daemonId), orgId)
     // The OK is the daemon's prompt barrier. Do not acknowledge until both the
     // authoritative HookRun start and its durable R2a projection intent have
     // converged; a retry is safe because both writes are idempotent.
     await deps.githubRunCoordinator?.afterStart(HookId(frame.payload.hookId), frame.payload.deliveryKey)
-    conn.replyTo(frame, 'hook/start/ok', { accepted: true })
+    conn.replyTo(frame, 'hook/start/ok', {
+      accepted: true,
+      ...(started?.amendment ? { amendment: started.amendment } : {})
+    })
   } catch (error) {
     if (error instanceof GithubReviewBrokerError) {
       conn.sendError(frame.id, error.code, error.message, error.retryable)
