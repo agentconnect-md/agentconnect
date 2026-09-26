@@ -1015,7 +1015,7 @@ Example:
       append current prompt, and advance markerA.
 ```
 
-If S_A closed by TTL, use `session/load`; on failure, start a new session but still replay transcript for continuity.
+If S_A closed by TTL, use `session/load`; on failure, start a new session but still replay transcript for continuity. Ordinary catch-up leaves out the agent's own messages, which its session already holds; a recreated session holds none, so its first replay also includes the agent's own replies, marked `[you]` under a heading saying the session restarted without its history.
 
 A delivery re-admitted from the durable inbox after a restart takes the same path, and it may be one a shutdown or crash cut off mid-turn. The daemon cannot tell whether the model already ran part of it, so it appends a delivery note to that prompt. The note says an earlier attempt may have stopped partway, and tells the model to check before repeating any external effect. When `session/load` restored the session, the note also says to continue from where the work stopped. When the session had to be recreated, the note says instead that the earlier actions may already have taken effect. A live delivery carries no note.
 
