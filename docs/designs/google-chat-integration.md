@@ -273,9 +273,11 @@ Do not hold the request open for an agent turn. See
 [interaction handling and retries](https://developers.google.com/workspace/chat/receive-respond-interactions).
 
 The current `RelayIngressHost.forward` result means the relay handled the message;
-it explicitly does not prove daemon admission, and the daemon's `rd/ack` for an
-`im` delivery reports every refusal except a durability failure as accepted. The
-routed path in [shared-bot relay](shared-bot-relay.md) §7.2 already carries the
+it explicitly does not prove daemon admission. The daemon's `rd/ack` for an `im`
+delivery does refuse entry-path failures such as no agent, unauthorized, draining,
+a wrong duty holder, or a failed durable write, but once dispatch begins it
+reports every deliberate gate refusal as accepted. The routed path in
+[shared-bot relay](shared-bot-relay.md) §7.2 already carries the
 strict shape: `rd/ack` gains `routeAdmission` and `recoverable`, and the relay's
 route forwarder maps them onto the `admitted` / `retry` / `rejected` dispositions
 and reasons of `rd/route/ack`. Extend the `im` ack with those same fields and
