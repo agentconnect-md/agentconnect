@@ -136,12 +136,21 @@ async function codeHostHookFilters(
   orgId: OrgId,
   query: z.infer<typeof SessionFilterQueryDto>,
   classifyAll: boolean
-): Promise<{ codeHostHookIds: Partial<Record<CodeHostProvider, HookId[]>>; repoHookIds?: HookId[] }> {
+): Promise<{
+  codeHostHookIds: Partial<Record<CodeHostProvider, HookId[]>>
+  repoHookIds?: HookId[]
+  repoInstallation?: { hookIds: HookId[]; channel: string }
+}> {
   if (query.githubRepoId) {
     const githubHooks = await deps.repos.hook.listForOrgKind(orgId, 'github')
     return {
       codeHostHookIds: { github: githubHooks.map((hook) => hook.id) },
-      repoHookIds: githubHooks.filter((hook) => hook.repoId?.toString() === query.githubRepoId).map((hook) => hook.id)
+      repoHookIds: githubHooks.filter((hook) => hook.repoId?.toString() === query.githubRepoId).map((hook) => hook.id),
+      // An installation row has no repository of its own; its sessions carry the event's repository in their channel.
+      repoInstallation: {
+        hookIds: githubHooks.filter((hook) => hook.installationId != null).map((hook) => hook.id),
+        channel: `github:${query.githubRepoId}`
+      }
     }
   }
   const wanted = (provider: CodeHostProvider) =>
@@ -707,7 +716,12 @@ export function sessionRoutes(deps: HttpDeps) {
         if (requested.some((id) => !new Set<string>(orgAgentIds).has(id))) {
           return { agents: [], agentNames: {}, integrations: [], channels: [], triggers: [] }
         }
-        const { codeHostHookIds, repoHookIds } = await codeHostHookFilters(deps, orgOf(req), req.query, true)
+        const { codeHostHookIds, repoHookIds, repoInstallation } = await codeHostHookFilters(
+          deps,
+          orgOf(req),
+          req.query,
+          true
+        )
         // A multi-agent request narrows to the qualifying CONVERSATIONS and then
         // reads facets off every member row the caller can see, rather than only
         // the selected agents' rows: a facet answers "what else can I narrow by",
@@ -721,7 +735,8 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
           codeHostHookIds,
-          ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {})
+          ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
+          ...(repoInstallation ? { hookTriggerInstallationChannel: repoInstallation } : {})
         }
         // Each facet drops its own active filter, so its external-audience
         // snapshot must span the same org-agent superset.
@@ -796,7 +811,12 @@ export function sessionRoutes(deps: HttpDeps) {
 
         // Each code host is a semantic subtype of hook sessions. Resolve definitions
         // only when integration classification or a repository-wide trigger filter needs them.
-        const { codeHostHookIds, repoHookIds } = await codeHostHookFilters(deps, orgOf(req), req.query, false)
+        const { codeHostHookIds, repoHookIds, repoInstallation } = await codeHostHookFilters(
+          deps,
+          orgOf(req),
+          req.query,
+          false
+        )
         // Two or more selected agents ask for the threads they SHARE. The rows stay
         // scoped to those agents (`agentIds`), so `?agentId=a` keeps returning
         // exactly what it always did. Every branch below reads this one binding —
@@ -819,6 +839,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.activityState ? { activityState: req.query.activityState } : {}),
           ...(Object.keys(codeHostHookIds).length > 0 ? { codeHostHookIds } : {}),
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
+          ...(repoInstallation ? { hookTriggerInstallationChannel: repoInstallation } : {}),
           ...(cursor ? { cursor } : {}),
           limit: req.query.limit,
           includeTotal: !cursor

@@ -346,7 +346,17 @@ function pageWhereSql(
   if (q.channel) filters.push(Prisma.sql`${a}."channel" = ${q.channel}`)
   if (q.triggeredBy) filters.push(Prisma.sql`${a}."triggeredBy" = ${q.triggeredBy}`)
   if (q.activityState) filters.push(Prisma.sql`${a}."activityState" = ${q.activityState}::"ActivityState"`)
-  if (q.hookTriggerIds) filters.push(hookTriggerSql(q.hookTriggerIds, a))
+  if (q.hookTriggerIds) {
+    const repository = hookTriggerSql(q.hookTriggerIds, a)
+    const installation = q.hookTriggerInstallationChannel
+    filters.push(
+      installation && installation.hookIds.length > 0
+        ? Prisma.sql`(${repository} OR (${a}."triggeredBy" IN (${Prisma.join(
+            installation.hookIds.map((id) => `${HOOK_TRIGGER_PREFIX}${id}`)
+          )}) AND ${a}."channel" = ${installation.channel}))`
+        : repository
+    )
+  }
   filters.push(...conversationParticipantsSql(q, a, probePrefix))
   if (includeCursor && q.cursor) {
     filters.push(Prisma.sql`
@@ -1422,6 +1432,7 @@ export class PgSessionRepo implements SessionRepo {
     const triggerQuery = { ...q }
     delete triggerQuery.triggeredBy
     delete triggerQuery.hookTriggerIds
+    delete triggerQuery.hookTriggerInstallationChannel
 
     const integrationFacet = integrationFacetSql(q.codeHostHookIds ?? {})
     const [agents, integrations, channels, triggers] = await Promise.all([

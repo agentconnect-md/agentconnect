@@ -540,6 +540,71 @@ describe('GET /sessions (metadata list from CP DB)', () => {
     expect(filteredBody.total).toBe(2)
   })
 
+  it("finds an installation-wide row's sessions under the repository they ran on", async () => {
+    const repoHook = randomUUID()
+    const installationHook = randomUUID()
+    const repoSession = randomUUID()
+    const installationSession = randomUUID()
+    const elsewhereSession = randomUUID()
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await prisma.hookDef.createMany({
+      data: [
+        {
+          id: repoHook,
+          orgId: DEFAULT_ORG_ID,
+          agentId: AGENT,
+          kind: 'github',
+          name: 'acme/infra',
+          sessionMode: 'perThread',
+          repoId: 123n,
+          repoFullName: 'acme/infra'
+        },
+        {
+          id: installationHook,
+          orgId: DEFAULT_ORG_ID,
+          agentId: AGENT,
+          kind: 'github',
+          name: 'acme/*',
+          sessionMode: 'perThread',
+          installationId: 777n,
+          installationAccount: 'acme'
+        }
+      ]
+    })
+    const session = (id: string, hookId: string, channel: string, at: string) => ({
+      id,
+      agentId: AGENT,
+      orgId: DEFAULT_ORG_ID,
+      platform: 'hook',
+      channel,
+      triggeredBy: `hook:${hookId}`,
+      phase: 'start' as const,
+      lastActivityAt: new Date(at)
+    })
+    await prisma.sessionMeta.createMany({
+      data: [
+        session(repoSession, repoHook, 'github:123', '2026-07-05T08:00:00.000Z'),
+        session(installationSession, installationHook, 'github:123', '2026-07-05T09:00:00.000Z'),
+        session(elsewhereSession, installationHook, 'github:456', '2026-07-05T10:00:00.000Z')
+      ]
+    })
+    running = buildHttpApp(prisma)
+
+    const filtered = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&githubRepoId=123` })
+    expect(filtered.statusCode).toBe(200)
+    const body = filtered.json() as { sessions: Array<{ sessionId: string }>; total: number }
+    expect(body.sessions.map((row) => row.sessionId)).toEqual([installationSession, repoSession])
+    expect(body.total).toBe(2)
+
+    // The installation's own trigger still narrows to every repository it ran on.
+    const byTrigger = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?view=flat&triggeredBy=${encodeURIComponent(`hook:${installationHook}`)}`
+    })
+    expect((byTrigger.json() as { total: number }).total).toBe(2)
+  })
+
   it('filters the metadata set by channel', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
