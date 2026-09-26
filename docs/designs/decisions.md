@@ -1412,9 +1412,11 @@ change preserves compatible conditions and invalidates preview results.
 
 ### 9.5 Recent evaluations and evidence
 
-Agent model selection has its own Recent evaluations entry beside Runtime and model
-on Agent Detail. It is an Agent-scoped session-start history, never part of an
-Integration conversation or routing history. The daemon stores it separately from
+Agent model selection has its own Recent evaluations section below Try a sample in
+the Agent's By decision model editor; the By decision hover card on Agent Detail and
+in the composers links to the Decision and opens the same list in a drawer. It is an
+Agent-scoped session-start history, never part of an Integration conversation or
+routing history. The daemon stores it separately from
 `decision_verdict`, and the CP returns each row only when the caller can also view
 the associated session. It records the chosen runtime/model or fallback, the frozen
 rules, Jev answer and chain, input, provider JSON, and the final pinned target.

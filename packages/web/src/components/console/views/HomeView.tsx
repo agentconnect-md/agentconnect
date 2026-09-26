@@ -2,6 +2,7 @@
 
 import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
 import { ruleSummaries } from '@/components/console/decisions/rule-summary'
+import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
 
 // The chat-first console landing. A composer ("Ask an agent") is the primary
@@ -719,7 +720,10 @@ export default function HomeView() {
                             selected: byDecision,
                             onSelect: () => setRuntime((current) => ({ fastMode: current.fastMode })),
                             rules: ruleSummaries(agent.modelSelection, selectedDecision?.question),
-                            fallback: defaultModel || agent.runtime
+                            fallback: defaultModel || agent.runtime,
+                            decisionHref:
+                              selectedDecision && orgPath(`/decisions/${encodeURIComponent(selectedDecision.id)}`),
+                            evaluations: modelEvaluationsTarget(agent)
                           }
                         : undefined
                     }

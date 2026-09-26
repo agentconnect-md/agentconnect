@@ -2389,6 +2389,33 @@
           "text4": "The evaluator is temporarily unavailable",
           "branchMatched": "Rule {index} matches ({condition}) → {decision}."
         },
+        "evaluations": {
+          "title": "Recent evaluations",
+          "close": "Close recent evaluations",
+          "noneYet": "none yet",
+          "empty": "No evaluations yet. Save a by-decision model and new sessions will show up here.",
+          "error": "Could not load model evaluations.",
+          "offline": "The agent's evaluation host is offline.",
+          "unsupported": "Upgrade the agent's evaluation host to read model evaluations.",
+          "retry": "Retry",
+          "loadMore": "Load more",
+          "retention": "Details are kept for 24 hours or 20 newer model selections; summaries are kept for seven days.",
+          "time": "Time",
+          "outcomeLabel": "Outcome",
+          "outcome": {
+            "selected": "Selected",
+            "fallback": "Fallback"
+          },
+          "target": "Runtime and model",
+          "reason": "Reason",
+          "noTarget": "No rule selected a supported model",
+          "unavailable": "Decision unavailable",
+          "noAnswer": "No answer",
+          "expired": "Details expired",
+          "expiredBody": "The input and full answer have expired; the selection summary remains available.",
+          "rules": "Rules as evaluated",
+          "input": "Evaluated input"
+        },
         "add": "Add"
       },
       "runtimeModel": {
@@ -2488,29 +2515,6 @@
         "safeMoveBody": "Bring {daemon} online before moving this agent safely.",
         "openRecovery": "Open recovery options",
         "runtimeAndModel": "Runtime and model"
-      },
-      "modelEvaluations": {
-        "title": "Recent evaluations",
-        "close": "Close model evaluations",
-        "empty": "No visible model selections.",
-        "error": "Could not load model evaluations.",
-        "offline": "The agent's evaluation host is offline.",
-        "unsupported": "Upgrade the agent's evaluation host to read model evaluations.",
-        "retry": "Retry",
-        "loadMore": "Load more",
-        "retention": "Details are kept for 24 hours or 20 newer model selections; summaries are kept for seven days.",
-        "time": "Time",
-        "outcomeLabel": "Outcome",
-        "outcome": { "selected": "Selected", "fallback": "Fallback" },
-        "target": "Runtime and model",
-        "reason": "Reason",
-        "noTarget": "No rule selected a supported model",
-        "unavailable": "Decision unavailable",
-        "noAnswer": "No answer",
-        "expired": "Details expired",
-        "expiredBody": "The input and full answer have expired; the selection summary remains available.",
-        "rules": "Rules as evaluated",
-        "input": "Evaluated input"
       },
       "runtime": {
         "title": "Runtime",

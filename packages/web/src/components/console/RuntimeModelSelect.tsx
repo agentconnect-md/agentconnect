@@ -7,7 +7,8 @@ import { useTranslations } from 'next-intl'
 import { AgentMark, MarkSlot } from '@/components/marks'
 import { Icon, Toggle } from '@/components/ui'
 import { ModelOption, ProviderModelMenu } from '@/components/console/ProviderModelMenu'
-import { DecisionModelHover } from '@/components/console/decisions/DecisionModelLabel'
+import { DecisionModelHover, useModelEvaluationsLink } from '@/components/console/decisions/DecisionModelLabel'
+import type { ModelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import {
   displayedEffort,
@@ -57,6 +58,8 @@ export interface RuntimeDecisionChoice {
   onSelect(): void
   rules?: readonly { when: string; then: string }[]
   fallback?: string
+  decisionHref?: string
+  evaluations?: ModelEvaluationsTarget
 }
 
 function SettingSelect({ label, control }: { label: string; control: RunSettingControl }) {
@@ -127,7 +130,10 @@ export function RuntimeModelSelect({
   const registry = useAcpRegistry()
   const [provider, setProvider] = useState(value.runtime)
   const [search, setSearch] = useState('')
-  const hover = useHoverCard()
+  const hover = useHoverCard({
+    interactive: !!decision?.selected && !!(decision.evaluations || decision.decisionHref)
+  })
+  const link = useModelEvaluationsLink(decision?.selected ? decision.evaluations : undefined, hover.hide)
   if (pending) {
     return (
       <span
@@ -229,7 +235,13 @@ export function RuntimeModelSelect({
   }
   const runtimeOnly = allowRuntimeOnly && !search && matching[0]?.options.length === 0 ? matching[0] : undefined
   const hoverContent = decision?.selected ? (
-    <DecisionModelHover name={decision.name} rules={decision.rules} fallback={decision.fallback} />
+    <DecisionModelHover
+      name={decision.name}
+      rules={decision.rules}
+      fallback={decision.fallback}
+      decisionHref={decision.decisionHref}
+      onEvaluations={link.onEvaluations}
+    />
   ) : (
     <HoverCardRows
       rows={[
@@ -317,6 +329,7 @@ export function RuntimeModelSelect({
             />
           </button>
           {!open && hover.card(hoverContent)}
+          {link.drawer}
         </>
       )}
     >
