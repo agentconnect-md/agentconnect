@@ -4,6 +4,7 @@ import {
   CodeHostRoutingFamily,
   CodeHostRoutingProvider,
   DECISION_EVALUATIONS_V1_FEATURE,
+  DECISION_EVALUATION_FILTER_V1_FEATURE,
   DecisionEvaluationRecordDetail,
   DecisionEvaluationRecordPage,
   SharedBotDecisionRouting,
@@ -299,7 +300,8 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
       reply: FastifyReply,
       host: AgentRecord,
       scope: CodeHostRoutingScope,
-      read: (daemonId: string) => Promise<T>
+      read: (daemonId: string) => Promise<T>,
+      decisionId?: string
     ): Promise<{ ok: true; value: T } | { ok: false }> => {
       const ready = (await deps.placementResolver.servingDaemons(host)).filter((id) => readyConn(id))
       if (ready.length === 0) {
@@ -309,7 +311,11 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
       // `source: 'hook_routing'` reaches only a peer that reads routing lanes; an older strict one would reject it.
       const capable = ready.filter((id) => {
         const features = readyConn(id)?.capabilities?.features ?? []
-        return [DECISION_EVALUATIONS_V1_FEATURE, ...requiredFeatures(scope)].every((f) => features.includes(f))
+        return [
+          DECISION_EVALUATIONS_V1_FEATURE,
+          ...requiredFeatures(scope),
+          ...(decisionId ? [DECISION_EVALUATION_FILTER_V1_FEATURE] : [])
+        ].every((f) => features.includes(f))
       })
       if (capable.length === 0) {
         await reply.code(503).send(unavailable(UNSUPPORTED, 'DAEMON_UPGRADE_REQUIRED'))
@@ -367,11 +373,12 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
           summary: 'List repository routing evaluations',
           operationId: 'listCodeHostDecisionRoutingEvaluations',
           description:
-            "Recent evaluations of one repository routing, newest first, read from the evaluation agent's serving daemon and proxied without being stored or logged. Needs view access to one member. Pages by `cursor` (the previous page's `nextCursor`) up to 50 rows and 32 KiB. Returns 503 when the host daemon is offline (`DAEMON_OFFLINE`) or must be upgraded (`DAEMON_UPGRADE_REQUIRED`).",
+            "Recent evaluations of one repository routing, newest first, read from the evaluation agent's serving daemon and proxied without being stored or logged. `decisionId` optionally filters by the recorded root Decision before paging. Needs view access to one member. Pages by `cursor` (the previous page's `nextCursor`) up to 50 rows and 32 KiB. Returns 503 when the host daemon is offline (`DAEMON_OFFLINE`) or must be upgraded (`DAEMON_UPGRADE_REQUIRED`).",
           params: ScopeParams,
           querystring: z.object({
             cursor: z.coerce.number().int().positive().optional(),
-            limit: z.coerce.number().int().min(1).max(50).default(20)
+            limit: z.coerce.number().int().min(1).max(50).default(20),
+            decisionId: z.string().uuid().optional()
           }),
           response: { 200: DecisionEvaluationRecordPage, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
         }
@@ -381,15 +388,22 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
         if (!asked || asked === 'forbidden') return reply.code(404).send(notFound(REPOSITORY_NOT_FOUND))
         if (!asked.host) return reply.code(503).send(unavailable(OFFLINE, 'DAEMON_OFFLINE'))
         const host = asked.host
-        const result = await proxied(req, reply, host, asked.scope, (daemonId) =>
-          deps.control.decisionEvaluations(daemonId, orgOf(req), {
-            agentId: host.id,
-            integrationId: asked.record.id,
-            channel: asked.record.id,
-            source: 'hook_routing',
-            ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
-            limit: req.query.limit
-          })
+        const result = await proxied(
+          req,
+          reply,
+          host,
+          asked.scope,
+          (daemonId) =>
+            deps.control.decisionEvaluations(daemonId, orgOf(req), {
+              agentId: host.id,
+              integrationId: asked.record.id,
+              channel: asked.record.id,
+              source: 'hook_routing',
+              ...(req.query.decisionId ? { decisionId: req.query.decisionId } : {}),
+              ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
+              limit: req.query.limit
+            }),
+          req.query.decisionId
         )
         if (!result.ok) return reply
         if (!sameLane(asked, await lane(req))) return reply.code(404).send(notFound(REPOSITORY_NOT_FOUND))

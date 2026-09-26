@@ -12,6 +12,46 @@ const sessionId = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(1
 const question = { type: 'boolean' as const, instructions: 'Choose a model?', criteria: { true: 'Yes', false: 'No' } }
 
 describe('model selection evaluation history', () => {
+  it('filters by Decision before paging an agent lane', async () => {
+    const store = await openTestStore()
+    const reader = new DecisionModelEvaluationReader({ store: () => store, servesAgent: () => true })
+    const save = (i: number, decisionId: string) =>
+      store.saveDecisionModelEvaluation(
+        AGENT,
+        sessionId(i),
+        {
+          at: new Date(AT).toISOString(),
+          sessionId: sessionId(i),
+          decisionId,
+          outcome: 'selected',
+          reason: null,
+          target: { runtime: 'test', model: 'chosen' },
+          answer: null,
+          requestedModel: null,
+          actualModel: null,
+          latencyMs: null,
+          usage: null
+        },
+        { selection: null, question: null, input: null, fullAnswer: null, rawRequest: null, rawResponse: null },
+        AT
+      )
+    await save(1, DECISION)
+    await save(2, OTHER)
+    await save(3, DECISION)
+    const page = await reader.list('', { agentId: AGENT, decisionId: DECISION, limit: 1 })
+    expect(page.items.map((item) => item.sessionId)).toEqual([sessionId(3)])
+    expect(page.nextCursor).toBe(page.items[0]!.seq)
+    expect(
+      (await reader.list('', { agentId: AGENT, decisionId: DECISION, cursor: page.nextCursor!, limit: 1 })).items.map(
+        (item) => item.sessionId
+      )
+    ).toEqual([sessionId(1)])
+    expect(
+      (await reader.list('', { agentId: AGENT, decisionId: OTHER, limit: 20 })).items.map((item) => item.sessionId)
+    ).toEqual([sessionId(2)])
+    await store.close()
+  })
+
   it('keeps a separate per-agent lane, strips bodies after 20 newer choices or 24 hours, and deletes summaries after seven days', async () => {
     const store = await openTestStore()
     const reader = new DecisionModelEvaluationReader({

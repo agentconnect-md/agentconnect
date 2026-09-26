@@ -5,6 +5,7 @@ import { z } from 'zod'
 import {
   ChannelDecisionGate,
   DECISION_EVALUATIONS_V1_FEATURE,
+  DECISION_EVALUATION_FILTER_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   DecisionEvaluation,
   type DecisionEvaluationConversation,
@@ -256,7 +257,8 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
       req: FastifyRequest,
       reply: FastifyReply,
       conversation: ReadableConversation,
-      read: (daemonId: string, agentId: string, integrationId: string) => Promise<T>
+      read: (daemonId: string, agentId: string, integrationId: string) => Promise<T>,
+      decisionId?: string
     ): Promise<{ ok: true; value: T } | { ok: false }> => {
       const agent = conversation.consumer.agent
       const ready = (await deps.placementResolver.servingDaemons(agent)).filter((id) => readyConn(id))
@@ -264,8 +266,10 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
         await reply.code(503).send(unavailable(OFFLINE, 'DAEMON_OFFLINE'))
         return { ok: false }
       }
-      const capable = ready.filter((id) =>
-        readyConn(id)?.capabilities?.features.includes(DECISION_EVALUATIONS_V1_FEATURE)
+      const capable = ready.filter(
+        (id) =>
+          readyConn(id)?.capabilities?.features.includes(DECISION_EVALUATIONS_V1_FEATURE) &&
+          (!decisionId || readyConn(id)?.capabilities?.features.includes(DECISION_EVALUATION_FILTER_V1_FEATURE))
       )
       if (capable.length === 0) {
         await reply.code(503).send(unavailable(UNSUPPORTED, 'DAEMON_UPGRADE_REQUIRED'))
@@ -330,11 +334,12 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
           summary: 'List recent conversation evaluations',
           operationId: 'listIntegrationChannelDecisionEvaluations',
           description:
-            "Recent By decision evaluations for one conversation, newest first, read from the serving daemon and proxied without being stored or logged. The caller must be able to read the conversation: the audience of its newest session in the namespace (platform and tenant scope) the serving daemon names for the install, or, before any session exists there, the organization baseline (closed while an external-access policy is active); the check runs on the reply before anything is returned. Pages by `cursor` (the previous page's `nextCursor`) up to 50 rows and 32 KiB. Returns 503 when the serving daemon is offline, including while its connection to the install has not yet reported the tenant scope, or must be upgraded, including a reply that names no namespace.",
+            "Recent By decision evaluations for one conversation, newest first, read from the serving daemon and proxied without being stored or logged. `decisionId` optionally filters by the recorded root Decision before paging. The caller must be able to read the conversation: the audience of its newest session in the namespace (platform and tenant scope) the serving daemon names for the install, or, before any session exists there, the organization baseline (closed while an external-access policy is active); the check runs on the reply before anything is returned. Pages by `cursor` (the previous page's `nextCursor`) up to 50 rows and 32 KiB. Returns 503 when the serving daemon is offline, including while its connection to the install has not yet reported the tenant scope, or must be upgraded, including a reply that names no namespace.",
           params: ConversationParams,
           querystring: z.object({
             cursor: z.coerce.number().int().positive().optional(),
-            limit: z.coerce.number().int().min(1).max(50).default(20)
+            limit: z.coerce.number().int().min(1).max(50).default(20),
+            decisionId: z.string().uuid().optional()
           }),
           response: { 200: DecisionEvaluationRecordPage, 404: ErrorDto, 503: ErrorDto }
         }
@@ -342,14 +347,20 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const conversation = await readableConversation(deps, req, req.params.id, req.params.channelId)
         if (!conversation) return reply.code(404).send(notFound('conversation not found'))
-        const result = await proxied(req, reply, conversation, (daemonId, agentId, integrationId) =>
-          deps.control.decisionEvaluations(daemonId, orgOf(req), {
-            agentId,
-            integrationId,
-            channel: req.params.channelId,
-            ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
-            limit: req.query.limit
-          })
+        const result = await proxied(
+          req,
+          reply,
+          conversation,
+          (daemonId, agentId, integrationId) =>
+            deps.control.decisionEvaluations(daemonId, orgOf(req), {
+              agentId,
+              integrationId,
+              channel: req.params.channelId,
+              ...(req.query.decisionId ? { decisionId: req.query.decisionId } : {}),
+              ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
+              limit: req.query.limit
+            }),
+          req.query.decisionId
         )
         if (!result.ok) return reply
         const { conversation: namespace, ...page } = result.value

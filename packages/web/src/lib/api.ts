@@ -4381,12 +4381,13 @@ export function deleteCodeHostRouting(scope: CodeHostRoutingKey, orgId?: string)
 // A routing's Recent evaluations, proxied from its evaluation host; 503 when that daemon is offline or too old.
 export function fetchCodeHostRoutingEvaluations(
   scope: CodeHostRoutingKey,
-  page: { cursor?: number; limit?: number } = {},
+  page: { cursor?: number; limit?: number; decisionId?: string } = {},
   orgId?: string
 ): Promise<DecisionEvaluationRecordPage> {
   const query = new URLSearchParams()
   if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
   if (page.limit !== undefined) query.set('limit', String(page.limit))
+  if (page.decisionId) query.set('decisionId', page.decisionId)
   const suffix = query.toString()
   return apiGet(`${codeHostRoutingPath(scope, orgId)}/evaluations${suffix ? `?${suffix}` : ''}`)
 }
@@ -4401,12 +4402,13 @@ export function fetchCodeHostRoutingEvaluation(
 
 export function fetchAgentModelEvaluations(
   agentId: string,
-  page: { cursor?: number; limit?: number } = {},
+  page: { cursor?: number; limit?: number; decisionId?: string } = {},
   orgId?: string
 ): Promise<DecisionModelEvaluationRecordPage> {
   const query = new URLSearchParams()
   if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
   if (page.limit !== undefined) query.set('limit', String(page.limit))
+  if (page.decisionId) query.set('decisionId', page.decisionId)
   const suffix = query.toString()
   return apiGet(
     `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/model-evaluations${suffix ? `?${suffix}` : ''}`
@@ -6632,6 +6634,7 @@ export function createDecisionApi(orgId: string): DecisionApi {
       const query = new URLSearchParams()
       if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
       if (page.limit !== undefined) query.set('limit', String(page.limit))
+      if (page.decisionId) query.set('decisionId', page.decisionId)
       const suffix = query.toString()
       return apiGet(`${conversation(ref)}/decision-evaluations${suffix ? `?${suffix}` : ''}`)
     },
@@ -6647,6 +6650,7 @@ export function createDecisionApi(orgId: string): DecisionApi {
       if (page.channelId !== undefined) query.set('channelId', page.channelId)
       if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
       if (page.limit !== undefined) query.set('limit', String(page.limit))
+      if (page.decisionId) query.set('decisionId', page.decisionId)
       const suffix = query.toString()
       return apiGet(`${routing(botId)}/evaluations${suffix ? `?${suffix}` : ''}`)
     },

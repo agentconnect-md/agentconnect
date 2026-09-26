@@ -122,6 +122,26 @@ function readerFor(s: LocalStore) {
 const lane = { agentId: AGENT, integrationId: 'int-a', channel: CH }
 
 describe('DecisionEvaluationReader', () => {
+  it('filters by Decision before paging a conversation lane', async () => {
+    const s = await openTestStore()
+    const firstId = '33333333-3333-4333-8333-333333333333'
+    const otherId = '44444444-4444-4444-8444-444444444444'
+    const first = (await reserve(s, 1, { decisionId: firstId })).seq
+    const other = (await reserve(s, 2, { decisionId: otherId })).seq
+    const latest = (await reserve(s, 3, { decisionId: firstId })).seq
+    const reader = readerFor(s)
+    const page = await reader.list(ORG, { ...lane, decisionId: firstId, limit: 1 })
+    expect(page.items.map((item) => item.seq)).toEqual([latest])
+    expect(page.nextCursor).toBe(latest)
+    expect(
+      (await reader.list(ORG, { ...lane, decisionId: firstId, limit: 1, cursor: latest })).items.map((item) => item.seq)
+    ).toEqual([first])
+    expect((await reader.list(ORG, { ...lane, decisionId: otherId, limit: 20 })).items.map((item) => item.seq)).toEqual(
+      [other]
+    )
+    await s.close()
+  })
+
   it('lists one lane newest-first, maps every state to an outcome, and pages by cursor', async () => {
     const s = await openTestStore()
     const triggered = (await reserve(s, 1)).seq
@@ -453,6 +473,7 @@ describe('DecisionEvaluationReader router verdicts', () => {
       targets?: unknown[]
       finish?: ['admitted' | 'canceled', string | null]
       answer?: Record<string, unknown>
+      decisionId?: string
     } = {}
   ): Promise<number> {
     const { seq, orgId } = await record(s, ts, channel)
@@ -463,7 +484,7 @@ describe('DecisionEvaluationReader router verdicts', () => {
       channel,
       agentId: AGENT,
       integrationId: `int-${ts}`,
-      decisionId: 'd-1',
+      decisionId: end.decisionId ?? 'd-1',
       configJson: frozen(channel),
       deliveryJson: delivery,
       requestedModel: 'jev-latest',
@@ -497,6 +518,25 @@ describe('DecisionEvaluationReader router verdicts', () => {
     })
   }
   const routingLane = { agentId: AGENT, integrationId: 'int-a', botId: BOT }
+
+  it('filters a router lane by Decision across channels before paging', async () => {
+    const s = await openTestStore()
+    const firstId = '33333333-3333-4333-8333-333333333333'
+    const otherId = '44444444-4444-4444-8444-444444444444'
+    const first = await routed(s, 1, CH, { decisionId: firstId })
+    const other = await routed(s, 2, 'C2', { decisionId: otherId })
+    const latest = await routed(s, 3, 'C2', { decisionId: firstId })
+    const reader = routingReader(s)
+    const lane = { ...routingLane, channels: [CH, 'C2'], decisionId: firstId, limit: 1 }
+    const page = await reader.listRouting(ORG, lane)
+    expect(page.items.map((item) => item.seq)).toEqual([latest])
+    expect(page.nextCursor).toBe(latest)
+    expect((await reader.listRouting(ORG, { ...lane, cursor: latest })).items.map((item) => item.seq)).toEqual([first])
+    expect((await reader.listRouting(ORG, { ...lane, decisionId: otherId })).items.map((item) => item.seq)).toEqual([
+      other
+    ])
+    await s.close()
+  })
 
   it('lists the bot router across channels with no install filter and classifies every outcome', async () => {
     const s = await openTestStore()

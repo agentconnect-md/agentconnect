@@ -9,7 +9,7 @@ export interface DecisionEvaluationSource {
   lane: 'conversation' | 'code_host'
   /** SWR identity of the lane, organization and API mode included. */
   key: readonly string[]
-  list(page: { cursor?: number; limit?: number }): Promise<DecisionEvaluationRecordPage>
+  list(page: { cursor?: number; limit?: number; decisionId?: string }): Promise<DecisionEvaluationRecordPage>
   get(seq: number): Promise<DecisionEvaluationRecordDetail>
 }
 

@@ -40,12 +40,14 @@ export class DecisionModelEvaluationReader {
 
   async list(orgId: string, req: DecisionModelEvaluationsRequest): Promise<DecisionModelEvaluationsReply> {
     this.assertScope(orgId, req.agentId)
-    const rows = await this.deps.store().listDecisionModelEvaluations(orgId, req.agentId, req.cursor, req.limit + 1)
+    const rows = await this.deps
+      .store()
+      .listDecisionModelEvaluations(orgId, req.agentId, req.cursor, req.limit + 1, req.decisionId)
     const items: DecisionModelEvaluationRecord[] = []
     let more = rows.length > req.limit
     for (const row of rows.slice(0, req.limit)) {
       const summary = this.summary(row)
-      if (!summary) continue
+      if (!summary || (req.decisionId && summary.decisionId !== req.decisionId)) continue
       if (bytes({ items: [...items, summary], nextCursor: Number.MAX_SAFE_INTEGER }) > DECISION_LIST_MAX_BYTES) {
         more = true
         break

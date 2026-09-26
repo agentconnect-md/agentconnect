@@ -16,6 +16,7 @@ import { DaemonSelect, type DaemonSelectOption } from '@/components/console/Daem
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { DecisionModelSelect } from '@/components/console/decisions/DecisionModelSelect'
 import { DecisionUsageList } from '@/components/console/decisions/DecisionUsageList'
+import { DecisionRecentEvaluations } from '@/components/console/decisions/DecisionRecentEvaluations'
 import { decisionInUse } from '@/lib/decisions/binding'
 import { decisionUsageHref } from '@/lib/decisions/usage-links'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -907,6 +908,9 @@ function DecisionEditor() {
               )}
             </div>
           </div>
+          {id && definition && usageState.status === 'ready' && (
+            <DecisionRecentEvaluations decisionId={id} question={definition.question} usages={usages} />
+          )}
         </div>
 
         <div className="flex min-w-0 flex-col gap-4 desktop:sticky desktop:top-4">

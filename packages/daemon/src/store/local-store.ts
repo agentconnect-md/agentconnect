@@ -5658,6 +5658,7 @@ export class LocalStore {
     /** Absent reads every channel of the lane's integration, as a hook's lane does. */
     channel?: string
     subject: string
+    decisionId?: string
     before?: number
     seq?: number
     limit: number
@@ -5667,6 +5668,10 @@ export class LocalStore {
     if (filter.channel !== undefined) {
       bound += ' AND v.channel = ?'
       params.push(filter.channel)
+    }
+    if (filter.decisionId !== undefined) {
+      bound += ' AND v.decisionId = ?'
+      params.push(filter.decisionId)
     }
     if (filter.seq !== undefined) {
       bound += ' AND v.seq = ?'
@@ -5690,6 +5695,7 @@ export class LocalStore {
     orgId: string
     subject: string
     channels: readonly string[]
+    decisionId?: string
     before?: number
     seq?: number
     limit: number
@@ -5697,11 +5703,15 @@ export class LocalStore {
     if (filter.channels.length === 0) return []
     const params: unknown[] = [this.orgForRead(filter.subject, filter.orgId), filter.subject, ...filter.channels]
     let bound = ''
+    if (filter.decisionId !== undefined) {
+      bound += ' AND v.decisionId = ?'
+      params.push(filter.decisionId)
+    }
     if (filter.seq !== undefined) {
-      bound = ' AND v.seq = ?'
+      bound += ' AND v.seq = ?'
       params.push(filter.seq)
     } else if (filter.before !== undefined) {
-      bound = ' AND v.seq < ?'
+      bound += ' AND v.seq < ?'
       params.push(filter.before)
     }
     const rows = (await this.db
@@ -6237,20 +6247,19 @@ export class LocalStore {
     orgId: string,
     agentId: string,
     before: number | undefined,
-    limit: number
+    limit: number,
+    decisionId?: string
   ): Promise<DecisionModelEvaluationRow[]> {
+    const params: unknown[] = [this.orgForRead(agentId, orgId), agentId, before ?? Number.MAX_SAFE_INTEGER]
+    const decisionFilter = decisionId ? ' AND summaryJson LIKE ?' : ''
+    if (decisionId) params.push(`%"decisionId":"${decisionId}"%`)
     return (await this.db
       .prepare(
         `SELECT seq, summaryJson, detailJson, bodiesStrippedAt
-      FROM decision_model_evaluation WHERE orgId = ? AND agentId = ? AND seq < ?
+      FROM decision_model_evaluation WHERE orgId = ? AND agentId = ? AND seq < ?${decisionFilter}
       ORDER BY seq DESC LIMIT ?`
       )
-      .all(
-        this.orgForRead(agentId, orgId),
-        agentId,
-        before ?? Number.MAX_SAFE_INTEGER,
-        limit
-      )) as DecisionModelEvaluationRow[]
+      .all(...params, limit)) as DecisionModelEvaluationRow[]
   }
 
   async getDecisionModelEvaluation(

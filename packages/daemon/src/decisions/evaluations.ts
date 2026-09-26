@@ -402,6 +402,7 @@ export class DecisionEvaluationReader {
     const { lane, conversation } = await this.lane(orgId, req)
     const rows = await this.deps.store().listDecisionVerdicts({
       ...lane,
+      ...(req.decisionId ? { decisionId: req.decisionId } : {}),
       ...(req.cursor !== undefined ? { before: req.cursor } : {}),
       limit: req.limit
     })
@@ -462,6 +463,7 @@ export class DecisionEvaluationReader {
       orgId,
       subject,
       channels: [...new Set(req.channels.map(channel))],
+      ...(req.decisionId ? { decisionId: req.decisionId } : {}),
       ...(req.cursor !== undefined ? { before: req.cursor } : {}),
       limit: req.limit
     })
