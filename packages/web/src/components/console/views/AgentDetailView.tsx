@@ -479,12 +479,15 @@ function AgentDetail() {
     : undefined
   const reviewSettingsRepoAccess = effectiveRepoAccess({
     repoId: reviewSettingsHook?.repoId,
-    repoFullName: reviewSettingsHook?.repoFullName,
+    repoFullName: reviewSettingsHook ? githubHookScopeKey(reviewSettingsHook) : undefined,
     workspace: wsForRepos ?? { mode: 'scratch' },
     authorizations: agentReposData ?? [],
     installationGrants: installationGrantsData
   })
-  const reviewSettingsInstallation = installationForRepo(reviewSettingsHook?.repoFullName, githubInstallations)
+  const reviewSettingsInstallation = installationForRepo(
+    reviewSettingsHook ? githubHookScopeKey(reviewSettingsHook) : undefined,
+    githubInstallations
+  )
   const reviewSettingsNeededAccess = reviewSettingsDraft ? requiredRepoAccess(reviewSettingsDraft) : 'none'
   // Only the github surface has a config-time blocker, named positively so no other
   // host inherits it; GitLab's writer is the project bot, which carries no per-agent
@@ -733,16 +736,17 @@ function AgentDetail() {
   const [addFamilyBusy, setAddFamilyBusy] = useState<string | null>(null)
   const [addFamilyError, setAddFamilyError] = useState<{ key: string; message: string } | null>(null)
   const addFamilyKey = (repoKey: string, fam: string) => `${repoKey}:${fam}`
-  // `seed` is any row of the repository — the siblings all name the same repo.
+  // `seed` is any row of the repository or installation — the siblings all name the same scope.
   const addGithubFamily = async (seed: HookDto, repoKey: string, fam: GhFamily) => {
-    if (addFamilyBusy || !seed.agentId || !seed.repoFullName) return
+    const scope = githubHookScopeKey(seed)
+    if (addFamilyBusy || !seed.agentId || !scope) return
     setAddFamilyBusy(addFamilyKey(repoKey, fam))
     setAddFamilyError(null)
     try {
       await createGithubHook({
         agentId: seed.agentId,
-        name: seed.repoFullName,
-        repoFullName: seed.repoFullName,
+        name: scope,
+        ...githubHookScope(seed),
         family: fam,
         ...githubFamilySubscription(fam, githubDefaultTriggerMode(fam)),
         reviewPolicy: 'off',

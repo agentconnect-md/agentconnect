@@ -15,7 +15,9 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const mocks = vi.hoisted(() => ({
   hooks: [] as unknown[],
   grants: [] as unknown[],
+  installations: [] as unknown[],
   createGithubHook: vi.fn(),
+  updateGithubHook: vi.fn(),
   openModal: vi.fn()
 }))
 
@@ -53,9 +55,13 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   fetchAgentHooks: vi.fn(async () => mocks.hooks),
   fetchAgentRepos: vi.fn(async () => []),
   fetchAgentInstallations: vi.fn(async () => mocks.grants),
-  fetchGithubInstallations: vi.fn(async () => ({ enabled: false, installations: [] })),
+  fetchGithubInstallations: vi.fn(async () => ({
+    enabled: mocks.installations.length > 0,
+    installations: mocks.installations
+  })),
   fetchGitlabConnections: vi.fn(async () => ({ enabled: false, connections: [] })),
-  createGithubHook: mocks.createGithubHook
+  createGithubHook: mocks.createGithubHook,
+  updateGithubHook: mocks.updateGithubHook
 }))
 
 const agent = {
@@ -187,6 +193,9 @@ function triggerOrder(scope: HTMLElement): string[] {
 beforeEach(() => {
   mocks.hooks = [ISSUES_ROW, PR_ROW, DEPLOY_ROW, RELEASE_ROW, WEB_ISSUES_ROW]
   mocks.grants = []
+  mocks.installations = []
+  mocks.updateGithubHook.mockReset()
+  mocks.updateGithubHook.mockRejectedValue(new Error('offline'))
   mocks.createGithubHook.mockReset()
   mocks.createGithubHook.mockResolvedValue({ id: 'hook-new' })
   mocks.openModal.mockReset()
@@ -373,5 +382,71 @@ describe('AgentDetailView, repositories an installation grant covers', () => {
     const covered = await render()
     expect(covered.textContent).toContain('acme/web')
     expect(covered.textContent).not.toContain('write-back unauthorized')
+  })
+})
+
+describe('AgentDetailView, an installation-wide row', () => {
+  const INSTALLATION_PR_ROW = githubHook({
+    id: 'hook-installation-pr',
+    repoId: null,
+    name: 'acme/*',
+    repoFullName: null,
+    installationAccount: 'acme',
+    family: 'pull_request',
+    events: ['pull_request:*', 'issue_comment:created'],
+    commentFamilies: ['pull_request'],
+    reviewPolicy: 'comment',
+    reportingMode: 'check'
+  })
+  const WRITE_GRANT = {
+    id: 'grant-1',
+    provider: 'github',
+    installationId: 12345,
+    accountLogin: 'acme',
+    access: 'write'
+  }
+
+  it('adds another subject by the installation’s account', async () => {
+    mocks.hooks = [INSTALLATION_PR_ROW]
+    mocks.grants = [WRITE_GRANT]
+    const scope = await render()
+    await act(async () => byTitle(scope, 'Watch another subject')[0]!.click())
+    await act(async () => menuItem('Add Issues')!.click())
+    const [input] = mocks.createGithubHook.mock.calls[0] as [Record<string, unknown>]
+    expect(input).toMatchObject({ agentId: 'agent-1', name: 'acme/*', githubAccount: 'acme', family: 'issues' })
+    expect(input).not.toHaveProperty('repoFullName')
+  })
+
+  it('saves review settings on the installation grant and live installation', async () => {
+    mocks.hooks = [INSTALLATION_PR_ROW]
+    mocks.grants = [WRITE_GRANT]
+    mocks.installations = [
+      {
+        id: 'inst-1',
+        installationId: 12345,
+        accountLogin: 'acme',
+        accountType: 'Organization',
+        repositorySelection: 'all',
+        suspended: false,
+        permissionsStatus: 'current',
+        pullRequestsPermission: 'write',
+        checksPermission: 'write',
+        settingsUrl: 'https://github.example.test/settings/installations/12345',
+        createdAt: '2026-09-01T00:00:00.000Z'
+      }
+    ]
+    mocks.updateGithubHook.mockResolvedValue(INSTALLATION_PR_ROW)
+    const scope = await render()
+    await act(async () => scope.querySelector<HTMLElement>('[aria-label="More for acme/* PRs"]')!.click())
+    await act(async () => menuItem('Settings…')!.click())
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    const save = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent?.trim() === 'Save'
+    )!
+    expect(save.disabled).toBe(false)
+    await act(async () => save.click())
+    const [, input] = mocks.updateGithubHook.mock.calls[0] as [string, Record<string, unknown>]
+    expect(input).toMatchObject({ githubAccount: 'acme', reviewPolicy: 'comment', reportingMode: 'check' })
+    expect(input).not.toHaveProperty('repoFullName')
   })
 })
