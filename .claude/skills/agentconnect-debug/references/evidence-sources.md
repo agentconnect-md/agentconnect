@@ -32,7 +32,7 @@ The script resolves the bundled `pg` driver inside the image, sets the session r
 
 ## 2. The daemon store
 
-**Where.** `<root>/state/local.sqlite` for a self-hosted daemon (`packages/daemon/src/paths.ts`); the root defaults to `~/.agentconnect`, or `AGENTCONNECT_ROOT`, or `--root`. `agentconnect status` prints the root the service runs on. A pool member keeps the same tables in the shared Postgres data plane instead.
+**Where.** `<root>/state/local.sqlite` for a self-hosted daemon (`packages/daemon/src/paths.ts`); the root defaults to `~/.agentconnect`, or `AGENTCONNECT_ROOT`, or `--root`. `agentconnect status` prints the root the service runs on. Before reading that file, check `<root>/config.json` → `store.backend`: a pool member, and any self-hosted daemon configured with `store: { backend: "postgres", configFile }` (PR #2240), keeps the same tables in the shared Postgres data plane (schema `agentconnect_cloud_store`, lowercase column names) and holds no local session history, so an absent or empty SQLite file there is not a missing session. Print only the `store` object, never the whole config.
 
 **Tables** (`packages/daemon/src/store/local-store.ts`):
 
