@@ -30,6 +30,7 @@ import type {
 } from '../persistence/ports.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from '../orchestrator/placementResolver.js'
 import { GitCredDeniedError, type GithubService } from './service.js'
+import { githubHookCovers } from '../hooks/installation-row.js'
 
 type ReviewBrokerCode = Extract<ErrorCode, 'SCOPE_DENIED' | 'LEASE_DENIED' | 'RATE_LIMITED' | 'CONFLICT' | 'INTERNAL'>
 
@@ -181,9 +182,8 @@ function requireCurrentActionAuthority(
     hook.kind !== 'github' ||
     hook.agentId === null ||
     hook.agentId !== run.agentId ||
-    hook.repoId === null ||
     run.repoId === null ||
-    hook.repoId !== run.repoId ||
+    !githubHookCovers(hook, run.repoId, run.sourceInstallationId) ||
     run.projectionEpoch === null ||
     hook.projectionEpoch !== run.projectionEpoch ||
     run.dispatchRevision === null ||

@@ -907,10 +907,10 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Revoke an installation grant',
           description:
-            'Remove the grant. Repositories it alone covered are denied on their next credential request; already-minted tokens live out their expiry of at most one hour. Organization owners only.',
+            'Remove the grant. Repositories it alone covered are denied on their next credential request; already-minted tokens live out their expiry of at most one hour. Refused while an installation-wide trigger of the agent watches the installation. Organization owners only.',
           operationId: 'deleteAgentInstallationAuthorization',
           params: AgentInstallationAuthParam,
-          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto }
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -918,6 +918,21 @@ export function agentRepoRoutes(deps: HttpDeps) {
         if (!agent) return
         const grant = await ownGrant(agent, req.params.id)
         if (!grant) return grantNotFound(reply)
+        // An installation-wide trigger without its grant could read no repository, so the triggers go first.
+        const watching = (await deps.repos.hook.listForAgent(agent.id)).filter(
+          (hook) => hook.kind === 'github' && hook.installationId === grant.installationId
+        )
+        if (watching.length > 0) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message:
+              'delete the triggers that watch all repositories in ' +
+              grant.accountLogin +
+              ' first: ' +
+              watching.map((hook) => hook.name).join(', ')
+          })
+        }
         if (!(await deps.repos.agentInstallationAuth.remove(grant.id))) return grantNotFound(reply)
         auditGrant(req, agent, `installation ${grant.accountLogin} authorization revoked`, grant)
         await replicateUpsert(agent)

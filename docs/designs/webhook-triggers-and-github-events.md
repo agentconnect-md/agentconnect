@@ -209,7 +209,9 @@ agent environment.
 
 ### Installation-Wide Rows
 
-> Status: designed for #2398, not yet implemented.
+> Status: the Control Plane half is implemented (#2398): rows, the grant gate and
+> revocation refusal, compiled rules behind the relay feature, and every effect's
+> coverage check. The relay's matching and the console picker follow.
 
 An agent reviewing or triaging a whole organization would otherwise need one row
 per repository and family, and a new repository would need new rows. An

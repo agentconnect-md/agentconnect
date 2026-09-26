@@ -236,6 +236,38 @@ describe('GithubCommentAuthzService', () => {
     await expect(h.service.allowed({ ...request, subjectAuthorLogin: 'outsider' })).resolves.toBe(false)
   })
 
+  describe('an installation-wide row', () => {
+    const installationRow = (over: Partial<HookRecord> = {}) =>
+      hook({ repoId: null, installationId: INSTALLATION_ID, installationAccount: 'acme', ...over })
+
+    it('authorizes an event of any repository in its installation', async () => {
+      const h = make({ hook: installationRow() })
+      await expect(h.service.allowed(request)).resolves.toBe(true)
+    })
+
+    it('denies an event whose signed installation is another one', async () => {
+      const h = make({ hook: installationRow({ installationId: INSTALLATION_ID + 1n }) })
+      await expect(h.service.allowed(request)).resolves.toBe(false)
+      expect(h.userRepoPermissionForCommentAuthz).not.toHaveBeenCalled()
+    })
+
+    it('denies a name that resolves to a repository other than the event’s', async () => {
+      const h = make({ hook: installationRow() })
+      h.repoRefForCommentAuthz.mockResolvedValueOnce({
+        repoId: REPO_ID + 1n,
+        fullName: request.repoFullName,
+        private: true
+      })
+      await expect(h.service.allowed(request)).resolves.toBe(false)
+    })
+
+    it('reads the trusted users of the event’s repository', async () => {
+      const h = make({ hook: installationRow(), permission: 'read', users: { octocat: 42n }, trusted: [42n] })
+      await expect(h.service.allowed(request)).resolves.toBe(true)
+      expect(h.actorIdsForRepo).toHaveBeenCalledWith(ORG_ID, 'github', REPO_ID)
+    })
+  })
+
   it('propagates operational GitHub failures', async () => {
     const h = make()
     h.userRepoPermissionForCommentAuthz.mockRejectedValueOnce(new Error('GitHub unavailable'))

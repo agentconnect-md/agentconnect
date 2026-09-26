@@ -49,6 +49,7 @@ import type {
   HookRepo,
   HookRunRecord
 } from '../persistence/ports.js'
+import { githubHookCovers } from '../hooks/installation-row.js'
 
 /** One publication lease's life. Long enough for the draft/publish pipeline, and
  *  renewable — expiry alone never transfers authority (§15.1). */
@@ -459,7 +460,9 @@ export class CodeHostReviewBrokerService {
       hook.kind === provider &&
       hook.agentId !== null &&
       hook.agentId === run.agentId &&
-      hook.repoId === projectExternalId &&
+      (hook.kind === 'github'
+        ? githubHookCovers(hook, projectExternalId, run.sourceInstallationId)
+        : hook.repoId === projectExternalId) &&
       run.dispatchRevision !== null &&
       hook.dispatchRevision === run.dispatchRevision
     )

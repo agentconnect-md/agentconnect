@@ -75,9 +75,12 @@ export function trustedActorRoutes(deps: HttpDeps) {
       }
       const repo = trustedActorRepoOf(hook)
       if (!repo) {
-        await reply
-          .code(400)
-          .send({ error: 'Bad Request', statusCode: 400, message: 'only a code-host hook has trusted users' })
+        // An installation row reads each event repository's own list, which a repository row manages.
+        const message =
+          hook.installationId != null
+            ? "an installation-wide trigger uses each repository's trusted users; manage them on a repository's trigger"
+            : 'only a code-host hook has trusted users'
+        await reply.code(400).send({ error: 'Bad Request', statusCode: 400, message })
         return null
       }
       return { hook, repo }

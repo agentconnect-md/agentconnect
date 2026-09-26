@@ -1439,6 +1439,17 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     expect(listForAgent).not.toHaveBeenCalled()
   })
 
+  it("an installation row's reply mints only inside its own installation", async () => {
+    const { svc, mintBodies } = harness({ rows: [] })
+
+    await svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/tools', 777n, [], false, 42n)
+    expect(mintBodies).toHaveLength(1)
+    await expect(svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/tools', 778n, [], false, 43n)).rejects.toMatchObject({
+      code: 'SCOPE_DENIED'
+    })
+    expect(mintBodies).toHaveLength(1)
+  })
+
   it('a general issues/PR ask still follows an additional repo comment-tier grant', async () => {
     const { svc, mintBodies } = harness({ rows: [grantRow({ access: 'comment' })] })
 

@@ -371,6 +371,51 @@ describe('HookService.compile', () => {
     // Deployment without the GitHub App: HookService built without the repo.
     expect(await make().svc.compile(ghHook())).toBeNull()
   })
+
+  const installationRow = (over: Partial<HookRecord> = {}) =>
+    ghHook({
+      repoId: null,
+      repoFullName: null,
+      githubSessionKey: null,
+      installationId: 2345678n,
+      installationAccount: 'acme',
+      ...over
+    })
+
+  it('compiles an installation row to its one live installation, with no repository of its own', async () => {
+    const { svc } = make({
+      installations: [installation(1234567n), installation(2345678n)],
+      appSlug: 'example-review-app'
+    })
+    const rule = await svc.compile(installationRow())
+    expect(rule).toEqual({
+      hookId: HOOK,
+      kind: 'github',
+      agentId: AGENT,
+      daemonId: DAEMON,
+      sessionMode: 'perThread',
+      reviewPolicy: 'off',
+      reportingMode: 'off',
+      gateMode: 'informational',
+      githubInstallation: {
+        installationId: '2345678',
+        accountLogin: 'acme',
+        events: ['issues:opened', 'issue_comment:created'],
+        labelFilter: ['bug'],
+        mentionOnly: false,
+        appSlug: 'example-review-app',
+        agentName: 'review-agent',
+        installationIds: ['2345678']
+      }
+    })
+  })
+
+  it('leaves the pool while an installation row’s installation is suspended or gone', async () => {
+    const suspended = make({ installations: [installation(2345678n, { suspendedAt: new Date() }), installation(1n)] })
+    expect(await suspended.svc.compile(installationRow())).toBeNull()
+    const gone = make({ installations: [installation(1n)] })
+    expect(await gone.svc.compile(installationRow())).toBeNull()
+  })
 })
 
 describe('HookService.replayTo', () => {

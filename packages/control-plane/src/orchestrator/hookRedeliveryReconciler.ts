@@ -181,14 +181,21 @@ export class HookRedeliveryReconciler {
 
     // The compile sieve: enabled github hooks that could actually fire.
     const byRepo = new Map<string, HookRecord[]>()
+    const byInstallation = new Map<string, HookRecord[]>()
     for (const hook of await this.hooks.listEnabled()) {
-      if (hook.kind !== 'github' || hook.repoId === null || !hook.agentId) continue
-      const key = hook.repoId.toString()
-      const bucket = byRepo.get(key)
+      if (hook.kind !== 'github' || !hook.agentId) continue
+      const [index, key] =
+        hook.installationId != null
+          ? [byInstallation, hook.installationId.toString()]
+          : hook.repoId !== null
+            ? [byRepo, hook.repoId.toString()]
+            : [undefined, '']
+      if (!index) continue
+      const bucket = index.get(key)
       if (bucket) bucket.push(hook)
-      else byRepo.set(key, [hook])
+      else index.set(key, [hook])
     }
-    if (byRepo.size === 0) {
+    if (byRepo.size === 0 && byInstallation.size === 0) {
       // Nothing to recover — but the interval IS covered (don't accumulate an
       // ever-growing catch-up window while no github hook exists).
       this.coveredUntilMs = newest
@@ -226,8 +233,15 @@ export class HookRedeliveryReconciler {
       if (!SUBSCRIPTION_EVENTS.has(d.event)) return false
       const at = Date.parse(d.delivered_at)
       if (Number.isNaN(at) || at < now - MAX_LOOKBACK_MS || at > newest) return false
-      const hooks = d.repository_id === null ? undefined : byRepo.get(String(d.repository_id))
-      const matched = hooks?.filter((hook) => hookMatchesEvent(hook, d.event, d.action)) ?? []
+      const repoHooks = d.repository_id === null ? [] : (byRepo.get(String(d.repository_id)) ?? [])
+      // An installation row fires where its agent has no row of the event's repository and family, as the relay decides.
+      const installationHooks =
+        d.repository_id === null || d.installation_id === null
+          ? []
+          : (byInstallation.get(String(d.installation_id)) ?? []).filter(
+              (hook) => !repoHooks.some((own) => own.agentId === hook.agentId && own.family === hook.family)
+            )
+      const matched = [...repoHooks, ...installationHooks].filter((hook) => hookMatchesEvent(hook, d.event, d.action))
       if (matched.length === 0) return false
       matchingHookIds.set(
         d.guid,

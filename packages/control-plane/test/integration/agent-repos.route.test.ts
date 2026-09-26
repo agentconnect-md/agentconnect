@@ -1833,3 +1833,170 @@ describe('choosing repositories by decision (multi-repository-workspaces.md deci
     expect(cleared.json()).toMatchObject({ repositorySelector: null })
   })
 })
+
+describe('installation-wide github hook rows (webhook-triggers-and-github-events.md, Installation-Wide Rows)', () => {
+  const grants = (agentId: string) => `${ORG}/agents/${agentId}/installations`
+  const grantInstallation = (a: HttpApp, agentId: string, payload: Record<string, unknown> = {}) =>
+    a.app.inject({
+      method: 'POST',
+      url: grants(agentId),
+      payload: { installationId: Number(INSTALLATION), ...payload }
+    })
+  const REVIEWABLE = { permissions: { pull_requests: 'write', checks: 'write' } }
+
+  async function seedRelay(): Promise<void> {
+    await prisma.relay.create({
+      data: {
+        id: randomUUID(),
+        name: `relay-${randomUUID().slice(0, 8)}`,
+        daemonUrl: 'wss://relay-0',
+        lastSeenAt: new Date()
+      }
+    })
+  }
+
+  const rowBody = (agentId: string, over: Record<string, unknown> = {}) => ({
+    agentId,
+    kind: 'github',
+    name: 'org-reviews',
+    githubAccount: 'acme',
+    family: 'pull_request',
+    events: ['pull_request:opened'],
+    ...over
+  })
+  const createRow = (a: HttpApp, body: Record<string, unknown>) =>
+    a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: body })
+  const updateRow = (a: HttpApp, id: string, body: Record<string, unknown>) => {
+    const { family: _family, ...rest } = body
+    void _family
+    return a.app.inject({ method: 'PUT', url: `${ORG}/hooks/${id}`, payload: rest })
+  }
+
+  async function setup(installation: Record<string, unknown> = REVIEWABLE): Promise<{ a: HttpApp; agentId: string }> {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation(installation)
+    await seedRelay()
+    return { a: app(), agentId }
+  }
+
+  it('needs the installation grant, then watches the whole installation with no repository of its own', async () => {
+    const { a, agentId } = await setup()
+
+    const ungranted = await createRow(a, rowBody(agentId))
+    expect(ungranted.statusCode).toBe(409)
+    expect((ungranted.json() as { message: string }).message).toMatch(/all repositories in acme are not authorized/)
+
+    expect((await grantInstallation(a, agentId)).statusCode).toBe(200)
+    const created = await createRow(a, rowBody(agentId))
+    expect(created.statusCode, created.body).toBe(200)
+    expect(created.json()).toMatchObject({
+      repoId: null,
+      repoFullName: null,
+      installationId: INSTALLATION.toString(),
+      installationAccount: 'acme',
+      family: 'pull_request'
+    })
+    const id = (created.json() as { id: string }).id
+    expect(await prisma.hookDef.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      repoId: null,
+      installationId: INSTALLATION,
+      installationAccount: 'acme',
+      githubSessionKey: null
+    })
+
+    const duplicate = await createRow(a, rowBody(agentId, { name: 'again' }))
+    expect(duplicate.statusCode).toBe(409)
+    expect((duplicate.json() as { message: string }).message).toMatch(/already watches all repositories in acme/)
+  })
+
+  it('names one repository or one account, and only a live installation of this organization', async () => {
+    const { a, agentId } = await setup()
+    expect((await grantInstallation(a, agentId)).statusCode).toBe(200)
+
+    const both = await createRow(a, rowBody(agentId, { repoFullName: 'acme/tools' }))
+    expect(both.statusCode).toBe(400)
+    const neither = await createRow(a, rowBody(agentId, { githubAccount: undefined }))
+    expect(neither.statusCode).toBe(400)
+    const unknown = await createRow(a, rowBody(agentId, { githubAccount: 'someone-else' }))
+    expect(unknown.statusCode).toBe(400)
+    expect(await prisma.hookDef.count()).toBe(0)
+  })
+
+  it("takes reviews and Checks at the grant's tier", async () => {
+    const { a, agentId } = await setup()
+    const grant = (await grantInstallation(a, agentId)).json() as { id: string }
+    const reviewing = rowBody(agentId, { reviewPolicy: 'full', reportingMode: 'check' })
+
+    const readTier = await createRow(a, reviewing)
+    expect(readTier.statusCode).toBe(409)
+    expect((readTier.json() as { message: string }).message).toMatch(
+      /reviews require the installation authorized at write/
+    )
+    const checksOnly = await createRow(a, rowBody(agentId, { reportingMode: 'check' }))
+    expect(checksOnly.statusCode).toBe(409)
+    expect((checksOnly.json() as { message: string }).message).toMatch(
+      /informational Checks require the installation authorized at write access/
+    )
+
+    const raised = await a.app.inject({
+      method: 'PATCH',
+      url: `${grants(agentId)}/${grant.id}`,
+      payload: { access: 'write' }
+    })
+    expect(raised.statusCode, raised.body).toBe(200)
+    // Unlike a repository row on a grant's tier, an installation row may publish Checks.
+    const created = await createRow(a, reviewing)
+    expect(created.statusCode, created.body).toBe(200)
+    expect(created.json()).toMatchObject({ reviewPolicy: 'full', reportingMode: 'check' })
+  })
+
+  it('refuses a review the installation has not accepted the permission for', async () => {
+    const { a, agentId } = await setup({ permissions: { pull_requests: 'read' } })
+    expect((await grantInstallation(a, agentId, { access: 'write' })).statusCode).toBe(200)
+
+    const refused = await createRow(a, rowBody(agentId, { reviewPolicy: 'full' }))
+    expect(refused.statusCode).toBe(409)
+    expect((refused.json() as { message: string }).message).toMatch(/Pull requests write permission/)
+  })
+
+  it('an edit keeps the installation and the agent, and a disable needs no live grant check', async () => {
+    const { a, agentId } = await setup()
+    expect((await grantInstallation(a, agentId)).statusCode).toBe(200)
+    const body = rowBody(agentId)
+    const { id } = (await createRow(a, body)).json() as { id: string }
+
+    const retuned = await updateRow(a, id, { ...body, events: ['pull_request:*'], labelFilter: ['ai-review'] })
+    expect(retuned.statusCode, retuned.body).toBe(200)
+    expect(retuned.json()).toMatchObject({ events: ['pull_request:*'], labelFilter: ['ai-review'] })
+
+    const toRepository = await updateRow(a, id, { ...body, githubAccount: undefined, repoFullName: 'acme/tools' })
+    expect(toRepository.statusCode).toBe(400)
+    expect((toRepository.json() as { message: string }).message).toMatch(/scope is fixed/)
+
+    const otherAccount = await updateRow(a, id, { ...body, githubAccount: 'other-org' })
+    expect(otherAccount.statusCode).toBe(409)
+    expect((otherAccount.json() as { message: string }).message).toMatch(/keeps its installation and agent/)
+
+    await prisma.agentInstallationAuthorization.deleteMany({ where: { agentId } })
+    const disabled = await updateRow(a, id, { ...body, enabled: false })
+    expect(disabled.statusCode, disabled.body).toBe(200)
+    expect(disabled.json()).toMatchObject({ enabled: false, installationAccount: 'acme' })
+  })
+
+  it('revoking the grant is 409 while an installation row watches it', async () => {
+    const { a, agentId } = await setup()
+    const grant = (await grantInstallation(a, agentId)).json() as { id: string }
+    const { id } = (await createRow(a, rowBody(agentId))).json() as { id: string }
+
+    const refused = await a.app.inject({ method: 'DELETE', url: `${grants(agentId)}/${grant.id}` })
+    expect(refused.statusCode).toBe(409)
+    expect((refused.json() as { message: string }).message).toMatch(
+      /delete the triggers that watch all repositories in acme first: org-reviews/
+    )
+    expect(await prisma.agentInstallationAuthorization.count({ where: { agentId } })).toBe(1)
+
+    expect((await a.app.inject({ method: 'DELETE', url: `${ORG}/hooks/${id}` })).statusCode).toBe(204)
+    expect((await a.app.inject({ method: 'DELETE', url: `${grants(agentId)}/${grant.id}` })).statusCode).toBe(204)
+  })
+})

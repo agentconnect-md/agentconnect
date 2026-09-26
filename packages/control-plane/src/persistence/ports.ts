@@ -2336,6 +2336,9 @@ export interface UpsertHookInput {
   /** GitHub numeric repo id — the relay match key (rename-immune, decision 6). */
   repoId?: bigint
   repoFullName?: string
+  /** An installation row's App installation and its account login; never with repoId. */
+  installationId?: bigint
+  installationAccount?: string
   /** The one subject family this row covers; absent on update leaves it as it is
    *  (immutable), and absent on a create leaves a legacy family-less row. */
   family?: string
@@ -2372,6 +2375,9 @@ export interface HookRecord {
   // ── kind=github (P2) ──
   repoId: bigint | null
   repoFullName: string | null
+  /** An installation row watches every repository of this App installation instead of one repository. */
+  installationId?: bigint | null
+  installationAccount?: string | null
   /** Immutable relay session namespace. Existing rows retain their historical
    * owner/repo prefix; new rows use the numeric repository identity. */
   githubSessionKey?: string | null

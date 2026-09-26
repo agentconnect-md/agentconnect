@@ -297,17 +297,38 @@ export class HookService {
         }
       }
     }
-    // github (P2): the rule carries the org's VALID installation ids — the
-    // relay's runtime attribution gate. Suspended/revoked installations are
-    // excluded; an empty set means no event could ever prove attribution, so
-    // the rule must leave the pool (broadcast converges to hook-remove).
-    if (hook.repoId === null || !hook.repoFullName || !this.installations) return null
+    // github (P2): the rule carries the org's live installation ids, the relay's attribution gate; with none left it leaves the pool.
+    if (!this.installations) return null
     const valid = (await this.installations.listForOrg(hook.orgId)).filter((i) => !i.suspendedAt)
-    if (valid.length === 0) return null
     // Empty stored comment families keep the published API's legacy repo-wide meaning, so the optional field is omitted.
     const commentFamilies = cadence.commentFamilies.filter(
       (family): family is 'issues' | 'pull_request' => family !== 'merge_request'
     )
+    const matching = {
+      events: cadence.events,
+      ...(commentFamilies.length > 0 ? { commentFamilies } : {}),
+      labelFilter: hook.labelFilter,
+      mentionOnly: cadence.mentionOnly,
+      ...(this.appSlug ? { appSlug: this.appSlug } : {}),
+      agentName: agent.name
+    }
+    // An installation row fires for every repository of its one installation, while that installation stays live.
+    if (hook.installationId != null) {
+      const installation = valid.find((i) => i.installationId === hook.installationId)
+      if (!installation || !hook.installationAccount) return null
+      const installationId = installation.installationId.toString()
+      return {
+        ...base,
+        kind: 'github',
+        githubInstallation: {
+          ...matching,
+          installationId,
+          accountLogin: installation.accountLogin,
+          installationIds: [installationId]
+        }
+      }
+    }
+    if (hook.repoId === null || !hook.repoFullName || valid.length === 0) return null
     return {
       ...base,
       kind: 'github',
@@ -316,13 +337,8 @@ export class HookService {
         repoId: hook.repoId.toString(),
         repoFullName: hook.repoFullName,
         sessionKeyPrefix: hook.githubSessionKey ?? hook.repoFullName,
-        events: cadence.events,
-        ...(commentFamilies.length > 0 ? { commentFamilies } : {}),
-        labelFilter: hook.labelFilter,
         // The App slug broadcasts to every matching rule; the immutable agent slug targets this one.
-        mentionOnly: cadence.mentionOnly,
-        ...(this.appSlug ? { appSlug: this.appSlug } : {}),
-        agentName: agent.name,
+        ...matching,
         installationIds: valid.map((i) => i.installationId.toString())
       }
     }

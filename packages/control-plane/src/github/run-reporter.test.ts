@@ -12,6 +12,7 @@ import { githubHookRun } from '../../test/fixtures/github-hook-run.js'
 import type {
   AgentRecord,
   GithubInstallationRecord,
+  HookRecord,
   HookRepo,
   HookReviewProjectionRecord,
   HookRunRecord
@@ -573,6 +574,7 @@ describe('GithubRunReporter', () => {
       refreshReviewProjectionTarget: vi.fn(async () => true),
       synchronizeReviewSubjects: vi.fn(async () => true),
       getRunById: vi.fn(async () => run()),
+      getUnscoped: vi.fn(async (): Promise<HookRecord | null> => null),
       listReviewSubjects: vi.fn(async () => [
         {
           projectionId: p.id,
@@ -619,6 +621,7 @@ describe('GithubRunReporter', () => {
         | 'synchronizeReviewSubjects'
         | 'listReviewSubjects'
         | 'getRunById'
+        | 'getUnscoped'
       >,
       agents: { getUnscoped: vi.fn(async () => currentAgent) },
       orgs: { slugById: vi.fn(async () => 'acme') },
@@ -764,6 +767,32 @@ describe('GithubRunReporter', () => {
     expect(hooks.advancePendingReviewProjection).toHaveBeenCalledWith(p.id, p.generation, new Date(NOW))
     expect(mint).not.toHaveBeenCalled()
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it("mints an installation row's Checks at its grant's tier, and a repository row's without it", async () => {
+    const p = projection()
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === 'POST'
+        ? new Response(
+            '{"id":90071992547409931,"external_id":"' + p.externalId + '","status":"queued","conclusion":null}',
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' }
+            }
+          )
+        : Response.json({ id: '90071992547409931' })
+    )
+    const installationRow = { id: p.hookId, kind: 'github', repoId: null, installationId: 77n } as unknown as HookRecord
+    const byRow = worker(p, fetchImpl, { getUnscoped: vi.fn(async () => installationRow) })
+    await byRow.reporter.tick()
+    expect(byRow.mint).toHaveBeenCalledWith(expect.anything(), p.repoId, p.repoFullName, { installationGrants: true })
+
+    const repositoryRow = { ...installationRow, repoId: p.repoId, installationId: null } as unknown as HookRecord
+    const byRepository = worker(p, fetchImpl, { getUnscoped: vi.fn(async () => repositoryRow) })
+    await byRepository.reporter.tick()
+    expect(byRepository.mint).toHaveBeenCalledWith(expect.anything(), p.repoId, p.repoFullName, {
+      installationGrants: false
+    })
   })
 
   it('creates one stable informational check with metadata-only output', async () => {

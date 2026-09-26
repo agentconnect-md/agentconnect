@@ -5,6 +5,7 @@ import {
   type RcGithubRerequestResult
 } from '@agentconnect.md/protocol'
 import type { HookRecord, HookRepo, HookReviewProjectionRecord, HookRunRecord } from '../persistence/ports.js'
+import { githubHookCovers } from '../hooks/installation-row.js'
 
 export interface GithubRerequestDeps {
   hooks: Pick<
@@ -47,7 +48,7 @@ export class GithubRerequestService {
       this.deps.hooks.getUnscoped(projection.hookId),
       this.deps.hooks.getRunById(projection.currentHookRunId)
     ])
-    if (!this.matchesCurrentHook(hook, projection) || !this.matchesCurrentRun(run, projection)) {
+    if (!this.matchesCurrentHook(hook, projection, run) || !this.matchesCurrentRun(run, projection)) {
       return { allowed: false }
     }
 
@@ -86,7 +87,7 @@ export class GithubRerequestService {
     const targets = current.map((projection, index) => {
       const hook = hooksById.get(projection.hookId) ?? null
       const run = runs[index] ?? null
-      if (!this.matchesCurrentHook(hook, projection) || !this.matchesCurrentRun(run, projection)) return null
+      if (!this.matchesCurrentHook(hook, projection, run) || !this.matchesCurrentRun(run, projection)) return null
       return {
         hookId: hook.id,
         pullNumber: run.pullNumber,
@@ -152,7 +153,9 @@ export class GithubRerequestService {
 
   private matchesCurrentHook(
     hook: HookRecord | null,
-    projection: HookReviewProjectionRecord
+    projection: HookReviewProjectionRecord,
+    // The current run's signed installation, which an installation row's coverage is judged by.
+    run: HookRunRecord | null
   ): hook is HookRecord & { agentId: NonNullable<HookRecord['agentId']> } {
     return (
       hook !== null &&
@@ -160,7 +163,7 @@ export class GithubRerequestService {
       hook.kind === 'github' &&
       hook.agentId !== null &&
       hook.agentId === projection.agentId &&
-      hook.repoId === projection.repoId &&
+      githubHookCovers(hook, projection.repoId, run?.sourceInstallationId) &&
       hook.reportingMode === 'check' &&
       hook.gateMode === 'informational' &&
       hook.projectionEpoch === projection.projectionEpoch
@@ -226,7 +229,7 @@ export class GithubRerequestService {
       hook.enabled &&
       hook.kind === 'github' &&
       hook.agentId === run.agentId &&
-      hook.repoId === run.repoId &&
+      githubHookCovers(hook, run.repoId, run.sourceInstallationId) &&
       hook.reviewPolicy !== 'off' &&
       hook.projectionEpoch === run.projectionEpoch
     )
