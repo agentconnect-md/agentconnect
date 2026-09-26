@@ -551,9 +551,15 @@ browser webchat token's five. Each relay instance caches the `rc/verify` verdict
 keyed by the token's hash, for the token's lifetime rather than per socket.
 
 This keeps CP where webchat already has it: at conversation open and at token
-renewal, never inside a turn. During a CP outage, turns on a live token keep
-working; new conversations and renewals fail until CP returns. Revoking the key
-takes effect when its outstanding tokens expire.
+renewal, never inside a turn. The verdict cache is per relay instance, and a
+turn can land on any instance behind `PUBLIC_RELAY_URL`. So during a CP outage,
+a turn on a live token keeps working only on an instance that has already
+verified that token. New conversations and renewals fail until CP returns.
+
+Revoking the key takes effect when its outstanding tokens expire. If a faster
+cutoff is ever needed, CP pushes the revocation to the pool the way
+`rc/daemon-revoke` does, and relays drop their cached verdicts. Shortening the
+TTL instead would pull CP back toward the turn path.
 
 The proxy maps each visitor to a conversation id and token itself, for example
 through a cookie. It must not trust the client-generated chat id, since any id
