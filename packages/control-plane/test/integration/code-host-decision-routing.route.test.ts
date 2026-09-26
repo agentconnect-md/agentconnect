@@ -54,6 +54,7 @@ const row = {
   seq: 3,
   at: '2026-01-01T00:00:00.000Z',
   messageId: 'issue-comment-1',
+  title: 'Issue #7: Parser drops trailing commas',
   decisionId: 'd-1',
   outcome: 'triggered' as const,
   reason: null,
@@ -590,7 +591,9 @@ describe('repository Decision routing — Recent evaluations', () => {
     ])
 
     const viewer = appWith({ userId: await member('viewer') })
-    expect((await viewer.app.app.inject({ method: 'GET', url: `${SCOPE}/evaluations` })).statusCode).toBe(200)
+    const untitled = await viewer.app.app.inject({ method: 'GET', url: `${SCOPE}/evaluations` })
+    expect(untitled.statusCode).toBe(200)
+    expect(untitled.json()).toEqual({ ...page, items: [{ ...row, title: null }] })
     expect((await viewer.app.app.inject({ method: 'GET', url: `${SCOPE}/evaluations/3` })).statusCode).toBe(403)
     expect(viewer.spy.gets).toEqual([])
   })

@@ -132,7 +132,7 @@ export function decisionRoutingEvaluationRoutes(deps: HttpDeps) {
           summary: 'List recent routing evaluations',
           operationId: 'listBotDecisionRoutingEvaluations',
           description:
-            "Recent shared-bot routing evaluations, newest first, read from the bot's evaluation host and proxied without being stored or logged: the answer, matched rules or Otherwise, each target with its admission status, and the outcome (Routed, Partially routed, Skipped, Fallback, Unavailable, Canceled, Pending). Covers `channelId`, or else every routed channel the bot-level host evaluates (up to 100); `decisionId` optionally filters by the recorded root Decision before paging. Each row is returned only when the caller can read its conversation: the audience of the newest session any bot agent holds there in the namespace the host names, or before any session the organization baseline (closed while an external-access policy is active); refused rows are dropped, so a page may be short while `nextCursor` continues. Returns 503 when the host is offline or must be upgraded, including a reply that names no namespace.",
+            "Recent shared-bot routing evaluations, newest first, read from the bot's evaluation host and proxied without being stored or logged: the answer, matched rules or Otherwise, each target with its admission status, and the outcome (Routed, Partially routed, Skipped, Fallback, Unavailable, Canceled, Pending). Covers `channelId`, or else every routed channel the bot-level host evaluates (up to 100); `decisionId` optionally filters by the recorded root Decision before paging. Each row is returned only when the caller can read its conversation: the audience of the newest session any bot agent holds there in the namespace the host names, or before any session the organization baseline (closed while an external-access policy is active); refused rows are dropped, so a page may be short while `nextCursor` continues. Each row's `title` names what was judged in one line and is null unless the caller could also read that evaluation's bodies. Returns 503 when the host is offline or must be upgraded, including a reply that names no namespace.",
           params: IdParam,
           querystring: z.object({
             channelId: z.string().min(1).max(512).optional(),
@@ -190,7 +190,11 @@ export function decisionRoutingEvaluationRoutes(deps: HttpDeps) {
         if (!namespace) return reply.code(503).send(unavailable(UNSUPPORTED, 'DAEMON_UPGRADE_REQUIRED'))
         const readable = channelReadable(req, bot, namespace)
         const allowed = await Promise.all(items.map((item) => readable(item.channel)))
-        return { items: items.filter((_, index) => allowed[index]), nextCursor }
+        const shown = items.filter((_, index) => allowed[index])
+        // A title quotes the frozen input, so it shows only where the detail would admit the caller.
+        const titled = channelReadable(req, bot, namespace, { bodies: true })
+        const keep = await Promise.all(shown.map((item) => titled(item.channel)))
+        return { items: shown.map((item, index) => (keep[index] ? item : { ...item, title: null })), nextCursor }
       }
     )
 

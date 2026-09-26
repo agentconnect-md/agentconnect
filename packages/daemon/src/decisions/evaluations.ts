@@ -30,6 +30,7 @@ import {
 import { transcriptChannelKey, type DecisionVerdictRow, type LocalStore } from '../store/local-store.js'
 import { routerSubject } from './router.js'
 import { hookRouterSubject } from '../codehost/hook-routing.js'
+import { clampSessionTitle } from '../messages/hook-message.js'
 
 /** Refused because this daemon does not serve the lane the frame names (answered as SCOPE_DENIED). */
 export class DecisionEvaluationScopeError extends Error {
@@ -109,6 +110,27 @@ function hookRouteReasonOf(row: DecisionVerdictRow): string | null {
   return typeof reason === 'string' ? reason : null
 }
 
+const SUBJECT_LABELS = new Map([
+  ['pull_request', 'PR #'],
+  ['merge_request', 'MR !'],
+  ['issue', 'Issue #']
+])
+const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim()
+
+/** What was judged, as a session title reads: a code-host subject by number and title, else the message's first line. */
+function titleOf(input: Record<string, unknown> | undefined): string | null {
+  const subject = record(input?.subject)
+  const label = typeof subject?.kind === 'string' ? SUBJECT_LABELS.get(subject.kind) : undefined
+  if (subject && label) {
+    const prefix = typeof subject.number === 'number' ? `${label}${subject.number}` : label.slice(0, -2)
+    const detail = typeof subject.title === 'string' ? oneLine(subject.title) : ''
+    return clampSessionTitle(detail ? `${prefix}: ${detail}` : prefix)
+  }
+  const text = record(input?.currentMessage)?.text
+  const line = typeof text === 'string' ? text.split('\n').map(oneLine).find(Boolean) : undefined
+  return line ? clampSessionTitle(line) : null
+}
+
 function summaryRow(row: VerdictRow): DecisionEvaluationRecord {
   const { answer, matchedKeys } = answerOf(row)
   const input = record(parseJson(row.inputJson))
@@ -119,6 +141,7 @@ function summaryRow(row: VerdictRow): DecisionEvaluationRecord {
     seq: Number(row.seq),
     at: new Date(Number(row.createdAt)).toISOString(),
     messageId: clip(row.ts ?? (typeof currentId === 'string' ? currentId : null), 256),
+    title: titleOf(input),
     decisionId: row.decisionId,
     outcome: outcomeOf(row),
     reason: clip(row.unavailableReason ?? row.cancelReason ?? hookRouteReasonOf(row), 128),
@@ -214,6 +237,7 @@ function routerSummaryRow(row: VerdictRow): DecisionRoutingEvaluationRecord {
     at: base.at,
     channel: clip(text(config?.channel, 512) ?? null, 512) ?? '',
     messageId: base.messageId,
+    title: base.title,
     decisionId: base.decisionId,
     outcome: routingEvaluationOutcome({
       state: row.state,

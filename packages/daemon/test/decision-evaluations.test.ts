@@ -176,6 +176,7 @@ describe('DecisionEvaluationReader', () => {
     ])
     expect(page.items.at(-1)).toMatchObject({
       messageId: '1',
+      title: 'Help please',
       decisionId: 'd-1',
       answer: { type: 'boolean', value: true, probability: 0.9 },
       matchedKeys: [],
@@ -186,6 +187,7 @@ describe('DecisionEvaluationReader', () => {
       detailsExpired: false,
       at: new Date(AT + 1).toISOString()
     })
+    expect(page.items.find((item) => item.seq === reserved)!.title).toBeNull()
     const first = await reader.list(ORG, { ...lane, limit: 2 })
     expect(first.items.map((item) => item.seq)).toEqual([settled, reserved])
     expect(first.nextCursor).toBe(reserved)
@@ -220,6 +222,32 @@ describe('DecisionEvaluationReader', () => {
     expect(page.nextCursor).toBe(page.items.at(-1)!.seq)
     const rest = await reader.list(ORG, { ...lane, limit: 20, cursor: page.nextCursor! })
     expect([...page.items, ...rest.items].map((item) => item.seq)).toEqual([...seqs].reverse())
+    await s.close()
+  })
+
+  it('titles a row by its code-host subject as the session reads, else by the message first line', async () => {
+    const s = await openTestStore()
+    const titled = async (n: number, input: Record<string, unknown>) => {
+      const { seq } = await reserve(s, n)
+      await settle(s, seq, 'skip', no, [], JSON.stringify(input))
+      return seq
+    }
+    const message = (text: string) => ({ currentMessage: { id: 'cur', sender: { id: 'U1' }, text, threadId: null } })
+    const pull = await titled(1, {
+      ...message('opened'),
+      subject: { kind: 'pull_request', number: 42, title: '  Fix the\n parser ' }
+    })
+    const mr = await titled(2, { ...message('opened'), subject: { kind: 'merge_request', number: 7 } })
+    const push = await titled(3, { ...message('\n\n  first  line \nsecond line'), subject: { kind: 'push' } })
+    const long = await titled(4, message('x'.repeat(200)))
+    const blank = await titled(5, message('   '))
+    const items = (await readerFor(s).list(ORG, { ...lane, limit: 10 })).items
+    const title = (seq: number) => items.find((item) => item.seq === seq)!.title
+    expect(title(pull)).toBe('PR #42: Fix the parser')
+    expect(title(mr)).toBe('MR !7')
+    expect(title(push)).toBe('first line')
+    expect(title(long)).toBe(`${'x'.repeat(79)}…`)
+    expect(title(blank)).toBeNull()
     await s.close()
   })
 
@@ -259,7 +287,10 @@ describe('DecisionEvaluationReader', () => {
       evidence: { snapshotSeq: seq, suppliedBackground: null },
       snapshot: { decisionId: 'd-1', question }
     })
-    expect((await reader.list(ORG, { ...lane, limit: 5 })).items[0]).toMatchObject({ detailsExpired: true })
+    expect((await reader.list(ORG, { ...lane, limit: 5 })).items[0]).toMatchObject({
+      detailsExpired: true,
+      title: null
+    })
     expect(await reader.get(ORG, { ...lane, seq: seq + 999 })).toEqual({ evaluation: null, conversation: SCOPE })
     await s.close()
   })
@@ -587,6 +618,7 @@ describe('DecisionEvaluationReader router verdicts', () => {
     ])
     expect(page.items.map((item) => item.seq)).not.toContain(gateSeq)
     expect(page.items.find((item) => item.seq === partial)).toMatchObject({
+      title: 'Help please',
       matchedRuleIds: ['r1'],
       usedOtherwise: false,
       evaluated: true,
