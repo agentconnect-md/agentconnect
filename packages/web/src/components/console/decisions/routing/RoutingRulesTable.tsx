@@ -2,7 +2,7 @@
 
 // A routing Decision's rules as the design lays them out: one row per Choice or Boolean answer and where it goes, else numbered rules, then Otherwise.
 
-import type { ReactNode } from 'react'
+import type { MouseEvent, ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
@@ -52,6 +52,14 @@ function answersOf(question: DecisionQuestion, words: { yes: string; no: string 
       when: { type: 'boolean', values: [value] }
     }))
   return null
+}
+
+/** Sets the hovered cell's tooltip only while one of its lines is cut off. */
+function titleWhenTruncated(text: string) {
+  return (event: MouseEvent<HTMLElement>) => {
+    const cut = Array.from(event.currentTarget.children).some((line) => line.scrollWidth > line.clientWidth)
+    event.currentTarget.title = cut ? text : ''
+  }
 }
 
 /** The one answer a rule's condition names, or null when it names several or none. */
@@ -335,7 +343,7 @@ export function RoutingRulesTable({
             const threshold = rule?.when?.type === 'choice' ? (rule.when.thresholds[answer.key] ?? 0.5) : null
             return (
               <div key={answer.key} data-testid="routing-answer" className={`${ROW} ${tableCols}`}>
-                <span className="flex min-w-0 flex-col gap-[2px]" title={answer.description}>
+                <span className="flex min-w-0 flex-col gap-[2px]" onMouseEnter={titleWhenTruncated(answer.description)}>
                   <span className="mono truncate text-[12.5px] text-(--text-primary)">{answer.label}</span>
                   <span className="truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
                     {answer.description}
