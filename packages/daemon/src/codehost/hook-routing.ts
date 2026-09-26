@@ -201,13 +201,14 @@ export class HookRouter {
         ...raw
       })
     let built: DecisionStateResult | undefined
+    const deadline = AbortSignal.timeout(Math.max(0, row.deadlineAt - this.host.now()))
     try {
       const context = await loadCodeHostDecisionContext({
         msg,
         store,
         record: { orgId: row.orgId, transcriptChannel: row.channel, seq: row.seq, thread },
         pullRequest: (signal) => this.host.pullRequestContext(msg, signal),
-        signal: AbortSignal.timeout(Math.max(0, row.deadlineAt - this.host.now()))
+        signal: deadline
       })
       built = context
         ? buildCodeHostDecisionState(
@@ -218,6 +219,7 @@ export class HookRouter {
     } catch {
       built = undefined
     }
+    if (deadline.aborted || this.host.now() >= row.deadlineAt) return await unavailable('timeout')
     if (!built || built.unsupported) return await unavailable('unsupported_input')
     if (!(await store.beginDecisionEvaluation(row.seq, row.subject, fence, JSON.stringify(built.state))))
       return await this.awaitExisting((await store.getDecisionVerdict(row.seq, row.subject)) ?? row)

@@ -65,7 +65,6 @@ import { replyTargetProvider, type CodeHostReplyTarget } from '../codehost/reply
 import {
   codeHostHostFence,
   codeHostPromptSupplement,
-  codeHostPullRequestContext,
   codeHostReplyTarget,
   codeHostThreadWorktreeCleanup,
   turnFinalFor,
@@ -74,7 +73,6 @@ import {
   type CodeHostTurnFinalHost
 } from '../codehost/turn-final.js'
 import { GithubReviewClient, type GithubReviewEffect } from './review.js'
-import type { PullRequestContext } from '../codehost/pull-context.js'
 
 /** Dispatch options this seam needs; a subset of the daemon's own. */
 export interface GithubHookDispatchOptions {
@@ -103,14 +101,7 @@ export interface GithubReviewHost {
   hasInbox(id: string): Promise<boolean>
   getSession(key: string): Promise<SessionRecord | undefined>
   displayNames(ids: string[]): Promise<Map<string, string>>
-  getPostToken(agentId: string, repo: string, hookId: string): Promise<{ token: string }>
-  /** §14.1 effect lease: the binding's effect PAT gated by the enabled gitlab hook. */
-  getGitlabPostToken(agentId: string, projectId: string, hookId: string): Promise<{ token: string }>
-  invalidateGitlabPost(agentId: string, projectId: string, presentedToken?: string): void
-  /** The Gitea twin (gitea-integration.md §10.1): the connection token gated by the enabled gitea hook. */
-  getGiteaPostToken(agentId: string, repoId: string, hookId: string): Promise<{ token: string }>
-  invalidateGiteaPost(agentId: string, repoId: string, presentedToken?: string): void
-  invalidatePost(agentId: string, repo: string, presentedToken?: string): void
+  turnFinal: CodeHostTurnFinalHost
   paused(agentId: string): boolean
   draining(agentId: string): boolean
   safetyDraining(agentId: string): boolean
@@ -189,18 +180,8 @@ export class GithubReviewOrchestrator {
     submit: (_key, req) => this.submitGithubReview(req)
   }
 
-  /** What the §6.5 turn-final members read back here: each provider's effect mint, and the instance its spec names. */
-  private readonly turnFinalHost: CodeHostTurnFinalHost = {
-    getPostToken: (agentId, repo, hookId) => this.host.getPostToken(agentId, repo, hookId),
-    invalidatePost: (agentId, repo, presented) => this.host.invalidatePost(agentId, repo, presented),
-    getGitlabPostToken: (agentId, projectId, hookId) => this.host.getGitlabPostToken(agentId, projectId, hookId),
-    invalidateGitlabPost: (agentId, projectId, presented) =>
-      this.host.invalidateGitlabPost(agentId, projectId, presented),
-    gitlabHostFor: (agentId) => this.agents.get(agentId)?.gitlabHost,
-    getGiteaPostToken: (agentId, repoId, hookId) => this.host.getGiteaPostToken(agentId, repoId, hookId),
-    invalidateGiteaPost: (agentId, repoId, presented) => this.host.invalidateGiteaPost(agentId, repoId, presented),
-    giteaHostFor: (agentId) => this.agents.get(agentId)?.giteaHost,
-    log: { warn: (message: string) => this.log.warn(message) }
+  private get turnFinalHost(): CodeHostTurnFinalHost {
+    return this.host.turnFinal
   }
 
   constructor(private readonly host: GithubReviewHost) {}
@@ -551,7 +532,7 @@ export class GithubReviewOrchestrator {
     if (github.headSha && github.baseSha) return github
 
     try {
-      const postToken = await this.host.getPostToken(hook.agentId, github.repoFullName, hook.hookId)
+      const postToken = await this.turnFinalHost.getPostToken(hook.agentId, github.repoFullName, hook.hookId)
       const revision = await this.githubReviewClient.getPull(postToken.token, github.repoFullName, github.pullNumber)
       hook.github = {
         ...github,
@@ -1117,13 +1098,6 @@ export class GithubReviewOrchestrator {
       apiBaseUrl: lease.apiBaseUrl,
       log: { warn: (message: string) => this.log.warn(message) }
     })
-  }
-
-  pullRequestContext(
-    hook: Pick<HookDispatchContext, 'hookId' | 'agentId' | 'github' | 'gitlab' | 'gitea' | 'context'>,
-    signal: AbortSignal
-  ): Promise<PullRequestContext | undefined> {
-    return codeHostPullRequestContext(hook, hook.agentId, this.turnFinalHost, signal)
   }
 
   /** Build the per-turn final-answer selector and the owning host's poster, tokened via that

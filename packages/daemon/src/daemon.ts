@@ -564,7 +564,11 @@ import {
 } from './decisions/router.js'
 import { routerFingerprint, resolveDecisionBundle } from './decisions/bundle.js'
 import { buildDecisionState, largestDecisionRequest } from './decisions/state.js'
-import { buildCodeHostDecisionState, loadCodeHostDecisionContext } from './codehost/decision-state.js'
+import {
+  buildCodeHostDecisionState,
+  fitCodeHostDecisionState,
+  loadCodeHostDecisionContext
+} from './codehost/decision-state.js'
 import { hookDecisionFacts } from './messages/hook-message.js'
 import { HookRouter } from './codehost/hook-routing.js'
 import {
@@ -813,7 +817,12 @@ import {
   type SessionWorktreeCleanupResult
 } from './github/hook-coords.js'
 import type { CodeHostReplyTarget } from './codehost/reply-target.js'
-import { codeHostThreadWorktreeCleanup, turnFinalFor } from './codehost/turn-final.js'
+import {
+  codeHostPullRequestContext,
+  codeHostThreadWorktreeCleanup,
+  turnFinalFor,
+  type CodeHostTurnFinalHost
+} from './codehost/turn-final.js'
 import {
   FailStopError,
   TurnStalledError,
@@ -1861,7 +1870,8 @@ export class Daemon {
     this.decisionRouter = new DecisionRouter(this.decisionRouterHost(), this.decisionLanes)
     this.hookRouter = new HookRouter({
       store: () => this.store,
-      pullRequestContext: (msg, signal) => this.githubReviews.pullRequestContext(msg, signal),
+      pullRequestContext: (msg, signal) =>
+        codeHostPullRequestContext(msg, msg.agentId, this.codeHostTurnFinalHost(), signal),
       evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal),
       now: () => this.clock.now(),
       ownerFence: () => `${this.cfg.daemonId ?? 'local'}:${this.decisionBootNonce}`,
@@ -10748,6 +10758,21 @@ export class Daemon {
     }
   }
 
+  private codeHostTurnFinalHost(): CodeHostTurnFinalHost {
+    return {
+      getPostToken: (agentId, repo, hookId) => this.gitCreds.getPostToken(agentId, repo, hookId),
+      invalidatePost: (agentId, repo, token) => this.gitCreds.invalidatePost(agentId, repo, token),
+      getGitlabPostToken: (agentId, projectId, hookId) => this.gitCreds.getGitlabPostToken(agentId, projectId, hookId),
+      invalidateGitlabPost: (agentId, projectId, token) =>
+        this.gitCreds.invalidateGitlabPost(agentId, projectId, token),
+      gitlabHostFor: (agentId) => this.agents.get(agentId)?.gitlabHost,
+      getGiteaPostToken: (agentId, repoId, hookId) => this.gitCreds.getGiteaPostToken(agentId, repoId, hookId),
+      invalidateGiteaPost: (agentId, repoId, token) => this.gitCreds.invalidateGiteaPost(agentId, repoId, token),
+      giteaHostFor: (agentId) => this.agents.get(agentId)?.giteaHost,
+      log: { warn: (message) => this.log.warn(message) }
+    }
+  }
+
   private githubReviewHost(): GithubReviewHost {
     return {
       log: () => this.log,
@@ -10759,13 +10784,7 @@ export class Daemon {
       hasInbox: async (id) => await this.store.hasInbox(id),
       getSession: async (key) => await this.store.getSession(key),
       displayNames: async (ids) => await this.store.getDisplayNames(ids),
-      getPostToken: (agentId, repo, hookId) => this.gitCreds.getPostToken(agentId, repo, hookId),
-      getGitlabPostToken: (agentId, projectId, hookId) => this.gitCreds.getGitlabPostToken(agentId, projectId, hookId),
-      invalidateGitlabPost: (agentId, projectId, token) =>
-        this.gitCreds.invalidateGitlabPost(agentId, projectId, token),
-      getGiteaPostToken: (agentId, repoId, hookId) => this.gitCreds.getGiteaPostToken(agentId, repoId, hookId),
-      invalidateGiteaPost: (agentId, repoId, token) => this.gitCreds.invalidateGiteaPost(agentId, repoId, token),
-      invalidatePost: (agentId, repo, presentedToken) => this.gitCreds.invalidatePost(agentId, repo, presentedToken),
+      turnFinal: this.codeHostTurnFinalHost(),
       paused: (agentId) => this.paused(agentId),
       draining: (agentId) => this.draining || this.drainingAgents.has(agentId),
       safetyDraining: (agentId) => this.safetyDrainingAgents.has(agentId),
@@ -14341,7 +14360,7 @@ export class Daemon {
             eventTimeUs: 0,
             kind: 'text'
           },
-          pullRequest: (signal) => this.githubReviews.pullRequestContext(hook, signal),
+          pullRequest: (signal) => codeHostPullRequestContext(hook, hook.agentId, this.codeHostTurnFinalHost(), signal),
           signal: entry.initAbort.signal
         }))()
       const context = await entry.codeHostDecisionContext
@@ -14419,7 +14438,12 @@ export class Daemon {
       if (!base && entry.hookContext && hookDecisionFacts(entry.hookContext))
         throw new Error('Repository selection failed: the input is unavailable (unsupported_input).')
       const primary = agent.workspace.gitRepo ? gitRepoLabel(agent.workspace.gitRepo) : undefined
-      const state = repoSelectionState(base ?? opening, { primary, partial }, { ...decision, question: largest })
+      const state = repoSelectionState(
+        base ?? opening,
+        { primary, partial },
+        { ...decision, question: largest },
+        entry.hookContext ? fitCodeHostDecisionState : undefined
+      )
       if (!state) throw new Error('Repository selection failed: the input is unavailable (unsupported_input).')
       signal.throwIfAborted()
       const evaluationId = randomUUID()

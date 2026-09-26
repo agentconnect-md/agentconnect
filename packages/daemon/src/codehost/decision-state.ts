@@ -110,6 +110,22 @@ function subjectOf(
   }
 }
 
+// Code hosts own their optional fields and trim order; the shared fitter owns the request budget.
+export function fitCodeHostDecisionState(
+  state: Record<string, unknown>,
+  decision: DecisionStateBudget
+): DecisionStateResult {
+  return fitDecisionState(state, decision, (copy) => {
+    const pull = copy.pullRequest as Record<string, unknown> | undefined
+    const subject = copy.subject as Record<string, unknown> | undefined
+    return [
+      [pull, 'diff', 'diff_truncated'],
+      [pull, 'commitMessages', 'commits_truncated'],
+      [subject, 'body', 'subject_body_trimmed']
+    ]
+  })
+}
+
 // Routing, runtime selection and repository selection share this state and request budget.
 export function buildCodeHostDecisionState(
   input: CodeHostDecisionContext,
@@ -136,7 +152,7 @@ export function buildCodeHostDecisionState(
   const member = codeHostHookMetadataOf(input.msg)
   const revision = member && codeHostHookRevisionOf(member)
   const isPull = facts.subject.kind === 'pull_request' || facts.subject.kind === 'merge_request'
-  return fitDecisionState(
+  return fitCodeHostDecisionState(
     {
       source: facts.provider,
       event: eventOf(input.msg, c),

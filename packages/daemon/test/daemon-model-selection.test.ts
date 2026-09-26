@@ -12,6 +12,7 @@ import {
   type RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import * as codeHostTurnFinal from '../src/codehost/turn-final.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 import type { ExecutorPlane } from '../src/execution/executor-plane.js'
 import { fakeCpClient } from './webchat-continuation-fixture.js'
@@ -219,7 +220,7 @@ async function start(root: string) {
 describe('session-pinned Decision model', () => {
   it('shares one code-host snapshot between model and repository selection before opening a runtime', async () => {
     const { internal, evaluate, started } = await start(scaffold())
-    const read = vi.spyOn(internal.githubReviews, 'pullRequestContext').mockResolvedValue({
+    const read = vi.spyOn(codeHostTurnFinal, 'codeHostPullRequestContext').mockResolvedValue({
       description: 'Fix login',
       commitMessages: ['Handle expired sessions'],
       diff: '-return cached\n+return refresh()',
@@ -670,7 +671,7 @@ describe('a target judged where the session could land (session-executors.md §5
       memberSet: () => ({ setId: 'example-set', name: 'Example group' }),
       executorCandidates
     })
-    vi.spyOn(internal.githubReviews, 'pullRequestContext').mockResolvedValue({
+    vi.spyOn(codeHostTurnFinal, 'codeHostPullRequestContext').mockResolvedValue({
       description: 'Fix login',
       commitMessages: [],
       diff: '',

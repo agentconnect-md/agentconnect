@@ -306,6 +306,31 @@ describe('hook router (host choice)', () => {
     await h.store.close()
   })
 
+  it('records and replays a context-read deadline as timeout without evaluating', async () => {
+    const h = await harness()
+    const event = await h.post('Review this change')
+    const deadline = new AbortController()
+    const timer = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(deadline.signal)
+    const read = h.store.decisionWindow.bind(h.store)
+    const window = vi.spyOn(h.store, 'decisionWindow').mockImplementationOnce(async (...args) => {
+      const result = await read(...args)
+      deadline.abort(new DOMException('Context read deadline reached', 'TimeoutError'))
+      return result
+    })
+    try {
+      const outcome = await event.choose()
+      expect(h.agentsOf(outcome)).toEqual([HOOK, HOOK_B, HOOK_C])
+      if (!outcome.accepted) throw new Error('Expected unavailable routing fallback')
+      expect(outcome.targets[0]!.selection).toMatchObject({ reason: 'unavailable', unavailableReason: 'timeout' })
+      expect(h.evaluate).not.toHaveBeenCalled()
+      expect(await event.choose()).toEqual(outcome)
+    } finally {
+      timer.mockRestore()
+      window.mockRestore()
+      await h.store.close()
+    }
+  })
+
   it('judges a mentioned event like any other, so the Decision target wins over the mention', async () => {
     const h = await harness()
     const outcome = await (await h.post('@agent-a look')).choose()

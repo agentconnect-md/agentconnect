@@ -74,6 +74,8 @@ export function fitsDecisionBudget(state: Record<string, unknown>, question: Dec
 
 export type DecisionStateBudget = { question: DecisionQuestion; model: string }
 
+type DecisionStateTextField = readonly [object: Record<string, unknown> | undefined, field: string, reason: string]
+
 // State bytes are identical across requests, so the largest envelope budgets every step or chunk.
 export function largestDecisionRequest<T extends DecisionStateBudget>(decisions: readonly [T, ...T[]]): T {
   const size = (decision: T) => Buffer.byteLength(decisionRequestBody({ decision, state: {} }), 'utf8')
@@ -88,7 +90,11 @@ export function decisionTextPrefix(text: string, maxBytes: number): string {
 }
 
 // Every consumer trims a copy, preserving the trigger and identity while spending the same request budget.
-export function fitDecisionState(input: Record<string, unknown>, decision: DecisionStateBudget): DecisionStateResult {
+export function fitDecisionState(
+  input: Record<string, unknown>,
+  decision: DecisionStateBudget,
+  textFields: (state: Record<string, unknown>) => readonly DecisionStateTextField[] = () => []
+): DecisionStateResult {
   const state = structuredClone(input)
   const history = (state.history ?? []) as unknown[]
   const context = (state.context ?? {}) as Record<string, unknown>
@@ -114,13 +120,7 @@ export function fitDecisionState(input: Record<string, unknown>, decision: Decis
     omitted++
     mark('budget_trimmed')
   }
-  const pull = state.pullRequest as Record<string, unknown> | undefined
-  const subject = state.subject as Record<string, unknown> | undefined
-  for (const [object, field, reason] of [
-    [pull, 'diff', 'diff_truncated'],
-    [pull, 'commitMessages', 'commits_truncated'],
-    [subject, 'body', 'subject_body_trimmed']
-  ] as const) {
+  for (const [object, field, reason] of textFields(state)) {
     while (!fits() && object && typeof object[field] === 'string' && object[field]) {
       object[field] = decisionTextPrefix(object[field], Math.floor(Buffer.byteLength(object[field]) / 2))
       mark('budget_trimmed')
