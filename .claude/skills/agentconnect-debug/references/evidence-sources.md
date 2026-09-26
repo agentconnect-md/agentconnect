@@ -1,6 +1,6 @@
 # Evidence sources
 
-Where each kind of evidence lives, what it can and cannot tell you, and how to read it without changing anything. Table and column names are the current code's.
+Where each kind of evidence lives, what it can and cannot tell you, and how to read it without changing anything. Table and column names below are the current code's and will drift; before writing a query, read the schema the daemon under investigation actually runs — `pragma table_info(<table>)` on the live store, or the DDL at its tag (`git show v<agentVersion>:packages/daemon/src/store/local-store.ts`, and `packages/control-plane/prisma/schema.prisma` for the Control Plane). When a bundled script fails on a column, the schema moved: update the script rather than working around it.
 
 ## 1. Control Plane database
 
