@@ -294,6 +294,19 @@ describe('AgentDetailView, code-host repository blocks', () => {
     expect(menuItem('Any update')).toBeTruthy()
   })
 
+  it('names a deployment row by its own cadences, at rest and in its menu', async () => {
+    const scope = await render()
+    // Both responsive trees: no row here is on a thread's opened cadence, so nothing reads Opened.
+    expect([...scope.querySelectorAll('span')].filter((el) => el.textContent === 'Opened')).toEqual([])
+    expect([...scope.querySelectorAll('span')].some((el) => el.textContent === 'Published')).toBe(true)
+    const trigger = scope.querySelector<HTMLElement>('[aria-label="Trigger for acme/api Deploys"]')!
+    expect(trigger.textContent).toContain('Created')
+    await act(async () => trigger.click())
+    expect(menuItem('Created')).toBeTruthy()
+    expect(menuItem('Any status')).toBeTruthy()
+    expect(menuItem('Opened')).toBeUndefined()
+  })
+
   it('explains the hovered cadence under a Run on heading instead of in a tooltip', async () => {
     const scope = await render()
     await act(async () => scope.querySelector<HTMLElement>('[aria-label="Trigger for acme/api PRs"]')!.click())

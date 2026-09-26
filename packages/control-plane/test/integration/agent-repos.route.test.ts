@@ -1992,7 +1992,7 @@ describe('installation-wide github hook rows (webhook-triggers-and-github-events
     const refused = await a.app.inject({ method: 'DELETE', url: `${grants(agentId)}/${grant.id}` })
     expect(refused.statusCode).toBe(409)
     expect((refused.json() as { message: string }).message).toMatch(
-      /delete the triggers that watch all repositories in acme first: org-reviews/
+      /^Delete the triggers that watch all repositories in acme first: org-reviews$/
     )
     expect(await prisma.agentInstallationAuthorization.count({ where: { agentId } })).toBe(1)
 

@@ -927,7 +927,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
             error: 'Conflict',
             statusCode: 409,
             message:
-              'delete the triggers that watch all repositories in ' +
+              'Delete the triggers that watch all repositories in ' +
               grant.accountLogin +
               ' first: ' +
               watching.map((hook) => hook.name).join(', ')

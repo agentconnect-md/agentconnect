@@ -8,6 +8,7 @@ import {
   GH_TRIGGER_LABEL,
   GH_TRIGGER_MODES,
   GH_TRIGGER_PILL,
+  githubTriggerPill,
   githubDefaultTriggerMode,
   githubFamilyCarriesReviews,
   githubFamilySubscription,
@@ -71,6 +72,15 @@ describe('GH_TRIGGER_PILL', () => {
   it('reads the design’s cadence names', () => {
     expect(GH_TRIGGER_PILL.first).toBe('Opened')
     expect(GH_TRIGGER_PILL.every).toBe('Any update')
+  })
+
+  it('names a deployment and a release row by their own cadences', () => {
+    expect(githubTriggerPill('first', 'deployment')).toBe('Created')
+    expect(githubTriggerPill('every', 'deployment')).toBe('Any status')
+    expect(githubTriggerPill('first', 'release')).toBe('Published')
+    expect(githubTriggerPill('every', 'release')).toBe('Any update')
+    expect(githubTriggerPill('first', 'pull_request')).toBe('Opened')
+    expect(githubTriggerPill('first', null)).toBe('Opened')
   })
 
   it('names the agent in the per-segment hover copy', () => {
