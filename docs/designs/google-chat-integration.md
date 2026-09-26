@@ -1,6 +1,6 @@
 # Google Chat Integration Design
 
-Status: proposed. Provider documentation checked on September 23, 2026; no live
+Status: proposed. Provider documentation checked on September 27, 2026; no live
 Google Chat integration has been tested for this design.
 
 Related: [issue #2262](https://github.com/agentconnect-md/agentconnect/issues/2262),
@@ -181,12 +181,16 @@ through the existing authenticated spec projection to the assigned daemon.
 Workload identity and ambient application-default credentials are future options.
 
 Use the existing external app identity and uniqueness contract to prevent binding
-the same app to multiple agents. Preserve the installation's transport scope
-across key rotation; neither a private-key hash nor a callback attempt ID defines
-a person's or session's identity. Changing the app project requires a new
-installation. The app's Google `users/...` identity must be verified in the live
-probe before mention matching is finalized; do not synthesize it from a project
-ID or assume the service-account email is the bot user.
+the same app to multiple agents: the bot row's `(platform, externalAppId,
+externalTenantId)` unique key, with the verified project number as
+`externalAppId` and the tenantless sentinel `-` as `externalTenantId`, because a
+null tenant does not participate in that constraint. Preserve the installation's
+transport scope across key rotation; neither a private-key hash nor a callback
+attempt ID defines a person's or session's identity. Changing the app project
+requires a new installation. The app's Google `users/...` identity must be
+verified in the live probe before mention matching is finalized; do not
+synthesize it from a project ID or assume the service-account email is the bot
+user.
 
 Validation checks credential structure, project identity, and a bounded Chat API
 read with app authentication. It must not send a test message from the Control
@@ -269,17 +273,29 @@ Do not hold the request open for an agent turn. See
 [interaction handling and retries](https://developers.google.com/workspace/chat/receive-respond-interactions).
 
 The current `RelayIngressHost.forward` result means the relay handled the message;
-it explicitly does not prove daemon admission. Extend that host seam to expose a
-strict admission disposition, using the existing `rd/msg` / `rd/ack` path. A Google
-module must not convert the old `accepted` result into an HTTP success by default.
+it explicitly does not prove daemon admission, and the daemon's `rd/ack` for an
+`im` delivery reports every refusal except a durability failure as accepted. The
+routed path in [shared-bot relay](shared-bot-relay.md) §7.2 already carries the
+strict shape: `rd/ack` gains `routeAdmission` and `recoverable`, and the relay's
+route forwarder maps them onto the `admitted` / `retry` / `rejected` dispositions
+and reasons of `rd/route/ack`. Extend the `im` ack with those same fields and
+expose that disposition through the host seam; do not define a Google-specific
+vocabulary. A Google module must not convert the old `accepted` result into an
+HTTP success by default.
 
-| Disposition           | HTTP behavior                                                                         |
-| --------------------- | ------------------------------------------------------------------------------------- |
-| Accepted              | 200 with an empty response only after durable inbox admission and its receipt commit. |
-| Duplicate             | 200 when a durable receipt proves prior acceptance; do not run the message again.     |
-| Intentionally ignored | 200 after a completed gate or unsupported-event decision; no work is promised.        |
-| Retryable or unknown  | 503 for unavailable daemon/storage, queue pressure, or an admission timeout.          |
-| Invalid request       | 401 for failed authentication; 400 for malformed payloads; never route either.        |
+| Disposition           | Relay verdict                                                                                                | HTTP behavior                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| Accepted              | `admitted`                                                                                                   | 200 with an empty response only after durable inbox admission and its receipt commit. |
+| Duplicate             | `admitted` against an existing receipt                                                                       | 200 when a durable receipt proves prior acceptance; do not run the message again.     |
+| Intentionally ignored | `rejected` with a gate reason (`off`, `muted`, `stopped`), or an unsupported event the module never forwards | 200 after that completed decision; no work is promised.                               |
+| Retryable or unknown  | `retry` (`durability`, `draining`, `capacity`, `not_ready`, `offline`) or an admission timeout               | 503 so Google may redeliver.                                                          |
+| Invalid request       | never forwarded                                                                                              | 401 for failed authentication; 400 for malformed payloads; never route either.        |
+
+The relay's inbound seam returns `HandledDelivery`, which today carries only a
+synchronous response body: the Slack route answers 200 for every handled
+delivery and 401 only when no assigned bot owns it. Carry the admission
+disposition on `HandledDelivery` as a platform-neutral member so the module's
+own route can answer 503.
 
 Use a bounded admission deadline inside the provider and relay request budgets.
 An HTTP timeout after a daemon commit is an unknown outcome, not a reason to
@@ -288,17 +304,28 @@ durable message queue. If the daemon is unavailable beyond Google's retry window
 delivery can be lost; report this limitation rather than promise offline recovery.
 
 Reuse the daemon's existing relay-ingress strategy, `requireDurable`, `receiptId`,
-`onAdmission`, and atomic inbox-with-receipt machinery. Preserve routing and
+`onAdmission`, and atomic inbox-with-receipt machinery. That strategy table is a
+core-owned map in the daemon keyed by platform name, with Linear as its only
+entry; Google Chat is its second implementer, so the same change promotes it to a
+member of the daemon platform contract with one registry line per platform,
+rather than adding a `googlechat` entry to core. Preserve routing and
 authorization while distinguishing transient draining/placement failures from
-intentional gates. The current generic ACK mapping is insufficient for that
-distinction. Enable Google Chat only when both assigned hosts support the strict
-admission contract; mixed versions must not silently downgrade it. Changes to any
-shared wire fields must update and validate both consumers together.
+intentional gates. The current `im` ACK mapping is insufficient for that
+distinction. Gate the ingress on the existing feature advertisement, as the relay
+already does with `daemon.supports(...)` for decision routing: a host that does
+not advertise the strict admission contract is refused, never served with the
+old ack semantics. Changes to any shared wire fields must update and validate
+both consumers together.
 
 Scope receipts to the installed app and stable Google message identity.
 Concurrent copies elect one admission in the store transaction; receipts outlive
 turn completion, steering, and inbox removal. Check them before an in-memory dedup
-fast path can settle a delivery. A failed durable write remains retryable.
+fast path can settle a delivery: the relay host's `dedupSeen` marks an identity
+on first sight and answers a repeat with 200 before any admission result exists,
+which suits Slack's bounded-loss path and not this one. The Google module marks
+the identity only after an accepted or ignored disposition, so a retry of a
+refused or timed-out attempt is forwarded again. A failed durable write remains
+retryable.
 
 Commands require a completed, replay-safe disposition too. Bind cancellation to
 its original operation/turn so a repeated callback cannot cancel later work.
@@ -323,8 +350,11 @@ without assuming named-Space thread options apply.
 
 Use `spaces.messages.create` and app-owned `spaces.messages.patch`. The
 [create API](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages/create)
-supports a custom `client-` message ID and a retry `requestId`. Derive stable output
-IDs from the durable delivery and segment identity. Persist each create intent,
+supports a custom `client-` message ID and a retry `requestId`. A custom ID must
+start with `client-`, use only lowercase letters, digits, and hyphens, stay within
+63 characters, and be unique in its Space, so derive it by hashing the durable
+delivery and segment identity into that alphabet rather than concatenating raw
+IDs. Persist each create intent,
 including its exact body and ID, before sending; record the returned resource name.
 After an ambiguous response, retry that operation or reconcile the existing ID,
 never allocate a fresh message ID. Do not reuse an identical-request ID with a
@@ -346,8 +376,11 @@ boundaries. Budget the complete encoded message below Google's 32,000-byte limit
 including metadata and UTF-8 expansion.
 
 One per-Space send queue covers local creates, edits, progress, and final replies
-across threads and connections. Space message writes share a one-per-second quota;
-project message writes also have a shared limit. See Google's
+across threads and connections. The daemon's `PlatformSendQueue` is one queue per
+connection with a 350 ms default spacing; instantiate it per Space with at least
+one second between writes. Space message writes share a one-per-second quota
+with every app acting in that Space; project message writes are limited to 3,000
+per minute. See Google's
 [quota documentation](https://developers.google.com/workspace/chat/limits).
 Coalesce streaming text with a two-second minimum edit interval, preserve fairness
 between threads, and let final output replace pending intermediate edits while
@@ -390,15 +423,15 @@ for private DM turns as part of the acceptance checks.
 
 ## 7. Implementation boundaries
 
-| Area                    | Required contribution                                                                                                     |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Protocol and message    | Register the known platform, conservative manifest values, and pure Google event normalization.                           |
-| Relay platform module   | HTTPS route, project-audience verification, demux, normalization, membership reports, and strict admission responses.     |
-| Daemon platform module  | Config schema, Chat REST connection/read port, relay ingress strategy, renderer, turn output, and lifecycle registration. |
-| Relay/daemon admission  | Expose durable acceptance through the existing forwarding contracts, including commands and transient refusals.           |
-| Daemon output           | Persist stable create intent/results and serialize Google sends through the platform output surface.                      |
-| Control Plane provider  | Credential validation/storage, app identity, uniqueness, secret rotation, daemon spec, and relay assignment projection.   |
-| Console platform module | Chat picker, setup wizard, connection diagnostics, conversation semantics, and explicit scope limitations.                |
+| Area                    | Required contribution                                                                                                                                                                             |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protocol and message    | Register the known platform, conservative manifest values, and pure Google event normalization.                                                                                                   |
+| Relay platform module   | HTTPS route, project-audience verification, demux, normalization, membership reports, and strict admission responses.                                                                             |
+| Daemon platform module  | Config schema, Chat REST connection/read port, the relay-ingress strategy promoted to a contract member, renderer, turn output, and lifecycle registration.                                       |
+| Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals. |
+| Daemon output           | Persist stable create intent/results and serialize Google sends through the platform output surface.                                                                                              |
+| Control Plane provider  | Credential validation/storage, app identity, uniqueness, secret rotation, daemon spec, and relay assignment projection.                                                                           |
+| Console platform module | Chat picker, setup wizard, connection diagnostics, conversation semantics, and explicit scope limitations.                                                                                        |
 
 Start with observed membership discovery and no bot-sender routing or multi-agent
 sharing. Add manifest fields only when an actual pre-dispatch consumer requires
@@ -429,7 +462,7 @@ and replay window. Consumers on the same subscription compete; two transports
 must not be active for one app during a cutover. Pub/Sub supports asynchronous
 responses and does not support dialogs.
 
-As checked on September 23, 2026, standard publish and delivery throughput share a
+As checked on September 27, 2026, standard publish and delivery throughput share a
 10 GiB monthly free allowance per billing account, then cost $40 per TiB.
 Internet egress and retained messages can incur additional charges. Small
 text-only workloads should cost little, but the allowance is shared and does not
