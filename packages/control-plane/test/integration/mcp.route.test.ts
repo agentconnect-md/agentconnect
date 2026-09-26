@@ -548,6 +548,27 @@ describe('delegated webchat MCP operations', () => {
     expect(await prisma.webchatMcpOperation.findFirst({ where: { toolName: 'createAgent' } })).toBeNull()
   })
 
+  it('refuses a delegated preview rather than queue its message sample for approval', async () => {
+    const { remoteRpc } = await delegatedFixture()
+    const sample = 'a private message that must not persist'
+    const call = await remoteRpc(2, 'previewDecision', {
+      decision: {
+        name: 'Urgent',
+        providerId: 'typesafe',
+        model: 'jev-latest',
+        question: { type: 'boolean', instructions: 'Urgent?', criteria: { true: 'yes', false: 'no' } }
+      },
+      target: { kind: 'pool' },
+      state: { history: [], currentMessage: { text: sample } }
+    })
+    const result = mcpMessage(call).result as unknown as ToolCallResult
+    expect(result.isError).toBe(true)
+    expect(toolText(result)).toContain('not available from webchat')
+    expect(await prisma.webchatMcpOperation.findFirst({ where: { toolName: 'previewDecision' } })).toBeNull()
+    const audit = await prisma.auditEvent.findMany({ where: { kind: 'mcp_tool_call' } })
+    expect(JSON.stringify(audit.map((row) => row.details))).not.toContain(sample)
+  })
+
   it('scopes the operation reads to the caller’s own conversation', async () => {
     const mine = await delegatedFixture()
     const operationId = await pendingWrite(mine, 4, 'renameDaemon', { daemonId: mine.daemonId, name: 'mine' })
@@ -891,6 +912,25 @@ describe('POST /api/v1/mcp — audit', () => {
     expect((rows[0]!.details as { status: number }).status).toBe(200)
     expect((rows[1]!.details as { tool: string }).tool).toBe('getAgent')
     expect((rows[1]!.details as { status: number }).status).toBe(404)
+  })
+
+  it('a preview’s message sample never reaches the audit row, valid or not', async () => {
+    const app = build()
+    const { key } = await makeUserWithKey('owner')
+    const sample = 'a private message that must not persist'
+    const state = { history: [{ sender: 'U1', text: sample }], currentMessage: { text: sample } }
+    await callTool(app, key, 'previewIntegrationChannelDecision', {
+      integrationId: randomUUID(),
+      channelId: 'C1',
+      decisionBinding: { type: 'gate', decisionId: randomUUID(), when: { type: 'boolean', values: [true] } },
+      state
+    })
+    await callTool(app, key, 'previewBotDecisionRouting', { botId: randomUUID(), state }) // schema-rejected
+
+    const rows = await prisma.auditEvent.findMany({ where: { kind: 'mcp_tool_call' }, orderBy: { id: 'asc' } })
+    expect(rows).toHaveLength(2)
+    expect((rows[0]!.details as { args: { state: unknown } }).args.state).toBe('[redacted]')
+    expect(JSON.stringify(rows.map((row) => row.details))).not.toContain(sample)
   })
 
   it('a rejected call (invalid arguments) is still audited with status invalid_arguments', async () => {

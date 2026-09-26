@@ -834,11 +834,12 @@ describe('MCP Decision tools', () => {
     expect(tool.schema.safeParse(neither).success).toBe(false)
   })
 
-  it('every preview spends an evaluator call, so it rides the write path', () => {
+  it('every preview spends an evaluator call and carries a message sample', () => {
     for (const name of ['previewDecision', 'previewIntegrationChannelDecision', 'previewBotDecisionRouting']) {
       const tool = findTool(name)!
       expect(tool.write, name).toBe(true)
       expect(tool.destructive, name).toBeUndefined()
+      expect(tool.contentArgs, name).toEqual(['state'])
     }
   })
 

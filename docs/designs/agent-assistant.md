@@ -250,8 +250,10 @@ The Decision tools write a Decision's executable half only — its audience is
 access control and stays in the console — and `updateAgent` carries `decisionIds`,
 `modelSelection` and `repositorySelector`. The three previews store nothing, but
 each is a billed evaluator call on the organization's provider credentials, so
-they are write tools: a delegated call waits for the owner's approval, a read-only
-token cannot reach them, and they draw from the write budget. Evaluation reads
+they are write tools: a read-only token cannot reach them, and they draw from the
+write budget. Their sample is message content (`contentArgs`), so audit records
+it as `[redacted]`, and a delegated call is refused outright, because a queued
+approval would store the sample in the operation row. Evaluation reads
 return the summary rows only; an evaluation's detail carries the judged messages,
 which stay out of the catalog for the reason Open Question 1 gives.
 

@@ -98,6 +98,8 @@ export interface McpToolDef {
    *  WS round-trip, or touches external state MUST stay `'external'` (the
    *  default) and keep the fail-closed at-most-once/ambiguous contract. */
   effect?: 'cp_db' | 'external'
+  /** Argument keys that carry message content: redacted from audit, and the tool is refused where approval would persist them. */
+  contentArgs?: readonly string[]
   call(ctx: McpToolCtx, args: Record<string, unknown>): Promise<RestResult>
 }
 
@@ -1299,12 +1301,13 @@ export const MCP_TOOLS: McpToolDef[] = [
     }
   },
 
-  // Previews store nothing but each is a billed evaluator call, so they take the write path (approval, mcp:write, budget).
+  // Previews store nothing but each is a billed evaluator call, so they take the write path (mcp:write, budget).
   {
     name: 'previewDecision',
     description:
-      'Try a Decision on a sample conversation — `history` lines with sender ids and the `currentMessage` to judge — and get the evaluator’s typed answer. Pass `decisionId` for a saved Decision, or `decision` for an unsaved draft. The run goes to one `target`: a daemon, the managed pool, or a member set. Stores nothing and binds nothing, but each run is a billed model call.',
+      'Try a Decision on a sample conversation — `history` lines with sender ids and the `currentMessage` to judge — and get the evaluator’s typed answer. Pass `decisionId` for a saved Decision, or `decision` for an unsaved draft. The run goes to one `target`: a daemon, the managed pool, or a member set. Stores nothing and binds nothing, but each run is a billed model call. Not available from webchat, where approval would store the sample.',
     write: true,
+    contentArgs: ['state'],
     schema: z
       .object({
         decisionId: DecisionId.optional(),
@@ -1343,8 +1346,9 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'previewIntegrationChannelDecision',
     description:
-      'Try a draft By decision gate on one conversation against a sample, on the daemon that serves it, and see whether the message would be admitted. Takes the same `decisionBinding` as setChannelTrigger and a `state` of `history` lines and the `currentMessage`. Writes nothing, but each run is a billed model call.',
+      'Try a draft By decision gate on one conversation against a sample, on the daemon that serves it, and see whether the message would be admitted. Takes the same `decisionBinding` as setChannelTrigger and a `state` of `history` lines and the `currentMessage`. Writes nothing, but each run is a billed model call. Not available from webchat, where approval would store the sample.',
     write: true,
+    contentArgs: ['state'],
     schema: z
       .object({
         integrationId: z.string().uuid().describe('The integration id (from listIntegrations)'),
@@ -1363,8 +1367,9 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'previewBotDecisionRouting',
     description:
-      'Try a draft shared-bot routing on one channel and situation against a sample, and see which agents it would route to. `config` and `channelIds` are the draft (as for saveBotDecisionRouting); `targets` is the situation — {type: "new"} for a new conversation, or {type: "mention" | "thread", agentIds, participantAgentIds} for an explicit mention or an established thread. Writes nothing, but each run is a billed model call.',
+      'Try a draft shared-bot routing on one channel and situation against a sample, and see which agents it would route to. `config` and `channelIds` are the draft (as for saveBotDecisionRouting); `targets` is the situation — {type: "new"} for a new conversation, or {type: "mention" | "thread", agentIds, participantAgentIds} for an explicit mention or an established thread. Writes nothing, but each run is a billed model call. Not available from webchat, where approval would store the sample.',
     write: true,
+    contentArgs: ['state'],
     schema: z
       .object({
         botId: z.string().uuid().describe('The bot id (from listBots)'),
