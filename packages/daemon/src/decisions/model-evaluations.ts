@@ -54,7 +54,7 @@ export class DecisionModelEvaluationReader {
       }
       items.push(summary)
     }
-    const last = items.at(-1)?.seq ?? Number(rows[0]?.seq)
+    const last = items.at(-1)?.seq ?? Number(rows[Math.min(req.limit, rows.length) - 1]?.seq)
     return { items, nextCursor: more && Number.isFinite(last) ? last : null }
   }
 

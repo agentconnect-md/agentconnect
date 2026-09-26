@@ -3820,7 +3820,7 @@ describe.skipIf(pg)('decision table migrations', () => {
   }
 
   it('creates the decision tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(32)
+    expect(SCHEMA_VERSION).toBe(33)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual(['decision_model_evaluation', 'decision_release', 'decision_verdict'])
@@ -3848,6 +3848,39 @@ describe.skipIf(pg)('decision table migrations', () => {
     old.close()
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toContain('decision_model_evaluation')
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
+  })
+
+  it('backfills root Decision IDs in v32 model selection history', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v32-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec(`
+      DROP TABLE decision_model_evaluation;
+      CREATE TABLE decision_model_evaluation (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        orgId TEXT NOT NULL,
+        agentId TEXT NOT NULL,
+        sessionId TEXT NOT NULL UNIQUE,
+        createdAt INTEGER NOT NULL,
+        summaryJson TEXT NOT NULL,
+        detailJson TEXT,
+        bodiesStrippedAt INTEGER
+      );
+      PRAGMA user_version = 32;
+    `)
+    const decisionId = '33333333-3333-4333-8333-333333333333'
+    old
+      .prepare(
+        `INSERT INTO decision_model_evaluation
+      (orgId, agentId, sessionId, createdAt, summaryJson)
+      VALUES (?, ?, ?, ?, ?)`
+      )
+      .run('', 'agent', 'session', 1, JSON.stringify({ decisionId }))
+    old.close()
+    const upgraded = await LocalStore.open(path)
+    expect((await upgraded.listDecisionModelEvaluations('', 'agent', undefined, 10, decisionId)).length).toBe(1)
+    await upgraded.close()
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 })

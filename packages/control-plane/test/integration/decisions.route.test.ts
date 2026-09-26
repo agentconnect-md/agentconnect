@@ -151,7 +151,7 @@ describe('Decision management and standalone preview', () => {
     expect((await patch(owner, { modelSelection: chain })).json()).toMatchObject({ modelSelection: chain })
     expect((await patch(editor, { modelSelection: chain })).statusCode).toBe(200)
     expect((await owner.app.inject({ method: 'GET', url: `${BASE}/${nextId}` })).json().usages).toEqual([
-      expect.objectContaining({ kind: 'model_selection', id: agentId })
+      expect.objectContaining({ kind: 'model_selection', id: agentId, rootDecisionId: id })
     ])
     expect((await owner.app.inject({ method: 'DELETE', url: `${BASE}/${nextId}` })).statusCode).toBe(409)
     const chainMetadata = (

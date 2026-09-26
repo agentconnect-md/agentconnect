@@ -4338,6 +4338,8 @@
     },
     "recentBySource": {
       "title": "近期评估",
+      "loading": "正在加载评估记录…",
+      "chainHistory": "此来源从决策链的首个步骤开始记录评估。",
       "noSources": "此 Decision 当前没有记录评估的使用入口。",
       "empty": "此来源近期没有评估记录。",
       "viewAll": "查看此来源的全部记录",

@@ -50,6 +50,7 @@ export interface DecisionUsage {
   kind: 'gate' | 'shared_bot_routing' | 'code_host_routing' | 'agent_tool' | 'model_selection'
   id: string
   label: string
+  rootDecisionId?: string
   integrationId?: string
   channelId?: string
   provider?: CodeHostRoutingProvider

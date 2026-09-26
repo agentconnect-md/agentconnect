@@ -1425,10 +1425,12 @@ days. The CP proxies these reads without persisting their content.
 Decision detail lists recent evaluations from its current recorded usages, separated
 by source: conversation gates, Shared Bot Routing, repository routing, and Agent
 model selection. Each source retains its own list, retention, detail drawer, and
-access checks. The optional Decision ID filter runs on the daemon before paging;
+access checks; sibling installs of one bot have separate gate sources. The optional
+Decision ID filter runs on the daemon before paging;
 older daemons report upgrade required for filtered reads. These histories identify
-the root Decision of a recorded evaluation; child steps remain visible in a
-retained chain detail. Agent tool calls have no evaluation history here.
+the root Decision of a recorded evaluation. A child Decision page reads its root
+chain's history and labels that scope; a retained detail shows which child steps
+were reached. Agent tool calls have no evaluation history here.
 
 Open Recent evaluations from a gate binding or Shared Bot Routing. The routing list
 shows Time, Channel, Decision answer, Matched keys/intervals and rules / Otherwise,

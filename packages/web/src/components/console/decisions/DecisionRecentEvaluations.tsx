@@ -54,29 +54,31 @@ export function DecisionRecentEvaluations({
   const [opened, setOpened] = useState<{ key: string; seq?: number; channel?: string } | null>(null)
   const selected = sources.find((source) => sourceKey(source) === selectedKey) ?? sources[0]!
   const drawerSource = sources.find((source) => sourceKey(source) === opened?.key)
+  const selectedDecisionId = selected?.rootDecisionId ?? decisionId
+  const drawerDecisionId = drawerSource?.rootDecisionId ?? decisionId
   const { data, error, isLoading, mutate } = useSWR(
-    selected ? ['decision-recent-evaluations', api.mode, orgId, decisionId, sourceKey(selected)] : null,
+    selected ? ['decision-recent-evaluations', api.mode, orgId, selectedDecisionId, sourceKey(selected)] : null,
     async (): Promise<{ items: RecentRow[]; nextCursor: number | null }> => {
       let page
       if (selected.kind === 'gate') {
         page = await api.listEvaluations(
           { integrationId: selected.integrationId!, channelId: selected.channelId! },
-          { decisionId, limit: PAGE }
+          { decisionId: selectedDecisionId, limit: PAGE }
         )
       } else if (selected.kind === 'shared_bot_routing') {
-        page = await api.listRoutingEvaluations(selected.id, { decisionId, limit: PAGE })
+        page = await api.listRoutingEvaluations(selected.id, { decisionId: selectedDecisionId, limit: PAGE })
       } else if (selected.kind === 'code_host_routing') {
         const scope: CodeHostRoutingKey = {
           provider: selected.provider!,
           repoId: selected.repoId!,
           family: selected.family!
         }
-        page = await codeHostRoutingEvaluations(api, orgId, scope).list({ decisionId, limit: PAGE })
+        page = await codeHostRoutingEvaluations(api, orgId, scope).list({ decisionId: selectedDecisionId, limit: PAGE })
       } else {
         page =
           api.mode === 'mock'
             ? { items: [], nextCursor: null }
-            : await fetchAgentModelEvaluations(selected.id, { decisionId, limit: PAGE }, orgId)
+            : await fetchAgentModelEvaluations(selected.id, { decisionId: selectedDecisionId, limit: PAGE }, orgId)
       }
       return {
         items: page.items.map((item) => ({
@@ -91,15 +93,21 @@ export function DecisionRecentEvaluations({
       }
     }
   )
-  const routing = useSWR(
-    drawerSource?.kind === 'shared_bot_routing' ? ['decision-recent-routing', api.mode, orgId, drawerSource.id] : null,
-    () => api.getRouting(drawerSource!.id)
+  const routingSource =
+    drawerSource?.kind === 'shared_bot_routing'
+      ? drawerSource
+      : selected?.kind === 'shared_bot_routing'
+        ? selected
+        : null
+  const routing = useSWR(routingSource ? ['decision-recent-routing', api.mode, orgId, routingSource.id] : null, () =>
+    api.getRouting(routingSource!.id)
   )
   const routingChannels =
     routing.data?.channels.map((channel) => ({
       channelId: channel.channelId,
       name: channel.name ?? channel.channelId
     })) ?? []
+  const routingNames = new Map(routingChannels.map((channel) => [channel.channelId, channel.name]))
   const agentNames = new Map(
     (routing.data?.channels ?? []).flatMap((channel) =>
       channel.defaultAgent
@@ -142,7 +150,12 @@ export function DecisionRecentEvaluations({
               </button>
             ))}
           </div>
-          {isLoading && !data && <p className="px-4 py-3 text-[12px] text-(--text-tertiary)">{t('loading')}</p>}
+          {selected.rootDecisionId && selected.rootDecisionId !== decisionId && (
+            <p className="px-4 pt-3 text-[12px] text-(--text-tertiary)">{t('recentBySource.chainHistory')}</p>
+          )}
+          {isLoading && !data && (
+            <p className="px-4 py-3 text-[12px] text-(--text-tertiary)">{t('recentBySource.loading')}</p>
+          )}
           {error && !data && (
             <p role="alert" className="px-4 py-3 text-[12px] text-(--status-error)">
               {errorParts(error)?.code === 'DAEMON_UPGRADE_REQUIRED'
@@ -175,7 +188,7 @@ export function DecisionRecentEvaluations({
                       {formatEvaluationTime(row.at, locale)}
                     </span>
                     <span className="block truncate text-[12.5px] text-(--text-primary)">
-                      {row.channel ? `${row.channel} · ` : ''}
+                      {row.channel ? `${routingNames.get(row.channel) ?? row.channel} · ` : ''}
                       {row.target ? `${row.target} · ` : ''}
                       {answerText(row.answer, answerWords) ?? '—'}
                     </span>
@@ -200,7 +213,7 @@ export function DecisionRecentEvaluations({
         <DecisionEvaluationsDrawer
           conversation={{ integrationId: drawerSource.integrationId!, channelId: drawerSource.channelId! }}
           channelName={drawerSource.label}
-          decisionId={decisionId}
+          decisionId={drawerDecisionId}
           initialSeq={opened?.seq}
           onClose={() => setOpened(null)}
         />
@@ -213,7 +226,7 @@ export function DecisionRecentEvaluations({
             family: drawerSource.family!
           })}
           channelName={drawerSource.label}
-          decisionId={decisionId}
+          decisionId={drawerDecisionId}
           initialSeq={opened?.seq}
           onClose={() => setOpened(null)}
         />
@@ -224,8 +237,10 @@ export function DecisionRecentEvaluations({
           botName={drawerSource.label}
           channels={routingChannels}
           agentNames={agentNames}
-          ruleNumbers={ruleNumbers(question, routing.data?.config?.rules ?? [])}
-          decisionId={decisionId}
+          ruleNumbers={
+            drawerDecisionId === decisionId ? ruleNumbers(question, routing.data?.config?.rules ?? []) : new Map()
+          }
+          decisionId={drawerDecisionId}
           initialEvaluation={
             opened?.seq !== undefined && opened.channel ? { seq: opened.seq, channel: opened.channel } : undefined
           }
@@ -237,7 +252,7 @@ export function DecisionRecentEvaluations({
           agentId={drawerSource.id}
           agentName={drawerSource.label}
           orgId={orgId}
-          decisionId={decisionId}
+          decisionId={drawerDecisionId}
           initialSeq={opened?.seq}
           onClose={() => setOpened(null)}
         />

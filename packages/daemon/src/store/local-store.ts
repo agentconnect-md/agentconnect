@@ -1223,11 +1223,13 @@ const DECISION_SCHEMA = `
         agentId TEXT NOT NULL,
         sessionId TEXT NOT NULL UNIQUE,
         createdAt INTEGER NOT NULL,
+        decisionId TEXT,
         summaryJson TEXT NOT NULL,
         detailJson TEXT,
         bodiesStrippedAt INTEGER
       );
       CREATE INDEX IF NOT EXISTS decision_model_evaluation_agent ON decision_model_evaluation (orgId, agentId, seq);
+      CREATE INDEX IF NOT EXISTS decision_model_evaluation_decision ON decision_model_evaluation (orgId, agentId, decisionId, seq);
       CREATE TABLE IF NOT EXISTS decision_release (
         orgId TEXT NOT NULL,
         channel TEXT NOT NULL,
@@ -1238,7 +1240,7 @@ const DECISION_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 32
+export const SCHEMA_VERSION = 33
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1585,8 +1587,41 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     if (!columns.some((c) => c.name === 'observedRuntime'))
       await db.exec('ALTER TABLE sessions ADD COLUMN observedRuntime TEXT')
   },
-  // v32 adds decision_model_evaluation in the CREATE block.
-  async () => undefined
+  // v32 creates the table before v33 widens it when upgrading a pre-v32 store.
+  async (db) =>
+    await db.exec(`CREATE TABLE IF NOT EXISTS decision_model_evaluation (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      orgId TEXT NOT NULL,
+      agentId TEXT NOT NULL,
+      sessionId TEXT NOT NULL UNIQUE,
+      createdAt INTEGER NOT NULL,
+      summaryJson TEXT NOT NULL,
+      detailJson TEXT,
+      bodiesStrippedAt INTEGER
+    )`),
+  // v33 indexes the root Decision used by model-selection history, including retained v32 rows.
+  async (db, store) => {
+    if (store.postgres) await db.exec('ALTER TABLE decision_model_evaluation ADD COLUMN IF NOT EXISTS decisionId TEXT')
+    else {
+      const columns = (await db.query('PRAGMA table_info(decision_model_evaluation)', [])).rows as { name: string }[]
+      if (!columns.some((column) => column.name === 'decisionId'))
+        await db.exec('ALTER TABLE decision_model_evaluation ADD COLUMN decisionId TEXT')
+    }
+    const rows = (await db.query('SELECT seq, summaryJson FROM decision_model_evaluation', [])).rows as Array<{
+      seq: number
+      summaryJson: string
+    }>
+    for (const row of rows) {
+      let decisionId: unknown
+      try {
+        decisionId = (JSON.parse(row.summaryJson) as { decisionId?: unknown }).decisionId
+      } catch {
+        continue
+      }
+      if (typeof decisionId === 'string')
+        await db.query('UPDATE decision_model_evaluation SET decisionId = ? WHERE seq = ?', [decisionId, row.seq])
+    }
+  }
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -6230,14 +6265,15 @@ export class LocalStore {
     await this.db
       .prepare(
         `INSERT OR IGNORE INTO decision_model_evaluation
-      (orgId, agentId, sessionId, createdAt, summaryJson, detailJson)
-      VALUES (?, ?, ?, ?, ?, ?)`
+      (orgId, agentId, sessionId, createdAt, decisionId, summaryJson, detailJson)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         this.orgForRead(agentId, undefined),
         agentId,
         sessionId,
         now,
+        summary.decisionId,
         JSON.stringify(summary),
         JSON.stringify(detail)
       )
@@ -6251,8 +6287,8 @@ export class LocalStore {
     decisionId?: string
   ): Promise<DecisionModelEvaluationRow[]> {
     const params: unknown[] = [this.orgForRead(agentId, orgId), agentId, before ?? Number.MAX_SAFE_INTEGER]
-    const decisionFilter = decisionId ? ' AND summaryJson LIKE ?' : ''
-    if (decisionId) params.push(`%"decisionId":"${decisionId}"%`)
+    const decisionFilter = decisionId ? ' AND decisionId = ?' : ''
+    if (decisionId) params.push(decisionId)
     return (await this.db
       .prepare(
         `SELECT seq, summaryJson, detailJson, bodiesStrippedAt

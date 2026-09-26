@@ -421,7 +421,7 @@ export class DecisionEvaluationReader {
       }
       items.push(parsed.data)
     }
-    const last = items.at(-1)?.seq ?? rows[0]?.seq
+    const last = items.at(-1)?.seq ?? rows[Math.min(req.limit, rows.length) - 1]?.seq
     return { items, nextCursor: more && last !== undefined && last > 0 ? last : null, conversation }
   }
 
@@ -482,7 +482,7 @@ export class DecisionEvaluationReader {
       }
       items.push(parsed.data)
     }
-    const last = items.at(-1)?.seq ?? rows[0]?.seq
+    const last = items.at(-1)?.seq ?? rows[Math.min(req.limit, rows.length) - 1]?.seq
     return { items, nextCursor: more && last !== undefined && last > 0 ? last : null, conversation }
   }
 

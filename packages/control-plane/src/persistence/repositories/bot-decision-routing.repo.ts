@@ -240,6 +240,7 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
         .filter((id) => !decisionIds || decisionIds.includes(id))
         .map((id) => ({
           decisionId: id,
+          rootDecisionId: row.decisionId,
           botId: BotId(row.botId),
           botName: row.bot.name,
           agentIds: [...new Set([...row.bot.integrations.map((i) => i.agentId), ...targets])].map(AgentId)
