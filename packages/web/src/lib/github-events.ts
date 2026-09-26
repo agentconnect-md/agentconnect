@@ -84,6 +84,14 @@ export const GH_TRIGGER_PILL: Record<GhTriggerMode, string> = {
   mention: '@-mention'
 }
 
+/** One row's cadence as the agent-detail menu names it: a deployment or release reads its own words, as the create tiles do. */
+export function githubTriggerPill(mode: GhTriggerMode, fam?: GhFamily | null): string {
+  if (fam === 'deployment')
+    return mode === 'first' ? 'Created' : mode === 'every' ? 'Any status' : GH_TRIGGER_PILL[mode]
+  if (fam === 'release' && mode === 'first') return 'Published'
+  return GH_TRIGGER_PILL[mode]
+}
+
 /** Every thread family offers all three cadences; a deployment or release has no thread anyone writes in, so nobody @-mentions in one. */
 export function githubFamilySupportsMode(fam: GhFamily, mode: GhTriggerMode): boolean {
   return (fam !== 'deployment' && fam !== 'release') || mode !== 'mention'

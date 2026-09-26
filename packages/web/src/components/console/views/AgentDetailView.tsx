@@ -146,7 +146,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { useSessionList } from '@/lib/use-session-list'
 import {
   GH_TRIGGER_MODES,
-  GH_TRIGGER_PILL,
+  githubTriggerPill,
   githubTriggerDescription,
   githubCommentFamilies,
   githubDefaultTriggerMode,
@@ -1871,7 +1871,7 @@ function AgentDetail() {
                             {ghRowPill(h)}
                           </span>
                           <span className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                            {GH_TRIGGER_PILL[triggerModeOf(h)]}
+                            {githubTriggerPill(triggerModeOf(h), githubHookFamily(h))}
                           </span>
                         </span>
                         {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
@@ -2235,7 +2235,7 @@ function AgentDetail() {
                                     {
                                       options: ghRowTriggerModes(h).map((mode) => ({
                                         value: mode,
-                                        label: GH_TRIGGER_PILL[mode],
+                                        label: githubTriggerPill(mode, githubHookFamily(h)),
                                         hint: githubTriggerTooltip(mode, da.name, githubHookFamily(h) ?? undefined),
                                         description: githubTriggerDescription(
                                           mode,
