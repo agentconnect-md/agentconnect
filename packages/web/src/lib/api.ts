@@ -2278,6 +2278,21 @@ export function mergeSessionDetailUsage(local: Session, detail: Session | null):
   })
 }
 
+/** The detail refetches on every session event and a list row does not, so a detail that recorded a runtime replaces the row's whole run config. */
+export function mergeSessionDetailRunConfig(row: Session, detail: Session | null): Session {
+  if (detail?.runtime === undefined) return row
+  return {
+    ...row,
+    runtime: detail.runtime,
+    // A recorded runtime without a model ran its own default, as a freshly listed row reads it.
+    model: detail.model ?? '',
+    effort: detail.effort,
+    fastMode: detail.fastMode,
+    permissionMode: detail.permissionMode,
+    outputMode: detail.outputMode
+  }
+}
+
 /** What a liveness row knows before its capability read lands: nothing yet. Views gate on
  *  `daemonsLoading` rather than reading this as "the daemon can do nothing". */
 const EMPTY_DAEMON_CAPS: DaemonCapabilitiesDto = { platforms: [], runtimes: [], acp: false, features: [] }

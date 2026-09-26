@@ -59,6 +59,7 @@ import {
   fmtCountCompact,
   fmtDate,
   memberDisplayName,
+  mergeSessionDetailRunConfig,
   mergeSessionDetailUsage,
   sessionFromDto,
   sessionFromDetailDto,
@@ -2681,8 +2682,9 @@ export default function SessionDetailView() {
   const imageInputRef = useRef<HTMLInputElement>(null)
   const imagePrepareGenerationRef = useRef(0)
 
+  const pgSession = getPgSession(id)
   const localSession =
-    getPgSession(id) ??
+    pgSession ??
     allSessions.find((s) => s.id === id) ??
     (routeSession && (routeSession.id === id || routeSession.realSessionId === id) ? routeSession : null)
   // Relationship links can point outside the cursor pages loaded by SessionsView.
@@ -2778,10 +2780,11 @@ export default function SessionDetailView() {
     ? (otherMemberDetails?.get(composerMember.sessionId) ?? null)
     : currentSessionDetail
   const detailSession = currentSessionDetail ? sessionFromDetailDto(currentSessionDetail) : null
-  // The cursor-loaded list row can predate the final Dream usage report. Keep
-  // its local/live fields, but let the independently refreshed detail snapshot
-  // supply the authoritative per-session token and cost totals.
-  const sessionMerged = localSession ? mergeSessionDetailUsage(localSession, detailSession) : detailSession
+  // A live playground session's status frames outrank the detail; a list or rail row takes the detail's run config.
+  const rowSession =
+    localSession && localSession !== pgSession ? mergeSessionDetailRunConfig(localSession, detailSession) : localSession
+  // The detail snapshot, refreshed independently of the list, supplies the authoritative token and cost totals.
+  const sessionMerged = rowSession ? mergeSessionDetailUsage(rowSession, detailSession) : detailSession
   // The conversation roster only exists on the detail snapshot (list rows and
   // adopted local state don't carry it); a live playground session's own roster
   // (which tracks mid-conversation joins) stays authoritative when present.
