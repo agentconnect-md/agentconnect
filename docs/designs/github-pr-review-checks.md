@@ -349,9 +349,10 @@ What that requirement gates is narrower than an approval. GitHub treats a
 `neutral` conclusion as passing, so a `COMMENT + neutral` review lets the pull
 request merge. A merge is held while the review is queued or running, when the
 agent requests changes, and when the review fails or never ran. A target-branch
-change that keeps the head reuses the head's Check. The new generation's Check
-replaces the earlier result as soon as the change is delivered, and until then
-the earlier result stands. The public documentation states both limits.
+change that keeps the head reuses the head's Check. The delivery opens the new
+generation at once, but the reporter publishes its Check asynchronously and
+retries a failed write, so the earlier result stands until the new Check is
+published. The public documentation states both limits.
 
 AgentConnect keeps the Check fit for that use instead of building a separate
 required context:
