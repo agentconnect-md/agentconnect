@@ -19,6 +19,7 @@ describe('httpServerConfigFrom', () => {
     const projected = httpServerConfigFrom(appConfig(), EXTRAS)
     expect(projected).not.toHaveProperty('PUBLIC_WEB_URL')
     expect(projected).not.toHaveProperty('OIDC_ISSUER')
+    expect(projected).not.toHaveProperty('OPENAPI_PATH_PREFIX')
   })
 
   it('carries the other optional public origins too', () => {
@@ -26,12 +27,15 @@ describe('httpServerConfigFrom', () => {
       appConfig({
         PUBLIC_WEB_URL: 'https://console.example.test',
         PUBLIC_CP_URL: 'https://api.example.test',
+        OPENAPI_PATH_PREFIX: '/v1',
         OIDC_ISSUER: 'https://auth.example.test'
       }),
       EXTRAS
     )
     expect(projected.PUBLIC_WEB_URL).toBe('https://console.example.test')
     expect(projected.PUBLIC_CP_URL).toBe('https://api.example.test')
+    // The served OpenAPI document is re-keyed by it; dropping it here is how the live document stays on /api/v1.
+    expect(projected.OPENAPI_PATH_PREFIX).toBe('/v1')
     expect(projected.OIDC_ISSUER).toBe('https://auth.example.test')
   })
 })

@@ -2818,6 +2818,7 @@ export function httpServerConfigFrom(
     // `connecting` for the few seconds they take to re-handshake, not `offline`.
     DAEMON_OFFLINE_GRACE_MS: config.HEARTBEAT_SEC * config.MISSED_BEATS * 1000,
     ...(config.PUBLIC_CP_URL ? { PUBLIC_CP_URL: config.PUBLIC_CP_URL } : {}),
+    ...(config.OPENAPI_PATH_PREFIX ? { OPENAPI_PATH_PREFIX: config.OPENAPI_PATH_PREFIX } : {}),
     ...(config.PUBLIC_MCP_URL ? { PUBLIC_MCP_URL: config.PUBLIC_MCP_URL } : {}),
     ...(config.DAEMON_DIST_TAG ? { DAEMON_DIST_TAG: config.DAEMON_DIST_TAG } : {}),
     ...(config.OIDC_ISSUER ? { OIDC_ISSUER: config.OIDC_ISSUER } : {}),
