@@ -632,8 +632,10 @@ describe('executor/prepare — checked against the ledger, then relayed (real Po
     // The holder's correlator lapses while the executor is still preparing, and resends the identical frame.
     holder.inject('executor/prepare', PREPARE, { id })
     // The duty is the LAST read before the relay (§6), two per request, so four settled means the resend got that far.
+    // `settledResults` lists a call as `incomplete` the moment it starts, so count only the reads that have answered.
+    const answered = () => holdsAgent.mock.settledResults.filter((r) => r.type !== 'incomplete')
     // A bounded deadline, not a fixed pause: a loaded runner costs latency here, never a red test.
-    await vi.waitFor(() => expect(holdsAgent.mock.settledResults).toHaveLength(4), { timeout: 10_000, interval: 5 })
+    await vi.waitFor(() => expect(answered()).toHaveLength(4), { timeout: 10_000, interval: 5 })
     // ...and nothing separates that read from the send, so one drained turn later the join has happened.
     await new Promise((resolve) => setImmediate(resolve))
     expect(relayed(executor)).toHaveLength(1)
