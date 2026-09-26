@@ -251,11 +251,9 @@ fire twice for one event, so a repository row overrides the installation row.
   revoking a repository authorization retires that repository's Checks and a
   grant has no per-repository cleanup
   ([agent-multi-repo-authorization.md](agent-multi-repo-authorization.md)
-  decision 10). An installation row can: its Checks belong to the row, so
-  revoking the grant retires them through the row. The grant's deletion runs the
-  lifecycle step that disabling reporting on the row runs, for every
-  installation row of that agent and installation. Access tiers only rise, so
-  revocation is the only change that needs this step.
+  decision 10). An installation row can, because the grant cannot disappear
+  under it (Removal below): its Checks are retired only through the row's own
+  lifecycle, as a repository row's are when it is deleted or stops reporting.
 - **Session namespace.** An installation row has no stored prefix. The relay
   keys each thread by `github:<repoId>` from the event, the prefix a new
   repository row stores, so a thread keeps its session when a repository row is
@@ -264,9 +262,12 @@ fire twice for one event, so a repository row overrides the installation row.
   threads, so they must agree on the anchoring target, as sibling repository rows
   do.
 - **Removal.** Removing a repository from the installation stops its events at
-  once. Removing the grant retires the row's Checks but leaves the row in place,
-  as an existing repository row outlives its authorization. The gate applies to
-  create and binding changes only.
+  once. Revoking the grant is refused with 409 while the agent still has an
+  installation row for that installation, naming the rows to delete first. A
+  repository row outlives its authorization because the reply token still works
+  through the enabled hook; an installation row without its grant could read no
+  repository at all, so it would only fail. To leave a repository out, remove it
+  from the App installation or watch repositories one row at a time.
 
 ### Signature and Attribution
 
@@ -981,8 +982,8 @@ The implementation does not provide:
 - arbitrary payload transformation or filter programs;
 - structured Bitbucket event semantics;
 - per-repository webhook registration managed by AgentConnect;
-- excluding repositories from an installation row, other than by overriding one
-  with a repository row;
+- excluding repositories from an installation row — remove them from the App
+  installation instead;
 - installation-wide rows on GitLab or Gitea;
 - daemon polling as an alternative public ingress;
 - queueing arbitrary generic deliveries while a daemon is offline;
