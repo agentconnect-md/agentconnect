@@ -725,10 +725,7 @@ function DecisionEditor() {
               </span>
             </Field>
 
-            <Field
-              label={t('instructions')}
-              hint={t.rich('instructionsHelp', { code: (chunks) => <span className="mono">{chunks}</span> })}
-            >
+            <Field label={t('instructions')} hint={t('instructionsHelp')}>
               <textarea
                 value={draft.instructions}
                 rows={3}

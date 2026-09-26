@@ -92,6 +92,8 @@ The editor contains Name, Provider, Model, Question type, Instructions, and Crit
 Choice criteria are keyed descriptions; Boolean criteria describe Yes and No;
 Score criteria are ordered descriptions with values `0..N-1`. Users define the
 answer domain here and configure what to do with an answer at the consumer.
+Instructions name the message they judge in plain words, such as "the latest message";
+state field names like `currentMessage` may appear but are not required.
 
 For example, a moderator's Decision can be:
 
@@ -102,7 +104,7 @@ For example, a moderator's Decision can be:
   "model": "jev-1.13.0",
   "question": {
     "type": "boolean",
-    "instructions": "Using history and currentMessage, is the sender of currentMessage repeatedly violating the community rules and showing behavior that warrants a ban?",
+    "instructions": "Using the earlier messages, is the sender of the latest message repeatedly violating the community rules and showing behavior that warrants a ban?",
     "criteria": {
       "true": "A recurring pattern of abusive or prohibited messages from this sender, interpreted in context.",
       "false": "An isolated mistake, an ordinary disagreement, quoted abuse, or no recurring violation visible in the available history."
