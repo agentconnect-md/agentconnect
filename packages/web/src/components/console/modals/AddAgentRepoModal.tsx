@@ -498,9 +498,7 @@ export default function AddAgentRepoModal({
       }
       onClick={() => chooseInstallation(installation.installationId)}
     >
-      <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
-        <GithubMark color="var(--text-secondary)" />
-      </span>
+      <Icon name="layers" size={16} color="var(--text-secondary)" className="flex-none" />
       <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
         <span className="block w-full min-w-0 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
           {tWorkspace.rich('allRepositoriesIn', {
@@ -708,9 +706,7 @@ export default function AddAgentRepoModal({
               <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
                 {pickedInstallation ? (
                   <>
-                    <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
-                      <GithubMark color="var(--text-secondary)" />
-                    </span>
+                    <Icon name="layers" size={16} color="var(--text-secondary)" className="flex-none" />
                     <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal">
                       {tWorkspace.rich('allRepositoriesIn', {
                         account: pickedInstallation.accountLogin,
@@ -778,7 +774,12 @@ export default function AddAgentRepoModal({
                   )}
                   {pickerGroups.map((group) => (
                     <div key={group.key} role="group" aria-label={group.account} data-picker-group={group.key}>
-                      <div className="fhdr">{group.account}</div>
+                      <div className="fhdr flex items-center gap-[6px]">
+                        <span className="h-[11px] w-[11px] flex-none opacity-70">
+                          <GithubMark color="var(--text-tertiary)" />
+                        </span>
+                        {group.account}
+                      </div>
                       {group.installation && installationOption(group.installation)}
                       {group.repos.map(repositoryOption)}
                     </div>
