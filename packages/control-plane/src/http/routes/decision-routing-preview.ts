@@ -51,7 +51,7 @@ const Targets = z.discriminatedUnion('type', [
       message: 'Participants must be selected recipients.'
     })
 ])
-const PreviewBody = z.strictObject({
+export const BotDecisionRoutingPreviewBody = z.strictObject({
   config: SharedBotDecisionRouting,
   channelIds: z.array(z.string().min(1).max(512)).max(1000).refine(unique, 'Channels must be unique.'),
   channelId: z.string().min(1).max(512),
@@ -141,7 +141,7 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
           description:
             "Evaluates a draft routing configuration and draft channel scope against a sample on the bot's evaluation host, for one channel and situation (a new conversation, an explicit mention, or an established thread with participant flags), then settles the targets exactly as the router does: every matched rule's agent, deduplicated, or Otherwise; a constrained situation keeps its recipients or skips. Writes nothing and never stores or logs the sample. Off, outside-scope, paused, Needs review, and unsupported configurations return `not_applied` with the reason and no model call; a situation whose recipients all participate settles with no model call. Returns 503 when the evaluation host is offline or unreachable; a provider failure returns `unavailable` with its continuation, which is never a skip.",
           params: IdParam,
-          body: PreviewBody,
+          body: BotDecisionRoutingPreviewBody,
           response: { 200: RoutingPreviewDto, 400: IssuesErrorDto, 403: ErrorDto, 404: IssuesErrorDto, 503: ErrorDto }
         }
       },

@@ -826,7 +826,8 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
         repoFullName: 'acme/api',
         family: 'pull_request',
         events: ['pull_request:opened']
-      }
+      },
+      ...decisionIdArgs()
     }
     // The GitHub read family exists only where the deployment configured an App,
     // so those two tools are probed against an app that has one — otherwise their
@@ -1096,3 +1097,36 @@ describe('POST /api/v1/mcp — rate limits (§6.5)', () => {
     expect(toolText(refused)).toContain('Rate limit exceeded')
   })
 })
+
+/** Reachable arguments for the Decision tools: random ids, so each lands on its real route and 404s there. */
+function decisionIdArgs(): Record<string, Record<string, unknown>> {
+  const decisionId = randomUUID()
+  const question = { type: 'boolean', instructions: 'Urgent?', criteria: { true: 'yes', false: 'no' } }
+  const decision = { name: 'reach', providerId: 'typesafe', model: 'jev-latest', question }
+  const routing = { decisionId, rules: [], enabled: false, otherwise: { type: 'skip' } }
+  const gate = { type: 'gate', decisionId, when: { type: 'boolean', values: [true] } }
+  const state = { history: [], currentMessage: { text: 'hello' } }
+  const scope = { provider: 'github', repoId: '42', family: 'pull_request' }
+  return {
+    getDecision: { decisionId },
+    getBotDecisionRouting: { botId: randomUUID() },
+    getCodeHostDecisionRouting: scope,
+    listDecisionEvaluations: { source: 'model_selection', agentId: randomUUID() },
+    createDecision: decision,
+    updateDecision: { decisionId, ...decision },
+    deleteDecision: { decisionId, confirm: 'x' },
+    saveBotDecisionRouting: { botId: randomUUID(), config: routing, channelIds: [], removals: [] },
+    saveCodeHostDecisionRouting: { ...scope, config: routing },
+    deleteCodeHostDecisionRouting: { ...scope, confirm: 'x' },
+    previewDecision: { decision, target: { kind: 'daemon', daemonId: randomUUID() }, state },
+    previewIntegrationChannelDecision: { integrationId: randomUUID(), channelId: 'C1', decisionBinding: gate, state },
+    previewBotDecisionRouting: {
+      botId: randomUUID(),
+      config: routing,
+      channelIds: [],
+      channelId: 'C1',
+      targets: { type: 'new' },
+      state
+    }
+  }
+}

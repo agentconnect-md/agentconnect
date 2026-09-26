@@ -208,30 +208,36 @@ context.**
 
 Tools **call the CP service layer directly or reuse route-handler logic**, preserving zod validation, `denyViewerWrite`, `canView/canEdit`, and `visibilityWhere`. The tool layer never duplicates authz; it only translates 403/404 into model-friendly errors:
 
-| Tool                                                              | Equivalent REST                                               | Write?  |
-| ----------------------------------------------------------------- | ------------------------------------------------------------- | ------- |
-| `whoami`                                                          | GET /me + GET /orgs/:orgId (credential identity/role)         | –       |
-| `listAgents` / `getAgent`                                         | GET /agents(:id)                                              | –       |
-| `listWorkspaceFiles` / `readWorkspaceFile`                        | GET /agents/:id/workspace/files(file) (proxied, unstored)     | –       |
-| `createAgent` / `updateAgent`                                     | POST /agents · PATCH /agents/:id                              | ✎       |
-| `createAgent` (delegated / webchat)                               | opens the prefilled Console create dialog; the reader submits | –       |
-| `setAgentWorkspace`                                               | PUT /agents/:id/workspace                                     | ✎🔥     |
-| `deleteAgent`                                                     | DELETE /agents/:id                                            | ✎🔥     |
-| `listDaemons` / `renameDaemon`                                    | GET /daemons (liveness) · PATCH /daemons/:id                  | –/✎     |
-| `listDaemonCapabilities` / `getDaemon`                            | GET /daemons/capabilities · GET /daemons/:id                  | –       |
-| `listCrons` / `getCron` / `listCronRuns`                          | GET /crons…                                                   | –       |
-| `upsertCron` / `runCron` / `deleteCron`                           | PUT /crons/:id · POST /crons/:id/run · DELETE                 | ✎(🔥)   |
-| `listSessions` / `getSession`                                     | GET /sessions(:id) (body policy is Open Question 1 in §15)    | –       |
-| `getUsage`                                                        | GET /usage                                                    | –       |
-| `listIntegrations` / `setChannelTrigger` / `removeIntegration`    | GET · PATCH channels/:channelId · DELETE                      | –/✎(🔥) |
-| `listBots` / `listMembers` / `listAgentHooks` / `listHookRuns`    | GET (metadata only, no secret)                                | –       |
-| `listGithubInstallations` / `listGithubRepositories`              | GET /github/installations(/:id/repositories)                  | –       |
-| `getGithubRepositoryAccess`                                       | GET /github/installations/:id/repositories/:o/:r/access       | –       |
-| `listGitlabConnections` / `listGitlabBots` / `listGitlabProjects` | GET /gitlab/connections · /gitlab/accounts · /gitlab/projects | –       |
-| `listGiteaConnections` / `listGiteaRepositories`                  | GET /gitea/connections · /gitea/repositories                  | –       |
-| `configureIntegration` / `manageCodeHosts`                        | – (a Console dialog named by `_meta.ui.resourceUri`)          | –       |
-| `getOperation` / `listOperations`                                 | GET /agents/:id/webchat/:conversationId/mcp-operations(…)     | –       |
-| `createGithubTrigger`                                             | POST /hooks (`kind:"github"` only)                            | ✎       |
+| Tool                                                                                           | Equivalent REST                                                | Write?  |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------- |
+| `whoami`                                                                                       | GET /me + GET /orgs/:orgId (credential identity/role)          | –       |
+| `listAgents` / `getAgent`                                                                      | GET /agents(:id)                                               | –       |
+| `listWorkspaceFiles` / `readWorkspaceFile`                                                     | GET /agents/:id/workspace/files(file) (proxied, unstored)      | –       |
+| `createAgent` / `updateAgent`                                                                  | POST /agents · PATCH /agents/:id                               | ✎       |
+| `createAgent` (delegated / webchat)                                                            | opens the prefilled Console create dialog; the reader submits  | –       |
+| `setAgentWorkspace`                                                                            | PUT /agents/:id/workspace                                      | ✎🔥     |
+| `deleteAgent`                                                                                  | DELETE /agents/:id                                             | ✎🔥     |
+| `listDaemons` / `renameDaemon`                                                                 | GET /daemons (liveness) · PATCH /daemons/:id                   | –/✎     |
+| `listDaemonCapabilities` / `getDaemon`                                                         | GET /daemons/capabilities · GET /daemons/:id                   | –       |
+| `listCrons` / `getCron` / `listCronRuns`                                                       | GET /crons…                                                    | –       |
+| `upsertCron` / `runCron` / `deleteCron`                                                        | PUT /crons/:id · POST /crons/:id/run · DELETE                  | ✎(🔥)   |
+| `listSessions` / `getSession`                                                                  | GET /sessions(:id) (body policy is Open Question 1 in §15)     | –       |
+| `getUsage`                                                                                     | GET /usage                                                     | –       |
+| `listIntegrations` / `setChannelTrigger` / `removeIntegration`                                 | GET · PATCH channels/:channelId · DELETE                       | –/✎(🔥) |
+| `listBots` / `listMembers` / `listAgentHooks` / `listHookRuns`                                 | GET (metadata only, no secret)                                 | –       |
+| `listGithubInstallations` / `listGithubRepositories`                                           | GET /github/installations(/:id/repositories)                   | –       |
+| `getGithubRepositoryAccess`                                                                    | GET /github/installations/:id/repositories/:o/:r/access        | –       |
+| `listGitlabConnections` / `listGitlabBots` / `listGitlabProjects`                              | GET /gitlab/connections · /gitlab/accounts · /gitlab/projects  | –       |
+| `listGiteaConnections` / `listGiteaRepositories`                                               | GET /gitea/connections · /gitea/repositories                   | –       |
+| `configureIntegration` / `manageCodeHosts`                                                     | – (a Console dialog named by `_meta.ui.resourceUri`)           | –       |
+| `getOperation` / `listOperations`                                                              | GET /agents/:id/webchat/:conversationId/mcp-operations(…)      | –       |
+| `createGithubTrigger`                                                                          | POST /hooks (`kind:"github"` only)                             | ✎       |
+| `listDecisions` / `getDecision` / `listDecisionProviders`                                      | GET /decisions(:id) · GET /decisions/providers                 | –       |
+| `createDecision` / `updateDecision` / `deleteDecision`                                         | POST /decisions · PATCH · DELETE /decisions/:id                | ✎(🔥)   |
+| `getBotDecisionRouting` / `saveBotDecisionRouting`                                             | GET · PUT /bots/:id/decision-routing                           | –/✎     |
+| `getCodeHostDecisionRouting` / `saveCodeHostDecisionRouting` / `deleteCodeHostDecisionRouting` | GET · PUT · DELETE /decision-routing/:provider/:repoId/:family | –/✎(🔥) |
+| `listDecisionEvaluations`                                                                      | GET the four `…/evaluations` lanes (summaries only)            | –       |
+| `previewDecision` / `previewIntegrationChannelDecision` / `previewBotDecisionRouting`          | POST the three `…/preview` routes                              | ✎       |
 
 The two UI tools are read-only by construction: they resolve their target through
 the ordinary authenticated REST reads and answer with a presentation intent
@@ -239,6 +245,15 @@ the ordinary authenticated REST reads and answer with a presentation intent
 account and replacing a Gitea bot token stay OFF the catalog for the §6.3 reason —
 each is a redirect to the provider or a token entry, so the human performs it in
 the browser under their own Console session, and the model only opens the page.
+
+The Decision tools write a Decision's executable half only — its audience is
+access control and stays in the console — and `updateAgent` carries `decisionIds`,
+`modelSelection` and `repositorySelector`. The three previews store nothing, but
+each is a billed evaluator call on the organization's provider credentials, so
+they are write tools: a delegated call waits for the owner's approval, a read-only
+token cannot reach them, and they draw from the write budget. Evaluation reads
+return the summary rows only; an evaluation's detail carries the judged messages,
+which stay out of the catalog for the reason Open Question 1 gives.
 
 The two operation reads are the delegated-webchat arm's own: they answer about
 side-effecting operations awaiting or past the conversation owner's approval
@@ -264,7 +279,7 @@ requires the caller's own GitHub permission for the tier requested.
   - all credential routes: `/me/keys`, `/daemons/token`, `/daemons/:id/keys`, `/agents/:id/webchat/token` (prevents a delegated session recursively opening another agent);
   - members and organization: writes under `/members`, `PATCH|DELETE /orgs/:orgId`;
   - access control: writes to all three `/sharing` families and `/agents/:id/call-policy`;
-  - credential-bearing integrations: writes to `/bots`, Slack install / GitHub installation funnels, and `/slack/config`;
+  - credential-bearing integrations: bot credential writes under `/bots`, Slack install / GitHub installation funnels, and `/slack/config` (a shared bot's `decision-routing` carries no credential and is in the catalog);
   - webhook-kind hook writes — that kind MINTS a persistent ingress URL and an
     HMAC secret, so no tool creates one. Code-host (`kind:"github"`) triggers are
     exposed (`createGithubTrigger`): they mint no capability, reach only a
@@ -274,7 +289,7 @@ requires the caller's own GitHub permission for the tier requested.
 
 ### 6.4 Destructive Operations Require Schema-Level Confirmation
 
-Schemas for 🔥 tools `deleteAgent`, `deleteCron`, `removeIntegration`, and `setAgentWorkspace` require `confirm: string` that must **exactly equal the target resource name** (the agent's `name` slug, for the workspace replacement). `setAgentWorkspace` is 🔥 without deleting a row: replacing the repository, branch, or mode discards the daemon-local checkout, including work that exists nowhere else, and a personal-key caller executes it straight through — so the confirmation belongs in the tool layer, not in a delegated browser approval. The CP compares it in the tool execution layer. This is a mechanism, not a prompt convention, and applies to every caller. A prompt may additionally ask for verbal confirmation, but that is a habit, never the boundary.
+Schemas for 🔥 tools `deleteAgent`, `deleteCron`, `removeIntegration`, `deleteDecision`, `deleteCodeHostDecisionRouting`, and `setAgentWorkspace` require `confirm: string` that must **exactly equal the target resource name** (the agent's `name` slug, for the workspace replacement; the repository's `owner/repo`, for a repository routing). `setAgentWorkspace` is 🔥 without deleting a row: replacing the repository, branch, or mode discards the daemon-local checkout, including work that exists nowhere else, and a personal-key caller executes it straight through — so the confirmation belongs in the tool layer, not in a delegated browser approval. The CP compares it in the tool execution layer. This is a mechanism, not a prompt convention, and applies to every caller. A prompt may additionally ask for verbal confirmation, but that is a habit, never the boundary.
 
 ### 6.5 Rate Limits and Audit
 

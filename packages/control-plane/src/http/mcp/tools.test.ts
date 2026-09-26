@@ -33,7 +33,12 @@ function recordingCtx(): { ctx: McpToolCtx; calls: RecordedCall[] } {
     delegatedConversationId: CONVERSATION_ID,
     get: async (path, query): Promise<RestResult> => {
       calls.push({ method: 'GET', path, ...(query ? { query } : {}) })
-      const resource = { id: 'integ-1', name: 'my-agent' }
+      const resource = {
+        id: 'integ-1',
+        name: 'my-agent',
+        repoFullName: 'my-agent',
+        decision: { id: DECISION_ID, name: 'my-agent', providerId: 'typesafe', model: 'jev-latest', question: QUESTION }
+      }
       return {
         statusCode: 200,
         body: path.endsWith('/integrations') ? JSON.stringify([resource]) : JSON.stringify(resource)
@@ -49,6 +54,24 @@ function recordingCtx(): { ctx: McpToolCtx; calls: RecordedCall[] } {
 
 const CRON_ID = '7b1f9df2-9f63-4a2e-a2d4-3a1a55f5f001'
 const AGENT_UUID = '5e0f8a25-31c8-4a1a-bb0e-9a8f6a2b1c22'
+const DECISION_ID = '3c2b1a09-8f7e-4d6c-9b5a-4e3d2c1b0a99'
+const BOT_ID = '6a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+const INTEGRATION_ID = '1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b'
+const QUESTION = {
+  type: 'boolean',
+  instructions: 'Does the message ask for help?',
+  criteria: { true: 'It asks for help', false: 'It does not' }
+}
+const DECISION = { name: 'Needs help', providerId: 'typesafe', model: 'jev-latest', question: QUESTION }
+const ROUTING = {
+  decisionId: DECISION_ID,
+  rules: [{ id: 'r1', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: AGENT_UUID } }],
+  enabled: true,
+  otherwise: { type: 'skip' }
+}
+const GATE = { type: 'gate', decisionId: DECISION_ID, when: { type: 'boolean', values: [true] } }
+const SAMPLE = { history: [{ sender: 'U1', text: 'hello' }], currentMessage: { text: 'can someone help?' } }
+const REPO_SCOPE = { provider: 'github', repoId: '42', family: 'pull_request' }
 
 /** Minimal happy-path args per tool (tools with no args pass {}). */
 const ARGS: Record<string, Record<string, unknown>> = {
@@ -86,7 +109,32 @@ const ARGS: Record<string, Record<string, unknown>> = {
   runCron: { cronId: 'cron-1' },
   deleteCron: { cronId: 'cron-1', confirm: 'my-agent' },
   setChannelTrigger: { integrationId: 'integ-1', channelId: 'C123', trigger: 'any' },
-  removeIntegration: { integrationId: 'integ-1', confirm: 'my-agent' }
+  removeIntegration: { integrationId: 'integ-1', confirm: 'my-agent' },
+  getDecision: { decisionId: DECISION_ID },
+  getBotDecisionRouting: { botId: BOT_ID },
+  getCodeHostDecisionRouting: REPO_SCOPE,
+  listDecisionEvaluations: { source: 'model_selection', agentId: AGENT_UUID },
+  createDecision: DECISION,
+  updateDecision: { decisionId: DECISION_ID, ...DECISION },
+  deleteDecision: { decisionId: DECISION_ID, confirm: 'my-agent' },
+  saveBotDecisionRouting: { botId: BOT_ID, config: ROUTING, channelIds: ['C1'], removals: [] },
+  saveCodeHostDecisionRouting: { ...REPO_SCOPE, config: ROUTING },
+  deleteCodeHostDecisionRouting: { ...REPO_SCOPE, confirm: 'my-agent' },
+  previewDecision: { decisionId: DECISION_ID, target: { kind: 'pool' }, state: SAMPLE },
+  previewIntegrationChannelDecision: {
+    integrationId: INTEGRATION_ID,
+    channelId: 'C1',
+    decisionBinding: GATE,
+    state: SAMPLE
+  },
+  previewBotDecisionRouting: {
+    botId: BOT_ID,
+    config: ROUTING,
+    channelIds: ['C1'],
+    channelId: 'C1',
+    targets: { type: 'new' },
+    state: SAMPLE
+  }
 }
 
 async function run(toolName: string, args?: Record<string, unknown>) {
@@ -617,7 +665,9 @@ describe('MCP destructive tools — the §6.4 confirm gate', () => {
       ['deleteAgent', { agentId: AGENT_UUID, confirm: 'wrong' }],
       ['deleteCron', { cronId: 'c1', confirm: 'wrong' }],
       ['removeIntegration', { integrationId: 'integ-1', confirm: 'wrong' }],
-      ['setAgentWorkspace', { agentId: AGENT_UUID, confirm: 'wrong', mode: 'scratch' }]
+      ['setAgentWorkspace', { agentId: AGENT_UUID, confirm: 'wrong', mode: 'scratch' }],
+      ['deleteDecision', { decisionId: DECISION_ID, confirm: 'wrong' }],
+      ['deleteCodeHostDecisionRouting', { ...REPO_SCOPE, confirm: 'wrong' }]
     ] as const) {
       const { calls, result } = await run(tool, args)
       expect(result.statusCode, tool).toBe(412)
@@ -641,7 +691,13 @@ describe('MCP destructive tools — the §6.4 confirm gate', () => {
   })
 
   it('a matching confirm releases exactly one DELETE', async () => {
-    for (const tool of ['deleteAgent', 'deleteCron', 'removeIntegration']) {
+    for (const tool of [
+      'deleteAgent',
+      'deleteCron',
+      'removeIntegration',
+      'deleteDecision',
+      'deleteCodeHostDecisionRouting'
+    ]) {
       const { calls, result } = await run(tool)
       expect(result.statusCode, tool).toBe(200)
       const mutations = calls.filter((c) => c.method !== 'GET')
@@ -684,5 +740,114 @@ describe('MCP destructive tools — the §6.4 confirm gate', () => {
   it('removeIntegration 404s on an id absent from the integration list', async () => {
     const { result } = await run('removeIntegration', { integrationId: 'other', confirm: 'my-agent' })
     expect(result.statusCode).toBe(404)
+  })
+})
+
+describe('MCP Decision tools', () => {
+  it('setChannelTrigger carries a By decision gate and a session mode, and never a null owner', async () => {
+    const tool = findTool('setChannelTrigger')!
+    const { calls } = await run('setChannelTrigger', {
+      integrationId: 'integ-1',
+      channelId: 'C1',
+      trigger: 'decision',
+      decisionBinding: GATE,
+      sessionMode: 'append'
+    })
+    expect(calls).toEqual([
+      {
+        method: 'PATCH',
+        path: `/orgs/${ORG_ID}/integrations/integ-1/channels/C1`,
+        body: { trigger: 'decision', decisionBinding: GATE, sessionMode: 'append' }
+      }
+    ])
+    // The route refuses a gate without its trigger and the reverse, and has not cleared an owner with null since #117.
+    const base = { integrationId: 'integ-1', channelId: 'C1' }
+    expect(tool.schema.safeParse({ ...base, trigger: 'decision' }).success).toBe(false)
+    expect(tool.schema.safeParse({ ...base, trigger: 'any', decisionBinding: GATE }).success).toBe(false)
+    expect(tool.schema.safeParse({ ...base, agentId: null }).success).toBe(false)
+  })
+
+  it('reads each evaluation source from its own lane with the paging query', async () => {
+    const lanes = [
+      [
+        { source: 'conversation', integrationId: INTEGRATION_ID, channelId: 'C1', limit: 5 },
+        `/orgs/${ORG_ID}/integrations/${INTEGRATION_ID}/channels/C1/decision-evaluations`
+      ],
+      [
+        { source: 'bot', botId: BOT_ID, channelId: 'C1', limit: 5 },
+        `/orgs/${ORG_ID}/bots/${BOT_ID}/decision-routing/evaluations`
+      ],
+      [
+        { source: 'repository', ...REPO_SCOPE, limit: 5 },
+        `/orgs/${ORG_ID}/decision-routing/github/42/pull_request/evaluations`
+      ],
+      [
+        { source: 'model_selection', agentId: AGENT_UUID, limit: 5 },
+        `/orgs/${ORG_ID}/agents/${AGENT_UUID}/model-evaluations`
+      ]
+    ] as const
+    for (const [args, path] of lanes) {
+      const { calls } = await run('listDecisionEvaluations', args)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]!.path, args.source).toBe(path)
+      expect(calls[0]!.query).toMatchObject({ limit: 5 })
+    }
+  })
+
+  it('refuses an evaluation source without the ids that name it, or a family its host does not route', () => {
+    const tool = findTool('listDecisionEvaluations')!
+    expect(tool.schema.safeParse({ source: 'conversation', integrationId: INTEGRATION_ID }).success).toBe(false)
+    expect(tool.schema.safeParse({ source: 'bot' }).success).toBe(false)
+    expect(
+      tool.schema.safeParse({ source: 'repository', provider: 'github', repoId: '42', family: 'merge_request' }).success
+    ).toBe(false)
+    expect(
+      findTool('getCodeHostDecisionRouting')!.schema.safeParse({ ...REPO_SCOPE, family: 'merge_request' }).success
+    ).toBe(false)
+  })
+
+  it('a Decision’s audience stays out of the catalog', () => {
+    for (const name of ['createDecision', 'updateDecision']) {
+      const tool = findTool(name)!
+      expect(tool.schema.safeParse({ ...ARGS[name], visibility: 'restricted' }).success, name).toBe(false)
+      expect(tool.schema.safeParse({ ...ARGS[name], sharedWith: ['u1'] }).success, name).toBe(false)
+    }
+  })
+
+  it('previewDecision tries a saved Decision by id without asking for its definition', async () => {
+    const { calls } = await run('previewDecision')
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'POST'])
+    expect(calls[1]).toEqual({
+      method: 'POST',
+      path: `/orgs/${ORG_ID}/decisions/preview`,
+      body: {
+        decision: { ...DECISION, name: 'my-agent' },
+        target: { kind: 'pool' },
+        state: SAMPLE,
+        consumer: { type: 'none' }
+      }
+    })
+    const tool = findTool('previewDecision')!
+    const both = { ...ARGS.previewDecision, decision: DECISION }
+    expect(tool.schema.safeParse(both).success).toBe(false)
+    const neither = { target: { kind: 'pool' }, state: SAMPLE }
+    expect(tool.schema.safeParse(neither).success).toBe(false)
+  })
+
+  it('every preview spends an evaluator call, so it rides the write path', () => {
+    for (const name of ['previewDecision', 'previewIntegrationChannelDecision', 'previewBotDecisionRouting']) {
+      const tool = findTool(name)!
+      expect(tool.write, name).toBe(true)
+      expect(tool.destructive, name).toBeUndefined()
+    }
+  })
+
+  it('updateAgent carries the Decision-driven model selection', async () => {
+    const modelSelection = {
+      decisionId: DECISION_ID,
+      rules: [{ when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'opus' }]
+    }
+    const { calls } = await run('updateAgent', { agentId: AGENT_UUID, modelSelection, decisionIds: [DECISION_ID] })
+    expect(calls[0]!.body).toEqual({ modelSelection, decisionIds: [DECISION_ID] })
   })
 })
