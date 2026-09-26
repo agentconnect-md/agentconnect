@@ -279,7 +279,7 @@ describe('repository dropdown', () => {
     expect(gitlab?.querySelector('a')).toBeNull()
     expect(gitlab?.textContent).toContain('example-group/docs')
     const installation = within('[data-installation-grant="12345"]')
-    expect(installation?.textContent).toContain('All repositories in acme')
+    expect(installation?.textContent).toContain('All of acme')
     expect(segment(installation, 'Read & write')?.getAttribute('aria-pressed')).toBe('true')
     expect(installation?.querySelector('button[aria-label="Checkout for acme"]')?.textContent).toBe('On demand')
   })

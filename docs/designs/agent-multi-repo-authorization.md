@@ -188,7 +188,7 @@ are visible at organization scope. Add three constraints:
 4. **An installation grant multiplies the blast radius by the installation.**
    Its tier applies to every repository the App can reach, including ones
    created after the grant. That is why it is `read` by default, owner-only, and
-   shown in the console as "All repositories in `<account>`" with the tier
+   shown in the console as "All of `<account>`" with the tier
    beside it and the write warning above; the combined-risk warning of
    constraint 3 applies to it as to any write grant.
 
@@ -577,11 +577,11 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
    - The card is visible under `canView`; add, delete, and an access or checkout
      change require `canEdit` and a non-viewer role, and a viewer sees the
      dropdown's rows with every control disabled.
-   - The same section lists installation grants as "All repositories in
+   - The same section lists installation grants as "All of
      `<account>`" with the GitHub mark, the access toggle, the checkout menu and
      a revoke action. There is no separate installation entry: **Authorize
      repository**'s GitHub picker groups its choices by account, in
-     installation order: each group opens with "All repositories in
+     installation order: each group opens with "All of
      `<account>`" when that live, unsuspended installation is not held yet,
      then lists the account's repositories. Picking an installation keeps the
      same **Read only** / **Read & write** choice (default read) with a write

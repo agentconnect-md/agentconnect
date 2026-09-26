@@ -1258,7 +1258,7 @@ another repository, and revokes an existing grant. The Workspace card's reposito
 dropdown may also change an additional repository's or installation grant's access and
 checkout, or revoke it. Both surfaces use the same options and vocabulary, and adding a
 repository has one flow, **Authorize repository**, whose GitHub picker also offers an
-organization owner "All repositories in `<account>`" for each installation the agent does
+organization owner "All of `<account>`" for each installation the agent does
 not hold yet: the dropdown and contextual authorization prompts open the shared dialog at
 the additional-repository step and return to the calling flow after authorization.
 

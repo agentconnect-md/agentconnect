@@ -138,7 +138,7 @@ export default function AddAgentRepoModal({
   installationGrants?: readonly AgentInstallationAuthDto[]
   /** An organization owner may pick a whole installation (agent-multi-repo-authorization.md decision 10). */
   canAuthorizeInstallation?: boolean
-  /** Given, the GitHub picker also offers each grantable installation as "All repositories in <account>". */
+  /** Given, the GitHub picker also offers each grantable installation as "All of <account>". */
   onInstallationCreated?: (grant: AgentInstallationAuthDto) => void
   /** The selector as Edit workspace holds it, which may be newer than `agent`'s. */
   repositorySelector?: AgentRepositorySelector | null

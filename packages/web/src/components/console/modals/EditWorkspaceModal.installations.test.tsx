@@ -113,7 +113,7 @@ const revoke = () => document.querySelector<HTMLButtonElement>('button[aria-labe
 const segment = (id: number, title: 'Read only' | 'Read & write') =>
   grantRow(id)?.querySelector<HTMLButtonElement>(`button[aria-label="${title}"]`) ?? null
 
-// Installations are authorized from Authorize repository's GitHub picker, as "All repositories in <account>".
+// Installations are authorized from Authorize repository's GitHub picker, as "All of <account>".
 const openPicker = async () => {
   await act(async () =>
     Array.from(document.querySelectorAll('button'))
@@ -134,7 +134,7 @@ describe('EditWorkspaceModal installation grants', () => {
     await render([grant({ access: 'write' })])
 
     const row = grantRow(12345)
-    expect(row?.textContent).toContain('All repositories in acme')
+    expect(row?.textContent).toContain('All of acme')
     expect(segment(12345, 'Read & write')?.getAttribute('aria-pressed')).toBe('true')
     expect(segment(12345, 'Read only')?.getAttribute('aria-pressed')).toBe('false')
     expect(row?.textContent).toContain('On demand')
@@ -192,7 +192,7 @@ describe('EditWorkspaceModal installation grants', () => {
     expect(document.body.textContent).toContain('Selected repositories')
 
     await act(async () => document.querySelector<HTMLButtonElement>('[data-installation="23456"]')?.click())
-    expect(document.body.textContent).toContain('All repositories in example-org')
+    expect(document.body.textContent).toContain('All of example-org')
     // A whole installation checks out By decision or On demand, never Always.
     const checkout = document.querySelector('[role="group"][aria-label="Checkout"]')
     expect(Array.from(checkout?.querySelectorAll('button') ?? []).map((b) => b.textContent)).toEqual([
@@ -213,7 +213,7 @@ describe('EditWorkspaceModal installation grants', () => {
       materialize: 'on-demand'
     })
     expect(onChange).toHaveBeenCalledWith([grant(), created])
-    expect(grantRow(23456)?.textContent).toContain('All repositories in example-org')
+    expect(grantRow(23456)?.textContent).toContain('All of example-org')
   })
 
   it('groups the picker by account, in installation order: the installation first, then its repositories', async () => {
@@ -257,7 +257,7 @@ describe('EditWorkspaceModal installation grants', () => {
     await act(async () => exactButton('Add')?.click())
 
     expect(document.body.textContent).toContain('only an organization owner may do this')
-    expect(document.body.textContent).toContain('All repositories in acme')
+    expect(document.body.textContent).toContain('All of acme')
   })
 
   it('revokes a grant and drops its row', async () => {

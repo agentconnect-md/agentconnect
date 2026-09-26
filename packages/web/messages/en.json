@@ -1917,7 +1917,7 @@
       "noAdditionalRepositories": "No additional repositories authorized.",
       "revokeRepositoryAccess": "Revoke repository access",
       "installationOwnerOnly": "Only organization owners can authorize or revoke an installation",
-      "allRepositoriesIn": "All repositories in <mono>{account}</mono>",
+      "allRepositoriesIn": "All of <mono>{account}</mono>",
       "revokeInstallationAccess": "Revoke installation access",
       "repositorySelector": "Repository selector",
       "repositorySelectorTitle": "The Decision provider and model that pick, before each new session, which By decision repositories it checks out",
@@ -2685,7 +2685,7 @@
         "manageRepository": "Manage repository",
         "authorizeRepository": "Authorize repository",
         "repositoryGrantsError": "Couldn't load repository grants.",
-        "allRepositoriesIn": "All repositories in <mono>{account}</mono>",
+        "allRepositoriesIn": "All of <mono>{account}</mono>",
         "files": "Files",
         "noFilesReported": "No files reported yet — the daemon indexes the working tree on first run."
       },
