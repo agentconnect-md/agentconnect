@@ -249,7 +249,7 @@ the key belongs to the agent, not to the person who minted it.
   non-expiring key, and a plaintext value shown exactly once.
 - The key outlives its minter's membership and edit access. Deleting the agent
   deletes its keys. Revoking a key stops new mints at once; chat tokens it
-  already minted expire on their own short TTL.
+  already minted expire within their 30-minute TTL.
 
 Tests should cover:
 
