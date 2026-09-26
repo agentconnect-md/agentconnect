@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
+  codeHostSubjectBody,
   GITHUB_RELEASE_RESTATED_EVENTS,
   GITHUB_REQUEST_REVIEW_ACTION,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
@@ -463,7 +464,7 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
     payload.head_commit?.message ??
     ''
   const excerpt = truncateUtf8(bodySource, GITHUB_BODY_EXCERPT_MAX)
-  const subjectBody = subject?.body ? truncateUtf8(subject.body, GITHUB_BODY_EXCERPT_MAX).text : ''
+  const subjectBody = subject?.body == null ? undefined : codeHostSubjectBody(subject.body)
   const action = githubEventAction(event, payload)
   const htmlUrl = firstUrl(
     payload.comment?.html_url,
@@ -503,7 +504,7 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
             ...(subject.author_association ? { authorAssociation: subject.author_association } : {}),
             ...(subject.state ? { state: subject.state } : {}),
             ...(typeof subject.draft === 'boolean' ? { draft: subject.draft } : {}),
-            ...(subjectBody ? { body: subjectBody } : {})
+            ...subjectBody
           }
         }
       : {}),

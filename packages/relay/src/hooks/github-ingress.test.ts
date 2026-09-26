@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import { createHmac } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
 import {
+  CODE_HOST_SUBJECT_MAX_BYTES,
   GITHUB_REQUEST_REVIEW_ACTION,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
@@ -3593,34 +3594,41 @@ describe('buildGithubContext', () => {
     })
   })
 
-  it('carries the issue/PR itself as subject, with its body capped on the byte budget', () => {
-    const c = buildGithubContext('issue_comment', {
-      action: 'created',
-      repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
-      sender: { login: 'bob', type: 'User' },
-      issue: {
-        number: 9,
-        title: 'flaky',
-        body: '€'.repeat(2000),
-        user: { login: 'alice', type: 'User' },
-        author_association: 'CONTRIBUTOR',
+  it.each([1500, 4000])(
+    'preserves subject attribution independently of the comment excerpt (%i characters)',
+    (size) => {
+      const body = `Summary\n${'界'.repeat(size)}\nCreated by Example Agent`
+      const c = buildGithubContext('issue_comment', {
+        action: 'created',
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
+        sender: { login: 'bob', type: 'User' },
+        issue: {
+          number: 9,
+          title: 'flaky',
+          body,
+          user: { login: 'alice', type: 'User' },
+          author_association: 'CONTRIBUTOR',
+          state: 'open',
+          draft: false,
+          pull_request: {}
+        },
+        comment: { body: 'still broken', author_association: 'NONE' }
+      })
+      expect(c).toMatchObject({ bodyExcerpt: 'still broken', authorAssociation: 'NONE', truncated: false })
+      expect(c.subject).toMatchObject({
+        authorLogin: 'alice',
+        authorType: 'User',
+        authorAssociation: 'CONTRIBUTOR',
         state: 'open',
         draft: false,
-        pull_request: {}
-      },
-      comment: { body: 'still broken', author_association: 'NONE' }
-    })
-    expect(c).toMatchObject({ bodyExcerpt: 'still broken', authorAssociation: 'NONE', truncated: false })
-    expect(c.subject).toMatchObject({
-      authorLogin: 'alice',
-      authorType: 'User',
-      authorAssociation: 'CONTRIBUTOR',
-      state: 'open',
-      draft: false
-    })
-    expect(Buffer.byteLength(c.subject!.body!, 'utf8')).toBeLessThanOrEqual(GITHUB_BODY_EXCERPT_MAX)
-    expect(c.subject!.body).toMatch(/^€+$/)
-  })
+        bodyTruncated: Buffer.byteLength(body) > CODE_HOST_SUBJECT_MAX_BYTES
+      })
+      expect(Buffer.byteLength(c.subject!.body!, 'utf8')).toBeLessThanOrEqual(CODE_HOST_SUBJECT_MAX_BYTES)
+      expect(c.subject!.body).toMatch(/^Summary\n/)
+      expect(c.subject!.body).toMatch(/Created by Example Agent$/)
+      if (Buffer.byteLength(body) <= CODE_HOST_SUBJECT_MAX_BYTES) expect(c.subject!.body).toBe(body)
+    }
+  )
 
   it('omits subject for an event without an issue or PR', () => {
     const c = buildGithubContext('push', {

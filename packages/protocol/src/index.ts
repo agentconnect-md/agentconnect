@@ -155,6 +155,7 @@ export { decodeEnvelope, decodeCpEnvelope, buildEnvelope, encode, MAX_FRAME_BYTE
 export type { DecodeResult, BuildOpts, InboundControlExt } from './codec.js'
 // ── one-frame slicing of file bytes, shared by every carrier of the memory-fs op set ──
 export { encodedBytes, fitToBudget, utf8Boundary } from './wire-slice.js'
+export { CODE_HOST_SUBJECT_MAX_BYTES, codeHostSubjectBody } from './code-host-subject.js'
 
 // ── tolerant reading of a peer-authored payload, for a wire that needs its own reader ──
 export { tolerantReader, tolerantSchemas } from './tolerant.js'

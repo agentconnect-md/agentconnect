@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  codeHostSubjectBody,
+  HookContext,
   DecisionEvaluationsReply,
   type DecisionEvaluation,
   type HookRoutingProjection,
@@ -391,6 +393,18 @@ describe('hook route evidence', () => {
 describe('code-host decision state', () => {
   const build = (msg: RdMsgHook, history: ChannelTextRow[], full = false) =>
     buildCodeHostDecisionState({ msg, current: row('Still broken?'), history, full }, { question, model: 'jev-1.13.0' })
+
+  it('retains ingress truncation evidence and the event attribution when enrichment is unavailable', () => {
+    const subject = codeHostSubjectBody(`Summary\n${'界'.repeat(4000)}\nCreated by Example Agent`)
+    const context = HookContext.parse({ ...fire().context!, truncated: false, subject })
+    const built = build(fire({ context }), [])
+    if (built.unsupported) throw new Error('unsupported')
+    expect(built.state).toMatchObject({
+      subject: { body: subject.body },
+      context: { partial: true, reasons: ['subject_body_trimmed'] }
+    })
+    expect((built.state.subject as { body: string }).body).toMatch(/Created by Example Agent$/)
+  })
 
   it('budgets escaped code-host context in priority order without mutating the snapshot', () => {
     const msg = fire({ github: { ...fire().github!, subjectKind: 'pull_request', pullNumber: 42 } })

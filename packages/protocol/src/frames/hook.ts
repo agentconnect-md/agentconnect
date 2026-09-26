@@ -352,7 +352,7 @@ export const HookContext = z.object({
   labels: z.array(z.string()).optional(),
   htmlUrl: z.string().optional(),
   bodyExcerpt: z.string().optional(), // ≤4 KiB
-  // The issue/PR itself, for a Decision to judge a comment against (code-host-decisions.md §5); body ≤4 KiB.
+  // The issue/PR itself; its description keeps both ends within 8 KiB (code-host-decisions.md §5).
   subject: z
     .object({
       authorLogin: z.string().optional(),
@@ -360,7 +360,8 @@ export const HookContext = z.object({
       authorAssociation: z.string().optional(),
       state: z.string().optional(),
       draft: z.boolean().optional(),
-      body: z.string().optional()
+      body: z.string().optional(),
+      bodyTruncated: z.boolean().optional()
     })
     .optional(),
   // ── github deployment (no thread: the environment is the subject) ──

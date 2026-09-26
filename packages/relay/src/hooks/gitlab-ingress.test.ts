@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import { createHmac, randomBytes } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
 import {
+  CODE_HOST_SUBJECT_MAX_BYTES,
   GITLAB_COM_V1_FEATURE,
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_INSTANCE_V1_FEATURE,
@@ -734,7 +735,7 @@ describe('gitlab ingress', () => {
         event: 'issues:opened',
         gitlab: { projectId: String(PROJECT), target: { kind: 'issue', iid: 42 } },
         context: expect.objectContaining({
-          subject: { authorLogin: 'alice', body: 'the primary is unreachable' }
+          subject: { authorLogin: 'alice', body: 'the primary is unreachable', bodyTruncated: false }
         }),
         routing: {
           routingId: ROUTING,
@@ -1039,7 +1040,7 @@ describe('gitlab ingress', () => {
           merge_request: {
             iid: 77,
             title: 't',
-            description: 'x'.repeat(5000),
+            description: `Summary\n${'界'.repeat(4000)}\nCreated by Example Agent`,
             state: 'opened',
             draft: true,
             author_id: 7002
@@ -1048,9 +1049,11 @@ describe('gitlab ingress', () => {
       )
       await settle()
       const subject = hookMsgs()[0]?.context?.subject
-      expect(subject).toMatchObject({ state: 'opened', draft: true })
+      expect(subject).toMatchObject({ state: 'opened', draft: true, bodyTruncated: true })
       expect(subject?.authorLogin).toBeUndefined()
-      expect(Buffer.byteLength(subject?.body ?? '')).toBeLessThanOrEqual(4 * 1024)
+      expect(Buffer.byteLength(subject?.body ?? '')).toBeLessThanOrEqual(CODE_HOST_SUBJECT_MAX_BYTES)
+      expect(subject?.body).toMatch(/^Summary\n/)
+      expect(subject?.body).toMatch(/Created by Example Agent$/)
     })
   })
 

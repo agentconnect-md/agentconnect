@@ -1,6 +1,7 @@
 import {
   codeHostHookMetadataOf,
   codeHostHookRevisionOf,
+  codeHostSubjectBody,
   type HookContext,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
@@ -121,7 +122,7 @@ export function fitCodeHostDecisionState(
     return [
       [pull, 'diff', 'diff_truncated'],
       [pull, 'commitMessages', 'commits_truncated'],
-      [subject, 'body', 'subject_body_trimmed']
+      [subject, 'body', 'subject_body_trimmed', (text, bytes) => codeHostSubjectBody(text, bytes).body]
     ]
   })
 }
@@ -147,7 +148,8 @@ export function buildCodeHostDecisionState(
     return prefix
   }
   const description = c?.subject?.body ?? input.pullRequest?.description
-  const body = description === undefined ? undefined : cap(description, 8 * 1024, 'subject_body_trimmed')
+  const body = description === undefined ? undefined : codeHostSubjectBody(description)
+  if (body?.bodyTruncated || c?.subject?.bodyTruncated) reasons.push('subject_body_trimmed')
   const pull = input.pullRequest
   const member = codeHostHookMetadataOf(input.msg)
   const revision = member && codeHostHookRevisionOf(member)
@@ -157,7 +159,7 @@ export function buildCodeHostDecisionState(
       source: facts.provider,
       event: eventOf(input.msg, c),
       repository: facts.subject.repoPath ? { fullName: facts.subject.repoPath } : {},
-      subject: subjectOf(c, facts.subject, body),
+      subject: subjectOf(c, facts.subject, body?.body),
       currentMessage,
       history: input.history.map((row) => decisionEntryOf(row, true)).reverse(),
       ...(isPull

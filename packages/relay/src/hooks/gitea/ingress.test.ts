@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import { createHmac, randomBytes } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
 import {
+  CODE_HOST_SUBJECT_MAX_BYTES,
   GITEA_V1_FEATURE,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
@@ -982,7 +983,7 @@ describe('gitea ingress', () => {
         event: 'issues:opened',
         gitea: { repoId: String(REPO), target: { kind: 'issue', index: 42 } },
         context: expect.objectContaining({
-          subject: { authorLogin: 'alice', body: 'the primary is unreachable' }
+          subject: { authorLogin: 'alice', body: 'the primary is unreachable', bodyTruncated: false }
         }),
         routing: {
           routingId: ROUTING,
@@ -1242,7 +1243,13 @@ describe('gitea ingress', () => {
 
     it('records a review submission for a pull-request scope, carrying the review text', async () => {
       h.table.upsert(routed({}, { events: ['merge_request:opened'] }))
-      await post(h, reviewPayload(), { eventType: 'pull_request_review_comment' })
+      await post(
+        h,
+        reviewPayload({
+          pull_request: pullRequest({ body: `Summary\n${'界'.repeat(4000)}\nCreated by Example Agent` })
+        }),
+        { eventType: 'pull_request_review_comment' }
+      )
       await settle()
       expect(hookMsgs()).toEqual([
         expect.objectContaining({
@@ -1251,10 +1258,14 @@ describe('gitea ingress', () => {
           routing: expect.objectContaining({ candidates: [] }),
           context: expect.objectContaining({
             bodyExcerpt: 'review body',
-            subject: expect.objectContaining({ draft: false, body: 'please review' })
+            subject: expect.objectContaining({ draft: false, bodyTruncated: true })
           })
         })
       ])
+      const subject = hookMsgs()[0]?.context?.subject
+      expect(Buffer.byteLength(subject?.body ?? '')).toBeLessThanOrEqual(CODE_HOST_SUBJECT_MAX_BYTES)
+      expect(subject?.body).toMatch(/^Summary\n/)
+      expect(subject?.body).toMatch(/Created by Example Agent$/)
       expect(h.reports).toHaveLength(0)
     })
 
