@@ -772,11 +772,10 @@ export class GithubReviewOrchestrator {
       github: { ...trusted, reportSha: trusted.reportSha ?? trusted.headSha },
       ...snapshot
     }
-    let started = false
+    let started: Awaited<ReturnType<CpClient['startHook']>> | undefined
     for (let attempt = 0; attempt < 3 && !started; attempt += 1) {
       try {
-        await client.startHook(payload)
-        started = true
+        started = await client.startHook(payload)
       } catch (err) {
         if (attempt === 2) {
           this.log.warn(`github review: hook/start rejected (${formatErr(err)})`)
@@ -787,12 +786,12 @@ export class GithubReviewOrchestrator {
         await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)))
       }
     }
-    if (
-      snapshot.reviewPolicy === 'off' ||
-      isGithubReviewCommentHook(hook) ||
-      !githubOpensReviewGeneration(hook.event, trusted, snapshot.reviewPolicy)
-    )
-      return undefined
+    if (snapshot.reviewPolicy === 'off') return undefined
+    const opensGeneration =
+      !isGithubReviewCommentHook(hook) && githubOpensReviewGeneration(hook.event, trusted, snapshot.reviewPolicy)
+    // A conversation turn holds review authority only as the amendment the CP named at the barrier, on its own head.
+    const amendment = opensGeneration ? undefined : started?.amendment
+    if (!opensGeneration && amendment?.reportSha !== (trusted.reportSha ?? trusted.headSha)) return undefined
     const recoverableAttempt =
       hook.reviewAttemptId !== undefined &&
       hook.reviewRequestedEvent !== undefined &&
@@ -809,6 +808,7 @@ export class GithubReviewOrchestrator {
       expectedBaseSha: trusted.baseSha,
       reportSha: trusted.reportSha ?? trusted.headSha,
       sessionId,
+      ...(amendment ? { amendment } : {}),
       reviewState: hook.reviewAttemptId === undefined || recoverableAttempt ? 'idle' : 'done'
     }
     if (recoverableAttempt) await this.reconcileGithubReviewAttempt(active)
@@ -892,11 +892,19 @@ export class GithubReviewOrchestrator {
     if (!active || active.hook.agentId !== req.agentId) {
       throw new Error('formal GitHub review is only available during the active PR hook turn')
     }
-    if (isGithubReviewCommentHook(active.hook)) {
+    if (isGithubReviewCommentHook(active.hook) && !active.amendment) {
       throw new Error('formal GitHub review is unavailable for an inline review-comment reply turn')
     }
     if (!reviewPolicyAllows(active.snapshot.reviewPolicy, req.event)) {
       throw new Error(`${req.event} exceeds this hook's ${active.snapshot.reviewPolicy} review policy`)
+    }
+    // The CP enforces this too; refusing here keeps the turn's one attempt for a corrected call.
+    if (active.amendment && (req.verdict === 'neutral' || req.verdict === active.amendment.verdict)) {
+      throw new Error(
+        `a verdict amendment must change the current ${active.amendment.verdict} verdict on this revision to ${
+          active.amendment.verdict === 'pass' ? 'fail' : active.amendment.verdict === 'fail' ? 'pass' : 'pass or fail'
+        }`
+      )
     }
     if (active.reviewState !== 'idle') {
       throw new Error('this PR hook turn already has a formal review attempt')

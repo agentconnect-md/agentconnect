@@ -140,6 +140,24 @@ describe('R1/R2a hook control schemas', () => {
         publishedComment: { kind: 'issue_comment', commentId: '5199581711' }
       }).success
     ).toBe(false)
+    // An inline thread reply is not the top-level fallback: a verdict amendment rides beside it.
+    expect(
+      HookReport.safeParse({
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'delivery-3',
+        status: 'success',
+        reviewAttemptId: ATTEMPT_ID,
+        reviewResult: {
+          state: 'submitted',
+          reviewId: '9007199254740993',
+          event: 'APPROVE',
+          verdict: 'pass',
+          commitId: github.headSha
+        },
+        publishedComment: { kind: 'review_comment', commentId: '5199581711' }
+      }).success
+    ).toBe(true)
     expect(
       HookReport.safeParse({
         hookId: HOOK_ID,
@@ -235,6 +253,23 @@ describe('R1/R2a hook control schemas', () => {
       JSON.stringify(buildEnvelope('hook/start/ok', { accepted: true }, { corr: start.id }))
     )
     expect(startOk.ok).toBe(true)
+    // A conversation turn's one review authority: the sealed verdict the CP names at the barrier.
+    const amendable = decodeEnvelope(
+      JSON.stringify(
+        buildEnvelope(
+          'hook/start/ok',
+          { accepted: true, amendment: { reportSha: github.headSha, event: 'REQUEST_CHANGES', verdict: 'fail' } },
+          { corr: start.id }
+        )
+      )
+    )
+    expect(amendable.ok).toBe(true)
+    if (!amendable.ok || !isFrame('hook/start/ok')(amendable.frame)) throw new Error('expected hook/start/ok')
+    expect(amendable.frame.payload.amendment).toEqual({
+      reportSha: github.headSha,
+      event: 'REQUEST_CHANGES',
+      verdict: 'fail'
+    })
 
     const auth = buildEnvelope('github/review-authorize', {
       hookId: HOOK_ID,

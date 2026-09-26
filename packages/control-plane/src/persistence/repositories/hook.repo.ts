@@ -1188,6 +1188,24 @@ export class PgHookRepo implements HookRepo {
     return row ? toRunRecord(row) : null
   }
 
+  // Same membership as the repair CTE's `latest`: a generation, or a conversation turn that submitted pass/fail.
+  async latestReviewVerdictRun(hookId: HookId, pullNumber: number, reportSha: string): Promise<HookRunRecord | null> {
+    const row = await this.db.hookRun.findFirst({
+      where: {
+        hookId,
+        pullNumber,
+        reportSha,
+        subjectKind: 'pull_request',
+        OR: [
+          { projectionIntent: 'revision_event' },
+          { projectionIntent: 'review_action_only', reviewAttemptState: 'submitted', verdict: { in: ['pass', 'fail'] } }
+        ]
+      },
+      orderBy: [{ startedAt: 'desc' }, { id: 'desc' }]
+    })
+    return row ? toRunRecord(row) : null
+  }
+
   async listRunsNeedingReviewProjection(limit = 100): Promise<HookRunRecord[]> {
     const take = Math.max(1, Math.min(limit, 500))
     // There is intentionally no FK from HookRun to HookReviewProjection (the

@@ -14,7 +14,9 @@ import {
   type GithubReviewAuthorized,
   type GithubReviewResultReport,
   type HookConfigSnapshot,
+  type HookReviewAmendment,
   type HookReviewEvent,
+  type HookReviewVerdict,
   type HookPreparing,
   type HookStart
 } from '@agentconnect.md/protocol'
@@ -49,7 +51,13 @@ export class GithubReviewBrokerError extends Error {
 export interface GithubReviewBrokerDeps {
   hook: Pick<
     HookRepo,
-    'getUnscoped' | 'getRun' | 'recordPreparing' | 'recordStart' | 'reserveReviewAttempt' | 'recordReviewResult'
+    | 'getUnscoped'
+    | 'getRun'
+    | 'latestReviewVerdictRun'
+    | 'recordPreparing'
+    | 'recordStart'
+    | 'reserveReviewAttempt'
+    | 'recordReviewResult'
   >
   agent: Pick<AgentRepo, 'getUnscoped'>
   github: Pick<GithubService, 'mintReviewForAgent' | 'validateReviewForAgent'>
@@ -240,6 +248,11 @@ function submittedVerdictIsValid(event: HookReviewEvent, verdict: 'pass' | 'fail
   return true
 }
 
+/** A conversation turn amends only a sealed verdict, and only by changing it: pass ↔ fail, or settling neutral. */
+function amendmentChangesVerdict(prior: HookReviewVerdict, requested: HookReviewVerdict): boolean {
+  return requested !== 'neutral' && requested !== prior
+}
+
 export class GithubReviewBrokerService {
   constructor(private readonly deps: GithubReviewBrokerDeps) {}
 
@@ -319,8 +332,39 @@ export class GithubReviewBrokerService {
     if (!accepted) denied('hook preparation was rejected', 'CONFLICT')
   }
 
-  /** Persist the exact start barrier before a GitHub hook enters the prompt. */
-  async start(input: HookStart, reportingDaemonId: DaemonId, reportingOrgId?: string): Promise<void> {
+  /** The verdict a `review_action_only` turn may amend: this hook's latest on the turn's own revision, already
+   *  sealed by an ended turn. Absent when nothing was reviewed, the last generation is still running, or it ended
+   *  without a verdict — that is Re-run's job, not an amendment's. */
+  private async amendableVerdict(run: HookRunRecord): Promise<HookReviewAmendment | undefined> {
+    if (
+      run.projectionIntent !== 'review_action_only' ||
+      run.subjectKind !== 'pull_request' ||
+      run.pullNumber === null ||
+      run.reportSha === null ||
+      run.reviewPolicySnapshot === null ||
+      run.reviewPolicySnapshot === 'off'
+    )
+      return undefined
+    const latest = await this.deps.hook.latestReviewVerdictRun(HookId(run.hookId), run.pullNumber, run.reportSha)
+    if (
+      !latest ||
+      latest.id === run.id ||
+      latest.status === 'running' ||
+      latest.reviewAttemptState !== 'submitted' ||
+      latest.reviewEvent === null ||
+      latest.verdict === null
+    )
+      return undefined
+    return { reportSha: run.reportSha, event: latest.reviewEvent, verdict: latest.verdict }
+  }
+
+  /** Persist the exact start barrier before a GitHub hook enters the prompt; a conversation turn learns here
+   *  whether it may amend a sealed verdict. */
+  async start(
+    input: HookStart,
+    reportingDaemonId: DaemonId,
+    reportingOrgId?: string
+  ): Promise<{ amendment?: HookReviewAmendment }> {
     const hookId = HookId(input.hookId)
     const initial = await this.deps.hook.getRun(hookId, input.deliveryKey)
     if (!initial) denied('review dispatch fence does not match the accepted hook run')
@@ -399,6 +443,8 @@ export class GithubReviewBrokerService {
 
     const accepted = recovering || (await this.deps.hook.recordStart(hookId, reportingDaemonId, startInput))
     if (!accepted) denied('hook start reservation was rejected', 'CONFLICT')
+    const amendment = await this.amendableVerdict(run)
+    return amendment ? { amendment } : {}
   }
 
   /** Reserve one attempt, revalidate live policy/placement, then mint its token. */
@@ -427,6 +473,15 @@ export class GithubReviewBrokerService {
       reportingDaemonId,
       input.requestedEvent
     )
+    // A turn that opened no generation holds review authority only as an amendment of a sealed verdict; a
+    // reconciliation of its own reserved attempt already passed this gate and must still reach its marker.
+    if (initial.projectionIntent !== 'revision_event' && initial.reviewAttemptId !== input.attemptId) {
+      const prior = await this.amendableVerdict(initial)
+      if (!prior) denied('this conversation turn has no sealed review verdict to amend')
+      if (!amendmentChangesVerdict(prior.verdict, input.requestedVerdict)) {
+        denied(`a verdict amendment must change the current ${prior.verdict} verdict to pass or fail`)
+      }
+    }
 
     const reservation = await this.deps.hook.reserveReviewAttempt(hookId, reportingDaemonId, {
       deliveryKey: input.deliveryKey,
