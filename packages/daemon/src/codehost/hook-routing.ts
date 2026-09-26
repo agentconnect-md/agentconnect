@@ -19,9 +19,10 @@ import {
 import { canonicalJson } from '../decisions/bundle.js'
 import { rawAnswerFields, type DecisionEvaluationInput } from '../decisions/evaluator.js'
 import { DEFAULT_DECISION_GATE_LIMITS } from '../decisions/gate.js'
-import type { DecisionStateResult } from '../decisions/state.js'
+import { largestDecisionRequest, type DecisionStateBudget, type DecisionStateResult } from '../decisions/state.js'
 import type { ChannelRecordRef, DecisionVerdictRow, LocalStore } from '../store/local-store.js'
-import { buildCodeHostHookState } from './decision-state.js'
+import { buildCodeHostDecisionState, loadCodeHostDecisionContext } from './decision-state.js'
+import type { PullRequestContext } from './pull-context.js'
 
 /** A code-host routing's verdict subject (code-host-decisions.md §5 step 4). */
 export const hookRouterSubject = (routingId: string): string => `hook-router:${routingId}`
@@ -67,6 +68,7 @@ export type HookRouteOutcome =
 
 export interface HookRouterHost {
   store(): LocalStore
+  pullRequestContext(msg: RdMsgHook, signal: AbortSignal): Promise<PullRequestContext | undefined>
   evaluate(input: DecisionEvaluationInput, signal?: AbortSignal): Promise<DecisionEvaluation>
   now(): number
   ownerFence(): string
@@ -200,16 +202,18 @@ export class HookRouter {
       })
     let built: DecisionStateResult | undefined
     try {
-      const window = await store.decisionWindow(row.orgId, row.channel, row.seq, undefined, undefined, { thread })
-      built = window.current
-        ? buildCodeHostHookState({
-            msg,
-            current: window.current,
-            history: window.history,
-            full: window.full,
-            question: config.question,
-            model: config.model
-          })
+      const context = await loadCodeHostDecisionContext({
+        msg,
+        store,
+        record: { orgId: row.orgId, transcriptChannel: row.channel, seq: row.seq, thread },
+        pullRequest: (signal) => this.host.pullRequestContext(msg, signal),
+        signal: AbortSignal.timeout(Math.max(0, row.deadlineAt - this.host.now()))
+      })
+      built = context
+        ? buildCodeHostDecisionState(
+            context,
+            largestDecisionRequest<DecisionStateBudget>([config, ...(config.definitions ?? [])])
+          )
         : undefined
     } catch {
       built = undefined

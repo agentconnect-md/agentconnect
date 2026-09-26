@@ -171,9 +171,9 @@ gets them through gap replay, and every agent can read the thread from GitHub.
 ### 5.1 The state Jev sees
 
 The code-host state keeps the chat field names, so a question written against `currentMessage` and
-`history` reads the same. One shared builder (`daemon/src/codehost/decision-state.ts`) assembles it
-for every provider; each provider's hook normalizer supplies only the subject's kind, number, draft
-flag and repository path from its trusted metadata:
+`history` reads the same. Routing, session runtime selection and repository selection use the same
+loader and pure builder (`daemon/src/codehost/decision-state.ts`). Each provider's hook normalizer
+supplies the subject identity; its existing repository grant supplies optional PR/MR context:
 
 ```jsonc
 {
@@ -193,19 +193,47 @@ flag and repository path from its trusted metadata:
   },
   "currentMessage": { "id": "…", "sender": { "id": "…", "association": "NONE" }, "text": "…" },
   "history": [{ "id": "…", "sender": { "id": "…" }, "text": "…", "time": "…" }],
-  "context": { "partial": false, "reasons": [], "omittedMessages": 0 }
+  "context": {
+    "partial": true,
+    "reasons": ["observed_history"],
+    "omittedMessages": 0,
+    "snapshotSequence": 123,
+    "tokenCount": "estimate"
+  }
 }
 ```
 
-`history` is the same thread's earlier channel-record rows (`thread` equal to the issue/PR
-number), newest 100, oldest first. The budget is the chat gate's (8,000 estimated tokens, 32 KiB
-serialized); trimming drops the oldest history first, then shortens the subject body, and never
-cuts the current message. `context.reasons` names each trim (`history_limit`, `budget_trimmed`,
-`subject_body_trimmed`).
+`currentMessage` is the triggering comment, review text, or normalized lifecycle event summary.
+`subject.body` is the issue/PR/MR description, capped at an 8 KiB UTF-8 prefix. The assembled agent
+prompt is never used. `history` contains the same thread's observed rows strictly before the
+trigger's sequence, including skipped and record-only events: newest 100, presented oldest first,
+with each history text capped at 16 KiB. Issues omit `pullRequest`.
+
+PR/MR states add `pullRequest: { baseSha?, headSha?, commitMessages, diff }`. The optional API read
+has one 1.5-second budget including credentials. It reads metadata, then one page of at most 10
+commits and a 12 KiB diff prefix concurrently, then metadata again. Both revision reads must agree;
+a known webhook head/base must agree too. GitLab's current MR head must also match its generated
+diff head. A changed or unverifiable revision omits the commits and
+diff with `revision_changed`, `revision_mismatch`, or `revision_unverified`. A failed read retains
+the webhook and observed history with `pull_request_unavailable`. The webhook description takes
+precedence over the API description. No checkout, retries or pagination are involved.
+
+Commit messages contribute at most 4 KiB. The shared request fitter measures the actual serialized
+question, model and state, including JSON escaping, against both 8,000 estimated tokens at four
+bytes each (32,000 bytes) and the 32 KiB hard limit. It drops oldest history, then shortens diff,
+commit messages and subject body in that order. It preserves the trigger and required identity;
+an input that still cannot fit is `unsupported_input`, handled by each consumer's fallback policy.
+`context.reasons` records missing and trimmed data; `omittedMessages` counts budget-dropped rows
+within the observed window. Chains budget against their largest request envelope and keep one
+state for all steps. Repository selection adds `workspace` before the final budget check.
 
 History begins when routing was enabled and has gaps while the host was offline; a new host on a
 separate SQLite store starts with partial history. GitLab and Gitea record a thread under the host
-agent's hook, so a host change also starts that scope's history afresh. Comments older than the routing are not fetched from the GitHub API.
+agent's hook, so a host change also starts that scope's history afresh. `observed_history` marks
+these windows partial; comments outside the observed window are not fetched from the provider.
+The runtime and repository selectors reuse one collected snapshot per session birth, while a
+routing host can have a different observation window. The bounded ingress envelope is retained
+in the daemon's durable inbox for restart replay; it is not sent to the Control Plane.
 
 ## 6. Linear
 

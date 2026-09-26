@@ -1,27 +1,85 @@
-import type { DecisionQuestion, HookContext, RdMsgHook } from '@agentconnect.md/protocol'
+import {
+  codeHostHookMetadataOf,
+  codeHostHookRevisionOf,
+  type HookContext,
+  type RdMsgHook
+} from '@agentconnect.md/protocol'
 import {
   decisionEntryOf,
-  fitsDecisionBudget,
-  type DecisionStateEntry,
+  decisionTextPrefix,
+  fitDecisionState,
+  type DecisionStateBudget,
   type DecisionStateResult
 } from '../decisions/state.js'
 import { hookDecisionFacts, type HookDecisionSubject } from '../messages/hook-message.js'
-import type { ChannelTextRow } from '../store/local-store.js'
+import type { ChannelRecordRef, ChannelTextRow, LocalStore } from '../store/local-store.js'
+import { PULL_CONTEXT_TIMEOUT_MS, type PullRequestContext } from './pull-context.js'
 
-export interface CodeHostHookStateInput {
-  msg: RdMsgHook
+export type CodeHostDecisionSource = Pick<RdMsgHook, 'github' | 'gitlab' | 'gitea' | 'context' | 'event'>
+
+export interface CodeHostDecisionContext {
+  msg: CodeHostDecisionSource
   current: ChannelTextRow
-  /** Newest-first, the same thread's earlier rows. */
+  // Newest-first, the same thread's earlier observed rows.
   history: readonly ChannelTextRow[]
   full: boolean
-  question: DecisionQuestion
-  model: string
+  reasons?: string[]
+  pullRequest?: PullRequestContext
 }
 
-/** The body is halved at most this many times before it is dropped outright. */
-const SUBJECT_BODY_HALVINGS = 12
+// Freeze the event and observed history once; provider enrichment is bounded and optional.
+export async function loadCodeHostDecisionContext(input: {
+  msg: CodeHostDecisionSource
+  store: LocalStore
+  record?: ChannelRecordRef
+  current?: ChannelTextRow
+  pullRequest(signal: AbortSignal): Promise<PullRequestContext | undefined>
+  signal: AbortSignal
+}): Promise<CodeHostDecisionContext | undefined> {
+  const msg = structuredClone(input.msg)
+  const facts = hookDecisionFacts(msg)
+  if (!facts) return undefined
+  input.signal.throwIfAborted()
+  const { record } = input
+  const window = record
+    ? await input.store.decisionWindow(record.orgId, record.transcriptChannel, record.seq, undefined, undefined, {
+        thread: record.thread
+      })
+    : undefined
+  const current = window?.current ?? input.current
+  if (!current) return undefined
+  const reasons = ['observed_history']
+  if (!window?.current) reasons.push('history_unavailable')
+  let pullRequest: PullRequestContext | undefined
+  if (facts.subject.kind === 'pull_request' || facts.subject.kind === 'merge_request') {
+    try {
+      pullRequest = await input.pullRequest(
+        AbortSignal.any([input.signal, AbortSignal.timeout(PULL_CONTEXT_TIMEOUT_MS)])
+      )
+    } catch {
+      // An unavailable supplement leaves the webhook and recorded conversation usable.
+    }
+    if (!pullRequest) reasons.push('pull_request_unavailable')
+    const member = codeHostHookMetadataOf(msg)
+    const expected = member && codeHostHookRevisionOf(member)
+    if (
+      pullRequest &&
+      expected &&
+      (pullRequest.headSha !== expected.headSha || (expected.baseSha && pullRequest.baseSha !== expected.baseSha))
+    ) {
+      pullRequest = {
+        ...pullRequest,
+        commitMessages: [],
+        diff: '',
+        reasons: [...pullRequest.reasons, 'revision_mismatch']
+      }
+    }
+  }
+  input.signal.throwIfAborted()
+  return { msg, current, history: window?.history ?? [], full: window?.full ?? false, reasons, pullRequest }
+}
 
-function eventOf(msg: RdMsgHook, c: HookContext | undefined): { name?: string; action?: string } {
+function eventOf(msg: CodeHostDecisionSource, c: HookContext | undefined): { name?: string; action?: string } {
   const [family, ...rest] = (msg.event ?? '').split(':')
   const name = c?.event ?? (family || undefined)
   const action = c?.action ?? (rest.length ? rest.join(':') : undefined)
@@ -52,68 +110,57 @@ function subjectOf(
   }
 }
 
-/** Halve a string on a code-point boundary. */
-function halve(text: string): string {
-  const cps = Array.from(text)
-  return cps.slice(0, Math.floor(cps.length / 2)).join('')
-}
-
-/** The code-host state Jev sees (code-host-decisions.md §5.1): chat field names, the subject beside them. */
-export function buildCodeHostHookState(input: CodeHostHookStateInput): DecisionStateResult {
-  const { msg } = input
-  // Which host a delivery is, and its subject identity, come from its normalizer; a delivery of none is not judged.
-  const facts = hookDecisionFacts(msg)
+// Routing, runtime selection and repository selection share this state and request budget.
+export function buildCodeHostDecisionState(
+  input: CodeHostDecisionContext,
+  decision: DecisionStateBudget
+): DecisionStateResult {
+  const facts = hookDecisionFacts(input.msg)
   if (!facts) return { unsupported: true }
   const c = facts.context
-  const association = c?.authorAssociation
   const base = decisionEntryOf(input.current, false)
-  const current = { ...base, sender: { ...base.sender, ...(association ? { association } : {}) } }
-  const candidates = input.history.map((row) => decisionEntryOf(row, true))
-  const repository = facts.subject.repoPath
-  const compose = (included: DecisionStateEntry[], body: string | undefined, bodyTrimmed: boolean) => {
-    const omitted = candidates.length - included.length
-    const reasons: string[] = []
-    if (input.full) reasons.push('history_limit')
-    if (omitted > 0) reasons.push('budget_trimmed')
-    if (bodyTrimmed) reasons.push('subject_body_trimmed')
-    return {
-      reasons,
-      omitted,
-      state: {
-        source: facts.provider,
-        event: eventOf(msg, c),
-        repository: repository ? { fullName: repository } : {},
-        subject: subjectOf(c, facts.subject, body),
-        currentMessage: current,
-        history: [...included].reverse(),
-        context: {
-          partial: reasons.length > 0,
-          reasons,
-          omittedMessages: omitted,
-          snapshotSequence: input.current.seq,
-          tokenCount: 'estimate'
-        }
-      } as Record<string, unknown>
-    }
+  const currentMessage = {
+    ...base,
+    sender: { ...base.sender, ...(c?.authorAssociation ? { association: c.authorAssociation } : {}) }
   }
-  const fits = (state: Record<string, unknown>) => fitsDecisionBudget(state, input.question, input.model)
-  let body = c?.subject?.body
-  // Oldest history goes first: the kept set is the newest suffix that fits beside the full body.
-  const included: DecisionStateEntry[] = []
-  for (const entry of candidates) {
-    if (!fits(compose([...included, entry], body, false).state)) break
-    included.push(entry)
+  const reasons = [...(input.reasons ?? []), ...(input.pullRequest?.reasons ?? [])]
+  if (input.full) reasons.push('history_limit')
+  const cap = (text: string, bytes: number, reason: string) => {
+    const prefix = decisionTextPrefix(text, bytes)
+    if (prefix !== text) reasons.push(reason)
+    return prefix
   }
-  let built = compose(included, body, false)
-  while (!fits(built.state) && included.length > 0) {
-    included.pop()
-    built = compose(included, body, false)
-  }
-  // Then the subject body, halved until it fits and dropped as a last resort; the current message is never cut.
-  for (let i = 0; !fits(built.state) && body !== undefined && i <= SUBJECT_BODY_HALVINGS; i++) {
-    body = i === SUBJECT_BODY_HALVINGS || body.length <= 1 ? undefined : halve(body)
-    built = compose(included, body, true)
-  }
-  if (!fits(built.state)) return { unsupported: true }
-  return { state: built.state, omittedMessages: built.omitted, reasons: built.reasons }
+  const description = c?.subject?.body ?? input.pullRequest?.description
+  const body = description === undefined ? undefined : cap(description, 8 * 1024, 'subject_body_trimmed')
+  const pull = input.pullRequest
+  const member = codeHostHookMetadataOf(input.msg)
+  const revision = member && codeHostHookRevisionOf(member)
+  const isPull = facts.subject.kind === 'pull_request' || facts.subject.kind === 'merge_request'
+  return fitDecisionState(
+    {
+      source: facts.provider,
+      event: eventOf(input.msg, c),
+      repository: facts.subject.repoPath ? { fullName: facts.subject.repoPath } : {},
+      subject: subjectOf(c, facts.subject, body),
+      currentMessage,
+      history: input.history.map((row) => decisionEntryOf(row, true)).reverse(),
+      ...(isPull
+        ? {
+            pullRequest: {
+              ...(revision ?? (pull?.headSha ? { baseSha: pull.baseSha, headSha: pull.headSha } : {})),
+              commitMessages: cap(pull?.commitMessages.join('\n\n') ?? '', 4 * 1024, 'commits_truncated'),
+              diff: cap(pull?.diff ?? '', 12 * 1024, 'diff_truncated')
+            }
+          }
+        : {}),
+      context: {
+        partial: reasons.length > 0,
+        reasons: [...new Set(reasons)],
+        omittedMessages: 0,
+        snapshotSequence: input.current.seq,
+        tokenCount: 'estimate'
+      }
+    },
+    decision
+  )
 }

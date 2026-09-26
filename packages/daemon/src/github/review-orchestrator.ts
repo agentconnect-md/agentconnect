@@ -319,6 +319,7 @@ export class GithubReviewOrchestrator {
       deliveryKey: msg.deliveryKey,
       firedAt: msg.firedAt,
       ...(msg.event ? { event: msg.event } : {}),
+      ...(msg.context ? { context: msg.context } : {}),
       ...(snapshot ? { snapshot } : {}),
       ...pickCodeHostHookMembers(msg)
     }
@@ -1118,7 +1119,10 @@ export class GithubReviewOrchestrator {
     })
   }
 
-  pullRequestContext(hook: HookDispatchContext, signal: AbortSignal): Promise<PullRequestContext | undefined> {
+  pullRequestContext(
+    hook: Pick<HookDispatchContext, 'hookId' | 'agentId' | 'github' | 'gitlab' | 'gitea' | 'context'>,
+    signal: AbortSignal
+  ): Promise<PullRequestContext | undefined> {
     return codeHostPullRequestContext(hook, hook.agentId, this.turnFinalHost, signal)
   }
 

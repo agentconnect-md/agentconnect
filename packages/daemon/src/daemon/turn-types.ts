@@ -1,4 +1,5 @@
 import type { HostKey } from '../acp/host-key.js'
+import type { CodeHostDecisionContext } from '../codehost/decision-state.js'
 import type { DutyGrantEntry, EventSession, ExternalSessionAudience, SessionKey } from '@agentconnect.md/protocol'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
@@ -300,6 +301,8 @@ export interface QueueEntry {
   webchat?: WebchatTurnContext
   callMeta?: CallMeta
   hookContext?: HookDispatchContext
+  // Model and repository selection share one collected snapshot for this session birth.
+  codeHostDecisionContext?: Promise<CodeHostDecisionContext | undefined>
   /** Best-effort lifecycle notification after ACP session initialization but
    *  before prompting. Used by trigger sources that expose a live deep-link. */
   onSessionReady?: (sessionId: string) => void

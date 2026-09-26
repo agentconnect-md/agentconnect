@@ -8,7 +8,7 @@ import type {
   SharedBotDecisionRouting
 } from '@agentconnect.md/protocol'
 import { routerFingerprint, type ResolvedRoutedChannel } from '../src/decisions/bundle.js'
-import type { DecisionEvaluationInput } from '../src/decisions/evaluator.js'
+import { decisionRequestBody, type DecisionEvaluationInput } from '../src/decisions/evaluator.js'
 import { DecisionLaneRuntime } from '../src/decisions/lanes.js'
 import {
   DEFAULT_DECISION_ROUTER_LIMITS,
@@ -279,10 +279,12 @@ describe('DecisionRouter', () => {
         {
           ...definition,
           id: 'd-2',
-          question: { type: 'boolean', instructions: 'Assign the specialist?', criteria: { true: 'Yes', false: 'No' } }
+          question: { type: 'boolean', instructions: 'x'.repeat(14_000), criteria: { true: 'Yes', false: 'No' } }
         }
       ]
     }
+    await h.post({ text: 'x'.repeat(12_000) })
+    await h.post({ text: 'y'.repeat(12_000) })
     const m = await h.post()
     await h.router.intake(m.candidate)
     await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
@@ -290,6 +292,7 @@ describe('DecisionRouter', () => {
     await vi.waitFor(() => expect(h.calls).toHaveLength(2), WAIT)
     expect(h.calls[1]!.input.state).toBe(h.calls[0]!.input.state)
     expect(h.calls[1]!.input.deadlineAt).toBe(h.calls[0]!.input.deadlineAt)
+    expect(Buffer.byteLength(decisionRequestBody(h.calls[1]!.input))).toBeLessThanOrEqual(32_000)
     h.calls[1]!.resolve({
       status: 'answered',
       answer: { type: 'boolean', value: true, probability: 0.9 },

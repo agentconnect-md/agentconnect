@@ -8,7 +8,7 @@ import {
   type RepoCandidatesReply
 } from '@agentconnect.md/protocol'
 import { z } from 'zod'
-import { DECISION_REQUEST_MAX_BYTES, decisionRequestBody } from './evaluator.js'
+import { fitDecisionState } from './state.js'
 
 /** At most this many selected repositories are materialized for one session (multi-repository-workspaces.md decision 17). */
 export const REPO_SELECTION_MAX = 5
@@ -148,27 +148,24 @@ function questionFor(chunk: readonly RepoSelectionCandidate[]): DecisionQuestion
   }
 }
 
-/** The state the selector sends (decision 16): the model-selection state plus `workspace.primary` and the candidates' own partial mark, or the opening alone when the largest question would not leave it within the request bound. */
+// Append workspace context, then apply the same budget as every other Decision consumer.
 export function repoSelectionState(
   base: Record<string, unknown>,
-  opening: Record<string, unknown>,
   options: { primary?: string; partial: boolean },
   decision: { model: string; question: DecisionQuestion }
-): Record<string, unknown> {
-  const withWorkspace = (state: Record<string, unknown>): Record<string, unknown> => {
-    const context = record(state.context)
-    const reasons = Array.isArray(context?.reasons) ? [...(context.reasons as unknown[])] : []
-    if (options.partial && !reasons.includes('candidates_truncated')) reasons.push('candidates_truncated')
-    const partial = context?.partial === true || options.partial
-    return {
-      ...state,
+): Record<string, unknown> | undefined {
+  const context = record(base.context)
+  const reasons = Array.isArray(context?.reasons) ? [...(context.reasons as string[])] : []
+  if (options.partial && !reasons.includes('candidates_truncated')) reasons.push('candidates_truncated')
+  const built = fitDecisionState(
+    {
+      ...base,
       workspace: options.primary === undefined ? {} : { primary: options.primary },
-      ...(context || options.partial ? { context: { ...context, partial, reasons } } : {})
-    }
-  }
-  const full = withWorkspace(base)
-  const bytes = Buffer.byteLength(decisionRequestBody({ decision, state: full }), 'utf8')
-  return bytes <= DECISION_REQUEST_MAX_BYTES ? full : withWorkspace(opening)
+      context: { ...context, partial: context?.partial === true || options.partial, reasons }
+    },
+    decision
+  )
+  return built.unsupported ? undefined : built.state
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

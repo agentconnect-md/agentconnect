@@ -159,27 +159,35 @@ describe('state (decision 16)', () => {
 
   it('adds the primary and the candidates’ partial mark to the model-selection state', () => {
     const base = { source: 'chat', currentMessage: { text: 'Fix the deploy' }, history: [], truncated: false }
-    expect(repoSelectionState(base, base, { primary: 'acme/primary-service', partial: false }, decision)).toEqual({
+    expect(repoSelectionState(base, { primary: 'acme/primary-service', partial: false }, decision)).toEqual({
       ...base,
-      workspace: { primary: 'acme/primary-service' }
+      workspace: { primary: 'acme/primary-service' },
+      context: { partial: false, reasons: [], omittedMessages: 0 }
     })
     const chat = { ...base, context: { partial: false, reasons: [], omittedMessages: 0 } }
-    expect(repoSelectionState(chat, base, { partial: true }, decision)).toEqual({
+    expect(repoSelectionState(chat, { partial: true }, decision)).toEqual({
       ...chat,
       workspace: {},
       context: { partial: true, reasons: ['candidates_truncated'], omittedMessages: 0 }
     })
-    expect(repoSelectionState(base, base, { partial: true }, decision)).toMatchObject({
+    expect(repoSelectionState(base, { partial: true }, decision)).toMatchObject({
       context: { partial: true, reasons: ['candidates_truncated'] }
     })
   })
 
-  it('falls back to the opening alone when the largest question would not leave the state within the request bound', () => {
+  it('trims history while preserving identity and reports input that cannot fit', () => {
     const opening = modelSelectionState('chat', 'Fix the deploy')
     const oversized = { ...opening, history: [{ text: 'x'.repeat(DECISION_REQUEST_MAX_BYTES) }] }
-    const state = repoSelectionState(oversized, opening, { primary: 'acme/primary-service', partial: false }, decision)
-    expect(state).toEqual({ ...opening, workspace: { primary: 'acme/primary-service' } })
-    expect(Buffer.byteLength(decisionRequestBody({ decision, state }))).toBeLessThanOrEqual(DECISION_REQUEST_MAX_BYTES)
+    const state = repoSelectionState(oversized, { primary: 'acme/primary-service', partial: false }, decision)
+    expect(state).toEqual({
+      ...opening,
+      workspace: { primary: 'acme/primary-service' },
+      context: { partial: true, reasons: ['budget_trimmed'], omittedMessages: 1 }
+    })
+    expect(Buffer.byteLength(decisionRequestBody({ decision, state: state! }))).toBeLessThanOrEqual(32_000)
+    expect(
+      repoSelectionState({ ...opening, currentMessage: { text: 'x'.repeat(32_000) } }, { partial: false }, decision)
+    ).toBeUndefined()
   })
 })
 

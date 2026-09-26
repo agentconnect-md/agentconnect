@@ -24,7 +24,7 @@ import { rawAnswerFields, type DecisionEvaluationInput } from './evaluator.js'
 import type { DecisionEvidence, DecisionUnavailableReason } from './evidence.js'
 import { DecisionLaneRuntime, laneId, verdictKey, type Lane } from './lanes.js'
 import { defaultDecisionGateMetrics, type DecisionGateMetrics } from './metrics.js'
-import { buildDecisionState } from './state.js'
+import { buildDecisionState, largestDecisionRequest, type DecisionStateBudget } from './state.js'
 
 export const DEFAULT_DECISION_GATE_LIMITS = {
   deadlineMs: 5_000,
@@ -428,6 +428,7 @@ export class DecisionGate {
       signal.throwIfAborted()
       let built: ReturnType<typeof buildDecisionState> | undefined
       try {
+        const budget = largestDecisionRequest<DecisionStateBudget>([config, ...(config.definitions ?? [])])
         built = window.current
           ? buildDecisionState({
               current: window.current,
@@ -446,8 +447,8 @@ export class DecisionGate {
               },
               full: window.full,
               rootMissing: window.rootMissing,
-              question: config.question,
-              model: config.model
+              question: budget.question,
+              model: budget.model
             })
           : undefined
       } catch {

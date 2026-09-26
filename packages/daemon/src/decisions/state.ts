@@ -72,60 +72,100 @@ export function fitsDecisionBudget(state: Record<string, unknown>, question: Dec
   return bytes <= DECISION_REQUEST_MAX_BYTES && Math.ceil(bytes / BYTES_PER_TOKEN) <= DECISION_TOKEN_BUDGET
 }
 
+export type DecisionStateBudget = { question: DecisionQuestion; model: string }
+
+// State bytes are identical across requests, so the largest envelope budgets every step or chunk.
+export function largestDecisionRequest<T extends DecisionStateBudget>(decisions: readonly [T, ...T[]]): T {
+  const size = (decision: T) => Buffer.byteLength(decisionRequestBody({ decision, state: {} }), 'utf8')
+  return decisions.reduce((largest, decision) => (size(decision) > size(largest) ? decision : largest))
+}
+
+export function decisionTextPrefix(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, 'utf8')
+  let end = Math.min(bytes.length, maxBytes)
+  while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--
+  return bytes.subarray(0, end).toString('utf8')
+}
+
+// Every consumer trims a copy, preserving the trigger and identity while spending the same request budget.
+export function fitDecisionState(input: Record<string, unknown>, decision: DecisionStateBudget): DecisionStateResult {
+  const state = structuredClone(input)
+  const history = (state.history ?? []) as unknown[]
+  const context = (state.context ?? {}) as Record<string, unknown>
+  const reasons = [...((context.reasons ?? []) as string[])]
+  let omitted = (context.omittedMessages as number | undefined) ?? 0
+  state.history = history
+  state.context = context
+  const update = () => {
+    Object.assign(context, {
+      partial: context.partial === true || reasons.length > 0,
+      reasons,
+      omittedMessages: omitted
+    })
+  }
+  const mark = (reason: string) => {
+    if (!reasons.includes(reason)) reasons.push(reason)
+    update()
+  }
+  update()
+  const fits = () => fitsDecisionBudget(state, decision.question, decision.model)
+  while (!fits() && history.length) {
+    history.shift()
+    omitted++
+    mark('budget_trimmed')
+  }
+  const pull = state.pullRequest as Record<string, unknown> | undefined
+  const subject = state.subject as Record<string, unknown> | undefined
+  for (const [object, field, reason] of [
+    [pull, 'diff', 'diff_truncated'],
+    [pull, 'commitMessages', 'commits_truncated'],
+    [subject, 'body', 'subject_body_trimmed']
+  ] as const) {
+    while (!fits() && object && typeof object[field] === 'string' && object[field]) {
+      object[field] = decisionTextPrefix(object[field], Math.floor(Buffer.byteLength(object[field]) / 2))
+      mark('budget_trimmed')
+      mark(reason)
+    }
+  }
+  return fits() ? { state, omittedMessages: omitted, reasons } : { unsupported: true }
+}
+
 /** Build the frozen Jev state at a verdict's row: newest history that fits, presented oldest-first. */
 export function buildDecisionState(input: DecisionStateInput): DecisionStateResult {
   const current = decisionEntryOf(input.current, false)
   const candidates = input.history.map((row) => decisionEntryOf(row, true))
-  const compose = (included: DecisionStateEntry[]): { state: Record<string, unknown>; reasons: string[] } => {
-    const omitted = candidates.length - included.length
-    const reasons: string[] = []
-    if (input.full) reasons.push('history_limit')
-    if (omitted > 0) reasons.push('budget_trimmed')
-    if (current.threadId === null || included.some((entry) => entry.threadId === null))
-      reasons.push('legacy_thread_unknown')
-    if (input.rootMissing) reasons.push('observation_started_after_conversation')
-    if (input.forwardedHistory) reasons.push('forwarded_history')
-    return {
-      reasons,
-      state: {
-        ...(input.source ? { source: input.source } : {}),
-        currentMessage: current,
-        history: [...included].reverse(),
-        conversation: input.conversation ?? {},
-        addressing: {
-          mentions: [...input.addressing.mentions],
-          ...(input.addressing.target ? { target: input.addressing.target } : {}),
-          ...(input.addressing.constraint
-            ? {
-                constraint: {
-                  eligibleAgentIds: [...input.addressing.constraint.eligibleAgentIds],
-                  participantAgentIds: [...input.addressing.constraint.participantAgentIds]
-                }
+  const reasons: string[] = []
+  if (input.full) reasons.push('history_limit')
+  if (current.threadId === null || candidates.some((entry) => entry.threadId === null))
+    reasons.push('legacy_thread_unknown')
+  if (input.rootMissing) reasons.push('observation_started_after_conversation')
+  if (input.forwardedHistory) reasons.push('forwarded_history')
+  return fitDecisionState(
+    {
+      ...(input.source ? { source: input.source } : {}),
+      currentMessage: current,
+      history: candidates.reverse(),
+      conversation: input.conversation ?? {},
+      addressing: {
+        mentions: [...input.addressing.mentions],
+        ...(input.addressing.target ? { target: input.addressing.target } : {}),
+        ...(input.addressing.constraint
+          ? {
+              constraint: {
+                eligibleAgentIds: [...input.addressing.constraint.eligibleAgentIds],
+                participantAgentIds: [...input.addressing.constraint.participantAgentIds]
               }
-            : {})
-        },
-        context: {
-          partial: reasons.length > 0,
-          reasons,
-          omittedMessages: omitted,
-          snapshotSequence: input.current.seq,
-          tokenCount: 'estimate'
-        }
+            }
+          : {})
+      },
+      context: {
+        partial: reasons.length > 0,
+        reasons,
+        omittedMessages: 0,
+        snapshotSequence: input.current.seq,
+        tokenCount: 'estimate'
       }
-    }
-  }
-  const fits = (state: Record<string, unknown>): boolean => fitsDecisionBudget(state, input.question, input.model)
-  // Newest first until the next one no longer fits; the kept set is a newest-suffix of the window.
-  const included: DecisionStateEntry[] = []
-  for (const entry of candidates) {
-    if (!fits(compose([...included, entry]).state)) break
-    included.push(entry)
-  }
-  let built = compose(included)
-  while (!fits(built.state) && included.length > 0) {
-    included.pop()
-    built = compose(included)
-  }
-  if (!fits(built.state)) return { unsupported: true }
-  return { state: built.state, omittedMessages: candidates.length - included.length, reasons: built.reasons }
+    },
+    input
+  )
 }

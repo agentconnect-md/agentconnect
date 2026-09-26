@@ -1797,29 +1797,24 @@ request budget, the existing opening-only state remains
 `{ source: "chat", currentMessage: { text }, history: [], truncated }`, with text
 bounded to an 8 KiB UTF-8 prefix. An empty history does not cause a later re-evaluation.
 
-PR/MR hooks, including comments and review events, use the root description plus
-commit messages and a diff prefix fetched through the code host's existing
-repository grant. `currentMessage.text` remains the description, bounded to an
-8 KiB UTF-8 prefix; `pullRequest.commitMessages` and `pullRequest.diff` add the
-supplementary text. The triggering comment and assembled agent prompt are not inputs.
+Code-host hooks use the same loader, state builder and request fitter as hook routing
+([code-host-decisions.md §5.1](code-host-decisions.md#51-the-state-jev-sees)).
+`source` names the provider (`github`, `gitlab`, or `gitea`); `currentMessage` is the
+triggering event or comment, `subject.body` is the root description, and `history`
+contains earlier observed messages from the same thread. Issues use this state too.
+PR/MR hooks add bounded, revision-checked commit messages and diff through the existing
+repository grant. Missing API data leaves the event and observed history usable and
+marks the context partial. The model and repository selectors reuse the same collected
+snapshot for a session birth. There is no description-only PR state or legacy adapter.
 
-Description, commit, and diff requests run concurrently. The existing five-second
-read deadline includes credential resolution; optional commit and diff reads share
-a 1.5-second deadline after credentials arrive. The daemon reads one page of at most
-10 commits and at most 12 KiB of diff, cancels the remaining response stream, and
-does not retry or follow pagination. Commit messages contribute at most 4 KiB. JSON
-responses are capped at 1 MiB for the description and 128 KiB for the commit page.
-Unavailable supplementary reads leave the description and any successful context
-usable. `context.partial` and `context.reasons` identify missing or truncated input.
-The full serialized request, including the Decision rubric and JSON escaping, uses
-the same §8.2 budget; diff text is trimmed before commit messages. An unavailable
-description uses fallback as before.
-
-These API reads happen before executor placement and workspace preparation, without
-a clone, fetch, or agent turn. They are bounded routing hints from the current PR/MR,
-not an authoritative review revision; formal review still verifies its own exact
-base and head. Other hook types use fallback. Evaluation reuses the evaluator's
-deadline. Input and provider results stay on the data plane.
+The optional provider read has a 1.5-second budget including credentials and never
+starts a checkout. Definition reads, state collection and evaluation share the model
+selector's five-second deadline. All chain definitions are read before building state;
+the largest serialized request envelope determines the budget, and every reached step
+uses that frozen state. An input that cannot fit uses the configured runtime/model
+fallback. These reads precede executor placement and workspace preparation. Formal
+review still verifies its own exact base and head. Input and provider results stay on
+the data plane.
 
 **Matching and fallback.** Choice chooses the highest passing probability; ties
 follow rule order. Boolean values cannot appear in multiple rules. Score ranges

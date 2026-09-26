@@ -8,9 +8,8 @@ import {
   type DecisionGetReply,
   type DecisionToolDefinition
 } from '@agentconnect.md/protocol'
-import { DECISION_REQUEST_MAX_BYTES, decisionRequestBody, type DecisionEvaluationInput } from './evaluator.js'
-import type { PullRequestContext } from '../codehost/pull-context.js'
-import { DECISION_TOKEN_BUDGET } from './state.js'
+import type { DecisionEvaluationInput } from './evaluator.js'
+import { decisionTextPrefix, largestDecisionRequest } from './state.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { z } from 'zod'
@@ -66,45 +65,9 @@ export function agentWithRuntime(agent: LoadedAgent, target: DecisionRuntimeTarg
   return selected
 }
 
-function textPrefix(text: string, maxBytes: number): string {
-  let end = Math.min(Buffer.byteLength(text), maxBytes)
-  const bytes = Buffer.from(text)
-  while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--
-  return bytes.subarray(0, end).toString('utf8')
-}
-
-export function modelSelectionState(source: 'chat' | 'pull_request', text: string): Record<string, unknown> {
-  const content = textPrefix(text, 8 * 1024)
+export function modelSelectionState(source: 'chat', text: string): Record<string, unknown> {
+  const content = decisionTextPrefix(text, 8 * 1024)
   return { source, currentMessage: { text: content }, history: [], truncated: content !== text }
-}
-
-// Preserve description-based instructions while adding bounded, explicitly partial code-host context.
-export function pullRequestModelSelectionState(
-  input: PullRequestContext,
-  decision: Pick<DecisionToolDefinition, 'model' | 'question'>
-): Record<string, unknown> {
-  const opening = modelSelectionState('pull_request', input.description)
-  const messages = input.commitMessages.join('\n\n')
-  const pullRequest = { commitMessages: textPrefix(messages, 4 * 1024), diff: input.diff }
-  const reasons = [...input.reasons]
-  if (opening.truncated) reasons.push('description_truncated')
-  if (pullRequest.commitMessages !== messages) reasons.push('commits_truncated')
-  const context = { partial: reasons.length > 0, reasons }
-  const state = { ...opening, pullRequest, context }
-  const maxBytes = Math.min(DECISION_REQUEST_MAX_BYTES, DECISION_TOKEN_BUDGET * 4)
-  while (Buffer.byteLength(decisionRequestBody({ decision, state })) > maxBytes) {
-    if (!context.reasons.includes('budget_trimmed')) context.reasons.push('budget_trimmed')
-    context.partial = true
-    if (pullRequest.diff) {
-      pullRequest.diff = textPrefix(pullRequest.diff, Math.floor(Buffer.byteLength(pullRequest.diff) / 2))
-    } else if (pullRequest.commitMessages) {
-      pullRequest.commitMessages = textPrefix(
-        pullRequest.commitMessages,
-        Math.floor(Buffer.byteLength(pullRequest.commitMessages) / 2)
-      )
-    } else return opening
-  }
-  return state
 }
 
 export interface SessionModelSelectionInput {
@@ -119,31 +82,51 @@ export interface SessionModelSelectionInput {
   evaluationId: string
 }
 
+// Definition and snapshot reads share the chain deadline even when their transport cannot cancel.
+function beforeAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    if (signal.aborted) abort()
+    else signal.addEventListener('abort', abort, { once: true })
+    void promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+  })
+}
+
 // Evaluate only at session start; the caller pins the chosen model or its fallback before prompting.
 export async function evaluateSessionModel(
   input: SessionModelSelectionInput
 ): Promise<DecisionRuntimeTarget | undefined> {
+  const deadlineAt = performance.timeOrigin + performance.now() + 5_000
+  const timeout = new AbortController()
+  const timer = setTimeout(() => timeout.abort(), 5_000)
+  const signal = AbortSignal.any([input.signal, timeout.signal])
   const current = () => {
-    input.signal.throwIfAborted()
+    signal.throwIfAborted()
     return input.current()
   }
-  if (!current()) return undefined
   try {
+    if (!current()) return undefined
     const selection = AgentModelSelection.parse(input.selection)
-    const { decision } = await input.decision(selection.decisionId)
+    const { decision } = await beforeAbort(input.decision(selection.decisionId), signal)
     if (!current() || !decision || decision.id !== selection.decisionId) return undefined
-    const state = await input.state(decision)
-    if (!current() || state === undefined) return undefined
-    const deadlineAt = performance.timeOrigin + performance.now() + 5_000
     const definitions = new Map([[decision.id, decision]])
+    const ids = new Set(selection.steps?.map((step) => step.decisionId))
+    ids.delete(decision.id)
+    for (const id of ids) {
+      const definition = (await beforeAbort(input.decision(id), signal)).decision
+      if (!current()) return undefined
+      if (definition?.id === id) definitions.set(id, definition)
+    }
+    const state = await beforeAbort(input.state(largestDecisionRequest([decision, ...definitions.values()])), signal)
+    if (!current() || state === undefined) return undefined
     let selected: DecisionRuntimeTarget | undefined
     const result = await runDecisionChain<DecisionModelStep>({
       root: selection,
       steps: selection.steps,
       deadlineAt,
-      signal: input.signal,
+      signal,
       evaluate: async (step, index, signal) => {
-        const definition = definitions.get(step.decisionId) ?? (await input.decision(step.decisionId)).decision
+        const definition = definitions.get(step.decisionId)
         signal.throwIfAborted()
         if (!current() || definition?.id !== step.decisionId)
           return { status: 'unavailable', reason: 'invalid_response' }
@@ -167,11 +150,18 @@ export async function evaluateSessionModel(
         return []
       }
     })
-    if (!current() || result.evaluation.status !== 'answered' || !selected || !(await input.supported(selected)))
+    if (
+      !current() ||
+      result.evaluation.status !== 'answered' ||
+      !selected ||
+      !(await beforeAbort(Promise.resolve(input.supported(selected)), signal))
+    )
       return undefined
     return current() ? selected : undefined
   } catch {
     input.signal.throwIfAborted()
     return undefined
+  } finally {
+    clearTimeout(timer)
   }
 }

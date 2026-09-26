@@ -13,6 +13,7 @@ import {
   type PublishedHookOutput,
   type GithubReviewAuthorized,
   type HookConfigSnapshot,
+  type HookContext,
   type HookReport,
   type HookReviewResult,
   type RdMsgHook
@@ -123,6 +124,8 @@ export interface HookDispatchContext {
   deliveryKey: string
   firedAt: string
   event?: string
+  // The bounded ingress envelope stays daemon-local with the durable delivery.
+  context?: HookContext
   snapshot?: HookConfigSnapshot
   github?: GithubHookMetadata
   /** GitLab twin of `github` — the trusted subject discriminator (§12.3). */
