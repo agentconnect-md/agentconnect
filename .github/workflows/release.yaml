@@ -19,6 +19,9 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
+      - '.claude/skills/**'
+      - '.agents/skills'
+      - '.agents/skills/**'
   workflow_dispatch:
 
 jobs:

@@ -49,14 +49,20 @@ jobs:
         run: |
           everything() { printf 'code=true\nwindows=true\nmicrosandbox=true\n' >> "$GITHUB_OUTPUT"; exit 0; }
           [ "${{ github.event_name }}" = 'pull_request' ] || everything
-          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') || exit 1
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[] | .filename, .previous_filename // empty') || exit 1
           [ -n "$files" ] || { echo 'PR file list is empty' >&2; exit 1; }
+          # Exclude repository skills and docs before selecting any test suite.
+          files=$(grep -vE '^docs/|^\.(claude|agents)/skills(/|$)|\.md$' <<<"$files" || true)
+          if [ -z "$files" ]; then
+            printf 'code=false\nwindows=false\nmicrosandbox=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           any() { grep -qE "$1" <<<"$files" && echo true || echo false; }
           other() { grep -qvE "$1" <<<"$files" && echo true || echo false; }
           {
-            echo "code=$(other '^docs/|\.md$')"
+            echo 'code=true'
             # Lists what CANNOT reach the daemon/CLI closure, so a new root config, script or package stays in scope.
-            echo "windows=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability)/|charts/|docs/)|\.md$')"
+            echo "windows=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability)/|charts/)')"
             echo "microsandbox=$(any '^(packages/daemon/(src/(execution|microsandbox|shim|remote)/|scripts/smoke-microsandbox-runtime\.mts$)|packages/connection/src/|\.github/workflows/test\.yaml$)')"
           } >> "$GITHUB_OUTPUT"
 
