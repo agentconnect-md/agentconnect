@@ -731,6 +731,8 @@ describe('Daemon session lifecycle (#118)', () => {
 
     await (daemon as any).dispatch('bot-a', dm('100', 'cold'), 'int-a')
     expect(prepare).toHaveBeenCalledTimes(1)
+    // That one preparation is the session's own, so its on-demand clone directory is made before the runtime is handed it.
+    expect(prepare.mock.calls[0]?.[2]).toMatchObject({ isolation: 'shared', sessionKey: expect.any(String) })
 
     // A different logical session on the already-running host still performs
     // its one warm new-session preparation.
