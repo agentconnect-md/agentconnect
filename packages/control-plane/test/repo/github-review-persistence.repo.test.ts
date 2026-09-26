@@ -1402,6 +1402,87 @@ describe('R1/R2a persistence foundation', () => {
     expect(await prisma.hookRun.count({ where: { hookId: { in: [hookId, webhookId] } } })).toBe(0)
   })
 
+  it("opens an installation row's Check on its write grant and keeps it through a repository revocation", async () => {
+    await seedDaemon(prisma, D1)
+    const repo = new PgHookRepo(prisma)
+    const agentId = AgentId(randomUUID())
+    await seedAgent(prisma, agentId, { daemonId: D1 })
+    const installationId = 4_310_000n
+    const grant = await prisma.agentInstallationAuthorization.create({
+      data: { agentId, provider: 'github', installationId, accountLogin: 'acme', access: 'write' }
+    })
+    const hookId = HookId(randomUUID())
+    const hook = await repo.upsert({
+      hookId,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId,
+      kind: 'github',
+      name: 'acme/*',
+      enabled: true,
+      sessionMode: 'perThread',
+      installationId,
+      installationAccount: 'acme',
+      events: ['pull_request:*'],
+      reviewPolicy: 'full',
+      reportingMode: 'check',
+      gateMode: 'informational'
+    })
+    const report = (deliveryKey: string, repoId: bigint, headSha: string) => ({
+      deliveryKey,
+      event: 'pull_request:opened',
+      status: 'success' as const,
+      agentId,
+      configRevision: hook.configRevision,
+      dispatchRevision: hook.dispatchRevision,
+      dispatchDaemonId: D1,
+      reviewPolicySnapshot: hook.reviewPolicy,
+      reportingModeSnapshot: hook.reportingMode,
+      gateModeSnapshot: hook.gateMode,
+      projectionIntent: 'revision_event' as const,
+      repoId,
+      repoFullName: `acme/repo-${repoId}`,
+      sourceInstallationId: installationId,
+      subjectKind: 'pull_request',
+      pullNumber: 7,
+      headSha,
+      baseSha: 'b'.repeat(40),
+      reportSha: headSha
+    })
+    const at = new Date('2026-07-11T00:10:00.000Z')
+    const project = async (deliveryKey: string, repoId: bigint, headSha: string) => {
+      expect(await repo.recordReport(hookId, D1, report(deliveryKey, repoId, headSha), at)).toBe(true)
+      const run = (await repo.getRun(hookId, deliveryKey))!
+      return repo.upsertReviewProjection({
+        hookId,
+        orgId: OrgId(DEFAULT_ORG_ID),
+        agentId,
+        agentName: 'installation-reviewer',
+        repoId,
+        repoFullName: `acme/repo-${repoId}`,
+        headSha,
+        reportSha: headSha,
+        projectionEpoch: hook.projectionEpoch,
+        mode: 'check',
+        gateMode: 'informational',
+        desiredState: 'success',
+        currentHookRunId: run.id,
+        nextAttemptAt: at
+      })
+    }
+
+    // No repository row or authorization: the installation grant alone carries the Check.
+    const opened = await project('write-grant', 701n, 'd'.repeat(40))
+    expect(opened).toMatchObject({ tombstonedAt: null, desiredState: 'success' })
+
+    // Revoking some repository authorization of the same repository never retires it.
+    expect(await repo.tombstoneReviewProjectionsForAgentRepo(agentId, 701n, at, 'failure')).toBe(0)
+    expect(await repo.getReviewProjection(opened.id)).toMatchObject({ tombstonedAt: null })
+
+    // A read grant cannot publish, exactly as a read repository authorization cannot.
+    await prisma.agentInstallationAuthorization.update({ where: { id: grant.id }, data: { access: 'read' } })
+    expect(await project('read-grant', 702n, 'e'.repeat(40))).toMatchObject({ tombstonedAt: expect.any(Date) })
+  })
+
   it('serializes generation advance against beginProjectionWrite', async () => {
     const repo = new PgHookRepo(prisma)
     for (let i = 0; i < 12; i++) {
