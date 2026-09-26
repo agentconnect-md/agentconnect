@@ -741,6 +741,70 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.stop()
   })
 
+  it('gives a session that joins a shared cold start its own preparation once the host is up', async () => {
+    let releaseStart!: () => void
+    const started = new Promise<void>((resolve) => (releaseStart = resolve))
+    const host = quietHost()
+    host.start.mockImplementation(async () => await started)
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace')
+
+    const first = (daemon as any).dispatch('bot-a', dm('100', 'cold'), 'int-a')
+    await vi.waitFor(() => expect(host.start).toHaveBeenCalledTimes(1))
+    const second = (daemon as any).dispatch('bot-a', dm('200', 'joins', 'T2'), 'int-a')
+    await vi.waitFor(() => expect((daemon as any).sessionIsolation.size).toBeGreaterThanOrEqual(2))
+    releaseStart()
+    await Promise.all([first, second])
+
+    // One preparation per session: the starter's inside the cold gate, the joiner's after the host started.
+    const sessions = prepare.mock.calls.map((call) => (call[2] as { sessionKey?: string } | undefined)?.sessionKey)
+    expect(sessions).toHaveLength(2)
+    expect(new Set(sessions).size).toBe(2)
+    expect(sessions.every((key) => typeof key === 'string')).toBe(true)
+    await daemon.stop()
+  })
+
+  it('gives each of two sessions arriving together at a cold shared host its own preparation', async () => {
+    let releaseStart!: () => void
+    const started = new Promise<void>((resolve) => (releaseStart = resolve))
+    const host = quietHost()
+    host.start.mockImplementation(async () => await started)
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace')
+
+    // Both enter hostFor in one tick, so neither has registered the start when the other decides.
+    const hostFor = (daemon as any).sessions.deps.hostFor as (
+      agentId: string,
+      request: { sessionKey: string; isolation: 'shared' },
+      cwd?: string
+    ) => Promise<unknown>
+    const both = Promise.all([
+      hostFor('bot-a', { sessionKey: 'slack:C1:100:bot-a', isolation: 'shared' }),
+      hostFor('bot-a', { sessionKey: 'slack:C1:200:bot-a', isolation: 'shared' })
+    ])
+    await vi.waitFor(() => expect(host.start).toHaveBeenCalledTimes(1))
+    releaseStart()
+    await both
+
+    const sessions = prepare.mock.calls.map((call) => (call[2] as { sessionKey?: string } | undefined)?.sessionKey)
+    expect(sessions).toHaveLength(2)
+    expect(new Set(sessions).size).toBe(2)
+    expect(sessions.every((key) => typeof key === 'string')).toBe(true)
+    await daemon.stop()
+  })
+
   it('earns one extra host start attempt when it repairs the runtime install', async () => {
     const root = scaffold({ agentStartAttempts: 1, agentStartBackoffMs: 0 })
     const failing = quietHost()

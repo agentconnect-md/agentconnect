@@ -3931,11 +3931,29 @@ export class Daemon {
       store: this.store,
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
-      hostFor: (agentId, request, cwd) =>
-        this.ensureHostAsync(this.hostKeyForRequest(agentId, request), { session: { workspace: request, cwd } }),
-      // A constructed AcpHost is not yet running. Keep the session on the cold
-      // path until initialize succeeds so concurrent waiters consume hostFor's
-      // single preparation rather than starting a warm preparation afterward.
+      hostFor: async (agentId, request, cwd) => {
+        const key = this.hostKeyForRequest(agentId, request)
+        // SessionManager just judged this session cold exactly when the host is not ready here, so it prepares nothing itself.
+        const cold = !this.readyHosts.has(key)
+        let owned = false
+        const host = await this.ensureHostAsync(key, {
+          session: { workspace: request, cwd },
+          onStartOwned: () => (owned = true)
+        })
+        // A cold shared session whose start another caller owns consumed that caller's preparation, so it prepares its own share now.
+        const agent = this.sessionAgent(agentId, request.sessionKey)
+        if (
+          cold &&
+          !owned &&
+          request.isolation === 'shared' &&
+          cwd === undefined &&
+          hostKeySessionKey(key) === undefined &&
+          agent
+        )
+          await this.prepareAgentWorkspace(agent, host, request)
+        return host
+      },
+      // A host is cold until initialize succeeds, so its waiters prepare only inside hostFor, never again as warm sessions.
       isHostRunning: (agentId, request) => this.readyHosts.has(this.hostKeyForRequest(agentId, request)),
       // A session-bound host was launched in the session's directory; the runtime session opens there.
       boundHostCwd: (agentId, request) => {
@@ -18499,7 +18517,12 @@ export class Daemon {
   // Start (or join the start of) the host `key` names; a session-bound key carries its session's workspace request or prepared cwd.
   private async ensureHostAsync(
     key: HostKey,
-    opts: { allowAgentDrain?: boolean; session?: { workspace: PrepareSessionWorkspaceRequest; cwd?: string } } = {}
+    opts: {
+      allowAgentDrain?: boolean
+      session?: { workspace: PrepareSessionWorkspaceRequest; cwd?: string }
+      /** Called when this call creates the start, so its session's request is the one the cold gate prepares. */
+      onStartOwned?: () => void
+    } = {}
   ): Promise<AcpHost> {
     const agentId = hostKeyAgentId(key)
     const label = hostKeyLabel(key)
@@ -18541,6 +18564,7 @@ export class Daemon {
     }
     let p = this.hostStarts.get(key)
     if (!p) {
+      opts.onStartOwned?.()
       const generation = (this.hostStartGeneration.get(key) ?? 0) + 1
       this.hostStartGeneration.set(key, generation)
       const startAbort = new AbortController()
