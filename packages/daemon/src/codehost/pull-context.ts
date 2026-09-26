@@ -1,15 +1,23 @@
 import type { CodeHostEffectLease } from './turn-final.js'
+import {
+  attachRawFileDiffs,
+  PULL_CONTEXT_DIFF_MAX_BYTES,
+  PULL_CONTEXT_FILE_LIMIT,
+  trimFileDiffs,
+  type PullRequestFile
+} from './pull-files.js'
 
 export const PULL_CONTEXT_TIMEOUT_MS = 1_500
 export const PULL_CONTEXT_COMMIT_LIMIT = 10
-const DIFF_MAX_BYTES = 12 * 1024
+const RESPONSE_MAX_BYTES = 1024 * 1024
 
 export interface PullRequestContext {
   description: string
   baseSha?: string
   headSha?: string
   commitMessages: string[]
-  diff: string
+  files: PullRequestFile[]
+  filesTruncated: boolean
   reasons: string[]
 }
 
@@ -20,8 +28,10 @@ interface PullContextPaths {
   headShaPaths: readonly (readonly string[])[]
   commits: string
   commitMessagePath: readonly string[]
-  diff: string
-  diffAccept?: string
+  files: string
+  fileCountPath: readonly string[]
+  file(row: Record<string, unknown>): PullRequestFile | undefined
+  rawDiff?: string
   authorization?: string
 }
 
@@ -43,7 +53,7 @@ function field(value: unknown, path: readonly string[]): unknown {
   return value
 }
 
-// Bracket one commit page and diff prefix with revision reads; no checkout, pagination or retries.
+// Bracket one commit page and one file page with revision reads; no checkout, pagination or retries.
 export async function readPullRequestContext(
   lease: CodeHostEffectLease,
   paths: PullContextPaths,
@@ -85,14 +95,14 @@ export async function readPullRequestContext(
         }
       }
       const text = Buffer.concat(chunks).toString('utf8')
-      return { text: truncated ? text.replace(/\uFFFD$/, '') : text, truncated }
+      return { text: truncated ? text.replace(/\uFFFD$/, '') : text, truncated, headers: response.headers }
     } finally {
       void reader.cancel().catch(() => {})
       reader.releaseLock()
     }
   }
   const metadata = async () => {
-    const body = await read(paths.description, 1024 * 1024, extraSignal)
+    const body = await read(paths.description, RESPONSE_MAX_BYTES, extraSignal)
     return body && !body.truncated ? (JSON.parse(body.text) as unknown) : undefined
   }
   const revision = (value: unknown) => {
@@ -116,15 +126,19 @@ export async function readPullRequestContext(
       description: text ?? '',
       ...start,
       commitMessages: [],
-      diff: '',
+      files: [],
+      filesTruncated: true,
       reasons: []
     }
     if (!start) return { ...context, reasons: ['revision_unverified'] }
-    const [commits, diff] = await Promise.allSettled([
+    const [commits, changedFiles, rawDiff] = await Promise.allSettled([
       read(paths.commits, 128 * 1024, extraSignal).then((body) =>
         body && !body.truncated ? (JSON.parse(body.text) as unknown) : undefined
       ),
-      read(paths.diff, DIFF_MAX_BYTES, extraSignal, paths.diffAccept ?? 'text/plain')
+      read(paths.files, RESPONSE_MAX_BYTES, extraSignal).then((body) =>
+        body && !body.truncated ? { rows: JSON.parse(body.text) as unknown, headers: body.headers } : undefined
+      ),
+      paths.rawDiff ? read(paths.rawDiff, RESPONSE_MAX_BYTES, extraSignal, 'text/plain') : undefined
     ])
     const after = await metadata().catch(() => undefined)
     const end = revision(after)
@@ -142,10 +156,36 @@ export async function readPullRequestContext(
         else if (!reasons.includes('commits_unavailable')) reasons.push('commits_unavailable')
       }
     }
-    const patch = diff.status === 'fulfilled' ? diff.value : undefined
-    if (!patch) reasons.push('diff_unavailable')
-    else if (patch.truncated) reasons.push('diff_truncated')
-    return { ...context, diff: patch?.text ?? '' }
+    const page = changedFiles.status === 'fulfilled' ? changedFiles.value : undefined
+    if (!page || !Array.isArray(page.rows)) reasons.push('files_unavailable')
+    else {
+      for (const row of page.rows.slice(0, PULL_CONTEXT_FILE_LIMIT)) {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) continue
+        const file = paths.file(row as Record<string, unknown>)
+        if (file) context.files.push(file)
+      }
+      const total = field(after, paths.fileCountPath)
+      const count =
+        typeof total === 'number'
+          ? total
+          : typeof total === 'string' && /^\d+\+?$/.test(total)
+            ? Number.parseInt(total, 10)
+            : undefined
+      context.filesTruncated =
+        context.files.length !== page.rows.length ||
+        (count === undefined ? page.rows.length >= PULL_CONTEXT_FILE_LIMIT : count > context.files.length) ||
+        /rel="?next"?/.test(page.headers.get('link') ?? '') ||
+        Number(page.headers.get('x-next-page')) > 1 ||
+        page.headers.get('x-hasmore') === 'true'
+      if (context.filesTruncated) reasons.push('files_truncated')
+      const patch = rawDiff.status === 'fulfilled' ? rawDiff.value : undefined
+      if (patch) attachRawFileDiffs(context.files, patch)
+      const trimmed = trimFileDiffs(context.files, PULL_CONTEXT_DIFF_MAX_BYTES)
+      if (trimmed || patch?.truncated || context.files.some((file) => file.diffTruncated))
+        reasons.push('diff_truncated')
+      if (context.files.some((file) => file.diffUnavailable)) reasons.push('diff_unavailable')
+    }
+    return context
   } finally {
     clearTimeout(timer)
     optional.abort()

@@ -217,21 +217,54 @@ prompt is never used. `history` contains the same thread's observed rows strictl
 trigger's sequence, including skipped and record-only events: newest 100, presented oldest first,
 with each history text capped at 16 KiB. Issues omit `pullRequest`.
 
-PR/MR states add `pullRequest: { baseSha?, headSha?, commitMessages, diff }`. The optional API read
-has one 1.5-second budget including credentials. It reads metadata, then one page of at most 10
-commits and a 12 KiB diff prefix concurrently, then metadata again. Both revision reads must agree;
+PR/MR states add `pullRequest: { baseSha?, headSha?, commitMessages, files, filesTruncated }`:
+
+```jsonc
+{
+  "files": [
+    {
+      "path": "src/session.ts",
+      "previousPath": "src/old-session.ts", // when renamed
+      "status": "renamed",
+      "additions": 12,
+      "deletions": 3,
+      "diff": "@@ -1,3 +1,12 @@\n…",
+      "diffTruncated": true
+    }
+  ],
+  "filesTruncated": false
+}
+```
+
+The optional API read has one 1.5-second budget including credentials. It reads metadata, then
+one page of at most 10 commits and one page of at most 100 changed files concurrently, then
+metadata again. GitHub's files endpoint and GitLab's diffs endpoint provide per-file patches;
+Gitea's metadata-only files endpoint is paired with one bounded raw diff read, matched by path.
+File responses and the raw diff are each capped at 1 MiB. Both revision reads must agree;
 a known webhook head/base must agree too. GitLab's current MR head must also match its generated
-diff head. A changed or unverifiable revision omits the commits and
-diff with `revision_changed`, `revision_mismatch`, or `revision_unverified`. A failed read retains
+diff head. A changed or unverifiable revision omits the commits and file inventory with
+`revision_changed`, `revision_mismatch`, or `revision_unverified`. A failed read retains
 the webhook and observed history with `pull_request_unavailable`. The webhook description takes
 precedence over the API description. No checkout, retries or pagination are involved.
 
-Commit messages contribute at most 4 KiB. The code-host builder supplies its ordered optional text
-fields to the shared request fitter, which measures the actual serialized question, model and
-state, including JSON escaping, against both 8,000 estimated tokens at four
-bytes each (32,000 bytes) and the 32 KiB hard limit. It drops oldest history, then shortens diff,
-commit messages and subject body in that order. Subject-body reductions retain both ends with the
-same helper, including when workspace context causes repository selection to refit the state.
+File paths, change status and full addition/deletion counts survive patch trimming. GitLab counts
+come from complete provider hunks; counts unavailable from the provider are omitted. A missing
+patch has `diffUnavailable: true`; a provider-collapsed or locally shortened patch has
+`diffTruncated: true`. `filesTruncated` marks an unavailable or incomplete inventory, including
+provider pagination/limits, rejected file rows and any files omitted by the request budget.
+The context reasons distinguish `files_unavailable`, `files_truncated`, `diff_unavailable` and
+`diff_truncated`. Language detection is not performed.
+
+Commit messages contribute at most 4 KiB. File patches share 12 KiB of UTF-8: short patches keep
+their full text and unused bytes are redistributed among larger patches, preserving an excerpt
+from each file instead of allowing the first large file to consume the budget. The code-host
+builder supplies ordered trimming steps to the shared request fitter, which measures the actual
+serialized question, model and state, including JSON escaping, against both 8,000 estimated
+tokens at four bytes each (32,000 bytes) and the 32 KiB hard limit. It drops oldest history, then
+reduces the shared patch budget, commit messages and subject body in that order. File inventory
+entries are removed from the end only after those optional texts are exhausted. Subject-body
+reductions retain both ends with the same helper, including when workspace context causes
+repository selection to refit the state.
 It preserves the trigger and required identity; an input that still cannot fit is `unsupported_input`,
 handled by each consumer's fallback policy.
 `context.reasons` records missing and trimmed data; `omittedMessages` counts budget-dropped rows

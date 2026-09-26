@@ -74,12 +74,7 @@ export function fitsDecisionBudget(state: Record<string, unknown>, question: Dec
 
 export type DecisionStateBudget = { question: DecisionQuestion; model: string }
 
-type DecisionStateTextField = readonly [
-  object: Record<string, unknown> | undefined,
-  field: string,
-  reason: string,
-  truncate?: (text: string, maxBytes: number) => string
-]
+type DecisionStateTrim = readonly [reason: string, trim: () => boolean]
 
 // State bytes are identical across requests, so the largest envelope budgets every step or chunk.
 export function largestDecisionRequest<T extends DecisionStateBudget>(decisions: readonly [T, ...T[]]): T {
@@ -94,11 +89,23 @@ export function decisionTextPrefix(text: string, maxBytes: number): string {
   return bytes.subarray(0, end).toString('utf8')
 }
 
+export function decisionTextTrimmer(
+  object: Record<string, unknown> | undefined,
+  field: string,
+  truncate = decisionTextPrefix
+): () => boolean {
+  return () => {
+    if (!object || typeof object[field] !== 'string' || !object[field]) return false
+    object[field] = truncate(object[field], Math.floor(Buffer.byteLength(object[field]) / 2))
+    return true
+  }
+}
+
 // Every consumer trims a copy, preserving the trigger and identity while spending the same request budget.
 export function fitDecisionState(
   input: Record<string, unknown>,
   decision: DecisionStateBudget,
-  textFields: (state: Record<string, unknown>) => readonly DecisionStateTextField[] = () => []
+  trimSteps: (state: Record<string, unknown>) => readonly DecisionStateTrim[] = () => []
 ): DecisionStateResult {
   const state = structuredClone(input)
   const history = (state.history ?? []) as unknown[]
@@ -125,9 +132,8 @@ export function fitDecisionState(
     omitted++
     mark('budget_trimmed')
   }
-  for (const [object, field, reason, truncate = decisionTextPrefix] of textFields(state)) {
-    while (!fits() && object && typeof object[field] === 'string' && object[field]) {
-      object[field] = truncate(object[field], Math.floor(Buffer.byteLength(object[field]) / 2))
+  for (const [reason, trim] of trimSteps(state)) {
+    while (!fits() && trim()) {
       mark('budget_trimmed')
       mark(reason)
     }

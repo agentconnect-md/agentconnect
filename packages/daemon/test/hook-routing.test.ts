@@ -416,7 +416,17 @@ describe('code-host decision state', () => {
       pullRequest: {
         description: 'Description',
         commitMessages: ['界'.repeat(2000)],
-        diff: '\t'.repeat(12 * 1024),
+        files: [
+          {
+            path: 'src/app.ts',
+            status: 'modified',
+            additions: 12,
+            deletions: 3,
+            diff: '\t'.repeat(12 * 1024),
+            diffTruncated: false
+          }
+        ],
+        filesTruncated: false,
         reasons: []
       }
     }
@@ -430,13 +440,20 @@ describe('code-host decision state', () => {
       subject: { body: 'It crashes.' },
       context: { partial: true, omittedMessages: 1 }
     })
-    const pull = built.state.pullRequest as { commitMessages: string; diff: string }
+    const pull = built.state.pullRequest as { commitMessages: string; files: Array<{ diff: string }> }
     expect(Buffer.byteLength(pull.commitMessages)).toBe(4095)
     expect(pull.commitMessages).not.toContain('�')
-    expect(pull.diff.length).toBeGreaterThan(0)
-    expect(pull.diff.length).toBeLessThan(context.pullRequest.diff.length)
+    expect(pull.files[0]!.diff.length).toBeGreaterThan(0)
+    expect(pull.files[0]!.diff.length).toBeLessThan(context.pullRequest.files[0]!.diff.length)
+    expect(pull.files[0]).toMatchObject({
+      path: 'src/app.ts',
+      status: 'modified',
+      additions: 12,
+      deletions: 3,
+      diffTruncated: true
+    })
     expect(context.history).toHaveLength(1)
-    expect(context.pullRequest.diff).toHaveLength(12 * 1024)
+    expect(context.pullRequest.files[0]!.diff).toHaveLength(12 * 1024)
   })
 
   it('retains the event on enrichment failure and omits supplements for another revision', async () => {
@@ -458,7 +475,7 @@ describe('code-host decision state', () => {
         state: {
           currentMessage: { text: 'Review this' },
           subject: { body: 'It crashes.' },
-          pullRequest: { headSha: 'expected', diff: '' },
+          pullRequest: { headSha: 'expected', files: [], filesTruncated: true },
           context: { partial: true, reasons: ['observed_history', 'history_unavailable', 'pull_request_unavailable'] }
         }
       })
@@ -468,7 +485,8 @@ describe('code-host decision state', () => {
           description: 'Later description',
           headSha: 'other',
           commitMessages: ['Later commit'],
-          diff: '+later',
+          files: [{ path: 'src/app.ts', status: 'modified', diff: '+later', diffTruncated: false }],
+          filesTruncated: false,
           reasons: []
         })
       })
@@ -476,7 +494,7 @@ describe('code-host decision state', () => {
         state: {
           currentMessage: { text: 'Review this' },
           subject: { body: 'It crashes.' },
-          pullRequest: { headSha: 'expected', commitMessages: '', diff: '' },
+          pullRequest: { headSha: 'expected', commitMessages: '', files: [], filesTruncated: true },
           context: { reasons: expect.arrayContaining(['revision_mismatch']) }
         }
       })

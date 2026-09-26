@@ -1,5 +1,4 @@
-/** GitLab's implementation of the daemon turn-final contract (§6.5, §14.1, §24.4): the note
- *  target on a numbered subject, the per-instance effect lease, and the turn-start host fence. */
+// GitLab's note target, instance-bound grant and turn-start host fence (§6.5, §14.1, §24.4).
 import { GITLAB_DEFAULT_BASE_URL, type RdMsgHook } from '@agentconnect.md/protocol'
 import type {
   CodeHostDelivery,
@@ -15,6 +14,7 @@ import { gitlabApiBaseUrl } from './api-base.js'
 import { GITLAB_HOST_MISMATCH_REASON } from './host-fence.js'
 import { GitlabFinalPoster } from './poster.js'
 import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext } from '../codehost/pull-context.js'
+import { diffLineCounts, PULL_CONTEXT_FILE_LIMIT } from '../codehost/pull-files.js'
 
 /** What GitLab's members read back on the daemon: the §14.1 effect lease, and the instance its spec names. */
 export interface GitlabTurnFinalHost {
@@ -115,7 +115,24 @@ export const gitlabTurnFinal: CodeHostTurnFinal<'gitlab'> = {
         headShaPaths: [['sha'], ['diff_refs', 'head_sha']],
         commits: `${path}/commits?per_page=${PULL_CONTEXT_COMMIT_LIMIT}&page=1`,
         commitMessagePath: ['message'],
-        diff: `${path}/raw_diffs`
+        files: `${path}/diffs?per_page=${PULL_CONTEXT_FILE_LIMIT}&page=1`,
+        fileCountPath: ['changes_count'],
+        file: (row) => {
+          if (typeof row.new_path !== 'string' || !row.new_path) return undefined
+          const diff = typeof row.diff === 'string' ? row.diff : undefined
+          const truncated = row.collapsed === true || row.too_large === true
+          return {
+            path: row.new_path,
+            ...(typeof row.old_path === 'string' && row.old_path !== row.new_path
+              ? { previousPath: row.old_path }
+              : {}),
+            status: row.deleted_file ? 'deleted' : row.new_file ? 'added' : row.renamed_file ? 'renamed' : 'modified',
+            ...(diff !== undefined && !truncated ? diffLineCounts(diff) : {}),
+            diff: diff ?? '',
+            diffTruncated: truncated,
+            ...(diff === undefined || (truncated && !diff) ? { diffUnavailable: true as const } : {})
+          }
+        }
       },
       signal
     )
