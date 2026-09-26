@@ -3931,11 +3931,21 @@ export class Daemon {
       store: this.store,
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
-      hostFor: (agentId, request, cwd) =>
-        this.ensureHostAsync(this.hostKeyForRequest(agentId, request), { session: { workspace: request, cwd } }),
-      // A constructed AcpHost is not yet running. Keep the session on the cold
-      // path until initialize succeeds so concurrent waiters consume hostFor's
-      // single preparation rather than starting a warm preparation afterward.
+      hostFor: async (agentId, request, cwd) => {
+        const key = this.hostKeyForRequest(agentId, request)
+        // A shared session joining a cold start another session began consumes that start's preparation, so it prepares its own share once the host is up.
+        const joinsColdStart =
+          request.isolation === 'shared' &&
+          cwd === undefined &&
+          hostKeySessionKey(key) === undefined &&
+          this.hostStarts.has(key) &&
+          !this.readyHosts.has(key)
+        const host = await this.ensureHostAsync(key, { session: { workspace: request, cwd } })
+        const agent = this.sessionAgent(agentId, request.sessionKey)
+        if (joinsColdStart && agent) await this.prepareAgentWorkspace(agent, host, request)
+        return host
+      },
+      // A host is cold until initialize succeeds, so its waiters prepare only inside hostFor, never again as warm sessions.
       isHostRunning: (agentId, request) => this.readyHosts.has(this.hostKeyForRequest(agentId, request)),
       // A session-bound host was launched in the session's directory; the runtime session opens there.
       boundHostCwd: (agentId, request) => {
