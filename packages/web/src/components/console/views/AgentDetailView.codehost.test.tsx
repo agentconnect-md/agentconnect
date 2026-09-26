@@ -224,6 +224,15 @@ describe('AgentDetailView, code-host repository blocks', () => {
     expect(byTitle(scope, 'Stop watching Deploys')).toHaveLength(1)
   })
 
+  it('titles the card by the host even when every repo shares one owner', async () => {
+    const scope = await render()
+    // Both fixtures live under acme; the card still says GitHub, so a second account never relabels it.
+    const titles = [...scope.querySelectorAll<HTMLElement>('span.badge')]
+      .filter((el) => el.textContent?.trim() === 'connected')
+      .map((el) => el.previousElementSibling?.textContent?.trim())
+    expect(titles).toEqual(['GitHub'])
+  })
+
   it('deletes just one family from the per-row control', async () => {
     const scope = await render()
     const removeIssues = byTitle(scope, 'Stop watching Issues')[0]!
