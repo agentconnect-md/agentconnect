@@ -2609,6 +2609,7 @@
         "loadingDeliveries": "Loading deliveries…",
         "noDeliveries": "No deliveries yet — POST the endpoint URL to fire this agent.",
         "openSession": "Open session",
+        "github": "GitHub",
         "gitlab": "GitLab",
         "gitea": "Gitea",
         "claudeFile": "CLAUDE.md",

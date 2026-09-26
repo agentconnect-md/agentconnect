@@ -467,13 +467,6 @@ function AgentDetail() {
       installationGrants: installationGrantsData
     }) === 'none'
 
-  // The group-card identity line: the repos' common owner when they share one,
-  // plain "GitHub" otherwise (subscriptions can span accounts).
-  const githubOwner = useMemo(() => {
-    const owners = [...new Set(githubHooks.map((h) => (h.repoFullName ?? h.name).split('/')[0]!))]
-    return owners.length === 1 ? owners[0]! : 'GitHub'
-  }, [githubHooks])
-
   const [reviewSettingsDraft, setReviewSettingsDraft] = useState<CodeHostReviewSettingsDraft | null>(null)
   const [reviewSettingsSaving, setReviewSettingsSaving] = useState(false)
   const [reviewSettingsError, setReviewSettingsError] = useState<string | null>(null)
@@ -2162,7 +2155,9 @@ function AgentDetail() {
                         </span>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <span className="font-sans text-[13.5px] font-semibold leading-normal">{githubOwner}</span>
+                            <span className="font-sans text-[13.5px] font-semibold leading-normal">
+                              {t('integrations.github')}
+                            </span>
                             <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
                               <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
                               {t('integrations.connected')}
