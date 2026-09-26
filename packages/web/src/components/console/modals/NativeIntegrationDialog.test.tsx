@@ -134,6 +134,24 @@ describe('native integration dialog', () => {
     )
     expect(completed).toHaveBeenCalledOnce()
   })
+  it('writes an installation-wide trigger back by its account, never as a repository', async () => {
+    const installationRow = { ...hook, repoFullName: null, installationAccount: 'acme', name: 'acme/*' }
+    mocks.fetchAgentHooks.mockResolvedValue([installationRow])
+    mocks.updateGithubHook.mockResolvedValue(installationRow)
+    await act(async () => {
+      root.render(<NativeIntegrationDialog ui={edit()} onClose={vi.fn()} onCompleted={vi.fn()} />)
+    })
+    await act(async () => {
+      element.querySelector<HTMLInputElement>('input[type=checkbox]')!.click()
+    })
+    await act(async () => {
+      button('Save changes').click()
+    })
+    const [, input] = mocks.updateGithubHook.mock.calls[0] as unknown as [string, Record<string, unknown>]
+    expect(input).toMatchObject({ githubAccount: 'acme', enabled: false })
+    expect(input).not.toHaveProperty('repoFullName')
+  })
+
   it('does not write on cancellation or report a changed target as saved', async () => {
     const completed = vi.fn()
     const close = vi.fn()

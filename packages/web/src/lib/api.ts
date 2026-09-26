@@ -4122,6 +4122,7 @@ export interface HookDto {
   // ── code-host kinds ── repo/project + subscription (empty/null on webhook kind)
   repoId?: string | null // GitHub numeric repo id, or the GitLab numeric project id
   repoFullName: string | null // owner/repo as GitHub cases it, or the GitLab project path
+  installationAccount?: string | null // an installation row's account: every repository of its GitHub App installation
   family: string | null // the one subject family this row covers; null on webhook kind and legacy-inert rows
   events: string[] // 'issues:*' / 'issue_comment:created' / 'merge_request:*' / …
   commentFamilies: HookCommentFamily[] // thread kinds whose replies may fire this hook
@@ -4164,13 +4165,14 @@ export interface CreateHookInput {
   hmac?: boolean
 }
 
-// github kind: the repo must sit inside one of the org's GitHub App
-// installations — the CP resolves it to the numeric match key server-side.
+// github kind: one repository inside one of the org's GitHub App installations, or every repository of one account's.
 export interface CreateGithubHookInput {
   agentId: string
   name: string
   enabled?: boolean
-  repoFullName: string
+  // Exactly one: the repository, or an installation account with the agent's installation grant.
+  repoFullName?: string
+  githubAccount?: string
   family: GithubHookFamily // one row per family; every event pattern must belong to it
   events: string[] // 'issues:*' etc — at least one
   commentFamilies?: GithubCommentFamily[]

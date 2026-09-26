@@ -74,6 +74,7 @@ import SkillSetupDialog from './SkillSetupDialog'
 import McpSetupDialog from './McpSetupDialog'
 import { NativeDialogNotice } from './NativeDialogNotice'
 import { nativeFailureReport, type NativeDialogReport } from './native-dialog-report'
+import { githubHookScope, githubHookScopeKey } from '@/lib/github-hook-scope'
 
 interface Props {
   ui: Extract<NativeMcpUi, { resourceUri: typeof INTEGRATION_SETUP_URI }>
@@ -242,12 +243,12 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
   const { refresh, agents } = useConsoleData()
   const repoAccess = effectiveRepoAccess({
     repoId: hook?.repoId,
-    repoFullName: hook?.repoFullName,
+    repoFullName: hook ? githubHookScopeKey(hook) : undefined,
     workspace: agents.find((agent) => agent.id === intent.agentId)?.workspace ?? { mode: 'scratch' },
     authorizations: repos,
     installationGrants
   })
-  const installation = installationForRepo(hook?.repoFullName, installations)
+  const installation = installationForRepo(hook ? githubHookScopeKey(hook) : undefined, installations)
   const reviewChanged = !!hook && (reviewPolicy !== hook.reviewPolicy || reportingMode !== hook.reportingMode)
   const reviewBlocked =
     hook?.kind === 'github' &&
@@ -323,7 +324,7 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
           hook.id,
           {
             ...common,
-            repoFullName: hook.repoFullName!,
+            ...githubHookScope(hook),
             ...(modeChanged
               ? githubFamilySubscription(hook.family as GhFamily, mode)
               : {

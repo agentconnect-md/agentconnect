@@ -8,6 +8,7 @@
  */
 
 import type { HookDto } from './api'
+import { githubHookScopeKey } from './github-hook-scope'
 import { GH_FAMILIES, githubHookFamily, type GhFamily } from './github-events'
 import { GT_FAMILIES, giteaHookFamily, type GtFamily } from './gitea-events'
 import { GL_FAMILIES, gitlabHookFamily, type GlFamily } from './gitlab-events'
@@ -31,8 +32,9 @@ export interface CodeHostHookRow<F extends string> {
   addFamilies: F[]
 }
 
+// An installation row groups under its `owner/*` scope, so renaming one never splits it from its siblings.
 function hookLabel(hook: HookDto): string {
-  return hook.repoFullName ?? hook.name
+  return githubHookScopeKey(hook) ?? hook.name
 }
 
 function orderRows<F extends string>(

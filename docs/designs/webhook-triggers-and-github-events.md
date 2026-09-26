@@ -862,11 +862,13 @@ merges requires it in its own GitHub ruleset, within the limits
 The agent detail Integrations card lists hooks alongside integrations. Generic
 hook creation reveals the capability URL and optional HMAC secret once. GitHub
 creation uses the App installation and repository picker and offers the pull
-request, issue, deployment and release subjects. The picker groups repositories
-by account and leads each group with "All repositories in <account>", which
-creates an installation row; when the agent has no grant for that installation
-yet, an organization owner authorizes it in the same flow, as a missing
-repository authorization is handled today; a deployment row has two cadences —
+request, issue, deployment and release subjects. The picker lists each live
+installation first, as "All of <account>", then the repositories. Picking one
+creates installation rows named `<account>/*`; when the agent has no grant for
+that installation yet, an organization owner authorizes it in the same flow.
+Only an owner raises that grant's tier for reviews, and an editor who is not an
+owner can pick the installation only once it is granted. A deployment row has
+two cadences —
 `created` (`deployment:created`) and `any status` (`deployment:*` plus
 `deployment_status:*`) — and no label or mention gate, since nobody writes in a
 deployment. A release row likewise has two cadences — `published`

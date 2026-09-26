@@ -30,6 +30,18 @@ function hook(partial: Partial<HookDto> & Pick<HookDto, 'id'>): HookDto {
 }
 
 describe('orderedGithubHookRows', () => {
+  it('groups an installation’s rows under its account even when one is renamed', () => {
+    const rows = orderedGithubHookRows([
+      hook({ id: 'i', name: 'acme/*', repoFullName: null, installationAccount: 'acme', family: 'issues' }),
+      hook({ id: 'p', name: 'org reviews', repoFullName: null, installationAccount: 'acme', family: 'pull_request' })
+    ])
+    expect(rows.map((row) => [row.hook.id, row.first, row.last])).toEqual([
+      ['p', true, false],
+      ['i', false, true]
+    ])
+    expect(rows[0]?.addFamilies).not.toContain('issues')
+  })
+
   it('keeps a repository as one row per family, change proposals first', () => {
     const rows = orderedGithubHookRows([
       hook({ id: 'a', repoId: '1', repoFullName: 'acme/api', family: 'issues', events: ['issues:*'] }),

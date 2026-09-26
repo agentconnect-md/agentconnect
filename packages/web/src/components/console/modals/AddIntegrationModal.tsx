@@ -69,6 +69,7 @@ import {
   fetchGithubRepoRoster,
   invalidateGithubRepoRosterCache,
   syncGithubInstallations,
+  updateAgentInstallation,
   updateAgentRepo,
   type CreatedHookDto,
   type GithubInstallationDto,
@@ -133,6 +134,7 @@ import {
   type HookReportingMode,
   type HookReviewPolicy
 } from '@/lib/github-review-settings'
+import { githubHookScopeKey, installationScopeAccount, installationScopeKey } from '@/lib/github-hook-scope'
 
 // THE HOST CHASSIS (integration-plugin-architecture.md §10). What lives here is
 // everything a platform CANNOT own: the picker tiles and their daemon-capability
@@ -472,6 +474,7 @@ export default function AddIntegrationModal({
   onClose: () => void
 }) {
   const t = useTranslations('Integrations.dialog')
+  const tWorkspaceEdit = useTranslations('Agents.workspaceEdit')
   // The platform-module hints name their key in full (`Integrations.dialog.platformHints.*`),
   // so they resolve through an unscoped translator rather than the one above.
   const hintsT = useTranslations()
@@ -547,7 +550,9 @@ export default function AddIntegrationModal({
   // one subject, so a repo may be watched for PRs and still free for issues.
   // Offered rows are disabled only once every offered family is taken (the CP
   // 409s a duplicate family as the backstop).
-  const { activeOrg, orgPath } = useOrgs()
+  const { activeOrg, orgPath, myRole } = useOrgs()
+  // An installation-wide trigger needs the installation grant, which only an organization owner writes.
+  const isOwner = myRole === 'owner'
   const agentHooksKey = consoleKeys.agentHooks(activeOrg?.id, agent.id)
   const { data: agentHooksData, mutate: mutateAgentHooks } = useSWR(agentHooksKey, ([, orgId, , agentId]) =>
     fetchAgentHooks(agentId, orgId)
@@ -555,8 +560,9 @@ export default function AddIntegrationModal({
   const watchedGhFamilies = useMemo(() => {
     const byRepo = new Map<string, Set<GhFamily>>()
     for (const h of agentHooksData ?? []) {
-      if (h.kind !== 'github' || !h.repoFullName) continue
-      const key = h.repoFullName.toLowerCase()
+      const scope = githubHookScopeKey(h)
+      if (h.kind !== 'github' || !scope) continue
+      const key = scope.toLowerCase()
       const taken = byRepo.get(key) ?? new Set<GhFamily>()
       // A null-family legacy row still blocks every family its events cover.
       for (const { fam } of GH_FAMILIES) {
@@ -596,14 +602,23 @@ export default function AddIntegrationModal({
   const authorizedRepos = useMemo(() => agentReposData ?? [], [agentReposData])
   // A repository its owner's installation grant covers is authorized too (decision 10); explicit rows keep their tier.
   const agentGrantsKey = consoleKeys.agentInstallations(activeOrg?.id, agent.id)
-  const { data: agentGrantsData, error: agentGrantsError } = useSWR(agentGrantsKey, ([, orgId, , agentId]) =>
-    fetchAgentInstallations(agentId, orgId)
-  )
+  const {
+    data: agentGrantsData,
+    error: agentGrantsError,
+    mutate: mutateAgentGrants
+  } = useSWR(agentGrantsKey, ([, orgId, , agentId]) => fetchAgentInstallations(agentId, orgId))
   const installationGrants = useMemo(() => agentGrantsData ?? [], [agentGrantsData])
+  // An `owner/*` pick watches every repository of that account's installation.
+  const ghPickAccount = installationScopeAccount(ghRepoPick)
+  const ghPickGrant = ghPickAccount
+    ? installationGrants.find((grant) => grant.accountLogin.toLowerCase() === ghPickAccount.toLowerCase())
+    : undefined
   const canEditAgent = agent.canEdit
   // Non-null ⇒ the unified workspace dialog is open at repository
   // authorization, prefilled with this owner/repo + minimum required tier.
-  const [authRepoFor, setAuthRepoFor] = useState<{ repo: string; access: RepoAccess } | null>(null)
+  const [authRepoFor, setAuthRepoFor] = useState<{ repo?: string; installationId?: number; access: RepoAccess } | null>(
+    null
+  )
   const ghSelectedRepo = ghRepos?.find((repo) => repo.fullName.toLowerCase() === ghRepoPick?.toLowerCase())
   const ghSelectedAuthorization = authorizedRepos.find(
     (authorization) => authorization.repoFullName.toLowerCase() === ghRepoPick?.toLowerCase()
@@ -1080,6 +1095,34 @@ export default function AddIntegrationModal({
 
   const authorizeSelectedRepo = async () => {
     if (!ghRepoPick || ghAccessSaving) return
+    if (ghPickAccount) {
+      if (!isOwner) {
+        setErr('Ask an organization owner to authorize all repositories in ' + ghPickAccount + ' for this agent.')
+        return
+      }
+      if (!ghPickGrant) {
+        const installationId = ghSelectedInstallation?.installationId
+        setAuthRepoFor({
+          ...(installationId !== undefined ? { installationId } : {}),
+          access: ghNeededAccess === 'none' ? 'read' : ghNeededAccess
+        })
+        return
+      }
+      if (ghNeededAccess === 'none' || repoAccessSatisfies(ghPickGrant.access, ghNeededAccess)) return
+      setGhAccessSaving(true)
+      setErr(null)
+      try {
+        const updated = await updateAgentInstallation(agent.id, ghPickGrant.id, { access: ghNeededAccess })
+        void mutateAgentGrants((rows) => rows?.map((row) => (row.id === updated.id ? updated : row)), {
+          revalidate: false
+        })
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e))
+      } finally {
+        setGhAccessSaving(false)
+      }
+      return
+    }
     if (ghSelectedIsWorkspace) {
       if (ghNeededAccess === 'none' || repoAccessSatisfies(ghRepoAccess, ghNeededAccess)) return
       setGhAccessSaving(true)
@@ -1296,6 +1339,10 @@ export default function AddIntegrationModal({
       return
     }
     const needsAdditionalGrant = ghRepoAccess === 'none'
+    if (needsAdditionalGrant && ghPickAccount) {
+      await authorizeSelectedRepo()
+      return
+    }
     if (needsAdditionalGrant) {
       if (!canEditAgent) {
         setErr(`Ask an editor to authorize ${ghRepoPick} for this agent first.`)
@@ -1342,7 +1389,7 @@ export default function AddIntegrationModal({
         await createGithubHook({
           agentId: agent.id,
           name: ghRepoPick,
-          repoFullName: ghRepoPick,
+          ...(ghPickAccount ? { githubAccount: ghPickAccount } : { repoFullName: ghRepoPick }),
           family: fam,
           ...githubFamilySubscription(fam, ghModeOf(fam)),
           labelFilter: ghLabels[fam] ?? [],
@@ -1771,7 +1818,17 @@ export default function AddIntegrationModal({
                         }}
                       >
                         <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
-                          {ghRepoPick ? (
+                          {ghPickAccount ? (
+                            <>
+                              <Icon name="layers" size={16} color="var(--text-tertiary)" className="flex-none" />
+                              <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal">
+                                {tWorkspaceEdit.rich('allRepositoriesIn', {
+                                  account: ghPickAccount,
+                                  mono: (chunks) => <span className="mono">{chunks}</span>
+                                })}
+                              </span>
+                            </>
+                          ) : ghRepoPick ? (
                             <>
                               <Icon
                                 name={pickedRepo && !pickedRepo.private ? 'book-bookmark' : 'lock'}
@@ -1837,6 +1894,76 @@ export default function AddIntegrationModal({
                                     </button>
                                   </div>
                                 )}
+                                {canAuthorizeAdditionalRepos &&
+                                  (gh?.installations ?? [])
+                                    .filter(
+                                      (installation) =>
+                                        !installation.suspended &&
+                                        (!q || installation.accountLogin.toLowerCase().includes(q))
+                                    )
+                                    .map((installation) => {
+                                      const key = installationScopeKey(installation.accountLogin)
+                                      const watched = repoFullyWatched(key)
+                                      const authTier = tierOf(key)
+                                      // Only an organization owner authorizes a whole installation.
+                                      const blocked = !authTier && !(isOwner && canEditAgent)
+                                      const disabled = watched || blocked
+                                      return (
+                                        <button
+                                          key={'installation:' + installation.installationId}
+                                          data-installation={installation.installationId}
+                                          className={`fopt min-h-[46px] items-center gap-3 px-2 py-2 ${disabled ? 'cursor-default opacity-55' : ''}`}
+                                          disabled={disabled}
+                                          onClick={() => {
+                                            if (disabled) return
+                                            setGhRepoPick(key)
+                                            setGhRepoOpen(false)
+                                          }}
+                                        >
+                                          <Icon
+                                            name="layers"
+                                            size={16}
+                                            color="var(--text-secondary)"
+                                            className="flex-none"
+                                          />
+                                          <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+                                            <span className="block w-full min-w-0 truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                                              {tWorkspaceEdit.rich('allRepositoriesIn', {
+                                                account: installation.accountLogin,
+                                                mono: (chunks) => <span className="mono">{chunks}</span>
+                                              })}
+                                            </span>
+                                            <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                                              {watched
+                                                ? t('alreadyWatchedByAgent')
+                                                : authTier
+                                                  ? t('authorizedForAgent')
+                                                  : blocked
+                                                    ? t('askOwnerToAuthorizeInstallation')
+                                                    : t('notAuthorizedReviewAccess')}
+                                            </span>
+                                          </span>
+                                          {watched ? (
+                                            <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
+                                              {t('added')}
+                                            </span>
+                                          ) : (
+                                            <>
+                                              {authTier ? (
+                                                <span className={REPOSITORY_ACCESS_BADGE[authTier]}>{authTier}</span>
+                                              ) : blocked ? null : (
+                                                <span className="badge flex-none bg-(--surface-app) text-(--brand-soft-text)">
+                                                  {t('authorize')}
+                                                </span>
+                                              )}
+                                              {ghRepoPick === key && (
+                                                <Icon name="check" size={17} color="var(--brand)" />
+                                              )}
+                                            </>
+                                          )}
+                                        </button>
+                                      )
+                                    })}
                                 {repoRows.map(({ repo, watched, isWorkspace, authTier }) => {
                                   const unauthorized = !isWorkspace && !authTier
                                   const editable = canEditAgent && canAuthorizeAdditionalRepos
@@ -2040,10 +2167,12 @@ export default function AddIntegrationModal({
                           repoSelected={Boolean(ghRepoPick)}
                           canAuthorizeRepo={
                             canEditAgent &&
-                            (ghRepoAccess === 'none' ||
-                              ghSelectedIsWorkspace ||
-                              ghSelectedAuthorization !== undefined ||
-                              ghSelectedGrantCovered)
+                            (ghPickAccount
+                              ? isOwner
+                              : ghRepoAccess === 'none' ||
+                                ghSelectedIsWorkspace ||
+                                ghSelectedAuthorization !== undefined ||
+                                ghSelectedGrantCovered)
                           }
                           authorizingRepo={ghAccessSaving}
                           onAuthorizeRepo={() => void authorizeSelectedRepo()}
@@ -2458,10 +2587,13 @@ export default function AddIntegrationModal({
         <EditWorkspaceModal
           agent={agent}
           authorized={authorizedRepos}
+          installationGrants={installationGrants}
           initialRepositoryAuthorization={{
             access: authRepoFor.access,
-            ...(authRepoFor.repo ? { repo: authRepoFor.repo } : {})
+            ...(authRepoFor.repo ? { repo: authRepoFor.repo } : {}),
+            ...(authRepoFor.installationId !== undefined ? { installationId: authRepoFor.installationId } : {})
           }}
+          onInstallationGrantsChange={(rows) => void mutateAgentGrants(rows, { revalidate: false })}
           onClose={() => setAuthRepoFor(null)}
           onChanged={() => {
             void refresh()

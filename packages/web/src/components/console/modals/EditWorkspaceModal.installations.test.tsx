@@ -219,6 +219,38 @@ describe('EditWorkspaceModal installation grants', () => {
     expect(grantRow(23456)?.textContent).toContain('All of example-org')
   })
 
+  it('opens straight at a preselected installation for an installation-wide trigger', async () => {
+    const created = grant({ id: 'grant-2', installationId: 23456, accountLogin: 'example-org', access: 'write' })
+    mocks.createAgentInstallation.mockResolvedValue(created)
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    const onChange = vi.fn()
+    await act(async () => {
+      root?.render(
+        <EditWorkspaceModal
+          agent={agent}
+          authorized={[]}
+          installationGrants={[]}
+          initialRepositoryAuthorization={{ installationId: 23456, access: 'write' }}
+          onInstallationGrantsChange={onChange}
+          onClose={() => undefined}
+          onChanged={() => undefined}
+        />
+      )
+    })
+
+    expect(document.body.textContent).toContain('All of example-org')
+    await act(async () => exactButton('Add')?.click())
+
+    expect(mocks.createAgentInstallation).toHaveBeenCalledWith('agent-a', {
+      installationId: 23456,
+      access: 'write',
+      materialize: 'on-demand'
+    })
+    expect(onChange).toHaveBeenCalledWith([created])
+  })
+
   it('groups the picker by account, in installation order: the installation first, then its repositories', async () => {
     const repo = (fullName: string, installationId: string) => ({
       fullName,

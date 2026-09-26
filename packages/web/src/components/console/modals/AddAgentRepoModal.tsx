@@ -121,6 +121,7 @@ export default function AddAgentRepoModal({
   onInstallationCreated,
   repositorySelector,
   initialRepo,
+  initialInstallationId,
   fixedRepo,
   initialAccess,
   workspaceContext = false,
@@ -144,6 +145,8 @@ export default function AddAgentRepoModal({
   repositorySelector?: AgentRepositorySelector | null
   /** Pre-selected owner/repo (the hook editor's "Authorize…" shortcut). */
   initialRepo?: string
+  /** Pre-selected installation (an installation-wide trigger's "Authorize…" shortcut). */
+  initialInstallationId?: number
   /** Repo locked by a manual GitHub workspace; it cannot authorize any other repo. */
   fixedRepo?: string
   /** Default access tier — the review/hook flow opens this dialog at `write`. */
@@ -176,11 +179,13 @@ export default function AddAgentRepoModal({
   const [reposNonce, setReposNonce] = useState(0)
   const [pick, setPick] = useState(fixedRepo ?? initialRepo ?? '')
   // A whole installation picked instead of one repository; `pick` is empty then.
-  const [pickInstallation, setPickInstallation] = useState<number | null>(null)
+  const [pickInstallation, setPickInstallation] = useState<number | null>(initialInstallationId ?? null)
   const [pickOpen, setPickOpen] = useState(false)
   const [q, setQ] = useState('')
   const [access, setAccess] = useState<RepoAccess>(initialAccess ?? 'read')
-  const [materialize, setMaterialize] = useState<RepoMaterialize>('always')
+  const [materialize, setMaterialize] = useState<RepoMaterialize>(
+    initialInstallationId !== undefined ? 'on-demand' : 'always'
+  )
   const { block: decisionBlock } = useRepositoryDecision(
     agent,
     repositorySelector !== undefined ? repositorySelector : agent.repositorySelector

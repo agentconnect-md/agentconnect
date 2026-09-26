@@ -82,6 +82,8 @@ const SELECTOR_BUSY = 'repository-selector'
 
 export interface InitialRepositoryAuthorization {
   repo?: string
+  // A whole installation preselected, for an installation-wide trigger.
+  installationId?: number
   access?: RepoAccess
 }
 
@@ -196,6 +198,7 @@ export default function EditWorkspaceModal({
   const [authorizations, setAuthorizations] = useState(authorized)
   const [repositoryEditor, setRepositoryEditor] = useState<{
     repo?: string
+    installationId?: number
     access?: RepoAccess
     returnToWorkspace: boolean
   } | null>(() =>
@@ -664,6 +667,9 @@ export default function EditWorkspaceModal({
         repositorySelector={selector}
         {...(githubWorkspace && githubWorkspace.provider === undefined ? { fixedRepo: githubWorkspace.repo } : {})}
         {...(repositoryEditor.repo ? { initialRepo: repositoryEditor.repo } : {})}
+        {...(repositoryEditor.installationId !== undefined
+          ? { initialInstallationId: repositoryEditor.installationId }
+          : {})}
         {...(repositoryEditor.access ? { initialAccess: repositoryEditor.access } : {})}
         workspaceContext
         showBack={repositoryEditor.returnToWorkspace}
