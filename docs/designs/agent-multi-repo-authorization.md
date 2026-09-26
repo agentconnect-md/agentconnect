@@ -434,7 +434,11 @@ Existing hooks remain grandfathered. A repository covered by one of the agent's
 installation grants (decision 10) passes: the gate resolves the repository's
 installation and matches it against the grants after the explicit rows. A hook
 that reports Checks on such a repository is 409 until the repository itself is
-authorized.
+authorized. An installation-wide hook row is the exception: it needs the grant
+itself, may report Checks at the grant's `write` tier, and revoking the grant
+retires those Checks through the row
+([webhook-triggers-and-github-events.md](webhook-triggers-and-github-events.md),
+Installation-Wide Rows).
 
 ## Daemon
 
