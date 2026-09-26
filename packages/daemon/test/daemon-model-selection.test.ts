@@ -513,6 +513,16 @@ describe('session-pinned Decision model', () => {
     await turn('first')
     await turn('first', 'An unrelated follow-up')
     expect(evaluate).toHaveBeenCalledOnce()
+    const firstChoices = await internal.store.listDecisionModelEvaluations('', agentId, undefined, 20)
+    expect(firstChoices).toHaveLength(1)
+    expect(JSON.parse(firstChoices[0].summaryJson)).toMatchObject({
+      outcome: 'selected',
+      target: { runtime: 'test', model: 'model-capable' }
+    })
+    expect(JSON.parse(firstChoices[0].detailJson)).toMatchObject({
+      input: { currentMessage: { text: 'Opening request' } },
+      chain: [{ decisionId, evaluation: { status: 'answered' } }]
+    })
     expect(evaluate).toHaveBeenCalledWith(
       expect.objectContaining({
         state: {
@@ -545,6 +555,7 @@ describe('session-pinned Decision model', () => {
     await turn('second')
     expect(evaluate).toHaveBeenCalledTimes(2)
     expect(prompted.at(-1)).toBe('model-standard')
+    expect(await internal.store.listDecisionModelEvaluations('', agentId, undefined, 20)).toHaveLength(2)
   })
 
   it.skipIf(process.platform === 'win32').each([true, false])(
@@ -565,6 +576,12 @@ describe('session-pinned Decision model', () => {
         : { effort: 'high', permissionMode: 'default', fastMode: false }
       if (fallback) first.evaluate.mockResolvedValue({ status: 'unavailable', reason: 'timeout' })
       await first.turn('first')
+      expect(
+        JSON.parse((await first.internal.store.listDecisionModelEvaluations('', agentId, undefined, 20))[0].summaryJson)
+      ).toMatchObject({
+        outcome: fallback ? 'fallback' : 'selected',
+        reason: fallback ? 'timeout' : null
+      })
       expect(first.prompted).toEqual([fallback ? 'model-standard' : 'model-capable'])
       expect(first.promptSettings).toEqual([expected])
       expect(first.internal.cpClient.emitEventSession).toHaveBeenLastCalledWith(expect.objectContaining(expected))
@@ -578,6 +595,7 @@ describe('session-pinned Decision model', () => {
       const second = await start(root)
       await second.turn('first', 'Another request')
       expect(second.evaluate).not.toHaveBeenCalled()
+      expect(await second.internal.store.listDecisionModelEvaluations('', agentId, undefined, 20)).toHaveLength(1)
       expect(second.prompted).toEqual([fallback ? 'model-standard' : 'model-capable'])
       expect(second.executionRuntimes).toEqual([fallback ? 'test' : 'alternative'])
       expect(second.promptSettings).toEqual([expected])

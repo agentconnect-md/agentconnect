@@ -206,6 +206,26 @@ describe('store retention rule table', () => {
     await seedEveryTable(s, LIVE, 'fresh', AT, 'member-a')
     await s.putMemoryEntryContinuation(LIVE, '{}', AT + 30 * 60 * 1000)
     await seedDecisionVerdicts(s, LIVE, AT)
+    const modelSessionId = '44444444-4444-4444-8444-444444444444'
+    await s.saveDecisionModelEvaluation(
+      LIVE,
+      modelSessionId,
+      {
+        at: new Date(AT).toISOString(),
+        sessionId: modelSessionId,
+        decisionId: '55555555-5555-4555-8555-555555555555',
+        outcome: 'selected',
+        reason: null,
+        target: { runtime: 'test', model: 'chosen' },
+        answer: null,
+        requestedModel: null,
+        actualModel: null,
+        latencyMs: null,
+        usage: null
+      },
+      { selection: null, question: null, input: null, fullAnswer: null, rawRequest: null, rawResponse: null },
+      AT
+    )
 
     const { instance } = sweeper(s, AT + 1_000)
     const summary = await instance.sweep()

@@ -1,6 +1,11 @@
 import {
   DECISION_EVALUATION_RAW_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
+  DECISION_MODEL_EVALUATIONS_V1_FEATURE,
+  DecisionModelEvaluationsReply,
+  DecisionModelEvaluationReply,
+  type DecisionModelEvaluationsRequestInput,
+  type DecisionModelEvaluationRequest,
   DECISION_PREVIEW_V1_FEATURE,
   DecisionCatalogReply,
   DecisionEvaluationReply,
@@ -921,6 +926,44 @@ export class ControlSender {
         'decision/evaluation',
         // Raw provider JSON is asked for only from a daemon that parses includeRaw; an older strict one would reject it.
         c.capabilities.features.includes(DECISION_EVALUATION_RAW_V1_FEATURE) ? { ...req, includeRaw: true } : req,
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 5000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  async decisionModelEvaluations(
+    daemonId: string,
+    orgId: string,
+    req: DecisionModelEvaluationsRequestInput
+  ): Promise<DecisionModelEvaluationsReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_MODEL_EVALUATIONS_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return DecisionModelEvaluationsReply.parse(
+      await c.conn.request(
+        'decision/model-evaluations',
+        req,
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 5000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  async decisionModelEvaluation(
+    daemonId: string,
+    orgId: string,
+    req: DecisionModelEvaluationRequest
+  ): Promise<DecisionModelEvaluationReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_MODEL_EVALUATIONS_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return DecisionModelEvaluationReply.parse(
+      await c.conn.request(
+        'decision/model-evaluation',
+        req,
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 5000, maxTries: 1 },
         orgId

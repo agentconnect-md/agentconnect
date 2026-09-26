@@ -3,15 +3,19 @@ import {
   DecisionEvaluationsRequest,
   DecisionPreviewRequest,
   DecisionRoutingEvaluationRequest,
-  DecisionRoutingEvaluationsRequest
+  DecisionRoutingEvaluationsRequest,
+  DecisionModelEvaluationsRequest,
+  DecisionModelEvaluationRequest
 } from '@agentconnect.md/protocol'
 import { DecisionEvaluationScopeError, type DecisionEvaluationReader } from '../../decisions/evaluations.js'
+import type { DecisionModelEvaluationReader } from '../../decisions/model-evaluations.js'
 import type { DecisionEvaluator } from '../../decisions/evaluator.js'
 import type { ControlHandler } from './context.js'
 
 export interface DecisionControlDeps {
   decisionEvaluator?: Pick<DecisionEvaluator, 'catalog' | 'evaluate'>
   decisionEvaluations?: Pick<DecisionEvaluationReader, 'list' | 'get' | 'listRouting' | 'getRouting'>
+  decisionModelEvaluations?: Pick<DecisionModelEvaluationReader, 'list' | 'get'>
 }
 
 export const decisionCatalog: ControlHandler<DecisionControlDeps> = (frame, deps, wire) => {
@@ -127,5 +131,29 @@ export const decisionRoutingEvaluation: ControlHandler<DecisionControlDeps> = as
     () => DecisionRoutingEvaluationRequest.parse(frame.payload),
     (orgId, req) => reader.getRouting(orgId, req),
     'decision/routing-evaluation/result'
+  )
+}
+
+export const decisionModelEvaluations: ControlHandler<DecisionControlDeps> = async (frame, deps, wire) => {
+  const reader = deps.decisionModelEvaluations
+  if (!reader) return wire.sendError(frame.id, 'BAD_PAYLOAD', 'Model evaluations are unavailable', false)
+  await readEvaluations(
+    frame,
+    wire,
+    () => DecisionModelEvaluationsRequest.parse(frame.payload),
+    (orgId, req) => reader.list(orgId, req),
+    'decision/model-evaluations/page'
+  )
+}
+
+export const decisionModelEvaluation: ControlHandler<DecisionControlDeps> = async (frame, deps, wire) => {
+  const reader = deps.decisionModelEvaluations
+  if (!reader) return wire.sendError(frame.id, 'BAD_PAYLOAD', 'Model evaluations are unavailable', false)
+  await readEvaluations(
+    frame,
+    wire,
+    () => DecisionModelEvaluationRequest.parse(frame.payload),
+    (orgId, req) => reader.get(orgId, req),
+    'decision/model-evaluation/result'
   )
 }

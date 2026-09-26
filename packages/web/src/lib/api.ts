@@ -13,6 +13,8 @@ import type {
   CodeHostRoutingProvider,
   DecisionEvaluationRecordDetail,
   DecisionEvaluationRecordPage,
+  DecisionModelEvaluationRecordDetail,
+  DecisionModelEvaluationRecordPage,
   SharedBotDecisionRouting
 } from '@agentconnect.md/protocol/decision'
 import type {
@@ -4393,6 +4395,28 @@ export function fetchCodeHostRoutingEvaluation(
   orgId?: string
 ): Promise<DecisionEvaluationRecordDetail> {
   return apiGet(`${codeHostRoutingPath(scope, orgId)}/evaluations/${encodeURIComponent(String(seq))}`)
+}
+
+export function fetchAgentModelEvaluations(
+  agentId: string,
+  page: { cursor?: number; limit?: number } = {},
+  orgId?: string
+): Promise<DecisionModelEvaluationRecordPage> {
+  const query = new URLSearchParams()
+  if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
+  if (page.limit !== undefined) query.set('limit', String(page.limit))
+  const suffix = query.toString()
+  return apiGet(
+    `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/model-evaluations${suffix ? `?${suffix}` : ''}`
+  )
+}
+
+export function fetchAgentModelEvaluation(
+  agentId: string,
+  seq: number,
+  orgId?: string
+): Promise<DecisionModelEvaluationRecordDetail> {
+  return apiGet(`${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/model-evaluations/${seq}`)
 }
 
 // PATCH a conversation's trigger (By decision with its gate), session mode or default agent; Off/Mention/Any clear the gate server-side.

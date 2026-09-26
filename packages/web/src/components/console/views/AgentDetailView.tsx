@@ -68,6 +68,7 @@ import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentDecisionsCard } from '@/components/console/AgentDecisionsCard'
 import { DecisionModelLabel } from '@/components/console/decisions/DecisionModelLabel'
+import { ModelSelectionEvaluationsDrawer } from '@/components/console/decisions/ModelSelectionEvaluationsDrawer'
 import { ruleSummaries } from '@/components/console/decisions/rule-summary'
 import { useCodeHostRowRouting } from '@/components/console/decisions/routing/useCodeHostRowRouting'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
@@ -356,6 +357,7 @@ function AgentDetail() {
       : undefined)
   // Which webhook row has its recent-deliveries panel expanded (one at a time).
   const [hookRunsFor, setHookRunsFor] = useState<string | null>(null)
+  const [modelEvaluationsOpen, setModelEvaluationsOpen] = useState(false)
   // Hooks are agent-scoped (no org-wide list). Keep a stable resource key so a
   // create/delete revalidation retains the last good rows while it refetches.
   const hooksKey = consoleKeys.agentHooks(activeOrg?.id, id)
@@ -1360,8 +1362,17 @@ function AgentDetail() {
                     <span className="text-[14px] text-(--text-tertiary) desktop:text-[13px]">
                       {t('basics.runtimeAndModel')}
                     </span>
-                    <span className="inline-flex min-w-0 font-sans text-[12.5px] font-medium leading-normal">
+                    <span className="flex min-w-0 flex-col items-end gap-1 font-sans text-[12.5px] font-medium leading-normal">
                       {decisionModel}
+                      {!da.name.startsWith(MOCK_PREFIX) && (
+                        <button
+                          type="button"
+                          className="lnk text-[11.5px]"
+                          onClick={() => setModelEvaluationsOpen(true)}
+                        >
+                          {t('modelEvaluations.title')}
+                        </button>
+                      )}
                     </span>
                   </div>
                 ) : (
@@ -2976,6 +2987,14 @@ function AgentDetail() {
             )}
           </div>
         </div>
+      )}
+      {modelEvaluationsOpen && (
+        <ModelSelectionEvaluationsDrawer
+          agentId={da.id}
+          agentName={da.displayName ?? da.name}
+          orgId={activeOrg?.id}
+          onClose={() => setModelEvaluationsOpen(false)}
+        />
       )}
     </div>
   )

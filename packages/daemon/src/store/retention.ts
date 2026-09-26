@@ -186,6 +186,14 @@ export const STORE_RETENTION_RULES: readonly StoreRetentionRule[] = [
     horizonMs: 7 * DAY_MS
   },
   {
+    id: 'decision-model-evaluation',
+    table: 'decision_model_evaluation',
+    key: ['seq'],
+    clock: 'createdAt',
+    agentColumn: 'agentId',
+    horizonMs: 7 * DAY_MS
+  },
+  {
     // Pending work has a deadline and cannot pin its row forever, even when nothing ever recovers it.
     id: 'decision-verdict-stale',
     table: 'decision_verdict',
