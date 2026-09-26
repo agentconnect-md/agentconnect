@@ -3223,6 +3223,137 @@ describe('github ingress', () => {
     })
     expect(res.statusCode).toBe(413)
   })
+
+  describe('installation-wide rules (Installation-Wide Rows)', () => {
+    const OTHER_REPO = 555
+    const installationRule = (overrides: Partial<RcHookAssign> = {}, matching: Record<string, unknown> = {}) => {
+      const { github, ...base } = rule({ hookId: HOOK_C, agentId: AGENT_C })
+      const { repoId: _repoId, repoFullName: _repoFullName, sessionKeyPrefix: _prefix, ...fields } = github!
+      void [_repoId, _repoFullName, _prefix]
+      return {
+        ...base,
+        githubInstallation: { ...fields, installationId: String(INSTALLATION), accountLogin: 'acme', ...matching },
+        ...overrides
+      } as RcHookAssign
+    }
+    const otherRepository = { repository: { id: OTHER_REPO, full_name: 'acme/tools', owner: { login: 'acme' } } }
+    const hookMsgs = () => h.sent.filter((msg): msg is Extract<RdMsg, { source: 'hook' }> => msg.source === 'hook')
+
+    it("fires for any repository of its installation, keyed and attributed by the event's repository", async () => {
+      h.table.upsert(installationRule())
+      await post('issues', issuesPayload(otherRepository))
+      await flush()
+      expect(hookMsgs()).toEqual([
+        expect.objectContaining({
+          hookId: HOOK_C,
+          agentId: AGENT_C,
+          sessionKey: 'github:' + OTHER_REPO + '#42',
+          github: expect.objectContaining({
+            repoId: String(OTHER_REPO),
+            repoFullName: 'acme/tools',
+            sourceInstallationId: String(INSTALLATION)
+          })
+        })
+      ])
+      expect(h.reports).toEqual([expect.objectContaining({ hookId: HOOK_C, status: 'accepted' })])
+    })
+
+    it("fires nothing for another installation's event", async () => {
+      h.table.upsert(installationRule())
+      await post('issues', issuesPayload({ ...otherRepository, installation: { id: INSTALLATION + 1 } }))
+      await flush()
+      expect(h.sent).toHaveLength(0)
+    })
+
+    it('gives way to its own agent’s repository rule of the family, not to another agent’s or another family’s', async () => {
+      h.table.upsert(rule())
+      h.table.upsert(installationRule({ agentId: AGENT }))
+      await post('issues', issuesPayload())
+      await flush()
+      expect(hookMsgs().map((msg) => msg.hookId)).toEqual([HOOK])
+
+      h.sent.length = 0
+      h.table.upsert(rule({}, { events: ['pull_request:opened'] }))
+      await post('issues', issuesPayload(), { headers: { 'x-github-delivery': 'gh-delivery-2' } })
+      await flush()
+      expect(hookMsgs().map((msg) => msg.hookId)).toEqual([HOOK_C])
+
+      h.sent.length = 0
+      h.table.upsert(rule())
+      h.table.upsert(installationRule())
+      await post('issues', issuesPayload(), { headers: { 'x-github-delivery': 'gh-delivery-3' } })
+      await flush()
+      expect(
+        hookMsgs()
+          .map((msg) => msg.hookId)
+          .sort()
+      ).toEqual([HOOK, HOOK_C].sort())
+    })
+
+    it('re-reads an installation rule filled in for the event after a live maintainer check', async () => {
+      h.table.upsert(
+        installationRule({}, { events: ['issues:opened', 'issue_comment:created'], commentFamilies: ['issues'] })
+      )
+      await post(
+        'issue_comment',
+        issuesPayload({
+          ...otherRepository,
+          action: 'created',
+          sender: { login: 'stranger', type: 'User' },
+          comment: { body: 'any update?', author_association: 'NONE' }
+        })
+      )
+      await flush()
+      expect(h.authzRequests).toEqual([
+        expect.objectContaining({ hookId: HOOK_C, repoId: String(OTHER_REPO), repoFullName: 'acme/tools' })
+      ])
+      expect(hookMsgs()).toEqual([
+        expect.objectContaining({ hookId: HOOK_C, sessionKey: 'github:' + OTHER_REPO + '#42' })
+      ])
+    })
+
+    it("re-runs an installation rule's Check review on the event's repository", async () => {
+      h.table.upsert(installationRule({ reportingMode: 'check', reviewPolicy: 'full' }))
+      h.rerequestResult = {
+        allowed: true,
+        hookId: HOOK_C,
+        pullNumber: 585,
+        baseSha: 'b'.repeat(40),
+        configRevision: '3',
+        dispatchRevision: '5'
+      }
+      h.authzResult = true
+      const pull = {
+        number: 585,
+        head: { sha: 'a'.repeat(40), repo: { id: OTHER_REPO } },
+        base: { sha: 'b'.repeat(40), repo: { id: OTHER_REPO } }
+      }
+      await post(
+        'check_run',
+        rerequestPayload({
+          ...otherRepository,
+          check_run: { id: 86617583005, head_sha: 'a'.repeat(40), pull_requests: [pull] }
+        })
+      )
+      await flush()
+      expect(hookMsgs()).toEqual([
+        expect.objectContaining({
+          hookId: HOOK_C,
+          sessionKey: 'github:' + OTHER_REPO + '#585',
+          event: 'check_run:rerequested',
+          github: expect.objectContaining({ repoId: String(OTHER_REPO), repoFullName: 'acme/tools', pullNumber: 585 })
+        })
+      ])
+    })
+
+    it('stops firing once removed from the table', async () => {
+      h.table.upsert(installationRule())
+      h.table.remove(HOOK_C)
+      await post('issues', issuesPayload(otherRepository))
+      await flush()
+      expect(h.sent).toHaveLength(0)
+    })
+  })
 })
 
 describe('buildTrustedGithubMetadata review comment ids', () => {

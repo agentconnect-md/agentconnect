@@ -21,6 +21,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { RelayDaemonServer } from '../relay-daemon-server.js'
 import type { HookTable } from './hook-table.js'
+import { githubRuleByHookId, githubRulesForEvent } from './github-installation.js'
 import type { HookRateLimiter } from './rate-limit.js'
 import { dispatchHookFire, noticeDelivery } from './ingress.js'
 import { GITHUB_ROUTED_THREAD_EVENTS, GITHUB_ROUTING } from './github-routing.js'
@@ -679,11 +680,12 @@ function currentGithubRerequestRule(
   table: HookTable,
   target: GithubRerequestTarget,
   repoId: number,
+  repoFullName: string | undefined,
   installationId: number,
   source: 'check' | 'workflow',
   expected?: Pick<RcHookAssign, 'agentId' | 'daemonId' | 'dispatchDaemonId'>
 ): GithubRerequestRule | undefined {
-  const rule = table.getByHookId(target.hookId)
+  const rule = githubRuleByHookId(table, target.hookId, { repoId: String(repoId), repoFullName: repoFullName ?? '' })
   if (
     !rule ||
     rule.kind !== 'github' ||
@@ -824,6 +826,7 @@ async function dispatchGithubRerequest(
       deps.table,
       target,
       repoId,
+      repoFullName,
       installationId,
       event === 'workflow_run' ? 'workflow' : 'check'
     )
@@ -873,6 +876,7 @@ async function dispatchGithubRerequest(
       deps.table,
       target,
       repoId,
+      repoFullName,
       installationId,
       event === 'workflow_run' ? 'workflow' : 'check',
       rule
@@ -1041,7 +1045,14 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
 
       const repoId = payload.repository?.id
       const subject = payload.issue ?? payload.pull_request
-      const rules = repoId === undefined ? [] : deps.table.getByCodeHostRepo('github', String(repoId))
+      const rules =
+        repoId === undefined
+          ? []
+          : githubRulesForEvent(
+              deps.table,
+              { repoId: String(repoId), repoFullName: payload.repository?.full_name ?? '' },
+              payload.installation?.id !== undefined ? String(payload.installation.id) : undefined
+            )
       // Threads need a number, pushes a ref, deployments an environment; every release of the repository shares one session.
       const environment = isGithubDeploymentEvent(event) ? payload.deployment?.environment : undefined
       const thread =
@@ -1203,7 +1214,10 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         rule: RcHookAssign,
         authzRequest: RcGithubCommentAuthz
       ): RcHookAssign | undefined => {
-        const current = deps.table.getByHookId(authzRequest.hookId)
+        const current = githubRuleByHookId(deps.table, authzRequest.hookId, {
+          repoId: authzRequest.repoId,
+          repoFullName: authzRequest.repoFullName
+        })
         if (
           !current ||
           current.hookId !== authzRequest.hookId ||

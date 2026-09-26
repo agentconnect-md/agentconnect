@@ -24,6 +24,7 @@ import {
   GITLAB_INSTANCE_V1_FEATURE,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
+  HOOK_GITHUB_INSTALLATION_V1_FEATURE,
   OWNER_DEFAULT_DECISION_V1_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
@@ -622,7 +623,9 @@ export class RelayCpClient {
           // Routes GitLab and Gitea hook rules the same way, so the CP may send it their routed rules.
           HOOK_DECISION_ROUTING_V2_FEATURE,
           // Seats an ownerAsDefault decision route as the channel default, one writer per session.
-          OWNER_DEFAULT_DECISION_V1_FEATURE
+          OWNER_DEFAULT_DECISION_V1_FEATURE,
+          // Fills an installation-wide GitHub rule in with each event's repository, so the CP may send it one.
+          HOOK_GITHUB_INSTALLATION_V1_FEATURE
         ]
       })
     )

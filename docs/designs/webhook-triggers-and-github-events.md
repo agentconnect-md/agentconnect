@@ -209,9 +209,9 @@ agent environment.
 
 ### Installation-Wide Rows
 
-> Status: the Control Plane half is implemented (#2398): rows, the grant gate and
-> revocation refusal, compiled rules behind the relay feature, and every effect's
-> coverage check. The relay's matching and the console picker follow.
+> Status: implemented in the Control Plane and the relay (#2398). The relay fills an
+> installation rule in with each event's repository and re-reads it that way before
+> dispatch. The console picker follows.
 
 An agent reviewing or triaging a whole organization would otherwise need one row
 per repository and family, and a new repository would need new rows. An
