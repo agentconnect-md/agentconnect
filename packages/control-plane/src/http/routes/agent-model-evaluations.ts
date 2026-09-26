@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
   DECISION_MODEL_EVALUATIONS_V1_FEATURE,
+  DECISION_EVALUATION_FILTER_V1_FEATURE,
   DecisionModelEvaluationRecordDetail,
   DecisionModelEvaluationRecordPage
 } from '@agentconnect.md/protocol'
@@ -37,7 +38,8 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
       req: FastifyRequest,
       reply: FastifyReply,
       agent: NonNullable<Awaited<ReturnType<typeof visibleAgent>>>,
-      read: (id: string) => Promise<T>
+      read: (id: string) => Promise<T>,
+      decisionId?: string
     ): Promise<T | null> => {
       const ids = await deps.placementResolver.servingDaemons(agent)
       const ready = ids.filter((id) => deps.daemonConns.get(id)?.state === 'READY')
@@ -45,8 +47,11 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
         await reply.code(503).send(error(503, 'the evaluation host is offline', 'DAEMON_OFFLINE'))
         return null
       }
-      const capable = ready.filter((id) =>
-        deps.daemonConns.get(id)?.capabilities?.features.includes(DECISION_MODEL_EVALUATIONS_V1_FEATURE)
+      const capable = ready.filter(
+        (id) =>
+          deps.daemonConns.get(id)?.capabilities?.features.includes(DECISION_MODEL_EVALUATIONS_V1_FEATURE) &&
+          (!decisionId ||
+            deps.daemonConns.get(id)?.capabilities?.features.includes(DECISION_EVALUATION_FILTER_V1_FEATURE))
       )
       if (!capable.length) {
         await reply
@@ -88,12 +93,13 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
           tags: [Tag.Decisions],
           summary: 'List recent model selection evaluations',
           description:
-            "Lists this agent's recent session-start model choices from its serving daemon. Rows from sessions the caller cannot view are omitted. Detail bodies expire after 24 hours or 20 newer choices; summaries expire after seven days.",
+            "Lists this agent's recent session-start model choices from its serving daemon. `decisionId` optionally filters by the recorded root Decision before paging. Rows from sessions the caller cannot view are omitted. Detail bodies expire after 24 hours or 20 newer choices; summaries expire after seven days.",
           operationId: 'listAgentModelEvaluations',
           params: Params,
           querystring: z.object({
             cursor: z.coerce.number().int().positive().optional(),
-            limit: z.coerce.number().int().min(1).max(50).default(20)
+            limit: z.coerce.number().int().min(1).max(50).default(20),
+            decisionId: z.string().uuid().optional()
           }),
           response: { 200: DecisionModelEvaluationRecordPage, 404: ErrorDto, 503: ErrorDto }
         }
@@ -101,11 +107,16 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await visibleAgent(req)
         if (!agent) return reply.code(404).send(error(404, 'agent not found'))
-        const result = await proxied(req, reply, agent, (id) =>
-          deps.control.decisionModelEvaluations(id, orgOf(req), {
-            agentId: agent.id,
-            ...req.query
-          })
+        const result = await proxied(
+          req,
+          reply,
+          agent,
+          (id) =>
+            deps.control.decisionModelEvaluations(id, orgOf(req), {
+              agentId: agent.id,
+              ...req.query
+            }),
+          req.query.decisionId
         )
         if (!result) return reply
         const allowed = await readable(

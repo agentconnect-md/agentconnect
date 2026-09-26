@@ -24,6 +24,7 @@ export const DECISION_CHAIN_V1_FEATURE = 'decision-chain-v1'
 // The peer answers decision/evaluations and decision/evaluation from its decision_verdict rows.
 export const DECISION_EVALUATIONS_V1_FEATURE = 'decision-evaluations-v1'
 export const DECISION_MODEL_EVALUATIONS_V1_FEATURE = 'decision-model-evaluations-v1'
+export const DECISION_EVALUATION_FILTER_V1_FEATURE = 'decision-evaluation-filter-v1'
 // The peer answers decision/routing-evaluations and decision/routing-evaluation from its router verdicts.
 export const DECISION_ROUTING_EVALUATIONS_V1_FEATURE = 'decision-routing-evaluations-v1'
 // The peer returns rawRequest/rawResponse on evaluation details when a request sets includeRaw.
@@ -120,6 +121,7 @@ const EvaluationLane = {
 }
 export const DecisionEvaluationsRequest = z.strictObject({
   ...EvaluationLane,
+  decisionId: z.string().uuid().optional(),
   cursor: z.number().int().positive().optional(),
   limit: z.number().int().min(1).max(50).default(20)
 })
@@ -158,6 +160,7 @@ export type DecisionEvaluationReply = z.infer<typeof DecisionEvaluationReply>
 
 export const DecisionModelEvaluationsRequest = z.strictObject({
   agentId: z.string().uuid(),
+  decisionId: z.string().uuid().optional(),
   cursor: z.number().int().positive().optional(),
   limit: z.number().int().min(1).max(50).default(20)
 })
@@ -191,6 +194,7 @@ const RoutingLane = {
 export const DecisionRoutingEvaluationsRequest = z.strictObject({
   ...RoutingLane,
   channels: z.array(z.string().min(1).max(512)).min(1).max(100),
+  decisionId: z.string().uuid().optional(),
   cursor: z.number().int().positive().optional(),
   limit: z.number().int().min(1).max(50).default(20)
 })

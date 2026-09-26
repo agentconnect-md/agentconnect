@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DECISION_MODEL_EVALUATIONS_V1_FEATURE, type DecisionModelEvaluationRecord } from '@agentconnect.md/protocol'
+import {
+  DECISION_EVALUATION_FILTER_V1_FEATURE,
+  DECISION_MODEL_EVALUATIONS_V1_FEATURE,
+  type DecisionModelEvaluationRecord
+} from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -47,8 +51,12 @@ describe('agent model evaluation reads', () => {
     const { userId } = await user.provisionOidcUser({ oidcSubject: email, email, emailVerified: true })
     await user.addMemberByEmail(DEFAULT_ORG_ID, email, 'viewer')
     const rows = [row(2, privateId), row(1, publicId)]
+    let requestedDecisionId: string | undefined
     const control = {
-      decisionModelEvaluations: async () => ({ items: rows, nextCursor: null }),
+      decisionModelEvaluations: async (_daemonId: string, _orgId: string, req: { decisionId?: string }) => {
+        requestedDecisionId = req.decisionId
+        return { items: rows, nextCursor: null }
+      },
       decisionModelEvaluation: async (_daemonId: string, _orgId: string, req: { seq: number }) => ({
         evaluation: {
           ...rows.find((item) => item.seq === req.seq)!,
@@ -61,8 +69,12 @@ describe('agent model evaluation reads', () => {
         }
       })
     }
+    let features = [DECISION_MODEL_EVALUATIONS_V1_FEATURE, DECISION_EVALUATION_FILTER_V1_FEATURE]
     const liveness = {
-      get: () => ({ state: 'READY', capabilities: { features: [DECISION_MODEL_EVALUATIONS_V1_FEATURE] } })
+      get: () => ({
+        state: 'READY',
+        capabilities: { features }
+      })
     }
     const app = buildHttpApp(
       prisma,
@@ -74,6 +86,20 @@ describe('agent model evaluation reads', () => {
     const list = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations` })
     expect(list.statusCode, list.body).toBe(200)
     expect(list.json().items).toEqual([rows[1]])
+    const filtered = await app.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${agentId}/model-evaluations?decisionId=${DECISION}`
+    })
+    expect(filtered.statusCode, filtered.body).toBe(200)
+    expect(requestedDecisionId).toBe(DECISION)
+    expect(filtered.json().items).toEqual([rows[1]])
+    features = [DECISION_MODEL_EVALUATIONS_V1_FEATURE]
+    const oldHost = await app.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${agentId}/model-evaluations?decisionId=${DECISION}`
+    })
+    expect(oldHost.statusCode).toBe(503)
+    expect(oldHost.json().code).toBe('DAEMON_UPGRADE_REQUIRED')
     const allowed = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations/1` })
     expect(allowed.statusCode, allowed.body).toBe(200)
     const denied = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations/2` })

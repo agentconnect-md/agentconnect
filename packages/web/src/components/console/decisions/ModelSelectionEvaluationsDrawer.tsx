@@ -25,18 +25,22 @@ export function ModelSelectionEvaluationsDrawer({
   agentId,
   agentName,
   orgId,
+  decisionId,
+  initialSeq,
   onClose
 }: {
   agentId: string
   agentName: string
   orgId?: string
+  decisionId?: string
+  initialSeq?: number
   onClose: () => void
 }) {
   const t = useTranslations('Agents.detail.modelEvaluations')
   const decisions = useTranslations('Decisions')
   const locale = useLocale()
-  const { data, error, isLoading, mutate } = useSWR(['agent-model-evaluations', orgId, agentId], () =>
-    fetchAgentModelEvaluations(agentId, { limit: PAGE }, orgId)
+  const { data, error, isLoading, mutate } = useSWR(['agent-model-evaluations', orgId, agentId, decisionId], () =>
+    fetchAgentModelEvaluations(agentId, { limit: PAGE, ...(decisionId ? { decisionId } : {}) }, orgId)
   )
   const [older, setOlder] = useState<{
     base: unknown
@@ -45,7 +49,7 @@ export function ModelSelectionEvaluationsDrawer({
   } | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [moreError, setMoreError] = useState(false)
-  const [open, setOpen] = useState<number | null>(null)
+  const [open, setOpen] = useState<number | null>(initialSeq ?? null)
   const extra = older?.base === data ? older : null
   const items = [...(data?.items ?? []), ...(extra?.items ?? [])]
   const cursor = extra ? extra.cursor : (data?.nextCursor ?? null)
@@ -69,7 +73,11 @@ export function ModelSelectionEvaluationsDrawer({
     setLoadingMore(true)
     setMoreError(false)
     try {
-      const page = await fetchAgentModelEvaluations(agentId, { cursor, limit: PAGE }, orgId)
+      const page = await fetchAgentModelEvaluations(
+        agentId,
+        { cursor, limit: PAGE, ...(decisionId ? { decisionId } : {}) },
+        orgId
+      )
       setOlder((current) => ({
         base: data,
         items: [...(current && current.base === data ? current.items : []), ...page.items],

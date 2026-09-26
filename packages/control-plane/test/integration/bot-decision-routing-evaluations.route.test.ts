@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
   DECISION_PREVIEW_V1_FEATURE,
+  DECISION_EVALUATION_FILTER_V1_FEATURE,
   DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
@@ -30,7 +31,13 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd8d8d8d8-dddd-4ddd-8ddd-dddddddddddd'
 const ROUTING = [DECISION_TRIGGER_V1_FEATURE, DECISION_ROUTING_V1_FEATURE]
-const CONN = [...ROUTING, DECISION_PREVIEW_V1_FEATURE, DECISION_ROUTING_EVALUATIONS_V1_FEATURE]
+const CONN = [
+  ...ROUTING,
+  DECISION_PREVIEW_V1_FEATURE,
+  DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
+  DECISION_EVALUATION_FILTER_V1_FEATURE
+]
+const DECISION = '33333333-3333-4333-8333-333333333333'
 const UNSCOPED: DecisionEvaluationConversation = { platform: 'slack', tenantScope: null }
 
 const draft: DecisionDraft = {
@@ -210,6 +217,13 @@ describe('GET /bots/:id/decision-routing/evaluations', () => {
     const one = await list(app, botId, '?channelId=C1&cursor=40')
     expect(one.statusCode, one.body).toBe(200)
     expect(spy.lists[1]!.req).toMatchObject({ channels: ['C1'], cursor: 40, limit: 20 })
+    expect((await list(app, botId, `?decisionId=${DECISION}`)).statusCode).toBe(200)
+    expect(spy.lists.at(-1)!.req).toMatchObject({ decisionId: DECISION })
+    const old = appWith({ conn: CONN.filter((feature) => feature !== DECISION_EVALUATION_FILTER_V1_FEATURE) })
+    expect((await list(old.app, botId, `?decisionId=${DECISION}`)).json()).toMatchObject({
+      code: 'DAEMON_UPGRADE_REQUIRED'
+    })
+    expect(old.spy.lists).toEqual([])
     expect((await list(app, botId, '?channelId=C9')).statusCode).toBe(404)
     expect((await list(app, randomUUID())).statusCode).toBe(404)
     expect((await prisma.sessionMeta.count()) + (await prisma.auditEvent.count())).toBe(before)

@@ -29,6 +29,8 @@ export function DecisionRoutingEvaluationsDrawer({
   channels,
   agentNames,
   ruleNumbers,
+  decisionId,
+  initialEvaluation,
   onClose
 }: {
   botId: string
@@ -38,6 +40,8 @@ export function DecisionRoutingEvaluationsDrawer({
   agentNames: ReadonlyMap<string, string>
   /** Each saved rule's editor number, so a matched rule reads as the row the editor shows. */
   ruleNumbers: ReadonlyMap<string, number>
+  decisionId?: string
+  initialEvaluation?: { seq: number; channel: string }
   onClose: () => void
 }) {
   const t = useTranslations('Decisions.routing')
@@ -51,8 +55,13 @@ export function DecisionRoutingEvaluationsDrawer({
   )
   const [channelId, setChannelId] = useState<string>('')
   const { data, error, isLoading, mutate } = useSWR(
-    ['decision-routing-evaluations', api.mode, orgId, botId, channelId],
-    () => api.listRoutingEvaluations(botId, { ...(channelId ? { channelId } : {}), limit: PAGE })
+    ['decision-routing-evaluations', api.mode, orgId, botId, channelId, decisionId],
+    () =>
+      api.listRoutingEvaluations(botId, {
+        ...(channelId ? { channelId } : {}),
+        limit: PAGE,
+        ...(decisionId ? { decisionId } : {})
+      })
   )
   const [appended, setAppended] = useState<{
     base: unknown
@@ -61,7 +70,7 @@ export function DecisionRoutingEvaluationsDrawer({
   } | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [moreError, setMoreError] = useState<string | null>(null)
-  const [open, setOpen] = useState<{ seq: number; channel: string } | null>(null)
+  const [open, setOpen] = useState<{ seq: number; channel: string } | null>(initialEvaluation ?? null)
   const opener = useRef<string | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
   useEffect(() => {
@@ -86,6 +95,7 @@ export function DecisionRoutingEvaluationsDrawer({
     try {
       const page = await api.listRoutingEvaluations(botId, {
         ...(channelId ? { channelId } : {}),
+        ...(decisionId ? { decisionId } : {}),
         cursor: nextCursor,
         limit: PAGE
       })
@@ -129,7 +139,7 @@ export function DecisionRoutingEvaluationsDrawer({
               label: t('retryLoad'),
               run: () => void mutate()
             })
-  } else if (items.length === 0) body = note('info', t('evaluations.empty'))
+  } else if (items.length === 0 && nextCursor === null) body = note('info', t('evaluations.empty'))
   else
     body = (
       <>

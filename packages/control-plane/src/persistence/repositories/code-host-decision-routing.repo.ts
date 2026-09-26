@@ -282,6 +282,7 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
         .filter((id) => !decisionIds || decisionIds.includes(id))
         .map((id) => ({
           decisionId: id,
+          rootDecisionId: row.decisionId,
           routingId: row.id,
           provider: row.provider,
           repoId: row.repoId,

@@ -1,6 +1,7 @@
 import {
   DECISION_EVALUATION_RAW_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
+  DECISION_EVALUATION_FILTER_V1_FEATURE,
   DECISION_MODEL_EVALUATIONS_V1_FEATURE,
   DecisionModelEvaluationsReply,
   DecisionModelEvaluationReply,
@@ -899,7 +900,11 @@ export class ControlSender {
     req: DecisionEvaluationsRequest
   ): Promise<DecisionEvaluationsReply> {
     const c = this.must(daemonId)
-    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_EVALUATIONS_V1_FEATURE))
+    if (
+      c.state !== 'READY' ||
+      !c.capabilities?.features.includes(DECISION_EVALUATIONS_V1_FEATURE) ||
+      (req.decisionId && !c.capabilities.features.includes(DECISION_EVALUATION_FILTER_V1_FEATURE))
+    )
       throw new NoConnection(daemonId)
     return DecisionEvaluationsReply.parse(
       await c.conn.request(
@@ -939,7 +944,11 @@ export class ControlSender {
     req: DecisionModelEvaluationsRequestInput
   ): Promise<DecisionModelEvaluationsReply> {
     const c = this.must(daemonId)
-    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_MODEL_EVALUATIONS_V1_FEATURE))
+    if (
+      c.state !== 'READY' ||
+      !c.capabilities?.features.includes(DECISION_MODEL_EVALUATIONS_V1_FEATURE) ||
+      (req.decisionId && !c.capabilities.features.includes(DECISION_EVALUATION_FILTER_V1_FEATURE))
+    )
       throw new NoConnection(daemonId)
     return DecisionModelEvaluationsReply.parse(
       await c.conn.request(
@@ -978,7 +987,11 @@ export class ControlSender {
     req: DecisionRoutingEvaluationsRequestInput
   ): Promise<DecisionRoutingEvaluationsReply> {
     const c = this.must(daemonId)
-    if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_ROUTING_EVALUATIONS_V1_FEATURE))
+    if (
+      c.state !== 'READY' ||
+      !c.capabilities?.features.includes(DECISION_ROUTING_EVALUATIONS_V1_FEATURE) ||
+      (req.decisionId && !c.capabilities.features.includes(DECISION_EVALUATION_FILTER_V1_FEATURE))
+    )
       throw new NoConnection(daemonId)
     return DecisionRoutingEvaluationsReply.parse(
       await c.conn.request(

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
   DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
+  DECISION_EVALUATION_FILTER_V1_FEATURE,
   DecisionRoutingEvaluationRecordDetail,
   DecisionRoutingEvaluationRecordPage,
   type DecisionEvaluationConversation
@@ -64,14 +65,18 @@ export function decisionRoutingEvaluationRoutes(deps: HttpDeps) {
       bot: BotRecord,
       hostId: string | null,
       preferAgentId: string | null,
-      read: (agentId: string, integrationId: string) => Promise<T>
+      read: (agentId: string, integrationId: string) => Promise<T>,
+      decisionId?: string
     ): Promise<Proxied<T>> => {
       const conn = hostId ? readyConn(hostId) : undefined
       if (!hostId || !conn) {
         await reply.code(503).send(unavailable(OFFLINE, 'DAEMON_OFFLINE'))
         return { ok: false }
       }
-      if (!conn.capabilities?.features.includes(DECISION_ROUTING_EVALUATIONS_V1_FEATURE)) {
+      if (
+        !conn.capabilities?.features.includes(DECISION_ROUTING_EVALUATIONS_V1_FEATURE) ||
+        (decisionId && !conn.capabilities.features.includes(DECISION_EVALUATION_FILTER_V1_FEATURE))
+      ) {
         await reply.code(503).send(unavailable(UNSUPPORTED, 'DAEMON_UPGRADE_REQUIRED'))
         return { ok: false }
       }
@@ -127,12 +132,13 @@ export function decisionRoutingEvaluationRoutes(deps: HttpDeps) {
           summary: 'List recent routing evaluations',
           operationId: 'listBotDecisionRoutingEvaluations',
           description:
-            "Recent shared-bot routing evaluations, newest first, read from the bot's evaluation host and proxied without being stored or logged: the answer, matched rules or Otherwise, each target with its admission status, and the outcome (Routed, Partially routed, Skipped, Fallback, Unavailable, Canceled, Pending). Covers `channelId`, or else every routed channel the bot-level host evaluates (up to 100). Each row is returned only when the caller can read its conversation: the audience of the newest session any bot agent holds there in the namespace the host names, or before any session the organization baseline (closed while an external-access policy is active); refused rows are dropped, so a page may be short while `nextCursor` continues. Returns 503 when the host is offline or must be upgraded, including a reply that names no namespace.",
+            "Recent shared-bot routing evaluations, newest first, read from the bot's evaluation host and proxied without being stored or logged: the answer, matched rules or Otherwise, each target with its admission status, and the outcome (Routed, Partially routed, Skipped, Fallback, Unavailable, Canceled, Pending). Covers `channelId`, or else every routed channel the bot-level host evaluates (up to 100); `decisionId` optionally filters by the recorded root Decision before paging. Each row is returned only when the caller can read its conversation: the audience of the newest session any bot agent holds there in the namespace the host names, or before any session the organization baseline (closed while an external-access policy is active); refused rows are dropped, so a page may be short while `nextCursor` continues. Returns 503 when the host is offline or must be upgraded, including a reply that names no namespace.",
           params: IdParam,
           querystring: z.object({
             channelId: z.string().min(1).max(512).optional(),
             cursor: z.coerce.number().int().positive().optional(),
-            limit: z.coerce.number().int().min(1).max(50).default(20)
+            limit: z.coerce.number().int().min(1).max(50).default(20),
+            decisionId: z.string().uuid().optional()
           }),
           response: { 200: DecisionRoutingEvaluationRecordPage, 404: ErrorDto, 503: ErrorDto }
         }
@@ -140,7 +146,7 @@ export function decisionRoutingEvaluationRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const bot = await visibleBot(req)
         if (!bot) return reply.code(404).send(notFound('bot not found'))
-        const { channelId, cursor, limit } = req.query
+        const { channelId, cursor, limit, decisionId } = req.query
         const description = await deps.httpBot.describeRouting(bot)
         const botHost = description.evaluationHost?.daemonId ?? null
         let hostId = botHost
@@ -160,15 +166,23 @@ export function decisionRoutingEvaluationRoutes(deps: HttpDeps) {
             .slice(0, MAX_CHANNELS)
           if (channels.length === 0) return { items: [], nextCursor: null }
         }
-        const result = await proxied(req, reply, bot, hostId, preferAgentId, (agentId, integrationId) =>
-          deps.control.decisionRoutingEvaluations(hostId!, orgOf(req), {
-            agentId,
-            integrationId,
-            botId: bot.id,
-            channels,
-            ...(cursor !== undefined ? { cursor } : {}),
-            limit
-          })
+        const result = await proxied(
+          req,
+          reply,
+          bot,
+          hostId,
+          preferAgentId,
+          (agentId, integrationId) =>
+            deps.control.decisionRoutingEvaluations(hostId!, orgOf(req), {
+              agentId,
+              integrationId,
+              botId: bot.id,
+              channels,
+              ...(decisionId ? { decisionId } : {}),
+              ...(cursor !== undefined ? { cursor } : {}),
+              limit
+            }),
+          decisionId
         )
         if (!result.ok) return reply
         const { conversation: namespace, items, nextCursor } = result.value

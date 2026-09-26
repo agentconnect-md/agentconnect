@@ -4327,6 +4327,7 @@
       "kind": {
         "gate": "channel gate",
         "shared_bot_routing": "shared bot routing",
+        "code_host_routing": "repository routing",
         "agent_tool": "agent tool",
         "model_selection": "model selection"
       },
@@ -4334,6 +4335,17 @@
       "ok": "ok",
       "hidden": "{count, plural, one {# more you cannot see} other {# more you cannot see}}",
       "hiddenUnknown": "Used by items you cannot see"
+    },
+    "recentBySource": {
+      "title": "Recent evaluations",
+      "loading": "Loading evaluations…",
+      "chainHistory": "This source records the Decision chain from its first step.",
+      "noSources": "No current source records evaluations for this Decision.",
+      "empty": "No recent evaluations from this source.",
+      "viewAll": "View all from this source",
+      "upgrade": "Upgrade this source's evaluation host to filter by Decision.",
+      "error": "Could not load evaluations from this source.",
+      "retry": "Retry"
     },
     "errors": {
       "name": "Give the decision a name before saving.",

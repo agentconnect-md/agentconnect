@@ -1,6 +1,8 @@
 import type {
   ChannelDecisionBinding,
   ChannelDecisionGate,
+  CodeHostRoutingFamily,
+  CodeHostRoutingProvider,
   DecisionChannelSettings,
   DecisionDefinition,
   DecisionDraft,
@@ -45,11 +47,15 @@ export interface DecisionProviderOption {
 }
 
 export interface DecisionUsage {
-  kind: 'gate' | 'shared_bot_routing' | 'agent_tool' | 'model_selection'
+  kind: 'gate' | 'shared_bot_routing' | 'code_host_routing' | 'agent_tool' | 'model_selection'
   id: string
   label: string
+  rootDecisionId?: string
   integrationId?: string
   channelId?: string
+  provider?: CodeHostRoutingProvider
+  repoId?: string
+  family?: CodeHostRoutingFamily
 }
 
 export interface DecisionDetail {
@@ -248,13 +254,13 @@ export interface DecisionApi {
   previewGate(ref: DecisionConversationRef, input: DecisionGatePreviewInput): Promise<DecisionGatePreviewResult>
   listEvaluations(
     ref: DecisionConversationRef,
-    page?: { cursor?: number; limit?: number }
+    page?: { cursor?: number; limit?: number; decisionId?: string }
   ): Promise<DecisionEvaluationRecordPage>
   getEvaluation(ref: DecisionConversationRef, seq: number): Promise<DecisionEvaluationRecordDetail>
   previewRouting(botId: string, input: DecisionRoutingPreviewInput): Promise<DecisionRoutingPreviewResult>
   listRoutingEvaluations(
     botId: string,
-    page?: { channelId?: string; cursor?: number; limit?: number }
+    page?: { channelId?: string; cursor?: number; limit?: number; decisionId?: string }
   ): Promise<DecisionRoutingEvaluationRecordPage>
   getRoutingEvaluation(
     botId: string,

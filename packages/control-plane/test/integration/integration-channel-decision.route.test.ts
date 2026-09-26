@@ -457,12 +457,11 @@ describe('Decision usage, edits, and deletion with channel gates', () => {
     }>
     expect(list.find((d) => d.id === decisionId)?.usageCount).toBe(1)
     const detail = (await app.app.inject({ method: 'GET', url: `${ORG}/decisions/${decisionId}` })).json()
-    expect(detail.usages).toHaveLength(1)
-    expect(detail.usages[0]).toMatchObject({
-      kind: 'gate',
-      channelId: 'C1',
-      label: expect.stringContaining('#general')
-    })
+    expect(detail.usages).toHaveLength(2)
+    expect(detail.usages.map((usage: { integrationId: string }) => usage.integrationId).sort()).toEqual(
+      installs.map((install) => install.integrationId).sort()
+    )
+    expect(detail.usages[0]).toMatchObject({ kind: 'gate', channelId: 'C1', rootDecisionId: decisionId })
 
     // A member who cannot see the owning agent sees neither the usage nor its name.
     await prisma.agent.updateMany({
@@ -483,7 +482,7 @@ describe('Decision usage, edits, and deletion with channel gates', () => {
     const ownerView = await app.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${decisionId}` })
     expect(ownerView.json()).toMatchObject({
       hiddenUsageCount: 0,
-      usages: [expect.objectContaining({ channelId: 'C1' })]
+      usages: expect.arrayContaining([expect.objectContaining({ channelId: 'C1' })])
     })
 
     // The FK is the backstop for a gate saved after the pre-check.
@@ -595,6 +594,9 @@ describe('chained conversation gates', () => {
         .sort()
     ).toEqual([root, child].sort())
     expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${child}` })).statusCode).toBe(409)
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/decisions/${child}` })).json().usages).toEqual([
+      expect.objectContaining({ kind: 'gate', rootDecisionId: root })
+    ])
     const changed = await app.app.inject({ method: 'PATCH', url: `${ORG}/decisions/${child}`, payload: boolDraft })
     expect(changed.statusCode, changed.body).toBe(200)
     expect(

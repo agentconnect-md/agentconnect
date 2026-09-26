@@ -46,6 +46,7 @@ const UsageDto = z.object({
   kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool', 'model_selection', 'code_host_routing']),
   id: z.string(),
   label: z.string(),
+  rootDecisionId: z.string().optional(),
   integrationId: z.string().optional(),
   channelId: z.string().optional(),
   // kind=code_host_routing: the routed repository scope.
@@ -119,7 +120,7 @@ export function decisionRoutes(deps: HttpDeps) {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const dto = (row: DecisionDefinition, req: FastifyRequest) => ({ ...row, canEdit: canEdit(row, ctxOf(req)) })
     const visible = (req: FastifyRequest, id: string) => visibleDecision(deps, req, id)
-    // Channel gates on these Decisions whose agent the caller can see, one per shared-bot conversation.
+    // Each visible install has its own evaluation lane, even when siblings share a conversation.
     const visibleUsages = async (req: FastifyRequest, decisionIds?: readonly string[]) => {
       const all = await deps.repos.integrationChannel.listDecisionUsages(orgOf(req), decisionIds)
       if (all.length === 0) return { all, visible: [] as Array<DecisionChannelUsage & { agentName: string }> }
@@ -129,7 +130,7 @@ export function decisionRoutes(deps: HttpDeps) {
       for (const usage of all) {
         const agent = agents.get(usage.agentId)
         if (!agent) continue
-        const key = `${usage.decisionId}\u0000${usage.botId}\u0000${usage.channelId}`
+        const key = `${usage.decisionId}\u0000${usage.integrationId}\u0000${usage.channelId}`
         if (seen.has(key)) continue
         seen.add(key)
         shown.push({ ...usage, agentName: agent.displayName || agent.name })
@@ -140,6 +141,7 @@ export function decisionRoutes(deps: HttpDeps) {
       kind: 'gate' as const,
       id: `${u.integrationId}:${u.channelId}`,
       label: `#${u.channelName ?? u.channelId} · ${u.agentName}`,
+      rootDecisionId: u.rootDecisionId,
       integrationId: u.integrationId,
       channelId: u.channelId
     })
@@ -153,7 +155,8 @@ export function decisionRoutes(deps: HttpDeps) {
     const routingUsageDto = (u: BotDecisionRoutingUsage) => ({
       kind: 'shared_bot_routing' as const,
       id: u.botId,
-      label: u.botName
+      label: u.botName,
+      rootDecisionId: u.rootDecisionId
     })
     // Code-host routings on these Decisions, visible when the caller can see one of the scope's members or targets.
     const codeHostUsages = async (req: FastifyRequest, decisionIds?: readonly string[]) => {
@@ -166,6 +169,7 @@ export function decisionRoutes(deps: HttpDeps) {
       kind: 'code_host_routing' as const,
       id: u.routingId,
       label: `${u.repoFullName} · ${codeHostsOf(deps)[u.provider].routing.familyLabel(u.family)}`,
+      rootDecisionId: u.rootDecisionId,
       provider: u.provider,
       repoId: u.repoId.toString(),
       family: u.family
@@ -179,7 +183,8 @@ export function decisionRoutes(deps: HttpDeps) {
           decisionId,
           kind: 'model_selection' as const,
           id: agent.id,
-          label: agent.displayName ?? agent.name
+          label: agent.displayName ?? agent.name,
+          rootDecisionId: agent.modelSelection!.decisionId
         })),
         ...(agent.decisionIds ?? []).map((decisionId) => ({
           decisionId,
@@ -286,7 +291,14 @@ export function decisionRoutes(deps: HttpDeps) {
           codeHostUsages(req, ids)
         ])
         const counts = new Map<string, number>()
-        for (const usage of [...gates, ...routers, ...codeHost, ...agents])
+        const gateConversations = new Set<string>()
+        for (const usage of gates) {
+          const key = `${usage.decisionId}\u0000${usage.botId}\u0000${usage.channelId}`
+          if (gateConversations.has(key)) continue
+          gateConversations.add(key)
+          counts.set(usage.decisionId, (counts.get(usage.decisionId) ?? 0) + 1)
+        }
+        for (const usage of [...routers, ...codeHost, ...agents])
           counts.set(usage.decisionId, (counts.get(usage.decisionId) ?? 0) + 1)
         return rows.map((row) => ({ ...dto(row, req), usageCount: counts.get(row.id) ?? 0 }))
       }
@@ -442,7 +454,7 @@ export function decisionRoutes(deps: HttpDeps) {
               ...agents.map(({ decisionId: _decisionId, ...usage }) => usage)
             ],
             hiddenUsageCount:
-              Math.max(0, conversations - shown.length) +
+              Math.max(0, conversations - conversationCount(shown)) +
               (routers - routing.visible.length) +
               (repositories - codeHost.visible.length) +
               hiddenAgents

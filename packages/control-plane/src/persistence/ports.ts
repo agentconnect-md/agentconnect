@@ -5397,6 +5397,7 @@ export interface ChannelDecisionRoutingRef {
 /** One conversation row whose By decision gate references a Decision. */
 export interface DecisionChannelUsage {
   decisionId: string
+  rootDecisionId: string
   integrationId: IntegrationId
   agentId: AgentId
   botId: BotId
@@ -5611,6 +5612,7 @@ export interface BotDecisionRoutingRemoval {
 /** One router referencing a Decision, with the agents its bot connects (for permission-filtered usages). */
 export interface BotDecisionRoutingUsage {
   decisionId: string
+  rootDecisionId: string
   botId: BotId
   botName: string
   agentIds: AgentId[]
@@ -5659,6 +5661,7 @@ export interface CodeHostDecisionRoutingRecord extends CodeHostRoutingScope {
 /** One code-host routing referencing a Decision, with its members and targets (for permission-filtered usages). */
 export interface CodeHostDecisionRoutingUsage {
   decisionId: string
+  rootDecisionId: string
   routingId: string
   provider: import('@agentconnect.md/protocol').CodeHostRoutingProvider
   repoId: bigint

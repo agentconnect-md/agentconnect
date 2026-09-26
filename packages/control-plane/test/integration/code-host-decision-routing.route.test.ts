@@ -4,6 +4,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import {
   DECISION_CHAIN_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
+  DECISION_EVALUATION_FILTER_V1_FEATURE,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
   type DecisionDraft,
@@ -33,6 +34,7 @@ const LATE_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
 const REPO_ID = 424242
 const INSTALLATION = 7654321n
 const SCOPE = `${ORG}/decision-routing/github/${REPO_ID}/issues`
+const DECISION = '33333333-3333-4333-8333-333333333333'
 
 const boolDraft: DecisionDraft = {
   name: 'Bug',
@@ -157,7 +159,9 @@ function appWith(
 ) {
   const spy = new SpyControl()
   const features =
-    opts.features === undefined ? [DECISION_EVALUATIONS_V1_FEATURE, HOOK_DECISION_ROUTING_V1_FEATURE] : opts.features
+    opts.features === undefined
+      ? [DECISION_EVALUATIONS_V1_FEATURE, HOOK_DECISION_ROUTING_V1_FEATURE, DECISION_EVALUATION_FILTER_V1_FEATURE]
+      : opts.features
   const liveness = {
     get: (daemonId: string) => {
       const advertised = opts.featuresByDaemon?.[daemonId] ?? features
@@ -495,14 +499,17 @@ describe('repository Decision routing — configuration', () => {
 
     const usage = await w.app.app.inject({ method: 'GET', url: `${ORG}/decisions/${decisionId}` })
     const routingId = (await prisma.codeHostDecisionRouting.findFirstOrThrow()).id
-    expect((usage.json() as { usages: unknown[] }).usages).toContainEqual({
-      kind: 'code_host_routing',
-      id: routingId,
-      label: 'example-org/example-repo · issues',
-      provider: 'github',
-      repoId: String(REPO_ID),
-      family: 'issues'
-    })
+    expect((usage.json() as { usages: unknown[] }).usages).toContainEqual(
+      expect.objectContaining({
+        kind: 'code_host_routing',
+        id: routingId,
+        label: 'example-org/example-repo · issues',
+        rootDecisionId: decisionId,
+        provider: 'github',
+        repoId: String(REPO_ID),
+        family: 'issues'
+      })
+    )
 
     const revision = (await prisma.agent.findUniqueOrThrow({ where: { id: w.early } })).configRevision
     const edited = await w.app.app.inject({
@@ -564,6 +571,17 @@ describe('repository Decision routing — Recent evaluations', () => {
     expect(w.spy.lists).toEqual([
       { agentId: w.early, integrationId: routingId, channel: routingId, source: 'hook_routing', limit: 5 }
     ])
+    expect(
+      (await w.app.app.inject({ method: 'GET', url: `${SCOPE}/evaluations?decisionId=${DECISION}` })).statusCode
+    ).toBe(200)
+    expect(w.spy.lists.at(-1)).toMatchObject({ decisionId: DECISION })
+    const old = appWith({ features: [DECISION_EVALUATIONS_V1_FEATURE, HOOK_DECISION_ROUTING_V1_FEATURE] })
+    expect(
+      (await old.app.app.inject({ method: 'GET', url: `${SCOPE}/evaluations?decisionId=${DECISION}` })).json()
+    ).toMatchObject({
+      code: 'DAEMON_UPGRADE_REQUIRED'
+    })
+    expect(old.spy.lists).toEqual([])
     const one = await w.app.app.inject({ method: 'GET', url: `${SCOPE}/evaluations/3` })
     expect(one.statusCode).toBe(200)
     expect(one.json()).toEqual(detail)
@@ -708,14 +726,17 @@ describe('repository Decision routing — GitLab and Gitea', () => {
     )
 
     const usage = await app.app.inject({ method: 'GET', url: `${ORG}/decisions/${decisionId}` })
-    expect((usage.json() as { usages: unknown[] }).usages).toContainEqual({
-      kind: 'code_host_routing',
-      id: stored.id,
-      label: 'example-group/example-project · merge requests',
-      provider: 'gitlab',
-      repoId: String(PROJECT_ID),
-      family: 'merge_request'
-    })
+    expect((usage.json() as { usages: unknown[] }).usages).toContainEqual(
+      expect.objectContaining({
+        kind: 'code_host_routing',
+        id: stored.id,
+        label: 'example-group/example-project · merge requests',
+        rootDecisionId: decisionId,
+        provider: 'gitlab',
+        repoId: String(PROJECT_ID),
+        family: 'merge_request'
+      })
+    )
 
     // A project rename moves the routing's path and re-projects its host.
     const revision = (await prisma.agent.findUniqueOrThrow({ where: { id: w.late } })).configRevision

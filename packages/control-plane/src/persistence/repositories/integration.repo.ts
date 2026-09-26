@@ -1239,6 +1239,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         .filter((id) => !decisionIds || decisionIds.includes(id))
         .map((id) => ({
           decisionId: id,
+          rootDecisionId: gate?.type === 'gate' ? gate.decisionId : r.decisionId!,
           integrationId: IntegrationId(r.integrationId),
           agentId: AgentId(r.integration.agentId),
           botId: BotId(r.integration.botId),

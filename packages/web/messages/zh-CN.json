@@ -4327,6 +4327,7 @@
       "kind": {
         "gate": "频道门控",
         "shared_bot_routing": "共享 Bot 路由",
+        "code_host_routing": "仓库路由",
         "agent_tool": "Agent 工具",
         "model_selection": "模型选择"
       },
@@ -4334,6 +4335,17 @@
       "ok": "正常",
       "hidden": "{count, plural, other {另有 # 处你无权查看}}",
       "hiddenUnknown": "被你无权查看的项目使用"
+    },
+    "recentBySource": {
+      "title": "近期评估",
+      "loading": "正在加载评估记录…",
+      "chainHistory": "此来源从决策链的首个步骤开始记录评估。",
+      "noSources": "此 Decision 当前没有记录评估的使用入口。",
+      "empty": "此来源近期没有评估记录。",
+      "viewAll": "查看此来源的全部记录",
+      "upgrade": "升级此来源的评估节点后，才能按 Decision 筛选。",
+      "error": "无法加载此来源的评估记录。",
+      "retry": "重试"
     },
     "errors": {
       "name": "保存前请先为决策命名。",

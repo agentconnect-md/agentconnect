@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DecisionModelEvaluationReader } from '../src/decisions/model-evaluations.js'
+import type { LocalStore } from '../src/store/local-store.js'
 import { STORE_RETENTION_RULES, StoreRetentionSweeper } from '../src/store/retention.js'
 import { openTestStore } from './store-support.js'
 
@@ -12,6 +13,81 @@ const sessionId = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(1
 const question = { type: 'boolean' as const, instructions: 'Choose a model?', criteria: { true: 'Yes', false: 'No' } }
 
 describe('model selection evaluation history', () => {
+  it('moves the cursor past a page of unreadable summaries', async () => {
+    const summary = JSON.stringify({
+      at: new Date(AT).toISOString(),
+      sessionId: sessionId(1),
+      decisionId: DECISION,
+      outcome: 'selected',
+      reason: null,
+      target: { runtime: 'test', model: 'chosen' },
+      answer: null,
+      requestedModel: null,
+      actualModel: null,
+      latencyMs: null,
+      usage: null
+    })
+    const rows = [
+      { seq: 4, summaryJson: '{}', detailJson: null, bodiesStrippedAt: null },
+      { seq: 3, summaryJson: '{}', detailJson: null, bodiesStrippedAt: null },
+      { seq: 2, summaryJson: summary, detailJson: null, bodiesStrippedAt: null },
+      { seq: 1, summaryJson: summary, detailJson: null, bodiesStrippedAt: null }
+    ]
+    const store = {
+      listDecisionModelEvaluations: async (
+        _orgId: string,
+        _agentId: string,
+        before: number | undefined,
+        limit: number
+      ) => rows.filter((row) => row.seq < (before ?? Number.MAX_SAFE_INTEGER)).slice(0, limit)
+    } as unknown as LocalStore
+    const reader = new DecisionModelEvaluationReader({ store: () => store, servesAgent: () => true })
+    const first = await reader.list('', { agentId: AGENT, limit: 2 })
+    expect(first).toEqual({ items: [], nextCursor: 3 })
+    const second = await reader.list('', { agentId: AGENT, cursor: first.nextCursor!, limit: 2 })
+    expect(second.items.map((item) => item.seq)).toEqual([2, 1])
+  })
+
+  it('filters by Decision before paging an agent lane', async () => {
+    const store = await openTestStore()
+    const reader = new DecisionModelEvaluationReader({ store: () => store, servesAgent: () => true })
+    const save = (i: number, decisionId: string) =>
+      store.saveDecisionModelEvaluation(
+        AGENT,
+        sessionId(i),
+        {
+          at: new Date(AT).toISOString(),
+          sessionId: sessionId(i),
+          decisionId,
+          outcome: 'selected',
+          reason: null,
+          target: { runtime: 'test', model: 'chosen' },
+          answer: null,
+          requestedModel: null,
+          actualModel: null,
+          latencyMs: null,
+          usage: null
+        },
+        { selection: null, question: null, input: null, fullAnswer: null, rawRequest: null, rawResponse: null },
+        AT
+      )
+    await save(1, DECISION)
+    await save(2, OTHER)
+    await save(3, DECISION)
+    const page = await reader.list('', { agentId: AGENT, decisionId: DECISION, limit: 1 })
+    expect(page.items.map((item) => item.sessionId)).toEqual([sessionId(3)])
+    expect(page.nextCursor).toBe(page.items[0]!.seq)
+    expect(
+      (await reader.list('', { agentId: AGENT, decisionId: DECISION, cursor: page.nextCursor!, limit: 1 })).items.map(
+        (item) => item.sessionId
+      )
+    ).toEqual([sessionId(1)])
+    expect(
+      (await reader.list('', { agentId: AGENT, decisionId: OTHER, limit: 20 })).items.map((item) => item.sessionId)
+    ).toEqual([sessionId(2)])
+    await store.close()
+  })
+
   it('keeps a separate per-agent lane, strips bodies after 20 newer choices or 24 hours, and deletes summaries after seven days', async () => {
     const store = await openTestStore()
     const reader = new DecisionModelEvaluationReader({

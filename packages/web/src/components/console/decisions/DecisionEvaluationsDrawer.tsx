@@ -31,6 +31,7 @@ export function DecisionEvaluationsDrawer({
   channelName,
   agentName,
   initialSeq,
+  decisionId,
   onClose
 }: (
   | { conversation: DecisionConversationRef; source?: undefined }
@@ -41,6 +42,7 @@ export function DecisionEvaluationsDrawer({
   agentName?: string
   /** Opens straight on this evaluation's detail; Back still lands on the list. */
   initialSeq?: number
+  decisionId?: string
   onClose: () => void
 }) {
   const t = useTranslations('Decisions')
@@ -58,8 +60,8 @@ export function DecisionEvaluationsDrawer({
     (id: string) => decisions.find((entry) => entry.id === id)?.name ?? t('binding.hiddenDecision'),
     [decisions, t]
   )
-  const { data, error, isLoading, mutate } = useSWR(['decision-evaluations', ...source.key], () =>
-    source.list({ limit: PAGE })
+  const { data, error, isLoading, mutate } = useSWR(['decision-evaluations', ...source.key, decisionId], () =>
+    source.list({ limit: PAGE, ...(decisionId ? { decisionId } : {}) })
   )
   // Later pages are appended locally; a fresh first page (revalidation or a new key) drops them.
   const [appended, setAppended] = useState<{
@@ -88,7 +90,7 @@ export function DecisionEvaluationsDrawer({
     setLoadingMore(true)
     setMoreError(null)
     try {
-      const page = await source.list({ cursor: nextCursor, limit: PAGE })
+      const page = await source.list({ cursor: nextCursor, limit: PAGE, ...(decisionId ? { decisionId } : {}) })
       setAppended((current) => ({
         base: data,
         items: [...(current && current.base === data ? current.items : []), ...page.items],
@@ -129,7 +131,7 @@ export function DecisionEvaluationsDrawer({
               label: t('binding.retry'),
               run: () => void mutate()
             })
-  } else if (items.length === 0) body = note('info', t(`${copy}.empty`))
+  } else if (items.length === 0 && nextCursor === null) body = note('info', t(`${copy}.empty`))
   else
     body = (
       <>

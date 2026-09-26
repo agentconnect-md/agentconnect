@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
   DECISION_EVALUATIONS_V1_FEATURE,
+  DECISION_EVALUATION_FILTER_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   type DecisionEvaluationConversation,
   type DecisionEvaluationRecordDetail,
@@ -26,7 +27,8 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd4d4d4d4-dddd-4ddd-8ddd-dddddddddddd'
 const SECOND = 'd5d5d5d5-dddd-4ddd-8ddd-dddddddddddd'
-const FEATURES = [DECISION_TRIGGER_V1_FEATURE, DECISION_EVALUATIONS_V1_FEATURE]
+const FEATURES = [DECISION_TRIGGER_V1_FEATURE, DECISION_EVALUATIONS_V1_FEATURE, DECISION_EVALUATION_FILTER_V1_FEATURE]
+const DECISION = '33333333-3333-4333-8333-333333333333'
 
 const row = {
   seq: 12,
@@ -197,6 +199,13 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
     ])
     expect((await list(app, integrationId)).statusCode).toBe(200)
     expect(spy.lists.at(-1)!.req).toEqual({ agentId, integrationId, channel: 'C1', limit: 20 })
+    expect((await list(app, integrationId, 'C1', `?decisionId=${DECISION}`)).statusCode).toBe(200)
+    expect(spy.lists.at(-1)!.req).toEqual({ agentId, integrationId, channel: 'C1', decisionId: DECISION, limit: 20 })
+    const old = appWith({ features: { [DAEMON]: [DECISION_TRIGGER_V1_FEATURE, DECISION_EVALUATIONS_V1_FEATURE] } })
+    expect((await list(old.app, integrationId, 'C1', `?decisionId=${DECISION}`)).json()).toMatchObject({
+      code: 'DAEMON_UPGRADE_REQUIRED'
+    })
+    expect(old.spy.lists).toEqual([])
     const one = await get(app, integrationId, 12)
     expect(one.statusCode, one.body).toBe(200)
     expect(one.json()).toEqual(detail)

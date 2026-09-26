@@ -166,7 +166,13 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
         settings.decisionBinding.type === 'gate' &&
         decisionChainIds(settings.decisionBinding).includes(id)
       )
-        result.push({ kind: 'gate', id: channel.id, label: channel.name })
+        result.push({
+          kind: 'gate',
+          id: channel.id,
+          label: channel.name,
+          integrationId: channel.botId,
+          channelId: channel.id
+        })
     }
     for (const routing of routings.values()) {
       if (decisionChainIds(routing.config).includes(id))
@@ -559,7 +565,11 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
     async listEvaluations(_ref, page = {}) {
       if (options.scenario === 'daemon_offline') throw offline()
       const limit = Math.min(50, Math.max(1, page.limit ?? 20))
-      const after = evaluations.filter((entry) => page.cursor === undefined || entry.seq < page.cursor)
+      const after = evaluations.filter(
+        (entry) =>
+          (page.cursor === undefined || entry.seq < page.cursor) &&
+          (page.decisionId === undefined || entry.decisionId === page.decisionId)
+      )
       const items: DecisionEvaluationRecord[] = after.slice(0, limit).map((entry) => {
         const {
           snapshot: _snapshot,
@@ -730,6 +740,7 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
       const after = routingEvaluations.filter(
         (entry) =>
           (page.cursor === undefined || entry.seq < page.cursor) &&
+          (page.decisionId === undefined || entry.decisionId === page.decisionId) &&
           (page.channelId === undefined || entry.channel === page.channelId)
       )
       const items: DecisionRoutingEvaluationRecord[] = after.slice(0, limit).map((entry) => {
