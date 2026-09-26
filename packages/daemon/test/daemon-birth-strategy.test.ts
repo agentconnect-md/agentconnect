@@ -92,7 +92,7 @@ describe('the birth strategy on the holder', () => {
     await internal.stop()
   }
 
-  async function row(internal: any, key: string): Promise<void> {
+  async function row(internal: any, key: string, isolation: 'session' | 'shared' = 'session'): Promise<void> {
     const rec: SessionRecord = {
       key,
       agentId: AGENT,
@@ -103,10 +103,10 @@ describe('the birth strategy on the holder', () => {
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 1,
-      workspaceIsolation: 'session'
+      workspaceIsolation: isolation
     }
     await internal.store.upsertSession(rec)
-    internal.sessionIsolation.set(key, 'session')
+    internal.sessionIsolation.set(key, isolation)
   }
 
   it('launches a session in the strategy it was born with after a restart under a changed `execution`', async () => {
@@ -141,6 +141,32 @@ describe('the birth strategy on the holder', () => {
       stayedHomeReason: 'not_on_group',
       birthStrategy: 'srt'
     })
+  })
+
+  it('keeps an isolated session born on the host in a host of its own there after the agent moves to srt, and a shared one on the agent’s', async () => {
+    const root = scaffold({ execution: 'host' })
+    const first = await start(root)
+    const isolated = KEY('1700000000.000300')
+    const shared = KEY('1700000000.000400')
+    await row(first, isolated)
+    await row(first, shared, 'shared')
+    for (const key of [isolated, shared]) await first.placeSessionOnExecutor(first.agents.get(AGENT), key)
+    // Born on the host with only a worktree of its own, the isolated session is served by the agent's shared host.
+    expect(first.hostKeyFor(AGENT, isolated)).toBe(agentHostKey(AGENT))
+    await stop(first)
+
+    writeAgent(root, { execution: 'srt' })
+    const second = await start(root)
+    const agent = second.agents.get(AGENT)
+    second.sessionIsolation.set(isolated, 'session')
+    second.sessionIsolation.set(shared, 'shared')
+    for (const key of [isolated, shared]) await second.placeSessionOnExecutor(agent, key)
+    expect(second.hostKeyFor(AGENT, isolated)).toBe(sessionHostKey(AGENT, isolated))
+    expect(second.hostKeyFor(AGENT, shared)).toBe(agentHostKey(AGENT))
+    const build = vi.spyOn(second, 'buildAcpHost').mockReturnValue({ host: { stop: async () => {} } })
+    second.ensureHost(second.hostKeyFor(AGENT, isolated), second.cfg, join(root, 'born-host'))
+    second.ensureHost(second.hostKeyFor(AGENT, shared), second.cfg)
+    expect(build.mock.calls.map((call) => (call[2] as { strategy: string }).strategy)).toEqual(['host', 'srt'])
   })
 
   it('prepares a placed session in its recorded strategy, and leaves an environment of another one as it is', async () => {
