@@ -1328,6 +1328,8 @@ export interface SessionFilterQuery extends SessionQuery {
    *  Keyed rather than one field per host, so a new provider needs no new field here. */
   codeHostHookIds?: Partial<Record<CodeHostProvider, HookId[]>>
   hookTriggerIds?: HookId[]
+  /** With `hookTriggerIds`, also the sessions these installation rows opened on one repository, whose channel is `github:<repoId>`. */
+  hookTriggerInstallationChannel?: { hookIds: HookId[]; channel: string }
   /** Agents whose sessions count as conversation MEMBERS, when the caller may see
    *  more than the filter returns. Absent ⇒ `agentIds`, i.e. membership and row
    *  scope are the same set. Only widens membership — which conversations qualify,
