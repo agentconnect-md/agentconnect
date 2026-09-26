@@ -694,13 +694,38 @@ describe('GithubReviewBrokerService', () => {
       await expect(service.start(startInput, DAEMON)).resolves.toEqual({
         amendment: { reportSha: 'head-sha', event: 'REQUEST_CHANGES', verdict: 'fail' }
       })
-      expect(hookRepo.latestReviewVerdictRun).toHaveBeenCalledWith(HOOK, 42, 'head-sha')
+      // Scoped to the run's own binding and epoch, not the hook's whole history.
+      expect(hookRepo.latestReviewVerdictRun).toHaveBeenCalledWith(HOOK, {
+        repoId: 123n,
+        projectionEpoch: 1n,
+        pullNumber: 42,
+        reportSha: 'head-sha'
+      })
 
       // A generation names nothing: it will produce the verdict itself.
       hookRepo.latestReviewVerdictRun.mockClear()
       setRun(run({ turnStartedAt: null }))
       await expect(service.start({ ...startInput, event: 'pull_request:synchronize' }, DAEMON)).resolves.toEqual({})
       expect(hookRepo.latestReviewVerdictRun).not.toHaveBeenCalled()
+    })
+
+    it('judges the started row, so a PR comment whose accepted row carried no revision still gets its amendment', async () => {
+      const { service, hookRepo, setRun } = setup()
+      // The relay accepts an issue_comment without head/base/report SHA; hook/start is what writes them.
+      const accepted = conversation({ event: 'issue_comment:created', headSha: null, baseSha: null, reportSha: null })
+      setRun(accepted)
+      hookRepo.recordStart.mockImplementation(async () => {
+        setRun(conversation({ event: 'issue_comment:created' }))
+        return true
+      })
+      hookRepo.latestReviewVerdictRun.mockResolvedValue(sealed())
+      await expect(service.start({ ...startInput, event: 'issue_comment:created' }, DAEMON)).resolves.toEqual({
+        amendment: { reportSha: 'head-sha', event: 'REQUEST_CHANGES', verdict: 'fail' }
+      })
+      expect(hookRepo.latestReviewVerdictRun).toHaveBeenCalledWith(
+        HOOK,
+        expect.objectContaining({ reportSha: 'head-sha' })
+      )
     })
 
     it.each([

@@ -339,13 +339,21 @@ export class GithubReviewBrokerService {
     if (
       run.projectionIntent !== 'review_action_only' ||
       run.subjectKind !== 'pull_request' ||
+      run.repoId === null ||
+      run.projectionEpoch === null ||
       run.pullNumber === null ||
       run.reportSha === null ||
       run.reviewPolicySnapshot === null ||
       run.reviewPolicySnapshot === 'off'
     )
       return undefined
-    const latest = await this.deps.hook.latestReviewVerdictRun(HookId(run.hookId), run.pullNumber, run.reportSha)
+    // Scoped to the run's own binding and epoch: a verdict a rebind or re-enable retired cannot be amended.
+    const latest = await this.deps.hook.latestReviewVerdictRun(HookId(run.hookId), {
+      repoId: run.repoId,
+      projectionEpoch: run.projectionEpoch,
+      pullNumber: run.pullNumber,
+      reportSha: run.reportSha
+    })
     if (
       !latest ||
       latest.id === run.id ||
@@ -443,7 +451,10 @@ export class GithubReviewBrokerService {
 
     const accepted = recovering || (await this.deps.hook.recordStart(hookId, reportingDaemonId, startInput))
     if (!accepted) denied('hook start reservation was rejected', 'CONFLICT')
-    const amendment = await this.amendableVerdict(run)
+    if (run.projectionIntent !== 'review_action_only') return {}
+    // An issue_comment's accepted row carries no revision; the barrier just wrote it, so judge the STARTED row.
+    const started = (await this.deps.hook.getRun(hookId, input.deliveryKey)) ?? run
+    const amendment = await this.amendableVerdict(started)
     return amendment ? { amendment } : {}
   }
 

@@ -2768,9 +2768,13 @@ export interface HookRepo {
   getRunById(runId: string): Promise<HookRunRecord | null>
   /** Org-fenced: the pull-request run owning one session, for the console's PR panel. */
   latestPullRequestRunForSession(orgId: OrgId, sessionId: string): Promise<HookRunRecord | null>
-  /** The run holding this hook's review verdict on one PR revision: its latest generation, or a
-   *  later conversation turn whose submitted pass/fail amended it. Null when nothing was reviewed. */
-  latestReviewVerdictRun(hookId: HookId, pullNumber: number, reportSha: string): Promise<HookRunRecord | null>
+  /** The run holding this hook's review verdict on one PR revision under its CURRENT repository binding and
+   *  projection epoch: its latest generation, or a later conversation turn whose submitted pass/fail amended it.
+   *  Null when nothing was reviewed there; a verdict sealed under an earlier binding or epoch never qualifies. */
+  latestReviewVerdictRun(
+    hookId: HookId,
+    scope: { repoId: bigint; projectionEpoch: bigint; pullNumber: number; reportSha: string }
+  ): Promise<HookRunRecord | null>
   /** Latest current revisions whose durable Check projection is absent or
    * stale. Used by the periodic R2a crash-repair loop. */
   listRunsNeedingReviewProjection(limit?: number): Promise<HookRunRecord[]>
