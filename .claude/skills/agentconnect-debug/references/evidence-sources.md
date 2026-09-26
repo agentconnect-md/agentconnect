@@ -32,7 +32,7 @@ The script resolves the bundled `pg` driver inside the image, sets the session r
 
 ## 2. The daemon store
 
-**Where.** `<root>/state/local.sqlite` for a self-hosted daemon (`packages/daemon/src/paths.ts`); the root defaults to `~/.agentconnect`, or `AGENTCONNECT_ROOT`, or `--root`. `agentconnect status` prints the root the service runs on. A pool member uses the shared Postgres data plane instead: same tables, query that database.
+**Where.** First read the running daemon's root and `config.json` (`agentconnect status` reports the root). A self-hosted daemon defaults to SQLite at `<root>/state/local.sqlite`, but `store.backend = postgres` selects a shared PostgreSQL store without local session history. A `--k8s` pool member always uses PostgreSQL. Read the selected backend before interpreting an absent SQLite file; see [the PostgreSQL recipe](#no-local-session-rows-or-a-missing-sqlite-store).
 
 **Tables** (`packages/daemon/src/store/local-store.ts`):
 
@@ -124,3 +124,83 @@ git show v1.61.0-rc.170:packages/daemon/src/store/local-store.ts | sed -n '1,80p
 ```
 
 A Control Plane rollout leaves a window where daemons are reconnecting; when a symptom's timestamp is within a minute of a release, read the deployment's rollout times before reading code.
+
+## 9. Diagnostic recipes
+
+These checks narrow a hypothesis; none turns a familiar symptom into proof of the same cause. Keep the report's run, session, repository revision, environment, and UTC window attached to every observation.
+
+### Slow startup or slow review
+
+**First check.** Select one `hook_run` by delivery/run id and, for a review, record its `headSha`, `projectionId`, and `projectionGeneration`. Put `startedAt`, `preparingAt`, `turnStartedAt`, and `completedAt` on one UTC timeline. Then align timestamped daemon, workspace, sandbox, runtime, and publication logs for that same run. Do not combine cold and warm samples.
+
+| Phase                        | Boundary evidence to record                                      | UTC start → end | Duration / uncertainty |
+| ---------------------------- | ---------------------------------------------------------------- | --------------- | ---------------------- |
+| Ingress, dispatch, placement | Relay receipt, `hook_run.startedAt`, dispatch and placement logs | …               | …                      |
+| Image or VM preparation      | Selected execution image/VM log, ready event                     | …               | …                      |
+| Repository checkout          | Workspace preparation and git completion logs                    | …               | …                      |
+| Skill preparation            | Skill resolution/install start and completion                    | …               | …                      |
+| ACP initialization or resume | Runtime launch, `session/load` or initialize result              | …               | …                      |
+| First model output           | `turnStartedAt`, prompt send, first ACP output                   | …               | …                      |
+| Tool execution               | Tool start/end rows and runtime log                              | …               | …                      |
+| Final publication            | `completedAt`, report/Check projection or platform post          | …               | …                      |
+
+The gap from `startedAt` to `preparingAt` bounds dispatch and waiting; `preparingAt` to `turnStartedAt` contains several preparation phases. Neither is a direct measurement of VM startup. A measured case had about 16.5 seconds in repository preparation and 1.4 seconds in VM startup. Attribute a delay only when both phase boundaries were observed; put `unknown` in the table otherwise. A slow total or a late Check alone does not identify the slow component.
+
+### Missing models or ignored configuration changes
+
+**First check.** Identify the code and configuration that served the failed turn: the writer daemon's `agentVersion`, the relevant Control Plane and relay rollout/image, and the executor pod or VM image when execution moved. On the daemon root, inspect the installed ACP adapter under `runtimes/` and its nested runtime CLI/version; `RuntimeStore.install()` can reuse an existing package tree. For a CP-requested upgrade, read the path in `<root>/cli-entry` and the CLI version at that path (`packages/daemon/src/lifecycle/cli-upgrade.ts`), separately from the daemon version. An upgraded daemon can have used an older upgrade CLI; updating a desktop runtime does not update a daemon-owned nested CLI.
+
+For the session, read `sessions.observedRuntime`, `observedModel`, `decisionModel`, model/effort/permission overrides, `birthStrategy`, and its placement. Compare those with the current agent form, then use the launch and runtime logs to establish the strategy, HOME, cwd, and actual model for the turn (`packages/daemon/src/store/session-metadata-outbox.ts`, `runtimes/runtime-store.ts`, and launch preparation). An observed pair is a last-turn observation, while the Decision and overrides can pin a different target than today's agent defaults. Pool membership or the current form alone does not prove which image, adapter, CLI, or settings an existing session used.
+
+### Git works but PR creation returns 403
+
+**First check.** Record the caller, sanitized command shape, target repository, credential route, and denied capability without printing a token. Distinguish the Git credential helper's `contents` token from AgentConnect's repository-targeted `gh` wrapper token (`contents`, `issues`, `pull_requests`) and from a Console user's repository-access authorization (`packages/daemon/src/cp/git-credential.ts`). A direct PR REST call made with the contents-only Git token can return `Resource not accessible by integration` even when the installation can create a PR through the proper route. A successful clone/push proves a contents route worked; the 403 alone does not prove the installation lacks PR permission. Check the target repo and the route before changing permissions.
+
+### A turn disappears or repeats after restart
+
+**First check.** Join one durable `inbox.id` and `sessionKey` to the outward session and hook/cron run, then place shutdown/drain, `session/load`, replay planning, prompt, and terminal-report evidence on one timeline. Read only metadata first: `inbox.id`, `sessionKey`, `enqueuedAt`, `completedAt`, whether `terminalReport` is present, and `sessions.lastDeliveredTs`/`lastTurnOutcome`. The `query` subcommand can read these from SQLite without exposing `inbox.msg` or the report body; use the PostgreSQL recipe below for a shared store.
+
+An admitted row with null `completedAt` is still eligible for execution/replay; a completed row retaining `terminalReport` is a separate publication obligation. `lastDeliveredTs` is a read cursor, and successful `session/load` proves runtime history was restored, not that the admitted turn ran or published. `planReplay()` uses `retryAdmittedTurn` so a retained inbox row can deliver its trigger even when the cursor passed it (`packages/daemon/src/session/turn/replay-plan.ts`; PR #2370). Before suggesting redelivery, check for a later prompt, terminal disposition, and publication receipt; otherwise the same work may repeat.
+
+### No local session rows or a missing SQLite store
+
+**First check.** Read the running root and the selected `store.backend` in `<root>/config.json`. For self-hosted `postgres`, resolve `store.configFile` against that root; under `--k8s`, use `/var/run/ac-data-plane/config.json` regardless of the file's store setting (`packages/daemon/src/daemon.ts` `startClusterPlanes`, `store/postgres-config.ts`). The credentials file names the **daemon data plane**, not the Control Plane database queried by `cp-query.sh`. A missing or stale `<root>/state/local.sqlite` does not imply lost sessions after the backend changes.
+
+Run the following on that daemon host, or in an authorized pod with the same mounted credentials file and a `psql` client. The connection URL stays in the process environment on that host/pod, never in an argument, scratch file, or transcript. Supply the configuration path and the organization, agent, and outward session ids from the Control Plane; `psql` quotes those ids as SQL literals. The store schema is `agentconnect_cloud_store`, whose PostgreSQL column names are lower case. These queries return metadata only:
+
+```bash
+node - '<data-plane-config-path>' '<org-id>' '<agent-id>' '<session-id>' <<'NODE'
+const { readFileSync } = require('node:fs')
+const { spawnSync } = require('node:child_process')
+const [configPath, orgId, agentId, sessionId] = process.argv.slice(2)
+const { databaseUrl } = JSON.parse(readFileSync(configPath, 'utf8'))
+const sql = `
+BEGIN READ ONLY;
+SELECT key, agentid, sessionid, acpsessionid, state, lastdeliveredts, updatedat
+  FROM agentconnect_cloud_store.sessions
+ WHERE agentid = :'agent_id' AND sessionid = :'session_id';
+SELECT i.id, i.sessionkey, i.enqueuedat, i.completedat,
+       i.terminalreport IS NOT NULL AS has_terminal_report
+  FROM agentconnect_cloud_store.inbox i
+  JOIN agentconnect_cloud_store.sessions s ON s.key = i.sessionkey
+ WHERE s.agentid = :'agent_id' AND s.sessionid = :'session_id';
+SELECT t.seq, t.ts, t.sender, t.kind, t.sessionscope
+  FROM agentconnect_cloud_store.transcript t
+  JOIN agentconnect_cloud_store.sessions s ON s.key = t.sessionscope
+ WHERE t.orgid = :'org_id' AND s.agentid = :'agent_id' AND s.sessionid = :'session_id'
+ ORDER BY t.seq DESC LIMIT 30;
+ROLLBACK;
+`
+const result = spawnSync('psql', [
+  '-X', '-v', 'ON_ERROR_STOP=1', '-v', `org_id=${orgId}`,
+  '-v', `agent_id=${agentId}`, '-v', `session_id=${sessionId}`
+], {
+  env: { ...process.env, PGDATABASE: databaseUrl, PGOPTIONS: '-c default_transaction_read_only=on -c statement_timeout=10000' },
+  input: sql, encoding: 'utf8'
+})
+if (result.status !== 0) throw new Error(`read-only data-plane query failed (psql exit ${result.status ?? 'unknown'})`)
+process.stdout.write(result.stdout)
+NODE
+```
+
+If `psql` is unavailable there, use an existing authorized database client in the same environment; do not move the connection file to the investigating machine. Never open a diagnostic connection through `openPostgresDataPlane()` or `LocalStore.open()`: those initialize or migrate schemas (`store/postgres-data-plane.ts`, `store/postgres-async-database.ts`). Scope shared `sessions`/`inbox` by agent and outward session, and `transcript` by organization and session scope. A row's presence establishes durable state, not which process currently holds the runtime or whether a report reached its destination.
