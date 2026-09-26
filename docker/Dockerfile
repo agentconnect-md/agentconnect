@@ -111,6 +111,14 @@ COPY --from=cp-builder /control-plane ./
 COPY --from=cp-builder /app/packages/setup/dist /app/packages/setup/dist
 COPY --from=cp-builder /app/packages/setup/package.json /app/packages/setup/package.json
 
+# The release this image reports (its OpenAPI document's x-agentconnect-release, its telemetry). The manifest
+# stays at 1.0.0-dev, so CI passes the effective image tag, as it does for the daemon below; only a
+# semver-shaped value is written.
+ARG CONTROL_PLANE_VERSION=""
+RUN if echo "$CONTROL_PLANE_VERSION" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+'; then \
+  CONTROL_PLANE_VERSION="$CONTROL_PLANE_VERSION" node -e "const fs=require('node:fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version=process.env.CONTROL_PLANE_VERSION.replace(/^v/,'');fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"; \
+  fi
+
 EXPOSE 8080
 CMD ["node", "dist/index.js"]
 

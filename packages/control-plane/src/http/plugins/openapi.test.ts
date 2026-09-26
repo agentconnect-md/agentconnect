@@ -6,8 +6,9 @@
  * no Postgres — this lives in the fast `unit` project.
  */
 import { describe, it, expect } from 'vitest'
-import type { FastifyInstance } from 'fastify'
+import Fastify, { type FastifyInstance } from 'fastify'
 import { buildHttpServer } from '../server.js'
+import { installOpenapi } from './openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { buildCpPlatformRegistry } from '../../platforms/registry.js'
 import { createTelegramCpProvider } from '../../platforms/telegram/provider.js'
@@ -49,6 +50,37 @@ describe('openapi plane', () => {
       // `info.version` is the API version ("1"), distinct from the spec version.
       expect(doc.info?.version).toBe('1')
       expect(doc.components?.securitySchemes?.bearerAuth).toMatchObject({ type: 'http', scheme: 'bearer' })
+      // A checkout carries the dev manifest version, which names no release.
+      expect(doc.info).not.toHaveProperty('x-agentconnect-release')
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('keys the paths by the prefix a gateway exposes them under', async () => {
+    const deps = stubDeps()
+    const app = buildHttpServer({ ...deps, config: { ...deps.config, OPENAPI_PATH_PREFIX: '/v1' } } as HttpDeps)
+    await app.ready()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const paths = Object.keys(doc.paths)
+      expect(paths.length).toBeGreaterThan(0)
+      expect(paths.every((p) => p.startsWith('/v1/'))).toBe(true)
+      expect(paths.some((p) => p.startsWith('/api/v1'))).toBe(false)
+      // The gateway rewrites the prefix only; the operations behind it are untouched.
+      expect(doc.paths['/v1/orgs/{orgId}/agents']?.get?.operationId).toBeDefined()
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('names the release it was built from when one is known', async () => {
+    const app = Fastify()
+    installOpenapi(app, { release: 'v1.2.3' })
+    await app.ready()
+    try {
+      const doc = app.swagger() as Record<string, any>
+      expect(doc.info['x-agentconnect-release']).toBe('v1.2.3')
     } finally {
       await app.close()
     }

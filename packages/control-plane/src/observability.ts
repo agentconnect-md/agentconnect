@@ -6,9 +6,9 @@
  * What stays here is what is genuinely the control plane's: its name, its
  * version, and Prisma, which no other service runs.
  */
-import { readFileSync } from 'node:fs'
 import { otelFastifyPlugin, startOpenTelemetry, type OpenTelemetryHandle } from '@agentconnect.md/observability'
 import { PrismaInstrumentation } from '@prisma/instrumentation'
+import { readPackageVersion } from './package-version.js'
 
 export type { OpenTelemetryHandle }
 export { shouldIgnoreUndiciRequest, undiciClientSpanName } from '@agentconnect.md/observability'
@@ -42,15 +42,4 @@ export function startControlPlaneOpenTelemetry(env: NodeJS.ProcessEnv = process.
     env,
     extraInstrumentations: [buildPrismaInstrumentation()]
   })
-}
-
-/** Resolved here rather than in the shared package, which would otherwise
- *  report its own version instead of the control plane's. */
-function readPackageVersion(): string | undefined {
-  try {
-    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string }
-    return pkg.version
-  } catch {
-    return undefined
-  }
 }

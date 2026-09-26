@@ -143,6 +143,12 @@ const CoreConfigShape = {
   // Externally-reachable CP origin used to render the daemon start command on
   // onboarding (C2). Unset ⇒ the command URL falls back to HOST:PORT.
   PUBLIC_CP_URL: z.string().url().optional(),
+  // Prefix a fronting gateway exposes the CP's /api/v1 routes under (the chart's apiHost mode: /v1). The served
+  // OpenAPI document keys its paths by it, so a client reading the document calls URLs that exist.
+  OPENAPI_PATH_PREFIX: z
+    .string()
+    .regex(/^\/[^\s?#]*$/, 'must be an absolute path prefix')
+    .optional(),
   // Hosts the deployment lets the CP dial even though they resolve to a private address
   // (mcp-provider-oauth.md). Comma-separated. Deliberately NOT the relay's
   // RELAY_MCP_ALLOWED_UPSTREAMS: CP egress and relay egress are separate permissions.

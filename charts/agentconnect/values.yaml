@@ -478,7 +478,8 @@ controlPlane:
     # CORS: unset in the default same-origin mode (browser talks to the CP under /cp).
     # In SUBDOMAIN mode (top-level `apiHost` set) the chart derives
     # CORS_ORIGIN=<publicUrl> automatically — see control-plane.yaml.
-    # PUBLIC_CP_URL is derived from the top-level `publicUrl` (see control-plane.yaml).
+    # PUBLIC_CP_URL is derived from the top-level `publicUrl` (see control-plane.yaml), and in
+    # SUBDOMAIN mode OPENAPI_PATH_PREFIX=/v1 comes with it, matching the -api HTTPRoute's rewrite.
   # Extra plain env (name: value). OpenTelemetry goes here when an install enables it —
   # the standard OTEL_* vars the Node SDK reads. Values may reference
   # $(OTEL_COLLECTOR_HOST) (node IP) and $(POD_NAME) — downward-API vars the template

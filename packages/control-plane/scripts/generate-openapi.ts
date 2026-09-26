@@ -14,14 +14,12 @@
  * host clients should call (e.g. https://api.example.test at release time).
  * `outfile` defaults to `openapi.json` in the current directory.
  *
- * `OPENAPI_PATH_PREFIX` (env) rewrites the version prefix in the emitted path
- * keys. The CP serves its routes under `/api/v1`, but a fronting gateway may
- * expose them under a different public prefix.
- * The published spec must describe the EXTERNAL contract, or a docs UI's
- * "Try it" hits the wrong URL and 404s. Set it to the external prefix; unset keeps
- * the CP's native `/api/v1` (correct for direct/local access). Only the path
- * keys change — operations, params, and the live `/openapi.json` endpoint are
- * untouched.
+ * `OPENAPI_PATH_PREFIX` (env) is the prefix a fronting gateway exposes the CP's
+ * `/api/v1` routes under; the emitted path keys carry it, exactly as the live
+ * `/openapi.json` does when the server runs with the same setting. The published
+ * spec must describe the EXTERNAL contract, or a docs UI's "Try it" hits the
+ * wrong URL and 404s. Unset keeps the CP's native `/api/v1` (correct for
+ * direct/local access).
  *
  * Run it via the `openapi:generate` package script, which runs `prisma generate`
  * first (the client is gitignored) and passes `--conditions development` so the
@@ -30,7 +28,6 @@
 import { writeFileSync } from 'node:fs'
 import { buildHttpServer } from '../src/http/server.js'
 import type { HttpDeps } from '../src/http/deps.js'
-import { API_V1_PREFIX } from '../src/http/version.js'
 import { buildCpPlatformRegistry } from '../src/platforms/registry.js'
 import { createTelegramCpProvider } from '../src/platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../src/platforms/discord/provider.js'
@@ -54,7 +51,8 @@ function stubDeps(): HttpDeps {
     config: {
       NODE_ENV: 'production',
       DEFAULT_OWNER_ID: '00000000-0000-4000-8000-000000000000',
-      ...(publicUrl ? { PUBLIC_CP_URL: publicUrl } : {})
+      ...(publicUrl ? { PUBLIC_CP_URL: publicUrl } : {}),
+      ...(process.env.OPENAPI_PATH_PREFIX ? { OPENAPI_PATH_PREFIX: process.env.OPENAPI_PATH_PREFIX } : {})
     },
     platforms: buildCpPlatformRegistry([
       createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
@@ -70,19 +68,6 @@ const app = buildHttpServer(stubDeps())
 await app.ready()
 const doc = app.swagger() as { openapi: string; paths: Record<string, unknown>; servers?: Array<{ url: string }> }
 await app.close()
-
-// Re-key paths when the deployment exposes a prefix that differs from the
-// CP's native prefix. Only the leading version
-// segment changes; the `{orgId}`/`{id}` tokens and every operation ride along.
-const publicPrefix = process.env.OPENAPI_PATH_PREFIX
-if (publicPrefix && publicPrefix !== API_V1_PREFIX) {
-  doc.paths = Object.fromEntries(
-    Object.entries(doc.paths).map(([path, item]) => [
-      path.startsWith(API_V1_PREFIX) ? publicPrefix + path.slice(API_V1_PREFIX.length) : path,
-      item
-    ])
-  )
-}
 
 writeFileSync(outfile, JSON.stringify(doc, null, 2) + '\n')
 console.log(
