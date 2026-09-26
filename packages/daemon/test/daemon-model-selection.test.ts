@@ -223,7 +223,17 @@ describe('session-pinned Decision model', () => {
     const read = vi.spyOn(codeHostTurnFinal, 'codeHostPullRequestContext').mockResolvedValue({
       description: 'Fix login',
       commitMessages: ['Handle expired sessions'],
-      diff: '-return cached\n+return refresh()',
+      files: [
+        {
+          path: 'src/login.ts',
+          status: 'modified',
+          additions: 1,
+          deletions: 1,
+          diff: '-return cached\n+return refresh()',
+          diffTruncated: false
+        }
+      ],
+      filesTruncated: false,
       reasons: []
     })
     const hook = pullHook()
@@ -252,7 +262,11 @@ describe('session-pinned Decision model', () => {
       subject: { kind: 'pull_request', number: 42, body },
       currentMessage: { text: 'Review the login change' },
       history: [{ text: 'The retry still fails' }],
-      pullRequest: { commitMessages: 'Handle expired sessions', diff: '-return cached\n+return refresh()' }
+      pullRequest: {
+        commitMessages: 'Handle expired sessions',
+        files: [{ path: 'src/login.ts', diff: '-return cached\n+return refresh()' }],
+        filesTruncated: false
+      }
     })
     expect(started).toEqual([])
     const selected = internal.sessionRuntimes.get(run.key)
@@ -741,7 +755,8 @@ describe('a target judged where the session could land (session-executors.md §5
     vi.spyOn(codeHostTurnFinal, 'codeHostPullRequestContext').mockResolvedValue({
       description: 'Fix login',
       commitMessages: [],
-      diff: '',
+      files: [],
+      filesTruncated: false,
       reasons: []
     })
     vi.spyOn(internal, 'hostedSessionCount').mockResolvedValue(opts.holderHosted ?? 0)

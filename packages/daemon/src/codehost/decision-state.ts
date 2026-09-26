@@ -8,6 +8,7 @@ import {
 import {
   decisionEntryOf,
   decisionTextPrefix,
+  decisionTextTrimmer,
   fitDecisionState,
   type DecisionStateBudget,
   type DecisionStateResult
@@ -15,6 +16,7 @@ import {
 import { hookDecisionFacts, type HookDecisionSubject } from '../messages/hook-message.js'
 import type { ChannelRecordRef, ChannelTextRow, LocalStore } from '../store/local-store.js'
 import { PULL_CONTEXT_TIMEOUT_MS, type PullRequestContext } from './pull-context.js'
+import { PULL_CONTEXT_DIFF_MAX_BYTES, trimFileDiffs, type PullRequestFile } from './pull-files.js'
 
 export type CodeHostDecisionSource = Pick<RdMsgHook, 'github' | 'gitlab' | 'gitea' | 'context' | 'event'>
 
@@ -71,7 +73,8 @@ export async function loadCodeHostDecisionContext(input: {
       pullRequest = {
         ...pullRequest,
         commitMessages: [],
-        diff: '',
+        files: [],
+        filesTruncated: true,
         reasons: [...pullRequest.reasons, 'revision_mismatch']
       }
     }
@@ -111,7 +114,7 @@ function subjectOf(
   }
 }
 
-// Code hosts own their optional fields and trim order; the shared fitter owns the request budget.
+// Keep the file inventory through patch, commit and body trimming; the shared fitter owns the request budget.
 export function fitCodeHostDecisionState(
   state: Record<string, unknown>,
   decision: DecisionStateBudget
@@ -119,10 +122,26 @@ export function fitCodeHostDecisionState(
   return fitDecisionState(state, decision, (copy) => {
     const pull = copy.pullRequest as Record<string, unknown> | undefined
     const subject = copy.subject as Record<string, unknown> | undefined
+    const files = (pull?.files ?? []) as PullRequestFile[]
     return [
-      [pull, 'diff', 'diff_truncated'],
-      [pull, 'commitMessages', 'commits_truncated'],
-      [subject, 'body', 'subject_body_trimmed', (text, bytes) => codeHostSubjectBody(text, bytes).body]
+      [
+        'diff_truncated',
+        () => trimFileDiffs(files, Math.floor(files.reduce((sum, file) => sum + Buffer.byteLength(file.diff), 0) / 2))
+      ],
+      ['commits_truncated', decisionTextTrimmer(pull, 'commitMessages')],
+      [
+        'subject_body_trimmed',
+        decisionTextTrimmer(subject, 'body', (text, bytes) => codeHostSubjectBody(text, bytes).body)
+      ],
+      [
+        'files_truncated',
+        () => {
+          if (!pull || !files.length) return false
+          files.pop()
+          pull.filesTruncated = true
+          return true
+        }
+      ]
     ]
   })
 }
@@ -151,6 +170,8 @@ export function buildCodeHostDecisionState(
   const body = description === undefined ? undefined : codeHostSubjectBody(description)
   if (body?.bodyTruncated || c?.subject?.bodyTruncated) reasons.push('subject_body_trimmed')
   const pull = input.pullRequest
+  const files = structuredClone(pull?.files ?? [])
+  if (trimFileDiffs(files, PULL_CONTEXT_DIFF_MAX_BYTES)) reasons.push('diff_truncated')
   const member = codeHostHookMetadataOf(input.msg)
   const revision = member && codeHostHookRevisionOf(member)
   const isPull = facts.subject.kind === 'pull_request' || facts.subject.kind === 'merge_request'
@@ -167,7 +188,8 @@ export function buildCodeHostDecisionState(
             pullRequest: {
               ...(revision ?? (pull?.headSha ? { baseSha: pull.baseSha, headSha: pull.headSha } : {})),
               commitMessages: cap(pull?.commitMessages.join('\n\n') ?? '', 4 * 1024, 'commits_truncated'),
-              diff: cap(pull?.diff ?? '', 12 * 1024, 'diff_truncated')
+              files,
+              filesTruncated: pull?.filesTruncated ?? true
             }
           }
         : {}),

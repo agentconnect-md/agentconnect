@@ -1,6 +1,4 @@
-/** Gitea's implementation of the daemon turn-final contract (gitea-integration.md §8, §10.1, §11): the
- *  comment target on a numbered subject, the per-instance effect lease, the turn-start host fence, the
- *  lifecycle pairing, and the review-delivery correlation the prompt needs fetched first. */
+// Gitea's comment target, instance-bound grant, host fence and review lifecycle (§8, §10.1, §11).
 import { GITEA_DEFAULT_BASE_URL, type RdMsgHook } from '@agentconnect.md/protocol'
 import type {
   CodeHostDelivery,
@@ -20,6 +18,7 @@ import { GITEA_HOST_MISMATCH_REASON } from './host-fence.js'
 import { GiteaFinalPoster } from './poster.js'
 import { correlateGiteaReview, giteaReviewEventState } from './review-correlation.js'
 import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext } from '../codehost/pull-context.js'
+import { PULL_CONTEXT_FILE_LIMIT, restPullRequestFile } from '../codehost/pull-files.js'
 import { giteaRepoPath } from './api.js'
 
 /** What Gitea's members read back on the daemon: the §10.1 effect lease, and the instance its spec names. */
@@ -156,7 +155,10 @@ export const giteaTurnFinal: CodeHostTurnFinal<'gitea'> = {
         headShaPaths: [['head', 'sha']],
         commits: `${path}/commits?limit=${PULL_CONTEXT_COMMIT_LIMIT}&page=1&verification=false&files=false`,
         commitMessagePath: ['commit', 'message'],
-        diff: `${path}.diff`,
+        files: `${path}/files?limit=${PULL_CONTEXT_FILE_LIMIT}&page=1`,
+        fileCountPath: ['changed_files'],
+        file: restPullRequestFile,
+        rawDiff: `${path}.diff`,
         authorization: 'token'
       },
       signal

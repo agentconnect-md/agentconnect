@@ -1,5 +1,4 @@
-/** GitHub's implementation of the daemon turn-final contract (§6.5, §14.1): the issue/PR
- *  comment target, its repo-targeted mint, and the pull-request lifecycle pairing. */
+// GitHub's comment target, repository grant and pull-request lifecycle pairing (§6.5, §14.1).
 import type {
   CodeHostDelivery,
   CodeHostReplySource,
@@ -12,6 +11,7 @@ import type {
 import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import { GithubFinalPoster } from './poster.js'
 import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext } from '../codehost/pull-context.js'
+import { PULL_CONTEXT_FILE_LIMIT, restPullRequestFile } from '../codehost/pull-files.js'
 
 /** The deployment's App speaks to github.com alone, so this root is not a per-turn fact. */
 const GITHUB_API_BASE_URL = 'https://api.github.com'
@@ -113,8 +113,9 @@ export const githubTurnFinal: CodeHostTurnFinal<'github'> = {
         headShaPaths: [['head', 'sha']],
         commits: `${path}/commits?per_page=${PULL_CONTEXT_COMMIT_LIMIT}&page=1`,
         commitMessagePath: ['commit', 'message'],
-        diff: path,
-        diffAccept: 'application/vnd.github.diff'
+        files: `${path}/files?per_page=${PULL_CONTEXT_FILE_LIMIT}&page=1`,
+        fileCountPath: ['changed_files'],
+        file: restPullRequestFile
       },
       signal
     )

@@ -163,7 +163,28 @@ describe('state (decision 16)', () => {
       source: 'github',
       currentMessage: { text: '' },
       history: [],
-      pullRequest: { diff: 'd'.repeat(12_000), commitMessages: 'c'.repeat(4_000) },
+      pullRequest: {
+        files: [
+          {
+            path: 'src/first.ts',
+            status: 'modified',
+            additions: 1,
+            deletions: 1,
+            diff: 'd'.repeat(6_000),
+            diffTruncated: false
+          },
+          {
+            path: 'src/second.ts',
+            status: 'added',
+            additions: 1,
+            deletions: 0,
+            diff: 'e'.repeat(6_000),
+            diffTruncated: false
+          }
+        ],
+        filesTruncated: false,
+        commitMessages: 'c'.repeat(4_000)
+      },
       subject: { body: 's'.repeat(8_000) },
       context: { partial: false, reasons: [], omittedMessages: 0 }
     }
@@ -181,9 +202,43 @@ describe('state (decision 16)', () => {
       pullRequest: { commitMessages: base.pullRequest.commitMessages },
       context: { partial: true, reasons: ['budget_trimmed', 'diff_truncated'], omittedMessages: 0 }
     })
-    expect((state.pullRequest as { diff: string }).diff.length).toBeLessThan(base.pullRequest.diff.length)
-    expect(base.pullRequest.diff).toHaveLength(12_000)
+    const files = (state.pullRequest as typeof base.pullRequest).files
+    expect(files.map(({ path }) => path)).toEqual(base.pullRequest.files.map(({ path }) => path))
+    expect(files.every((file) => file.diff.length > 0 && file.diff.length < 6_000 && file.diffTruncated)).toBe(true)
+    expect(base.pullRequest.files.every((file) => file.diff.length === 6_000 && !file.diffTruncated)).toBe(true)
     expect(base.context.reasons).toEqual([])
+  })
+
+  it('marks an inventory that cannot fit even after every patch has been removed', () => {
+    const files = Array.from({ length: 100 }, (_, index) => ({
+      path: `${'long-name/'.repeat(40)}${index}.ts`,
+      status: 'modified',
+      additions: 100,
+      deletions: 2,
+      diff: 'd'.repeat(100),
+      diffTruncated: false
+    }))
+    const base = {
+      currentMessage: { text: 'Review this' },
+      history: [],
+      pullRequest: { files, filesTruncated: false },
+      context: { reasons: [] }
+    }
+    const fitted = repoSelectionState(
+      base,
+      { primary: 'example-org/repo', partial: false },
+      decision,
+      fitCodeHostDecisionState
+    )!
+    const pull = fitted.pullRequest as typeof base.pullRequest
+    expect(Buffer.byteLength(decisionRequestBody({ decision, state: fitted }))).toBeLessThanOrEqual(32_000)
+    expect(pull.filesTruncated).toBe(true)
+    expect(pull.files.length).toBeGreaterThan(0)
+    expect(pull.files.length).toBeLessThan(files.length)
+    expect(pull.files.every((file) => file.diff === '' && file.diffTruncated && file.additions === 100)).toBe(true)
+    expect(fitted.context).toMatchObject({ reasons: expect.arrayContaining(['files_truncated']) })
+    expect(base.pullRequest.filesTruncated).toBe(false)
+    expect(files.every((file) => file.diff.length === 100)).toBe(true)
   })
 
   it('keeps closing attribution when workspace context forces another subject-body reduction', () => {

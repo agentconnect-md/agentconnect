@@ -3,6 +3,7 @@ import type { DecisionToolDefinition, AgentModelSelection } from '@agentconnect.
 import { evaluateSessionModel, modelSelectionState } from '../src/decisions/model-selection.js'
 import { codeHostPullRequestContext, type CodeHostTurnFinalHost } from '../src/codehost/turn-final.js'
 import { PULL_CONTEXT_TIMEOUT_MS, readPullRequestContext } from '../src/codehost/pull-context.js'
+import { restPullRequestFile } from '../src/codehost/pull-files.js'
 
 const decision: DecisionToolDefinition = {
   id: '33333333-3333-4333-8333-333333333333',
@@ -35,14 +36,20 @@ const paths = {
   headShaPaths: [['head', 'sha']],
   commits: '/pulls/42/commits',
   commitMessagePath: ['commit', 'message'],
-  diff: '/pulls/42.diff'
+  files: '/pulls/42/files',
+  fileCountPath: ['changed_files'],
+  file: restPullRequestFile
 }
 const patch = 'diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-old\n+new\n'
+const fileRow = { filename: 'app.ts', status: 'modified', additions: 1, deletions: 1, patch }
+const file = { path: 'app.ts', status: 'modified', additions: 1, deletions: 1, diff: patch, diffTruncated: false }
 const revision = {
   sha: 'head',
   base: { sha: 'base' },
   head: { sha: 'head' },
-  diff_refs: { base_sha: 'base', head_sha: 'head' }
+  diff_refs: { base_sha: 'base', head_sha: 'head' },
+  changed_files: 1,
+  changes_count: '1'
 }
 const revisionState = { baseSha: 'base', headSha: 'head' }
 
@@ -202,10 +209,10 @@ describe('session model evaluation', () => {
     ).rejects.toThrow()
   })
 
-  it('checks the revision around bounded commits and diff under one GitHub repository grant', async () => {
-    const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+  it('checks the revision around bounded commits and files under one GitHub repository grant', async () => {
+    const fetcher = vi.fn<typeof fetch>(async (url) => {
       if (String(url).includes('/commits?')) return Response.json([{ commit: { message: 'Fix login' } }])
-      if (new Headers(init?.headers).get('accept') === 'application/vnd.github.diff') return new Response(patch)
+      if (String(url).includes('/files?')) return Response.json([fileRow])
       return Response.json({ ...revision, body: 'The PR description', title: 'Not the input' })
     })
     vi.stubGlobal('fetch', fetcher)
@@ -227,7 +234,8 @@ describe('session model evaluation', () => {
       description: 'The PR description',
       ...revisionState,
       commitMessages: ['Fix login'],
-      diff: patch,
+      files: [file],
+      filesTruncated: false,
       reasons: []
     })
     expect(getPostToken).toHaveBeenCalledOnce()
@@ -285,7 +293,10 @@ describe('session model evaluation', () => {
           return Response.json([
             provider === 'gitlab' ? { message: 'Fix login' } : { commit: { message: 'Fix login' } }
           ])
-        if (String(url).endsWith('/raw_diffs') || String(url).endsWith('.diff')) return new Response(patch)
+        if (String(url).includes('/diffs?'))
+          return Response.json([{ old_path: 'app.ts', new_path: 'app.ts', diff: patch }])
+        if (String(url).includes('/files?')) return Response.json([{ ...fileRow, patch: undefined }])
+        if (String(url).endsWith('.diff')) return new Response(patch)
         return Response.json({ ...revision, body: 'Description', description: 'Description' })
       })
       vi.stubGlobal('fetch', fetcher)
@@ -293,7 +304,8 @@ describe('session model evaluation', () => {
         description: 'Description',
         ...revisionState,
         commitMessages: ['Fix login'],
-        diff: patch,
+        files: [file],
+        filesTruncated: false,
         reasons: []
       })
       expect(token).toHaveBeenCalledExactlyOnceWith('example-agent', '100', 'hook-1')
@@ -303,12 +315,13 @@ describe('session model evaluation', () => {
           ? [
               'https://code.example.test/api/v4/projects/100/merge_requests/42',
               'https://code.example.test/api/v4/projects/100/merge_requests/42/commits?per_page=10&page=1',
-              'https://code.example.test/api/v4/projects/100/merge_requests/42/raw_diffs',
+              'https://code.example.test/api/v4/projects/100/merge_requests/42/diffs?per_page=100&page=1',
               'https://code.example.test/api/v4/projects/100/merge_requests/42'
             ]
           : [
               'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42',
               'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42/commits?limit=10&page=1&verification=false&files=false',
+              'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42/files?limit=100&page=1',
               'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42.diff',
               'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42'
             ]
@@ -319,20 +332,61 @@ describe('session model evaluation', () => {
           headers: { authorization: `${provider === 'gitlab' ? 'Bearer' : 'token'} fixture-token` }
         })
       if (provider === 'gitlab') {
+        fetcher.mockImplementation(async (url) => {
+          if (String(url).includes('/commits?')) return Response.json([])
+          if (String(url).includes('/diffs?'))
+            return Response.json([
+              { new_path: 'large.ts', diff: '', too_large: true },
+              { new_path: 'folded.ts', diff: '', collapsed: true },
+              { new_path: 'unavailable.ts' }
+            ])
+          return Response.json({ ...revision, changes_count: '3', description: 'Description' })
+        })
+        const partial = await codeHostPullRequestContext(source, 'example-agent', host, new AbortController().signal)
+        expect(partial).toMatchObject({ filesTruncated: false, reasons: ['diff_truncated', 'diff_unavailable'] })
+        expect(partial!.files).toEqual(
+          ['large.ts', 'folded.ts', 'unavailable.ts'].map((path, index) => ({
+            path,
+            status: 'modified',
+            diff: '',
+            diffTruncated: index < 2,
+            diffUnavailable: true
+          }))
+        )
         fetcher.mockImplementation(async () =>
           Response.json({ ...revision, sha: 'new-head', description: 'Description' })
         )
         expect(await codeHostPullRequestContext(source, 'example-agent', host, new AbortController().signal)).toEqual({
           description: 'Description',
           commitMessages: [],
-          diff: '',
+          files: [],
+          filesTruncated: true,
           reasons: ['revision_unverified']
         })
       }
     }
   )
 
-  it.each(['commits', 'diff'] as const)(
+  it('retains a later file and full statistics when an earlier patch exceeds the total diff budget', async () => {
+    const big = { ...fileRow, additions: 5000, patch: '@@ -1 +1,5000 @@\n-old\n' + '+界\n'.repeat(5000) }
+    const fetcher = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith(paths.commits)) return Response.json([])
+      if (String(url).endsWith(paths.files)) return Response.json([big, { ...fileRow, filename: 'later.ts' }])
+      return Response.json({ ...revision, changed_files: 2, body: 'Description' })
+    })
+    const result = await readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
+    expect(result).toMatchObject({
+      filesTruncated: false,
+      reasons: ['diff_truncated'],
+      files: [
+        { path: 'app.ts', additions: 5000, diffTruncated: true },
+        { path: 'later.ts', diff: patch, diffTruncated: false }
+      ]
+    })
+    expect(result!.files.reduce((sum, file) => sum + Buffer.byteLength(file.diff), 0)).toBeLessThanOrEqual(12 * 1024)
+  })
+
+  it.each(['commits', 'files'] as const)(
     'abandons slow %s at the shared deadline and discards unverified supplements',
     async (slow) => {
       vi.useFakeTimers()
@@ -340,7 +394,7 @@ describe('session model evaluation', () => {
       const fetcher = vi.fn<typeof fetch>(async (url) => {
         if (String(url).endsWith(paths[slow])) return new Response(new ReadableStream({ cancel: cancelled }))
         if (String(url).endsWith(paths.commits)) return Response.json([{ commit: { message: 'Fix login' } }])
-        if (String(url).endsWith(paths.diff)) return new Response(patch)
+        if (String(url).endsWith(paths.files)) return Response.json([fileRow])
         return Response.json({ ...revision, body: 'Description' })
       })
       const result = readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
@@ -354,7 +408,8 @@ describe('session model evaluation', () => {
         description: 'Description',
         ...revisionState,
         commitMessages: [],
-        diff: '',
+        files: [],
+        filesTruncated: true,
         reasons: ['revision_unverified']
       })
       expect(cancelled).toHaveBeenCalledOnce()
@@ -362,26 +417,41 @@ describe('session model evaluation', () => {
     }
   )
 
-  it('bounds response reads, cancels large streams, and marks partial context', async () => {
+  it('bounds raw diff reads while retaining a separately paginated file inventory', async () => {
     const cancel = vi.fn()
+    const rawDiff = '/pulls/42.diff'
     const fetcher = vi.fn<typeof fetch>(async (url) => {
       if (String(url).endsWith(paths.commits))
         return Response.json(Array.from({ length: 10 }, () => ({ commit: { message: 'Fix' } })))
-      if (String(url).endsWith(paths.diff))
+      if (String(url).endsWith(paths.files))
+        return Response.json(
+          [
+            { ...fileRow, patch: undefined },
+            { filename: 'later.ts', status: 'added', additions: 1, deletions: 0 }
+          ],
+          { headers: { link: '</pulls/42/files?page=2>; rel="next"' } }
+        )
+      if (String(url).endsWith(rawDiff))
         return new Response(
           new ReadableStream({
             start(controller) {
-              controller.enqueue(Buffer.from(patch + '界'.repeat(5000)))
+              controller.enqueue(Buffer.from(patch + '+界\n'.repeat(220_000)))
             },
             cancel
           })
         )
       return Response.json({ ...revision, body: 'Description' })
     })
-    const result = await readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
-    expect(result).toMatchObject({ reasons: ['commit_limit', 'diff_truncated'] })
-    expect(Buffer.byteLength(result!.diff)).toBeLessThanOrEqual(12 * 1024)
-    expect(result!.diff).not.toContain('�')
+    const result = await readPullRequestContext(lease, { ...paths, rawDiff }, new AbortController().signal, fetcher)
+    expect(result).toMatchObject({
+      filesTruncated: true,
+      reasons: ['commit_limit', 'files_truncated', 'diff_truncated', 'diff_unavailable']
+    })
+    expect(result!.files.map(({ path }) => path)).toEqual(['app.ts', 'later.ts'])
+    expect(Buffer.byteLength(result!.files[0]!.diff)).toBeLessThanOrEqual(12 * 1024)
+    expect(result!.files[0]!.diff).not.toContain('�')
+    expect(result!.files[0]!.diffTruncated).toBe(true)
+    expect(result!.files[1]).toMatchObject({ additions: 1, diff: '', diffUnavailable: true })
     expect(cancel).toHaveBeenCalledOnce()
     const oversized = vi.fn()
     fetcher.mockImplementation(async (url) =>
@@ -424,18 +494,19 @@ describe('session model evaluation', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
-  it('omits commits and diff if the PR moves during the read', async () => {
+  it('omits commits and files if the PR moves during the read', async () => {
     let reads = 0
     const fetcher = vi.fn<typeof fetch>(async (url) => {
       if (String(url).endsWith(paths.commits)) return Response.json([{ commit: { message: 'Fix login' } }])
-      if (String(url).endsWith(paths.diff)) return new Response(patch)
+      if (String(url).endsWith(paths.files)) return Response.json([fileRow])
       return Response.json({ ...revision, head: { sha: ++reads === 1 ? 'head' : 'new-head' }, body: 'Description' })
     })
     expect(await readPullRequestContext(lease, paths, new AbortController().signal, fetcher)).toEqual({
       ...revisionState,
       description: 'Description',
       commitMessages: [],
-      diff: '',
+      files: [],
+      filesTruncated: true,
       reasons: ['revision_changed']
     })
   })
