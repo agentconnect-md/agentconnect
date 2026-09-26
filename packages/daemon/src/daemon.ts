@@ -991,6 +991,9 @@ type HostRetirement = {
 /** How long a Linear delivery waits for the delegator's name before dispatching with the id. */
 const LINEAR_ACTOR_LOOKUP_MS = 1500
 
+/** ACP sessions whose prompt fingerprints are kept for late runtime titles; the least recently prompted is dropped past this. */
+const SESSION_PROMPT_ECHO_CAP = 1000
+
 /** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
  *  try is logged with the stage it sat in, so a silent stall names its step. */
 const RELAY_ACK_SLOW_MS = 4000
@@ -1706,6 +1709,8 @@ export class Daemon {
     string,
     { agentId: string; sessionId: string; updates: { sessionUpdate: string; [key: string]: any }[] }
   >()
+  // Each ACP session's first and latest prompt fingerprints: a runtime's fallback title reads one back, sometimes after its turn ended.
+  private readonly sessionPromptEchoes = new Map<string, { first: string; last: string }>()
   // In-progress host teardowns by HostKey; ensureHostAsync awaits an entry before (re)spawning so a stop racing a message leaves one host.
   private hostStopping = new Map<HostKey, Promise<void>>()
   // Recurring idle sweep (reap idle hosts + TTL-close idle sessions).
@@ -15236,11 +15241,11 @@ export class Daemon {
     while (true) {
       if (p.plan.stageAnswer) this.discardStagedAttempt(p)
 
-      // Fingerprint what this attempt sends, so a runtime fallback title that merely joins
-      // these blocks is recognized as an echo when it streams back (onAcpUpdate).
+      // Fingerprint what this attempt sends, so a runtime title that merely reads it back is dropped as an echo (onAcpUpdate).
       p.promptEchoPrefix = promptEchoPrefix(
         promptBlocks.flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : []))
       )
+      this.rememberPromptEcho(pendingTurnKey(p.hostKey, sessionId), p.promptEchoPrefix)
       // Start-fence linearization: no await occurs between queue coalescing above
       // (or the prior regeneration decision) and initiating this ACP request.
       p.promptInFlight = true
@@ -17930,6 +17935,24 @@ export class Daemon {
     }
   }
 
+  /** Keep an ACP session's first and latest prompt fingerprints, bounded so a long-lived daemon does not hold every session it ran. */
+  private rememberPromptEcho(key: string, prefix: string): void {
+    if (!prefix) return
+    const known = this.sessionPromptEchoes.get(key)
+    this.sessionPromptEchoes.delete(key)
+    if (this.sessionPromptEchoes.size >= SESSION_PROMPT_ECHO_CAP) {
+      const oldest = this.sessionPromptEchoes.keys().next().value
+      if (oldest !== undefined) this.sessionPromptEchoes.delete(oldest)
+    }
+    this.sessionPromptEchoes.set(key, { first: known?.first ?? prefix, last: prefix })
+  }
+
+  /** Whether a runtime title only reads back a prompt this ACP session was sent: this turn's, its first, or its latest. */
+  private isSessionPromptEcho(title: string, key: string, current: string | undefined): boolean {
+    const known = this.sessionPromptEchoes.get(key)
+    return [current, known?.first, known?.last].some((prefix) => !!prefix && isPromptEchoTitle(title, prefix))
+  }
+
   private bufferEarlySessionMetadata(
     owner: HostKey,
     sessionId: string,
@@ -18179,16 +18202,12 @@ export class Daemon {
       data: { update }
     })
     if (p?.outputSuppressed) return
-    // codex-acp >= 1.1.3 auto-titles an untitled session from its raw prompt text
-    // (all first-prompt text blocks joined, unbounded). Whatever that prompt led with, the
-    // "title" is an echo of what we just sent — internal agent/memory context on a session
-    // that inlined standing context, the caller's whole message on one that did not (a turn
-    // after `session/load`). Drop it before it is buffered, persisted, streamed to webchat,
-    // or recorded (issue #659). Real titles do not begin with the prompt we sent.
+    // A fallback title that reads back a prompt this session was sent (this turn's, its first or its latest, even after the turn ended) is dropped before anything records it (#659).
     if (
       update?.sessionUpdate === 'session_info_update' &&
       typeof update.title === 'string' &&
-      (isStandingContextTitleEcho(update.title) || isPromptEchoTitle(update.title, p?.promptEchoPrefix ?? ''))
+      (isStandingContextTitleEcho(update.title) ||
+        this.isSessionPromptEcho(update.title, pendingTurnKey(owner, sessionId), p?.promptEchoPrefix))
     )
       return
     // Clamp a surviving runtime title ONCE, here, to the one-line 80-character shape every

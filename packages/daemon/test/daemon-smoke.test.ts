@@ -1211,6 +1211,71 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
+  it('drops a fallback title that reads a prompt back after its turn ended, and still applies a late real one', async () => {
+    // A claude-shaped runtime publishes its fallback title (the raw prompt) at turn end, after the prompt resolved.
+    const root = scaffold()
+    let onUpdate!: (sid: string, update: unknown) => Promise<void> | void
+    const sent: string[] = []
+    const fakeHost = {
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-late-echo'),
+      hasSession: (id: string) => id === 'acp-late-echo',
+      prompt: vi.fn(async (_sid: string, blocks: { type: string; text?: string }[]) => {
+        sent.push(
+          blocks
+            .filter((b) => b.type === 'text' && typeof b.text === 'string')
+            .map((b) => b.text as string)
+            .join('\n')
+        )
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(),
+      stop: vi.fn()
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return fakeHost as any
+      }
+    })
+    await daemon.start()
+    vi.spyOn(daemon as any, 'replyConnFor').mockReturnValue({
+      setStatus: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
+      postMessage: vi.fn(async () => undefined),
+      postContext: vi.fn(async () => {})
+    })
+    const deliver = async (ts: string, text: string): Promise<void> => {
+      await (daemon as any).dispatch('bot-a', {
+        msgId: `slack:D1:${ts}`,
+        traceId: `late-echo-${ts}`,
+        source: 'user',
+        platform: 'slack',
+        channel: 'D1',
+        thread: '310.1',
+        sender: { id: 'U1', isBot: false },
+        text,
+        mentionedBots: [],
+        isDm: true
+      })
+    }
+    const born = 'Summarize the release notes for the next rc'
+    await deliver('310.1', born)
+    await deliver('310.2', 'Also list every migration the rc carries, with the tables each one touches')
+    expect(fakeHost.prompt).toHaveBeenCalledTimes(2)
+    const store = (daemon as any).store
+    // Both turns are over; the runtime now pushes its fallback title, the latest prompt read back.
+    await onUpdate('acp-late-echo', { sessionUpdate: 'session_info_update', title: sent[1]!.split('\n')[0] })
+    expect((await store.getSessionByAcpId('acp-late-echo'))?.title).toBe(born)
+    await onUpdate('acp-late-echo', { sessionUpdate: 'session_info_update', title: 'Release notes and migrations' })
+    expect((await store.getSessionByAcpId('acp-late-echo'))?.title).toBe('Release notes and migrations')
+    await daemon.stop()
+    rmSync(root, { recursive: true, force: true })
+  })
+
   it('clamps a runtime title to one line of at most 80 characters', async () => {
     const root = scaffold()
     let onUpdate!: (sid: string, update: unknown) => Promise<void> | void
