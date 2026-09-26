@@ -11,7 +11,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import useSWR, { useSWRConfig } from 'swr'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
-import { useSessionList } from '@/lib/use-session-list'
+import { revalidateMountedSessionLists, useSessionList } from '@/lib/use-session-list'
 import { randomUuid } from '@/lib/random-uuid'
 import { accessNotificationSnapshot, type AccessNotificationSnapshot } from '@/lib/access-notification-snapshot'
 import type { ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
@@ -960,19 +960,20 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     fetchSessionFacets(orgId as string)
   )
 
+  // The session lists are useSWRInfinite reads, which the filtered mutate never reaches.
   const revalidateSessionLists = useCallback(() => {
     if (!orgKey) return Promise.resolve([])
-    return mutateCache(
-      (key) =>
-        Array.isArray(key) &&
-        ((key[0] === 'console' &&
-          key[1] === orgKey &&
-          (key[2] === 'sessions' ||
-            key[2] === 'session-facets' ||
-            key[2] === 'session-detail' ||
-            key[2] === 'session-approvals')) ||
-          (key[0] === 'conversation-by-key' && key[1] === orgKey))
-    )
+    return Promise.all([
+      revalidateMountedSessionLists(orgKey),
+      mutateCache(
+        (key) =>
+          Array.isArray(key) &&
+          ((key[0] === 'console' &&
+            key[1] === orgKey &&
+            (key[2] === 'session-facets' || key[2] === 'session-detail' || key[2] === 'session-approvals')) ||
+            (key[0] === 'conversation-by-key' && key[1] === orgKey))
+      )
+    ])
   }, [mutateCache, orgKey])
 
   const revalidateConsole = useCallback(

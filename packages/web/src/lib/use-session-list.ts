@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import useSWRInfinite from 'swr/infinite'
 import { fetchConversations, fetchSessions, type SessionListFilters, type SessionListPage } from '@/lib/api'
 import { accessNotificationSnapshot } from '@/lib/access-notification-snapshot'
@@ -8,6 +8,17 @@ import { consoleKeys } from '@/lib/swr-keys'
 
 const SESSION_PAGE_LIMIT = 50
 type SessionPageKey = NonNullable<ReturnType<typeof consoleKeys.sessions>>
+type MountedSessionList = { orgId: string; key: string; revalidate: () => Promise<unknown> }
+
+// SWR's filtered global mutate skips useSWRInfinite keys, so each mounted list registers its own bound mutate.
+const mountedSessionLists = new Set<MountedSessionList>()
+
+/** Refetches every mounted session list of `orgId`, once per distinct list. */
+export function revalidateMountedSessionLists(orgId: string): Promise<unknown[]> {
+  const byKey = new Map<string, MountedSessionList['revalidate']>()
+  for (const list of mountedSessionLists) if (list.orgId === orgId) byKey.set(list.key, list.revalidate)
+  return Promise.all([...byKey.values()].map((revalidate) => revalidate()))
+}
 
 /** The agent filter as one scalar SWR key part. Sorted so the same set of agents
  *  always addresses the same cache entry regardless of the order they were
@@ -102,6 +113,14 @@ export function useSessionList(
       parallel: false
     }
   )
+
+  useEffect(() => {
+    const firstPageKey = getKey(0, null)
+    if (!orgId || !firstPageKey) return
+    const list: MountedSessionList = { orgId, key: JSON.stringify(firstPageKey), revalidate: () => mutate() }
+    mountedSessionLists.add(list)
+    return () => void mountedSessionLists.delete(list)
+  }, [getKey, mutate, orgId])
 
   const sessions = useMemo(() => {
     const byId = new Map<string, SessionListPage['sessions'][number]>()
