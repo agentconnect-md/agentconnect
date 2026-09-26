@@ -48,7 +48,8 @@ target "control-plane" {
   inherits = ["_release"]
   target   = "control-plane"
   args = {
-    SETUP_VERSION = SETUP_VERSION
+    SETUP_VERSION         = SETUP_VERSION
+    CONTROL_PLANE_VERSION = VERSION
   }
   tags = concat(
     ["${REGISTRY}/${OWNER}/control-plane:${VERSION}"],

@@ -78,6 +78,7 @@ import { oauthRoutes } from './oauth/routes.js'
 import { API_V1_PREFIX } from './version.js'
 import type { CpRouteScope } from '../platforms/provider.js'
 import { controlPlaneOtelFastifyPlugin } from '../observability.js'
+import { releaseTag } from '../package-version.js'
 
 export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {}): FastifyInstance {
   // Opaque entry refs must reach schema validation instead of failing the router's shorter default limit.
@@ -121,7 +122,13 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
   // `/docs` (root, unversioned — human tooling). Registered here — before the
   // route plugins below — so `@fastify/swagger`'s `onRoute` hook captures them
   // and builds the spec straight from the zod DTO schemas each route declares.
-  installOpenapi(app, { ...(deps.config.PUBLIC_CP_URL ? { publicUrl: deps.config.PUBLIC_CP_URL } : {}) })
+  // The document describes the public contract: the gateway's origin and prefix, and the release it was built from.
+  const release = releaseTag()
+  installOpenapi(app, {
+    ...(deps.config.PUBLIC_CP_URL ? { publicUrl: deps.config.PUBLIC_CP_URL } : {}),
+    ...(deps.config.OPENAPI_PATH_PREFIX ? { pathPrefix: deps.config.OPENAPI_PATH_PREFIX } : {}),
+    ...(release ? { release } : {})
+  })
 
   // Browser CORS for the Web UI (C2). Explicit CORS_ORIGIN wins; otherwise reflect
   // any origin in development and stay disabled in production. Bearer-token auth

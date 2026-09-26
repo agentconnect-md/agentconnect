@@ -65,6 +65,15 @@ or `https://api.example.com/v1` behind the rewrite) rather than hard-coding `/ap
 in the client (§5.4). So a host can present the API as `api.example.com/v1/…` and the
 console follows, with no rebuild.
 
+**The OpenAPI document follows the public shape too.** The CP serves it at
+`/api/v1/openapi.json` with `servers[0].url = PUBLIC_CP_URL`, so behind the rewrite it
+must key its paths by the public prefix or every URL it lists 404s at that server.
+`OPENAPI_PATH_PREFIX` (env; the chart sets `/v1` in `apiHost` mode, matching its `-api`
+HTTPRoute) re-keys the paths in the served document and in `openapi:generate` alike; unset
+keeps `/api/v1` for direct-to-CP hosts. The document also names the release the image was
+built from in `info.x-agentconnect-release`, so a reader of the live document knows which
+version it describes.
+
 > Note: the browser API Resource configured in Setup is an **OIDC audience
 > identifier URI**, not a routable host — unrelated to this design.
 

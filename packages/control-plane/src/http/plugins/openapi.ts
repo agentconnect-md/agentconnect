@@ -152,6 +152,11 @@ export interface OpenapiOptions {
   /** Externally-reachable CP origin (`PUBLIC_CP_URL`); emitted as the spec's
    *  `servers[0].url` so "Try it out" targets the real host. Omitted when unset. */
   publicUrl?: string
+  /** Prefix a gateway exposes `/api/v1` under (`OPENAPI_PATH_PREFIX`); the document's paths are re-keyed by
+   *  it, so it describes the URLs a client reaches, not the CP's own. Unset ⇒ the native prefix. */
+  pathPrefix?: string
+  /** The release this server was built from, emitted as `info.x-agentconnect-release`. Omitted when unknown. */
+  release?: string
 }
 
 /**
@@ -221,6 +226,18 @@ const backfillPrefixPathParams: SwaggerTransformObject = (doc) => {
   return openapiObject
 }
 
+// Re-key the paths under the prefix a gateway exposes them at; only the leading segment changes.
+function rekeyPaths<T extends { paths?: Record<string, unknown> }>(doc: T, prefix: string | undefined): T {
+  if (!prefix || prefix === API_V1_PREFIX || !doc.paths) return doc
+  doc.paths = Object.fromEntries(
+    Object.entries(doc.paths).map(([path, item]) => [
+      path.startsWith(API_V1_PREFIX) ? prefix + path.slice(API_V1_PREFIX.length) : path,
+      item
+    ])
+  )
+  return doc
+}
+
 /**
  * Install OpenAPI generation + interactive docs on `app`. Call once on the root
  * instance, after `installZod` and BEFORE the route plugins register.
@@ -236,7 +253,8 @@ export function installOpenapi(app: FastifyInstance, opts: OpenapiOptions = {}):
           'org-scoped under `/api/v1/orgs/:orgId` behind bearer auth; a ' +
           'cross-org id reads as 404. The Control Plane stores only control-plane ' +
           'metadata — message bodies and workspace bytes stay daemon-local.',
-        version: '1'
+        version: '1',
+        ...(opts.release ? { 'x-agentconnect-release': opts.release } : {})
       },
       ...(opts.publicUrl ? { servers: [{ url: opts.publicUrl }] } : {}),
       components: {
@@ -255,8 +273,9 @@ export function installOpenapi(app: FastifyInstance, opts: OpenapiOptions = {}):
     },
     transform: createJsonSchemaTransform({ skipList: SKIP_LIST }),
     // Backfill prefix path params (`{orgId}`) the per-route zod schemas omit —
-    // otherwise the spec fails OpenAPI 3.1 validation. See the helper above.
-    transformObject: backfillPrefixPathParams
+    // otherwise the spec fails OpenAPI 3.1 validation — then key the paths the
+    // way a gateway exposes them. See the helpers above.
+    transformObject: (doc) => rekeyPaths(backfillPrefixPathParams(doc), opts.pathPrefix)
   })
 
   void app.register(fastifySwaggerUi, {

@@ -156,6 +156,12 @@ spec:
             - name: PUBLIC_CP_URL
               value: {{ if .Values.apiHost }}{{ printf "https://%s" .Values.apiHost | quote }}{{ else }}{{ printf "%s/cp" (trimSuffix "/" .Values.publicUrl) | quote }}{{ end }}
             {{- end }}
+            {{- if .Values.apiHost }}
+            # SUBDOMAIN mode: the -api HTTPRoute exposes the CP's /api/v1 routes as /v1 on this
+            # host (httproute.yaml), so the OpenAPI document keys its paths the way clients reach them.
+            - name: OPENAPI_PATH_PREFIX
+              value: /v1
+            {{- end }}
             {{- if and .Values.apiHost .Values.publicUrl }}
             # SUBDOMAIN mode (top-level `apiHost` set): the browser served at `publicUrl`
             # calls the CP on the dedicated api host cross-origin, so allow the website

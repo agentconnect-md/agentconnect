@@ -129,6 +129,8 @@ export interface HttpServerConfig extends HumanAuthConfig {
   /** Externally-reachable CP origin used to render the daemon start command
    *  (onboarding). Unset ⇒ fall back to `HOST:PORT`. */
   PUBLIC_CP_URL?: string
+  /** Prefix a gateway exposes `/api/v1` under; the OpenAPI document keys its paths by it. */
+  OPENAPI_PATH_PREFIX?: string
   /** The MCP endpoint's dedicated public origin (e.g.
    *  https://mcp.example.test). Set ⇒ the canonical MCP resource URL is this
    *  origin (root resource) and discovery uses the origin-root PRM. Unset ⇒
