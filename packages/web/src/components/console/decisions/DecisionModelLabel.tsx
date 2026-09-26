@@ -81,7 +81,7 @@ export function DecisionModelHover({
           onClick={onEvaluations}
           className="mt-2 flex w-full cursor-pointer items-center gap-[6px] border-0 border-t border-(--border-subtle) bg-transparent px-0 pb-0 pt-2 text-left font-sans text-[11.5px] font-medium leading-normal text-(--brand-soft-text) hover:underline"
         >
-          <Icon name="history" size={12} className="flex-none" />
+          <Icon name="rotate-ccw-clock" size={12} className="flex-none" />
           <span className="flex-1">{evaluationsT('title')}</span>
           <Icon name="arrow-right" size={12} className="flex-none" />
         </button>

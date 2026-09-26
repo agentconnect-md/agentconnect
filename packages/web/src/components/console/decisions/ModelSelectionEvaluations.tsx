@@ -266,7 +266,7 @@ export function ModelSelectionEvaluations({
           {t('title')}
           {state.empty && <span className="mono text-[11.5px] font-normal text-(--text-tertiary)">{t('noneYet')}</span>}
         </span>
-        <Icon name="history" size={14} className="flex-none text-(--text-tertiary)" />
+        <Icon name="rotate-ccw-clock" size={14} className="flex-none text-(--text-tertiary)" />
       </summary>
       <div className="border-t border-(--border-subtle)">
         <ModelEvaluationsBody state={state} padX="px-4" />
