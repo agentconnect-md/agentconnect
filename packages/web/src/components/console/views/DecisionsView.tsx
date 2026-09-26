@@ -10,7 +10,7 @@ import { Button, Icon } from '@/components/ui'
 import { LoadingState } from '@/components/marks'
 import { formatDateTime } from '@/i18n/format'
 import { useOrgs } from '@/lib/org-context'
-import { DECISION_EXAMPLES, type DecisionExample } from '@/lib/decisions/examples'
+import { DECISION_EXAMPLES, type DecisionExample, type DecisionExampleId } from '@/lib/decisions/examples'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { DECISION_PROVIDER_PROFILES } from '@agentconnect.md/protocol/decision'
 import type { DecisionSummary } from '@agentconnect.md/protocol/decision-api'
@@ -119,6 +119,8 @@ function DecisionExamples({ writable }: { writable: boolean }) {
   const { providers } = useDecisionProviders()
   const [adding, setAdding] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Examples already created by a partly failed Add all, so a retry adds only the rest.
+  const [created, setCreated] = useState<ReadonlySet<DecisionExampleId>>(() => new Set())
   const answers = (example: DecisionExample) => {
     const question = example.question
     if (question.type === 'boolean') return [t('condition.yes'), t('condition.no')]
@@ -132,8 +134,10 @@ function DecisionExamples({ writable }: { writable: boolean }) {
     if (!provider || adding) return
     setAdding(true)
     setError(null)
+    const done = new Set(created)
     try {
       for (const example of DECISION_EXAMPLES) {
+        if (done.has(example.id)) continue
         await api.createDecision({
           name: example.name,
           providerId: provider.id,
@@ -142,11 +146,14 @@ function DecisionExamples({ writable }: { writable: boolean }) {
           visibility: 'org',
           sharedWith: []
         })
+        done.add(example.id)
       }
+      // Reload only once all exist: the list replaces this view, and with it the retry.
+      await reload()
     } catch (cause) {
+      setCreated(done)
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
-      await reload()
       setAdding(false)
     }
   }
@@ -197,17 +204,24 @@ function DecisionExamples({ writable }: { writable: boolean }) {
           <span className="mono hidden truncate text-[12px] text-(--text-secondary) desktop:inline">
             {answers(example).join(' · ')}
           </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-(--brand)"
-            disabled={!writable || adding}
-            ariaLabel={t('examples.addLabel', { name: example.name })}
-            onClick={() => router.push(orgPath(`/decisions/new?example=${encodeURIComponent(example.id)}`))}
-          >
-            <Icon name="plus" size={14} />
-            {t('examples.add')}
-          </Button>
+          {created.has(example.id) ? (
+            <span className="flex items-center gap-[6px] px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
+              <Icon name="check" size={14} />
+              {t('examples.added')}
+            </span>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-(--brand)"
+              disabled={!writable || adding}
+              ariaLabel={t('examples.addLabel', { name: example.name })}
+              onClick={() => router.push(orgPath(`/decisions/new?example=${encodeURIComponent(example.id)}`))}
+            >
+              <Icon name="plus" size={14} />
+              {t('examples.add')}
+            </Button>
+          )}
         </div>
       ))}
     </div>

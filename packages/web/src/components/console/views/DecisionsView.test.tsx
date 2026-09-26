@@ -129,4 +129,28 @@ describe('DecisionsView examples', () => {
     )
     expect(document.body.querySelectorAll('a.row.click')).toHaveLength(DECISION_EXAMPLES.length)
   })
+
+  it('keeps the examples after a partial failure and retries only the ones not created', async () => {
+    const api = await renderEmpty()
+    const original = api.createDecision.bind(api)
+    const create = vi
+      .spyOn(api, 'createDecision')
+      .mockImplementationOnce(original)
+      .mockImplementationOnce(original)
+      .mockRejectedValueOnce(new Error('capacity reached'))
+    await click(byText('Add all examples'))
+    await act(async () => {})
+    expect(byText('capacity reached')).toBeTruthy()
+    expect(document.body.querySelectorAll('a.row.click')).toHaveLength(0)
+    expect(document.body.querySelector('button[aria-label="Add Needs reply"]')).toBeNull()
+    expect(document.body.querySelector('button[aria-label="Add Support category"]')).toBeTruthy()
+
+    create.mockClear()
+    create.mockImplementation(original)
+    await click(byText('Add all examples'))
+    await act(async () => {})
+    expect(create).toHaveBeenCalledTimes(DECISION_EXAMPLES.length - 2)
+    expect(create).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'Needs reply' }))
+    expect(document.body.querySelectorAll('a.row.click')).toHaveLength(DECISION_EXAMPLES.length)
+  })
 })
