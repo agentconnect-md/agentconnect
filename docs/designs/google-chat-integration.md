@@ -1,7 +1,7 @@
 # Google Chat Integration Design
 
-Status: proposed. Provider documentation checked on September 27, 2026; no live
-Google Chat integration has been tested for this design.
+Status: **draft** — not implemented. Provider documentation checked on September 27,
+2026; no live Google Chat integration has been tested for this design.
 
 Related: [issue #2262](https://github.com/agentconnect-md/agentconnect/issues/2262),
 [platform modules](integration-plugin-architecture.md),

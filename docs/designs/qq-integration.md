@@ -1,5 +1,7 @@
 # QQ Integration Design
 
+Status: implemented.
+
 > Related: [platform modules](integration-plugin-architecture.md),
 > [inbound attachments](inbound-file-attachments.md),
 > [agent-authored attachments](agent-authored-attachments.md),

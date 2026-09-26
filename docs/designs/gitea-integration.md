@@ -1,6 +1,6 @@
 # Gitea Integration
 
-> Status: **Proposed** — platform assumptions verified 2026-09-11 against
+> Status: **Implemented** — platform assumptions verified 2026-09-11 against
 > Gitea 1.27 (the current stable line; gitea.com tracks the development
 > branch). Scope: **gitea.com and one self-hosted Gitea instance per
 > deployment, 1.23 or later**. Forgejo and Codeberg are outside the contract.

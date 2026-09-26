@@ -1,6 +1,6 @@
 # Message Intake
 
-> Status: Proposed. Supersedes the storage and ordering sections of
+> Status: Implemented. Supersedes the storage and ordering sections of
 > [decisions.md](decisions.md) (§4 observation window, §7.2, §7.4 evaluation host, §8) and the
 > per-agent transcript rows of [channel-session-mode.md](channel-session-mode.md) (§6.2, §10, §12.2);
 > each superseded section now points here. Routing semantics that those documents define and this

@@ -1,15 +1,13 @@
 # Session executors: spreading one agent's sessions across a daemon group
 
-**Status:** Design, decided 2026-09-16 and revised 2026-09-20, before implementation
-started. The revision replaced the hand-rolled holder–executor link with a `prepare`
+**Status:** Implemented — every change in §12 has landed; §13's questions stay open.
+Decided 2026-09-16 and revised 2026-09-20; the revision replaced the hand-rolled holder–executor link with a `prepare`
 the Control Plane relays and a TLS-PSK byte pipe (§6), fixed an admission grant that
 would have ended running sessions during a Control Plane outage, and cut what v1
 does not need (§14, §15). A second revision on 2026-09-21 took the group's shared
 data-plane store out of the design entirely: the executor allocates each launch's
 generation (§6), a relayed `release` retires an environment (§7), and the backstop
-reconcile asks only the Control Plane and this machine's own retention (§7). The
-feature-independent groundwork has landed — #2154, #2155, #2157, #2158, #2160,
-#2161 and #2165 — and so have F1, F2a and F2b (§12). A third revision on
+reconcile asks only the Control Plane and this machine's own retention (§7). A third revision on
 2026-09-24 brought in what the first had deferred: an agent names the strategy it
 runs in and every machine offers a table of them (§5), runtime credentials are the
 executor's alone (§8), `srt` becomes a strategy by wrapping the shim (§5), and the

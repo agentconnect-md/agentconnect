@@ -1,6 +1,6 @@
 # AgentConnect Add-on Evaluation and Harness Neutrality
 
-**Status:** Draft for review
+**Status:** Implemented through P1, plus P2's raw-ACP comparison; the nightly runtime matrix and P3 are not built
 
 **Author:** AgentConnect team
 

@@ -1,8 +1,8 @@
 # Slack Approval DM
 
-> **Status:** Accepted (issue
-> [#1648](https://github.com/agentconnect-md/agentconnect/issues/1648));
-> shipping as two stacked changes (§9). File/line references describe the
+> **Status:** Implemented (issue
+> [#1648](https://github.com/agentconnect-md/agentconnect/issues/1648)); both
+> stacked changes (§9) and the console states (§7, #1704) have shipped. File/line references describe the
 > shipped machinery this design composes.
 >
 > **Scope:** protocol + control-plane + daemon + web. Slack only — it is the

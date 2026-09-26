@@ -1,6 +1,7 @@
 # Webchat Multi-Agent Conversations
 
-**Status:** Proposed design
+**Status:** Implemented through M2, except the routes-snapshot roster slice and the
+`Conversation participants:` standing line; M3 polish is open
 
 > This document designs multi-agent conversations for webchat (the console
 > Playground): one human owner talking with **several agents in one

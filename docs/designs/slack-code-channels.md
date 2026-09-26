@@ -1,6 +1,6 @@
 # Slack Code Channels Integration
 
-> **Status:** Proposed — a research assessment with a phased plan; nothing here is
+> **Status:** Draft — a research assessment with a phased plan; nothing here is
 > implemented. Slack's code-channel API is a partner-only beta (§2.3), so §5 is what
 > AgentConnect can ship now on generally available Slack primitives and §6 is what waits on
 > that API. File/line references describe the shipped machinery as of 2026-09-15.

@@ -1,6 +1,7 @@
 # MCP-Side Elicitation
 
-**Status:** Audit + design record. **The mechanism has shipped; no product call site has.**
+**Status:** Audit + design record. **Implemented: the mechanism and the three §4.2 call sites
+([#2022](https://github.com/agentconnect-md/agentconnect/pull/2022)) have shipped.**
 [#2016](https://github.com/agentconnect-md/agentconnect/pull/2016) (`ff2fe00d`) landed the ask seam —
 `packages/daemon/src/mcp/ask.ts`, the bridge's capability read, the `mcpAsk` IPC result and the
 `input_required` return — proven end to end by a test-only tool, with every product tool still
