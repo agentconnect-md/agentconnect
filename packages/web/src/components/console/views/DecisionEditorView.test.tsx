@@ -104,7 +104,7 @@ async function type(selector: string, index: number, value: string) {
 /** A complete, saveable choice decision — the two keys and both descriptions a save needs. */
 async function fillValidChoice() {
   await type('input[placeholder="Request type"]', 0, 'Request type')
-  await type('textarea[placeholder="Ask one question about currentMessage."]', 0, 'Which request is this?')
+  await type('textarea[placeholder="Ask one question about the latest message."]', 0, 'Which request is this?')
   await type('input[placeholder="key"]', 0, 'deploy')
   await type('input[placeholder="key"]', 1, 'review')
   await type('input[placeholder="What this answer means"]', 0, 'Shipping and rollbacks')
@@ -207,7 +207,7 @@ describe('DecisionEditorView', () => {
     const run = () => [...document.body.querySelectorAll('button')].find((node) => node.textContent?.includes('Run'))
     expect(run()?.disabled).toBe(true)
 
-    await type('textarea[placeholder="Ask one question about currentMessage."]', 0, 'Which request is this?')
+    await type('textarea[placeholder="Ask one question about the latest message."]', 0, 'Which request is this?')
     await type('input[placeholder="key"]', 0, 'deploy')
     await type('input[placeholder="key"]', 1, 'review')
     await type('input[placeholder="What this answer means"]', 0, 'Shipping')

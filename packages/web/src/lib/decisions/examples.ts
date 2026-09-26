@@ -25,7 +25,7 @@ export const DECISION_EXAMPLES: readonly DecisionExample[] = [
     name: 'Needs reply',
     question: {
       type: 'boolean',
-      instructions: 'Given history, does currentMessage need an answer from an agent?',
+      instructions: 'Given the earlier messages, does the latest message need an answer from an agent?',
       criteria: {
         true: 'A question or request for help, even one phrased as a statement.',
         false: 'Greetings, thanks, chit-chat, or a message meant for someone else.'
@@ -41,7 +41,7 @@ export const DECISION_EXAMPLES: readonly DecisionExample[] = [
     name: 'Spam',
     question: {
       type: 'score',
-      instructions: 'How spammy is currentMessage? Use history to spot repeat senders.',
+      instructions: 'How spammy is the latest message? Use the earlier messages to spot repeat senders.',
       criteria: [
         'Normal message',
         'Suspicious: promotional or link-heavy, possibly genuine',
@@ -62,7 +62,7 @@ export const DECISION_EXAMPLES: readonly DecisionExample[] = [
     name: 'Support category',
     question: {
       type: 'choice',
-      instructions: 'What does the sender of currentMessage need help with?',
+      instructions: 'What does the sender of the latest message need help with?',
       criteria: {
         technical: 'Errors, bugs, setup, or how to use the product',
         billing: 'Payments, invoices, plans, or refunds',
