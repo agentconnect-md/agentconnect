@@ -2,7 +2,7 @@
 /** The GitHub arm sends its checkout choice on create; the hook editor's preselected shortcut keeps the Always default. */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRepositorySelector } from '@agentconnect.md/protocol/decision'
 import type { DecisionProviderOption } from '@agentconnect.md/protocol/decision-api'
 import type { AgentRepoAuthDto } from '@/lib/api'
@@ -105,6 +105,11 @@ async function render(
 const buttonsNamed = (text: string) =>
   Array.from(document.querySelectorAll('button')).filter((button) => button.textContent?.includes(text))
 
+beforeEach(() => {
+  // By decision is behind its console flag.
+  window.__AC_ENV = { FEATURE_FLAGS: 'repository-decision' }
+})
+
 afterEach(async () => {
   if (root) await act(async () => root?.unmount())
   host?.remove()
@@ -112,6 +117,7 @@ afterEach(async () => {
   host = undefined
   mocks.createAgentRepo.mockReset()
   decisionProviders.rows = []
+  window.__AC_ENV = {}
 })
 
 describe('AddAgentRepoModal, GitHub checkout', () => {
@@ -123,6 +129,15 @@ describe('AddAgentRepoModal, GitHub checkout', () => {
     expect(buttons.map((button) => button.textContent)).toEqual(['Always', 'By decision', 'On demand'])
     expect(buttons[1]?.disabled).toBe(true)
     expect(buttons[1]?.title).toBe('No Decision provider is ready where this agent runs')
+  })
+
+  it('offers only Always and On demand where the By decision flag is off', async () => {
+    window.__AC_ENV = {}
+    await render({ initialRepo: 'example-org/example-repo' })
+
+    const group = document.querySelector('[role="group"][aria-label="Checkout"]')
+    const buttons = Array.from(group?.querySelectorAll('button') ?? [])
+    expect(buttons.map((button) => button.textContent)).toEqual(['Always', 'On demand'])
   })
 
   it('authorizes a repository on demand when that checkout is chosen', async () => {

@@ -105,6 +105,8 @@ let root: Root | undefined
 let host: HTMLDivElement | undefined
 
 beforeEach(() => {
+  // By decision is behind its console flag.
+  window.__AC_ENV = { FEATURE_FLAGS: 'repository-decision' }
   state.providers = [provider()]
 })
 
@@ -114,6 +116,7 @@ afterEach(async () => {
   root = undefined
   host = undefined
   for (const mock of Object.values(mocks)) mock.mockReset()
+  window.__AC_ENV = {}
 })
 
 async function render(
@@ -163,6 +166,31 @@ const pickInstallation = async () => {
   await click(Array.from(document.querySelectorAll('.inp')).find((el) => el.textContent?.includes('Pick a repository')))
   await click(document.querySelector('[data-installation]'))
 }
+
+describe('EditWorkspaceModal, By decision behind its flag', () => {
+  it('offers only Always and On demand, and no selector, where the flag is off', async () => {
+    window.__AC_ENV = {}
+    await render()
+
+    await click(rowCheckout())
+    expect(choices().map((item) => item.textContent)).toEqual(['Always', 'On demand'])
+    expect(selectorField()).toBeNull()
+  })
+
+  it('keeps a row already By decision, and its selector, where the flag is off', async () => {
+    window.__AC_ENV = {}
+    await render({ agent: agentWith({ repositorySelector: SELECTOR }), authorized: [row({ materialize: 'decision' })] })
+
+    await click(rowCheckout())
+    expect(choices().map((item) => item.textContent)).toEqual(['Always', 'By decision', 'On demand'])
+    expect(
+      choices()
+        .find((item) => item.textContent === 'By decision')
+        ?.getAttribute('aria-checked')
+    ).toBe('true')
+    expect(selectorField()?.textContent).toContain('Repository selector')
+  })
+})
 
 describe('EditWorkspaceModal, By decision', () => {
   it('disables By decision while no provider is ready where the agent runs, naming the missing key', async () => {

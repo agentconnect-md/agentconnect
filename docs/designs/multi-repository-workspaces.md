@@ -6,7 +6,9 @@
 > `decision` and `on-demand` rows, `decision` and `on-demand` installation
 > grants, and the repository selector on the daemon, advertised as
 > `repo-selector-v1`, with **By decision** and the **Repository selector** in
-> the console.
+> the console. The console offers them behind the `repository-decision` flag
+> (`features.repositoryDecision` in the chart, off by default); where it is off,
+> a row already By decision and a selector already set stay shown.
 >
 > Before this design an agent's workspace was exactly one repository.
 > Additional repositories existed only as an authorization allowlist
