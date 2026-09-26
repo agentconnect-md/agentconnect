@@ -18,6 +18,7 @@ import { DecisionModelSelect } from '@/components/console/decisions/DecisionMode
 import { DecisionUsageList } from '@/components/console/decisions/DecisionUsageList'
 import { DecisionRecentEvaluations } from '@/components/console/decisions/DecisionRecentEvaluations'
 import { decisionInUse } from '@/lib/decisions/binding'
+import { decisionExample } from '@/lib/decisions/examples'
 import { decisionUsageHref } from '@/lib/decisions/usage-links'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
@@ -161,6 +162,7 @@ function DecisionEditor() {
     useDecisionsPrototype()
   const { providers, error: providerError } = useDecisionProviders()
   const definition = id ? decisions.find((entry) => entry.id === id) : undefined
+  const example = id ? undefined : decisionExample(search.get('example'))
 
   const [selectedTargetValue, setSelectedTargetValue] = useState<string | null>(null)
   const editable = myRole !== 'viewer' && (!id || (!!definition && definition.canEdit !== false))
@@ -178,8 +180,10 @@ function DecisionEditor() {
   // Set by an authoritative 409 in-use refusal, so nothing reads as unused even when every usage is hidden.
   const [refusedInUse, setRefusedInUse] = useState(false)
   const [confirmAgentAnswerChange, setConfirmAgentAnswerChange] = useState(false)
-  const [history, setHistory] = useState<Array<{ sender: string; text: string }>>([])
-  const [current, setCurrent] = useState('')
+  const [history, setHistory] = useState<Array<{ sender: string; text: string }>>(
+    () => example?.sample.history.map((message) => ({ ...message })) ?? []
+  )
+  const [current, setCurrent] = useState(example?.sample.current ?? '')
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<{
     signature: string
@@ -204,17 +208,23 @@ function DecisionEditor() {
       return
     }
     if (!firstProvider) return
-    setDraft({
-      name: '',
-      providerId: firstProvider.id,
-      model: firstProvider.models[0]?.id ?? '',
-      type: 'choice',
-      instructions: '',
-      criteria: criteriaForType('choice'),
-      visibility: 'org',
-      sharedWith: []
-    })
-  }, [draft, id, definition, firstProvider])
+    const providerId = firstProvider.id
+    const model = firstProvider.models[0]?.id ?? ''
+    setDraft(
+      example
+        ? draftFrom({ ...example, providerId, model, visibility: 'org', sharedWith: [] })
+        : {
+            name: '',
+            providerId,
+            model,
+            type: 'choice',
+            instructions: '',
+            criteria: criteriaForType('choice'),
+            visibility: 'org',
+            sharedWith: []
+          }
+    )
+  }, [draft, id, definition, firstProvider, example])
 
   useEffect(() => {
     if (!id) return
@@ -921,7 +931,8 @@ function DecisionEditor() {
                 type="button"
                 className="lnk gap-[6px] text-[12px] font-medium"
                 onClick={() => {
-                  const demo = EXAMPLES[draft.type]
+                  // An example's own sample fits only while its question type is kept.
+                  const demo = example?.question.type === draft.type ? example.sample : EXAMPLES[draft.type]
                   setHistory(demo.history.map((message) => ({ ...message })))
                   setCurrent(demo.current)
                   setResult(null)

@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as decisionProvider from '@/lib/decisions/provider'
 import * as decisionMock from '@/lib/decisions/mock-api'
 import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
+import { decisionExample } from '@/lib/decisions/examples'
 import type { MemberSetRow } from '@/lib/data'
 import { ApiError } from '@/lib/api'
 
@@ -233,6 +234,24 @@ describe('DecisionEditorView', () => {
     await act(async () => {})
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'typesafe', model: 'jev-latest' }))
     expect(push).toHaveBeenCalledWith('/decisions')
+  })
+
+  it('prefills a new decision from an example and saves it unchanged', async () => {
+    searchParams = new URLSearchParams('example=prAuthor')
+    const example = decisionExample('prAuthor')!
+    await render()
+    expect(document.body.querySelector<HTMLInputElement>('input[placeholder="Request type"]')?.value).toBe('PR author')
+    const currentMessage = () =>
+      document.body.querySelector<HTMLTextAreaElement>('textarea[placeholder="The message being evaluated"]')?.value
+    expect(currentMessage()).toBe(example.sample.current)
+    // Load example restores this example's own sample, not the generic Choice one.
+    await type('textarea[placeholder="The message being evaluated"]', 0, 'edited')
+    await click(byText('Load example'))
+    expect(currentMessage()).toBe(example.sample.current)
+    const create = vi.spyOn(store.api, 'createDecision')
+    await click(byText('Create'))
+    await act(async () => {})
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: 'PR author', question: example.question }))
   })
 
   it('refuses to delete a decision a consumer still uses from the editor', async () => {
