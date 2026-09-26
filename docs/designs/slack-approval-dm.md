@@ -413,7 +413,7 @@ changes:
    decider, card lifecycle + restart survivability (§5.4), and the
    unconditional `block_id` target on DM cards (§5.3).
 
-Console notifications (§7) are deferred to a follow-up issue.
+Console notifications (§7) followed as their own change (#1704).
 
 ## 10. Out of scope / future
 
