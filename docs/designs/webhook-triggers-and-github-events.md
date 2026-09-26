@@ -209,9 +209,9 @@ agent environment.
 
 ### Installation-Wide Rows
 
-> Status: implemented in the Control Plane and the relay (#2398). The relay fills an
-> installation rule in with each event's repository and re-reads it that way before
-> dispatch. The console picker follows.
+> Status: implemented in the Control Plane, the relay and the console (#2398). The
+> relay fills an installation rule in with each event's repository and re-reads it
+> that way before dispatch.
 
 An agent reviewing or triaging a whole organization would otherwise need one row
 per repository and family, and a new repository would need new rows. An
