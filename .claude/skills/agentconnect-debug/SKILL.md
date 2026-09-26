@@ -40,7 +40,7 @@ Decide where the thing must be before looking for it. "The place I know is empty
 
 ## 3. Pick the evidence source by symptom
 
-Start with [references/symptoms.md](references/symptoms.md): it maps a reported symptom to the first query, what the result usually means, and where the fix landed. Then read [references/evidence-sources.md](references/evidence-sources.md) for how to read the source you need. Five investigations that went to the wrong component first have a worked recipe in [references/recipes.md](references/recipes.md): slow starts, the code that actually served a turn, a 403 with working git, a turn lost or repeated across a restart, and a store that is not where SQLite would be. Work outward in this order and stop when the evidence explains the report:
+Start with [references/symptoms.md](references/symptoms.md): it maps a reported symptom to the first query, what the result usually means, and where the fix landed. Then read [references/evidence-sources.md](references/evidence-sources.md) for how to read the source you need. Four investigations that went to the wrong component first have a worked recipe in [references/recipes.md](references/recipes.md): slow starts, the code that actually served a turn, a 403 with working git, and a turn lost or repeated across a restart. Work outward in this order and stop when the evidence explains the report:
 
 1. Control Plane tables — what was dispatched, to whom, and what state the orchestrator believes.
 2. The daemon store — what the daemon believed and did (`sessions`, `transcript`, `inbox`, outboxes).
