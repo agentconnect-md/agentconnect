@@ -47,16 +47,17 @@ The script resolves the bundled `pg` driver inside the image, sets the session r
 | `cron_runs`               | The daemon's side of schedule runs                                                                                                                                                                                                          |
 | `permission_requests`     | Pending and answered permission asks                                                                                                                                                                                                        |
 
-**Tool rows.** On a `kind = 'tool'` row, `body` is the JSON `ToolBody` (`packages/protocol/src/frames/session.ts`): `status` (`pending|in_progress|completed|failed`), `kind` (`execute`, `read`, `edit`, …), `rawInput` (for a shell tool typically `command`, `cwd`), `rawOutput` (for a shell tool typically `formatted_output`, `exit_code`), `truncated`. The console counts any non-zero-exit execute as a failed tool call, so one root cause fans out into a chain of red rows; read the first failure, not the last.
+**Tool rows.** On a `kind = 'tool'` row, `body` is the JSON `ToolBody` (`packages/protocol/src/frames/session.ts`): `status` (`pending|in_progress|completed|failed`), `kind` (`execute`, `read`, `edit`, …), `rawInput` (for a shell tool typically `command`, `cwd`), `rawOutput` (for a shell tool typically `formatted_output`, `exit_code`), `truncated`. The console counts any non-zero-exit execute as a failed tool call, so one root cause fans out into a chain of red rows; read the first failure, not the last. Rows of one thread are shared by every agent in it, and `sessionScope` holds the admitting session's key: scope by it before calling a failure the investigated session's. Raw command and output are free-form and can carry a credential another session used, so read them one row at a time (`--seq <n> --raw`) and keep them out of public text.
 
 **Hook sessions** key their transcript as `channel = owner/repo`, `thread = <PR or issue number>`.
 
 **How to read.** The daemon itself uses `node:sqlite`, so the host's Node can open the file without a `sqlite3` binary. Copy nothing off the host; stream the script over SSH and open read-only:
 
 ```bash
-ssh < host > 'node - sessions <root> <substring>' < scripts/daemon-store.cjs
-ssh < host > 'node - tools <root> <channel> <thread>' < scripts/daemon-store.cjs
-ssh < host > 'node - query <root> "select count(*) from inbox where completedAt is null"' < scripts/daemon-store.cjs
+ssh daemon-host 'node - sessions <root> <substring>' < scripts/daemon-store.cjs
+ssh daemon-host 'node - tools <root> <channel> <thread> --session <sessionKey>' < scripts/daemon-store.cjs
+ssh daemon-host 'node - tools <root> <channel> <thread> --seq <n> --raw' < scripts/daemon-store.cjs
+ssh daemon-host 'node - query <root> "select count(*) from inbox where completedAt is null"' < scripts/daemon-store.cjs
 ```
 
 ## 3. The daemon's filesystem
@@ -90,7 +91,7 @@ Find the process without exposing its arguments:
 
 ```bash
 ps -o pid,ppid,lstart,comm -C node # Linux
-cat /proc/ < pid > /cgroup         # which unit owns it: system, user, or none
+cat /proc/PID/cgroup               # which unit owns it: system, user, or none
 ```
 
 Then read the log where that supervisor put it:

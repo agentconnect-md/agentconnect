@@ -50,7 +50,7 @@ Start with [references/symptoms.md](references/symptoms.md): it maps a reported 
 
 Use the bundled scripts instead of retyping queries; every retyped one-liner in the past broke on quoting:
 
-- `scripts/daemon-store.cjs` reads a daemon's `<root>/state/local.sqlite` read-only with the host's own Node: `leaf`, `sessions`, `tools`, `query`.
+- `scripts/daemon-store.cjs` reads a daemon's `<root>/state/local.sqlite` read-only with the host's own Node: `leaf`, `sessions`, `tools`, `query`. `tools` prints metadata only and scopes to one session with `--session`, because a thread's rows are shared by every agent in it; a row's command and output come out only for one `--seq` with `--raw`, because another session's tool call can carry a credential that must not land in this investigation's transcript or in any public text.
 - `scripts/cp-query.sh` runs one parameterized read-only statement inside a Control Plane pod with the pod's own database credentials.
 
 ## 4. Check the premise before concluding
@@ -76,4 +76,4 @@ Lead with the cause, or the open hypotheses and the next check for each. Then gi
 - Do not restart, stop, or reconfigure a daemon or service as part of diagnosis. Report what a restart would change and let the operator decide.
 - Do not walk a whole disk with `du` on a shared host; use `df -h` and a depth-limited `du` on the suspected tree.
 - Respect production restrictions: where `exec` into a pod is not allowed, work from logs and the console; where a daemon on a host belongs to another environment, leave it alone.
-- Keep secrets out of scratch files and transcripts: a `DATABASE_URL` stays inside the pod, an API key stays in the service unit.
+- Keep secrets out of scratch files and transcripts: a `DATABASE_URL` stays inside the pod, an API key stays in the service unit, and a tool row's raw command or output is read one row at a time and never quoted in public text.

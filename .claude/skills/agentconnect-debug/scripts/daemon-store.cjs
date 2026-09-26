@@ -10,7 +10,10 @@ const USAGE = [
   'usage:',
   '  daemon-store.cjs leaf <sessionKey>                                 the session directory leaf for a session key',
   '  daemon-store.cjs sessions <root|sqlite> [needle]                   sessions with ids, executor, outcome, leaf; needle matches key, sessionId, acpSessionId',
-  '  daemon-store.cjs tools <root|sqlite> <channel> [thread] [limit]    tool rows of one conversation, first failure flagged',
+  '  daemon-store.cjs tools <root|sqlite> <channel> [thread] [--session <sessionKey>] [--limit <n>]',
+  '                                                                     tool rows of one conversation as metadata only; --session keeps one session',
+  '  daemon-store.cjs tools <root|sqlite> <channel> [thread] --seq <n> --raw',
+  '                                                                     the command and output preview of ONE row; may hold secrets, never paste it into public text',
   '  daemon-store.cjs query <root|sqlite> <sql> [param...]              one read-only statement, rows as JSON'
 ].join('\n')
 
@@ -78,6 +81,23 @@ function describeTool(row) {
   }
 }
 
+// Options may follow the positionals: --session <key>, --limit <n>, --seq <n>, --raw.
+function parseOptions(args) {
+  const positional = []
+  const options = {}
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]
+    if (arg === '--raw') options.raw = true
+    else if (arg === '--session' || arg === '--limit' || arg === '--seq') {
+      const value = args[++i]
+      if (value === undefined) fail(`${arg} needs a value`)
+      options[arg.slice(2)] = arg === '--session' ? value : Number(value)
+    } else if (arg.startsWith('--')) fail(`unknown option ${arg}`)
+    else positional.push(arg)
+  }
+  return { positional, options }
+}
+
 function main(argv) {
   const [command, ...rest] = argv
   if (command === 'leaf') {
@@ -102,15 +122,19 @@ function main(argv) {
     return
   }
   if (command === 'tools') {
-    const [, channel, thread, limit] = rest
+    const { positional, options } = parseOptions(rest.slice(1))
+    const [channel, thread] = positional
     if (!channel) fail(USAGE)
+    if (options.raw && options.seq === undefined) fail('--raw shows one row at a time: pass --seq <n> with it')
+    // Rows of one thread are shared by every agent in it; sessionScope is the admitting session's key.
     const rows = db
       .prepare(
-        `select seq, ts, sender, text, body from transcript
+        `select seq, ts, sender, sessionScope, text, body from transcript
          where channel = ?1 and (?2 is null or thread = ?2) and kind = 'tool'
-         order by seq limit ?3`
+           and (?3 is null or sessionScope = ?3) and (?4 is null or seq = ?4)
+         order by seq limit ?5`
       )
-      .all(channel, thread ?? null, Number(limit ?? 200))
+      .all(channel, thread ?? null, options.session ?? null, options.seq ?? null, options.limit ?? 200)
     let failed = 0
     let firstFailed
     for (const row of rows) {
@@ -120,17 +144,27 @@ function main(argv) {
         failed += 1
         firstFailed ??= row.seq
       }
-      const head = tool.text.replace(/\s+/g, ' ').slice(0, 160)
-      const marks = [isFailed ? 'FAIL' : 'ok', tool.truncated ? 'truncated' : null].filter(Boolean).join(',')
+      const marks = [
+        isFailed ? 'FAIL' : 'ok',
+        tool.text === '' ? 'no-output' : null,
+        tool.truncated ? 'truncated' : null
+      ]
+        .filter(Boolean)
+        .join(',')
+      const scope = row.sessionScope ? leaf(row.sessionScope) : '-'
       console.log(
-        `#${row.seq} ${row.ts ?? '-'} ${tool.kind} [${marks}] exit=${tool.exit ?? '-'} ${tool.command.slice(0, 200)}`
+        `#${row.seq} ${row.ts ?? '-'} ${row.sender} ${scope} ${tool.kind} [${marks}] exit=${tool.exit ?? '-'}`
       )
-      if (head) console.log(`    ${head}`)
-      else if (isFailed) console.log("    (empty output: read the runtime's own log under the session HOME)")
+      if (!options.raw) continue
+      console.log(`    command: ${tool.command.replace(/\s+/g, ' ').slice(0, 500)}`)
+      const head = tool.text.replace(/\s+/g, ' ').slice(0, 500)
+      if (head) console.log(`    output:  ${head}`)
+      else if (isFailed) console.log("    output:  (empty: read the runtime's own log under the session HOME)")
     }
     console.log(
       `\n${rows.length} tool rows, ${failed} failed${firstFailed === undefined ? '' : `, first failure at seq ${firstFailed}`}`
     )
+    if (!options.raw && failed > 0) console.log('command and output of one row: --seq <n> --raw (treat as sensitive)')
     return
   }
   if (command === 'query') {
