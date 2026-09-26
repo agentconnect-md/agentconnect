@@ -9,7 +9,7 @@
  * from the routes verbatim. Tools NEVER re-implement authorization.
  *
  * Write tools (`write: true`) are the §6.2 ✎ set — deliberately curated:
- * credential, member, org, access-control, and bot operations stay OUT of the
+ * credential, member, org, access-control, and bot-credential operations stay OUT of the
  * catalog (§6.3; the REST guards remain the hard boundary). Destructive tools
  * (`destructive: true`, §6.4 🔥) additionally carry a required `confirm`
  * argument that must byte-equal the live resource's name — compared HERE, at
@@ -34,6 +34,20 @@ import {
   SkillSetupIntent
 } from '@agentconnect.md/protocol/mcp-app'
 import { HOOK_KINDS, isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
+import {
+  AgentDecisionIds,
+  AgentModelSelection,
+  AgentRepositorySelector,
+  CodeHostRoutingFamily,
+  CodeHostRoutingProvider,
+  DecisionDraft,
+  DecisionPreviewSample,
+  SharedBotDecisionRouting,
+  isCodeHostRoutingScope
+} from '@agentconnect.md/protocol'
+import { UpdateIntegrationChannelBody } from '../dto/index.js'
+import { BotDecisionRoutingSaveBody } from '../routes/decision-routing.js'
+import { BotDecisionRoutingPreviewBody } from '../routes/decision-routing-preview.js'
 
 /** The day presets `getUsage` accepts, which it converts to an explicit window. */
 type UsageToolRange = 'd1' | 'd7' | 'd30' | 'd90'
@@ -84,6 +98,8 @@ export interface McpToolDef {
    *  WS round-trip, or touches external state MUST stay `'external'` (the
    *  default) and keep the fail-closed at-most-once/ambiguous contract. */
   effect?: 'cp_db' | 'external'
+  /** Argument keys that carry message content: redacted from audit, and the tool is refused where approval would persist them. */
+  contentArgs?: readonly string[]
   call(ctx: McpToolCtx, args: Record<string, unknown>): Promise<RestResult>
 }
 
@@ -251,6 +267,46 @@ function checkWorkspaceMode(value: Record<string, unknown>, ctx: z.RefinementCtx
 /** The `family:action` patterns a github trigger subscribes to — validated
  *  authoritatively by the route against the row's own family. */
 const GithubHookEvents = z.array(z.string().min(1)).min(1).max(20)
+
+// A Decision's executable half; its audience is access control and stays in the console (§6.3).
+const decisionFields = {
+  name: DecisionDraft.shape.name.describe('Display name, unique enough for a person to pick it from a list'),
+  providerId: DecisionDraft.shape.providerId.describe('An evaluator provider id from listDecisionProviders'),
+  model: DecisionDraft.shape.model.describe('One of that provider’s model ids that answers this question type'),
+  question: DecisionDraft.shape.question.describe(
+    'boolean: `criteria` {true, false}; choice: 2–32 `criteria` keys, each describing when it applies; score: an ordered `criteria` list of 2–10 levels. `instructions` says what to judge.'
+  )
+} as const
+
+const DecisionId = CanonicalUuid.describe('The Decision id (from listDecisions)')
+
+// A repository routing is keyed by the code host's numeric repository id and one subject family.
+const codeHostRoutingScope = {
+  provider: CodeHostRoutingProvider,
+  repoId: z
+    .string()
+    .regex(/^[1-9]\d{0,18}$/)
+    .describe('The repository’s numeric id on its code host, as listAgentHooks reports it (`repoId`)'),
+  family: CodeHostRoutingFamily.describe(
+    'github routes issues and pull_request; gitlab and gitea route issues and merge_request'
+  )
+} as const
+
+function checkRoutingScope(value: { provider?: unknown; family?: unknown }, ctx: z.RefinementCtx): void {
+  if (typeof value.provider === 'string' && !isCodeHostRoutingScope(value.provider, value.family as string))
+    ctx.addIssue({ code: 'custom', message: 'The family is not routable for this provider.', path: ['family'] })
+}
+
+const routingPath = (a: Record<string, unknown>): string =>
+  `/decision-routing/${seg(a.provider)}/${seg(a.repoId)}/${seg(a.family)}`
+
+// Each evaluation source is one consumer lane; the fields it needs are required by the refinement below.
+const EVALUATION_SOURCE_FIELDS = {
+  conversation: ['integrationId', 'channelId'],
+  bot: ['botId'],
+  repository: ['provider', 'repoId', 'family'],
+  model_selection: ['agentId']
+} as const
 
 export const MCP_TOOLS: McpToolDef[] = [
   {
@@ -715,6 +771,98 @@ export const MCP_TOOLS: McpToolDef[] = [
     schema: z.object({ hookId: z.string().min(1).describe('The hook id (from listAgentHooks)') }).strict(),
     call: (ctx, a) => ctx.get(org(ctx, `/hooks/${seg(a.hookId)}/runs`))
   },
+  {
+    name: 'listDecisions',
+    description:
+      'List the reusable Decisions visible to you — typed questions (boolean, choice or score) an evaluator model answers about a message or subject — each with how many visible consumers use it: conversation gates, shared-bot routers, repository routings and agents.',
+    schema: NoArgs,
+    call: (ctx) => ctx.get(org(ctx, '/decisions'))
+  },
+  {
+    name: 'getDecision',
+    description:
+      'One Decision in full — provider, model and question — with every visible consumer that uses it. Read it before binding the Decision anywhere: a consumer’s condition must fit the question’s type and keys.',
+    schema: z.object({ decisionId: DecisionId }).strict(),
+    call: (ctx, a) => ctx.get(org(ctx, `/decisions/${seg(a.decisionId)}`))
+  },
+  {
+    name: 'listDecisionProviders',
+    description:
+      'The evaluator providers and models each daemon can run a Decision on, the question types each model answers, and whether the organization’s provider credentials are ready. Choose a Decision’s providerId and model from here.',
+    schema: z
+      .object({ daemonId: z.string().uuid().optional().describe('Only this daemon (from listDaemons)') })
+      .strict(),
+    call: (ctx, a) => ctx.get(org(ctx, '/decisions/providers'), { daemonId: a.daemonId as string | undefined })
+  },
+  {
+    name: 'getBotDecisionRouting',
+    description:
+      'A shared bot’s By decision routing: the root Decision, its rules (condition → an agent, skip, or a further Decision step), the Otherwise action, the channels it covers, and readiness. Read it before saveBotDecisionRouting, which replaces the whole configuration.',
+    schema: z.object({ botId: z.string().uuid().describe('The bot id (from listBots)') }).strict(),
+    call: (ctx, a) => ctx.get(org(ctx, `/bots/${seg(a.botId)}/decision-routing`))
+  },
+  {
+    name: 'getCodeHostDecisionRouting',
+    description:
+      'A repository’s Decision routing for one subject family: which of the agents triggered on it (`members`) takes each issue or pull/merge request, by rules over a Decision’s answer. `config` is null when the repository is not routed. Read it before saveCodeHostDecisionRouting, which replaces the whole configuration.',
+    schema: z.object(codeHostRoutingScope).strict().superRefine(checkRoutingScope),
+    call: (ctx, a) => ctx.get(org(ctx, routingPath(a)))
+  },
+  {
+    // Summaries only: an evaluation's detail carries the judged messages, and bodies stay out of the catalog (§15 Q1).
+    name: 'listDecisionEvaluations',
+    description:
+      'Recent evaluations of a Decision consumer, newest first, read live from the serving daemon: the answer and confidence, matched rule keys, outcome (triggered / skipped / unavailable / canceled / pending), model and latency. Use it to explain why a message was admitted, routed or skipped, or why a session got its model. `source` picks the consumer — conversation (integrationId + channelId), bot (botId, optionally one channelId), repository (provider + repoId + family), model_selection (agentId). Page with `cursor` from the previous `nextCursor`. A 503 means the daemon is offline or too old.',
+    schema: z
+      .object({
+        source: z.enum(['conversation', 'bot', 'repository', 'model_selection']),
+        integrationId: z.string().uuid().optional().describe('conversation: the integration (from listIntegrations)'),
+        channelId: z
+          .string()
+          .min(1)
+          .max(512)
+          .optional()
+          .describe('conversation: required; bot: narrows to one channel'),
+        botId: z.string().uuid().optional().describe('bot: the shared bot (from listBots)'),
+        provider: codeHostRoutingScope.provider.optional().describe('repository: the code host'),
+        repoId: codeHostRoutingScope.repoId.optional(),
+        family: codeHostRoutingScope.family.optional(),
+        agentId: z.string().uuid().optional().describe('model_selection: the agent (from listAgents)'),
+        decisionId: z.string().uuid().optional().describe('Only evaluations whose root Decision is this one'),
+        cursor: z.number().int().positive().optional(),
+        limit: z.number().int().min(1).max(50).optional()
+      })
+      .strict()
+      .superRefine((value, ctx) => {
+        for (const key of EVALUATION_SOURCE_FIELDS[value.source])
+          if (value[key] === undefined)
+            ctx.addIssue({ code: 'custom', message: `required for ${value.source}`, path: [key] })
+        if (value.source === 'repository') checkRoutingScope(value, ctx)
+      }),
+    call: (ctx, a) => {
+      const query = {
+        decisionId: a.decisionId as string | undefined,
+        cursor: a.cursor as number | undefined,
+        limit: a.limit as number | undefined
+      }
+      switch (a.source) {
+        case 'conversation':
+          return ctx.get(
+            org(ctx, `/integrations/${seg(a.integrationId)}/channels/${seg(a.channelId)}/decision-evaluations`),
+            query
+          )
+        case 'bot':
+          return ctx.get(org(ctx, `/bots/${seg(a.botId)}/decision-routing/evaluations`), {
+            ...query,
+            channelId: a.channelId as string | undefined
+          })
+        case 'repository':
+          return ctx.get(org(ctx, `${routingPath(a)}/evaluations`), query)
+        default:
+          return ctx.get(org(ctx, `/agents/${seg(a.agentId)}/model-evaluations`), query)
+      }
+    }
+  },
 
   // ——— Write tools (§6.2 ✎) — curated; credentials/members/org/access-control stay out (§6.3) ———
   {
@@ -801,7 +949,23 @@ export const MCP_TOOLS: McpToolDef[] = [
         outputMode: OutputMode.nullable().optional(),
         fastMode: z.boolean().nullable().optional(),
         permissionMode: z.string().min(1).nullable().optional(),
-        pause: z.boolean().optional().describe('true pauses the agent; false resumes it')
+        pause: z.boolean().optional().describe('true pauses the agent; false resumes it'),
+        decisionIds: AgentDecisionIds.nullable()
+          .optional()
+          .describe(
+            'Decisions the agent may evaluate itself during a turn (from listDecisions); replaces the list, null clears'
+          ),
+        modelSelection: AgentModelSelection.nullable()
+          .optional()
+          .describe(
+            'Pick each new session’s runtime and model by a Decision: `rules` map a condition on its answer to a target {runtime, model, effort?, permissionMode?, fastMode?} (valid values from getDaemon) or `nextStepId` of a chained step in `steps`. Replaces the whole selection; null reverts to the fixed runtime and model.'
+          ),
+        repositorySelector: AgentRepositorySelector.strict()
+          .nullable()
+          .optional()
+          .describe(
+            'The evaluator {providerId, model} that picks which `decision`-materialized repositories a session clones; must answer choice questions. null clears'
+          )
       })
       .strict(),
     call: async (ctx, a) => {
@@ -1002,21 +1166,30 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'setChannelTrigger',
     description:
-      'Change how an integration behaves in one conversation: the trigger mode (off / mention-only / any message; off disables the conversation) and/or the conversation’s owning agent (null clears the override).',
+      'Change how an integration behaves in one conversation: its trigger, session mode, and/or owning agent. Triggers are off (disables the conversation), mention, any, or decision — a group conversation admits a message only when a Decision gate says so. `decision` requires `decisionBinding` {type: "gate", decisionId, when, steps?}: `when` must fit the Decision’s question (boolean `values`, choice `thresholds` per key, score `min`/`max`), and `nextStepId` / `elseStepId` chain up to seven further `steps`. Any other trigger clears an existing gate. Check it afterwards with the `conversation` source of listDecisionEvaluations.',
     write: true,
     schema: z
       .object({
         integrationId: z.string().min(1).describe('The integration id (from listIntegrations)'),
         channelId: z.string().min(1).describe('The platform channel id (from listIntegrations channels)'),
-        trigger: z.enum(['off', 'mention', 'any']).optional(),
-        agentId: z
-          .string()
-          .min(1)
-          .nullable()
-          .optional()
-          .describe('Owning agent for this channel; null clears the override')
+        trigger: UpdateIntegrationChannelBody.shape.trigger,
+        decisionBinding: UpdateIntegrationChannelBody.shape.decisionBinding.describe(
+          'Required with, and only with, trigger "decision"'
+        ),
+        sessionMode: UpdateIntegrationChannelBody.shape.sessionMode.describe(
+          'createNew opens a session per thread; append joins the conversation’s one long-lived session'
+        ),
+        agentId: z.string().min(1).optional().describe('Owning agent for this channel (from listAgents)')
       })
-      .strict(),
+      .strict()
+      .superRefine((value, ctx) => {
+        if ((value.trigger === 'decision') !== (value.decisionBinding !== undefined))
+          ctx.addIssue({
+            code: 'custom',
+            message: 'decisionBinding is required with, and only with, trigger "decision"',
+            path: ['decisionBinding']
+          })
+      }),
     call: (ctx, a) =>
       ctx.send(
         'PATCH',
@@ -1048,6 +1221,162 @@ export const MCP_TOOLS: McpToolDef[] = [
       if (typeof found.name !== 'string' || found.name !== a.confirm) return confirmMismatch('the integration’s `name`')
       return ctx.send('DELETE', org(ctx, `/integrations/${seg(a.integrationId)}`))
     }
+  },
+  {
+    name: 'createDecision',
+    description:
+      'Save a reusable Decision: a typed question an evaluator model answers about a message or subject. Saving enables nothing — bind it with setChannelTrigger (a conversation gate), saveBotDecisionRouting, saveCodeHostDecisionRouting, or updateAgent (modelSelection or decisionIds). It is visible to the whole organization; restricting its audience is done in the console. Try it first with previewDecision.',
+    write: true,
+    schema: z.object(decisionFields).strict(),
+    call: (ctx, a) => ctx.send('POST', org(ctx, '/decisions'), bodyOf(a))
+  },
+  {
+    name: 'updateDecision',
+    description:
+      'Replace a Decision’s name, provider, model and question in one step (pass all four; its audience is kept). Every consumer is revalidated: a gate or routing whose condition no longer fits the question is disabled as Needs review until it is saved again, so check getDecision’s usages before changing the question’s type or keys.',
+    write: true,
+    schema: z.object({ decisionId: DecisionId, ...decisionFields }).strict(),
+    call: (ctx, a) => ctx.send('PATCH', org(ctx, `/decisions/${seg(a.decisionId)}`), bodyOf(a, 'decisionId'))
+  },
+  {
+    name: 'deleteDecision',
+    description:
+      'Permanently delete a Decision — IRREVERSIBLE. Refused with 409 while any conversation gate, routing or agent still uses it (the answer lists them). `confirm` must exactly equal the Decision’s `name`; get the user’s explicit approval before calling.',
+    write: true,
+    destructive: true,
+    schema: z
+      .object({
+        decisionId: DecisionId,
+        confirm: z.string().min(1).describe('The Decision’s exact `name` — a deliberate re-type')
+      })
+      .strict(),
+    call: async (ctx, a) => {
+      const target = await ctx.get(org(ctx, `/decisions/${seg(a.decisionId)}`))
+      if (target.statusCode !== 200) return target
+      const name = (JSON.parse(target.body) as { decision?: { name?: unknown } }).decision?.name
+      if (typeof name !== 'string' || name !== a.confirm) return confirmMismatch('the Decision’s `name`')
+      return ctx.send('DELETE', org(ctx, `/decisions/${seg(a.decisionId)}`))
+    }
+  },
+  {
+    name: 'saveBotDecisionRouting',
+    description:
+      'Replace a shared bot’s By decision routing: the root Decision, its rules (each an `id`, a `when` condition, and an action — an agent, skip, or `nextStepId` of a chained step), the Otherwise action, `enabled`, and the channel scope. `channelIds` is the COMPLETE scope: an added channel must be an enabled group channel and turns By decision, replacing any gate; every channel dropped from the scope must appear in `removals` with its replacement trigger. Read getBotDecisionRouting first and send the whole configuration back.',
+    write: true,
+    schema: z
+      .object({ botId: z.string().uuid().describe('The bot id (from listBots)'), ...BotDecisionRoutingSaveBody.shape })
+      .strict(),
+    call: (ctx, a) => ctx.send('PUT', org(ctx, `/bots/${seg(a.botId)}/decision-routing`), bodyOf(a, 'botId'))
+  },
+  {
+    name: 'saveCodeHostDecisionRouting',
+    description:
+      'Replace a repository’s Decision routing for one subject family: which of the agents triggered on it takes each issue or pull/merge request. `config` holds the root Decision, rules (each an `id`, a `when` condition, and an action — an agent, skip, or `nextStepId`), the Otherwise action and `enabled`; every rule’s agent must be one of getCodeHostDecisionRouting’s `members`, and you need edit access to all of them. `enabled: false` pauses routing, so every member fires again.',
+    write: true,
+    schema: z
+      .object({ ...codeHostRoutingScope, config: SharedBotDecisionRouting })
+      .strict()
+      .superRefine(checkRoutingScope),
+    call: (ctx, a) => ctx.send('PUT', org(ctx, routingPath(a)), { config: a.config })
+  },
+  {
+    name: 'deleteCodeHostDecisionRouting',
+    description:
+      'Remove a repository’s Decision routing for one subject family, so every agent triggered on it fires unrouted again — the rules are lost. `confirm` must exactly equal the repository’s `owner/repo` (`repoFullName` from getCodeHostDecisionRouting); get the user’s explicit approval before calling.',
+    write: true,
+    destructive: true,
+    schema: z
+      .object({
+        ...codeHostRoutingScope,
+        confirm: z.string().min(1).describe('The repository’s exact `owner/repo` — a deliberate re-type')
+      })
+      .strict()
+      .superRefine(checkRoutingScope),
+    call: async (ctx, a) => {
+      const target = await ctx.get(org(ctx, routingPath(a)))
+      if (target.statusCode !== 200) return target
+      const name = (JSON.parse(target.body) as { repoFullName?: unknown }).repoFullName
+      if (typeof name !== 'string' || name !== a.confirm) return confirmMismatch('the repository’s `owner/repo`')
+      return ctx.send('DELETE', org(ctx, routingPath(a)))
+    }
+  },
+
+  // Previews store nothing but each is a billed evaluator call, so they take the write path (mcp:write, budget).
+  {
+    name: 'previewDecision',
+    description:
+      'Try a Decision on a sample conversation — `history` lines with sender ids and the `currentMessage` to judge — and get the evaluator’s typed answer. Pass `decisionId` for a saved Decision, or `decision` for an unsaved draft. The run goes to one `target`: a daemon, the managed pool, or a member set. Stores nothing and binds nothing, but each run is a billed model call. Not available from webchat, where approval would store the sample.',
+    write: true,
+    contentArgs: ['state'],
+    schema: z
+      .object({
+        decisionId: DecisionId.optional(),
+        decision: z.object(decisionFields).strict().optional().describe('An unsaved draft instead of decisionId'),
+        target: z
+          .discriminatedUnion('kind', [
+            z.object({ kind: z.literal('daemon'), daemonId: z.string().uuid() }).strict(),
+            z.object({ kind: z.literal('pool') }).strict(),
+            z.object({ kind: z.literal('set'), setId: z.string().uuid() }).strict()
+          ])
+          .describe('Where it runs — a daemon from listDecisionProviders whose provider is ready'),
+        state: DecisionPreviewSample
+      })
+      .strict()
+      .superRefine((value, ctx) => {
+        if ((value.decisionId === undefined) === (value.decision === undefined))
+          ctx.addIssue({ code: 'custom', message: 'pass exactly one of decisionId and decision', path: ['decisionId'] })
+      }),
+    call: async (ctx, a) => {
+      let decision = a.decision as Record<string, unknown> | undefined
+      if (!decision) {
+        const saved = await ctx.get(org(ctx, `/decisions/${seg(a.decisionId)}`))
+        if (saved.statusCode !== 200) return saved
+        const { name, providerId, model, question } = (JSON.parse(saved.body) as { decision: Record<string, unknown> })
+          .decision
+        decision = { name, providerId, model, question }
+      }
+      return ctx.send('POST', org(ctx, '/decisions/preview'), {
+        decision,
+        target: a.target,
+        state: a.state,
+        consumer: { type: 'none' }
+      })
+    }
+  },
+  {
+    name: 'previewIntegrationChannelDecision',
+    description:
+      'Try a draft By decision gate on one conversation against a sample, on the daemon that serves it, and see whether the message would be admitted. Takes the same `decisionBinding` as setChannelTrigger and a `state` of `history` lines and the `currentMessage`. Writes nothing, but each run is a billed model call. Not available from webchat, where approval would store the sample.',
+    write: true,
+    contentArgs: ['state'],
+    schema: z
+      .object({
+        integrationId: z.string().uuid().describe('The integration id (from listIntegrations)'),
+        channelId: z.string().min(1).max(512).describe('The platform channel id (from listIntegrations channels)'),
+        decisionBinding: UpdateIntegrationChannelBody.shape.decisionBinding.unwrap(),
+        state: DecisionPreviewSample
+      })
+      .strict(),
+    call: (ctx, a) =>
+      ctx.send(
+        'POST',
+        org(ctx, `/integrations/${seg(a.integrationId)}/channels/${seg(a.channelId)}/decision-preview`),
+        bodyOf(a, 'integrationId', 'channelId')
+      )
+  },
+  {
+    name: 'previewBotDecisionRouting',
+    description:
+      'Try a draft shared-bot routing on one channel and situation against a sample, and see which agents it would route to. `config` and `channelIds` are the draft (as for saveBotDecisionRouting); `targets` is the situation — {type: "new"} for a new conversation, or {type: "mention" | "thread", agentIds, participantAgentIds} for an explicit mention or an established thread. Writes nothing, but each run is a billed model call. Not available from webchat, where approval would store the sample.',
+    write: true,
+    contentArgs: ['state'],
+    schema: z
+      .object({
+        botId: z.string().uuid().describe('The bot id (from listBots)'),
+        ...BotDecisionRoutingPreviewBody.shape
+      })
+      .strict(),
+    call: (ctx, a) => ctx.send('POST', org(ctx, `/bots/${seg(a.botId)}/decision-routing/preview`), bodyOf(a, 'botId'))
   }
 ]
 

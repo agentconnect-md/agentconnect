@@ -25,7 +25,7 @@ import { ctxOf, denyViewerWrite, orgOf } from '../rbac.js'
 
 const IdParam = z.object({ id: z.string().uuid() })
 const unique = (values: readonly string[]) => new Set(values).size === values.length
-const SaveBody = z.strictObject({
+export const BotDecisionRoutingSaveBody = z.strictObject({
   config: SharedBotDecisionRouting,
   channelIds: z.array(z.string().min(1).max(512)).max(1000).refine(unique, 'Channels must be unique.'),
   removals: z
@@ -179,7 +179,7 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
           description:
             'Saves the complete routing configuration and its channel scope in one transaction. `channelIds` is the complete desired scope: an addition must be an enabled group channel and becomes By decision on every sibling row, replacing any gate; every removed channel must appear in `removals` with its replacement trigger and optional default agent. `enabled: false` pauses routing and keeps the scope. Adding channels is refused with `code` DECISION_UNSUPPORTED_CONSUMER (409) while the relay or the evaluation host does not support routing; an invisible Decision is `code` DECISION_NOT_FOUND (404).',
           params: IdParam,
-          body: SaveBody,
+          body: BotDecisionRoutingSaveBody,
           response: {
             200: DetailDto,
             400: IssuesErrorDto,

@@ -149,8 +149,17 @@ function serverInfo(publicWebUrl?: string) {
  *  bloat `audit_event.details` or dump a large pasted secret into the org audit trail. */
 const AUDIT_ARGS_MAX = 512
 
-function auditArgs(validated: Record<string, unknown> | undefined, raw: unknown): unknown {
-  const value = validated ?? raw ?? {}
+function auditArgs(
+  validated: Record<string, unknown> | undefined,
+  raw: unknown,
+  contentArgs: readonly string[] = []
+): unknown {
+  let value = validated ?? raw ?? {}
+  // Message content never reaches the audit trail; only its presence is recorded.
+  if (contentArgs.length > 0 && value !== null && typeof value === 'object' && !Array.isArray(value))
+    value = Object.fromEntries(
+      Object.entries(value).map(([key, v]) => [key, contentArgs.includes(key) ? '[redacted]' : v])
+    )
   const json = JSON.stringify(value) ?? 'null'
   if (json.length <= AUDIT_ARGS_MAX) return value
   return { _truncated: true, preview: json.slice(0, AUDIT_ARGS_MAX) }
@@ -442,6 +451,17 @@ export function mcpRoutes(deps: HttpDeps) {
                   'this token is limited to read-only access (missing the mcp:write scope) — reconnect and grant write access to use write tools'
               })
             }
+          } else if (invocationContext && tool.contentArgs) {
+            // A queued operation stores its arguments, and message content never lands in CP persistence.
+            result = {
+              statusCode: 403,
+              body: JSON.stringify({
+                error: 'Forbidden',
+                statusCode: 403,
+                message:
+                  'this tool carries message content, which an approval would have to store; it is not available from webchat — try it in the console instead'
+              })
+            }
           } else if (tool.write && invocationContext && tool.delegatedForm) {
             // This write asks the owner for a prefilled form instead of an approval: nothing is
             // queued here and nothing executes — the human submits it under their own Console JWT.
@@ -530,12 +550,12 @@ export function mcpRoutes(deps: HttpDeps) {
                   agentId: invocationContext.agentId,
                   conversationId: invocationContext.conversationId,
                   tool: params.name,
-                  args: auditArgs(parsed.success ? parsed.data : undefined, params.arguments),
+                  args: auditArgs(parsed.success ? parsed.data : undefined, params.arguments, tool.contentArgs),
                   status: result?.statusCode ?? (parsed.success ? 'error' : 'invalid_arguments')
                 }
               : {
                   tool: params.name,
-                  args: auditArgs(parsed.success ? parsed.data : undefined, params.arguments),
+                  args: auditArgs(parsed.success ? parsed.data : undefined, params.arguments, tool.contentArgs),
                   status: result?.statusCode ?? (parsed.success ? 'error' : 'invalid_arguments'),
                   ...(apiKeyId ? { apiKeyId } : {})
                 }
