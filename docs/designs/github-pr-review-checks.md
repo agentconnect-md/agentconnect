@@ -341,10 +341,20 @@ Association settles once per generation. A permission doorbell or normal retry c
 **Decision (2026-09-26): no AgentConnect-side required gate.** Requiring a Check
 is the repository's own setting, the same way GitHub Actions leaves it to a
 ruleset or branch protection rather than to the workflow. An organization that
-wants reviews to block merges adds the informational Check
+wants reviews to hold merges adds the informational Check
 (`AgentConnect PR Review: <agent-name>`) as a required status check in its
-ruleset, pinned to the AgentConnect App. AgentConnect keeps the Check fit for
-that use instead of building a separate required context:
+ruleset, pinned to the AgentConnect App.
+
+What that requirement gates is narrower than an approval. GitHub treats a
+`neutral` conclusion as passing, so a `COMMENT + neutral` review lets the pull
+request merge. A merge is held while the review is queued or running, when the
+agent requests changes, and when the review fails or never ran. A target-branch
+change that keeps the head reuses the head's Check. The new generation's Check
+replaces the earlier result as soon as the change is delivered, and until then
+the earlier result stands. The public documentation states both limits.
+
+AgentConnect keeps the Check fit for that use instead of building a separate
+required context:
 
 - **A Check on every head.** A Check appears only for revisions the row reviews,
   so a required Check needs a pull-request row with the Any update cadence, no
@@ -359,8 +369,8 @@ that use instead of building a separate required context:
   External Issues and Pull Requests).
 
 The public documentation explains how to require the Check, with these three
-points. `gateMode=required` stays a reserved value that the server rejects. The
-rest of this section records the dropped design.
+points and the two limits above. `gateMode=required` stays a reserved value that
+the server rejects. The rest of this section records the dropped design.
 
 Required context must be immutable and unique within repository. Informational uses a **different name** so it can never neutral→success a context still pinned by operator:
 

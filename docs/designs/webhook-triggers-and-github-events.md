@@ -848,9 +848,9 @@ Creation requires:
 
 GitHub review and reporting settings are validated both at configuration time
 and again at effect time. Commit-status reporting and the reserved `required`
-gate mode are rejected. An organization that wants the review Check to block
-merges requires it in its own GitHub ruleset
-([github-pr-review-checks.md](github-pr-review-checks.md) §5).
+gate mode are rejected. An organization that wants the review Check to hold
+merges requires it in its own GitHub ruleset, within the limits
+[github-pr-review-checks.md](github-pr-review-checks.md) §5 states.
 
 The agent detail Integrations card lists hooks alongside integrations. Generic
 hook creation reveals the capability URL and optional HMAC secret once. GitHub
