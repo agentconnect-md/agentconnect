@@ -4262,7 +4262,26 @@
     "create": "Create",
     "loading": "Loading decisions…",
     "emptyTitle": "No decisions yet",
-    "emptyBody": "Create one to ask a question about incoming messages, then pick which answers wake an agent.",
+    "emptyBody": "Start from an example. Added decisions are fully editable.",
+    "examples": {
+      "addAll": "Add all examples",
+      "adding": "Adding…",
+      "add": "Add",
+      "addLabel": "Add {name}",
+      "columns": {
+        "example": "Example",
+        "answers": "Answers"
+      },
+      "hints": {
+        "needsReply": "Use as a gate: let the agent reply only on Yes.",
+        "spam": "Use as a gate: wake a moderator on 2–3, or keep a support agent to 0–1.",
+        "supportCategory": "Use in routing: technical → support agent, billing → billing agent, skip spam.",
+        "issueType": "Use on issues: bug → fixer agent, feature → planning agent.",
+        "prFocus": "Use on PRs: security → security reviewer, architecture → architecture reviewer.",
+        "prAuthor": "Use for cross-model review: claude → Codex reviewer, codex or grok → Claude reviewer.",
+        "taskComplexity": "Use for agent runtime: switch to a stronger model with higher effort on Hard."
+      }
+    },
     "noMatches": "No decisions match “{query}”.",
     "notFound": "This decision no longer exists.",
     "noInstructions": "No instructions yet",

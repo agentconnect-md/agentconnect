@@ -1260,6 +1260,14 @@ fields; Choice has keyed descriptions; Score
 has ordered levels labeled `0..N-1`. Trigger conditions and target agents belong
 in consumer editors.
 
+An organization with no Decisions sees editable examples in place of the list, one
+per shipped consumer: a reply gate, spam scoring, support routing, issue type, PR
+focus, PR author (for cross-model review), and task complexity for runtime selection.
+**Add** opens the editor prefilled from one example, with a sample conversation in
+**Try with an example** that **Load example** restores, and saves nothing until Create;
+**Add all examples** creates every example with the first available model. The
+examples carry the question only; each row's hint names the consumer it suits.
+
 Model remains visible with one available choice: Jev 1.13 (`jev-1.13.0`). Provider
 options come from the authorized daemon catalog, showing BYOK or AC credits and
 readiness. Endpoint/key configuration belongs to the daemon environment or host
@@ -1964,8 +1972,8 @@ for routine response, routing, and session choices. Directions to explore includ
 - **Session selection:** use eligible session candidates and recent context to
   judge whether a message starts a new topic or continues an existing session.
   This does not change the established-thread continuity specified for Stage 2.
-- **Built-in templates:** provide editable starting points for common judgments
-  that users can apply without creating a Decision from scratch.
+- **Built-in templates:** the empty Decisions page already offers static examples
+  (§9.1); a template library offered beyond the empty state remains open.
 
 AI-assisted authoring produces saved configuration. Runtime Auto would make choices
 for incoming messages using the candidates and context available at that time;
