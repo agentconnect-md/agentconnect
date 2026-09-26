@@ -18600,13 +18600,14 @@ export class Daemon {
       }
       const boundKey = bound && hostKeySessionKey(key)
       // The cold gate, before every fresh spawn: a failed child had write authority, so its replacement re-verifies the skill receipts; a review in its own pod needs only that, its cwd already prepared.
+      // A shared host started for a session prepares that session's share too (its on-demand clone directory), since the session consumes this one preparation.
       const prepared =
         bound?.cwd !== undefined && this.runsInSessionPod(agent, boundKey)
           ? await this.prepareSessionPodLaunch(agent, boundKey, allowAgentDrain)
           : await this.prepareAgentWorkspace(
               agent,
               undefined,
-              bound && bound.cwd === undefined ? bound.workspace : undefined,
+              session && session.cwd === undefined ? session.workspace : undefined,
               allowAgentDrain
             )
       if (!this.usesMicrosandbox(agent))
