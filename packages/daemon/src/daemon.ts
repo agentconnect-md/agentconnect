@@ -3,6 +3,7 @@ import {
   MEMORY_ENTRIES_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
+  DECISION_MODEL_EVALUATIONS_V1_FEATURE,
   DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
   DECISION_EVALUATION_RAW_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
@@ -551,6 +552,7 @@ import {
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
 import { DecisionEvaluationReader } from './decisions/evaluations.js'
+import { DecisionModelEvaluationReader } from './decisions/model-evaluations.js'
 import { backgroundConversationText, intakeEvidenceText, routeSelectionEvidence } from './decisions/evidence.js'
 import { DecisionLaneRuntime } from './decisions/lanes.js'
 import {
@@ -1511,6 +1513,7 @@ export class Daemon {
   private readonly modelSessions: ModelSessionHostPool
   private readonly decisionEvaluator: DecisionEvaluator
   private readonly decisionEvaluations: DecisionEvaluationReader
+  private readonly decisionModelEvaluations: DecisionModelEvaluationReader
   private readonly decisionGate: DecisionGate
   /** The shared-bot router (message-intake.md §6), sharing the gate's lanes and provider budget. */
   private readonly decisionRouter: DecisionRouter
@@ -1905,6 +1908,10 @@ export class Daemon {
           tenantScope
         }
       }
+    })
+    this.decisionModelEvaluations = new DecisionModelEvaluationReader({
+      store: () => this.store,
+      servesAgent: (orgId, agentId) => this.servesAgent(agentId) && this.orgForAgent(agentId) === orgId
     })
     this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
     // Self-hosted launches inherit the host environment already; only a pod launch needs these carried.
@@ -6922,6 +6929,7 @@ export class Daemon {
       PROVIDER_CREDENTIALS_V1_FEATURE,
       DECISION_PREVIEW_V1_FEATURE,
       DECISION_EVALUATIONS_V1_FEATURE,
+      DECISION_MODEL_EVALUATIONS_V1_FEATURE,
       DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
       DECISION_EVALUATION_RAW_V1_FEATURE,
       DECISION_TRIGGER_V1_FEATURE,
@@ -14186,6 +14194,7 @@ export class Daemon {
       )
       const target = this.sessionRuntimes.get(key)
       if (target) await this.store.pinDecisionModel(key, target)
+      if (target && run.modelEvaluation) await this.saveSessionModelEvaluation(run, target)
       const selectedRepos = this.sessionRepoSelections.get(key)
       if (selectedRepos) {
         await this.store.pinSelectedRepos(key, selectedRepos)
@@ -14255,6 +14264,62 @@ export class Daemon {
     return this.sessionRuntimes.get(run.key)?.model
   }
 
+  private async saveSessionModelEvaluation(run: TurnRun, target: DecisionRuntimeTarget): Promise<void> {
+    const record = run.modelEvaluation
+    if (!record) return
+    const evidence = record.evidence
+    const result = evidence?.evaluation
+    const answer = result?.status === 'answered' ? result.answer : null
+    const raw = (text: string | null) =>
+      text === null
+        ? null
+        : {
+            text: text.slice(0, 16 * 1024),
+            truncated: text.length > 16 * 1024
+          }
+    try {
+      const input = evidence?.input ?? null
+      const boundedInput = input && JSON.stringify(input).length <= 16 * 1024 ? input : null
+      const sessionId = await this.store.ensureOutwardSessionId(run.key, run.entry.agentId, record.at)
+      await this.store.saveDecisionModelEvaluation(
+        run.entry.agentId,
+        sessionId,
+        {
+          at: new Date(record.at).toISOString(),
+          sessionId,
+          decisionId: record.decisionId,
+          outcome: record.selected ? 'selected' : 'fallback',
+          reason: record.reason,
+          target,
+          answer: answer
+            ? answer.type === 'boolean'
+              ? { type: 'boolean', value: answer.value, probability: answer.probability }
+              : answer.type === 'choice'
+                ? { type: 'choice', value: answer.value, confidence: answer.confidence }
+                : { type: 'score', value: answer.value, confidence: answer.confidence }
+            : null,
+          requestedModel: evidence?.requestedModel ?? null,
+          actualModel: result?.status === 'answered' ? result.model : null,
+          latencyMs: evidence?.latencyMs ?? null,
+          usage: result?.status === 'answered' ? result.usage : null
+        },
+        {
+          selection: evidence?.selection ?? null,
+          question: evidence?.question ?? null,
+          input: boundedInput,
+          fullAnswer: answer,
+          chain: evidence?.chain,
+          rawRequest: raw(evidence?.rawRequest ?? null),
+          rawResponse: raw(evidence?.rawResponse ?? null)
+        },
+        record.at
+      )
+      run.modelEvaluation = undefined
+    } catch (error) {
+      this.log.warn(`model evaluation could not be saved (${(error as Error).name})`)
+    }
+  }
+
   private async selectSessionModel(
     run: TurnRun,
     persisted: SessionRecord | undefined,
@@ -14298,6 +14363,7 @@ export class Daemon {
     const orgId = this.cpCollab.orgForAgent(agent.id)
     const client = this.cpClient
     let target: DecisionRuntimeTarget | undefined
+    let evidence: import('./decisions/model-selection.js').SessionModelEvaluationEvidence | null = null
     const manualModel =
       manual?.model ?? (agent.allowRuntimeChangesInChat ? await this.store.getModelOverride(key) : undefined)
     if (
@@ -14323,12 +14389,30 @@ export class Daemon {
             purpose: 'model_selection'
           }),
         state: (decision) => this.sessionDecisionState(entry, agent, decision),
-        evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal)
+        evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal),
+        onResult: (result) => {
+          evidence = result
+        }
       })
     }
     entry.initAbort.signal.throwIfAborted()
     const currentAgent = this.agents.get(agent.id)
     if (!currentAgent || modelSelectionConfiguration(currentAgent) !== configuration) return
+    const recorded = evidence as import('./decisions/model-selection.js').SessionModelEvaluationEvidence | null
+    if (!manualModel)
+      run.modelEvaluation = {
+        decisionId: selection.decisionId,
+        selected: target !== undefined,
+        reason: target
+          ? null
+          : recorded?.evaluation?.status === 'unavailable'
+            ? recorded.evaluation.reason
+            : recorded?.evaluation
+              ? 'no_target'
+              : 'unavailable',
+        at: this.clock.now(),
+        evidence: recorded
+      }
     target ??= { runtime: agent.runtime, model: manualModel ?? agent.runtimeOverrides.model }
     const selected = agentWithRuntime(agent, target)
     this.sessionRuntimes.set(key, {
@@ -20000,6 +20084,7 @@ export class Daemon {
       // message-intake.md §8 rule 2's idle pass; the per-insert arming catches the hot path.
       await this.store.sweepAllObservations().catch(() => undefined)
       await this.store.stripDecisionVerdictBodies(this.clock.now()).catch(() => undefined)
+      await this.store.stripDecisionModelEvaluationBodies(this.clock.now()).catch(() => undefined)
       if (!this.draining) this.armStoreRetentionSweep()
     }, SESSION_RETENTION_SWEEP_INTERVAL_MS)
   }
@@ -22740,6 +22825,7 @@ export class Daemon {
       dreamRunner: () => this.dreamRunner(),
       decisionEvaluator: () => this.decisionEvaluator,
       decisionEvaluations: () => this.decisionEvaluations,
+      decisionModelEvaluations: () => this.decisionModelEvaluations,
       runtimeCommands: () => this.runtimeCommands,
       memoryHomePortsFor: (agentId) => this.memoryHomePortsFor(agentId),
       wakeMemoryOutbox: () => this.memoryOutbox?.wake(),

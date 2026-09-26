@@ -6,7 +6,9 @@ import {
   type DecisionModelStep,
   type DecisionEvaluation,
   type DecisionGetReply,
-  type DecisionToolDefinition
+  type DecisionToolDefinition,
+  type DecisionChainTrace,
+  type DecisionQuestion
 } from '@agentconnect.md/protocol'
 import type { DecisionEvaluationInput } from './evaluator.js'
 import { decisionTextPrefix, largestDecisionRequest } from './state.js'
@@ -80,6 +82,19 @@ export interface SessionModelSelectionInput {
   state(decision: DecisionToolDefinition): Promise<Record<string, unknown> | undefined>
   evaluate(input: DecisionEvaluationInput, signal: AbortSignal): Promise<DecisionEvaluation>
   evaluationId: string
+  onResult?: (result: SessionModelEvaluationEvidence) => void
+}
+
+export interface SessionModelEvaluationEvidence {
+  selection: AgentModelSelection
+  question: DecisionQuestion | null
+  requestedModel: string | null
+  input: Record<string, unknown> | null
+  evaluation: DecisionEvaluation | null
+  chain: DecisionChainTrace
+  rawRequest: string | null
+  rawResponse: string | null
+  latencyMs: number
 }
 
 // Definition and snapshot reads share the chain deadline even when their transport cannot cancel.
@@ -104,11 +119,21 @@ export async function evaluateSessionModel(
     signal.throwIfAborted()
     return input.current()
   }
+  const startedAt = performance.now()
+  let question: DecisionQuestion | null = null
+  let requestedModel: string | null = null
+  let state: Record<string, unknown> | null = null
+  let evaluation: DecisionEvaluation | null = null
+  let chain: DecisionChainTrace = []
+  let rawRequest: string | null = null
+  let rawResponse: string | null = null
   try {
     if (!current()) return undefined
     const selection = AgentModelSelection.parse(input.selection)
     const { decision } = await beforeAbort(input.decision(selection.decisionId), signal)
     if (!current() || !decision || decision.id !== selection.decisionId) return undefined
+    question = decision.question
+    requestedModel = decision.model
     const definitions = new Map([[decision.id, decision]])
     const ids = new Set(selection.steps?.map((step) => step.decisionId))
     ids.delete(decision.id)
@@ -117,8 +142,10 @@ export async function evaluateSessionModel(
       if (!current()) return undefined
       if (definition?.id === id) definitions.set(id, definition)
     }
-    const state = await beforeAbort(input.state(largestDecisionRequest([decision, ...definitions.values()])), signal)
-    if (!current() || state === undefined) return undefined
+    state =
+      (await beforeAbort(input.state(largestDecisionRequest([decision, ...definitions.values()])), signal)) ?? null
+    if (!current() || state === null) return undefined
+    const snapshot = state
     let selected: DecisionRuntimeTarget | undefined
     const result = await runDecisionChain<DecisionModelStep>({
       root: selection,
@@ -136,8 +163,14 @@ export async function evaluateSessionModel(
             agentId: input.agentId,
             evaluationId: index === 0 ? input.evaluationId : `${input.evaluationId.slice(0, 120)}:${index}`,
             decision: definition,
-            state,
-            deadlineAt
+            state: snapshot,
+            deadlineAt,
+            onRawRequest: (text) => {
+              if (index === 0) rawRequest = text
+            },
+            onRawResponse: (text) => {
+              if (index === 0) rawResponse = text
+            }
           },
           signal
         )
@@ -150,6 +183,8 @@ export async function evaluateSessionModel(
         return []
       }
     })
+    evaluation = result.evaluation
+    chain = result.trace
     if (
       !current() ||
       result.evaluation.status !== 'answered' ||
@@ -162,6 +197,17 @@ export async function evaluateSessionModel(
     input.signal.throwIfAborted()
     return undefined
   } finally {
+    input.onResult?.({
+      selection: input.selection,
+      question,
+      requestedModel,
+      input: state,
+      evaluation,
+      chain,
+      rawRequest,
+      rawResponse,
+      latencyMs: Math.max(0, Math.round(performance.now() - startedAt))
+    })
     clearTimeout(timer)
   }
 }

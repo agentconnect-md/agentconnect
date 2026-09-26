@@ -390,6 +390,13 @@ export interface TurnRun {
   readonly plan: TurnPlan
   // Session runtime selection replaces only the execution fields before opening the host.
   agent: LoadedAgent
+  modelEvaluation?: {
+    decisionId: string
+    selected: boolean
+    reason: string | null
+    at: number
+    evidence: import('../decisions/model-selection.js').SessionModelEvaluationEvidence | null
+  }
   readonly replyConn: ReplyConnection | undefined
   /** The platform egress transport this turn leased, when its output does not go through
    *  `replyConn`. Resolved ONCE, with the lease, and handed to the output surface as-is. */

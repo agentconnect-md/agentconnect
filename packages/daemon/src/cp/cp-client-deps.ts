@@ -1,4 +1,5 @@
 import type { DecisionEvaluationReader } from '../decisions/evaluations.js'
+import type { DecisionModelEvaluationReader } from '../decisions/model-evaluations.js'
 import type { DecisionEvaluator } from '../decisions/evaluator.js'
 import { createMemoryEntriesWriter, createMemoryEntriesReader } from './memory-entries.js'
 import type { MemoryProvider } from '../memory/provider.js'
@@ -156,6 +157,7 @@ export interface CpClientOrgHost {
 export interface CpClientSeamHost {
   decisionEvaluator(): DecisionEvaluator
   decisionEvaluations(): DecisionEvaluationReader
+  decisionModelEvaluations(): DecisionModelEvaluationReader
   configApply(): ConfigApply
   store(): LocalStore
   agents(): ReadonlyMap<string, LoadedAgent>
@@ -469,6 +471,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     dreamReader: createDreamReader(host.dreamRunner()),
     decisionEvaluator: host.decisionEvaluator(),
     decisionEvaluations: host.decisionEvaluations(),
+    decisionModelEvaluations: host.decisionModelEvaluations(),
     localSkillsReader: createLocalSkillsReader(
       host.workspaces(),
       // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the

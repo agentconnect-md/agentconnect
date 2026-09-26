@@ -18,6 +18,8 @@ import {
   QuotedMessageSchema,
   SessionImageAttachment as SessionImageAttachmentSchema,
   type DecisionRuntimeTarget,
+  type DecisionModelEvaluationRecord,
+  type DecisionModelEvaluationRecordDetail,
   type DreamInfo,
   type ExternalSessionOrigin,
   type QuotedMessage,
@@ -628,6 +630,13 @@ export const RETAINED_BY_PENDING_VERDICT_SQL = `SELECT 1 FROM decision_verdict v
 export const DECISION_BODY_RETENTION_MS = 24 * 3_600_000
 export const DECISION_BODY_RETAINED_VERDICTS = 20
 
+export interface DecisionModelEvaluationRow {
+  seq: number
+  summaryJson: string
+  detailJson: string | null
+  bodiesStrippedAt: number | null
+}
+
 /** The step-1 row a delivery was recorded at (message-intake.md §3): the verdict's position. */
 export interface ChannelRecordRef {
   seq: number
@@ -1208,6 +1217,17 @@ const DECISION_SCHEMA = `
       CREATE INDEX IF NOT EXISTS decision_verdict_lane ON decision_verdict (orgId, channel, subject, seq);
       CREATE INDEX IF NOT EXISTS decision_verdict_state ON decision_verdict (state, agentId);
       CREATE INDEX IF NOT EXISTS decision_verdict_integration ON decision_verdict (integrationId);
+      CREATE TABLE IF NOT EXISTS decision_model_evaluation (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        orgId TEXT NOT NULL,
+        agentId TEXT NOT NULL,
+        sessionId TEXT NOT NULL UNIQUE,
+        createdAt INTEGER NOT NULL,
+        summaryJson TEXT NOT NULL,
+        detailJson TEXT,
+        bodiesStrippedAt INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS decision_model_evaluation_agent ON decision_model_evaluation (orgId, agentId, seq);
       CREATE TABLE IF NOT EXISTS decision_release (
         orgId TEXT NOT NULL,
         channel TEXT NOT NULL,
@@ -1218,7 +1238,7 @@ const DECISION_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 31
+export const SCHEMA_VERSION = 32
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1564,7 +1584,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
     if (!columns.some((c) => c.name === 'observedRuntime'))
       await db.exec('ALTER TABLE sessions ADD COLUMN observedRuntime TEXT')
-  }
+  },
+  // v32 adds decision_model_evaluation in the CREATE block.
+  async () => undefined
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -6182,6 +6204,84 @@ export class LocalStore {
       )
       .run({ now, cutoff: now - DECISION_BODY_RETENTION_MS, kept: DECISION_BODY_RETAINED_VERDICTS })
     await this.deleteOrphanDecisionReleases()
+    return Number(result.changes)
+  }
+
+  async saveDecisionModelEvaluation(
+    agentId: string,
+    sessionId: string,
+    summary: Omit<DecisionModelEvaluationRecord, 'seq' | 'detailsExpired'>,
+    detail: Pick<
+      DecisionModelEvaluationRecordDetail,
+      'selection' | 'question' | 'input' | 'fullAnswer' | 'chain' | 'rawRequest' | 'rawResponse'
+    >,
+    now: number
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO decision_model_evaluation
+      (orgId, agentId, sessionId, createdAt, summaryJson, detailJson)
+      VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        this.orgForRead(agentId, undefined),
+        agentId,
+        sessionId,
+        now,
+        JSON.stringify(summary),
+        JSON.stringify(detail)
+      )
+  }
+
+  async listDecisionModelEvaluations(
+    orgId: string,
+    agentId: string,
+    before: number | undefined,
+    limit: number
+  ): Promise<DecisionModelEvaluationRow[]> {
+    return (await this.db
+      .prepare(
+        `SELECT seq, summaryJson, detailJson, bodiesStrippedAt
+      FROM decision_model_evaluation WHERE orgId = ? AND agentId = ? AND seq < ?
+      ORDER BY seq DESC LIMIT ?`
+      )
+      .all(
+        this.orgForRead(agentId, orgId),
+        agentId,
+        before ?? Number.MAX_SAFE_INTEGER,
+        limit
+      )) as DecisionModelEvaluationRow[]
+  }
+
+  async getDecisionModelEvaluation(
+    orgId: string,
+    agentId: string,
+    seq: number
+  ): Promise<DecisionModelEvaluationRow | undefined> {
+    return (await this.db
+      .prepare(
+        `SELECT seq, summaryJson, detailJson, bodiesStrippedAt
+      FROM decision_model_evaluation WHERE orgId = ? AND agentId = ? AND seq = ?`
+      )
+      .get(this.orgForRead(agentId, orgId), agentId, seq)) as DecisionModelEvaluationRow | undefined
+  }
+
+  async stripDecisionModelEvaluationBodies(now: number): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE decision_model_evaluation
+      SET detailJson = NULL, bodiesStrippedAt = @now
+      WHERE detailJson IS NOT NULL AND (createdAt < @cutoff OR
+        (SELECT COUNT(*) FROM decision_model_evaluation newer
+          WHERE newer.orgId = decision_model_evaluation.orgId
+            AND newer.agentId = decision_model_evaluation.agentId
+            AND newer.seq > decision_model_evaluation.seq) >= @kept)`
+      )
+      .run({
+        now,
+        cutoff: now - DECISION_BODY_RETENTION_MS,
+        kept: DECISION_BODY_RETAINED_VERDICTS
+      })
     return Number(result.changes)
   }
 

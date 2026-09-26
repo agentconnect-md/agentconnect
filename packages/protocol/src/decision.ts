@@ -547,6 +547,43 @@ export const DecisionEvaluationRecordPage = z.strictObject({
 })
 export type DecisionEvaluationRecordPage = z.infer<typeof DecisionEvaluationRecordPage>
 
+// A session birth's model choice has its own history, separate from conversation and routing verdicts.
+export const DecisionModelEvaluationRecord = z.strictObject({
+  seq: z.number().int().positive(),
+  at: z.string().max(64),
+  sessionId: Id,
+  decisionId: Id,
+  outcome: z.enum(['selected', 'fallback']),
+  reason: z.string().max(128).nullable(),
+  target: DecisionRuntimeTarget,
+  answer: DecisionAnswerSummary.nullable(),
+  requestedModel: z.string().max(128).nullable(),
+  actualModel: z.string().max(256).nullable(),
+  latencyMs: z.number().int().nonnegative().nullable(),
+  usage: z
+    .strictObject({ inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative() })
+    .nullable(),
+  detailsExpired: z.boolean()
+})
+export type DecisionModelEvaluationRecord = z.infer<typeof DecisionModelEvaluationRecord>
+
+export const DecisionModelEvaluationRecordDetail = DecisionModelEvaluationRecord.extend({
+  selection: AgentModelSelection.nullable(),
+  question: DecisionQuestion.nullable(),
+  input: z.record(z.string(), z.unknown()).nullable(),
+  fullAnswer: DecisionAnswer.nullable(),
+  chain: DecisionChainTrace.optional(),
+  rawRequest: DecisionRawJson.nullable(),
+  rawResponse: DecisionRawJson.nullable()
+})
+export type DecisionModelEvaluationRecordDetail = z.infer<typeof DecisionModelEvaluationRecordDetail>
+
+export const DecisionModelEvaluationRecordPage = z.strictObject({
+  items: z.array(DecisionModelEvaluationRecord).max(50),
+  nextCursor: z.number().int().positive().nullable()
+})
+export type DecisionModelEvaluationRecordPage = z.infer<typeof DecisionModelEvaluationRecordPage>
+
 const Usage = z.strictObject({
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative()

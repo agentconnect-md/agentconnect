@@ -738,6 +738,8 @@ consumer kind without restricting the reusable resource to gates and routers.
 | `POST /integrations/:id/channels/:channelId/decision-preview`          | Gate draft and sample state; answer plus match/skip                                         |
 | `GET /integrations/:id/channels/:channelId/decision-evaluations`       | Recent evaluations, newest first, bounded page by `cursor`/`limit`; proxied from the daemon |
 | `GET /integrations/:id/channels/:channelId/decision-evaluations/:seq`  | One evaluation's frozen snapshot, input, answer, and evidence, or `detailsExpired`          |
+| `GET /agents/:id/model-evaluations`                                    | Session-start model choices, scoped to the Agent and each session's audience                |
+| `GET /agents/:id/model-evaluations/:seq`                               | One frozen model choice and its retained input, answer, and rules                           |
 | `POST /bots/:id/decision-routing/preview` (Stage 2)                    | Routing draft, channel and sample context; precedence outcome or answer/rule/target         |
 | `GET /bots/:id/decision-routing/evaluations` (Stage 2)                 | Router verdicts newest first by `channelId`/`cursor`/`limit`; each row's audience checked   |
 | `GET /bots/:id/decision-routing/evaluations/:seq?channelId=` (Stage 2) | One router verdict's snapshots, constraint, input, answer, and per-target admissions        |
@@ -1409,6 +1411,16 @@ must not show them as Ready or silently expand their matching set. A provider/mo
 change preserves compatible conditions and invalidates preview results.
 
 ### 9.5 Recent evaluations and evidence
+
+Agent model selection has its own Recent evaluations entry beside Runtime and model
+on Agent Detail. It is an Agent-scoped session-start history, never part of an
+Integration conversation or routing history. The daemon stores it separately from
+`decision_verdict`, and the CP returns each row only when the caller can also view
+the associated session. It records the chosen runtime/model or fallback, the frozen
+rules, Jev answer and chain, input, provider JSON, and the final pinned target.
+Follow-ups use that pinned target and create no new evaluation. Detail bodies expire
+after 24 hours or 20 newer choices for the same Agent; summaries expire after seven
+days. The CP proxies these reads without persisting their content.
 
 Open Recent evaluations from a gate binding or Shared Bot Routing. The routing list
 shows Time, Channel, Decision answer, Matched keys/intervals and rules / Otherwise,

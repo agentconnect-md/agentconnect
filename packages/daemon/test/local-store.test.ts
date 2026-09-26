@@ -3803,7 +3803,7 @@ describe('the observation floor (message-intake.md §8 rule 2)', () => {
 })
 
 // message-intake.md §4.3: v26 adds the verdict and release tables, created by the CREATE block on both paths.
-describe.skipIf(pg)('the v25 → v26 decision tables', () => {
+describe.skipIf(pg)('decision table migrations', () => {
   const userVersion = (path: string): number => {
     const db = new DatabaseSync(path)
     const v = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
@@ -3819,11 +3819,11 @@ describe.skipIf(pg)('the v25 → v26 decision tables', () => {
     return rows.map((r) => r.name)
   }
 
-  it('creates both tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(31)
+  it('creates the decision tables on a fresh store and stamps the current version', async () => {
+    expect(SCHEMA_VERSION).toBe(32)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
-    expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
+    expect(tables(path)).toEqual(['decision_model_evaluation', 'decision_release', 'decision_verdict'])
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
@@ -3836,7 +3836,18 @@ describe.skipIf(pg)('the v25 → v26 decision tables', () => {
     const upgraded = await LocalStore.open(path)
     expect(await upgraded.listPendingDecisionVerdicts()).toEqual([])
     await upgraded.close()
-    expect(tables(path)).toEqual(['decision_release', 'decision_verdict'])
+    expect(tables(path)).toEqual(['decision_model_evaluation', 'decision_release', 'decision_verdict'])
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
+  })
+
+  it('adds model selection history to a v31 store', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v31-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('DROP TABLE decision_model_evaluation; PRAGMA user_version = 31')
+    old.close()
+    await (await LocalStore.open(path)).close()
+    expect(tables(path)).toContain('decision_model_evaluation')
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 })

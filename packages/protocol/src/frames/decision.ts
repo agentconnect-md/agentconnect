@@ -4,6 +4,8 @@ import {
   DecisionEvaluation,
   DecisionEvaluationRecordDetail,
   DecisionEvaluationRecordPage,
+  DecisionModelEvaluationRecordDetail,
+  DecisionModelEvaluationRecordPage,
   DecisionQuestion,
   DecisionRoutingEvaluationRecordDetail,
   DecisionRoutingEvaluationRecordPage
@@ -21,6 +23,7 @@ export const DECISION_MODEL_SELECTION_V1_FEATURE = 'decision-model-selection-v1'
 export const DECISION_CHAIN_V1_FEATURE = 'decision-chain-v1'
 // The peer answers decision/evaluations and decision/evaluation from its decision_verdict rows.
 export const DECISION_EVALUATIONS_V1_FEATURE = 'decision-evaluations-v1'
+export const DECISION_MODEL_EVALUATIONS_V1_FEATURE = 'decision-model-evaluations-v1'
 // The peer answers decision/routing-evaluations and decision/routing-evaluation from its router verdicts.
 export const DECISION_ROUTING_EVALUATIONS_V1_FEATURE = 'decision-routing-evaluations-v1'
 // The peer returns rawRequest/rawResponse on evaluation details when a request sets includeRaw.
@@ -152,6 +155,32 @@ export const DecisionEvaluationReply = z
     message: 'The evaluation detail must fit within 64 KiB.'
   })
 export type DecisionEvaluationReply = z.infer<typeof DecisionEvaluationReply>
+
+export const DecisionModelEvaluationsRequest = z.strictObject({
+  agentId: z.string().uuid(),
+  cursor: z.number().int().positive().optional(),
+  limit: z.number().int().min(1).max(50).default(20)
+})
+export type DecisionModelEvaluationsRequest = z.infer<typeof DecisionModelEvaluationsRequest>
+export type DecisionModelEvaluationsRequestInput = z.input<typeof DecisionModelEvaluationsRequest>
+export const DecisionModelEvaluationsReply = DecisionModelEvaluationRecordPage.refine(
+  (page) => encodedBytes(page) <= DECISION_LIST_MAX_BYTES,
+  { message: 'The evaluation page must fit within 32 KiB.' }
+)
+export type DecisionModelEvaluationsReply = z.infer<typeof DecisionModelEvaluationsReply>
+export const DecisionModelEvaluationRequest = z.strictObject({
+  agentId: z.string().uuid(),
+  seq: z.number().int().positive()
+})
+export type DecisionModelEvaluationRequest = z.infer<typeof DecisionModelEvaluationRequest>
+export const DecisionModelEvaluationReply = z
+  .strictObject({
+    evaluation: DecisionModelEvaluationRecordDetail.nullable()
+  })
+  .refine((reply) => encodedBytes(reply) <= DECISION_EVALUATION_DETAIL_MAX_BYTES, {
+    message: 'The evaluation detail must fit within 64 KiB.'
+  })
+export type DecisionModelEvaluationReply = z.infer<typeof DecisionModelEvaluationReply>
 
 // A bot's router verdicts across the channels the CP may read; the lane is the served member, the subject `router:<botId>`.
 const RoutingLane = {
