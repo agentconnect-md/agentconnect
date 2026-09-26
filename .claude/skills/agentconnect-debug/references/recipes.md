@@ -97,20 +97,33 @@ The replay decision is `packages/daemon/src/session/turn/replay-plan.ts`. A repl
 
 **Where the store lives.** `<root>/config.json` → `store` is `{ "backend": "sqlite" }` by default, or `{ "backend": "postgres", "configFile": "<path relative to root>" }` (PR #2240). A pool member (`--k8s`) always reads the mount `/var/run/ac-data-plane/config.json`. That file is `{ "version": 1, "databaseUrl": …, "maxConnections": … }` and is the only place the database is named — never a flag, never an environment variable. At startup a self-hosted Postgres store logs `store: PostgreSQL (a shared store; this machine keeps no local session history)`, and it refuses to start without the Control Plane, because every row carries the agent's organization.
 
-**The database.** Schema `agentconnect_cloud_store`, the same table and column names as SQLite through the dialect layer (`packages/daemon/src/store/postgres-dialect.ts`); columns are camelCase and must be quoted; rows carry `orgId` (and owner claims such as `ownerId`), so scope every query by organization and session key. This is not the Control Plane database that `scripts/cp-query.sh` reaches: that one has `session_meta`, this one has `sessions`, `transcript`, `inbox`.
+**The database.** Schema `agentconnect_cloud_store`, the same tables as SQLite through the dialect layer (`packages/daemon/src/store/postgres-dialect.ts`). The dialect creates the camelCase columns unquoted, so PostgreSQL stores them in lowercase: write `sessionid`, `executordaemonid`, `updatedat`, `completedat` in direct SQL, never `"sessionId"`. Only some tables carry `orgId` (`transcript`, `transcript_recipient`, `session_outward_ids`, `permission_requests`, the decision tables); `sessions` and `inbox` do not, so scope those by `agentid` and the session `key`. This is not the Control Plane database that `scripts/cp-query.sh` reaches: that one has `session_meta`, this one has `sessions`, `transcript`, `inbox`.
 
 **Smallest check.** On the daemon host, print only the backend and the file name, never the whole config:
 
 ```bash
-node -e 'const c=require(process.argv[1]);console.log(JSON.stringify(c.store??{backend:"sqlite"}))' < root > /config.json
-ls -la < root > /state/local.sqlite
+ROOT=/path/to/daemon/root
+node -e 'const c=require(process.argv[1]);console.log(JSON.stringify(c.store??{backend:"sqlite"}))' "$ROOT/config.json"
+ls -la "$ROOT/state/local.sqlite"
 ```
 
 **Reading it.** Open a plain read-only connection; never call `openPostgresDataPlane()` or `LocalStore.open()` from a diagnostic, because both take the schema advisory lock and run bootstrap and migrations. `scripts/daemon-pg-query.cjs` does the plain connection: the data-plane file's connection string (read where the file is, never copied off), `search_path=agentconnect_cloud_store,pg_catalog`, `SET default_transaction_read_only = on`, and `application_name=agentconnect-debug` so it is distinguishable in `pg_stat_activity`. The `pg` driver it needs is importable in a pool pod (`/app/packages/daemon/node_modules`) but not on a self-hosted host, where the published daemon is one self-contained bundle with the driver inlined; there, install it once into a scratch prefix and point `NODE_PATH` at it. If `psql` is installed instead, hand it the connection through `PG*` environment variables, never on a command line:
 
 ```bash
-kubectl -n node -e "$(cat scripts/daemon-pg-query.cjs)" -- pool 'select count(*) from inbox where "completedAt" is null' < namespace > exec < pool-pod > --
-ssh daemon-host 'npm --prefix /tmp/ac-debug install --silent pg@8 && NODE_PATH=/tmp/ac-debug/node_modules node - <root> "select key, \"sessionId\", state, \"executorDaemonId\" from sessions where \"orgId\" = $1 and key like $2 order by \"updatedAt\" desc limit 20" <orgId> "%<thread>%"' < scripts/daemon-pg-query.cjs
+# Pool member: the image has the driver. Placeholders are shell variables so nothing is parsed as a redirection.
+NAMESPACE=agents-namespace
+POD=pool-pod-name
+kubectl -n "$NAMESPACE" exec -i "$POD" -- node - pool \
+  'select count(*) as pending from inbox where completedat is null' < scripts/daemon-pg-query.cjs
+
+# Self-hosted postgres store: install a scratch driver once, then stream the script. The SQL is double-quoted on the
+# remote side, so its $1/$2 are escaped as \$1/\$2 to reach Node intact.
+ROOT=/path/to/daemon/root
+AGENT=agent-uuid
+THREAD=thread-id
+ssh daemon-host "npm --prefix /tmp/ac-debug install --silent pg@8 && NODE_PATH=/tmp/ac-debug/node_modules node - $ROOT \
+  \"select key, sessionid, state, executordaemonid from sessions where agentid = \\\$1 and key like \\\$2 order by updatedat desc limit 20\" \
+  $AGENT '%$THREAD%'" < scripts/daemon-pg-query.cjs
 ```
 
 **What supports the hypothesis.** `backend: postgres` with an empty or absent SQLite file: the rows are in the shared store, look there. `backend: sqlite` with an empty file: the daemon is on a different root from the one that holds the data, or retention purged the session (`session_purges` keeps the receipt until the Control Plane acknowledges it).
