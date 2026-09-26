@@ -233,11 +233,13 @@ fire twice for one event, so a repository row overrides the installation row.
   for the event's installation and family. A repository row is therefore how one
   repository gets different settings.
 - **Decision routing.** Routing stays per repository and family
-  ([code-host-decisions.md](code-host-decisions.md) §1), and its candidates stay
-  the repository rows. On a scope with an enabled routing, installation rows of
-  that family do not fire: the Decision rules the scope. The relay learns this
-  from the routing its repository rules already carry. To make an agent routable
-  there, give it a repository row.
+  ([code-host-decisions.md](code-host-decisions.md) §1) and decides among that
+  repository's rows only. An installation row is outside every routing: on a
+  routed scope it fires as it would anywhere else, whatever the Decision picks,
+  including Otherwise's nobody. Routing assigns the repository's own agents,
+  while an installation row is a standing organization-wide duty such as a
+  reviewer. To bring an agent into one repository's routing, give it a row
+  there, which overrides its installation row on that repository.
 - **Authorization.** Creating the row needs the installation grant; review or
   reporting on it needs that grant at `write`. The effects that today check "the
   hook's repository is the event's repository" instead check that the event's

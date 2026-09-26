@@ -26,6 +26,11 @@ take each new issue or PR from a typed judgment, the way a shared bot routes a n
 - **The Decision rules the scope.** Every event is judged, including later updates of the same
   issue or PR and events that @-mention an agent; when the Decision's target differs from the
   mentioned agent, the Decision's target takes the event.
+- **The scope is the repository's own rows.** An installation-wide row, which covers every
+  repository of a GitHub App installation, is not a candidate and is not held back: it fires on a
+  routed scope as it would elsewhere
+  ([webhook-triggers-and-github-events.md](webhook-triggers-and-github-events.md),
+  Installation-Wide Rows).
 - **A routed scope runs on every update.** While routing is enabled, the scope's rows ignore their
   own trigger mode (Opened, Any update, @-mention) and fire on any update; label filters still
   apply.
