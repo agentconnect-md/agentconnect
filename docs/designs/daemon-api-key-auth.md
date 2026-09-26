@@ -6,8 +6,8 @@
 
 Daemon-to-Control-Plane authentication uses a long-lived, database-backed,
 revocable API key in the WebSocket `auth` frame. The same credential primitive
-also supports personal, relay, and OAuth access tokens, while each principal
-type remains confined to its intended trust boundary.
+also supports personal, relay, OAuth access, and (proposed) agent keys, while
+each principal type remains confined to its intended trust boundary.
 
 In-cluster daemons do not use this credential. A cloud daemon authenticates with
 the projected ServiceAccount token its pod carries, verified by TokenReview —
@@ -193,7 +193,7 @@ They never include the plaintext key or stored hash.
 
 ---
 
-## 6. Personal, relay, and OAuth keys
+## 6. Personal, relay, OAuth, and agent keys
 
 The principal type is stored only in the database row. The opaque token format
 is shared, but authentication services enforce strict separation.
@@ -221,6 +221,44 @@ reject them.
 OAuth access tokens use `principalType = oauth`, are bound to a user,
 organization, scopes, and an OAuth grant, and have a finite expiry. Revoking an
 OAuth grant revokes its access-token rows.
+
+### Agent keys
+
+**Status:** Proposed. This is the credential behind the agent chat API in
+[shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api).
+
+An agent key lets a server that an organization runs, such as a documentation
+site's backend or a support widget's proxy, open conversations with one agent.
+It follows the installation-token model rather than the personal-token model:
+the key belongs to the agent, not to the person who minted it.
+
+- Agent keys use `principalType = agent`. The row binds `orgId` and a new
+  nullable `agentId` column, a foreign key that cascades when the agent is
+  deleted. `userId` stays null, and `createdByUserId` records the minter for
+  audit only.
+- A key's entire authority is the chat-token mint for its own agent. Human
+  authentication rejects this principal type the same way it rejects daemon
+  keys. So every other REST route, the daemon WebSocket, and the MCP endpoint
+  refuse the key without any per-route scope check, and any route added later
+  is closed to it by default. The `scopes` column stays empty; a second
+  agent-key capability would be the first reason to use it.
+- `GET`, `POST`, and `DELETE /orgs/:orgId/agents/:agentId/keys` list, mint, and
+  revoke keys. All three require edit access to the agent. A request
+  authenticated by any API key cannot mint an agent key.
+- The mint policy matches personal keys: a 90-day default expiry, an optional
+  non-expiring key, and a plaintext value shown exactly once.
+- The key outlives its minter's membership and edit access. Deleting the agent
+  deletes its keys. Revoking a key stops new mints at once; chat tokens it
+  already minted expire within their 30-minute TTL.
+
+Tests should cover:
+
+- rejection of agent keys by human authentication, the daemon WebSocket, and
+  MCP;
+- 404 for another agent's or another organization's chat-token mint;
+- edit-access gating on the three key routes, and refusal of a mint made with
+  any API key;
+- cascade on agent deletion.
 
 ---
 
