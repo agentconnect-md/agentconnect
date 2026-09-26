@@ -1,6 +1,6 @@
 # Merged Conversation View
 
-Status: draft for review
+Status: implemented through C2 (§10); C3 polish is open
 Owner: console/web + control plane
 Related: [webchat-multi-agents.md](webchat-multi-agents.md) (§8/§9, milestone M3),
 [session-visibility.md](session-visibility.md),

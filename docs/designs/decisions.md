@@ -1,6 +1,6 @@
 # Decisions
 
-> Status: Partially implemented — Decision persistence, Console CRUD, daemon provider readiness, standalone live previews, Provider keys, and the Jev evaluator are implemented. Live message admission and routing remain follow-up work.
+> Status: Implemented — Decision persistence, Console CRUD, daemon provider readiness, standalone live previews, Provider keys, the Jev evaluator, and live message admission and routing. Cloud evaluation on AC credits (C1, §10.4) remains.
 > Storage, ordering, and the evaluation-host rule are superseded by [message-intake.md](message-intake.md); the sections it replaces say so inline.
 > Scope: reusable typed judgments, initially using TypeSafe Jev.
 > Delivery: Stage 1 adds the Decision resource and fixed-target activation; Stage 2 adds shared-bot routing.

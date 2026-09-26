@@ -4,9 +4,8 @@ Native integration configuration preserves the direct HTTP delivery specified he
 The Console dialog is projected from the runtime's ordinary ACP tool result, without
 an admin MCP proxy; see [native integration configuration](webchat-native-integration-ui.md).
 
-Status: proposed replacement design. This document is authoritative for the next
-implementation of the feature; the existing daemon-local broker implementation is
-superseded and must not be treated as the target architecture.
+Status: implemented. This design replaced the daemon-local broker implementation, which
+has been removed.
 
 ## 1. Summary
 

@@ -1,6 +1,7 @@
 # MCP-Side Elicitation
 
-**Status:** Audit + design record. **The mechanism has shipped; no product call site has.**
+**Status:** Audit + design record. **Implemented: the mechanism and the three §4.2 call sites
+([#2022](https://github.com/agentconnect-md/agentconnect/pull/2022)) have shipped.**
 [#2016](https://github.com/agentconnect-md/agentconnect/pull/2016) (`ff2fe00d`) landed the ask seam —
 `packages/daemon/src/mcp/ask.ts`, the bridge's capability read, the `mcpAsk` IPC result and the
 `input_required` return — proven end to end by a test-only tool, with every product tool still
@@ -131,8 +132,8 @@ this: the ask is issued by the bridge process, on the MCP connection it already 
 
 ## 4. The audit (issue #1965, checkbox 1)
 
-**Every site below is still open.** #2016 shipped the mechanism with no product caller, so each of
-these tools guesses, suppresses or fails today exactly as it did before that change.
+**This audit is historical:** it records each tool as it stood after #2016. #2022 has since given
+the three §4.2 sites an ask; §4.3's `sendMessage` target stays deferred.
 
 ### 4.1 The issue's three candidates
 

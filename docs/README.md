@@ -2,8 +2,9 @@
 
 This directory holds the guides and design documents for the whole system. This
 page is the index: every document is listed exactly once, under its primary
-area, with one line on what it covers — implementation status and ownership live
-in each document's own header. When a document spans two areas, follow the
+area, with one line on what it covers. A document whose design is not implemented
+yet is marked **(draft)**; finer implementation status and ownership live in each
+document's own header. When a document spans two areas, follow the
 cross-references inside it.
 
 ## Guides
@@ -39,10 +40,10 @@ the picture it draws.
 - [slack-identity.md](designs/slack-identity.md) — Slack accounts as a sign-in method, and the one rule for reading that identity.
 - [slack-approval-dm.md](designs/slack-approval-dm.md) — DM-ing a linked agent editor to decide a pending approval from Slack.
 - [slack-streaming-turn-output.md](designs/slack-streaming-turn-output.md) — Streaming a Slack turn's tool-call chrome over one native card stream.
-- [slack-code-channels.md](designs/slack-code-channels.md) — Slack Code code channels: what is buildable now on generally available primitives, and what waits on the partner-only API.
+- **(draft)** [slack-code-channels.md](designs/slack-code-channels.md) — Slack Code code channels: what is buildable now on generally available primitives, and what waits on the partner-only API.
 - [feishu-integration.md](designs/feishu-integration.md) — The Lark / Feishu integration, international and CN variants.
 - [qq-integration.md](designs/qq-integration.md) — Official QQ bot integration, attachment support, and shared group-context and approval dependencies.
-- [google-chat-integration.md](designs/google-chat-integration.md) — Proposed native Google Chat integration with HTTPS relay ingress, threaded replies, durable admission, and a Pub/Sub alternative.
+- **(draft)** [google-chat-integration.md](designs/google-chat-integration.md) — Proposed native Google Chat integration with HTTPS relay ingress, threaded replies, durable admission, and a Pub/Sub alternative.
 
 ### Webchat and console
 
@@ -80,7 +81,7 @@ the picture it draws.
 - [turn-final-context-refresh.md](designs/turn-final-context-refresh.md) — Turn-final context refresh and answer regeneration on IM turns.
 - [transcript-full-tool-body.md](designs/transcript-full-tool-body.md) — Complete tool-call bodies in transcripts.
 - [agent-authored-attachments.md](designs/agent-authored-attachments.md) — Outbound agent-authored files across platforms.
-- [inbound-file-attachments.md](designs/inbound-file-attachments.md) — Inbound user files: the workspace landing zone and the web-console upload.
+- **(draft)** [inbound-file-attachments.md](designs/inbound-file-attachments.md) — Inbound user files: the workspace landing zone and the web-console upload.
 
 ### Authorization, identity, and visibility
 

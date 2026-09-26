@@ -1,6 +1,6 @@
 # AgentConnect Collaboration Arena
 
-**Status:** Draft for review (revised after design review)
+**Status:** Implemented; the §10.2 cross-room handoff is blocked (see the baseline)
 
 **Author:** AgentConnect team
 

@@ -1,6 +1,8 @@
 # Inbound File Attachments
 
-**Status:** Proposed — no part of this is implemented yet.
+**Status:** Draft — not implemented as designed. Platform files reach `uploads/` only when
+the agent saves one through a read tool (#2104), not at prompt build (§8 phase 1); the
+web-console upload (phases 2–3) is not built.
 
 Users can already hand an agent an image: webchat uploads one (re-encoded to WebP,
 ≤ 160 KB), and every chat platform's inbound images reach the agent's prompt as ACP

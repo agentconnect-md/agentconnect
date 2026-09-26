@@ -1,6 +1,6 @@
 # Session access for the infrequent visitor
 
-Status: draft v2, revised after adversarial review. Companion to
+Status: implemented (phases 1–4), from draft v2 revised after adversarial review. Companion to
 [session-visibility.md](session-visibility.md) (the authorization model this
 document does not change) and issue #775 (whose proposals this document absorbs,
 re-motivates — and in one case demotes; see §7).
