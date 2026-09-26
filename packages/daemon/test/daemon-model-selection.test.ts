@@ -227,6 +227,8 @@ describe('session-pinned Decision model', () => {
       reasons: []
     })
     const hook = pullHook()
+    const body = `Summary\n${'界'.repeat(1500)}\nCreated by Example Agent`
+    hook.context!.subject = { body, bodyTruncated: false }
     const msg = buildHookMessage(hook, 'trace-1')
     const channel = transcriptChannelKey(msg.channel, msg.transportScope)
     await internal.store.recordObservations(agentId, channel, [
@@ -247,7 +249,7 @@ describe('session-pinned Decision model', () => {
     expect(read).toHaveBeenCalledOnce()
     expect(evaluate.mock.calls[0]![0].state).toMatchObject({
       source: 'github',
-      subject: { kind: 'pull_request', number: 42, body: 'Fix login' },
+      subject: { kind: 'pull_request', number: 42, body },
       currentMessage: { text: 'Review the login change' },
       history: [{ text: 'The retry still fails' }],
       pullRequest: { commitMessages: 'Handle expired sessions', diff: '-return cached\n+return refresh()' }

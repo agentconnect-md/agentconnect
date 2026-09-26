@@ -1,5 +1,6 @@
 /** Gitea delivery normalization (gitea-integration.md §8), the pure half of the ingress; keyed on `X-Gitea-Event-Type` only, and untrusted beyond filter input. */
 import {
+  codeHostSubjectBody,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
   type CodeHostRoutingFamily,
@@ -502,13 +503,13 @@ function giteaSubject(
   ctx: GiteaMatchCtx
 ): Pick<HookContext, 'subject'> | undefined {
   if (!subject || ctx.family === 'push') return undefined
-  const body = subject.body ? truncateUtf8(subject.body, GITHUB_BODY_EXCERPT_MAX).text : ''
+  const body = subject.body == null ? undefined : codeHostSubjectBody(subject.body)
   return {
     subject: {
       ...(subject.user?.login ? { authorLogin: subject.user.login } : {}),
       ...(subject.state ? { state: subject.state } : {}),
       ...(typeof subject.draft === 'boolean' ? { draft: subject.draft } : {}),
-      ...(body ? { body } : {})
+      ...body
     }
   }
 }

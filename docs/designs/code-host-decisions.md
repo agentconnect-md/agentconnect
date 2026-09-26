@@ -209,7 +209,10 @@ supplies the subject identity; its existing repository grant supplies optional P
 ```
 
 `currentMessage` is the triggering comment, review text, or normalized lifecycle event summary.
-`subject.body` is the issue/PR/MR description, capped at an 8 KiB UTF-8 prefix. The assembled agent
+`subject.body` is the issue/PR/MR description, capped at 8 KiB of UTF-8 by the same helper at ingress
+and state construction. Oversized descriptions keep a prefix and suffix around an explicit omission
+marker so closing attribution remains available. Ingress carries `subject.bodyTruncated` independently
+of the triggering comment's truncation; state records it as `subject_body_trimmed`. The assembled agent
 prompt is never used. `history` contains the same thread's observed rows strictly before the
 trigger's sequence, including skipped and record-only events: newest 100, presented oldest first,
 with each history text capped at 16 KiB. Issues omit `pullRequest`.
@@ -227,8 +230,10 @@ Commit messages contribute at most 4 KiB. The code-host builder supplies its ord
 fields to the shared request fitter, which measures the actual serialized question, model and
 state, including JSON escaping, against both 8,000 estimated tokens at four
 bytes each (32,000 bytes) and the 32 KiB hard limit. It drops oldest history, then shortens diff,
-commit messages and subject body in that order. It preserves the trigger and required identity;
-an input that still cannot fit is `unsupported_input`, handled by each consumer's fallback policy.
+commit messages and subject body in that order. Subject-body reductions retain both ends with the
+same helper, including when workspace context causes repository selection to refit the state.
+It preserves the trigger and required identity; an input that still cannot fit is `unsupported_input`,
+handled by each consumer's fallback policy.
 `context.reasons` records missing and trimmed data; `omittedMessages` counts budget-dropped rows
 within the observed window. Chains budget against their largest request envelope and keep one
 state for all steps. Repository selection adds `workspace` before refitting with the same code-host

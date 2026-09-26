@@ -186,6 +186,32 @@ describe('state (decision 16)', () => {
     expect(base.context.reasons).toEqual([])
   })
 
+  it('keeps closing attribution when workspace context forces another subject-body reduction', () => {
+    const base = {
+      source: 'github',
+      currentMessage: { text: '' },
+      history: [],
+      subject: { body: `Summary\n${'界'.repeat(2600)}\nCreated by Example Agent` },
+      context: { partial: false, reasons: [], omittedMessages: 0 }
+    }
+    base.currentMessage.text = 't'.repeat(31_999 - Buffer.byteLength(decisionRequestBody({ decision, state: base })))
+    const state = repoSelectionState(
+      base,
+      { primary: 'example-org/primary-service', partial: false },
+      decision,
+      fitCodeHostDecisionState
+    )!
+    const body = (state.subject as { body: string }).body
+    expect(Buffer.byteLength(decisionRequestBody({ decision, state }))).toBeLessThanOrEqual(32_000)
+    expect(Buffer.byteLength(body)).toBeLessThan(Buffer.byteLength(base.subject.body))
+    expect(body).toMatch(/^Summary\n/)
+    expect(body).toMatch(/Created by Example Agent$/)
+    expect(body).not.toContain('�')
+    expect(state.context).toMatchObject({ partial: true, reasons: ['budget_trimmed', 'subject_body_trimmed'] })
+    expect(state.currentMessage).toEqual(base.currentMessage)
+    expect(base.subject.body).not.toContain('[... content omitted ...]')
+  })
+
   it('adds the primary and the candidates’ partial mark to the model-selection state', () => {
     const base = { source: 'chat', currentMessage: { text: 'Fix the deploy' }, history: [], truncated: false }
     expect(repoSelectionState(base, { primary: 'acme/primary-service', partial: false }, decision)).toEqual({

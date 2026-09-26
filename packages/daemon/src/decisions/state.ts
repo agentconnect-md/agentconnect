@@ -74,7 +74,12 @@ export function fitsDecisionBudget(state: Record<string, unknown>, question: Dec
 
 export type DecisionStateBudget = { question: DecisionQuestion; model: string }
 
-type DecisionStateTextField = readonly [object: Record<string, unknown> | undefined, field: string, reason: string]
+type DecisionStateTextField = readonly [
+  object: Record<string, unknown> | undefined,
+  field: string,
+  reason: string,
+  truncate?: (text: string, maxBytes: number) => string
+]
 
 // State bytes are identical across requests, so the largest envelope budgets every step or chunk.
 export function largestDecisionRequest<T extends DecisionStateBudget>(decisions: readonly [T, ...T[]]): T {
@@ -120,9 +125,9 @@ export function fitDecisionState(
     omitted++
     mark('budget_trimmed')
   }
-  for (const [object, field, reason] of textFields(state)) {
+  for (const [object, field, reason, truncate = decisionTextPrefix] of textFields(state)) {
     while (!fits() && object && typeof object[field] === 'string' && object[field]) {
-      object[field] = decisionTextPrefix(object[field], Math.floor(Buffer.byteLength(object[field]) / 2))
+      object[field] = truncate(object[field], Math.floor(Buffer.byteLength(object[field]) / 2))
       mark('budget_trimmed')
       mark(reason)
     }

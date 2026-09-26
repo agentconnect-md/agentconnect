@@ -2,6 +2,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
+  codeHostSubjectBody,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
@@ -456,13 +457,13 @@ function subjectOf(payload: GitlabPayload, ctx: GitlabMatchCtx): Pick<HookContex
     ctx.subjectAuthorId !== undefined && ctx.subjectAuthorId === ctx.actorId ? payload.user?.username : undefined
   const mr = ctx.family === 'note' ? payload.merge_request : ctx.family === 'merge_request' ? attrs : undefined
   const draft = mr?.draft ?? mr?.work_in_progress
-  const body = subject.description ? truncateUtf8(subject.description, GITHUB_BODY_EXCERPT_MAX).text : ''
+  const body = subject.description == null ? undefined : codeHostSubjectBody(subject.description)
   return {
     subject: {
       ...(authorLogin ? { authorLogin } : {}),
       ...(subject.state ? { state: subject.state } : {}),
       ...(typeof draft === 'boolean' ? { draft } : {}),
-      ...(body ? { body } : {})
+      ...body
     }
   }
 }
