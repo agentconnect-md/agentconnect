@@ -32,7 +32,7 @@ The script resolves the bundled `pg` driver inside the image, sets the session r
 
 ## 2. The daemon store
 
-**Where.** `<root>/state/local.sqlite` for a self-hosted daemon (`packages/daemon/src/paths.ts`); the root defaults to `~/.agentconnect`, or `AGENTCONNECT_ROOT`, or `--root`. `agentconnect status` prints the root the service runs on. A pool member uses the shared Postgres data plane instead: same tables, query that database.
+**Where.** `<root>/state/local.sqlite` for a self-hosted daemon (`packages/daemon/src/paths.ts`); the root defaults to `~/.agentconnect`, or `AGENTCONNECT_ROOT`, or `--root`. `agentconnect status` prints the root the service runs on. Read `<root>/config.json` → `store.backend` before trusting an empty file: a pool member, and any daemon whose owner set `store: { backend: "postgres" }`, keeps the same tables in the shared Postgres data plane instead, and this machine then holds no local session history. Recipe 5 in [recipes.md](recipes.md) has the read-only path for that store.
 
 **Tables** (`packages/daemon/src/store/local-store.ts`):
 
