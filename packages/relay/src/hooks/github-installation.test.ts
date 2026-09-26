@@ -104,6 +104,24 @@ describe('githubRulesForEvent', () => {
     ])
   })
 
+  it.each([
+    ['push', ['push:*'], ['push:*']],
+    ['deployment, its statuses included', ['deployment:*'], ['deployment_status:*']],
+    ['release', ['release:published'], ['release:*']]
+  ])('lets a repository rule override an installation rule of %s', (_family, own, installation) => {
+    const table = new HookTable()
+    table.upsert(repositoryRule(own))
+    table.upsert(installationRule(installation))
+    expect(githubRulesForEvent(table, REPO, '1234567').map((rule) => rule.hookId)).toEqual([REPOSITORY_HOOK])
+    expect(githubRuleByHookId(table, INSTALLATION_HOOK, REPO)).toBeUndefined()
+
+    table.upsert(repositoryRule(['issues:opened']))
+    expect(githubRulesForEvent(table, REPO, '1234567').map((rule) => rule.hookId)).toEqual([
+      REPOSITORY_HOOK,
+      INSTALLATION_HOOK
+    ])
+  })
+
   it('offers only repository rules without a signed installation or a repository name', () => {
     const table = new HookTable()
     table.upsert(installationRule())

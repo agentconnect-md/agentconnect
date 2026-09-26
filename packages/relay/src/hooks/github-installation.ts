@@ -1,7 +1,7 @@
 // Installation-wide GitHub rules (webhook-triggers-and-github-events.md, Installation-Wide Rows): filled in per event, then matched as repository rules.
 import type { RcHookAssign } from '@agentconnect.md/protocol'
 import type { HookTable } from './hook-table.js'
-import { githubRuleFamilies } from './github-routing.js'
+import { githubRuleFamilies, type GithubThreadFamily } from './github-routing.js'
 
 /** The repository a signed event names; an empty name leaves installation rules out. */
 export interface GithubEventRepository {
@@ -25,15 +25,30 @@ export function githubRuleForRepository(rule: RcHookAssign, repo: GithubEventRep
   }
 }
 
+type GithubRowFamily = GithubThreadFamily | 'push' | 'deployment' | 'release'
+
+/** Every row family a rule's events name: the thread families as routing reads them, plus push, deployment (with its statuses) and release. */
+function githubRowFamilies(
+  github: Pick<NonNullable<RcHookAssign['github']>, 'events' | 'commentFamilies'>
+): Set<GithubRowFamily> {
+  const families = new Set<GithubRowFamily>(githubRuleFamilies(github))
+  for (const pattern of github.events) {
+    const prefix = pattern.split(':', 1)[0]
+    if (prefix === 'push' || prefix === 'deployment' || prefix === 'release') families.add(prefix)
+    else if (prefix === 'deployment_status') families.add('deployment')
+  }
+  return families
+}
+
 /** An installation rule gives way where its agent has a repository rule of the event's repository sharing a family. */
 function overridden(rule: RcHookAssign, repositoryRules: readonly RcHookAssign[]): boolean {
   if (!rule.githubInstallation) return false
-  const families = githubRuleFamilies(rule.githubInstallation)
+  const families = githubRowFamilies(rule.githubInstallation)
   return repositoryRules.some(
     (own) =>
       own.agentId === rule.agentId &&
       own.github !== undefined &&
-      [...githubRuleFamilies(own.github)].some((family) => families.has(family))
+      [...githubRowFamilies(own.github)].some((family) => families.has(family))
   )
 }
 
