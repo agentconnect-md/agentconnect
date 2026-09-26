@@ -64,6 +64,7 @@ import {
   lockHookReviewOrgProducerScope
 } from '../review-projection-lock.js'
 import { authoritativeHookProjectionState } from '../../github/projection-state.js'
+import { githubHookCovers } from '../../hooks/installation-row.js'
 import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 import { bumpCodeHostRoutingHosts } from './code-host-decision-routing.repo.js'
@@ -1697,6 +1698,7 @@ export class PgHookRepo implements HookRepo {
             kind: true,
             enabled: true,
             repoId: true,
+            installationId: true,
             configRevision: true,
             dispatchRevision: true,
             projectionEpoch: true,
@@ -1720,8 +1722,7 @@ export class PgHookRepo implements HookRepo {
           (requiresProjectionFence &&
             (hook.kind !== 'github' ||
               !hook.enabled ||
-              hook.repoId === null ||
-              r.repoId !== hook.repoId ||
+              !githubHookCovers(hook, r.repoId, r.sourceInstallationId) ||
               r.headSha === undefined ||
               r.reportSha !== r.headSha ||
               r.agentId === undefined ||
@@ -2559,6 +2560,7 @@ export class PgHookRepo implements HookRepo {
             enabled: true,
             agentId: true,
             repoId: true,
+            installationId: true,
             projectionEpoch: true,
             reportingMode: true,
             gateMode: true
@@ -2571,22 +2573,39 @@ export class PgHookRepo implements HookRepo {
         // HookReviewProjection is the GitHub Checks ledger, so both authorities read
         // github here — the hosts number their repositories independently (§8.1).
         const workspaceIsThisRepo = agent?.workspaceRepoId === input.repoId && agent.gitCredentialProvider === 'github'
-        const additionalGrant = workspaceIsThisRepo
-          ? null
-          : await tx.agentRepoAuthorization.findUnique({
+        // An installation row publishes on its installation grant, which cannot be revoked while the row exists.
+        const installationRow = hook?.installationId != null
+        const installationGrant = installationRow
+          ? await tx.agentInstallationAuthorization.findUnique({
               where: {
-                agentId_provider_repoId: { agentId: input.agentId, provider: 'github', repoId: input.repoId }
+                agentId_provider_installationId: {
+                  agentId: input.agentId,
+                  provider: 'github',
+                  installationId: hook.installationId!
+                }
               },
               select: { access: true }
             })
+          : null
+        const additionalGrant =
+          workspaceIsThisRepo || installationRow
+            ? null
+            : await tx.agentRepoAuthorization.findUnique({
+                where: {
+                  agentId_provider_repoId: { agentId: input.agentId, provider: 'github', repoId: input.repoId }
+                },
+                select: { access: true }
+              })
         const currentRepoAuthority =
           agent?.orgId === input.orgId &&
-          ((workspaceIsThisRepo && agent.gitAccess === 'write') || additionalGrant?.access === 'write')
+          (installationRow
+            ? installationGrant?.access === 'write'
+            : (workspaceIsThisRepo && agent.gitAccess === 'write') || additionalGrant?.access === 'write')
         const currentLifecycle =
           hook?.kind === 'github' &&
           hook.enabled &&
           hook.agentId === input.agentId &&
-          hook.repoId === input.repoId &&
+          githubHookCovers(hook, input.repoId, incomingRun?.sourceInstallationId) &&
           hook.projectionEpoch === input.projectionEpoch &&
           hook.reportingMode === input.mode &&
           hook.gateMode === input.gateMode &&
@@ -3198,7 +3217,14 @@ export class PgHookRepo implements HookRepo {
   ): Promise<number> {
     return this.transaction(async (tx) => {
       await lockHookReviewAgentRepoScope(tx, agentId, repoId)
-      const rows = await tx.hookReviewProjection.findMany({ where: { agentId, repoId } })
+      // An installation row's Checks stand on its installation grant, not on this repository's authorization.
+      const installationRows = await tx.hookDef.findMany({
+        where: { agentId, installationId: { not: null } },
+        select: { id: true }
+      })
+      const rows = await tx.hookReviewProjection.findMany({
+        where: { agentId, repoId, hookId: { notIn: installationRows.map((row) => row.id) } }
+      })
       return this.tombstoneProjectionRows(tx, rows, at, desiredState)
     })
   }
