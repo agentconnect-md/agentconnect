@@ -709,7 +709,9 @@ describe('Decision edits and deletion with a router', () => {
     }>
     expect(list.find((d) => d.id === decisionId)?.usageCount).toBe(1)
     const detail = (await app.app.inject({ method: 'GET', url: `${ORG}/decisions/${decisionId}` })).json()
-    expect(detail.usages).toEqual([{ kind: 'shared_bot_routing', id: botId, label: expect.stringMatching(/^bot-/) }])
+    expect(detail.usages).toEqual([
+      { kind: 'shared_bot_routing', id: botId, label: expect.stringMatching(/^bot-/), rootDecisionId: decisionId }
+    ])
     const refused = await app.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${decisionId}` })
     expect(refused.statusCode, refused.body).toBe(409)
     expect(refused.json()).toMatchObject({
