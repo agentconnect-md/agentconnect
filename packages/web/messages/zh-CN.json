@@ -4262,7 +4262,26 @@
     "create": "创建",
     "loading": "正在加载决策…",
     "emptyTitle": "还没有决策",
-    "emptyBody": "创建一个决策来对收到的消息提问，然后选择哪些答案唤醒 Agent。",
+    "emptyBody": "从示例开始，添加后可以随意修改。",
+    "examples": {
+      "addAll": "添加全部示例",
+      "adding": "正在添加…",
+      "add": "添加",
+      "addLabel": "添加 {name}",
+      "columns": {
+        "example": "示例",
+        "answers": "答案"
+      },
+      "hints": {
+        "needsReply": "用作触发条件：只在答案为 Yes 时让 Agent 回复。",
+        "spam": "用作触发条件：2–3 唤醒审核 Agent，或让客服 Agent 只处理 0–1。",
+        "supportCategory": "用于路由：technical → 技术支持 Agent，billing → 账单 Agent，spam 跳过。",
+        "issueType": "用于 Issue：bug → 修复 Agent，feature → 规划 Agent。",
+        "prFocus": "用于 PR：security → 安全评审，architecture → 架构评审。",
+        "prAuthor": "用于交叉模型评审：claude → Codex 评审，codex 或 grok → Claude 评审。",
+        "taskComplexity": "用于 Agent 运行时：Hard 时换更强的模型并提高 effort。"
+      }
+    },
     "noMatches": "没有匹配“{query}”的决策。",
     "notFound": "该决策已不存在。",
     "noInstructions": "还没有指令",

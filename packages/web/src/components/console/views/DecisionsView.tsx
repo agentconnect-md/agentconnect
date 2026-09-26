@@ -4,16 +4,20 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { useState } from 'react'
 import { useFormatter, useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { LoadingState } from '@/components/marks'
 import { formatDateTime } from '@/i18n/format'
 import { useOrgs } from '@/lib/org-context'
+import { DECISION_EXAMPLES, type DecisionExample } from '@/lib/decisions/examples'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
+import { DECISION_PROVIDER_PROFILES } from '@agentconnect.md/protocol/decision'
 import type { DecisionSummary } from '@agentconnect.md/protocol/decision-api'
 
 // Name and question lead at every width.
 const GRID = 'grid-cols-1 gap-3 desktop:grid-cols-[2fr_.8fr_1.2fr_.8fr_.7fr]'
+const EXAMPLE_GRID = 'grid-cols-[minmax(0,1fr)_auto] gap-3 desktop:grid-cols-[minmax(0,2.4fr)_.8fr_1.2fr_auto]'
 
 const TYPE_TONE: Record<string, string> = {
   choice: 'bg-(--status-info-soft) text-(--status-info)',
@@ -57,25 +61,7 @@ function DecisionsList() {
           {error}
         </div>
       ) : decisions.length === 0 ? (
-        <div className="card flex flex-col items-center gap-[7px] px-6 py-[44px] text-center">
-          <span className="flex h-11 w-11 items-center justify-center rounded-[10px] border border-(--border-subtle) bg-(--surface-sunken)">
-            <Icon name="split" size={20} color="var(--text-tertiary)" />
-          </span>
-          <div className="mt-[6px] font-sans text-[14px] font-semibold leading-normal">{t('emptyTitle')}</div>
-          <div className="max-w-[420px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
-            {t('emptyBody')}
-          </div>
-          <Button
-            variant="primary"
-            size="sm"
-            className="mt-[10px]"
-            disabled={!writable}
-            onClick={() => router.push(orgPath('/decisions/new'))}
-          >
-            <Icon name="plus" size={14} />
-            {t('createDecision')}
-          </Button>
-        </div>
+        <DecisionExamples writable={writable} />
       ) : (
         <div className="card">
           <div className={`row h hidden desktop:grid ${GRID}`}>
@@ -121,6 +107,109 @@ function DecisionsList() {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function DecisionExamples({ writable }: { writable: boolean }) {
+  const t = useTranslations('Decisions')
+  const { orgPath } = useOrgs()
+  const router = useRouter()
+  const { api, reload } = useDecisionsPrototype()
+  const { providers } = useDecisionProviders()
+  const [adding, setAdding] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const answers = (example: DecisionExample) => {
+    const question = example.question
+    if (question.type === 'boolean') return [t('condition.yes'), t('condition.no')]
+    if (question.type === 'score') return question.criteria.map((_, level) => String(level))
+    return Object.keys(question.criteria)
+  }
+
+  // Shipped models let the examples save before any daemon is connected, as the editor does.
+  const addAll = async () => {
+    const provider = providers[0] ?? DECISION_PROVIDER_PROFILES[0]
+    if (!provider || adding) return
+    setAdding(true)
+    setError(null)
+    try {
+      for (const example of DECISION_EXAMPLES) {
+        await api.createDecision({
+          name: example.name,
+          providerId: provider.id,
+          model: provider.models[0]?.id ?? '',
+          question: example.question,
+          visibility: 'org',
+          sharedWith: []
+        })
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      await reload()
+      setAdding(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="flex flex-wrap items-center gap-3 px-5 py-4">
+        <div className="min-w-[220px] flex-1">
+          <div className="font-sans text-[14px] font-semibold leading-normal">{t('emptyTitle')}</div>
+          <div className="mt-[3px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
+            {t('emptyBody')}
+          </div>
+        </div>
+        <Button variant="secondary" size="sm" disabled={!writable || adding} onClick={() => void addAll()}>
+          <Icon name="copy-plus" size={14} />
+          {adding ? t('examples.adding') : t('examples.addAll')}
+        </Button>
+      </div>
+      {error && (
+        <div className="mx-5 mb-3 flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]">
+          <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+          <span>{error}</span>
+        </div>
+      )}
+      <div className={`row h hidden desktop:grid ${EXAMPLE_GRID}`}>
+        <span>{t('examples.columns.example')}</span>
+        <span>{t('questionType')}</span>
+        <span>{t('examples.columns.answers')}</span>
+        <span />
+      </div>
+      {DECISION_EXAMPLES.map((example) => (
+        <div key={example.id} className={`row items-center ${EXAMPLE_GRID}`}>
+          <span className="flex min-w-0 flex-col gap-[3px]">
+            <span className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
+              {example.name}
+            </span>
+            <span className="mono text-[11.5px] text-(--text-tertiary)">{example.question.instructions}</span>
+            <span className="mt-[3px] flex items-start gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
+              <Icon name="lightbulb" size={13} className="mt-[2px] flex-none" color="var(--text-tertiary)" />
+              {t(`examples.hints.${example.id}`)}
+            </span>
+          </span>
+          <span className="hidden desktop:block">
+            <span className={`badge ${TYPE_TONE[example.question.type] ?? ''}`}>
+              {t(`types.${example.question.type}`)}
+            </span>
+          </span>
+          <span className="mono hidden truncate text-[12px] text-(--text-secondary) desktop:inline">
+            {answers(example).join(' · ')}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-(--brand)"
+            disabled={!writable || adding}
+            ariaLabel={t('examples.addLabel', { name: example.name })}
+            onClick={() => router.push(orgPath(`/decisions/new?example=${encodeURIComponent(example.id)}`))}
+          >
+            <Icon name="plus" size={14} />
+            {t('examples.add')}
+          </Button>
+        </div>
+      ))}
     </div>
   )
 }

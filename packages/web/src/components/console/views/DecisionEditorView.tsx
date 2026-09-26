@@ -18,6 +18,7 @@ import { DecisionModelSelect } from '@/components/console/decisions/DecisionMode
 import { DecisionUsageList } from '@/components/console/decisions/DecisionUsageList'
 import { DecisionRecentEvaluations } from '@/components/console/decisions/DecisionRecentEvaluations'
 import { decisionInUse } from '@/lib/decisions/binding'
+import { decisionExample } from '@/lib/decisions/examples'
 import { decisionUsageHref } from '@/lib/decisions/usage-links'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
@@ -161,6 +162,7 @@ function DecisionEditor() {
     useDecisionsPrototype()
   const { providers, error: providerError } = useDecisionProviders()
   const definition = id ? decisions.find((entry) => entry.id === id) : undefined
+  const example = id ? undefined : decisionExample(search.get('example'))
 
   const [selectedTargetValue, setSelectedTargetValue] = useState<string | null>(null)
   const editable = myRole !== 'viewer' && (!id || (!!definition && definition.canEdit !== false))
@@ -204,17 +206,23 @@ function DecisionEditor() {
       return
     }
     if (!firstProvider) return
-    setDraft({
-      name: '',
-      providerId: firstProvider.id,
-      model: firstProvider.models[0]?.id ?? '',
-      type: 'choice',
-      instructions: '',
-      criteria: criteriaForType('choice'),
-      visibility: 'org',
-      sharedWith: []
-    })
-  }, [draft, id, definition, firstProvider])
+    const providerId = firstProvider.id
+    const model = firstProvider.models[0]?.id ?? ''
+    setDraft(
+      example
+        ? draftFrom({ ...example, providerId, model, visibility: 'org', sharedWith: [] })
+        : {
+            name: '',
+            providerId,
+            model,
+            type: 'choice',
+            instructions: '',
+            criteria: criteriaForType('choice'),
+            visibility: 'org',
+            sharedWith: []
+          }
+    )
+  }, [draft, id, definition, firstProvider, example])
 
   useEffect(() => {
     if (!id) return

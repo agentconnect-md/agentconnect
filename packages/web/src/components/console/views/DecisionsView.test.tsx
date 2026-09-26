@@ -7,6 +7,9 @@ import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DecisionsPrototypeProvider } from '@/lib/decisions/provider'
+import * as decisionMock from '@/lib/decisions/mock-api'
+import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
+import { DECISION_EXAMPLES } from '@/lib/decisions/examples'
 
 const push = vi.fn()
 
@@ -33,6 +36,7 @@ afterEach(async () => {
   root = undefined
   container = undefined
   push.mockClear()
+  vi.restoreAllMocks()
 })
 
 async function render() {
@@ -87,5 +91,42 @@ describe('DecisionsView', () => {
     await render()
     await click(byText('Add decision'))
     expect(push).toHaveBeenCalledWith('/decisions/new')
+  })
+})
+
+describe('DecisionsView examples', () => {
+  const renderEmpty = async () => {
+    const api = decisionMock.createDecisionMockApi({ seed: { ...createDecisionMockSeed(), decisions: [] } })
+    vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(api)
+    await render()
+    return api
+  }
+
+  it('offers every example with its answers and usage hint on an empty page', async () => {
+    await renderEmpty()
+    for (const example of DECISION_EXAMPLES) expect(byText(example.name)).toBeTruthy()
+    expect(byText('claude · codex · grok · unknown')).toBeTruthy()
+    expect(byText('Yes · No')).toBeTruthy()
+    expect(byText('Use as a gate: let the agent reply only on Yes.')).toBeTruthy()
+  })
+
+  it('opens the editor prefilled from one example without saving', async () => {
+    const api = await renderEmpty()
+    const create = vi.spyOn(api, 'createDecision')
+    await click(document.body.querySelector('button[aria-label="Add PR author"]'))
+    expect(push).toHaveBeenCalledWith('/decisions/new?example=prAuthor')
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('creates every example at once and then lists them', async () => {
+    const api = await renderEmpty()
+    const create = vi.spyOn(api, 'createDecision')
+    await click(byText('Add all examples'))
+    await act(async () => {})
+    expect(create).toHaveBeenCalledTimes(DECISION_EXAMPLES.length)
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Needs reply', providerId: 'typesafe', visibility: 'org' })
+    )
+    expect(document.body.querySelectorAll('a.row.click')).toHaveLength(DECISION_EXAMPLES.length)
   })
 })
