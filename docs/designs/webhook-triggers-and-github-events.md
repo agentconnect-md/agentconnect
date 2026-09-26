@@ -91,8 +91,9 @@ The authoritative implementation surfaces are:
 2. Event content travels only on the relay-to-daemon data plane.
 3. The CP stores hook definitions and body-free run metadata, never event
    bodies.
-4. Matching uses numeric GitHub repository IDs and CP-compiled installation
-   membership. Payload ownership fields are filters, not authorization.
+4. Matching uses numeric GitHub identity and CP-compiled installation
+   membership: a repository row matches the repository ID, an installation row
+   the installation ID. Payload ownership fields are filters, not authorization.
 5. Every matched hook names one explicit `agentId`; daemon route arbitration is
    not involved.
 6. The daemon deduplicates on `(sessionKey, msgId)`, where
@@ -178,23 +179,92 @@ target model as scheduled triggers. Without a target, the turn is headless.
 
 ### Repository Authorization
 
-A GitHub hook watches one repository covered by a live GitHub App installation
-owned by the organization. The server resolves the repository name to its
-numeric `repoId`; clients cannot supply the numeric ID directly.
+A GitHub hook row watches either one repository covered by a live GitHub App
+installation owned by the organization, or every repository of one such
+installation (see Installation-Wide Rows below). The server resolves the
+repository name to its numeric `repoId`, or the account to its installation;
+clients cannot supply a numeric ID directly.
 
-The watched repository must also be either:
+Triggers never outrun credentials, so the watched repository must also be one
+of:
 
-- the agent workspace repository; or
-- an explicit `AgentRepoAuthorization`.
+- the agent workspace repository;
+- an explicit `AgentRepoAuthorization`; or
+- a repository of an installation the agent holds an installation grant for
+  ([agent-multi-repo-authorization.md](agent-multi-repo-authorization.md)
+  decision 10).
 
-Agent-visible credentials remain clamped to the workspace repository plus the
-explicit authorization set. A hook does not implicitly broaden `GH_TOKEN`.
+An installation row requires the installation grant itself. The check runs on
+create and on every binding-changing edit, as for a repository row.
+
+Agent-visible credentials remain clamped to the workspace repository, the
+explicit authorization set, and the installation grants. A hook does not
+implicitly broaden `GH_TOKEN`.
 
 `GithubPoster` requests a separate repository-scoped token with
 `purpose: github_hook_reply` and the relay-delivered `hookId`. The CP
 revalidates the enabled hook by immutable hook and repository identity before
 minting issue or pull-request comment permission. That token never enters the
 agent environment.
+
+### Installation-Wide Rows
+
+> Status: designed for #2398, not yet implemented.
+
+An agent reviewing or triaging a whole organization would otherwise need one row
+per repository and family, and a new repository would need new rows. An
+installation row instead covers every repository of one GitHub App installation,
+including repositories added to it later.
+
+GitHub's own organization webhook is the reference: one hook receives the events
+of every repository in the organization, and GitHub App installation membership
+decides coverage. It departs from that model in one place. GitHub delivers to an
+organization hook and a repository hook independently. Here, one agent must not
+fire twice for one event, so a repository row overrides the installation row.
+
+- **Shape.** A GitHub row sets exactly one of `repoId` and `installationId`, which
+  a database CHECK enforces. An installation row is unique per
+  `(agentId, kind, installationId, family)` and keeps every per-row setting of a
+  repository row: one family, its cadence, label filter, `mentionOnly`, and
+  review settings. Every GitHub family may be watched this way. GitHub only: the
+  installation grant it depends on is GitHub-only.
+- **Precedence.** For one event, an agent's candidate rules are its enabled row
+  for the event's repository and family if that exists, otherwise its installation row
+  for the event's installation and family. A repository row is therefore how one
+  repository gets different settings.
+- **Decision routing.** Routing stays per repository and family
+  ([code-host-decisions.md](code-host-decisions.md) §1), and its candidates stay
+  the repository rows. On a scope with an enabled routing, installation rows of
+  that family do not fire: the Decision rules the scope. The relay learns this
+  from the routing its repository rules already carry. To make an agent routable
+  there, give it a repository row.
+- **Authorization.** Creating the row needs the installation grant; review or
+  reporting on it needs that grant at `write`. The effects that today check "the
+  hook's repository is the event's repository" instead check that the event's
+  repository belongs to the row's installation: the `github_hook_reply` token,
+  formal review authorization, Check publication, and the expected fan-out of a
+  redelivery claim. A review of a repository that has no row of its own checks
+  out through the grant ([multi-repository-workspaces.md](multi-repository-workspaces.md)).
+- **Checks.** A repository row cannot publish Checks on a grant's tier, because
+  revoking a repository authorization retires that repository's Checks and a
+  grant has no per-repository cleanup
+  ([agent-multi-repo-authorization.md](agent-multi-repo-authorization.md)
+  decision 10). An installation row can: its Checks belong to the row, so
+  revoking the grant retires them through the row. The grant's deletion runs the
+  lifecycle step that disabling reporting on the row runs, for every
+  installation row of that agent and installation. Access tiers only rise, so
+  revocation is the only change that needs this step.
+- **Session namespace.** An installation row has no stored prefix. The relay
+  keys each thread by `github:<repoId>` from the event, the prefix a new
+  repository row stores, so a thread keeps its session when a repository row is
+  added or removed later.
+- **Siblings.** An agent's installation rows of one installation answer the same
+  threads, so they must agree on the anchoring target, as sibling repository rows
+  do.
+- **Removal.** Removing a repository from the installation stops its events at
+  once. Removing the grant retires the row's Checks but leaves the row in place,
+  as an existing repository row outlives its authorization. The gate applies to
+  create and binding changes only.
 
 ### Signature and Attribution
 
@@ -402,7 +472,9 @@ repository/pull/head delivery key coalesces multiple workflows for one revision.
 ### Session Affinity
 
 GitHub hooks always use `perThread`. The relay forms the session key from the
-hook's immutable `githubSessionKey` prefix and the issue or pull-request number.
+hook's immutable `githubSessionKey` prefix and the issue or pull-request number;
+an installation row, which stores no prefix, uses the event repository's
+`github:<repoId>`.
 New rows use a numeric-repository-based prefix, so repository renames do not
 split the conversation. A push keys on its ref and a deployment on its
 environment (`prefix#deployments/production`): every deployment to one
@@ -645,8 +717,14 @@ A compiled rule includes:
 - configuration and dispatch revisions;
 - session mode and optional output target;
 - a generic capability token and optional HMAC secret; or
-- GitHub repository identity, event filters, mention handles, installation
-  membership, and review/reporting policy.
+- GitHub repository identity, or for an installation row the installation
+  identity, plus event filters, mention handles, installation membership, and
+  review/reporting policy.
+
+A relay indexes rules by repository and, for installation rows, by
+installation. It advertises installation-row support as a feature, and the CP
+compiles installation rows only for relays that advertise it, so an older relay
+never receives a rule without a repository.
 
 The HMAC secret is sensitive and must never appear in logs.
 
@@ -703,7 +781,8 @@ The Prisma schema is authoritative. The main records are:
 
 A code-host `HookDef` row covers exactly ONE subject family — `pull_request`,
 `issues`, `push`, `deployment` or `release` for GitHub, `merge_request`, `issues` or `push`
-for GitLab — recorded in `family` and unique per `(agentId, kind, repoId, family)`. Watching a
+for GitLab — recorded in `family` and unique per `(agentId, kind, repoId, family)`, or per
+`(agentId, kind, installationId, family)` for an installation row. Watching a
 repository for both pull requests and issues is therefore two rows, each with its
 own cadence, label filter and `mentionOnly` gate: pull requests can fire on every
 update while issues fire only on an explicit mention. `family` is immutable, so
@@ -764,16 +843,23 @@ Creation requires:
 - a visible owning agent;
 - a valid target integration when anchoring is requested; and
 - for GitHub, a configured App, a covered repository, and appropriate explicit
-  repository authorization.
+  repository authorization; or, for an installation row, a live installation
+  and an installation grant for it.
 
 GitHub review and reporting settings are validated both at configuration time
-and again at effect time. Unsupported required gates and commit-status
-reporting are rejected.
+and again at effect time. Commit-status reporting and the reserved `required`
+gate mode are rejected. An organization that wants the review Check to block
+merges requires it in its own GitHub ruleset
+([github-pr-review-checks.md](github-pr-review-checks.md) §5).
 
 The agent detail Integrations card lists hooks alongside integrations. Generic
 hook creation reveals the capability URL and optional HMAC secret once. GitHub
 creation uses the App installation and repository picker and offers the pull
-request, issue, deployment and release subjects; a deployment row has two cadences —
+request, issue, deployment and release subjects. The picker groups repositories
+by account and leads each group with "All repositories in <account>", which
+creates an installation row; when the agent has no grant for that installation
+yet, an organization owner authorizes it in the same flow, as a missing
+repository authorization is handled today; a deployment row has two cadences —
 `created` (`deployment:created`) and `any status` (`deployment:*` plus
 `deployment_status:*`) — and no label or mention gate, since nobody writes in a
 deployment. A release row likewise has two cadences — `published`
@@ -893,13 +979,17 @@ The implementation does not provide:
 - arbitrary payload transformation or filter programs;
 - structured Bitbucket event semantics;
 - per-repository webhook registration managed by AgentConnect;
+- excluding repositories from an installation row, other than by overriding one
+  with a repository row;
+- installation-wide rows on GitLab or Gitea;
 - daemon polling as an alternative public ingress;
 - queueing arbitrary generic deliveries while a daemon is offline;
 - automatic replay of ambiguous dispatches;
 - creating, renaming, or deleting the GitHub teams that back the team-mention
   form — an organization owns those, and the App requests no organization
   permissions;
-- required GitHub review gates;
+- a required review gate mode — an organization requires the review Check in
+  its own ruleset;
 - commit-status reporting; or
 - per-organization custom GitHub Apps or GitHub Enterprise Server support.
 

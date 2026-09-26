@@ -1,9 +1,10 @@
 # Formal GitHub PR Reviews + Durable Informational Checks
 
 > Status: **R1 + R2a are implemented**: controlled formal PR reviews and
-> CP-owned informational Checks. **R2b required gates, R2c required-safe
-> fork/merge-queue support, and R3 commit statuses are not implemented.** The server fails
-> closed for `gateMode=required` and `reportingMode=status`.
+> CP-owned informational Checks. **R2b required gates and R2c required-safe
+> fork/merge-queue support are dropped** (2026-09-26, §5): an organization requires the
+> informational Check in its own GitHub ruleset. **R3 commit statuses are not implemented.**
+> The server fails closed for `gateMode=required` and `reportingMode=status`.
 >
 > The current design uses `AgentRepoAuthorization`, numeric repository identity,
 > the repository-routed gitcred/gh wrapper, `GithubFinalPoster`, and HookRun.
@@ -44,8 +45,8 @@ subject to these constraints:
 | ----- | --------------- | ---------------------------------------------------------------------------------------------------------------- |
 | R1    | Implemented     | Structured formal reviews, active-turn/action-time authority, durable attempt/result recovery                    |
 | R2a   | Implemented     | `check + informational`; durable projection/reporter, epoch/lifecycle locks, ACK outbox, informational rerequest |
-| R2b   | Not implemented | Required eligibility, test-merge acceptance, required-safe rerequest                                             |
-| R2c   | Not implemented | Required-safe fork PRs and merge queue / `merge_group`                                                           |
+| R2b   | Dropped (§5)    | Required eligibility, test-merge acceptance, required-safe rerequest                                             |
+| R2c   | Dropped (§5)    | Required-safe fork PRs and merge queue / `merge_group`                                                           |
 | R3    | Not implemented | Legacy commit-status transport and `statuses:write` rollout                                                      |
 
 Wire/schema retain `required` and `status` enum values for rolling compatibility, but they are not delivered capabilities. HTTP create/update returns a semantic conflict for both, and daemon/worker fail closed again. R2a accepts `check_run.rerequested`, `check_suite.rerequested`, `check_run.requested_action(request_review)`, `pull_request.review_requested`, and an approved pull-request workflow entering `workflow_run:in_progress`. These explicit events may start a new generation only for a current **informational** hook, and the explicit requester or workflow triggering actor must still hold a trigger-authorized repository role. Required-safe semantics remain R2b.
@@ -335,7 +336,31 @@ Full result generation-CAS updates `HookReviewSubject`: upsert current open PRs,
 
 Association settles once per generation. A permission doorbell or normal retry cannot secretly revalidate and turn it green; recovery needs a new revision/generation review. Informational `reportSha=headSha`, and association always queries `headSha`, not a future R2b PR-specific test-merge `reportSha`.
 
-### 5. R2b Future: Required Context Aggregates `(hookId, revision)` Verdict
+### 5. R2b (Dropped): Required Context Aggregates `(hookId, revision)` Verdict
+
+**Decision (2026-09-26): no AgentConnect-side required gate.** Requiring a Check
+is the repository's own setting, the same way GitHub Actions leaves it to a
+ruleset or branch protection rather than to the workflow. An organization that
+wants reviews to block merges adds the informational Check
+(`AgentConnect PR Review: <agent-name>`) as a required status check in its
+ruleset, pinned to the AgentConnect App. AgentConnect keeps the Check fit for
+that use instead of building a separate required context:
+
+- **A Check on every head.** A Check appears only for revisions the row reviews,
+  so a required Check needs a pull-request row with the Any update cadence, no
+  label filter, and no @-mention mode. Otherwise a pull request the row never
+  reviews waits forever.
+- **A way to recover.** A failed or interrupted review (an unavailable runtime, a
+  provider error) fails the Check. Re-run on the Checks page and the Check's
+  Request review action start a new generation on the same head.
+- **Outside contributors.** A pull request from an author without a trusted
+  repository role waits for a maintainer to start the review
+  ([webhook-triggers-and-github-events.md](webhook-triggers-and-github-events.md),
+  External Issues and Pull Requests).
+
+The public documentation explains how to require the Check, with these three
+points. `gateMode=required` stays a reserved value that the server rejects. The
+rest of this section records the dropped design.
 
 Required context must be immutable and unique within repository. Informational uses a **different name** so it can never neutral→success a context still pinned by operator:
 
