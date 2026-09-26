@@ -136,7 +136,11 @@
       "loginRequiredOn": "{names} 需要登录",
       "loginRequiredOnMore": "{names} 及另外 {count} 台需要登录",
       "showCommand": "显示命令",
-      "models": "模型"
+      "models": "模型",
+      "runtimeEnvironment": "Runtime 环境",
+      "expandHostMissing": "展开下方以查看主机上未安装的 Runtime。",
+      "showHostMissing": "展开主机上没有的 Runtime（{count}）",
+      "hideHostMissing": "收起主机上没有的 Runtime（{count}）"
     },
     "lineDiff": {
       "lineChanges": "行变更",
@@ -3313,6 +3317,8 @@
       "noRuntimesNoServing": "暂无运行时，没有成员正在服务。",
       "noRuntimesUnadvertised": "暂无运行时，服务中的成员还没有公布运行时配置。",
       "noRuntimesIntersection": "没有运行时由所有服务中成员共同提供。此处的 Agent 会落到任一服务中成员上，因此只能运行它们共同提供的运行时。",
+      "strategyReason": "此群组的{strategy}不可用。{reason}",
+      "strategyUnavailable": "此群组的{strategy}不可用。",
       "agentsOnGroup": "此群组上的 Agent",
       "noAgentsOnGroup": "还没有 Agent 指向此群组",
       "placeAgentHint": "将 Agent 放置到 {group}，它会运行在当前服务中的成员上。"
@@ -3524,13 +3530,8 @@
       "runtimeEmpty": {
         "strategyReason": "此 Daemon 的{strategy}不可用。{reason}",
         "strategyUnavailable": "此 Daemon 的{strategy}不可用。",
-        "expandHostMissing": "展开下方以查看主机上未安装的 Runtime。",
-        "noRuntimes": "此 Daemon 未报告任何 Runtime。",
-        "hide": "收起",
-        "show": "展开",
-        "hostMissing": "主机上没有的 Runtime（{count}）"
+        "noRuntimes": "此 Daemon 未报告任何 Runtime。"
       },
-      "runtimeEnvironment": "Runtime 环境",
       "neverConnected": "从未连接",
       "lastSeenAgo": "上次在线于 {value} 前",
       "runtimes": "Runtime",

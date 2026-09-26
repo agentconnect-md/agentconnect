@@ -36,9 +36,12 @@ import {
   FleetStat,
   FleetStatColumn,
   FleetUsageCard,
+  HostMissingToggle,
   ResourceDial,
   ResourceDials,
+  StrategyTabs,
   barColor,
+  imageOnlyRuntimeIds,
   unionRuntimes,
   type FleetRuntime
 } from '@/components/console/FleetDetail'
@@ -58,6 +61,7 @@ import { useStrategyNames } from '@/components/console/ExecutionStrategyField'
 
 export default function DaemonDetailView() {
   const t = useTranslations('Daemons.detail')
+  const tf = useTranslations('Common.fleetDetail')
   const strategyNames = useStrategyNames()
   const acpRegistry = useAcpRegistry()
   const { orgPath } = useOrgs()
@@ -159,13 +163,10 @@ export default function DaemonDetailView() {
       ? daemon.caps.sandboxUnavailable
       : undefined
   const strategyDown = !!strategyDownReason || (!table && runtimeStrategy === LEGACY_SANDBOX && !sandboxSupported)
-  const hostMissingIds = new Set(
+  const hostMissingIds =
     runtimeStrategy !== HOST_STRATEGY && !daemon.pool && !strategyDown
-      ? runtimeModels
-          .filter((rt) => rt.hostAvailable === false && !rt.unavailableReason)
-          .map((rt) => rt.aliasOf ?? rt.runtime)
-      : []
-  )
+      ? imageOnlyRuntimeIds([{ runtimeModels }])
+      : new Set<string>()
   const runtimes: FleetRuntime[] = strategyDown
     ? []
     : unionRuntimes([{ ...daemon, runtimeModels }]).filter((rt) => showHostMissing || !hostMissingIds.has(rt.runtime))
@@ -174,46 +175,16 @@ export default function DaemonDetailView() {
     : strategyDown
       ? t('runtimeEmpty.strategyUnavailable', { strategy: strategyNames.name(runtimeStrategy) })
       : hostMissingIds.size > 0
-        ? t('runtimeEmpty.expandHostMissing')
+        ? tf('expandHostMissing')
         : t('runtimeEmpty.noRuntimes')
-  const hostMissingControl = hostMissingIds.size > 0 && (
-    <button
-      type="button"
-      aria-expanded={showHostMissing}
-      onClick={() => setShowHostMissing((shown) => !shown)}
-      className="flex w-full cursor-pointer items-center gap-2 border-0 border-t border-(--border-subtle) bg-transparent px-4 py-3 text-left font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover)"
-    >
-      <Icon name={showHostMissing ? 'chevron-up' : 'chevron-down'} size={14} className="flex-none" />
-      {showHostMissing ? t('runtimeEmpty.hide') : t('runtimeEmpty.show')}{' '}
-      {t('runtimeEmpty.hostMissing', { count: hostMissingIds.size })}
-    </button>
+  const hostMissingControl = (
+    <HostMissingToggle
+      count={hostMissingIds.size}
+      shown={showHostMissing}
+      onToggle={() => setShowHostMissing((shown) => !shown)}
+    />
   )
-  const runtimeModeControl =
-    runtimeTabs.length === 1 ? (
-      <span
-        className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
-        title={strategyNames.detail(runtimeStrategy)}
-      >
-        {strategyNames.name(runtimeStrategy)}
-      </span>
-    ) : (
-      <div className="pillbar" role="group" aria-label={t('runtimeEnvironment')}>
-        {runtimeTabs.map((slug) => (
-          <button
-            key={slug}
-            type="button"
-            className={
-              runtimeStrategy === slug ? 'pill on px-[10px] py-1 text-[12px]' : 'pill px-[10px] py-1 text-[12px]'
-            }
-            aria-pressed={runtimeStrategy === slug}
-            title={strategyNames.detail(slug)}
-            onClick={() => setRuntimeTab(slug)}
-          >
-            {strategyNames.name(slug)}
-          </button>
-        ))}
-      </div>
-    )
+  const runtimeModeControl = <StrategyTabs tabs={runtimeTabs} value={runtimeStrategy} onChange={setRuntimeTab} />
   const seen = daemon.uptime === '—' ? t('neverConnected') : t('lastSeenAgo', { value: daemon.uptime })
   // `conns` is the daemon's agent ceiling; <= 0 is its UNBOUNDED sentinel, not a ceiling of zero.
   // Its numerator is the daemon's OWN heartbeat count, never `hosted`: a group duty this member

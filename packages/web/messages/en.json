@@ -136,7 +136,11 @@
       "loginRequiredOn": "Login required on {names}",
       "loginRequiredOnMore": "Login required on {names} +{count}",
       "showCommand": "Show command",
-      "models": "Models"
+      "models": "Models",
+      "runtimeEnvironment": "Runtime environment",
+      "expandHostMissing": "Expand below to see runtimes not installed on host.",
+      "showHostMissing": "Show runtimes not on host ({count})",
+      "hideHostMissing": "Hide runtimes not on host ({count})"
     },
     "lineDiff": {
       "lineChanges": "Line changes",
@@ -3313,6 +3317,8 @@
       "noRuntimesNoServing": "No runtimes — no member is serving.",
       "noRuntimesUnadvertised": "No runtimes reported — the serving member has not advertised its runtime profiles yet.",
       "noRuntimesIntersection": "No runtime is on every serving member. An agent here lands on whichever one is serving, so only what they all offer can run.",
+      "strategyReason": "{strategy} is unavailable on this group. {reason}",
+      "strategyUnavailable": "{strategy} is unavailable on this group.",
       "agentsOnGroup": "Agents on this group",
       "noAgentsOnGroup": "No agents target this group yet",
       "placeAgentHint": "Place an agent on {group} and it runs on whichever member is serving."
@@ -3524,13 +3530,8 @@
       "runtimeEmpty": {
         "strategyReason": "{strategy} is unavailable on this daemon. {reason}",
         "strategyUnavailable": "{strategy} is unavailable on this daemon.",
-        "expandHostMissing": "Expand below to see runtimes not installed on host.",
-        "noRuntimes": "No runtimes reported by this daemon.",
-        "hide": "Hide",
-        "show": "Show",
-        "hostMissing": "runtimes not on host ({count})"
+        "noRuntimes": "No runtimes reported by this daemon."
       },
-      "runtimeEnvironment": "Runtime environment",
       "neverConnected": "never connected",
       "lastSeenAgo": "last seen {value} ago",
       "runtimes": "Runtimes",

@@ -439,3 +439,200 @@ describe('GroupDetailView', () => {
     expect(render()).not.toContain('Group not found')
   })
 })
+
+describe('one runtime tab per strategy a serving member offers', () => {
+  const ON = { available: true } as const
+  const KVM = 'microsandbox needs a usable /dev/kvm'
+  type Runtime = DaemonRow['runtimeModels'][number]
+  const claude = (strategies: Runtime['strategies'], over: Partial<Runtime> = {}): Runtime => ({
+    runtime: 'claude',
+    version: '9.0.0',
+    hostVersion: '2.0.0',
+    models: ['merged-model'],
+    strategies,
+    ...over
+  })
+  // In the VM image only: no host install and no saved login, as a bundled runtime reads.
+  const imageOnly: Runtime = {
+    runtime: 'opencode',
+    version: '1.5.0',
+    models: [],
+    hostAvailable: false,
+    credentialsConfigured: false,
+    authRequired: true,
+    strategies: {
+      host: { available: false, unavailableReason: 'not installed' },
+      microsandbox: { available: true, models: ['image-model'] }
+    }
+  }
+  const withTable = (name: string, table: NonNullable<DaemonRow['caps']['strategies']>, runtimes: Runtime[]) =>
+    daemon(name, {
+      daemonId: name,
+      caps: { platforms: [], runtimes: [], acp: true, features: [], strategies: table },
+      runtimeModels: runtimes
+    })
+
+  let host: HTMLDivElement
+  let root: Root
+  const mount = () => {
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    root = createRoot(host)
+    act(() => root.render(<GroupDetailView />))
+  }
+  const unmount = () => {
+    act(() => root.unmount())
+    host.remove()
+  }
+  const control = () => host.querySelector('[aria-label="Runtime environment"]')
+  const choose = (label: string) =>
+    act(() =>
+      Array.from(control()!.querySelectorAll('button'))
+        .find((b) => b.textContent === label)!
+        .click()
+    )
+
+  beforeEach(() => {
+    mocks.memberSets = [group({ memberDaemonIds: ['agent-1', 'agent-2'] })]
+  })
+
+  it('names each tab as the daemon card does, in its order, when any serving member offers it', () => {
+    mocks.daemons = [
+      withTable('agent-1', { microsandbox: ON, host: ON }, []),
+      withTable('agent-2', { srt: ON, host: ON }, [])
+    ]
+    mount()
+    const tabs = Array.from(control()!.querySelectorAll('button'))
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Host', 'Sandbox', 'VM'])
+    expect(tabs.map((tab) => tab.getAttribute('title'))).toEqual([
+      'No isolation boundary: sessions run directly on the machine.',
+      'SRT: process isolation with bubblewrap, on Linux.',
+      'microsandbox: one microVM per session. Needs KVM.'
+    ])
+    expect(control()!.querySelector('[aria-pressed="true"]')?.textContent).toBe('Host')
+    expect(host.textContent).toContain('Only what every serving member offers')
+    unmount()
+  })
+
+  it('lists each strategy’s own runtimes and models, and image-only runtimes only under VM', () => {
+    const strategies = (vmModels: string[]) => ({
+      host: { available: true, models: ['host-model'] },
+      microsandbox: { available: true, models: vmModels }
+    })
+    mocks.daemons = [
+      withTable('agent-1', { host: ON, microsandbox: ON }, [claude(strategies(['vm-model', 'vm-extra'])), imageOnly]),
+      withTable('agent-2', { host: ON, microsandbox: ON }, [claude(strategies(['vm-model'])), imageOnly])
+    ]
+    mount()
+    expect(host.textContent).toContain('v2.0.0')
+    expect(host.textContent).not.toContain('v9.0.0')
+    expect(host.textContent).not.toContain('opencode')
+    expect(host.textContent).not.toContain('Login required')
+    expect(host.textContent).not.toContain('runtimes not on host')
+
+    choose('VM')
+    expect(host.textContent).toContain('v9.0.0')
+    // Only the model every member's image advertises.
+    expect(host.textContent).toContain('1 model')
+    expect(host.textContent).not.toContain('opencode')
+    const fold = Array.from(host.querySelectorAll('button')).find((b) => b.textContent?.includes('not on host'))!
+    expect(fold.textContent).toBe('Show runtimes not on host (1)')
+    expect(fold.getAttribute('aria-expanded')).toBe('false')
+    act(() => fold.click())
+    expect(host.textContent).toContain('opencode')
+    expect(host.textContent).toContain('Login required on agent-1, agent-2')
+    unmount()
+  })
+
+  it('names only the members a tab counts as needing a login', () => {
+    const codex = (authRequired: boolean): Runtime => ({
+      runtime: 'codex',
+      version: '3.0.0',
+      models: ['gpt-model'],
+      authRequired,
+      strategies: { host: { available: true, models: ['gpt-model'] }, srt: { available: true, models: ['gpt-model'] } }
+    })
+    mocks.daemons = [
+      withTable('agent-1', { host: ON, srt: ON }, [codex(false)]),
+      withTable('agent-2', { host: ON, srt: { available: false, reason: 'bubblewrap is missing' } }, [codex(true)])
+    ]
+    mount()
+    expect(host.textContent).toContain('Login required on agent-2')
+    // agent-2 cannot run the sandbox, so it neither constrains that tab nor needs a login there.
+    choose('Sandbox')
+    expect(host.textContent).toContain('Codex')
+    expect(host.textContent).not.toContain('Login required')
+    unmount()
+  })
+
+  it('shows the reason for a strategy no serving member can run', () => {
+    mocks.daemons = [
+      withTable('agent-1', { host: ON, microsandbox: { available: false, reason: KVM } }, [
+        claude({ host: { available: true, models: ['host-model'] } })
+      ]),
+      withTable('agent-2', { host: ON, microsandbox: { available: false, reason: 'another reason' } }, [
+        claude({ host: { available: true, models: ['host-model'] } })
+      ])
+    ]
+    mount()
+    choose('VM')
+    expect(host.textContent).toContain(`VM is unavailable on this group. ${KVM}`)
+    expect(host.textContent).not.toContain('Claude Code')
+    choose('Host')
+    expect(host.textContent).toContain('Claude Code')
+    unmount()
+  })
+
+  it('reads a member that reports no table from its merged list in every tab', () => {
+    mocks.daemons = [
+      withTable('agent-1', { host: ON, microsandbox: ON }, [
+        claude({
+          host: { available: true, models: ['host-model'] },
+          microsandbox: { available: true, models: ['vm-model'] }
+        }),
+        { runtime: 'codex', version: '3.0.0', models: ['gpt-model'] }
+      ]),
+      daemon('agent-2', {
+        daemonId: 'agent-2',
+        runtimeModels: [claude(null, { models: ['host-model', 'vm-model'] })]
+      })
+    ]
+    mount()
+    expect(host.textContent).toContain('1 model')
+    // The legacy member has no codex, so no tab can promise it.
+    expect(host.textContent).not.toContain('Codex')
+    choose('VM')
+    expect(host.textContent).toContain('1 model')
+    expect(host.textContent).not.toContain('Codex')
+    unmount()
+
+    // No serving member reports a table: today's single merged list, with no tabs.
+    mocks.daemons = [
+      daemon('agent-1', { daemonId: 'agent-1', runtimeModels: [claude(null)] }),
+      daemon('agent-2', { daemonId: 'agent-2', runtimeModels: [claude(null)] })
+    ]
+    mount()
+    expect(control()).toBeNull()
+    expect(host.textContent).toContain('v9.0.0')
+    unmount()
+  })
+
+  it('counts the group’s agents whose execution is the tab’s strategy', () => {
+    const both = { host: { available: true, models: ['host-model'] }, srt: { available: true, models: ['host-model'] } }
+    mocks.daemons = [
+      withTable('agent-1', { host: ON, srt: ON }, [claude(both)]),
+      withTable('agent-2', { host: ON, srt: ON }, [claude(both)])
+    ]
+    mocks.agents = [
+      onGroup('a1', 'g1', { execution: 'host' }),
+      onGroup('a2', 'g1', { execution: 'srt' }),
+      onGroup('a3', 'g1', { execution: 'srt' }),
+      pinned('a4', 'agent-1', { execution: 'host' })
+    ]
+    mount()
+    expect(host.textContent).toContain('v2.0.0 · 1 agent')
+    choose('Sandbox')
+    expect(host.textContent).toContain('v2.0.0 · 2 agents')
+    unmount()
+  })
+})

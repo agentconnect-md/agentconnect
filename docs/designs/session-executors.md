@@ -1300,9 +1300,10 @@ machine cannot run it. The agent's model pickers read the same entries: the Fixe
 picker, each By decision rule and its fallback, and a chat composer before the
 session's first turn offer each runtime's models under the agent's strategy — the host
 install's for `host` and `srt`, the image's for `microsandbox` — where an older daemon's
-single list and a pool agent's stay as reported. A group's runtime list names the members that
-need a runtime login, since those are the machines whose sign-in a session would
-lack (#2397).
+single list and a pool agent's stay as reported. A group's runtime list has the same
+tabs, one per strategy a serving member offers, each intersecting the entries of the
+serving members that can run it; it names the members that need a runtime login, since
+those are the machines whose sign-in a session would lack (#2397).
 
 ## 11. Converging the local path
 

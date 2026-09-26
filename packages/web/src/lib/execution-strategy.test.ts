@@ -13,6 +13,7 @@ import {
   strategyNameKey,
   strategyOptions,
   strategyModelSource,
+  strategyMembers,
   strategyRuntimeModels,
   strategyUsesImage
 } from './execution-strategy'
@@ -222,6 +223,24 @@ describe('the runtimes one strategy starts', () => {
     expect(strategyRuntimeModels([legacy], LEGACY_SANDBOX)).toMatchObject([
       { version: '', models: ['host-model'], unavailableReason: 'image-binary-missing' }
     ])
+  })
+
+  it('reads a group’s tab over the members that can run it, keeping a member without a table as reported', () => {
+    const member = (name: string, strategies?: StrategyTable) => ({
+      name,
+      caps: caps({ strategies }),
+      runtimeModels: [claude]
+    })
+    const members = [
+      member('agent-1', { host: { available: true }, microsandbox: { available: true } }),
+      member('agent-2', { host: { available: true }, microsandbox: { available: false, reason: KVM } }),
+      member('agent-3')
+    ]
+    const vm = strategyMembers(members, 'microsandbox')
+    expect(vm.map((m) => m.name)).toEqual(['agent-1', 'agent-3'])
+    expect(vm[0]!.runtimeModels).toMatchObject([{ version: '9.0.0', models: [] }])
+    expect(vm[1]!.runtimeModels).toBe(members[2]!.runtimeModels)
+    expect(strategyMembers(members, 'srt').map((m) => m.name)).toEqual(['agent-3'])
   })
 })
 
