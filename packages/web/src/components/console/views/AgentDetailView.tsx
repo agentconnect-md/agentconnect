@@ -2910,14 +2910,16 @@ function AgentDetail() {
                 rowCarriesReviews(reviewSettingsHook),
                 rowCarriesLabels(reviewSettingsHook)
               )}
-              {/* Repository-wide, so it saves itself rather than riding the row's PUT. */}
-              <div className="mt-4">
-                <TrustedUsersField
-                  hookId={reviewSettingsHook.id}
-                  provider={reviewSettingsDraft.kind}
-                  flushRef={trustedUsersFlush}
-                />
-              </div>
+              {/* Repository-wide, so it saves itself rather than riding the row's PUT; an installation row has no repository to keep it on. */}
+              {!reviewSettingsHook.installationAccount && (
+                <div className="mt-4">
+                  <TrustedUsersField
+                    hookId={reviewSettingsHook.id}
+                    provider={reviewSettingsDraft.kind}
+                    flushRef={trustedUsersFlush}
+                  />
+                </div>
+              )}
               {reviewSettingsError && (
                 <div className="mt-3 flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
                   <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
