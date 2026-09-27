@@ -42,8 +42,9 @@ export class WebchatVerdictCache {
       if (hit.expiresAtMs > this.now()) return { ...structuredClone(hit.verdict), verifiedAtMs: hit.verifiedAtMs }
       this.entries.delete(key)
     }
-    const verdict = await this.verifyWithCp(token)
+    // Dated before the round trip: the CP reads the roster before its own awaits, so completion order must not rank verdicts.
     const verifiedAtMs = this.now()
+    const verdict = await this.verifyWithCp(token)
     const expiresAtMs = webchatTokenExpiryMs(token)
     if (verdict.ok && expiresAtMs !== undefined && expiresAtMs > verifiedAtMs) {
       this.sweep()

@@ -57,6 +57,18 @@ describe('WebchatVerdictCache', () => {
     expect((await cache.verify(t)).verifiedAtMs).toBe(T0)
   })
 
+  it('dates a verdict when its request starts, so an older verification that resolves later ranks lower', async () => {
+    const settle: Array<() => void> = []
+    const { cache, advance } = build(() => new Promise<RcVerifyResult>((resolve) => settle.push(() => resolve(OK))))
+    const older = cache.verify(token(T0 / 1000 + 300, 'a'))
+    advance(1_000)
+    const newer = cache.verify(token(T0 / 1000 + 300, 'b'))
+    settle[1]!()
+    settle[0]!()
+    expect((await newer).verifiedAtMs).toBe(T0 + 1_000)
+    expect((await older).verifiedAtMs).toBe(T0)
+  })
+
   it('keys by token, so a different token is its own verification', async () => {
     const { cache, verify } = build()
     await cache.verify(token(T0 / 1000 + 300, 'a'))
