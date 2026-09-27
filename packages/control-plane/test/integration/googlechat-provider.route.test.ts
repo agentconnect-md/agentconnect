@@ -200,14 +200,30 @@ describe('POST /integrations/googlechat/platform-install', () => {
     expect(bot?.secret?.botToken).toBe(KEY)
   })
 
-  it('installs on a named agent whose daemon runs Google Chat, and refuses a second install', async () => {
+  it('installs on a named agent, re-stamps the same bot when run again, and refuses another agent', async () => {
     const agentId = await placedAgent()
-    const { app } = harness({ deploymentApp: true })
+    const other = randomUUID()
+    await seedAgent(prisma, other, { daemonId: DAEMON })
+    const { app, googleCalls } = harness({ deploymentApp: true })
 
-    expect((await install(app, { agentId })).statusCode).toBe(201)
+    const first = await install(app, { agentId })
+    expect(first.statusCode).toBe(201)
+    const { id, botId } = first.json() as { id: string; botId: string }
+    const before = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
+
+    // Running it again is how a rotated deployment key reaches the bot: same bot, same integration, a new generation.
     const again = await install(app, { agentId })
-    expect(again.statusCode).toBe(409)
-    expect(again.json().message).toMatch(/already connected/)
+    expect(again.statusCode).toBe(200)
+    expect(again.json()).toMatchObject({ id, botId, agentId })
+    expect(googleCalls).toHaveLength(4)
+    const after = await prisma.bot.findUniqueOrThrow({ where: { id: botId }, include: { secret: true } })
+    expect(after.credentialRevision).toBeGreaterThan(before.credentialRevision)
+    expect(after.secret?.botToken).toBe(KEY)
+    expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(1)
+
+    const taken = await install(app, { agentId: other })
+    expect(taken.statusCode).toBe(409)
+    expect(taken.json().message).toMatch(/already connected/)
   })
 
   it('409s when neither an agentId nor a preset exists', async () => {

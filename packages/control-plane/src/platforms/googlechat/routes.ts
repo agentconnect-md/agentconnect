@@ -15,7 +15,12 @@ import { installNewBot } from '../../http/install-bot.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { TENANTLESS_SENTINEL } from '../../persistence/ports.js'
 import { ErrorDto, IntegrationDto } from '../../http/dto/index.js'
+import { toDto as toIntegrationDto } from '../../http/routes/integrations.js'
 import { GOOGLE_CHAT_APP_TAKEN_MESSAGE, buildGoogleChatInstall, validateGoogleChatApp } from './provider.js'
+
+/** The 409 copy when the deployment's project ID no longer matches the installed bot of the same project number. */
+export const GOOGLE_CHAT_PROJECT_CHANGED_MESSAGE =
+  'The deployment’s Google Chat app now names a different project than the installed bot; a different project needs a new installation.'
 
 const GoogleChatPlatformInstallBody = z.object({
   /** The agent to connect; omitted ⇒ the organization's preset `agentconnect` agent. */
@@ -36,10 +41,11 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
           tags: [Tag.Integrations],
           summary: 'Install the deployment Google Chat app',
           description:
-            'Connect the Google Chat app configured in the Setup Server to an agent, the organization’s preset agent unless `agentId` names another. Validates the stored service-account key with one Chat API read and creates the bot and its integration; no key is pasted and none is returned. Requires the relay pool, because Google Chat delivers events only over HTTPS.',
+            'Connect the Google Chat app configured in the Setup Server to an agent, the organization’s preset agent unless `agentId` names another. Validates the stored service-account key with one Chat API read and creates the bot and its integration (201); no key is pasted and none is returned. Running it again for the agent that already holds the app re-stamps that bot with the current deployment key (200), which is how a rotated key reaches it; an app held by another agent or organization answers 409. Requires the relay pool, because Google Chat delivers events only over HTTPS.',
           operationId: 'installGoogleChatPlatformApp',
           body: GoogleChatPlatformInstallBody,
           response: {
+            200: IntegrationDto,
             201: IntegrationDto,
             400: ErrorDto,
             401: ErrorDto,
@@ -97,11 +103,27 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
           }
         }
 
-        // One bot per Chat app, across organizations; checked before spending a Google round trip.
-        if (
-          await deps.repos.bot.getByExternalIdentity(GOOGLE_CHAT_PLATFORM, platform.projectNumber, TENANTLESS_SENTINEL)
-        ) {
+        // One bot per Chat app, across organizations; only the agent already holding it may run the install again.
+        const existing = await deps.repos.bot.getByExternalIdentity(
+          GOOGLE_CHAT_PLATFORM,
+          platform.projectNumber,
+          TENANTLESS_SENTINEL
+        )
+        const held =
+          existing?.orgId === orgId
+            ? (await deps.repos.integration.listForBot(existing.id)).find((install) => install.agentId === agent.id)
+            : undefined
+        if (existing && !held) {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: GOOGLE_CHAT_APP_TAKEN_MESSAGE })
+        }
+        // The project number is the bot's identity and the project ID its alias, so a different ID is a new installation.
+        if (existing && existing.platformConfig?.projectId !== platform.projectId) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            code: 'GOOGLE_CHAT_PROJECT_CHANGED',
+            message: GOOGLE_CHAT_PROJECT_CHANGED_MESSAGE
+          })
         }
         const validated = await validateGoogleChatApp(platform, googleChat.fetch)
         if (!validated.ok) {
@@ -111,6 +133,20 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
             ...(validated.code ? { code: validated.code } : {}),
             message: validated.message
           })
+        }
+
+        if (existing && held) {
+          // Re-stamp the current deployment key as a fresh credential generation, then re-push the spec.
+          await deps.repos.botCredential.install(
+            orgId,
+            existing.id,
+            buildGoogleChatInstall(platform).secrets,
+            new Date()
+          )
+          await deps.httpBot.syncBot(existing.id)
+          return reply
+            .code(200)
+            .send(toIntegrationDto(held, await deps.repos.integrationChannel.listForIntegration(held.id)))
         }
 
         try {
@@ -124,16 +160,7 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
             prebuilt: true,
             createdByUserId: req.principal.userId
           })
-          return reply.code(201).send({
-            id: integration.id,
-            name: integration.name,
-            platform: integration.platform,
-            agentId: integration.agentId,
-            botId: integration.botId,
-            status: integration.status,
-            createdAt: integration.createdAt.toISOString(),
-            channels: []
-          })
+          return reply.code(201).send(toIntegrationDto(integration))
         } catch (err) {
           // The composite unique fired between the pre-check and the insert.
           if (err instanceof BotExternalIdentityTaken) {

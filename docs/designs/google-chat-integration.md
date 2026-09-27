@@ -122,11 +122,13 @@ The Control Plane receives them as `GOOGLE_CHAT_PLATFORM_PROJECT_ID`,
 round-trip, so `POST /integrations/googlechat/platform-install` installs that app
 directly on the preset `agentconnect` agent, or on a named one: it validates the
 stored key again, creates a prebuilt HTTP bot, and copies the key into that bot's
-encrypted secret row, so a later key change reaches the bot only through secret
-rotation. Per-agent apps are configured from an agent's integrations page in the
-Console through `POST /integrations` with a `googlechat` credential block on the
-HTTP transport. Both produce the same bot row, uniqueness key, and relay
-assignment; only the surface that collects the credential differs.
+encrypted secret row. A rotated deployment key reaches the installed bot by
+running the install again for the agent that holds it, which re-stamps the same
+bot; the app never moves to another agent or organization that way. Per-agent
+apps are configured from an agent's integrations page in the Console through
+`POST /integrations` with a `googlechat` credential block on the HTTP transport.
+Both produce the same bot row, uniqueness key, and relay assignment; only the
+surface that collects the credential differs.
 
 The key check and the `chat.bot` probe live in the Control Plane's Google Chat
 module, which the Setup Server imports. The Setup Server runs the validation below
