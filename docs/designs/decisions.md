@@ -1422,9 +1422,9 @@ change preserves compatible conditions and invalidates preview results.
 
 ### 9.5 Recent evaluations and evidence
 
-Agent model selection has its own Recent evaluations section below Try a sample in
-the Agent's By decision model editor; the By decision hover card on Agent Detail and
-in the composers links to the Decision and opens the same list in a drawer. It is an
+Agent model selection keeps its own history, listed on the Decision page under that
+Agent's place; the By decision hover card on Agent Detail and in the composers links
+to the Decision and opens the same list in a drawer. It is an
 Agent-scoped session-start history, never part of an Integration conversation or
 routing history. The daemon stores it separately from
 `decision_verdict`, and the CP returns each row only when the caller can also view
@@ -1434,10 +1434,14 @@ Follow-ups use that pinned target and create no new evaluation. Detail bodies ex
 after 24 hours or 20 newer choices for the same Agent; summaries expire after seven
 days. The CP proxies these reads without persisting their content.
 
-Decision detail lists recent evaluations from its current recorded usages, separated
-by source: conversation gates, Shared Bot Routing, repository routing, and Agent
-model selection. Each source retains its own list, retention, detail drawer, and
-access checks; sibling installs of one bot have separate gate sources. The optional
+Decision detail shows its places of use and their recent evaluations in one card:
+a tab per place (conversation gates, Shared Bot Routing, repository routing, Agent
+model selection, and agent tools, which record none) after an **All** tab that merges
+every recorded place's latest page by time. Hovering a tab names the place's kind and,
+for a gate, whether its condition needs review; a selected place offers its settings
+and its full list in a drawer, and places the viewer cannot see are counted below.
+Each source retains its own list, retention, detail drawer, and access checks;
+sibling installs of one bot have separate gate sources. The optional
 Decision ID filter runs on the daemon before paging;
 older daemons report upgrade required for filtered reads. These histories identify
 the root Decision of a recorded evaluation. A child Decision page reads its root
@@ -1695,7 +1699,7 @@ Binding authorization runs inside the agent configuration transaction. It locks
 the actor's membership and submitted Decision rows before the committed agent
 enable-list is read and replaced. An edit that preserves a hidden attachment cannot
 restore it after a concurrent removal. Deletion takes the conflicting Decision lock
-and refuses while any agent still references it. The Decision's Used by list shows
+and refuses while any agent still references it. The Decision's places list
 only agents visible to the viewer; deletion also protects hidden references.
 
 `GET /agents/:id/decisions` returns attached names, provider/model, and question type

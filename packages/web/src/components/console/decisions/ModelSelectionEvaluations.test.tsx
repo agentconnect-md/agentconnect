@@ -7,7 +7,8 @@ import type { DecisionModelEvaluationRecord } from '@agentconnect.md/protocol/de
 
 const api = vi.hoisted(() => ({ fetchAgentModelEvaluations: vi.fn(), fetchAgentModelEvaluation: vi.fn() }))
 vi.mock('@/lib/api', async (original) => ({ ...(await original<object>()), ...api }))
-import { ModelSelectionEvaluations } from './ModelSelectionEvaluations'
+vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'example-org' } }) }))
+import { ModelSelectionEvaluationsDrawer } from './ModelSelectionEvaluations'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let root: Root | undefined
@@ -41,18 +42,17 @@ async function render(live: boolean) {
   await act(async () =>
     root!.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <ModelSelectionEvaluations agentId="agent-1" orgId="example-org" live={live} />
+        <ModelSelectionEvaluationsDrawer target={{ agentId: 'agent-1', agentName: 'Agent', live }} onClose={() => {}} />
       </SWRConfig>
     )
   )
   await act(async () => {})
 }
 
-it('shows the empty state without a request when the editor is not live', async () => {
+it('shows the empty state without a request when the agent is not live', async () => {
   await render(false)
   expect(api.fetchAgentModelEvaluations).not.toHaveBeenCalled()
-  expect(container.querySelector('summary')?.textContent).toContain('none yet')
-  expect(container.textContent).toContain('No evaluations yet.')
+  expect(document.body.textContent).toContain('No evaluations yet.')
 })
 
 it('lists recent selections and opens one in place', async () => {
@@ -60,12 +60,11 @@ it('lists recent selections and opens one in place', async () => {
   api.fetchAgentModelEvaluation.mockRejectedValue(new Error('gone'))
   await render(true)
   expect(api.fetchAgentModelEvaluations).toHaveBeenCalledWith('agent-1', { limit: 20 }, 'example-org')
-  expect(container.querySelector('summary')?.textContent).not.toContain('none yet')
-  const row = container.querySelector<HTMLButtonElement>('li button')!
+  const row = document.body.querySelector<HTMLButtonElement>('li button')!
   expect(row.textContent).toContain('claude · model-large')
   await act(async () => row.click())
   await act(async () => {})
   expect(api.fetchAgentModelEvaluation).toHaveBeenCalledWith('agent-1', 7, 'example-org')
-  expect(container.textContent).toContain('Details expired')
-  expect(container.querySelector('li')).toBeNull()
+  expect(document.body.textContent).toContain('Details expired')
+  expect(document.body.querySelector('li')).toBeNull()
 })

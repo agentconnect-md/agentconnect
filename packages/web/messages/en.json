@@ -2392,7 +2392,6 @@
         "evaluations": {
           "title": "Recent evaluations",
           "close": "Close recent evaluations",
-          "noneYet": "none yet",
           "empty": "No evaluations yet. Save a by-decision model and new sessions will show up here.",
           "error": "Could not load model evaluations.",
           "offline": "The agent's evaluation host is offline.",
@@ -4366,10 +4365,16 @@
       "chainHistory": "This source records the Decision chain from its first step.",
       "noSources": "No current source records evaluations for this Decision.",
       "empty": "No recent evaluations from this source.",
-      "viewAll": "View all from this source",
       "upgrade": "Upgrade this source's evaluation host to filter by Decision.",
       "error": "Could not load evaluations from this source.",
-      "retry": "Retry"
+      "retry": "Retry",
+      "usedIn": "used in {count, plural, one {1 place} other {# places}}",
+      "all": "All",
+      "settings": "Settings",
+      "openPanel": "Open panel",
+      "notRecorded": "This place does not record evaluations.",
+      "emptyAll": "No recent evaluations yet.",
+      "partialError": "{count, plural, one {1 place could not be loaded.} other {# places could not be loaded.}}"
     },
     "errors": {
       "name": "Give the decision a name before saving.",

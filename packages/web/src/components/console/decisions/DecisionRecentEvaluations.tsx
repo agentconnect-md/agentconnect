@@ -1,14 +1,23 @@
 'use client'
 
+// A Decision's places of use as tabs over their recent evaluations: All merges every recorded place by time.
+
 import { useState } from 'react'
+import Link from 'next/link'
 import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
-import type { DecisionQuestion, DecisionEvaluationRecord } from '@agentconnect.md/protocol/decision'
+import type {
+  DecisionAnswerSummary,
+  DecisionEvaluationOutcome,
+  DecisionQuestion,
+  DecisionRoutingEvaluationOutcome
+} from '@agentconnect.md/protocol/decision'
 import type { DecisionUsage } from '@agentconnect.md/protocol/decision-api'
+import { Icon } from '@/components/ui'
 import { fetchAgentModelEvaluations, type CodeHostRoutingKey } from '@/lib/api'
-import { useDecisionsPrototype } from '@/lib/decisions/provider'
+import { useDecisionsPrototype, type DecisionGateUsage } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
-import { answerText } from '@/lib/decisions/evaluations'
+import { answerText, latencyText } from '@/lib/decisions/evaluations'
 import { codeHostRoutingEvaluations } from '@/lib/decisions/evaluation-source'
 import { ruleNumbers } from '@/lib/decisions/routing-draft'
 import { formatEvaluationTime } from './EvaluationParts'
@@ -17,88 +26,183 @@ import { ModelSelectionEvaluationsDrawer } from './ModelSelectionEvaluations'
 import { DecisionRoutingEvaluationsDrawer } from './routing/DecisionRoutingEvaluationsDrawer'
 
 type RecordedUsage = DecisionUsage & { kind: 'gate' | 'shared_bot_routing' | 'code_host_routing' | 'model_selection' }
-type RecentRow = Pick<DecisionEvaluationRecord, 'seq' | 'at' | 'answer'> & {
-  outcome: string
-  channel?: string
-  target?: string
+type Kind = DecisionUsage['kind']
+
+interface Place {
+  key: string
+  kind: Kind
+  label: string
+  href: string | null
+  review?: boolean
+  source?: RecordedUsage
 }
 
-const PAGE = 10
-const sourceKey = (usage: RecordedUsage) => `${usage.kind}:${usage.id}`
+interface Row {
+  place: string
+  seq: number
+  at: string
+  answer: DecisionAnswerSummary | null
+  /** The raw outcome of this place's history, worded at render. */
+  outcome: string
+  latencyMs: number | null
+  title: string | null
+  channel?: string
+  channelName?: string
+}
 
-function recorded(usages: DecisionUsage[]): RecordedUsage[] {
-  return usages.filter(
-    (usage): usage is RecordedUsage =>
-      (usage.kind === 'gate' && !!usage.integrationId && !!usage.channelId) ||
-      usage.kind === 'shared_bot_routing' ||
-      (usage.kind === 'code_host_routing' && !!usage.provider && !!usage.repoId && !!usage.family) ||
-      usage.kind === 'model_selection'
+type Loaded = { items: Row[]; more: boolean } | { error: unknown }
+
+const PAGE = 10
+const ICONS: Record<Kind, string> = {
+  gate: 'hash',
+  shared_bot_routing: 'git-branch',
+  code_host_routing: 'git-pull-request',
+  model_selection: 'cpu',
+  agent_tool: 'wrench'
+}
+const usageKey = (usage: DecisionUsage) => `${usage.kind}:${usage.id}`
+
+function recorded(usage: DecisionUsage): usage is RecordedUsage {
+  return (
+    (usage.kind === 'gate' && !!usage.integrationId && !!usage.channelId) ||
+    usage.kind === 'shared_bot_routing' ||
+    (usage.kind === 'code_host_routing' && !!usage.provider && !!usage.repoId && !!usage.family) ||
+    usage.kind === 'model_selection'
   )
 }
 
 export function DecisionRecentEvaluations({
   decisionId,
   question,
-  usages
+  usages,
+  usageStatus,
+  gated = [],
+  hiddenCount = 0,
+  inUse = false,
+  hrefFor
 }: {
   decisionId: string
   question: DecisionQuestion
   usages: DecisionUsage[]
+  usageStatus: 'loading' | 'ready' | 'error'
+  /** Local gates the prototype store tracks, with whether an edit left their condition needing review. */
+  gated?: DecisionGateUsage[]
+  hiddenCount?: number
+  /** A server refusal said the Decision is used, so an empty list still names that someone uses it. */
+  inUse?: boolean
+  hrefFor: (usage: DecisionUsage) => string | null
 }) {
   const t = useTranslations('Decisions')
   const modelT = useTranslations('Agents.dialog.modelSelection.evaluations')
   const locale = useLocale()
   const { api, orgId } = useDecisionsPrototype()
-  const sources = recorded(usages)
+  const places: Place[] = [
+    ...gated.map((gate) => ({
+      key: `gate-local:${gate.channelId}`,
+      kind: 'gate' as const,
+      label: gate.channelName,
+      href: null,
+      review: gate.needsReview
+    })),
+    ...usages.map((usage) => ({
+      key: usageKey(usage),
+      kind: usage.kind,
+      label: usage.label,
+      href: hrefFor(usage),
+      ...(recorded(usage) ? { source: usage } : {})
+    }))
+  ]
+  const sources = places.flatMap((place) => (place.source ? [place.source] : []))
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const selected = places.find((place) => place.key === selectedKey) ?? null
   const [opened, setOpened] = useState<{ key: string; seq?: number; channel?: string } | null>(null)
-  const selected = sources.find((source) => sourceKey(source) === selectedKey) ?? sources[0]!
-  const drawerSource = sources.find((source) => sourceKey(source) === opened?.key)
-  const selectedDecisionId = selected?.rootDecisionId ?? decisionId
+  const drawerSource = sources.find((source) => usageKey(source) === opened?.key)
   const drawerDecisionId = drawerSource?.rootDecisionId ?? decisionId
-  const { data, error, isLoading, mutate } = useSWR(
-    selected ? ['decision-recent-evaluations', api.mode, orgId, selectedDecisionId, sourceKey(selected)] : null,
-    async (): Promise<{ items: RecentRow[]; nextCursor: number | null }> => {
-      let page
-      if (selected.kind === 'gate') {
-        page = await api.listEvaluations(
-          { integrationId: selected.integrationId!, channelId: selected.channelId! },
-          { decisionId: selectedDecisionId, limit: PAGE }
-        )
-      } else if (selected.kind === 'shared_bot_routing') {
-        page = await api.listRoutingEvaluations(selected.id, { decisionId: selectedDecisionId, limit: PAGE })
-      } else if (selected.kind === 'code_host_routing') {
-        const scope: CodeHostRoutingKey = {
-          provider: selected.provider!,
-          repoId: selected.repoId!,
-          family: selected.family!
-        }
-        page = await codeHostRoutingEvaluations(api, orgId, scope).list({ decisionId: selectedDecisionId, limit: PAGE })
-      } else {
-        page =
-          api.mode === 'mock'
-            ? { items: [], nextCursor: null }
-            : await fetchAgentModelEvaluations(selected.id, { decisionId: selectedDecisionId, limit: PAGE }, orgId)
-      }
+
+  const read = async (source: RecordedUsage): Promise<{ items: Row[]; more: boolean }> => {
+    const root = source.rootDecisionId ?? decisionId
+    const place = usageKey(source)
+    const common = (item: {
+      seq: number
+      at: string
+      answer: DecisionAnswerSummary | null
+      latencyMs: number | null
+    }) => ({
+      place,
+      seq: item.seq,
+      at: item.at,
+      answer: item.answer,
+      latencyMs: item.latencyMs
+    })
+    if (source.kind === 'shared_bot_routing') {
+      const [page, routing] = await Promise.all([
+        api.listRoutingEvaluations(source.id, { decisionId: root, limit: PAGE }),
+        api.getRouting(source.id).catch(() => null)
+      ])
+      const names = new Map(routing?.channels.map((channel) => [channel.channelId, channel.name ?? channel.channelId]))
       return {
         items: page.items.map((item) => ({
-          seq: item.seq,
-          at: item.at,
-          answer: item.answer,
+          ...common(item),
           outcome: item.outcome,
-          ...('channel' in item ? { channel: item.channel } : {}),
-          ...('target' in item ? { target: `${item.target.runtime} · ${item.target.model}` } : {})
+          title: item.title,
+          channel: item.channel,
+          channelName: names.get(item.channel) ?? item.channel
         })),
-        nextCursor: page.nextCursor
+        more: page.nextCursor !== null
       }
     }
+    if (source.kind === 'model_selection') {
+      const page =
+        api.mode === 'mock'
+          ? { items: [], nextCursor: null }
+          : await fetchAgentModelEvaluations(source.id, { decisionId: root, limit: PAGE }, orgId)
+      return {
+        items: page.items.map((item) => ({
+          ...common(item),
+          outcome: item.outcome,
+          title: `${item.target.runtime} · ${item.target.model}`
+        })),
+        more: page.nextCursor !== null
+      }
+    }
+    const page =
+      source.kind === 'gate'
+        ? await api.listEvaluations(
+            { integrationId: source.integrationId!, channelId: source.channelId! },
+            { decisionId: root, limit: PAGE }
+          )
+        : await codeHostRoutingEvaluations(api, orgId, {
+            provider: source.provider!,
+            repoId: source.repoId!,
+            family: source.family!
+          } satisfies CodeHostRoutingKey).list({ decisionId: root, limit: PAGE })
+    return {
+      items: page.items.map((item) => ({
+        ...common(item),
+        outcome: item.outcome,
+        title: item.title
+      })),
+      more: page.nextCursor !== null
+    }
+  }
+
+  // One read per recorded place; a place that fails keeps its error without hiding the others.
+  const { data, isLoading, mutate } = useSWR(
+    sources.length ? ['decision-recent-evaluations', api.mode, orgId, decisionId, ...sources.map(usageKey)] : null,
+    async (): Promise<Record<string, Loaded>> =>
+      Object.fromEntries(
+        await Promise.all(
+          sources.map(async (source) => {
+            try {
+              return [usageKey(source), await read(source)] as const
+            } catch (error) {
+              return [usageKey(source), { error }] as const
+            }
+          })
+        )
+      )
   )
-  const routingSource =
-    drawerSource?.kind === 'shared_bot_routing'
-      ? drawerSource
-      : selected?.kind === 'shared_bot_routing'
-        ? selected
-        : null
+  const routingSource = drawerSource?.kind === 'shared_bot_routing' ? drawerSource : null
   const routing = useSWR(routingSource ? ['decision-recent-routing', api.mode, orgId, routingSource.id] : null, () =>
     api.getRouting(routingSource!.id)
   )
@@ -107,7 +211,6 @@ export function DecisionRecentEvaluations({
       channelId: channel.channelId,
       name: channel.name ?? channel.channelId
     })) ?? []
-  const routingNames = new Map(routingChannels.map((channel) => [channel.channelId, channel.name]))
   const agentNames = new Map(
     (routing.data?.channels ?? []).flatMap((channel) =>
       channel.defaultAgent
@@ -115,100 +218,225 @@ export function DecisionRecentEvaluations({
         : []
     )
   )
+
+  const loadedOf = (place: Place): Loaded | undefined => (place.source ? data?.[place.key] : undefined)
+  const rowsOf = (place: Place) => {
+    const loaded = loadedOf(place)
+    return loaded && 'items' in loaded ? loaded.items : []
+  }
+  const countOf = (place: Place) => {
+    const loaded = loadedOf(place)
+    return loaded && 'items' in loaded ? `${loaded.items.length}${loaded.more ? '+' : ''}` : null
+  }
+  const shownPlaces = selected ? [selected] : places
+  const rows = shownPlaces.flatMap(rowsOf).sort((a, b) => (a.at === b.at ? b.seq - a.seq : a.at < b.at ? 1 : -1))
+  const failed = shownPlaces.filter((place) => {
+    const loaded = loadedOf(place)
+    return loaded && 'error' in loaded
+  })
+  const placeByKey = new Map(places.map((place) => [place.key, place]))
   const answerWords = { yes: t('condition.yes'), no: t('condition.no') }
-  const outcome = (row: RecentRow) =>
-    selected.kind === 'model_selection'
+  const total = places.reduce((sum, place) => sum + rowsOf(place).length, 0)
+  const anyMore = places.some((place) => {
+    const loaded = loadedOf(place)
+    return !!loaded && 'items' in loaded && loaded.more
+  })
+  const note = (text: string) => <p className="m-0 px-4 py-3 text-[12.5px] text-(--text-tertiary)">{text}</p>
+  const kindWord = (kind: Kind) => t(`usedBy.kind.${kind}`)
+  // Outcomes stay raw in the cache and are worded here, so a language switch rewords rows already loaded.
+  const outcomeText = (row: Row, kind: Kind) =>
+    kind === 'model_selection'
       ? modelT(`outcome.${row.outcome as 'selected' | 'fallback'}`)
-      : selected.kind === 'shared_bot_routing'
-        ? t(`routing.evaluations.outcomes.${row.outcome as 'routed'}`)
-        : t(`evaluations.outcomes.${row.outcome as 'triggered'}`)
+      : kind === 'shared_bot_routing'
+        ? t(`routing.evaluations.outcomes.${row.outcome as DecisionRoutingEvaluationOutcome}`)
+        : t(`evaluations.outcomes.${row.outcome as DecisionEvaluationOutcome}`)
+  const hint = (place: Place) =>
+    [
+      place.label,
+      [
+        kindWord(place.kind),
+        place.review !== undefined ? (place.review ? t('usedBy.needsReview') : t('usedBy.ok')) : null
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    ].join('\n')
+  const tab = (active: boolean) =>
+    `-mb-px flex items-center gap-[7px] border-0 border-b-2 border-solid bg-transparent px-0 py-[10px] text-[13px] leading-normal ${
+      active
+        ? 'border-(--brand) font-semibold text-(--text-primary)'
+        : 'border-transparent font-medium text-(--text-secondary) hover:text-(--text-primary)'
+    }`
+  const counter = (text: string | null) =>
+    text === null ? null : (
+      <span className="rounded-full bg-(--surface-active) px-[7px] font-mono text-[11px] leading-[18px] text-(--text-secondary)">
+        {text}
+      </span>
+    )
+
+  const usedIn =
+    usageStatus === 'ready'
+      ? t('recentBySource.usedIn', { count: places.length + hiddenCount })
+      : usageStatus === 'loading'
+        ? t('usedBy.loading')
+        : t('usedBy.error')
 
   return (
-    <div className="card">
-      <div className="cardhead">
-        <span className="cardtitle">{t('recentBySource.title')}</span>
-      </div>
-      {sources.length === 0 ? (
-        <p className="px-4 py-3 text-[12.5px] text-(--text-tertiary)">{t('recentBySource.noSources')}</p>
-      ) : (
-        <>
-          <div className="flex flex-wrap gap-2 border-b border-(--border-subtle) px-4 py-3">
-            {sources.map((source) => (
+    <div className="card" data-testid="decision-recent-evaluations">
+      <div className="cardhead flex-wrap justify-between gap-y-2">
+        <span className="flex min-w-0 flex-wrap items-baseline gap-x-[10px]">
+          <span className="cardtitle">{t('recentBySource.title')}</span>
+          <span className="truncate font-mono text-[11.5px] leading-normal text-(--text-tertiary)">{usedIn}</span>
+        </span>
+        {selected && (
+          <span className="flex flex-none items-center gap-4">
+            {selected.href && (
+              <Link href={selected.href} className="lnk gap-[6px] text-[12.5px] font-medium">
+                <Icon name="settings" size={13} />
+                {t('recentBySource.settings')}
+              </Link>
+            )}
+            {selected.source && (
               <button
-                key={sourceKey(source)}
                 type="button"
-                onClick={() => setSelectedKey(sourceKey(source))}
-                aria-pressed={sourceKey(source) === sourceKey(selected)}
-                className={`rounded-md border px-2.5 py-1.5 text-left text-[12px] leading-normal ${
-                  sourceKey(source) === sourceKey(selected)
-                    ? 'border-(--border-strong) bg-(--surface-active) text-(--text-primary)'
-                    : 'border-(--border-subtle) bg-transparent text-(--text-secondary) hover:bg-(--surface-hover)'
-                }`}
+                className="lnk gap-[6px] text-[12.5px] font-medium"
+                onClick={() => setOpened({ key: selected.key })}
               >
-                <span className="block font-medium">{source.label}</span>
-                <span className="text-[11px] text-(--text-tertiary)">{t(`usedBy.kind.${source.kind}`)}</span>
+                <Icon name="panel-right" size={13} />
+                {t('recentBySource.openPanel')}
+              </button>
+            )}
+          </span>
+        )}
+      </div>
+
+      {usageStatus === 'ready' && places.length === 0 ? (
+        note(inUse || hiddenCount > 0 ? t('usedBy.hiddenUnknown') : t('notUsed'))
+      ) : usageStatus !== 'ready' ? null : (
+        <>
+          <div
+            role="tablist"
+            aria-label={t('recentBySource.title')}
+            className="flex flex-wrap gap-x-6 border-b border-(--border-subtle) px-4"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={selected === null}
+              className={tab(selected === null)}
+              onClick={() => setSelectedKey(null)}
+            >
+              {t('recentBySource.all')}
+              {counter(data ? `${total}${anyMore ? '+' : ''}` : null)}
+            </button>
+            {places.map((place) => (
+              <button
+                key={place.key}
+                type="button"
+                role="tab"
+                aria-selected={selected?.key === place.key}
+                title={hint(place)}
+                className={tab(selected?.key === place.key)}
+                onClick={() => setSelectedKey(place.key)}
+              >
+                <Icon name={ICONS[place.kind]} size={13} className="flex-none text-(--text-tertiary)" />
+                <span className="mono max-w-[260px] truncate">{place.label}</span>
+                {place.review && <span aria-hidden className="size-[6px] flex-none rounded-full bg-(--amber-500)" />}
+                {counter(countOf(place))}
               </button>
             ))}
           </div>
-          {selected.rootDecisionId && selected.rootDecisionId !== decisionId && (
-            <p className="px-4 pt-3 text-[12px] text-(--text-tertiary)">{t('recentBySource.chainHistory')}</p>
+
+          {selected?.source?.rootDecisionId && selected.source.rootDecisionId !== decisionId && (
+            <p className="m-0 px-4 pt-3 text-[12px] text-(--text-tertiary)">{t('recentBySource.chainHistory')}</p>
           )}
-          {isLoading && !data && (
-            <p className="px-4 py-3 text-[12px] text-(--text-tertiary)">{t('recentBySource.loading')}</p>
+          {selected && !selected.source ? (
+            note(t('recentBySource.notRecorded'))
+          ) : !selected && sources.length === 0 ? (
+            note(t('recentBySource.noSources'))
+          ) : isLoading && !data ? (
+            note(t('recentBySource.loading'))
+          ) : (
+            <>
+              {failed.length > 0 && (
+                <p role="alert" className="m-0 px-4 pt-3 text-[12px] text-(--status-error)">
+                  {selected
+                    ? errorParts((loadedOf(selected) as { error: unknown }).error)?.code === 'DAEMON_UPGRADE_REQUIRED'
+                      ? t('recentBySource.upgrade')
+                      : t('recentBySource.error')
+                    : t('recentBySource.partialError', { count: failed.length })}{' '}
+                  <button type="button" className="lnk" onClick={() => void mutate()}>
+                    {t('recentBySource.retry')}
+                  </button>
+                </p>
+              )}
+              {rows.length === 0 && failed.length === 0 ? (
+                note(selected ? t('recentBySource.empty') : t('recentBySource.emptyAll'))
+              ) : rows.length > 0 ? (
+                <ul className="m-0 list-none p-0">
+                  {rows.map((row) => {
+                    const place = placeByKey.get(row.place)!
+                    const answer = answerText(row.answer, answerWords)
+                    return (
+                      <li
+                        key={`${row.place}:${row.channel ?? ''}:${row.seq}`}
+                        className="border-b border-(--border-subtle) last:border-b-0"
+                      >
+                        <button
+                          type="button"
+                          data-at={row.at}
+                          className="flex w-full flex-col gap-[3px] border-0 bg-transparent px-4 py-[10px] text-left hover:bg-(--surface-hover)"
+                          onClick={() =>
+                            setOpened({
+                              key: row.place,
+                              seq: row.seq,
+                              ...(row.channel ? { channel: row.channel } : {})
+                            })
+                          }
+                        >
+                          {/* Each line keeps its right side whole and wraps it below when the card is too narrow. */}
+                          <span className="flex w-full flex-wrap items-center justify-between gap-x-4">
+                            <span className="min-w-0 flex-[1_1_140px] truncate text-[13px] leading-normal text-(--text-primary)">
+                              {row.title ?? '—'}
+                            </span>
+                            {answer ? (
+                              <span className="mono flex-none text-[12.5px] text-(--text-primary)">{answer}</span>
+                            ) : (
+                              <span className="badge flex-none bg-(--surface-active) text-(--text-secondary)">
+                                {outcomeText(row, place.kind)}
+                              </span>
+                            )}
+                          </span>
+                          <span className="flex w-full flex-wrap items-center justify-between gap-x-4 font-mono text-[11.5px] leading-normal text-(--text-tertiary)">
+                            <span className="flex min-w-0 flex-[1_1_140px] items-center gap-[6px]">
+                              <span className="flex-none">{formatEvaluationTime(row.at, locale)}</span>
+                              <span aria-hidden>·</span>
+                              <Icon name={ICONS[place.kind]} size={12} className="flex-none" />
+                              <span className="truncate">
+                                {[place.label, row.channelName].filter(Boolean).join(' · ')}
+                              </span>
+                            </span>
+                            <span className="flex-none">
+                              {[answer ? outcomeText(row, place.kind) : null, latencyText(row.latencyMs)]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              ) : null}
+            </>
           )}
-          {error && !data && (
-            <p role="alert" className="px-4 py-3 text-[12px] text-(--status-error)">
-              {errorParts(error)?.code === 'DAEMON_UPGRADE_REQUIRED'
-                ? t('recentBySource.upgrade')
-                : t('recentBySource.error')}{' '}
-              <button type="button" className="lnk" onClick={() => void mutate()}>
-                {t('recentBySource.retry')}
-              </button>
+          {hiddenCount > 0 && (
+            <p className="m-0 border-t border-(--border-subtle) px-4 py-[10px] text-[12px] text-(--text-tertiary)">
+              {t('usedBy.hidden', { count: hiddenCount })}
             </p>
-          )}
-          {data && data.items.length === 0 && data.nextCursor === null && (
-            <p className="px-4 py-3 text-[12px] text-(--text-tertiary)">{t('recentBySource.empty')}</p>
-          )}
-          <ul className="m-0 list-none p-0">
-            {data?.items.map((row) => (
-              <li key={`${row.channel ?? ''}:${row.seq}`} className="border-b border-(--border-subtle)">
-                <button
-                  type="button"
-                  className="flex w-full items-center justify-between gap-3 border-0 bg-transparent px-4 py-2.5 text-left hover:bg-(--surface-hover)"
-                  onClick={() =>
-                    setOpened({
-                      key: sourceKey(selected),
-                      seq: row.seq,
-                      ...(row.channel ? { channel: row.channel } : {})
-                    })
-                  }
-                >
-                  <span className="min-w-0">
-                    <span className="block font-mono text-[11px] text-(--text-tertiary)">
-                      {formatEvaluationTime(row.at, locale)}
-                    </span>
-                    <span className="block truncate text-[12.5px] text-(--text-primary)">
-                      {row.channel ? `${routingNames.get(row.channel) ?? row.channel} · ` : ''}
-                      {row.target ? `${row.target} · ` : ''}
-                      {answerText(row.answer, answerWords) ?? '—'}
-                    </span>
-                  </span>
-                  <span className="badge shrink-0 bg-(--surface-active) text-(--text-secondary)">{outcome(row)}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-          {data && (data.items.length > 0 || data.nextCursor !== null) && (
-            <button
-              type="button"
-              className="lnk mx-4 my-3 text-[12px]"
-              onClick={() => setOpened({ key: sourceKey(selected) })}
-            >
-              {t('recentBySource.viewAll')}
-            </button>
           )}
         </>
       )}
+
       {drawerSource?.kind === 'gate' && (
         <DecisionEvaluationsDrawer
           conversation={{ integrationId: drawerSource.integrationId!, channelId: drawerSource.channelId! }}

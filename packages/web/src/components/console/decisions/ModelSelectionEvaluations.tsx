@@ -9,7 +9,6 @@ import { errorParts } from '@/lib/decisions/binding'
 import { answerText, cancelReasonKey } from '@/lib/decisions/evaluations'
 import { useOrgs } from '@/lib/org-context'
 import { MOCK_MODE, MOCK_PREFIX } from '@/lib/data'
-import { Icon } from '@/components/ui'
 import { DecisionChainResults } from './DecisionChainResults'
 import { DecisionModelResult } from './DecisionModelResult'
 import {
@@ -239,39 +238,6 @@ function ModelEvaluationsBody({ state, padX }: { state: ModelEvaluations; padX: 
         </>
       )}
     </div>
-  )
-}
-
-/** The agent's recent model selections, listed under the sample in the By decision editor. */
-export function ModelSelectionEvaluations({
-  agentId,
-  orgId,
-  live
-}: {
-  agentId: string
-  orgId?: string
-  live: boolean
-}) {
-  const t = useTranslations('Agents.dialog.modelSelection.evaluations')
-  const state = useModelEvaluations(agentId, orgId, live)
-  return (
-    <details className="group rounded-md border border-(--border-subtle)" data-testid="model-selection-evaluations">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-[10px] px-4 py-[9px] [&::-webkit-details-marker]:hidden">
-        <span className="flex items-center gap-2 font-sans text-[13px] font-semibold leading-normal">
-          <Icon
-            name="chevron-down"
-            size={13}
-            className="flex-none -rotate-90 text-(--text-tertiary) transition-transform group-open:rotate-0"
-          />
-          {t('title')}
-          {state.empty && <span className="mono text-[11.5px] font-normal text-(--text-tertiary)">{t('noneYet')}</span>}
-        </span>
-        <Icon name="rotate-ccw-clock" size={14} className="flex-none text-(--text-tertiary)" />
-      </summary>
-      <div className="border-t border-(--border-subtle)">
-        <ModelEvaluationsBody state={state} padX="px-4" />
-      </div>
-    </details>
   )
 }
 
