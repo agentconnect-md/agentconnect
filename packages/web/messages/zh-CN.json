@@ -230,7 +230,7 @@
       "agentsLabel": "Agent",
       "allAgents": "全部 Agent",
       "selectedAgents": "指定 Agent",
-      "agentCount": "{count} 个 Agent",
+      "agentCount": "{count, plural, one {# 个 Agent} other {# 个 Agent}}",
       "agentsLoading": "正在加载 Agent…",
       "noAgents": "此组织暂无 Agent",
       "days": "{count} 天",
