@@ -5,17 +5,12 @@ import type { FastifyPluginAsync } from 'fastify'
 import { GOOGLE_CHAT_PLATFORM, type IntegrationGoogleChatConfig } from '@agentconnect.md/protocol'
 import { TENANTLESS_SENTINEL, type BotRecord, type BotSecretMaterial } from '../../persistence/ports.js'
 import type { CpConfigValidation, CpInstallTransport, CpNewBotInstall, CpPlatformProvider } from '../provider.js'
-import {
-  checkServiceAccountKey,
-  isGoogleCloudProjectNumber,
-  probeFailureIsConnectivity,
-  probeGoogleChatCredential
-} from './credential.js'
+import { checkGoogleChatApp, probeFailureIsConnectivity, type GoogleChatAppFailure } from './credential.js'
 
-/** The `googlechat` block of `POST /integrations`: one Chat app's project and its write-only service-account key. */
+/** The `googlechat` block of `POST /integrations`; an entered project number is only a cross-check of the resolved one. */
 export const GoogleChatCreateCredentials = z.object({
   projectId: z.string().trim().min(1).max(100),
-  projectNumber: z.string().trim().min(1).max(40),
+  projectNumber: z.string().trim().min(1).max(40).optional(),
   serviceAccountKey: z.string().trim().min(1).max(20_000)
 })
 export type GoogleChatCreateCredentials = z.infer<typeof GoogleChatCreateCredentials>
@@ -40,43 +35,46 @@ export const GoogleChatCpEnvSchema = {
 export const GOOGLE_CHAT_APP_TAKEN_MESSAGE =
   'This Google Chat app is already connected to an agent. Each Chat app serves one agent; create a Chat app in its own Google Cloud project for this agent.'
 
-/** Key check, numeric project number, then one bounded `chat.bot` read; no message is ever sent (§3). */
+/** The machine code the console switches on, per refusal. */
+const REFUSAL_CODES: Record<GoogleChatAppFailure, string> = {
+  project_number_invalid: 'GOOGLE_CHAT_PROJECT_NUMBER_INVALID',
+  invalid_key: 'GOOGLE_CHAT_KEY_INVALID',
+  project_mismatch: 'GOOGLE_CHAT_PROJECT_MISMATCH',
+  key_rejected: 'GOOGLE_CHAT_KEY_REJECTED',
+  crm_disabled: 'GOOGLE_CHAT_CRM_DISABLED',
+  crm_forbidden: 'GOOGLE_CHAT_CRM_FORBIDDEN',
+  project_unresolved: 'GOOGLE_CHAT_PROJECT_UNRESOLVED',
+  project_number_mismatch: 'GOOGLE_CHAT_PROJECT_NUMBER_MISMATCH',
+  chat_api_refused: 'GOOGLE_CHAT_APP_UNAVAILABLE',
+  unreachable: 'GOOGLE_CHAT_UNREACHABLE',
+  google_unavailable: 'GOOGLE_CHAT_UNREACHABLE'
+}
+
+/** Key check, the project number resolved with the key, then one bounded `chat.bot` read; no message is ever sent (§3). */
 export async function validateGoogleChatApp(
   credentials: GoogleChatCreateCredentials,
   fetchImpl: typeof fetch
 ): Promise<CpConfigValidation> {
-  if (!isGoogleCloudProjectNumber(credentials.projectNumber)) {
-    return {
-      ok: false,
-      status: 400,
-      code: 'GOOGLE_CHAT_PROJECT_NUMBER_INVALID',
-      message: 'the project number must be the numeric Project number from the Google Cloud dashboard'
-    }
-  }
-  const checked = checkServiceAccountKey(credentials.serviceAccountKey, credentials.projectId)
-  if (checked.status !== 'ok') {
-    const code = checked.status === 'project_mismatch' ? 'GOOGLE_CHAT_PROJECT_MISMATCH' : 'GOOGLE_CHAT_KEY_INVALID'
-    return { ok: false, status: 400, code, message: checked.message }
-  }
-  const probe = await probeGoogleChatCredential(checked.key, fetchImpl)
-  if (probe.status === 'ok') {
+  const checked = await checkGoogleChatApp(credentials, fetchImpl)
+  if (checked.status === 'ok') {
+    // The resolved number, never the entered one, is the app identity every later write uses.
     return {
       ok: true,
-      identity: { name: `Google Chat · ${credentials.projectId}`, externalAppId: credentials.projectNumber }
+      identity: { name: `Google Chat · ${credentials.projectId}`, externalAppId: checked.projectNumber }
     }
   }
   // An unreachable Google is inconclusive, never proof the key is bad.
-  if (probeFailureIsConnectivity(probe.status)) {
-    return { ok: false, status: 503, code: 'GOOGLE_CHAT_UNREACHABLE', message: probe.message }
-  }
-  const code = probe.status === 'key_rejected' ? 'GOOGLE_CHAT_KEY_REJECTED' : 'GOOGLE_CHAT_APP_UNAVAILABLE'
-  return { ok: false, status: 400, code, message: probe.message }
+  const status = probeFailureIsConnectivity(checked.status) ? 503 : 400
+  return { ok: false, status, code: REFUSAL_CODES[checked.status], message: checked.message }
 }
 
-/** The rows one Chat app writes, shared by the create tail and the deployment-app install route. */
-export function buildGoogleChatInstall(credentials: GoogleChatCreateCredentials): CpNewBotInstall {
+/** The rows one Chat app writes, keyed by the project number `validateGoogleChatApp` resolved. */
+export function buildGoogleChatInstall(
+  credentials: Pick<GoogleChatCreateCredentials, 'projectId' | 'serviceAccountKey'>,
+  projectNumber: string
+): CpNewBotInstall {
   return {
-    bot: { externalAppId: credentials.projectNumber, platformConfig: { projectId: credentials.projectId } },
+    bot: { externalAppId: projectNumber, platformConfig: { projectId: credentials.projectId } },
     // The key's canonical JSON in the `botToken` slot; it reaches the assigned daemon only.
     secrets: {
       botToken: JSON.stringify(JSON.parse(credentials.serviceAccountKey)),
@@ -84,7 +82,7 @@ export function buildGoogleChatInstall(credentials: GoogleChatCreateCredentials)
       signingSecret: null
     },
     externalIdentity: {
-      externalAppId: credentials.projectNumber,
+      externalAppId: projectNumber,
       externalTenantId: TENANTLESS_SENTINEL,
       conflictMessage: GOOGLE_CHAT_APP_TAKEN_MESSAGE
     }
@@ -133,7 +131,10 @@ export function createGoogleChatCpProvider(
     validateConfig: (credentials) => validateGoogleChatApp(credentials, fetchImpl),
 
     // One app serves one agent in this version, so a requested `shareable` is dropped.
-    buildNewBotInstall: ({ credentials }) => buildGoogleChatInstall(credentials),
+    buildNewBotInstall: ({ credentials, identity }) => {
+      if (!identity.externalAppId) throw new Error('googlechat install requires the resolved project number')
+      return buildGoogleChatInstall(credentials, identity.externalAppId)
+    },
 
     // App-scoped with no tenant axis: the project number plus the tenantless sentinel, and the project ID as public metadata.
     projectBotIdentity: (input) =>

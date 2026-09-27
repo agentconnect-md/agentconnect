@@ -130,12 +130,16 @@ apps are configured from an agent's integrations page in the Console through
 Both produce the same bot row, uniqueness key, and relay assignment; only the
 surface that collects the credential differs.
 
-The key check and the `chat.bot` probe live in the Control Plane's Google Chat
-module, which the Setup Server imports. The Setup Server runs the validation below
-before it stores anything and shows the HTTPS callback and **Project Number**
-audience to copy. A `chat.bot` credential does not reveal its project number, so
-validation checks only its shape; a wrong number fails callback verification,
-which the end-to-end test exposes.
+The key check, the project-number resolution, and the `chat.bot` probe live in
+the Control Plane's Google Chat module, which the Setup Server imports. The Setup
+Server runs the validation below before it stores anything and shows the HTTPS
+callback and **Project Number** audience to copy. A `chat.bot` token cannot read
+its project, so validation mints a second token for the same service account with
+the `cloud-platform.read-only` scope and reads the key's own project from Cloud
+Resource Manager (`GET /v1/projects/{projectId}`). The number it returns is the
+app identity; an entered number is optional and must match it. The service
+account therefore needs the Browser role (`resourcemanager.projects.get`) on the
+project, and the project needs the Cloud Resource Manager API enabled.
 
 In this version the deployment-owned app serves one agent. Google requires one
 Cloud project per Chat app and this design keeps one app per agent, so a hosted
@@ -158,9 +162,11 @@ The wizard should present these concrete steps:
 2. Complete Google's Cloud project, API, and configuration prerequisites.
 3. Copy the generated app information, HTTPS callback, and audience setting into
    Google Cloud Console; configure who can find and use the app.
-4. Create the service account, provide its credential through the secret form,
-   and validate it. Show an actionable setup error if organization policy prevents
-   creating a key; do not imply that ordinary Google sign-in supplies an app key.
+4. Create the service account, grant it the Browser role on the project, and
+   enable the Cloud Resource Manager API; then provide its credential through the
+   secret form and validate it. Show an actionable setup error if organization
+   policy prevents creating a key; do not imply that ordinary Google sign-in
+   supplies an app key.
 5. Add the configured app in Google Chat, then send a DM or Space mention to test
    the complete path.
 
@@ -180,13 +186,13 @@ distribution requirements. See [testing visibility](https://developers.google.co
 The Console wizard, or the Setup Server for the deployment-owned app, collects
 credentials and shows the derived installation metadata:
 
-| Value                           | Storage and meaning                                                                                                         |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Google Cloud project ID         | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                                       |
-| Verified project number         | Canonical numeric app identity and expected token audience; its shape is checked, as `chat.bot` cannot reveal it.           |
-| HTTPS callback URL              | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings.               |
-| Service-account key JSON        | Write-only credential in the encrypted bot secret store; the deployment app's deployment secret is copied there at install. |
-| Verified Chat app user identity | Provider identity metadata for mention matching and bot attribution; obtain from Google, not a display name.                |
+| Value                           | Storage and meaning                                                                                                             |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Google Cloud project ID         | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                                           |
+| Verified project number         | Canonical app identity and token audience, resolved through Cloud Resource Manager with the key; must match any entered number. |
+| HTTPS callback URL              | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings.                   |
+| Service-account key JSON        | Write-only credential in the encrypted bot secret store; the deployment app's deployment secret is copied there at install.     |
+| Verified Chat app user identity | Provider identity metadata for mention matching and bot attribution; obtain from Google, not a display name.                    |
 
 Keep the app and service account in one project for the first version. Configure
 Chat API interaction events with an HTTPS endpoint and **Project Number** audience,
@@ -222,13 +228,16 @@ verified in the live probe before mention matching is finalized; do not
 synthesize it from a project ID or assume the service-account email is the bot
 user.
 
-Validation checks credential structure, project identity, and a bounded Chat API
-read with app authentication. It must not send a test message from the Control
-Plane or the Setup Server. A saved configuration is not proof of working ingress.
-Combine relay assignment and daemon readiness, distinguish authentication and
-connectivity failures, and provide an explicit DM/mention test to verify the
-complete round trip. A Google credential passing validation does not prove the
-operator copied the endpoint and audience settings correctly.
+Validation checks credential structure, resolves the project number with the
+key, and makes a bounded Chat API read with app authentication. It must not send
+a test message from the Control Plane or the Setup Server. A saved configuration
+is not proof of working ingress. Combine relay assignment and daemon readiness,
+distinguish authentication and connectivity failures, and provide an explicit
+DM/mention test to verify the complete round trip. Two resolution failures have
+their own answers: a disabled Cloud Resource Manager API asks the operator to
+enable it in the key's project, and a denied project read asks for the Browser
+role on the service account. A Google credential passing validation does not
+prove the operator copied the endpoint and audience settings correctly.
 
 ### Operating cost
 
@@ -510,9 +519,11 @@ Before implementing the full module, run a small live probe with an operator-own
 test app. Confirm canonical project/credential binding, authoritative app-user
 identity, signed HTTPS callbacks, DM and Space mention payloads, thread coordinates,
 and app-authenticated create/patch with Markdown and stable IDs. Record anonymized
-fixtures. Specifically test whether an unmentioned reply arrives, but keep it
-outside the supported contract unless a
-follow-up design deliberately expands event coverage.
+fixtures. The project/credential binding is verified: a read-only token for the
+Chat app's service account reads the project's number from Cloud Resource Manager,
+while the `chat.bot` token is refused that read for insufficient scopes.
+Specifically test whether an unmentioned reply arrives, but keep it outside the
+supported contract unless a follow-up design deliberately expands event coverage.
 
 The implementation must then demonstrate:
 

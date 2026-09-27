@@ -5,11 +5,15 @@ import { decodeJwt, decodeProtectedHeader, importSPKI, jwtVerify } from 'jose'
 import {
   GOOGLE_CHAT_BOT_SCOPE,
   GOOGLE_CHAT_PROBE_URL,
+  GOOGLE_CLOUD_READ_ONLY_SCOPE,
   GOOGLE_TOKEN_ENDPOINT,
+  checkGoogleChatApp,
   checkServiceAccountKey,
+  googleCloudProjectUrl,
   isGoogleCloudProjectNumber,
   probeFailureIsConnectivity,
   probeGoogleChatCredential,
+  resolveProjectNumber,
   type GoogleServiceAccountKey
 } from './credential.js'
 
@@ -203,5 +207,129 @@ describe('probeGoogleChatCredential', () => {
 
     expect(result.status).toBe('chat_api_refused')
     expect(result.message).toMatch(/Enable the Google Chat API/)
+  })
+})
+
+const PROJECT_NUMBER = '123456789012'
+const CRM_URL = googleCloudProjectUrl(PROJECT_ID)
+
+type CrmAnswer = 'ok' | 'other_project' | 'service_disabled' | 'permission_denied' | 'offline'
+
+/** Google's token endpoint, Cloud Resource Manager, and the Chat API, answering fresh responses per call. */
+function fakeCloud(crm: CrmAnswer = 'ok') {
+  const calls: { method: string; url: string; scope?: string; bearer?: string | null }[] = []
+  const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const url = String(input)
+    const method = init.method ?? 'GET'
+    if (url === GOOGLE_TOKEN_ENDPOINT) {
+      const assertion = new URLSearchParams(String(init.body)).get('assertion')!
+      const scope = String(decodeJwt(assertion).scope)
+      calls.push({ method, url, scope })
+      return Response.json({ access_token: `token-for ${scope}` })
+    }
+    calls.push({ method, url, bearer: new Headers(init.headers).get('authorization') })
+    if (url === CRM_URL) {
+      if (crm === 'offline') throw new TypeError('fetch failed')
+      if (crm === 'service_disabled') {
+        return Response.json(
+          {
+            error: {
+              code: 403,
+              status: 'PERMISSION_DENIED',
+              message: 'Cloud Resource Manager API has not been used in this project before or it is disabled.',
+              details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'SERVICE_DISABLED' }]
+            }
+          },
+          { status: 403 }
+        )
+      }
+      if (crm === 'permission_denied') {
+        return Response.json(
+          { error: { code: 403, status: 'PERMISSION_DENIED', message: 'The caller does not have permission' } },
+          { status: 403 }
+        )
+      }
+      const projectId = crm === 'other_project' ? 'other-example-project' : PROJECT_ID
+      return Response.json({ projectNumber: PROJECT_NUMBER, projectId, lifecycleState: 'ACTIVE' })
+    }
+    if (url === GOOGLE_CHAT_PROBE_URL) return Response.json({ spaces: [] })
+    throw new Error(`unexpected ${url}`)
+  }) as typeof fetch
+  return { fetchImpl, calls }
+}
+
+describe('resolveProjectNumber', () => {
+  it('reads the key’s own project with a read-only token, not the chat.bot one', async () => {
+    const cloud = fakeCloud()
+    const resolved = await resolveProjectNumber(validKey(), cloud.fetchImpl, () => NOW)
+
+    expect(resolved).toEqual({ status: 'ok', projectNumber: PROJECT_NUMBER })
+    expect(cloud.calls).toEqual([
+      { method: 'POST', url: GOOGLE_TOKEN_ENDPOINT, scope: GOOGLE_CLOUD_READ_ONLY_SCOPE },
+      { method: 'GET', url: CRM_URL, bearer: `Bearer token-for ${GOOGLE_CLOUD_READ_ONLY_SCOPE}` }
+    ])
+    expect(CRM_URL).toBe(`https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT_ID}`)
+  })
+
+  it('asks for the Cloud Resource Manager API when it is disabled in the project', async () => {
+    const resolved = await resolveProjectNumber(validKey(), fakeCloud('service_disabled').fetchImpl, () => NOW)
+    expect(resolved).toEqual({
+      status: 'crm_disabled',
+      message: `Enable the Cloud Resource Manager API in project ${PROJECT_ID}: AgentConnect reads the project's number through it to bind the Chat app to this key.`
+    })
+  })
+
+  it('asks for the Browser role when the service account may not read the project', async () => {
+    const resolved = await resolveProjectNumber(validKey(), fakeCloud('permission_denied').fetchImpl, () => NOW)
+    expect(resolved).toEqual({
+      status: 'crm_forbidden',
+      message: `Grant ${CLIENT_EMAIL} the Browser role on project ${PROJECT_ID} (resourcemanager.projects.get): AgentConnect reads the project's number with it to bind the Chat app to this key.`
+    })
+  })
+
+  it('refuses an answer about another project, and reports an unreachable API as connectivity', async () => {
+    const other = await resolveProjectNumber(validKey(), fakeCloud('other_project').fetchImpl, () => NOW)
+    expect(other.status).toBe('project_unresolved')
+    const offline = await resolveProjectNumber(validKey(), fakeCloud('offline').fetchImpl, () => NOW)
+    expect(offline.status).toBe('unreachable')
+    expect(probeFailureIsConnectivity(offline.status as 'unreachable')).toBe(true)
+  })
+})
+
+describe('checkGoogleChatApp', () => {
+  const input = { projectId: PROJECT_ID, serviceAccountKey: keyJson() }
+
+  it('resolves the number before the chat.bot read and returns it as the identity', async () => {
+    const cloud = fakeCloud()
+    const checked = await checkGoogleChatApp(input, cloud.fetchImpl, () => NOW)
+
+    expect(checked).toMatchObject({ status: 'ok', projectNumber: PROJECT_NUMBER })
+    expect(cloud.calls.map((call) => call.scope ?? call.url)).toEqual([
+      GOOGLE_CLOUD_READ_ONLY_SCOPE,
+      CRM_URL,
+      GOOGLE_CHAT_BOT_SCOPE,
+      GOOGLE_CHAT_PROBE_URL
+    ])
+  })
+
+  it('accepts an entered number only when it is the resolved one', async () => {
+    const same = await checkGoogleChatApp({ ...input, projectNumber: PROJECT_NUMBER }, fakeCloud().fetchImpl, () => NOW)
+    expect(same).toMatchObject({ status: 'ok', projectNumber: PROJECT_NUMBER })
+
+    const cloud = fakeCloud()
+    const other = await checkGoogleChatApp({ ...input, projectNumber: '210987654321' }, cloud.fetchImpl, () => NOW)
+    expect(other).toEqual({
+      status: 'project_number_mismatch',
+      message: `the project number 210987654321 does not match project ${PROJECT_ID}, whose number is ${PROJECT_NUMBER}`
+    })
+    // A refused binding never reaches the Chat API.
+    expect(cloud.calls.map((call) => call.url)).not.toContain(GOOGLE_CHAT_PROBE_URL)
+  })
+
+  it('stops at a refused resolution', async () => {
+    const cloud = fakeCloud('permission_denied')
+    const checked = await checkGoogleChatApp(input, cloud.fetchImpl, () => NOW)
+    expect(checked.status).toBe('crm_forbidden')
+    expect(cloud.calls.map((call) => call.url)).not.toContain(GOOGLE_CHAT_PROBE_URL)
   })
 })

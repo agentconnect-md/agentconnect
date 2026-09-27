@@ -9,7 +9,14 @@ import {
   GoogleChatCpEnvSchema,
   googleChatBotAssignBags
 } from './provider.js'
-import { GOOGLE_CHAT_PROBE_URL, GOOGLE_TOKEN_ENDPOINT } from './credential.js'
+import { decodeJwt } from 'jose'
+import {
+  GOOGLE_CHAT_BOT_SCOPE,
+  GOOGLE_CHAT_PROBE_URL,
+  GOOGLE_CLOUD_READ_ONLY_SCOPE,
+  GOOGLE_TOKEN_ENDPOINT,
+  googleCloudProjectUrl
+} from './credential.js'
 import { buildCpPlatformRegistry } from '../registry.js'
 import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
 import type { BotRecord, CreateBotInput, IntegrationRecord } from '../../persistence/ports.js'
@@ -43,19 +50,35 @@ const CORE: IntegrationCoreEnvelope = {
   decisions: { bindings: [], definitions: [] }
 }
 
-type GoogleAnswer = 'ok' | 'rejected' | 'offline' | 'no_app'
+type GoogleAnswer = 'ok' | 'rejected' | 'offline' | 'no_app' | 'crm_disabled' | 'crm_forbidden'
+const CRM_URL = googleCloudProjectUrl(PROJECT_ID)
 
-/** Answers only Google's fixed token endpoint and the one Chat API read, recording every call. */
+/** Answers Google's token endpoint, Cloud Resource Manager, and the one Chat API read, recording every call and token scope. */
 function fakeGoogle(answer: GoogleAnswer = 'ok') {
-  const calls: { method: string; url: string }[] = []
+  const calls: { method: string; url: string; scope?: string }[] = []
   const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = String(input)
-    calls.push({ method: init.method ?? 'GET', url })
+    const assertion = url === GOOGLE_TOKEN_ENDPOINT ? new URLSearchParams(String(init.body)).get('assertion') : null
+    calls.push({
+      method: init.method ?? 'GET',
+      url,
+      ...(assertion ? { scope: String(decodeJwt(assertion).scope) } : {})
+    })
     if (answer === 'offline') throw new TypeError('fetch failed')
     if (url === GOOGLE_TOKEN_ENDPOINT) {
       return answer === 'rejected'
         ? Response.json({ error: 'invalid_grant', error_description: 'Invalid JWT Signature.' }, { status: 400 })
         : Response.json({ access_token: 'synthetic-access-token', token_type: 'Bearer', expires_in: 3599 })
+    }
+    if (url === CRM_URL) {
+      if (answer === 'crm_disabled' || answer === 'crm_forbidden') {
+        const details = answer === 'crm_disabled' ? [{ reason: 'SERVICE_DISABLED' }] : []
+        return Response.json(
+          { error: { code: 403, status: 'PERMISSION_DENIED', message: 'denied', details } },
+          { status: 403 }
+        )
+      }
+      return Response.json({ projectNumber: PROJECT_NUMBER, projectId: PROJECT_ID })
     }
     if (url === GOOGLE_CHAT_PROBE_URL) {
       return answer === 'no_app'
@@ -144,7 +167,7 @@ describe('the googlechat create body', () => {
 })
 
 describe('validateConfig', () => {
-  it('runs the key check, then one token exchange and one Chat API read, and sends nothing', async () => {
+  it('resolves the project number with a read-only token, then makes one Chat API read, and sends nothing', async () => {
     const google = fakeGoogle()
     const result = await createGoogleChatCpProvider({ fetch: google.fetchImpl }).validateConfig(CREDENTIALS, 'http')
 
@@ -153,9 +176,58 @@ describe('validateConfig', () => {
       identity: { name: `Google Chat · ${PROJECT_ID}`, externalAppId: PROJECT_NUMBER }
     })
     expect(google.calls).toEqual([
-      { method: 'POST', url: GOOGLE_TOKEN_ENDPOINT },
+      { method: 'POST', url: GOOGLE_TOKEN_ENDPOINT, scope: GOOGLE_CLOUD_READ_ONLY_SCOPE },
+      { method: 'GET', url: CRM_URL },
+      { method: 'POST', url: GOOGLE_TOKEN_ENDPOINT, scope: GOOGLE_CHAT_BOT_SCOPE },
       { method: 'GET', url: GOOGLE_CHAT_PROBE_URL }
     ])
+  })
+
+  it('takes the identity from the key’s project when no number is entered', async () => {
+    const { projectNumber: _, ...withoutNumber } = CREDENTIALS
+    const result = await createGoogleChatCpProvider({ fetch: fakeGoogle().fetchImpl }).validateConfig(
+      withoutNumber,
+      'http'
+    )
+    expect(result).toMatchObject({ ok: true, identity: { externalAppId: PROJECT_NUMBER } })
+  })
+
+  it('refuses an entered number that is not the key’s project, naming both, before the Chat API read', async () => {
+    const google = fakeGoogle()
+    const result = await createGoogleChatCpProvider({ fetch: google.fetchImpl }).validateConfig(
+      { ...CREDENTIALS, projectNumber: '210987654321' },
+      'http'
+    )
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
+      code: 'GOOGLE_CHAT_PROJECT_NUMBER_MISMATCH',
+      message: `the project number 210987654321 does not match project ${PROJECT_ID}, whose number is ${PROJECT_NUMBER}`
+    })
+    expect(google.calls.map((call) => call.url)).not.toContain(GOOGLE_CHAT_PROBE_URL)
+  })
+
+  it('answers a disabled Cloud Resource Manager API and a missing Browser role with their own codes', async () => {
+    const disabled = await createGoogleChatCpProvider({ fetch: fakeGoogle('crm_disabled').fetchImpl }).validateConfig(
+      CREDENTIALS,
+      'http'
+    )
+    expect(disabled).toMatchObject({
+      ok: false,
+      status: 400,
+      code: 'GOOGLE_CHAT_CRM_DISABLED',
+      message: expect.stringMatching(/^Enable the Cloud Resource Manager API in project example-project/)
+    })
+    const forbidden = await createGoogleChatCpProvider({ fetch: fakeGoogle('crm_forbidden').fetchImpl }).validateConfig(
+      CREDENTIALS,
+      'http'
+    )
+    expect(forbidden).toMatchObject({
+      ok: false,
+      status: 400,
+      code: 'GOOGLE_CHAT_CRM_FORBIDDEN',
+      message: expect.stringMatching(/the Browser role on project example-project/)
+    })
   })
 
   it('refuses a non-numeric project number before calling Google', async () => {
@@ -229,9 +301,9 @@ describe('the rows one Chat app writes', () => {
   const provider = createGoogleChatCpProvider()
   const identity = { name: `Google Chat · ${PROJECT_ID}`, externalAppId: PROJECT_NUMBER }
 
-  it('carries the project number as the app identity and the project ID as public metadata', () => {
+  it('carries the resolved project number as the app identity, never an entered one', () => {
     const install = provider.buildNewBotInstall({
-      credentials: CREDENTIALS,
+      credentials: { ...CREDENTIALS, projectNumber: '210987654321' },
       identity,
       transport: 'http',
       shareable: true
@@ -243,6 +315,9 @@ describe('the rows one Chat app writes', () => {
       conflictMessage: GOOGLE_CHAT_APP_TAKEN_MESSAGE
     })
     expect(manifestFor('googlechat').multiAgentShareable).toBe(false)
+    expect(() =>
+      provider.buildNewBotInstall({ credentials: CREDENTIALS, identity: {}, transport: 'http', shareable: false })
+    ).toThrow(/resolved project number/)
   })
 
   it('stores the key write-only as canonical JSON in the bot secret row', () => {

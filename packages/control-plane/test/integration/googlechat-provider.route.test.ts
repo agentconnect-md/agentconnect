@@ -6,7 +6,11 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { provisionPresetAgents } from '../../src/persistence/index.js'
-import { GOOGLE_CHAT_PROBE_URL, GOOGLE_TOKEN_ENDPOINT } from '../../src/platforms/googlechat/credential.js'
+import {
+  GOOGLE_CHAT_PROBE_URL,
+  GOOGLE_TOKEN_ENDPOINT,
+  googleCloudProjectUrl
+} from '../../src/platforms/googlechat/credential.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import type { IntegrationRemove, IntegrationUpsert } from '@agentconnect.md/protocol'
@@ -27,6 +31,7 @@ const KEY = JSON.stringify({
   client_email: `agentconnect-chat@${PROJECT_ID}.iam.gserviceaccount.com`
 })
 const DEPLOYMENT_APP = { projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER, serviceAccountKey: KEY }
+const CRM_URL = googleCloudProjectUrl(PROJECT_ID)
 
 let running: HttpApp | undefined
 afterEach(async () => {
@@ -42,12 +47,13 @@ class SpyControl {
   async integrationRemove(_daemonId: string, _r: IntegrationRemove): Promise<void> {}
 }
 
-/** Google's token endpoint and one Chat API read; anything else, including a message send, fails the test. */
+/** Google's token endpoint, the project read, and one Chat API read; anything else, including a message send, fails. */
 function fakeGoogle(calls: string[]): typeof fetch {
   return (async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = String(input)
     calls.push(`${init.method ?? 'GET'} ${url}`)
     if (url === GOOGLE_TOKEN_ENDPOINT) return Response.json({ access_token: 'synthetic-access-token' })
+    if (url === CRM_URL) return Response.json({ projectNumber: PROJECT_NUMBER, projectId: PROJECT_ID })
     if (url === GOOGLE_CHAT_PROBE_URL) return Response.json({ spaces: [] })
     throw new Error(`unexpected request to ${url}`)
   }) as typeof fetch
@@ -97,7 +103,12 @@ describe('a per-agent Chat app from POST /integrations', () => {
     })
     expect(res.statusCode).toBe(201)
     expect(res.body).not.toContain('PRIVATE KEY')
-    expect(googleCalls).toEqual([`POST ${GOOGLE_TOKEN_ENDPOINT}`, `GET ${GOOGLE_CHAT_PROBE_URL}`])
+    expect(googleCalls).toEqual([
+      `POST ${GOOGLE_TOKEN_ENDPOINT}`,
+      `GET ${CRM_URL}`,
+      `POST ${GOOGLE_TOKEN_ENDPOINT}`,
+      `GET ${GOOGLE_CHAT_PROBE_URL}`
+    ])
     const dto = res.json() as { botId: string; name: string }
     expect(dto.name).toBe(`Google Chat · ${PROJECT_ID}`)
 
@@ -151,6 +162,25 @@ describe('a per-agent Chat app from POST /integrations', () => {
     expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(1)
   })
 
+  it('refuses an entered number that is not the key’s project, storing nothing', async () => {
+    const agentId = await placedAgent()
+    const { app } = harness()
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: {
+        platform: 'googlechat',
+        agentId,
+        transport: 'http',
+        googlechat: { ...DEPLOYMENT_APP, projectNumber: '210987654321' }
+      }
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json().code).toBe('GOOGLE_CHAT_PROJECT_NUMBER_MISMATCH')
+    expect(await prisma.bot.count()).toBe(0)
+  })
+
   it('refuses the socket transport before calling Google', async () => {
     const agentId = await placedAgent()
     const { app, googleCalls } = harness()
@@ -186,7 +216,7 @@ describe('POST /integrations/googlechat/platform-install', () => {
     expect(res.statusCode).toBe(201)
     expect(res.body).not.toContain('PRIVATE KEY')
     expect(res.json()).toMatchObject({ platform: 'googlechat', agentId: preset!.id, channels: [] })
-    expect(googleCalls).toEqual([`POST ${GOOGLE_TOKEN_ENDPOINT}`, `GET ${GOOGLE_CHAT_PROBE_URL}`])
+    expect(googleCalls).toHaveLength(4)
 
     const bot = await prisma.bot.findFirst({ where: { platform: 'googlechat' }, include: { secret: true } })
     expect(bot).toMatchObject({
@@ -215,7 +245,7 @@ describe('POST /integrations/googlechat/platform-install', () => {
     const again = await install(app, { agentId })
     expect(again.statusCode).toBe(200)
     expect(again.json()).toMatchObject({ id, botId, agentId })
-    expect(googleCalls).toHaveLength(4)
+    expect(googleCalls).toHaveLength(8)
     const after = await prisma.bot.findUniqueOrThrow({ where: { id: botId }, include: { secret: true } })
     expect(after.credentialRevision).toBeGreaterThan(before.credentialRevision)
     expect(after.secret?.botToken).toBe(KEY)

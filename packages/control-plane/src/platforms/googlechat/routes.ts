@@ -41,7 +41,7 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
           tags: [Tag.Integrations],
           summary: 'Install the deployment Google Chat app',
           description:
-            'Connect the Google Chat app configured in the Setup Server to an agent, the organization’s preset agent unless `agentId` names another. Validates the stored service-account key with one Chat API read and creates the bot and its integration (201); no key is pasted and none is returned. Running it again for the agent that already holds the app re-stamps that bot with the current deployment key (200), which is how a rotated key reaches it; an app held by another agent or organization answers 409. Requires the relay pool, because Google Chat delivers events only over HTTPS.',
+            'Connect the Google Chat app configured in the Setup Server to an agent, the organization’s preset agent unless `agentId` names another. Validates the stored service-account key, resolves the project number from the key’s own project through Cloud Resource Manager (a configured number must match it), makes one Chat API read, and creates the bot and its integration keyed by that resolved number (201); no key is pasted and none is returned. Running it again for the agent that already holds the app re-stamps that bot with the current deployment key (200), which is how a rotated key reaches it; an app held by another agent or organization answers 409. Requires the relay pool, because Google Chat delivers events only over HTTPS.',
           operationId: 'installGoogleChatPlatformApp',
           body: GoogleChatPlatformInstallBody,
           response: {
@@ -103,10 +103,22 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
           }
         }
 
+        // Validation resolves the project number from the key itself; that number, not the configured one, is the identity.
+        const validated = await validateGoogleChatApp(platform, googleChat.fetch)
+        if (!validated.ok) {
+          return reply.code(validated.status).send({
+            error: validated.status === 400 ? 'Bad Request' : 'Service Unavailable',
+            statusCode: validated.status,
+            ...(validated.code ? { code: validated.code } : {}),
+            message: validated.message
+          })
+        }
+        const projectNumber = validated.identity.externalAppId!
+
         // One bot per Chat app, across organizations; only the agent already holding it may run the install again.
         const existing = await deps.repos.bot.getByExternalIdentity(
           GOOGLE_CHAT_PLATFORM,
-          platform.projectNumber,
+          projectNumber,
           TENANTLESS_SENTINEL
         )
         const held =
@@ -125,24 +137,11 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
             message: GOOGLE_CHAT_PROJECT_CHANGED_MESSAGE
           })
         }
-        const validated = await validateGoogleChatApp(platform, googleChat.fetch)
-        if (!validated.ok) {
-          return reply.code(validated.status).send({
-            error: validated.status === 400 ? 'Bad Request' : 'Service Unavailable',
-            statusCode: validated.status,
-            ...(validated.code ? { code: validated.code } : {}),
-            message: validated.message
-          })
-        }
+        const install = buildGoogleChatInstall(platform, projectNumber)
 
         if (existing && held) {
           // Re-stamp the current deployment key as a fresh credential generation, then re-push the spec.
-          await deps.repos.botCredential.install(
-            orgId,
-            existing.id,
-            buildGoogleChatInstall(platform).secrets,
-            new Date()
-          )
+          await deps.repos.botCredential.install(orgId, existing.id, install.secrets, new Date())
           await deps.httpBot.syncBot(existing.id)
           return reply
             .code(200)
@@ -151,7 +150,7 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
 
         try {
           const { integration } = await installNewBot(deps, req.log, {
-            ...buildGoogleChatInstall(platform),
+            ...install,
             orgId,
             agent,
             platform: GOOGLE_CHAT_PLATFORM,

@@ -1,4 +1,4 @@
-/** The deployment-owned Google Chat app's install route when a bot for the app already exists (google-chat-integration.md §3). */
+/** The deployment-owned Google Chat app's install route: the resolved project number and an app that already has a bot (§3). */
 import { generateKeyPairSync } from 'node:crypto'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -6,7 +6,8 @@ import type { HttpDeps } from '../../http/deps.js'
 import { installZod } from '../../http/plugins/zod.js'
 import type { BotRecord, IntegrationRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
-import { GOOGLE_CHAT_PROBE_URL, GOOGLE_TOKEN_ENDPOINT } from './credential.js'
+import type { GoogleChatPlatformAppConfig } from '../../config/google-chat-platform.js'
+import { GOOGLE_CHAT_PROBE_URL, GOOGLE_TOKEN_ENDPOINT, googleCloudProjectUrl } from './credential.js'
 import { GOOGLE_CHAT_APP_TAKEN_MESSAGE } from './provider.js'
 import { GOOGLE_CHAT_PROJECT_CHANGED_MESSAGE, googleChatPlatformInstallRoutes } from './routes.js'
 
@@ -16,7 +17,9 @@ const PRESET = AgentId('77777777-7777-4777-8777-777777777777')
 const OTHER_AGENT = AgentId('66666666-6666-4666-8666-666666666666')
 const BOT = BotId('88888888-8888-4888-8888-888888888888')
 const PROJECT_ID = 'example-project'
+// What Cloud Resource Manager reports for the key's project.
 const PROJECT_NUMBER = '123456789012'
+const CRM_URL = googleCloudProjectUrl(PROJECT_ID)
 const { privateKey: PRIVATE_KEY } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
   publicKeyEncoding: { type: 'spki', format: 'pem' },
@@ -29,7 +32,7 @@ const ROTATED = {
   private_key: PRIVATE_KEY,
   client_email: 'chat@example.test'
 }
-const DEPLOYMENT_APP = {
+const DEPLOYMENT_APP: GoogleChatPlatformAppConfig = {
   projectId: PROJECT_ID,
   projectNumber: PROJECT_NUMBER,
   serviceAccountKey: JSON.stringify(ROTATED, null, 2)
@@ -63,22 +66,27 @@ afterEach(async () => {
   running = undefined
 })
 
-async function harness(bot: BotRecord | null, google: 'ok' | 'rejected' = 'ok') {
+async function harness(
+  bot: BotRecord | null,
+  opts: { google?: 'ok' | 'rejected'; app?: GoogleChatPlatformAppConfig } = {}
+) {
   const googleCalls: string[] = []
   const fetchImpl = (async (input: string | URL | Request) => {
     const url = String(input)
     googleCalls.push(url)
     if (url === GOOGLE_TOKEN_ENDPOINT) {
-      return google === 'ok'
-        ? Response.json({ access_token: 'synthetic-access-token' })
-        : Response.json({ error: 'invalid_grant' }, { status: 400 })
+      return opts.google === 'rejected'
+        ? Response.json({ error: 'invalid_grant' }, { status: 400 })
+        : Response.json({ access_token: 'synthetic-access-token' })
     }
+    if (url === CRM_URL) return Response.json({ projectNumber: PROJECT_NUMBER, projectId: PROJECT_ID })
     if (url === GOOGLE_CHAT_PROBE_URL) return Response.json({ spaces: [] })
     throw new Error(`unexpected request to ${url}`)
   }) as typeof fetch
   const install = vi.fn(async () => 2)
   const syncBot = vi.fn(async () => {})
   const listForBot = vi.fn(async () => (bot?.id === BOT ? [HELD] : []))
+  const getByExternalIdentity = vi.fn(async () => bot)
   const deps = {
     config: { PUBLIC_RELAY_URL: 'https://relay.example.test' },
     httpBot: { hasConnectedRelay: () => true, syncBot },
@@ -88,7 +96,7 @@ async function harness(bot: BotRecord | null, google: 'ok' | 'rejected' = 'ok') 
       agent: {
         get: async (_org: OrgId, id: AgentId) => ({ id, orgId: ORG, name: 'agentconnect', visibility: 'org' })
       },
-      bot: { getByExternalIdentity: async () => bot },
+      bot: { getByExternalIdentity },
       integration: { listForBot },
       integrationChannel: { listForIntegration: async () => [] },
       botCredential: { install }
@@ -100,12 +108,35 @@ async function harness(bot: BotRecord | null, google: 'ok' | 'rejected' = 'ok') 
     req.principal = { userId: 'user-1' }
     req.orgCtx = { orgId: ORG, role: 'collaborator', userId: 'user-1' } as never
   })
-  await app.register(googleChatPlatformInstallRoutes(deps, { app: DEPLOYMENT_APP, fetch: fetchImpl }))
+  await app.register(googleChatPlatformInstallRoutes(deps, { app: opts.app ?? DEPLOYMENT_APP, fetch: fetchImpl }))
   running = app
   const post = (payload: Record<string, unknown> = {}) =>
     app.inject({ method: 'POST', url: '/integrations/googlechat/platform-install', payload })
-  return { post, googleCalls, install, syncBot, listForBot }
+  return { post, googleCalls, install, syncBot, listForBot, getByExternalIdentity }
 }
+
+describe('POST /integrations/googlechat/platform-install: the resolved project number', () => {
+  it('looks the app up by the number resolved from the key’s project', async () => {
+    const h = await harness(existingBot())
+
+    expect((await h.post()).statusCode).toBe(200)
+    expect(h.googleCalls).toEqual([GOOGLE_TOKEN_ENDPOINT, CRM_URL, GOOGLE_TOKEN_ENDPOINT, GOOGLE_CHAT_PROBE_URL])
+    expect(h.getByExternalIdentity).toHaveBeenCalledWith('googlechat', PROJECT_NUMBER, '-')
+  })
+
+  it('refuses a configured number that is not the key’s project, before any lookup or write', async () => {
+    const h = await harness(existingBot(), { app: { ...DEPLOYMENT_APP, projectNumber: '210987654321' } })
+
+    const res = await h.post()
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({
+      code: 'GOOGLE_CHAT_PROJECT_NUMBER_MISMATCH',
+      message: `the project number 210987654321 does not match project ${PROJECT_ID}, whose number is ${PROJECT_NUMBER}`
+    })
+    expect(h.getByExternalIdentity).not.toHaveBeenCalled()
+    expect(h.install).not.toHaveBeenCalled()
+  })
+})
 
 describe('POST /integrations/googlechat/platform-install for an app that already has a bot', () => {
   it('re-stamps the holding agent’s bot with the current deployment key and answers 200 with its integration', async () => {
@@ -115,7 +146,6 @@ describe('POST /integrations/googlechat/platform-install for an app that already
     expect(res.statusCode).toBe(200)
     expect(res.json()).toMatchObject({ id: HELD.id, botId: BOT, agentId: PRESET, platform: 'googlechat' })
     expect(res.body).not.toContain('PRIVATE KEY')
-    expect(h.googleCalls).toEqual([GOOGLE_TOKEN_ENDPOINT, GOOGLE_CHAT_PROBE_URL])
     expect(h.install).toHaveBeenCalledWith(
       ORG,
       BOT,
@@ -126,7 +156,7 @@ describe('POST /integrations/googlechat/platform-install for an app that already
   })
 
   it('writes nothing when the current key no longer validates', async () => {
-    const h = await harness(existingBot(), 'rejected')
+    const h = await harness(existingBot(), { google: 'rejected' })
 
     const res = await h.post({ agentId: PRESET })
     expect(res.statusCode).toBe(400)
@@ -135,14 +165,14 @@ describe('POST /integrations/googlechat/platform-install for an app that already
     expect(h.syncBot).not.toHaveBeenCalled()
   })
 
-  it('keeps the 409 when another agent holds the app, before calling Google', async () => {
+  it('keeps the 409 when another agent holds the app', async () => {
     const h = await harness(existingBot())
 
     const res = await h.post({ agentId: OTHER_AGENT })
     expect(res.statusCode).toBe(409)
     expect(res.json().message).toBe(GOOGLE_CHAT_APP_TAKEN_MESSAGE)
-    expect(h.googleCalls).toEqual([])
     expect(h.install).not.toHaveBeenCalled()
+    expect(h.syncBot).not.toHaveBeenCalled()
   })
 
   it('keeps the 409 when another organization holds the app, without reading its installs', async () => {
@@ -152,7 +182,6 @@ describe('POST /integrations/googlechat/platform-install for an app that already
     expect(res.statusCode).toBe(409)
     expect(res.json().message).toBe(GOOGLE_CHAT_APP_TAKEN_MESSAGE)
     expect(h.listForBot).not.toHaveBeenCalled()
-    expect(h.googleCalls).toEqual([])
     expect(h.install).not.toHaveBeenCalled()
   })
 
@@ -165,7 +194,6 @@ describe('POST /integrations/googlechat/platform-install for an app that already
       code: 'GOOGLE_CHAT_PROJECT_CHANGED',
       message: GOOGLE_CHAT_PROJECT_CHANGED_MESSAGE
     })
-    expect(h.googleCalls).toEqual([])
     expect(h.install).not.toHaveBeenCalled()
   })
 })
