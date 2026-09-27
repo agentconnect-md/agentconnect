@@ -571,6 +571,8 @@ export interface WebChannelListSemantics {
   roster?: 'observed' | 'derived'
   /** Room-row triggers (absent ⇒ all); drop `any` without unaddressed traffic, and omitting `decision` withholds By decision. */
   triggers?: readonly ('off' | 'mention' | 'any' | 'decision')[]
+  /** The mention trigger's sentence where the host's ("and in threads it has joined") overstates what the platform delivers. Absent ⇒ the host's. */
+  mentionHint?: WebChannelListMessage
   /** Where a shared bot's By decision lives: `'router'` (absent) is the bot's router, `'conversation'` each row's own gate. */
   sharedDecision?: 'router' | 'conversation'
   /** Session modes this platform's channel rows offer. Absent ⇒ both, which is every
@@ -615,6 +617,7 @@ export interface WebChannelListSemantics {
  * module describes semantics; the host owns locale resolution. */
 export type WebChannelListMessageKey =
   | 'discordCannotLeaveRowHint'
+  | 'googlechatMentionHint'
   | 'linearGatedNote'
   | 'ownerChange.title'
   | 'ownerChange.body'

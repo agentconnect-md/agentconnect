@@ -1344,6 +1344,7 @@
       "gatedNote": "Private agent — answers only where enabled below.",
       "linearGatedNote": "Private agent — answers only in teams where it is the default.",
       "discordCannotLeaveRowHint": "A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.",
+      "googlechatMentionHint": "Replies when mentioned. Google Chat delivers a message in a space, thread replies included, only when it mentions the app.",
       "space": {
         "thisServer": "this server",
         "leaveTitle": "Leave {space} — the bot leaves the whole server, with every {noun} in it",
@@ -5374,7 +5375,7 @@
     },
     "googlechat": {
       "checking": "Checking this deployment…",
-      "relayRequired": "Google Chat sends its events over HTTPS, and this deployment has no public relay to receive them.",
+      "relayRequired": "Google Chat delivers over HTTPS callbacks only, so it needs a public callback endpoint. Ask an administrator to configure one, then connect an app here.",
       "deployment": {
         "use": "Use the deployment app",
         "installing": "Installing…",
@@ -5418,8 +5419,8 @@
         "saved": "Saved",
         "savedDone": "Google accepted the key.",
         "connected": "Connected",
-        "connectedDone": "The relay and the agent’s daemon are ready.",
-        "waitingDaemon": "Waiting for the agent’s daemon.",
+        "connectedDone": "The callback endpoint is live and the agent is online.",
+        "waitingDaemon": "Waiting for the agent to come online.",
         "tested": "Tested",
         "testedDone": "A conversation reached the agent.",
         "testedPending": "Add the app in Google Chat, then send it a direct message or mention it in a space.",

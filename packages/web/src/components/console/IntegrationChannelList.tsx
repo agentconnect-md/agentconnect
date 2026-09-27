@@ -93,7 +93,13 @@ function RowSettings({
         ]
       : (
           [
-            { value: 'mention', label: translate('trigger.mention'), hint: translate('trigger.mentionHint') },
+            {
+              value: 'mention',
+              label: translate('trigger.mention'),
+              hint: semantics.mentionHint
+                ? resolveMessage(translate, semantics.mentionHint)
+                : translate('trigger.mentionHint')
+            },
             {
               value: 'any',
               label: translate('trigger.anyMessage'),

@@ -14,7 +14,9 @@ export const GOOGLE_CHAT_CHANNEL_LIST: WebChannelListSemantics = {
   roomGlyph: '',
   // The app leaves a space when someone removes it in Google Chat.
   leave: 'none',
-  triggers: ['off', 'mention', 'decision']
+  triggers: ['off', 'mention', 'decision'],
+  // Google delivers a Space message, thread replies included, only when it mentions the app; the host's hint promises more.
+  mentionHint: { key: 'googlechatMentionHint' }
 }
 
 export const googleChatModule: WebPlatformModule<GoogleChatApi> = {

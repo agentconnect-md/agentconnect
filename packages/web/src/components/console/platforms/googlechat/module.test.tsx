@@ -42,6 +42,7 @@ describe('Google Chat channel semantics', () => {
     expect(semantics.triggers).toContain('mention')
     expect(semantics.triggers).toContain('off')
     expect(semantics.triggers).not.toContain('any')
+    expect(semantics.mentionHint).toEqual({ key: 'googlechatMentionHint' })
   })
 })
 

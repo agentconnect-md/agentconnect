@@ -156,7 +156,7 @@ describe('GoogleChatWizardBody', () => {
 
   it('says a relay is required when this deployment has none', async () => {
     await render({ relayCapability: { available: false, publicUrl: null } })
-    expect(text()).toContain('no public relay')
+    expect(text()).toContain('public callback endpoint')
     expect(host.querySelector('input')).toBeNull()
     expect(footer?.hidden).toBe(true)
   })
@@ -195,7 +195,7 @@ describe('GoogleChatWizardBody', () => {
     expect(text()).toContain('Test it in Google Chat')
     expect([...host.querySelectorAll('li[data-done="true"]')].map((li) => li.textContent)).toEqual([
       'SavedGoogle accepted the key.',
-      'ConnectedThe relay and the agent’s daemon are ready.'
+      'ConnectedThe callback endpoint is live and the agent is online.'
     ])
     expect(text()).toContain('send it a direct message or mention it in a space')
     expect(text()).toContain('no one can open them in this console')

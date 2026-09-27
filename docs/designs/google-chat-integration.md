@@ -369,8 +369,10 @@ Run the existing discovery, conversation gate, trigger, command, session routing
 and Decision checks. Off stays silent, including for commands. Restricted agents
 remain disabled in new conversations until an editor enables them. Reuse the
 normal DM On/Off policy. In Spaces, the console does not offer the every-message
-trigger, because Google does not deliver unmentioned traffic; retain the common
-trigger policy without promising ambient capture. Admitted follow-ups use normal
+trigger, because Google does not deliver unmentioned traffic, and the mention
+option carries this platform's own sentence, since the shared one promises
+replies in joined threads that Google never delivers; retain the common trigger
+policy without promising ambient capture. Admitted follow-ups use normal
 steering or queuing; `!queue` and `!cancel` keep their shared meanings.
 
 ### ACK is an admission boundary
