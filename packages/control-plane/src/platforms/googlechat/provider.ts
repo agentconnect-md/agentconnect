@@ -157,15 +157,12 @@ export interface GoogleChatCpProviderDeps {
   fetch?: typeof fetch
   /** The deployment-app install route, pre-bound by the composition root. */
   installRoutes?: { org: FastifyPluginAsync[]; publicCallback: FastifyPluginAsync[] }
-  /** The app-identity loop (`app-identity.ts`); absent ⇒ no background loop declared. */
-  identityReconciler?: { start(): void; stop(): void }
 }
 
 export function createGoogleChatCpProvider(
   deps: GoogleChatCpProviderDeps = {}
 ): CpPlatformProvider<GoogleChatCreateCredentials> {
   const fetchImpl: typeof fetch = (input, init) => (deps.fetch ?? fetch)(input, init)
-  const { identityReconciler } = deps
   return {
     platformId: GOOGLE_CHAT_PLATFORM,
 
@@ -208,18 +205,7 @@ export function createGoogleChatCpProvider(
 
     envSchema: GoogleChatCpEnvSchema,
 
-    // A Chat app's key never names the app; the loop reads its `users/…` name from Google and the assignment carries it (§3).
-    ...(identityReconciler
-      ? {
-          backgroundLoops: [
-            {
-              label: 'googlechat-app-identity',
-              start: () => identityReconciler.start(),
-              stop: () => identityReconciler.stop()
-            }
-          ] as const
-        }
-      : {}),
+    // No background loop: Google offers no app-authenticated read of the app's `users/…` name, so only traffic reveals it (§3).
 
     async projectIntegrationConfig(_integration, bot, _core, secrets) {
       return googleChatIntegrationConfig(bot, secrets)

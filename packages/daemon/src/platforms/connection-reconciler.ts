@@ -930,7 +930,7 @@ export class ConnectionReconciler {
     }
   }
 
-  /** Reconcile the Google Chat app clients (§5): no socket, so the client is published before `start()` warms the token and learns the identity. */
+  /** Reconcile the Google Chat app clients (§5): no socket, so the client is published before `start()` warms the token. */
   async reconcileGoogleChatConnections(): Promise<void> {
     for (const group of consolidateGoogleChat(this.host.transportAgents(), this.log).values()) {
       const existing = this.googleChatPool.find(group.key)
@@ -951,9 +951,6 @@ export class ConnectionReconciler {
         for (const { integrationId } of group.integrations)
           this.host.bindGoogleChat(integrationId, conn, conn.botUserId ?? '')
         await conn.start()
-        // The identity arrives with start(): rebind so mention routing and the self-echo guard read it.
-        for (const { integrationId } of group.integrations)
-          this.host.bindGoogleChat(integrationId, conn, conn.botUserId ?? '')
         this.log.info(`googlechat: app client ready for integration ${group.integrationId}`)
       } catch (err) {
         this.log.warn(`googlechat: app client warm-up failed for integration ${group.integrationId}: ${formatErr(err)}`)

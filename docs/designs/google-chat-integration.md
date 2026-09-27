@@ -247,7 +247,7 @@ credentials and shows the derived installation metadata:
 | Verified project number  | Canonical app identity and token audience, resolved through Cloud Resource Manager with the key; must match any entered number. |
 | HTTPS callback URL       | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings.                   |
 | Service-account key JSON | Write-only credential in the encrypted bot secret store; the deployment app's deployment secret is copied there at install.     |
-| Chat app user identity   | The app's own `users/…` name, read from Google by the Control Plane and stored as the bot's `botUserId`; never a display name.  |
+| Chat app user identity   | The app's `users/…` name from traffic (a verified add or mention, or the first reply); Google has no app-authenticated read.    |
 
 Keep the app and service account in one project for the first version. Configure
 Chat API interaction events with an HTTPS endpoint and **Project Number** audience,
@@ -281,21 +281,33 @@ attempt ID defines a person's or session's identity. Changing the app project
 requires a new installation.
 
 The app's Google `users/…` identity is in neither its key nor its assignment at
-install. The Control Plane provider's `googlechat-app-identity` background loop
-(`platforms/googlechat/app-identity.ts`, after the Slack bot-identity
-reconciler) reads it for every Google Chat bot whose `botUserId` is unset: it
-mints a `chat.bot` token from the stored key, lists one Space
-(`GET /v1/spaces?pageSize=1`), reads the app's own membership there
-(`GET /v1/{space}/members/app`), stores `member.name` through the
-platform-neutral `setBotUserIdIfMissing`, and re-broadcasts the assignment,
-which then carries `ingress.appUserName`. An app in no Space yet is retried on
-the next pass. Until that lands, the relay bridges from Google's own data: the
-one `ADD` annotation on a message-bearing `ADDED_TO_SPACE` names the app being
-added, and a Space `MESSAGE` that mentions exactly one app names this one,
-because Google delivers Space messages only to the apps they mention. The ingest
-keeps what it learned and reports it through `reportBotUserId`; an assignment
-that carries the identity always wins. Do not synthesize the identity from a
-project ID or assume the service-account email is the bot user.
+install, and Google offers no app-authenticated read of it. The
+`spaces/{space}/members/app` alias of
+[`spaces.members.get`](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.members/get)
+is documented for user authentication; under app authentication Google refuses
+it for every Space type with `403 PERMISSION_DENIED`: "Service account
+authentication doesn't support access to membership information for apps. To get
+membership information for an app, authenticate as a user."
+[`spaces.members.list`](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.members/list)
+under app authentication excludes Chat app memberships, the app's own included,
+and the identity is not the project number. All three were verified live on
+September 27, 2026; do not reintroduce a Control Plane or daemon read of it.
+
+The identity is therefore learned from traffic. The relay reads it from Google's
+own data: the one `ADD` annotation on a message-bearing `ADDED_TO_SPACE` names
+the app being added, and a Space `MESSAGE` that mentions exactly one app names
+this one, because Google delivers Space messages only to the apps they mention.
+The ingest keeps what it learned and reports it through `reportBotUserId`, which
+updates that relay's own routing table for mention matching and echo
+suppression; nothing forwards it to the Control Plane, so each relay learns it
+again after a restart or reassignment. Until then the relay forwards text with
+the mention unstripped, and routing does not wait: every Space delivery is
+stamped as a mention and DMs route directly. The daemon adopts the identity from
+the `sender.name` of its first create response. The assignment projects
+`ingress.appUserName` from the bot's `botUserId` and always wins over a learned
+identity, but nothing stores that column for a Google Chat bot today. Do not
+synthesize the identity from a project ID or assume the service-account email is
+the bot user.
 
 Validation checks credential structure, resolves the project number with the
 key, and makes a bounded Chat API read with app authentication. It must not send
@@ -565,14 +577,14 @@ idempotent request retries with bounded, jittered backoff, three attempts in
 all; a create takes the read-back path above instead. Other apps or daemons can
 still consume the shared quota.
 
-The app's own `users/…` identity is read at connect: `spaces.list` names the
-Spaces the app is in, and `GET {space}/members/app` in the first of them answers
-the membership whose `member.name` is that identity; while the app is in no Space
-yet, the `sender.name` of its first create response supplies it. The same list
-reports the named Spaces as observed conversations, and a Space's first delivery
-reports it too, so membership never depends on the list alone. Output mode adds
-no chrome: every mode but `none` streams the same way, because Google Chat has no
-status bar, typing indicator, or reaction to spend a richer mode on.
+Connecting only warms the token and reads no identity, since Google refuses the
+app's own membership read under app authentication (§3); the `sender.name` of the
+app's first create response supplies its `users/…` identity. At connect,
+`spaces.list` reports the named Spaces the app is in as observed conversations,
+and a Space's first delivery reports it too, so membership never depends on the
+list alone. Output mode adds no chrome: every mode but `none` streams the same
+way, because Google Chat has no status bar, typing indicator, or reaction to
+spend a richer mode on.
 
 Feedback is best effort after admission. Post no startup message, as on other
 chat platforms; do not promise native typing indicators or reactions. Membership loss,
@@ -617,7 +629,7 @@ for private DM turns as part of the acceptance checks.
 | Daemon platform module  | Done in `packages/daemon/src/platforms/googlechat/`: the config schema registration, the app-authenticated Chat REST connection and read port, the `relayIngress` member on the shared relay-ingress host port, the Markdown renderer and byte-budget splitter, the streaming turn output, command chrome, and the connection-registry lifecycle. |
 | Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals.                                                                                                                                                 |
 | Daemon output           | Done: client ids derive from the durable delivery identity, results land on transcript rows keyed by the message resource name, an ambiguous create reconciles by `GET` on its client id, and every write goes through one per-Space `PlatformSendQueue`.                                                                                         |
-| Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment-owned app's install, secret rotation, daemon spec, relay assignment projection, and the `googlechat-app-identity` loop that stores the app's `users/…` name as `botUserId` and projects it as `ingress.appUserName`.                        |
+| Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment-owned app's install, secret rotation, daemon spec, and relay assignment projection.                                                                                                                                                         |
 | Console platform module | Mark, wizard (deployment app first when offered; guided own-app steps; mapped refusals; saved, connected, tested), Settings identity and key replacement, mention-only Space triggers, renderer.                                                                                                                                                  |
 
 Start with observed membership discovery and no bot-sender routing or multi-agent

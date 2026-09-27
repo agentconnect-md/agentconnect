@@ -264,7 +264,7 @@ export class GoogleChatConnection implements PlatformConnection {
     this.sendIntervalMs = deps.sendIntervalMs ?? GOOGLE_CHAT_SPACE_INTERVAL_MS
   }
 
-  /** The app's own `users/…` identity, once `members/app` or a create response has named it. */
+  /** The app's own `users/…` identity, once a create response names it; Google exposes no app-authenticated read of it (§5). */
   get botUserId(): string | undefined {
     return this.appUserName
   }
@@ -276,11 +276,10 @@ export class GoogleChatConnection implements PlatformConnection {
 
   // ── 1. transport lifecycle ──
 
-  /** No socket to open: warm the token, then learn the app identity from a Space it is already in. */
+  /** No socket to open: warm the token; the app identity comes from traffic, never from a read at connect. */
   async start(): Promise<void> {
     this.stopped = false
     await this.token()
-    await this.discoverIdentity()
   }
 
   async stop(): Promise<void> {
@@ -567,19 +566,7 @@ export class GoogleChatConnection implements PlatformConnection {
     return spaces
   }
 
-  /** `members/app` in any Space the app is in names its `users/…` identity; with no Space yet, the first create does (§5). */
-  private async discoverIdentity(): Promise<void> {
-    if (this.appUserName) return
-    const signal = AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS)
-    const first = (await this.listSpaces(signal)).find((space) => space.name)
-    if (!first?.name) return
-    const membership = await this.request<{ member?: { name?: string } }>('GET', `${first.name}/members/app`, {
-      retry: 'none',
-      signal
-    })
-    this.noteAppIdentity(membership.member?.name)
-  }
-
+  /** Google refuses `members/app` under app authentication, so a message the app wrote is the only source (§5). */
   private noteAppIdentity(name: string | undefined): void {
     if (!this.appUserName && name && /^users\/[^/]+$/.test(name)) this.appUserName = name
   }

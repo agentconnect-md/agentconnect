@@ -1,8 +1,4 @@
-/**
- * The Google Chat Layer-1 connection (google-chat-integration.md §5): the JWT-bearer token mint and its
- * cache, the create/patch request shapes, reconciliation of an ambiguous create by client id, thread and
- * credential failures, 429 backoff, per-Space pacing, and app-identity discovery. Nothing here reaches Google.
- */
+/** The Google Chat Layer-1 connection (google-chat-integration.md §5) against a fake Google: token, writes, retries, pacing, identity. */
 import { describe, it, expect } from 'vitest'
 import { generateKeyPairSync } from 'node:crypto'
 import { jwtVerify } from 'jose'
@@ -264,7 +260,7 @@ describe('creates and patches', () => {
       markupSyntax: GOOGLE_CHAT_MARKUP,
       thread: { name: THREAD }
     })
-    // The create response's sender is the fallback identity source.
+    // The create response's sender is the identity source.
     expect(conn.botUserId).toBe(APP_USER)
   })
 
@@ -424,30 +420,35 @@ describe('per-Space pacing', () => {
   })
 })
 
-describe('start() discovers the app identity', () => {
-  it('reads members/app in a Space the app is in, and lists named Spaces for the read port', async () => {
-    const { conn, chatCalls } = harness((call) => {
-      if (call.url.pathname === '/v1/spaces')
-        return reply(200, {
-          spaces: [
-            { name: SPACE, spaceType: 'SPACE', displayName: 'Example Space' },
-            { name: DM, spaceType: 'DIRECT_MESSAGE' }
-          ]
-        })
-      if (call.url.pathname === `/v1/${SPACE}/members/app`)
-        return reply(200, { member: { name: APP_USER, type: 'BOT' } })
-      return reply(404, {})
-    })
+describe('start() and the app identity', () => {
+  it('only warms the token: Google refuses members/app under app authentication, so nothing is read at connect', async () => {
+    const { conn, chatCalls, tokenCalls } = harness(() =>
+      reply(403, { error: { message: 'Service account authentication does not support app membership' } })
+    )
     await conn.start()
-    expect(conn.botUserId).toBe(APP_USER)
-    expect(chatCalls().map((c) => c.url.pathname)).toEqual(['/v1/spaces', `/v1/${SPACE}/members/app`])
-    expect(await conn.listChannels()).toEqual([{ id: SPACE, name: 'Example Space', isPrivate: false }])
+    expect(tokenCalls()).toHaveLength(1)
+    expect(chatCalls()).toEqual([])
+    expect(conn.botUserId).toBeUndefined()
   })
 
-  it('leaves the identity unknown when the app is in no Space yet', async () => {
-    const { conn } = harness(() => reply(200, {}))
+  it('learns the identity from the sender of its first create after start', async () => {
+    const { conn } = harness(() => created(`${SPACE}/messages/EXAMPLE_THREAD.first`))
     await conn.start()
     expect(conn.botUserId).toBeUndefined()
+    await conn.createMessage({ space: SPACE, thread: THREAD, clientId: 'client-first', text: 'hi' })
+    expect(conn.botUserId).toBe(APP_USER)
+  })
+
+  it('lists only the named Spaces the app is in for the read port', async () => {
+    const { conn } = harness(() =>
+      reply(200, {
+        spaces: [
+          { name: SPACE, spaceType: 'SPACE', displayName: 'Example Space' },
+          { name: DM, spaceType: 'DIRECT_MESSAGE' }
+        ]
+      })
+    )
+    expect(await conn.listChannels()).toEqual([{ id: SPACE, name: 'Example Space', isPrivate: false }])
   })
 
   it('answers the read port from spaces.get and never fetches an attachment', async () => {
