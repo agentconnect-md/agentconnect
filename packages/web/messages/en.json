@@ -243,7 +243,16 @@
       "create": "Create",
       "revokeTitle": "Revoke API key",
       "revokeBody": "will stop working immediately. Any script or integration using it will start getting 401s. This can’t be undone.",
-      "revoking": "Revoking…"
+      "revoking": "Revoking…",
+      "edit": "Edit",
+      "editTitle": "Edit API key",
+      "save": "Save",
+      "saving": "Saving…",
+      "regenerate": "Regenerate",
+      "regenerateTitle": "Regenerate API key",
+      "regenerateBody": "will get a new value. The current value stops working immediately; the name, permission, agents and expiry stay.",
+      "regenerating": "Regenerating…",
+      "regeneratedTitle": "API key regenerated"
     },
     "social": {
       "title": "Sign-in methods",

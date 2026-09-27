@@ -7,13 +7,22 @@
  */
 import type { ApiKey, ApiKeyPermission as DbApiKeyPermission } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
-import type { ApiKeyRepo, ApiKeyRecord, UserApiKeyRecord, CreateApiKeyInput, PrincipalType } from '../ports.js'
+import type {
+  ApiKeyRepo,
+  ApiKeyRecord,
+  UserApiKeyRecord,
+  CreateApiKeyInput,
+  UpdateApiKeyInput,
+  PrincipalType
+} from '../ports.js'
 import { DaemonId, OrgId } from '../../domain/ids.js'
 import type { ApiKeyPermission } from '../../domain/api-key-permission.js'
 
-// The selection rows ride every read; the record carries their agent ids.
-const WITH_AGENTS = { agents: { select: { agentId: true } } } as const
-type ApiKeyRow = ApiKey & { agents: Array<{ agentId: string }> }
+// The selection rows ride every read with their agent's names, so the key list can say which agents without a second read.
+const WITH_AGENTS = {
+  agents: { select: { agentId: true, agent: { select: { name: true, displayName: true } } } }
+} as const
+type ApiKeyRow = ApiKey & { agents: Array<{ agentId: string; agent: { name: string; displayName: string | null } }> }
 
 // Prisma enum values cannot hold `:`, so the client spells `agent:chat` as `agent_chat` (the column keeps the wire spelling via @map).
 const toDbPermission = (p: ApiKeyPermission): DbApiKeyPermission => (p === 'agent:chat' ? 'agent_chat' : p)
@@ -32,6 +41,7 @@ function toRecord(k: ApiKeyRow): ApiKeyRecord {
     permission: fromDbPermission(k.permission),
     allAgents: k.allAgents,
     agentIds: k.agents.map((a) => a.agentId),
+    agents: k.agents.map((a) => ({ id: a.agentId, name: a.agent.name, displayName: a.agent.displayName })),
     oauthGrantId: k.oauthGrantId,
     createdAt: k.createdAt,
     lastUsedAt: k.lastUsedAt,
@@ -79,6 +89,33 @@ export class PgApiKeyRepo implements ApiKeyRepo {
     const row = await this.db.apiKey.update({
       where: { id },
       data: { revokedAt: at, revokedReason: reason },
+      include: WITH_AGENTS
+    })
+    return toRecord(row)
+  }
+
+  async update(id: string, patch: UpdateApiKeyInput): Promise<ApiKeyRecord> {
+    // One nested write keeps the row and its replaced selection atomic; the hash column is never in the data.
+    const row = await this.db.apiKey.update({
+      where: { id },
+      data: {
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.expiresAt !== undefined ? { expiresAt: patch.expiresAt } : {}),
+        ...(patch.permission !== undefined ? { permission: toDbPermission(patch.permission) } : {}),
+        ...(patch.allAgents !== undefined ? { allAgents: patch.allAgents } : {}),
+        ...(patch.agentIds !== undefined
+          ? { agents: { deleteMany: {}, create: [...new Set(patch.agentIds)].map((agentId) => ({ agentId })) } }
+          : {})
+      },
+      include: WITH_AGENTS
+    })
+    return toRecord(row)
+  }
+
+  async replaceSecret(id: string, secret: { hash: string; displayTail: string }): Promise<ApiKeyRecord> {
+    const row = await this.db.apiKey.update({
+      where: { id },
+      data: { hash: secret.hash, displayTail: secret.displayTail, lastUsedAt: null },
       include: WITH_AGENTS
     })
     return toRecord(row)

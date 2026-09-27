@@ -171,6 +171,7 @@ export type AuditKind =
   | 'protocol_error'
   | 'api_key_create'
   | 'api_key_rotate'
+  | 'api_key_update'
   | 'api_key_revoke'
   | 'mcp_tool_call'
 
@@ -440,6 +441,23 @@ export interface CreateApiKeyInput {
   expiresAt?: Date | null
 }
 
+/** Settings a key may change after minting (daemon-api-key-auth.md §6); the hash is never among them. */
+export interface UpdateApiKeyInput {
+  name?: string | null
+  expiresAt?: Date | null
+  permission?: ApiKeyPermission
+  /** Given together: the replacement selection (the rows are swapped, not merged). */
+  allAgents?: boolean
+  agentIds?: readonly string[]
+}
+
+/** A selected agent as the key list names it; the row cascades away with the agent. */
+export interface ApiKeyAgentRef {
+  id: string
+  name: string
+  displayName: string | null
+}
+
 /** Domain view of an `api_key` row. NEVER carries the hash or any secret material. */
 export interface ApiKeyRecord {
   id: string
@@ -454,6 +472,7 @@ export interface ApiKeyRecord {
   /** The agent selection (daemon-api-key-auth.md §6): meaningful for an agent-level permission only. */
   allAgents: boolean
   agentIds: string[]
+  agents: ApiKeyAgentRef[]
   oauthGrantId: string | null // set iff principalType='oauth'
   createdAt: Date
   lastUsedAt: Date | null
@@ -484,6 +503,10 @@ export interface ApiKeyRepo {
    *  ({@link ApiKeyRepo.listForUser}) — so an org parameter here would be both
    *  wrong for relay keys and weaker than the fence already in place. */
   revoke(id: string, reason: string, at: Date): Promise<ApiKeyRecord>
+  /** Edit settings in place; the hash is untouched, so the key keeps working. System-tier like `revoke`: callers prove ownership first. */
+  update(id: string, patch: UpdateApiKeyInput): Promise<ApiKeyRecord>
+  /** Swap the secret under the same row: new hash and tail, settings kept, liveness reset. The old value stops verifying at once. */
+  replaceSecret(id: string, secret: { hash: string; displayTail: string }): Promise<ApiKeyRecord>
   /** Revoke every live oauth access token minted under a grant — the "disconnect"
    *  cascade so a Profile revoke kills outstanding tokens now, not in ≤1h. Returns count. */
   revokeByOAuthGrant(grantId: string, reason: string, at: Date): Promise<number>

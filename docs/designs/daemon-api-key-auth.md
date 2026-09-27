@@ -201,7 +201,9 @@ is shared, but authentication services enforce strict separation.
 ### Personal keys
 
 `GET`, `POST`, and `DELETE /me/keys` let a user list, mint, and revoke their own
-organization-bound keys.
+organization-bound keys; `PATCH /me/keys/:id` edits one in place and
+`POST /me/keys/:id/regenerate` replaces its secret (both below, under
+[Key permissions and agent selection](#key-permissions-and-agent-selection)).
 
 - A key acts as its bound user in its bound organization.
 - The default expiry is 90 days; callers may request a non-expiring key.
@@ -276,6 +278,21 @@ later work) differs from a personal key only in whose identity it carries.
   the key's organization answers 404. The console's personal key dialog shows
   the two choices. The rest of the mint policy is unchanged: a 90-day default expiry,
   an optional non-expiring key, and a plaintext value shown exactly once.
+- After minting, a key is edited and regenerated the way a GitHub fine-grained
+  token is. `PATCH /me/keys/:id` changes `name`, `expiresInDays` (the mint
+  body's shape: a new lifetime from now, or `null`), `permission`, and for an
+  agent-level permission `agents`, with the mint's validation, judged against
+  the permission the key has after the edit: entering `agent:chat` requires
+  `agents`, `full` and `read` refuse it and clear the selection. The hash never
+  changes, so the key keeps working with the same plaintext, and the org is
+  fixed. `POST /me/keys/:id/regenerate` is the only way to get a new value: it
+  writes a new hash and display tail on the same row, keeps every setting,
+  resets `lastUsedAt`, answers the plaintext exactly once, and the previous
+  value stops verifying at once. Neither call is admitted to a request
+  authenticated by an API key, for the reason minting is not, and a revoked key
+  answers 409 to both. `GET /me/keys` names the selected agents (`agents`, id
+  and name) beside their ids; a deleted agent's row is already gone. Edits
+  audit as `api_key_update`, regeneration as `api_key_rotate`.
 - Nothing changes for the key's identity. It still acts as its user in its
   organization, and a session it opens is that user's session.
 

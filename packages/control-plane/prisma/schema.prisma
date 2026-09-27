@@ -3004,6 +3004,7 @@ enum AuditKind {
   protocol_error
   api_key_create
   api_key_rotate
+  api_key_update
   api_key_revoke
   mcp_tool_call
 }

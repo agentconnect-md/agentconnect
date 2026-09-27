@@ -7,7 +7,7 @@
  * which is how these tests prove a minted key is a live credential, is bound to
  * its org, and dies on revoke.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
@@ -34,6 +34,7 @@ interface KeyRow {
   permission: 'full' | 'read' | 'agent:chat'
   allAgents: boolean
   agentIds: string[]
+  agents: Array<{ id: string; name: string; displayName: string | null }>
   createdAt: string
   lastUsedAt: string | null
   expiresAt: string | null
@@ -440,6 +441,244 @@ describe('POST /me/keys — permission and agent selection', () => {
         allAgents: false,
         agentIds: []
       })
+    } finally {
+      await close()
+    }
+  })
+})
+
+describe('PATCH /me/keys/:id — edit in place', () => {
+  const patch = (
+    app: ReturnType<typeof buildHttpApp>['app'],
+    id: string,
+    body: Record<string, unknown>,
+    headers: Record<string, string> = {}
+  ) => app.inject({ method: 'PATCH', url: `/api/v1/me/keys/${id}`, payload: body, headers })
+  const listed = async (app: ReturnType<typeof buildHttpApp>['app'], id: string) =>
+    ((await app.inject({ method: 'GET', url: '/api/v1/me/keys' })).json() as KeyRow[]).find((k) => k.id === id)!
+
+  it('lists the selected agents by id and name', async () => {
+    await seedAgent(prisma, AGENT)
+    await seedAgent(prisma, AGENT_B, { name: 'agent-b' })
+    await prisma.agent.update({ where: { id: AGENT_B }, data: { displayName: 'Agent B' } })
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const some = (await mint(app, { permission: 'agent:chat', agents: [AGENT, AGENT_B] })).json() as Minted
+      const row = await listed(app, some.apiKeyId)
+      expect([...row.agents].sort((a, b) => a.id.localeCompare(b.id))).toEqual(
+        [
+          { id: AGENT, name: expect.any(String), displayName: null },
+          { id: AGENT_B, name: 'agent-b', displayName: 'Agent B' }
+        ].sort((a, b) => a.id.localeCompare(b.id))
+      )
+      // A `full` key carries no selection at all.
+      const full = (await mint(app, {})).json() as Minted
+      expect((await listed(app, full.apiKeyId)).agents).toEqual([])
+    } finally {
+      await close()
+    }
+  })
+
+  it('edits name and expiry in place and the same secret keeps working', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const minted = (await mint(app, { name: 'before' })).json() as Minted
+      const before = await prisma.apiKey.findUniqueOrThrow({ where: { id: minted.apiKeyId } })
+
+      const renamed = await patch(app, minted.apiKeyId, { name: 'after' })
+      expect(renamed.statusCode).toBe(200)
+      expect((renamed.json() as KeyRow).name).toBe('after')
+
+      const never = await patch(app, minted.apiKeyId, { expiresInDays: null })
+      expect((never.json() as KeyRow).expiresAt).toBeNull()
+      const thirty = await patch(app, minted.apiKeyId, { expiresInDays: 30 })
+      const expiresAt = new Date((thirty.json() as KeyRow).expiresAt!).getTime()
+      expect(expiresAt - Date.now()).toBeGreaterThan(29 * 86_400_000)
+      expect(expiresAt - Date.now()).toBeLessThan(31 * 86_400_000)
+
+      const cleared = await patch(app, minted.apiKeyId, { name: null })
+      expect((cleared.json() as KeyRow).name).toBeNull()
+
+      // Nothing about the credential moved: same hash, same tail, and the plaintext still authenticates.
+      const after = await prisma.apiKey.findUniqueOrThrow({ where: { id: minted.apiKeyId } })
+      expect(after.hash).toBe(before.hash)
+      expect(after.displayTail).toBe(before.displayTail)
+      const me = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(minted.apiKey) })
+      expect(me.statusCode).toBe(200)
+
+      expect((await patch(app, minted.apiKeyId, {})).statusCode).toBe(400)
+      expect((await patch(app, minted.apiKeyId, { expiresInDays: 0 })).statusCode).toBe(400)
+      // Audit writes are fire-and-forget: filter to this key and wait for the set, never for an order or a count.
+      await vi.waitFor(async () => {
+        const rows = await prisma.auditEvent.findMany({
+          where: { kind: 'api_key_update', details: { path: ['apiKeyId'], equals: minted.apiKeyId } }
+        })
+        expect(rows.map((r) => (r.details as { changed: string[] }).changed).sort()).toEqual([
+          ['expiresInDays'],
+          ['expiresInDays'],
+          ['name'],
+          ['name']
+        ])
+      })
+    } finally {
+      await close()
+    }
+  })
+
+  it('changes the permission without a new secret; the selection follows the permission', async () => {
+    await seedAgent(prisma, AGENT)
+    await seedAgent(prisma, AGENT_B, { name: 'agent-b' })
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const minted = (await mint(app, {})).json() as Minted
+      // Entering agent:chat needs a selection; the permission is unchanged until one is given.
+      expect((await patch(app, minted.apiKeyId, { permission: 'agent:chat' })).statusCode).toBe(400)
+      expect((await listed(app, minted.apiKeyId)).permission).toBe('full')
+      const toChat = await patch(app, minted.apiKeyId, { permission: 'agent:chat', agents: [AGENT] })
+      expect(toChat.statusCode).toBe(200)
+      expect(toChat.json() as KeyRow).toMatchObject({ permission: 'agent:chat', allAgents: false, agentIds: [AGENT] })
+      // Already agent-level: the permission alone leaves the selection be; agents alone replaces it.
+      expect((await patch(app, minted.apiKeyId, { permission: 'agent:chat' })).json()).toMatchObject({
+        agentIds: [AGENT]
+      })
+      const swapped = (await patch(app, minted.apiKeyId, { agents: [AGENT_B] })).json() as KeyRow
+      expect(swapped.agentIds).toEqual([AGENT_B])
+      expect(await prisma.apiKeyAgent.count({ where: { apiKeyId: minted.apiKeyId } })).toBe(1)
+      const all = (await patch(app, minted.apiKeyId, { agents: 'all' })).json() as KeyRow
+      expect(all).toMatchObject({ allAgents: true, agentIds: [] })
+      // The key now reaches the chat surface and nothing else, with the same plaintext.
+      const me = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(minted.apiKey) })
+      expect(me.statusCode).toBe(403)
+      // Leaving agent:chat clears the selection; a selection on `read` is refused outright.
+      expect((await patch(app, minted.apiKeyId, { permission: 'read', agents: 'all' })).statusCode).toBe(400)
+      const toRead = (await patch(app, minted.apiKeyId, { permission: 'read' })).json() as KeyRow
+      expect(toRead).toMatchObject({ permission: 'read', allAgents: false, agentIds: [] })
+      expect((await patch(app, minted.apiKeyId, { agents: [AGENT] })).statusCode).toBe(400)
+      const asRead = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(minted.apiKey) })
+      expect(asRead.statusCode).toBe(200)
+    } finally {
+      await close()
+    }
+  })
+
+  it('validates the selection like the mint: visible agents of the key’s org only', async () => {
+    await seedAgent(prisma, AGENT)
+    const otherOrg = await new PgOrgRepo(prisma).create({
+      name: null,
+      slug: 'other-org',
+      ownerUserId: DEFAULT_OWNER_ID
+    })
+    const FOREIGN = 'c7c7c7c7-cccc-4ccc-8ccc-c7c7c7c7c7c7'
+    await seedAgent(prisma, FOREIGN, { name: 'foreign', orgId: otherOrg.id })
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const minted = (await mint(app, { permission: 'agent:chat', agents: [AGENT] })).json() as Minted
+      expect((await patch(app, minted.apiKeyId, { agents: [randomUUID()] })).statusCode).toBe(404)
+      expect((await patch(app, minted.apiKeyId, { agents: [FOREIGN] })).statusCode).toBe(404)
+      expect((await patch(app, minted.apiKeyId, { agents: ['not-a-uuid'] })).statusCode).toBe(400)
+      expect((await listed(app, minted.apiKeyId)).agentIds).toEqual([AGENT])
+    } finally {
+      await close()
+    }
+  })
+
+  it('refuses a request authenticated by an API key, a foreign key, and a revoked key', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const minted = (await mint(app, {})).json() as Minted
+      const other = (await mint(app, {})).json() as Minted
+      const byKey = await patch(app, other.apiKeyId, { name: 'widened' }, bearer(minted.apiKey))
+      expect(byKey.statusCode).toBe(403)
+      expect((await listed(app, other.apiKeyId)).name).toBeNull()
+
+      const stranger = await new PgUserRepo(prisma).provisionOidcUser({
+        oidcSubject: 'sub-stranger-edit',
+        email: 'stranger-edit@example.test',
+        emailVerified: true
+      })
+      const foreign = await prisma.apiKey.create({
+        data: {
+          principalType: 'user',
+          orgId: DEFAULT_ORG_ID,
+          userId: stranger.userId,
+          hash: 'foreign-hash-edit',
+          displayTail: '…frgn'
+        }
+      })
+      expect((await patch(app, foreign.id, { name: 'mine now' })).statusCode).toBe(404)
+      expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: foreign.id } })).name).toBeNull()
+
+      await app.inject({ method: 'DELETE', url: `/api/v1/me/keys/${minted.apiKeyId}` })
+      expect((await patch(app, minted.apiKeyId, { name: 'zombie' })).statusCode).toBe(409)
+    } finally {
+      await close()
+    }
+  })
+})
+
+describe('POST /me/keys/:id/regenerate — new secret, same key', () => {
+  it('invalidates the old value, returns a new plaintext once, and keeps every setting', async () => {
+    await seedAgent(prisma, AGENT)
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const minted = (
+        await mint(app, { name: 'rotating', permission: 'agent:chat', agents: [AGENT], expiresInDays: 10 })
+      ).json() as Minted
+      const before = await prisma.apiKey.findUniqueOrThrow({ where: { id: minted.apiKeyId } })
+
+      const res = await app.inject({ method: 'POST', url: `/api/v1/me/keys/${minted.apiKeyId}/regenerate` })
+      expect(res.statusCode).toBe(200)
+      const regenerated = res.json() as Minted
+      expect(regenerated.apiKeyId).toBe(minted.apiKeyId)
+      expect(regenerated.apiKey).not.toBe(minted.apiKey)
+      expect(regenerated).toMatchObject({ permission: 'agent:chat', allAgents: false, agentIds: [AGENT] })
+
+      const after = await prisma.apiKey.findUniqueOrThrow({ where: { id: minted.apiKeyId } })
+      expect(after.hash).not.toBe(before.hash)
+      expect(after.displayTail).toBe(regenerated.displayTail)
+      expect(after.name).toBe('rotating')
+      expect(after.expiresAt?.getTime()).toBe(before.expiresAt?.getTime())
+      expect(after.permission).toBe(before.permission)
+      expect(after.lastUsedAt).toBeNull()
+      expect(await prisma.apiKey.count({ where: { userId: DEFAULT_OWNER_ID } })).toBe(1) // same row, no new one
+
+      // The old plaintext is dead; the new one is the same credential (agent:chat, so refused on /me/keys — but authenticated).
+      const old = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(minted.apiKey) })
+      expect(old.statusCode).toBe(401)
+      const fresh = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(regenerated.apiKey) })
+      expect(fresh.statusCode).toBe(403)
+      await vi.waitFor(async () => {
+        const rows = await prisma.auditEvent.findMany({
+          where: { kind: 'api_key_rotate', details: { path: ['apiKeyId'], equals: minted.apiKeyId } }
+        })
+        expect(rows.map((r) => (r.details as { displayTail: string }).displayTail)).toEqual([regenerated.displayTail])
+      })
+    } finally {
+      await close()
+    }
+  })
+
+  it('refuses a request authenticated by an API key, a foreign key, and a revoked key', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const minted = (await mint(app, {})).json() as Minted
+      const other = (await mint(app, {})).json() as Minted
+      const byKey = await app.inject({
+        method: 'POST',
+        url: `/api/v1/me/keys/${other.apiKeyId}/regenerate`,
+        headers: bearer(minted.apiKey)
+      })
+      expect(byKey.statusCode).toBe(403)
+      const still = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(other.apiKey) })
+      expect(still.statusCode).toBe(200)
+
+      expect((await app.inject({ method: 'POST', url: `/api/v1/me/keys/${randomUUID()}/regenerate` })).statusCode).toBe(
+        404
+      )
+      await app.inject({ method: 'DELETE', url: `/api/v1/me/keys/${minted.apiKeyId}` })
+      expect(
+        (await app.inject({ method: 'POST', url: `/api/v1/me/keys/${minted.apiKeyId}/regenerate` })).statusCode
+      ).toBe(409)
     } finally {
       await close()
     }

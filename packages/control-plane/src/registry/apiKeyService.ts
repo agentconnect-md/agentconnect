@@ -36,6 +36,7 @@ function toView(r: ApiKeyRecord): ApiKeyView {
     permission: r.permission,
     allAgents: r.allAgents,
     agentIds: r.agentIds,
+    agents: r.agents,
     createdAt: r.createdAt,
     lastUsedAt: r.lastUsedAt,
     expiresAt: r.expiresAt,
@@ -190,6 +191,66 @@ export class ApiKeyService implements ApiKeyAdmin {
         orgId,
         actorUserId: input.userId,
         details: { apiKeyId: rec.id, displayTail: rec.displayTail, principalType: 'user', permission }
+      })
+      .catch(() => {})
+    return toMinted(rec, minted.token)
+  }
+
+  async update(
+    apiKeyId: string,
+    patch: {
+      name?: string | null
+      expiresInDays?: number | null
+      permission?: ApiKeyPermission
+      agents?: 'all' | readonly string[]
+    }
+  ): Promise<ApiKeyView> {
+    // Same shape as the mint body: a day count from now, or `null` for a non-expiring key; absent leaves it alone.
+    const expiresAt =
+      patch.expiresInDays === undefined
+        ? undefined
+        : patch.expiresInDays === null
+          ? null
+          : new Date(this.clock.now() + patch.expiresInDays * 86_400_000)
+    const selection =
+      patch.permission !== undefined && !isAgentLevelPermission(patch.permission)
+        ? { allAgents: false, agentIds: [] as readonly string[] } // `full` and `read` cover every agent, so no rows
+        : patch.agents === undefined
+          ? {}
+          : patch.agents === 'all'
+            ? { allAgents: true, agentIds: [] as readonly string[] }
+            : { allAgents: false, agentIds: patch.agents }
+    const rec = await this.apiKeys.update(apiKeyId, {
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+      ...(patch.permission !== undefined ? { permission: patch.permission } : {}),
+      ...selection
+    })
+    void this.audit
+      .append({
+        kind: 'api_key_update',
+        ...(rec.orgId ? { orgId: rec.orgId } : {}),
+        ...(rec.userId ? { actorUserId: rec.userId } : {}),
+        details: {
+          apiKeyId: rec.id,
+          displayTail: rec.displayTail,
+          changed: Object.keys(patch).filter((k) => patch[k as keyof typeof patch] !== undefined),
+          permission: rec.permission
+        }
+      })
+      .catch(() => {})
+    return toView(rec)
+  }
+
+  async regenerate(apiKeyId: string): Promise<MintedKeyView> {
+    const minted = this.codec.mint()
+    const rec = await this.apiKeys.replaceSecret(apiKeyId, { hash: minted.hash, displayTail: minted.displayTail })
+    void this.audit
+      .append({
+        kind: 'api_key_rotate',
+        ...(rec.orgId ? { orgId: rec.orgId } : {}),
+        ...(rec.userId ? { actorUserId: rec.userId } : {}),
+        details: { apiKeyId: rec.id, displayTail: rec.displayTail }
       })
       .catch(() => {})
     return toMinted(rec, minted.token)

@@ -2,26 +2,30 @@
  * `http/routes/me-keys.ts` — the caller's own personal API keys (C2, root surface
  * like `/me`: identity-scoped, outside the org boundary).
  *
- *   GET    /me/keys        → active keys you own, across all your orgs (never the secret/hash)
- *   POST   /me/keys        → mint a key in ONE of your orgs (default 90-day expiry); plaintext once
- *   DELETE /me/keys/:id     → revoke one of your own keys (kill switch)
+ *   GET    /me/keys                 → active keys you own, across all your orgs (never the secret/hash)
+ *   POST   /me/keys                 → mint a key in ONE of your orgs (default 90-day expiry); plaintext once
+ *   PATCH  /me/keys/:id             → edit name / expiry / permission / agents in place; the secret is unchanged
+ *   POST   /me/keys/:id/regenerate  → new secret under the same row and settings; plaintext once, old value dead
+ *   DELETE /me/keys/:id             → revoke one of your own keys (kill switch)
  *
  * A personal key acts as YOU, with your role, in the org it was minted for
  * (daemon-api-key-auth.md §8) — permissions are per-org, so every key names an org.
  * These routes are identity-scoped (no `/orgs/:orgId` prefix); the create body
  * carries the target org, verified against the caller's membership.
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { UserApiKeyView } from '../../ports.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
+import { isAgentLevelPermission } from '../../domain/api-key-permission.js'
 import { canView } from '../../authorization/policy.js'
 import {
   UserApiKeyListDto,
   UserApiKeyDto,
   MintedUserKeyDto,
   CreateUserKeyBody,
+  UpdateUserKeyBody,
   IdParam,
   ErrorDto,
   type UserApiKeyDtoT
@@ -39,6 +43,7 @@ function toDto(v: UserApiKeyView): UserApiKeyDtoT {
     permission: v.permission,
     allAgents: v.allAgents,
     agentIds: v.agentIds,
+    agents: v.agents,
     createdAt: v.createdAt.toISOString(),
     lastUsedAt: v.lastUsedAt ? v.lastUsedAt.toISOString() : null,
     expiresAt: v.expiresAt ? v.expiresAt.toISOString() : null,
@@ -46,7 +51,29 @@ function toDto(v: UserApiKeyView): UserApiKeyDtoT {
   }
 }
 
+const notFound = (reply: FastifyReply, message: string) =>
+  reply.code(404).send({ error: 'Not Found', statusCode: 404, message })
+const badRequest = (reply: FastifyReply, message: string) =>
+  reply.code(400).send({ error: 'Bad Request', statusCode: 400, message })
+
 export function meKeyRoutes(deps: HttpDeps) {
+  // Ownership: only the caller's OWN keys — a foreign (or unknown) key id must read as absent, never get touched.
+  const findOwned = async (req: FastifyRequest, id: string): Promise<UserApiKeyView | undefined> => {
+    const owned = await deps.apiKeys.listForUser(req.principal!.userId, { includeRevoked: true })
+    return owned.find((k) => k.id === id)
+  }
+  // A selected agent must exist in the key's org and be visible to the caller; anything else reads as absent, like a foreign org.
+  const agentsVisible = async (orgId: string, agentIds: readonly string[], userId: string): Promise<boolean> => {
+    const role = await deps.repos.org.roleOf(orgId, userId)
+    if (!role) return false
+    const ctx = { userId, role }
+    for (const id of agentIds) {
+      const agent = await deps.repos.agent.get(OrgId(orgId), AgentId(id))
+      if (!agent || !canView(agent, ctx)) return false
+    }
+    return true
+  }
+
   return async function meKeyRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
@@ -97,16 +124,9 @@ export function meKeyRoutes(deps: HttpDeps) {
         if (!role) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'organization not found' })
         }
-        // A selected agent must exist in the key's org and be visible to the caller; anything else reads as absent, like a foreign org.
         const agentIds = Array.isArray(req.body.agents) ? [...new Set(req.body.agents)] : undefined
-        if (agentIds) {
-          const ctx = { userId: req.principal!.userId, role }
-          for (const id of agentIds) {
-            const agent = await deps.repos.agent.get(OrgId(req.body.orgId), AgentId(id))
-            if (!agent || !canView(agent, ctx)) {
-              return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-            }
-          }
+        if (agentIds && !(await agentsVisible(req.body.orgId, agentIds, req.principal!.userId))) {
+          return notFound(reply, 'agent not found')
         }
         const minted = await deps.apiKeys.mintForUser({
           userId: req.principal!.userId,
@@ -127,6 +147,90 @@ export function meKeyRoutes(deps: HttpDeps) {
       }
     )
 
+    r.patch(
+      '/me/keys/:id',
+      {
+        preHandler: app.humanAuth,
+        schema: {
+          tags: [Tag.ApiKeys],
+          summary: 'Edit an API key',
+          description:
+            'Edits one of your own API keys in place: `name` (`null` clears it), `expiresInDays` (a new lifetime from now, or `null` for a non-expiring key), `permission`, and for an agent-level permission `agents` (`all`, or ids of agents you can see in the key’s organization). The secret does not change, so the key keeps working; use regenerate for a new value. Switching to `agent:chat` requires `agents`; `full` and `read` refuse it and clear any selection. A request authenticated by an API key cannot edit keys, and a revoked key cannot be edited.',
+          operationId: 'updateMyApiKey',
+          params: IdParam,
+          body: UpdateUserKeyBody,
+          response: { 200: UserApiKeyDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        // Same rule as minting: a leaked key must not be able to widen or extend itself.
+        if (req.apiKeyId) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'API keys cannot edit API keys' })
+        }
+        const target = await findOwned(req, req.params.id)
+        if (!target) return notFound(reply, 'key not found')
+        if (target.revokedAt) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'key is revoked' })
+        }
+        // The selection rules are judged against the permission the key will have after the edit.
+        const permission = req.body.permission ?? target.permission
+        if (req.body.agents !== undefined && !isAgentLevelPermission(permission)) {
+          return badRequest(reply, 'agents applies only to an agent-level permission')
+        }
+        if (isAgentLevelPermission(permission) && !isAgentLevelPermission(target.permission) && !req.body.agents) {
+          return badRequest(reply, `agents is required for the ${permission} permission`)
+        }
+        const agentIds = Array.isArray(req.body.agents) ? [...new Set(req.body.agents)] : undefined
+        if (agentIds && !(await agentsVisible(target.orgId, agentIds, req.principal!.userId))) {
+          return notFound(reply, 'agent not found')
+        }
+        const updated = await deps.apiKeys.update(target.id, {
+          ...(req.body.name !== undefined ? { name: req.body.name } : {}),
+          ...(req.body.expiresInDays !== undefined ? { expiresInDays: req.body.expiresInDays } : {}),
+          ...(req.body.permission !== undefined ? { permission: req.body.permission } : {}),
+          ...(req.body.agents !== undefined ? { agents: agentIds ?? 'all' } : {})
+        })
+        return toDto({ ...target, ...updated })
+      }
+    )
+
+    r.post(
+      '/me/keys/:id/regenerate',
+      {
+        preHandler: app.humanAuth,
+        schema: {
+          tags: [Tag.ApiKeys],
+          summary: 'Regenerate an API key',
+          description:
+            'Replaces the secret of one of your own API keys. The key keeps its id, name, permission, agents and expiry; the previous value stops working immediately and the new plaintext is returned exactly once. A request authenticated by an API key cannot regenerate keys, and a revoked key cannot be regenerated.',
+          operationId: 'regenerateMyApiKey',
+          params: IdParam,
+          response: { 200: MintedUserKeyDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (req.apiKeyId) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'API keys cannot regenerate API keys' })
+        }
+        const target = await findOwned(req, req.params.id)
+        if (!target) return notFound(reply, 'key not found')
+        if (target.revokedAt) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'key is revoked' })
+        }
+        const minted = await deps.apiKeys.regenerate(target.id)
+        return {
+          apiKeyId: minted.apiKeyId,
+          apiKey: minted.token,
+          displayTail: minted.displayTail,
+          permission: minted.permission,
+          allAgents: minted.allAgents,
+          agentIds: minted.agentIds
+        }
+      }
+    )
+
     r.delete(
       '/me/keys/:id',
       {
@@ -142,13 +246,8 @@ export function meKeyRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        // Ownership: only the caller's OWN keys are revocable — a foreign (or
-        // unknown) key id must read as absent, never get revoked (cross-user kill).
-        const owned = await deps.apiKeys.listForUser(req.principal!.userId, { includeRevoked: true })
-        const target = owned.find((k) => k.id === req.params.id)
-        if (!target) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'key not found' })
-        }
+        const target = await findOwned(req, req.params.id)
+        if (!target) return notFound(reply, 'key not found')
         if (target.revokedAt) return toDto(target) // already revoked → no-op, no second audit write
         const revoked = await deps.apiKeys.revoke(req.params.id, 'revoked by user')
         // `revoke` returns the base view (no org fields) — merge the fresh revokedAt

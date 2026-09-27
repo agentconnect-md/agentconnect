@@ -243,7 +243,16 @@
       "create": "创建",
       "revokeTitle": "撤销 API 密钥",
       "revokeBody": "将立即失效。所有使用它的脚本或集成会开始收到 401 错误。此操作无法撤销。",
-      "revoking": "撤销中…"
+      "revoking": "撤销中…",
+      "edit": "编辑",
+      "editTitle": "编辑 API 密钥",
+      "save": "保存",
+      "saving": "保存中…",
+      "regenerate": "重新生成",
+      "regenerateTitle": "重新生成 API 密钥",
+      "regenerateBody": "将换成新的值。当前值立即失效；名称、权限、Agent 和过期时间保持不变。",
+      "regenerating": "生成中…",
+      "regeneratedTitle": "API 密钥已重新生成"
     },
     "social": {
       "title": "登录方式",
