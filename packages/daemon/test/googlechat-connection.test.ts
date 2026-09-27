@@ -452,20 +452,49 @@ describe('start() and the app identity', () => {
   })
 
   it('answers the read port from spaces.get and never fetches an attachment', async () => {
-    const { conn } = harness((call) =>
-      call.url.pathname === `/v1/${DM}`
-        ? reply(200, { name: DM, spaceType: 'DIRECT_MESSAGE' })
-        : reply(200, { name: SPACE, spaceType: 'SPACE', displayName: 'Example Space' })
-    )
+    const { conn, calls } = harness((call) => {
+      if (call.url.pathname === `/v1/${DM}`) return reply(200, { name: DM, spaceType: 'DIRECT_MESSAGE' })
+      if (call.url.pathname === `/v1/${DM}/members`)
+        return reply(200, {
+          memberships: [
+            { member: { name: 'users/100000000000000000001', displayName: 'Example Person', type: 'HUMAN' } }
+          ]
+        })
+      return reply(200, { name: SPACE, spaceType: 'SPACE', displayName: 'Example Space' })
+    })
     expect(await conn.getChannelInfo(SPACE)).toEqual({
       id: SPACE,
       name: 'Example Space',
       isIm: false,
       isPrivate: false
     })
-    expect(await conn.getChannelInfo(DM)).toEqual({ id: DM, isIm: true, isPrivate: true })
+    // A DM space has no display name of its own: the row is named after the one person in it.
+    expect(await conn.getChannelInfo(DM)).toEqual({ id: DM, name: 'Example Person', isIm: true, isPrivate: true })
+    const members = calls.find((c) => c.url.pathname === `/v1/${DM}/members`)
+    expect(members?.url.searchParams.get('filter')).toBe('member.type = "HUMAN"')
+    expect(calls.filter((c) => c.url.pathname === `/v1/${SPACE}/members`)).toHaveLength(0)
     expect(await conn.downloadFile('anything')).toBeNull()
     expect(await conn.listMembers(SPACE)).toEqual([])
     expect(await conn.getUserProfile('users/1')).toEqual({ id: 'users/1' })
+  })
+
+  it('leaves a DM row unnamed when its membership read fails or names more than one person', async () => {
+    const refused = harness((call) =>
+      call.url.pathname === `/v1/${DM}/members`
+        ? reply(403, { error: { message: 'no' } })
+        : reply(200, { name: DM, spaceType: 'DIRECT_MESSAGE' })
+    )
+    expect(await refused.conn.getChannelInfo(DM)).toEqual({ id: DM, isIm: true, isPrivate: true })
+    const crowded = harness((call) =>
+      call.url.pathname === `/v1/${DM}/members`
+        ? reply(200, {
+            memberships: [
+              { member: { name: 'users/100000000000000000001', displayName: 'One', type: 'HUMAN' } },
+              { member: { name: 'users/100000000000000000002', displayName: 'Two', type: 'HUMAN' } }
+            ]
+          })
+        : reply(200, { name: DM, spaceType: 'DIRECT_MESSAGE' })
+    )
+    expect(await crowded.conn.getChannelInfo(DM)).toEqual({ id: DM, isIm: true, isPrivate: true })
   })
 })

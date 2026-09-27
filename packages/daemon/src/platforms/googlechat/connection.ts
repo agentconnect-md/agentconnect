@@ -141,6 +141,10 @@ interface SpaceResource {
   spaceType?: string
 }
 
+interface MembershipResource {
+  member?: { name?: string; displayName?: string; type?: string }
+}
+
 interface MessageResource {
   name?: string
   text?: string
@@ -367,16 +371,26 @@ export class GoogleChatConnection implements PlatformConnection {
   // ── 3. read port ──
 
   async getChannelInfo(channel: string, opts: { signal?: AbortSignal } = {}): Promise<PlatformChannelInfo> {
-    const space = await this.request<SpaceResource>('GET', channel, {
-      retry: 'none',
-      signal: opts.signal ?? AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS)
-    })
+    const signal = opts.signal ?? AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS)
+    const space = await this.request<SpaceResource>('GET', channel, { retry: 'none', signal })
     const isIm = space.spaceType === 'DIRECT_MESSAGE'
-    return {
-      id: channel,
-      ...(space.displayName ? { name: space.displayName } : {}),
-      isIm,
-      isPrivate: space.spaceType !== 'SPACE'
+    // A DM space carries no display name, so its row is named after the one person in it (§5).
+    const name = isIm ? await this.dmCounterpartName(channel, signal) : space.displayName
+    return { id: channel, ...(name ? { name } : {}), isIm, isPrivate: space.spaceType !== 'SPACE' }
+  }
+
+  /** The DM's single human member's display name: app authentication may list human memberships, not the app's own. */
+  private async dmCounterpartName(space: string, signal: AbortSignal): Promise<string | undefined> {
+    try {
+      const page = await this.request<{ memberships?: MembershipResource[] }>('GET', `${space}/members`, {
+        query: { pageSize: '2', filter: 'member.type = "HUMAN"' },
+        retry: 'none',
+        signal
+      })
+      const humans = (page.memberships ?? []).filter((m) => m.member?.type === 'HUMAN')
+      return humans.length === 1 ? humans[0]!.member?.displayName || undefined : undefined
+    } catch {
+      return undefined
     }
   }
 
