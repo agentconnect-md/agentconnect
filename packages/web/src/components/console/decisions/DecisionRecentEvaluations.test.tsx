@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 
-import { act } from 'react'
+import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { DecisionUsage } from '@agentconnect.md/protocol/decision-api'
+import type { DecisionApi, DecisionUsage } from '@agentconnect.md/protocol/decision-api'
 import * as decisionMock from '@/lib/decisions/mock-api'
 import { createDecisionMockSeed } from '@/lib/decisions/fixtures'
 import { DecisionsPrototypeProvider, type DecisionGateUsage } from '@/lib/decisions/provider'
@@ -34,11 +34,20 @@ afterEach(async () => {
 
 async function mount(
   usages: (seed: ReturnType<typeof createDecisionMockSeed>) => DecisionUsage[],
-  extra: { gated?: DecisionGateUsage[]; hiddenCount?: number } = {}
+  {
+    before,
+    ...extra
+  }: {
+    gated?: DecisionGateUsage[]
+    hiddenCount?: number
+    markFor?: (usage: DecisionUsage) => ReactNode
+    before?: (api: DecisionApi) => void
+  } = {}
 ) {
   const seed = createDecisionMockSeed()
   const api = decisionMock.createDecisionMockApi({ seed })
   const spies = { gate: vi.spyOn(api, 'listEvaluations'), routing: vi.spyOn(api, 'listRoutingEvaluations') }
+  before?.(api)
   vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(api)
   container = document.createElement('div')
   document.body.append(container)
@@ -83,6 +92,8 @@ describe('DecisionRecentEvaluations', () => {
     const times = all.map((row) => row.getAttribute('data-at'))
     expect(times).toEqual([...times].sort().reverse())
     expect(all.some((row) => row.textContent?.includes('Our invoice charged us twice this month.'))).toBe(true)
+    // A row whose bodies retention stripped says so instead of showing a blank title.
+    expect(all.some((row) => row.textContent?.startsWith('Details expired'))).toBe(true)
     // A routing row names its channel by the bot's routing, not by the raw id.
     const routed = all.find((row) => row.textContent?.includes('Support bot'))!
     expect(routed.textContent).toContain('#help')
@@ -132,6 +143,38 @@ describe('DecisionRecentEvaluations', () => {
     const tool = tabs().find((tab) => tab.textContent?.includes('Triage agent'))!
     await act(async () => tool.click())
     expect(container!.textContent).toContain('This place does not record evaluations.')
+  })
+
+  it('keeps a place the viewer cannot read as a neutral note, not a failure, and shows each place by its mark', async () => {
+    await mount(
+      (seed) => [
+        { kind: 'gate', id: 'gate-1', label: '#help', integrationId: 'int-1', channelId: 'C1' },
+        {
+          kind: 'shared_bot_routing',
+          id: seed.bots[0]!.id,
+          label: 'Support bot',
+          rootDecisionId: seed.decisions[0]!.id
+        }
+      ],
+      {
+        markFor: (usage) => <span data-mark={usage.kind} />,
+        // The CP answers 404 for a conversation whose audience refuses the caller.
+        before: (api) =>
+          vi
+            .spyOn(api, 'listEvaluations')
+            .mockRejectedValue(
+              new decisionMock.DecisionMockApiError(404, { error: 'not_found', message: 'conversation not found' })
+            )
+      }
+    )
+    expect(container!.querySelector('[role="alert"]')).toBeNull()
+    expect(rows().length).toBeGreaterThan(0)
+    const help = tabs().find((tab) => tab.textContent?.includes('#help'))!
+    expect(help.querySelector('[data-mark="gate"]')).not.toBeNull()
+    expect(help.textContent).toBe('#help')
+    await act(async () => help.click())
+    expect(container!.textContent).toContain("You cannot see this place's evaluations.")
+    expect(container!.querySelector('[role="alert"]')).toBeNull()
   })
 
   it('says a Decision is not used anywhere', async () => {

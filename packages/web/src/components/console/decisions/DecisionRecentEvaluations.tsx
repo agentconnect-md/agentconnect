@@ -2,7 +2,7 @@
 
 // A Decision's places of use as tabs over their recent evaluations: All merges every recorded place by time.
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
@@ -14,6 +14,7 @@ import type {
 } from '@agentconnect.md/protocol/decision'
 import type { DecisionUsage } from '@agentconnect.md/protocol/decision-api'
 import { Icon } from '@/components/ui'
+import { MarkSlot } from '@/components/marks'
 import { fetchAgentModelEvaluations, type CodeHostRoutingKey } from '@/lib/api'
 import { useDecisionsPrototype, type DecisionGateUsage } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
@@ -30,6 +31,8 @@ type Kind = DecisionUsage['kind']
 
 interface Place {
   key: string
+  /** The integration, bot, code host, or agent mark this place is known by, when the caller resolves one. */
+  mark?: ReactNode
   kind: Kind
   label: string
   href: string | null
@@ -45,6 +48,7 @@ interface Row {
   /** The raw outcome of this place's history, worded at render. */
   outcome: string
   latencyMs: number | null
+  detailsExpired: boolean
   title: string | null
   channel?: string
   channelName?: string
@@ -52,7 +56,8 @@ interface Row {
   target?: string
 }
 
-type Loaded = { items: Row[]; more: boolean } | { error: unknown }
+// A place whose conversation the caller cannot read answers 404; that is a hidden place, not a failed one.
+type Loaded = { items: Row[]; more: boolean } | { error: unknown } | { hidden: true }
 
 const PAGE = 10
 const ICONS: Record<Kind, string> = {
@@ -81,7 +86,8 @@ export function DecisionRecentEvaluations({
   gated = [],
   hiddenCount = 0,
   inUse = false,
-  hrefFor
+  hrefFor,
+  markFor
 }: {
   decisionId: string
   question: DecisionQuestion
@@ -93,6 +99,7 @@ export function DecisionRecentEvaluations({
   /** A server refusal said the Decision is used, so an empty list still names that someone uses it. */
   inUse?: boolean
   hrefFor: (usage: DecisionUsage) => string | null
+  markFor?: (usage: DecisionUsage) => ReactNode
 }) {
   const t = useTranslations('Decisions')
   const modelT = useTranslations('Agents.dialog.modelSelection.evaluations')
@@ -111,6 +118,7 @@ export function DecisionRecentEvaluations({
       kind: usage.kind,
       label: usage.label,
       href: hrefFor(usage),
+      mark: markFor?.(usage),
       ...(recorded(usage) ? { source: usage } : {})
     }))
   ]
@@ -129,12 +137,14 @@ export function DecisionRecentEvaluations({
       at: string
       answer: DecisionAnswerSummary | null
       latencyMs: number | null
+      detailsExpired: boolean
     }) => ({
       place,
       seq: item.seq,
       at: item.at,
       answer: item.answer,
-      latencyMs: item.latencyMs
+      latencyMs: item.latencyMs,
+      detailsExpired: item.detailsExpired
     })
     if (source.kind === 'shared_bot_routing') {
       const [page, routing] = await Promise.all([
@@ -199,7 +209,7 @@ export function DecisionRecentEvaluations({
             try {
               return [usageKey(source), await read(source)] as const
             } catch (error) {
-              return [usageKey(source), { error }] as const
+              return [usageKey(source), errorParts(error)?.status === 404 ? { hidden: true } : { error }] as const
             }
           })
         )
@@ -244,6 +254,12 @@ export function DecisionRecentEvaluations({
     const loaded = loadedOf(place)
     return !!loaded && 'items' in loaded && loaded.more
   })
+  const markOf = (place: Place, size: number) =>
+    place.mark ? (
+      <MarkSlot size={14}>{place.mark}</MarkSlot>
+    ) : (
+      <Icon name={ICONS[place.kind]} size={size} className="flex-none text-(--text-tertiary)" />
+    )
   const note = (text: string) => <p className="m-0 px-4 py-3 text-[12.5px] text-(--text-tertiary)">{text}</p>
   const kindWord = (kind: Kind) => t(`usedBy.kind.${kind}`)
   // Outcomes stay raw in the cache and are worded here, so a language switch rewords rows already loaded.
@@ -341,7 +357,7 @@ export function DecisionRecentEvaluations({
                 className={tab(selected?.key === place.key)}
                 onClick={() => setSelectedKey(place.key)}
               >
-                <Icon name={ICONS[place.kind]} size={13} className="flex-none text-(--text-tertiary)" />
+                {markOf(place, 13)}
                 <span className="mono max-w-[260px] truncate">{place.label}</span>
                 {place.review && <span aria-hidden className="size-[6px] flex-none rounded-full bg-(--amber-500)" />}
                 {counter(countOf(place))}
@@ -354,6 +370,8 @@ export function DecisionRecentEvaluations({
           )}
           {selected && !selected.source ? (
             note(t('recentBySource.notRecorded'))
+          ) : selected && loadedOf(selected) && 'hidden' in loadedOf(selected)! ? (
+            note(t('recentBySource.hidden'))
           ) : !selected && sources.length === 0 ? (
             note(t('recentBySource.noSources'))
           ) : isLoading && !data ? (
@@ -398,8 +416,12 @@ export function DecisionRecentEvaluations({
                         >
                           {/* Each line keeps its right side whole and wraps it below when the card is too narrow. */}
                           <span className="flex w-full flex-wrap items-center justify-between gap-x-4">
-                            <span className="min-w-0 flex-[1_1_140px] truncate text-[13px] leading-normal text-(--text-primary)">
-                              {row.title ?? '—'}
+                            <span
+                              className={`min-w-0 flex-[1_1_140px] truncate text-[13px] leading-normal ${
+                                row.title ? 'text-(--text-primary)' : 'text-(--text-tertiary)'
+                              }`}
+                            >
+                              {row.title ?? (row.detailsExpired ? t('evaluations.sheet.detailsExpired') : '—')}
                             </span>
                             {answer ? (
                               <span className="mono flex-none text-[12.5px] text-(--text-primary)">{answer}</span>
@@ -413,7 +435,7 @@ export function DecisionRecentEvaluations({
                             <span className="flex min-w-0 flex-[1_1_140px] items-center gap-[6px]">
                               <span className="flex-none">{formatEvaluationTime(row.at, locale)}</span>
                               <span aria-hidden>·</span>
-                              <Icon name={ICONS[place.kind]} size={12} className="flex-none" />
+                              {markOf(place, 12)}
                               <span className="truncate">
                                 {[place.label, row.channelName].filter(Boolean).join(' · ')}
                                 {row.target ? ` → ${row.target}` : ''}
