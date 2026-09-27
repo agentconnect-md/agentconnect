@@ -1386,3 +1386,103 @@ describe('the strict admission verdict beside the shared ack (google-chat-integr
     await daemon.stop()
   })
 })
+
+describe('control commands on the relay path (google-chat-integration.md §4)', () => {
+  /** A host whose prompts each block until released in order, so a turn can be cancelled or queued behind. */
+  function gatedHost() {
+    const releases: Array<() => void> = []
+    const host = {
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      prompt: vi.fn(async () => {
+        await new Promise<void>((resolve) => releases.push(resolve))
+        return 'end_turn'
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn()
+    }
+    return { host, release: () => releases.shift()?.() }
+  }
+  /** A command typed on the issue's session thread, keyed like a follow-up activity. */
+  const command = (id: string, text: string) => {
+    const d = delivery(
+      { msgId: `linear:${id}`, traceId: `linear:${id}`, text },
+      { event: 'prompted', issueId: 'issue-1' }
+    )
+    d.msgId = `linear:${id}`
+    return d
+  }
+  const consumed = (msgId: string) => ({ msgId, accepted: true, routeAdmission: 'rejected', recoverable: false })
+  const WAIT = { timeout: 10_000 }
+
+  it('acks `!queue` only after its queued message is durably admitted, refusing a failed write', async () => {
+    const host = fakeHost()
+    const { daemon, store, turnSettled } = await boot({ host: () => host })
+    vi.spyOn(store, 'appendInboxWithReceipt').mockRejectedValue(new Error('disk is gone'))
+    expect(await im(daemon, command('q1', '!queue do it'))).toEqual({
+      msgId: 'linear:q1',
+      accepted: false,
+      reason: 'durability',
+      routeAdmission: 'rejected',
+      recoverable: true
+    })
+    await turnSettled()
+    expect(host.prompt).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('treats a redelivered `!queue` as a duplicate under the receipt, not a second queued turn', async () => {
+    const host = fakeHost()
+    const { daemon, turnSettled } = await boot({ host: () => host })
+    const queue = command('q2', '!queue do it')
+    expect(await im(daemon, queue)).toEqual({ msgId: 'linear:q2', accepted: true, routeAdmission: 'admitted' })
+    await turnSettled()
+    expect(host.prompt).toHaveBeenCalledTimes(1)
+    // The row went with the turn; only the receipt can recognize the redelivery.
+    expect(await im(daemon, queue)).toEqual({ msgId: 'linear:q2', accepted: true, routeAdmission: 'admitted' })
+    await turnSettled()
+    expect(host.prompt).toHaveBeenCalledTimes(1)
+    expect((daemon as any).serialQueue.size).toBe(0)
+    await daemon.stop()
+  })
+
+  it('binds `!cancel` to the turn it found: redelivered after that turn ended, it is consumed and cancels nothing', async () => {
+    const gated = gatedHost()
+    const { daemon, turnSettled } = await boot({ host: () => gated.host })
+    await im(daemon, delivery())
+    await vi.waitFor(() => expect(gated.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+    const cancel = command('cancel-1', '!cancel')
+    expect(await im(daemon, cancel)).toEqual({ msgId: 'linear:cancel-1', accepted: true, routeAdmission: 'admitted' })
+    expect(gated.host.cancel).toHaveBeenCalledTimes(1)
+    gated.release()
+    await turnSettled()
+    // Later work in the same session, which the redelivered cancel must never reach.
+    await im(daemon, command('m2', 'and the second half?'))
+    await vi.waitFor(() => expect(gated.host.prompt).toHaveBeenCalledTimes(2), WAIT)
+    expect(await im(daemon, cancel)).toEqual(consumed('linear:cancel-1'))
+    expect(gated.host.cancel).toHaveBeenCalledTimes(1)
+    gated.release()
+    await turnSettled()
+    await daemon.stop()
+  })
+
+  it('acks each other command from what it durably did: applied is admitted, a reply or refusal is consumed', async () => {
+    const { daemon, turnSettled } = await boot()
+    await im(daemon, delivery())
+    await turnSettled()
+    const verdict = async (id: string, text: string) => {
+      const ack = await im(daemon, command(id, text))
+      if (ack.routeAdmission === 'admitted') return 'applied'
+      return ack.routeAdmission === 'rejected' && ack.accepted === true && ack.recoverable === false ? 'consumed' : ack
+    }
+    expect(await verdict('status', '/status')).toBe('consumed')
+    expect(await verdict('stop', '!stop')).toBe('applied') // the mute latch
+    expect(await verdict('resume', '!resume')).toBe('applied') // clears it
+    expect(await verdict('resume-again', '!resume')).toBe('consumed') // nothing latched: a reply
+    expect(await verdict('cancel', '!cancel')).toBe('consumed') // nothing running
+    expect(await verdict('fast', '/fast on')).toBe('consumed') // refused by the Agent-level guard
+    expect(await verdict('new', '!new')).toBe('applied') // the cleared context
+    await daemon.stop()
+  })
+})

@@ -296,7 +296,7 @@ import {
   isUsableSourceDepth,
   routeRules
 } from './router/routing-table.js'
-import { isControlCommandText, parseCommand, requiresTrustedActor } from './commands/commands.js'
+import { isControlCommandText, parseCommand, requiresTrustedActor, type AgentCommand } from './commands/commands.js'
 import { CommandHandlers, type CommandHost } from './commands/handlers.js'
 import {
   rulesFromAgent,
@@ -2077,8 +2077,20 @@ export class Daemon {
       emitStatusBar: (p) => this.emitStatusBar(p),
       interruptTurn: (agentId, key, reason, acpSessionId, opts) =>
         this.interruptTurn(agentId, key, reason, acpSessionId, opts),
-      dispatchQueueCommand: async (agentId, msg, integrationId) => {
-        await this.dispatch(agentId, msg, integrationId, undefined, undefined, { isQueueCmd: true })
+      dispatchQueueCommand: async (agentId, msg, integrationId, admission) => {
+        // A caller acking from admission gets the write required, under its receipt, and the admission reported.
+        const turn = this.dispatch(agentId, msg, integrationId, undefined, undefined, {
+          isQueueCmd: true,
+          ...(admission
+            ? {
+                requireDurable: true,
+                ...(admission.receiptId ? { receiptId: admission.receiptId(msg) } : {}),
+                onAdmission: admission.onAdmission
+              }
+            : {})
+        })
+        admission?.onDispatched?.(turn)
+        await turn
       },
       replyConnFor: (agentId, integrationId) => this.commandConnFor(agentId, integrationId),
       sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
@@ -9669,8 +9681,7 @@ export class Daemon {
         this.log.warn(`relay: unauthorized command from ${normalized.sender.id} for agent ${msg.agentId}`)
         return imRejected(msg.msgId, false, 'unauthorized', false)
       }
-      await this.commands.handleCommand(command, normalized, target)
-      return imAdmitted(msg.msgId)
+      return await this.admitRelayCommand(command, msg, normalized, target, trace)
     }
     // The ACK follows the durable reservation (decisions.md §8.3); a record the gate cannot use is retried.
     const { searchActionToken: _searchActionToken, ...rd } = msg
@@ -9686,6 +9697,69 @@ export class Daemon {
     if (decision.kind === 'held' || decision.kind === 'pending' || decision.kind === 'duplicate')
       return imAdmitted(msg.msgId)
     return await this.admitRelayImTarget(msg, normalized, trace)
+  }
+
+  /** A control command on the relay im path: at most once per receipt, acked from what it durably did (google-chat-integration.md §4). */
+  private async admitRelayCommand(
+    command: AgentCommand,
+    msg: RdMsgIm,
+    normalized: NormalizedMessage,
+    target: NonNullable<ReturnType<CommandHandlers['resolveExplicitCommandTarget']>>,
+    trace: RelayAckTrace
+  ): Promise<RdAck> {
+    trace.stage = `command:${command.kind}`
+    const receiptId = this.platformModules.get(normalized.platform)?.relayIngress?.receiptId
+    // A reply, a refusal or a no-op is consumed: nothing durable was promised, so a resend changes nothing.
+    const consumed = imRejected(msg.msgId, true, undefined, false)
+    if (command.kind === 'queue') {
+      // The queued message rides dispatch's durable fence itself, so the ack waits for its row, under the strategy's receipt.
+      let report!: (ack: RdAck) => void
+      const admitted = new Promise<RdAck>((resolve) => (report = resolve))
+      const effect = await this.commands.handleCommand(command, normalized, target, undefined, {
+        queueAdmission: {
+          ...(receiptId ? { receiptId } : {}),
+          onAdmission: (result) => report(imAdmissionAck(msg.msgId, result)),
+          // Resolved without an admission report: no proof of a row; rejected before one: the write failed.
+          onDispatched: (turn) =>
+            void turn.then(
+              () => report({ msgId: msg.msgId, accepted: true }),
+              () => report(imRejected(msg.msgId, false, 'durability', true))
+            )
+        }
+      })
+      return effect === 'admitting' ? await admitted : consumed
+    }
+    if (receiptId) {
+      // Minted before the command runs: a redelivery finds the receipt and re-runs nothing, so a cancel never reaches later work.
+      let minted: boolean
+      try {
+        minted = await this.store.appendInbox({
+          id: receiptId(normalized),
+          sessionKey: sessionKey(
+            normalized.platform,
+            normalized.channel,
+            normalized.thread ?? normalized.msgId,
+            msg.agentId,
+            normalized.transportScope
+          ),
+          agentId: msg.agentId,
+          msg: JSON.stringify(normalized),
+          integrationId: msg.integrationId,
+          completedAt: this.clock.now(),
+          loopGuardCounted: 1,
+          enqueuedAt: monotonicTs()
+        })
+      } catch (err) {
+        this.log.warn(`relay: command receipt for ${msg.msgId} failed: ${formatErr(err)}`)
+        return imRejected(msg.msgId, false, 'durability', true)
+      }
+      if (!minted) {
+        this.log.info(`relay: redelivered ${command.kind} ${msg.msgId} already ran — consumed`)
+        return consumed
+      }
+    }
+    const effect = await this.commands.handleCommand(command, normalized, target)
+    return effect === 'applied' ? imAdmitted(msg.msgId) : consumed
   }
 
   /** Step 6 for a pre-addressed relay IM: coordinate, mute, the platform's ingress strategy, then dispatch. */

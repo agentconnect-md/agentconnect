@@ -526,9 +526,12 @@ relay `im` path (arbitration echo, conversation gating, control commands, the
 itself (`settled`) or refuse it as unrecorded (`refused`); `onAdmitted?` runs
 once inside dispatch's durable admission fence; `requireDurable?` and
 `receiptId?` bind the delivery to a permanent receipt minted with its admission
-row. A platform without the member takes the shared path unchanged. Linear is
-the first implementer (`platforms/linear/relay-ingress.ts`, reaching the daemon
-through a narrow host port); Google Chat is the second.
+row. On the relay path a control command is minted a receipt under `receiptId?`
+before it runs, and `!queue` dispatches under it, so a redelivered command
+re-runs nothing and cancels no later work. A platform without the member takes
+the shared path unchanged. Linear is the first implementer
+(`platforms/linear/relay-ingress.ts`, reaching the daemon through a narrow host
+port); Google Chat is the second.
 
 ### 7.5 The connection registry
 

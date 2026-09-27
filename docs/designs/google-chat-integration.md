@@ -368,7 +368,16 @@ a retry of a `retry` or timed-out attempt is forwarded again. A failed durable
 write remains retryable.
 
 Commands require a completed, replay-safe disposition too. Bind cancellation to
-its original operation/turn so a repeated callback cannot cancel later work.
+its original operation/turn so a repeated callback cannot cancel later work. On
+the daemon, `!queue` acks only after its queued message's durable admission,
+under the strategy's `receiptId` when one exists, so a redelivery is a
+duplicate rather than a second queued turn; every other command is minted a
+born-completed receipt under that same `receiptId` before it runs, so a
+redelivered `!cancel` finds it and cancels nothing, and its ack is `admitted`
+when a durable effect completed (a mute, a cleared context, an interrupted turn)
+and `rejected`/`recoverable: false` when it only replied or refused. A platform
+without a `receiptId` keeps the bounded replay window of the relay dedup and the
+daemon's ack cache.
 Lifecycle updates are idempotent observations: use event kind, Space, actor, and
 event time when no message resource exists, and confirm conflicting membership
 hints through provider reads. Do not collapse all add/remove events for a Space.
