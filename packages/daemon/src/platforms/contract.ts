@@ -34,6 +34,8 @@
  * MANIFEST (§5, pure data) is genuinely cross-host, and it goes to protocol when
  * the registry lands. This one is daemon-owned.
  */
+import type { RdMsgIm } from '@agentconnect.md/protocol'
+import type { NormalizedMessage } from '../messages/normalized.js'
 
 /** The human behind one interactive click (button / select / modal submit). Carried
  *  alongside the action so the daemon records WHO changed a session, which a bare
@@ -380,4 +382,27 @@ export interface PlatformConnection {
   readCanvas?(canvasId: string): Promise<PlatformCanvas>
   /** Apply edits to one. */
   updateCanvas?(canvasId: string, edits: PlatformCanvasEdit[]): Promise<void>
+}
+
+/** §7.4 relay-ingress strategy: how one platform shapes a relay-delivered `im` once core's gates have passed it. */
+export interface RelayIngressStrategy {
+  /** Shape the delivery: `settled` ⇒ answered by the platform, no turn; `refused` ⇒ unrecorded, so redelivered. */
+  prepare(
+    msg: RdMsgIm,
+    normalized: NormalizedMessage,
+    trace: { stage: string }
+  ): Promise<'dispatch' | 'settled' | 'refused'>
+  /** Runs once, inside dispatch's durable admission fence, on first admission; rejecting refuses the delivery. */
+  onAdmitted?(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean, steered: boolean): Promise<void>
+  /** Refuse rather than run best-effort when the durable row cannot be written, for a hook that dedups on that row. */
+  requireDurable?: boolean
+  /** Permanent receipt id minted with the admission row in one transaction; its prior existence makes a duplicate. */
+  receiptId?(normalized: NormalizedMessage): string
+}
+
+/** One platform's daemon module: the per-platform (not per-connection) members core looks up by platform id. */
+export interface DaemonPlatformModule {
+  readonly platformId: string
+  /** Absent ⇒ the shared relay `im` path, byte for byte. */
+  readonly relayIngress?: RelayIngressStrategy
 }

@@ -1512,8 +1512,11 @@ tile.
     its own and no stop payload names the team — the agent, platform and
     transport scope stay the daemon's own facts, and the relay's unverified
     `sessionKey` is still not read.
-  - The ≤10 s ack at `rd/msg` admission, after inbox dedup (§10.1), and from
-    the same hook the §10.2 auto-start (`LinearConnection.startIssue`, one
+  - `relay-ingress.ts` — the module's `relayIngress` contract member
+    (integration-plugin-architecture.md §7.4): the served receipt, the
+    message strategy above, and the ≤10 s ack at `rd/msg` admission, after
+    inbox dedup (§10.1), and from the same hook the §10.2 auto-start
+    (`LinearConnection.startIssue`, one
     state read + at most one `issueUpdate`, both on the paced queue) when the
     bag says the turn is the session-opening `created` and names an issue.
   - `codeHostLinks` in `turn-output.ts`: the §10.3 collector over the turn's

@@ -306,11 +306,12 @@ durable message queue. If the daemon is unavailable beyond Google's retry window
 delivery can be lost; report this limitation rather than promise offline recovery.
 
 Reuse the daemon's existing relay-ingress strategy, `requireDurable`, `receiptId`,
-`onAdmission`, and atomic inbox-with-receipt machinery. That strategy table is a
-core-owned map in the daemon keyed by platform name, with Linear as its only
-entry; Google Chat is its second implementer, so the same change promotes it to a
-member of the daemon platform contract with one registry line per platform,
-rather than adding a `googlechat` entry to core. Preserve routing and
+`onAdmission`, and atomic inbox-with-receipt machinery. That strategy is now the
+optional `relayIngress` member of the daemon platform contract
+(`DaemonPlatformModule`), looked up through the daemon's platform module
+registry, with Linear as its first implementer; Google Chat implements the same
+member and adds one registry line, rather than adding a `googlechat` entry to
+core. Preserve routing and
 authorization while distinguishing transient draining/placement failures from
 intentional gates. The current `im` ACK mapping is insufficient for that
 distinction. Gate the ingress on the existing feature advertisement, as the relay
@@ -429,7 +430,7 @@ for private DM turns as part of the acceptance checks.
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Protocol and message    | Register the known platform, conservative manifest values, and pure Google event normalization.                                                                                                   |
 | Relay platform module   | HTTPS route, project-audience verification, demux, normalization, membership reports, and strict admission responses.                                                                             |
-| Daemon platform module  | Config schema, Chat REST connection/read port, the relay-ingress strategy promoted to a contract member, renderer, turn output, and lifecycle registration.                                       |
+| Daemon platform module  | Config schema, Chat REST connection/read port, its `relayIngress` contract member, renderer, turn output, and lifecycle registration.                                                             |
 | Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals. |
 | Daemon output           | Persist stable create intent/results and serialize Google sends through the platform output surface.                                                                                              |
 | Control Plane provider  | Credential validation/storage, app identity, uniqueness, secret rotation, daemon spec, and relay assignment projection.                                                                           |

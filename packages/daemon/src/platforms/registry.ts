@@ -28,7 +28,7 @@
  * are injected by the Arena, take part in no consolidation, and must survive every
  * prune — so pruning takes an explicit immunity predicate rather than inferring it.
  */
-import type { PlatformConnection } from './contract.js'
+import type { DaemonPlatformModule, PlatformConnection } from './contract.js'
 
 /** A connection's identity, opaque by construction: the registry compares these
  *  for equality and never parses them. Minted by the platform's own key function
@@ -96,5 +96,22 @@ export class ConnectionPool<C extends PlatformConnection> {
 
   isConnecting(key: ConnectionKey): boolean {
     return this.connecting.has(key)
+  }
+}
+
+/** The daemon's platform modules by id, one registry line per platform; a duplicate id fails construction. */
+export class PlatformModuleRegistry {
+  private readonly byId = new Map<string, DaemonPlatformModule>()
+
+  constructor(modules: readonly DaemonPlatformModule[]) {
+    for (const entry of modules) {
+      if (this.byId.has(entry.platformId)) throw new Error(`duplicate daemon platform module: ${entry.platformId}`)
+      this.byId.set(entry.platformId, entry)
+    }
+  }
+
+  /** The platform's module, or undefined — core then takes its shared path. */
+  get(platformId: string): DaemonPlatformModule | undefined {
+    return this.byId.get(platformId)
   }
 }

@@ -1279,13 +1279,14 @@ describe('§10.1 a follow-up and the acknowledgement watchdog', () => {
   })
 
   it('names the stage an acknowledgement is stuck in once it outlives one relay try', async () => {
-    const { daemon, turnSettled } = await boot()
+    const { daemon, store, turnSettled } = await boot()
     ;(daemon as any).relayAckSlowMs = 20
     const warn = vi.spyOn((daemon as any).log, 'warn')
-    const served = (daemon as any).linearDeliveryServed.bind(daemon)
-    ;(daemon as any).linearDeliveryServed = async (normalized: unknown) => {
-      await new Promise((resolve) => setTimeout(resolve, 60))
-      return served(normalized)
+    // Stall only the served-receipt read, so the watchdog fires inside that stage.
+    const hasInbox = store.hasInbox.bind(store)
+    store.hasInbox = async (id: string) => {
+      if (id.startsWith(linearDeliveryReceiptId(''))) await new Promise((resolve) => setTimeout(resolve, 60))
+      return hasInbox(id)
     }
     const ack = await (daemon as any).handleRelayMsg(delivery({}, { event: 'created', issueId: 'issue-1' }), () => {})
     expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })

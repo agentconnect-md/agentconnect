@@ -517,6 +517,19 @@ posts), `tenantScope(integration, conn)` / `transportScopeIdentity(...)`
 a real thread and re-dispatches), command chrome renderers (the four-way
 `/status` formatting), and DM inference.
 
+The relay-ingress strategy is a member of the daemon platform contract rather
+than a core table keyed by platform name: `DaemonPlatformModule.relayIngress?`
+(`platforms/contract.ts`), which core reads through `PlatformModuleRegistry`
+(`platforms/registry.ts`) by `normalized.platform` once its own gates on the
+relay `im` path (arbitration echo, conversation gating, control commands, the
+`!stop` mute) have passed. `prepare` shapes the delivery and may answer it
+itself (`settled`) or refuse it as unrecorded (`refused`); `onAdmitted?` runs
+once inside dispatch's durable admission fence; `requireDurable?` and
+`receiptId?` bind the delivery to a permanent receipt minted with its admission
+row. A platform without the member takes the shared path unchanged. Linear is
+the first implementer (`platforms/linear/relay-ingress.ts`, reaching the daemon
+through a narrow host port); Google Chat is the second.
+
 ### 7.5 The connection registry
 
 What "one registry" must actually absorb: 4 conn-by-integration maps, 5
@@ -541,12 +554,12 @@ registry.
 
 ### 7.6 Contract layering summary
 
-| Implementer                   | Layer 1 (connect + ingress + read port)   | Layer 2 (turn output surface) |
-| ----------------------------- | ----------------------------------------- | ----------------------------- |
-| Slack/Telegram/Discord/Feishu | yes                                       | yes                           |
-| GitHub poster                 | no                                        | yes                           |
-| Linear (per its design)       | minimal (relay-plugin ingress; no socket) | yes                           |
-| webchat                       | core-owned                                | core-owned                    |
+| Implementer                   | Layer 1 (connect + ingress + read port)   | Relay-ingress strategy (§7.4) | Layer 2 (turn output surface) |
+| ----------------------------- | ----------------------------------------- | ----------------------------- | ----------------------------- |
+| Slack/Telegram/Discord/Feishu | yes                                       | no (shared path)              | yes                           |
+| GitHub poster                 | no                                        | no                            | yes                           |
+| Linear (per its design)       | minimal (relay-plugin ingress; no socket) | yes (`relayIngress`)          | yes                           |
+| webchat                       | core-owned                                | core-owned                    | core-owned                    |
 
 ## 8. Relay Slot
 
