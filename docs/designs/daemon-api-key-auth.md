@@ -246,17 +246,26 @@ later work) differs from a personal key only in whose identity it carries.
   permissions, `agent:chat` in v1; `full` and `read` always cover every agent.
   A key with `allAgents = false` and no rows reaches no agent. An empty
   selection never means all.
-- Enforcement lives in one place, `humanAuth`. A route declares the permission
-  it accepts through its Fastify route config. A key whose permission is not
-  `full` is admitted only by a route that declares that permission, so every
-  undeclared route, including `/me/*`, the MCP endpoint, and any route added
-  later, refuses it. When the declaring route carries an `:agentId` parameter,
-  `humanAuth` also checks the key's selection and answers 404 for an agent
-  outside it. `read` keeps the read-only check that OAuth tokens already pass
-  through in the org-scope guard.
+- Enforcement lives in one place, `humanAuth`, and depends on the permission.
+  `full` is admitted everywhere. `read` is admitted by every route whose method
+  is `GET`, `HEAD`, or `OPTIONS` and refused by every other; that is the
+  read-only check the org-scope guard applies to OAuth tokens today, moved to
+  where the key is resolved so it also covers `/me/*` and MCP. An agent-level
+  permission is admitted only by a route that declares it through its Fastify
+  route config, so every undeclared route, including `/me/*`, the MCP endpoint,
+  and any route added later, refuses it. When the declaring route carries an
+  `:agentId` parameter, `humanAuth` also checks the key's selection and answers
+  404 for an agent outside it.
 - The only v1 route that declares `agent:chat` is
   `POST /orgs/:orgId/agents/:agentId/webchat/token`. On a resume, the
   conversation's bound agent must also be in the selection.
+- A token minted by a key inherits the key's limits. When the minting key's
+  permission is not `full`, the token route stamps the permission and the agent
+  into the token's claims, `rc/verify` returns them, and the relay enforces them
+  at every entry point ([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api)).
+  A console mint, or a `full` key's, carries no such claim. Minting another
+  token does not widen anything, since every token the key mints carries the
+  same claims.
 - `POST /me/keys` takes `permission` and, for an agent-level permission,
   `agents: 'all' | string[]`. The console's personal key dialog shows the two
   choices. The rest of the mint policy is unchanged: a 90-day default expiry,
@@ -266,10 +275,14 @@ later work) differs from a personal key only in whose identity it carries.
 
 Tests should cover:
 
-- a `read` key refused on a write and a `agent:chat` key refused on every
-  undeclared route, including `/me/keys` and MCP;
+- a `read` key admitted on `GET /orgs/:orgId/agents` and refused on a write,
+  including `POST /me/keys` and an MCP write tool;
+- an `agent:chat` key admitted by the token route and refused on every
+  undeclared route, including a `GET`, `/me/keys`, and MCP;
 - 404 from the token route for an agent outside the selection, and for a
   resume whose conversation is bound to such an agent;
+- the token minted by an `agent:chat` key carrying the permission and agent
+  claims, and a console-minted token carrying neither;
 - `full` keys ignoring the selection, and a selection emptied by agent deletion
   reaching no agent;
 - existing rows defaulting to `full` after the migration.

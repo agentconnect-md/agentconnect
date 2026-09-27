@@ -542,7 +542,10 @@ The proxy mints a token per conversation, not per turn:
    an optional `conversationId`. The response gains `expiresAt`. Without an id,
    CP creates a conversation owned by the key's user. A resume follows the
    route's existing rules: the caller's own conversation, the 409 fence for an
-   agent that moved, 404 otherwise.
+   agent that moved, 404 otherwise. When the key's permission is `agent:chat`,
+   the token's claims carry that permission and the agent
+   ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#key-permissions-and-agent-selection)),
+   and `rc/verify` returns them with the verdict.
 2. For each turn, the proxy calls `POST <relayUrl>/chat` with
    `Authorization: Bearer <token>` and forwards the `useChat` request body.
    - The relay turns the last user message's text into a webchat turn. It
@@ -568,11 +571,16 @@ conversation the key's user owns can be resumed through the proxy. A request
 whose history holds a single user message is a new conversation; `useChat`
 clears its history client-side without telling the server.
 
-The route exposes one operation, a text turn. The browser socket's other
-operations, runtime and permission changes, per-turn overrides, `targets`,
-`mentions`, elicitation, and MCP App calls, have no representation in a
-`useChat` request, so no allowlist is needed. The daemon's
-`allowRuntimeChangesInChat` gate is unaffected.
+A token whose claims carry `agent:chat` is confined to this route. The browser
+socket refuses it at the handshake, one check beside the verify call, so the
+socket's other operations, runtime and permission changes, per-turn overrides,
+`targets`, `mentions`, elicitation, and MCP App calls, are out of the key
+holder's reach, and so is any other participant of a conversation that has
+gained one since. `/chat` exposes one operation, a text turn, and addresses it
+to the token's agent alone; a `useChat` request has no representation for
+anything else. A token without the claim, the console's own, is accepted by
+both entry points as today. The daemon's `allowRuntimeChangesInChat` gate is
+unaffected.
 
 | `rd/chat` output                         | UI message stream                                       |
 | ---------------------------------------- | ------------------------------------------------------- |
@@ -652,8 +660,8 @@ two can coexist.
    `full` personal key works from this point.
 2. **CP and Web:** key permissions and agent selection
    ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#key-permissions-and-agent-selection)),
-   the token route's `agent:chat` declaration, and the personal key dialog's
-   two new choices.
+   the token route's `agent:chat` declaration and claim stamping, the browser
+   socket's claim check, and the personal key dialog's two new choices.
 3. **Relay:** the stream-resume route.
 4. **Web:** the agent detail page's API tab, hidden since it shipped
    unfinished, returns with the two endpoints and a proxy example.
