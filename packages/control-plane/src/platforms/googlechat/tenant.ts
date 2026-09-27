@@ -4,33 +4,37 @@
 export interface GoogleChatTenant {
   /** From a Space's `customer` (`customers/{customerId}`). */
   customerId?: string
-  /** From a Workspace user's `domainId` (`domains/{domainId}`). */
-  domainId?: string
+  /** From Workspace users' `domainId`s (`domains/{domainId}`); a customer may own several domains. */
+  domainIds?: string[]
 }
 
 /** The 409 copy when another organization holds the customer; it names no organization. */
 export const GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE =
   'This Google Workspace organization is already connected to another AgentConnect organization.'
 
-/** The customer and domain ids a row's `platformConfig` carries. */
+/** A bare Workspace customer or domain id. */
+const BARE_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+/** The customer id and the domain set a row's `platformConfig` carries; `domainIds` is comma-joined because the bag holds strings. */
 export function googleChatTenantOf(config: Record<string, unknown> | null | undefined): GoogleChatTenant {
   const customerId = config?.customerId
-  const domainId = config?.domainId
+  const joined = config?.domainIds
+  const domainIds = typeof joined === 'string' ? [...new Set(joined.split(',').filter((id) => BARE_ID.test(id)))] : []
   return {
-    ...(typeof customerId === 'string' && customerId !== '' ? { customerId } : {}),
-    ...(typeof domainId === 'string' && domainId !== '' ? { domainId } : {})
+    ...(typeof customerId === 'string' && BARE_ID.test(customerId) ? { customerId } : {}),
+    ...(domainIds.length > 0 ? { domainIds } : {})
   }
 }
 
-/** Every tenant key the ids name, `customers/…` first. */
+/** Every tenant key the ids name, `customers/…` first, then one `domains/…` per domain. */
 export function googleChatTenantKeys(tenant: GoogleChatTenant): string[] {
   return [
     ...(tenant.customerId ? [`customers/${tenant.customerId}`] : []),
-    ...(tenant.domainId ? [`domains/${tenant.domainId}`] : [])
+    ...(tenant.domainIds ?? []).map((id) => `domains/${id}`)
   ]
 }
 
-/** A row's primary key: `customers/…` when known, else `domains/…`; undefined for a tenantless row. */
+/** A row's primary key: `customers/…` when known, else its first `domains/…`; undefined for a tenantless row. */
 export function googleChatPrimaryTenant(tenant: GoogleChatTenant): string | undefined {
   return googleChatTenantKeys(tenant)[0]
 }
@@ -39,6 +43,19 @@ export function googleChatPrimaryTenant(tenant: GoogleChatTenant): string | unde
 export function googleChatTenantEntries(tenant: GoogleChatTenant): Record<string, string> {
   return {
     ...(tenant.customerId ? { customerId: tenant.customerId } : {}),
-    ...(tenant.domainId ? { domainId: tenant.domainId } : {})
+    ...(tenant.domainIds?.length ? { domainIds: tenant.domainIds.join(',') } : {})
+  }
+}
+
+/** The entries that attach `proven` to a row's current bag: a missing customer id, and every domain it does not list yet. */
+export function googleChatTenantAdditions(
+  current: Record<string, unknown> | null | undefined,
+  proven: GoogleChatTenant
+): Record<string, string> {
+  const known = googleChatTenantOf(current)
+  const newDomains = (proven.domainIds ?? []).filter((id) => !(known.domainIds ?? []).includes(id))
+  return {
+    ...(proven.customerId && current?.customerId === undefined ? { customerId: proven.customerId } : {}),
+    ...(newDomains.length > 0 ? { domainIds: [...(known.domainIds ?? []), ...newDomains].join(',') } : {})
   }
 }

@@ -3389,8 +3389,12 @@ export interface BotRepo {
   /** Backfill only a missing provider bot identity (a Slack member id, a Chat app's `users/…` name); never replace
    *  an established one. System-tier like {@link BotRepo.setSlackAppIdIfMissing}. */
   setBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean>
-  /** Add public `platformConfig` entries the row lacks, under its row lock; an existing entry is never replaced. Org-fenced. */
-  addPlatformConfigEntries(orgId: OrgId, id: BotId, entries: Record<string, string>): Promise<void>
+  /** Write the public `platformConfig` entries `merge` derives from the locked row's bag; false when it derived none. Org-fenced. */
+  mergePlatformConfig(
+    orgId: OrgId,
+    id: BotId,
+    merge: (current: Record<string, unknown>) => Record<string, string>
+  ): Promise<boolean>
   /** Stamp the freed-bot display hints when its LAST integration is removed.
    *  Org-fenced: a cross-org id writes nothing. */
   markFreed(orgId: OrgId, id: BotId, at: Date, lastAgentName: string | null): Promise<void>

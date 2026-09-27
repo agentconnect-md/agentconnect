@@ -279,19 +279,24 @@ export class PgBotRepo implements BotRepo {
     return result.count === 1
   }
 
-  async addPlatformConfigEntries(orgId: OrgId, id: BotId, entries: Record<string, string>): Promise<void> {
-    await withAmbientTx(this.db, async (tx) => {
+  async mergePlatformConfig(
+    orgId: OrgId,
+    id: BotId,
+    merge: (current: Record<string, unknown>) => Record<string, string>
+  ): Promise<boolean> {
+    return withAmbientTx(this.db, async (tx) => {
       const locked = await tx.$queryRaw<
         { platformConfig: unknown }[]
       >`SELECT "platformConfig" FROM bot WHERE id = ${id} AND "orgId" = ${orgId} FOR UPDATE`
       if (locked.length === 0) throw new BotMissing(id)
       const bag = (locked[0]!.platformConfig as Record<string, unknown> | null) ?? {}
-      const added = Object.fromEntries(Object.entries(entries).filter(([key]) => bag[key] === undefined))
-      if (Object.keys(added).length === 0) return
+      const entries = merge(bag)
+      if (Object.keys(entries).length === 0) return false
       await tx.bot.update({
         where: { id, orgId },
-        data: { platformConfig: { ...bag, ...added } as Prisma.InputJsonObject }
+        data: { platformConfig: { ...bag, ...entries } as Prisma.InputJsonObject }
       })
+      return true
     })
   }
 

@@ -14,15 +14,11 @@ import { installNewBot } from '../../http/install-bot.js'
 import { syncGoogleAccountId } from '../../http/google-account-id.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { ErrorDto } from '../../http/dto/index.js'
+import type { BotRecord } from '../../persistence/ports.js'
 import { checkServiceAccountKey, googleChatAppReader, type GoogleChatAppRead } from './credential.js'
 import { buildGoogleChatInstall, googleChatRowTenantKeys } from './provider.js'
 import { googleChatErrorLabel, googleChatInstallTarget } from './routes.js'
-import {
-  GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE,
-  googleChatTenantEntries,
-  googleChatTenantKeys,
-  type GoogleChatTenant
-} from './tenant.js'
+import { GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE, googleChatTenantAdditions, type GoogleChatTenant } from './tenant.js'
 
 /** Base64url JSON is short; anything longer is not a state the relay minted. */
 const MAX_STATE_LENGTH = 4_096
@@ -48,7 +44,8 @@ export const GoogleChatClaimState = z.object({
   user: z.string().regex(/^users\/\d{1,64}$/),
   kind: z.enum(['dm', 'space']),
   tenant: z.string().max(256).optional(),
-  redirect: z.string().max(2_048).refine(isGoogleChatRedirect),
+  // Absent when the event carried no completion URL, as the welcome card's click does; a present one must be Chat's.
+  redirect: z.string().max(2_048).refine(isGoogleChatRedirect).optional(),
   iat: z.number().int().nonnegative()
 })
 export type GoogleChatClaimState = z.infer<typeof GoogleChatClaimState>
@@ -121,7 +118,10 @@ export async function proveGoogleChatTenant(
     if (!customerId && !domainId) {
       return { ok: false, status: 403, code: 'GOOGLE_CHAT_CLAIM_WORKSPACE_REQUIRED', message: WORKSPACE_MESSAGE }
     }
-    return { ok: true, tenant: { ...(customerId ? { customerId } : {}), ...(domainId ? { domainId } : {}) } }
+    return {
+      ok: true,
+      tenant: { ...(customerId ? { customerId } : {}), ...(domainId ? { domainIds: [domainId] } : {}) }
+    }
   }
   const listed = await read(`${state.space}/members?pageSize=100`)
   if (listed.status !== 'ok') return readRefusal(listed)
@@ -140,13 +140,37 @@ export async function proveGoogleChatTenant(
   const domainId = domainIdOf(humans[0])
   if (!domainId)
     return { ok: false, status: 403, code: 'GOOGLE_CHAT_CLAIM_WORKSPACE_REQUIRED', message: WORKSPACE_MESSAGE }
-  return { ok: true, tenant: { domainId } }
+  return { ok: true, tenant: { domainIds: [domainId] } }
 }
 
 const GoogleChatClaimBody = z.object({ state: z.string().min(1).max(MAX_STATE_LENGTH) })
 
-/** Where the browser goes next: the Chat prompt's completion URL, after which Chat sends the original event again. */
-const GoogleChatClaimDto = z.object({ redirect: z.string() })
+/** Where the browser goes next: the Chat prompt's completion URL when the state carried one; absent, the person returns to Chat. */
+const GoogleChatClaimDto = z.object({ redirect: z.string().optional() })
+
+/** The success body: the completion URL when the prompt carried one. */
+function claimed(state: GoogleChatClaimState): { redirect?: string } {
+  return state.redirect ? { redirect: state.redirect } : {}
+}
+
+/** The customer rows of `app` a claim resolves against, and the row the proof lands on (§10.3, §10.5 step 5). */
+function googleChatClaimTarget<Row extends Pick<BotRecord, 'orgId' | 'externalTenantId' | 'platformConfig'>>(
+  rows: readonly Row[],
+  orgId: string,
+  proven: GoogleChatTenant
+): { taken: true } | { taken: false; row?: Row } {
+  const knows = (row: Row, key: string) => googleChatRowTenantKeys(row).includes(key)
+  const domainKeys = (proven.domainIds ?? []).map((id) => `domains/${id}`)
+  const byDomain = rows.find((row) => domainKeys.some((key) => knows(row, key)))
+  const byCustomer = proven.customerId ? rows.find((row) => knows(row, `customers/${proven.customerId}`)) : undefined
+  if ((byDomain && byDomain.orgId !== orgId) || (byCustomer && byCustomer.orgId !== orgId)) return { taken: true }
+  // A row that already lists the domain wins, whatever its primary key; a Space claim then lands on its customer's row.
+  if (byDomain) return { taken: false, row: byDomain }
+  if (proven.customerId) return { taken: false, ...(byCustomer ? { row: byCustomer } : {}) }
+  // A DM proves a domain alone: it joins the organization's only customer row; several leave the customer ambiguous, so it gets its own.
+  const own = rows.filter((row) => row.orgId === orgId)
+  return { taken: false, ...(own.length === 1 ? { row: own[0]! } : {}) }
+}
 
 function refuse(reply: FastifyReply, status: number, code: string, message: string): FastifyReply {
   return reply.code(status).send({ error: googleChatErrorLabel(status), statusCode: status, code, message })
@@ -163,7 +187,7 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
           tags: [Tag.Integrations],
           summary: 'Claim a Google Workspace customer for Google Chat',
           description:
-            'Connect the caller’s Google Workspace customer to this organization on the deployment’s multi-tenant Google Chat app. `state` is the unsigned base64url JSON the Chat prompt carried; every fact is re-derived: the caller’s linked Google account must be the Chat user who asked, a Space claim requires the caller’s membership in that Space to be INTERNAL, and a DM claim requires the caller to be its only human member, whose domain is the one bound. The customer is installed on the organization’s preset agent (201). A customer this organization already holds answers 200 and records any id the claim newly proved; one held by another organization answers 409 without naming it. Answers the Chat prompt’s completion URL.',
+            'Connect the caller’s Google Workspace customer to this organization on the deployment’s multi-tenant Google Chat app. `state` is the unsigned base64url JSON the Chat prompt carried; every fact is re-derived: the caller’s linked Google account must be the Chat user who asked, a Space claim requires the caller’s membership in that Space to be INTERNAL, and a DM claim requires the caller to be its only human member, whose domain is the one bound. A proven domain already listed on a row decides that row; otherwise a Space claim lands on its customer’s row and a DM claim joins the organization’s only customer row. A new customer is installed on the organization’s preset agent (201). A customer this organization already holds answers 200 and records any id or domain the claim newly proved; one held by another organization answers 409 without naming it. Answers the Chat prompt’s completion URL when the state carried one.',
           operationId: 'claimGoogleChatCustomer',
           body: GoogleChatClaimBody,
           response: {
@@ -254,27 +278,33 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
         )
         if (!proof.ok) return refuse(reply, proof.status, proof.code, proof.message)
 
-        // One customer maps to one organization: any row that knows one of the proven keys decides.
-        const keys = googleChatTenantKeys(proof.tenant)
-        const matches = (await deps.repos.bot.listForPlatform(GOOGLE_CHAT_PLATFORM)).filter(
-          (bot) =>
-            bot.externalAppId === platform.projectNumber && googleChatRowTenantKeys(bot).some((k) => keys.includes(k))
+        // One customer maps to one organization: any customer row of this app that knows a proven key decides.
+        const rows = (await deps.repos.bot.listForPlatform(GOOGLE_CHAT_PLATFORM)).filter(
+          (bot) => bot.externalAppId === platform.projectNumber && googleChatRowTenantKeys(bot).length > 0
         )
-        if (matches.some((bot) => bot.orgId !== orgId)) {
-          return refuse(reply, 409, 'GOOGLE_CHAT_CLAIM_TAKEN', GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE)
-        }
+        const resolved = googleChatClaimTarget(rows, orgId, proof.tenant)
+        if (resolved.taken) return refuse(reply, 409, 'GOOGLE_CHAT_CLAIM_TAKEN', GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE)
         const install = buildGoogleChatInstall(
           { projectId: platform.projectId, projectNumber: platform.projectNumber, serviceAccountKey: key.key.json },
           proof.tenant
         )
 
-        const held = matches[0]
+        const held = resolved.row
         if (held) {
-          const known = held.platformConfig ?? {}
-          const added = Object.entries(googleChatTenantEntries(proof.tenant)).filter(
-            ([name]) => known[name] === undefined
+          // A customer id another row of this organization already holds stays there, so no key names two rows.
+          const customerElsewhere =
+            !!proof.tenant.customerId &&
+            rows.some(
+              (row) =>
+                row.id !== held.id && googleChatRowTenantKeys(row).includes(`customers/${proof.tenant.customerId}`)
+            )
+          const attach: GoogleChatTenant = {
+            ...(proof.tenant.customerId && !customerElsewhere ? { customerId: proof.tenant.customerId } : {}),
+            ...(proof.tenant.domainIds ? { domainIds: proof.tenant.domainIds } : {})
+          }
+          const added = await deps.repos.bot.mergePlatformConfig(orgId, held.id, (current) =>
+            googleChatTenantAdditions(current, attach)
           )
-          if (added.length > 0) await deps.repos.bot.addPlatformConfigEntries(orgId, held.id, Object.fromEntries(added))
           // A freed customer row goes back on the preset agent with the current deployment key, or Chat would prompt forever.
           if (held.agentIds.length === 0) {
             const target = await googleChatInstallTarget(deps, req)
@@ -299,8 +329,8 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
               )
             }
           }
-          if (added.length > 0 || held.agentIds.length === 0) await deps.httpBot.syncBot(held.id)
-          return reply.code(200).send({ redirect: state.redirect })
+          if (added || held.agentIds.length === 0) await deps.httpBot.syncBot(held.id)
+          return reply.code(200).send(claimed(state))
         }
 
         const ingress = relayIngress(deps)
@@ -325,7 +355,7 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
           }
           throw err
         }
-        return reply.code(201).send({ redirect: state.redirect })
+        return reply.code(201).send(claimed(state))
       }
     )
   }

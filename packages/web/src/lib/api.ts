@@ -4516,9 +4516,9 @@ export async function installGoogleChatPlatformApp(input: { agentId?: string } =
 export async function replaceGoogleChatKey(botId: string, serviceAccountKey: string): Promise<BotDto> {
   return apiPut<BotDto>(`${orgBase()}/bots/${encodeURIComponent(botId)}/googlechat/key`, { serviceAccountKey })
 }
-/** Claim the caller's Google Workspace for `orgId` on the deployment's multi-tenant Chat app; returns where Chat continues. */
-export async function claimGoogleChatCustomer(orgId: string, state: string): Promise<{ redirect: string }> {
-  return apiPost<{ redirect: string }>(`${orgBase(orgId)}/integrations/googlechat/claim`, { state })
+/** Claim the caller's Google Workspace for `orgId` on the deployment's multi-tenant Chat app; returns where Chat continues, when the prompt carried a completion URL. */
+export async function claimGoogleChatCustomer(orgId: string, state: string): Promise<{ redirect?: string }> {
+  return apiPost<{ redirect?: string }>(`${orgBase(orgId)}/integrations/googlechat/claim`, { state })
 }
 
 // ── members ───────────────────────────────────────────────────────────────────

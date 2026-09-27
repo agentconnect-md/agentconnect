@@ -12,11 +12,12 @@ import { writeFlowState } from '@/lib/flow-state'
 import {
   decodeGoogleChatClaimState,
   googleChatClaimErrorKey,
+  googleChatConversationUrl,
   isGoogleChatRedirect,
   type GoogleChatClaimState
 } from '@/lib/googlechat-claim'
 
-type Phase = 'loading' | 'invalid' | 'ready' | 'returning'
+type Phase = 'loading' | 'invalid' | 'ready' | 'returning' | 'done'
 
 export default function GoogleChatClaim() {
   const t = useTranslations('Auth.googleChatClaim')
@@ -74,6 +75,11 @@ export default function GoogleChatClaim() {
     setError(null)
     try {
       const { redirect } = await claimGoogleChatCustomer(orgId, raw)
+      // Without a completion URL Chat cannot resume the prompt, so the person goes back and writes again.
+      if (redirect === undefined) {
+        setPhase('done')
+        return
+      }
       if (!isGoogleChatRedirect(redirect)) throw new Error('unexpected redirect')
       setPhase('returning')
       window.location.assign(redirect)
@@ -101,6 +107,19 @@ export default function GoogleChatClaim() {
             <Button variant="secondary" onClick={() => window.location.assign('/')}>
               {t('goToAgentConnect')}
             </Button>
+          </div>
+        ) : phase === 'done' && claim ? (
+          <div className="flex flex-col items-center gap-5 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-(--status-online-soft)">
+              <Icon name="check" size={22} color="var(--status-online)" />
+            </span>
+            <div>
+              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('doneTitle')}</h1>
+              <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{t('doneBody')}</p>
+            </div>
+            <a href={googleChatConversationUrl(claim)} className="dsbtn dsbtn-primary">
+              {t('backToChat')}
+            </a>
           </div>
         ) : phase === 'loading' || phase === 'returning' || !claim ? (
           <div className="flex flex-col items-center gap-4 py-6 text-[14px] text-(--text-secondary)">

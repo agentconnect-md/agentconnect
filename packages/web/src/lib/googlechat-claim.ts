@@ -8,8 +8,8 @@ export interface GoogleChatClaimState {
   /** `users/…`, the Chat user who asked. */
   user: string
   kind: 'dm' | 'space'
-  /** Where Chat continues once the claim is done. */
-  redirect: string
+  /** Where Chat continues once the claim is done; absent when the prompt carried none, as the welcome card's click does. */
+  redirect?: string
 }
 
 /** Chat's completion URL is always on Chat's own origin; the page never follows anything else. */
@@ -44,10 +44,18 @@ export function decodeGoogleChatClaimState(raw: string | null): GoogleChatClaimS
   const app = text(fields.app, /^[1-9]\d{0,19}$/)
   const space = text(fields.space, /^spaces\/[A-Za-z0-9_-]{1,128}$/)
   const user = text(fields.user, /^users\/\d{1,64}$/)
-  const redirect = typeof fields.redirect === 'string' && isGoogleChatRedirect(fields.redirect) ? fields.redirect : null
   const kind = fields.kind === 'dm' || fields.kind === 'space' ? fields.kind : null
-  if (fields.v !== 1 || !app || !space || !user || !redirect || !kind) return null
-  return { app, space, user, kind, redirect }
+  const redirect = fields.redirect
+  // A missing completion URL is fine; a present one off Chat's origin makes the whole link invalid.
+  if (redirect !== undefined && !(typeof redirect === 'string' && isGoogleChatRedirect(redirect))) return null
+  if (fields.v !== 1 || !app || !space || !user || !kind) return null
+  return { app, space, user, kind, ...(redirect ? { redirect } : {}) }
+}
+
+/** Where the person goes back to Chat when no completion URL came along: the Space's room or the DM. */
+export function googleChatConversationUrl(state: Pick<GoogleChatClaimState, 'kind' | 'space'>): string {
+  const id = encodeURIComponent(state.space.slice('spaces/'.length))
+  return `https://chat.google.com/${state.kind === 'dm' ? 'dm' : 'room'}/${id}`
 }
 
 export type GoogleChatClaimErrorKey =

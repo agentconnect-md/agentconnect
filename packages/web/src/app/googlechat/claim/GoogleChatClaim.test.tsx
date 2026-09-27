@@ -40,18 +40,21 @@ import GoogleChatClaim from './GoogleChatClaim'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const REDIRECT = 'https://chat.google.com/api/config_complete_redirect?token=synthetic'
-const STATE = Buffer.from(
-  JSON.stringify({
-    v: 1,
-    app: '123456789012',
-    space: 'spaces/AAAAexample',
-    user: 'users/100000000000000000009',
-    kind: 'space',
-    tenant: 'customers/C0000000000',
-    redirect: REDIRECT,
-    iat: 1_790_000_000
-  })
-).toString('base64url')
+const encodeState = (over: Record<string, unknown> = {}) =>
+  Buffer.from(
+    JSON.stringify({
+      v: 1,
+      app: '123456789012',
+      space: 'spaces/AAAAexample',
+      user: 'users/100000000000000000009',
+      kind: 'space',
+      tenant: 'customers/C0000000000',
+      redirect: REDIRECT,
+      iat: 1_790_000_000,
+      ...over
+    })
+  ).toString('base64url')
+const STATE = encodeState()
 
 const org = (id: string, role: 'owner' | 'collaborator' | 'viewer', name: string) => ({ id, slug: id, name, role })
 
@@ -103,6 +106,25 @@ describe('GoogleChatClaim', () => {
     await act(async () => button('Connect').click())
     expect(mocks.claim).toHaveBeenCalledWith('org-edit', STATE)
     expect(window.location.assign).toHaveBeenCalledWith(REDIRECT)
+  })
+
+  it.each([
+    ['space', 'spaces/AAAAexample', 'https://chat.google.com/room/AAAAexample'],
+    ['dm', 'spaces/DDDDexample', 'https://chat.google.com/dm/DDDDexample']
+  ])('without a completion URL, a %s claim ends on a link back to the conversation', async (kind, space, back) => {
+    const state = encodeState({ kind, space, redirect: undefined })
+    window.history.replaceState({}, '', `/googlechat/claim?state=${state}`)
+    mocks.claim.mockResolvedValue({})
+    await render()
+
+    await act(async () => button('Connect').click())
+    expect(mocks.claim).toHaveBeenCalledWith('org-edit', state)
+    expect(window.location.assign).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Google Chat is connected')
+    expect(host.textContent).toContain('send your message again')
+    const link = host.querySelector('a.dsbtn-primary')
+    expect(link?.textContent).toBe('Back to Google Chat')
+    expect(link?.getAttribute('href')).toBe(back)
   })
 
   it('maps a refusal to a plain sentence', async () => {

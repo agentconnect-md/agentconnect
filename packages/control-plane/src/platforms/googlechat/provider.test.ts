@@ -385,26 +385,28 @@ describe('the rows one Chat app writes', () => {
       externalAppId: PROJECT_NUMBER,
       platformConfig: { projectId: PROJECT_ID, ...platformConfig }
     })
-    expect(provider.projectBotIdentity!(input({ customerId: 'C0000000000', domainId: '0000000000' }))).toEqual({
+    expect(
+      provider.projectBotIdentity!(input({ customerId: 'C0000000000', domainIds: '0000000000,0000000001' }))
+    ).toEqual({
       externalAppId: PROJECT_NUMBER,
       externalTenantId: 'customers/C0000000000',
-      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainId: '0000000000' }
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000,0000000001' }
     })
-    expect(provider.projectBotIdentity!(input({ domainId: '0000000000' }))).toEqual({
+    expect(provider.projectBotIdentity!(input({ domainIds: '0000000000' }))).toEqual({
       externalAppId: PROJECT_NUMBER,
       externalTenantId: 'domains/0000000000',
-      platformConfig: { projectId: PROJECT_ID, domainId: '0000000000' }
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
     })
   })
 
   it('writes a customer row with a copy of the deployment key and a refusal that names no organization', () => {
     const install = buildGoogleChatInstall(
       { projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER, serviceAccountKey: JSON.stringify(KEY_FIELDS, null, 2) },
-      { domainId: '0000000000' }
+      { domainIds: ['0000000000'] }
     )
     expect(install.bot).toEqual({
       externalAppId: PROJECT_NUMBER,
-      platformConfig: { projectId: PROJECT_ID, domainId: '0000000000' }
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
     })
     expect(install.secrets).toEqual({ botToken: JSON.stringify(KEY_FIELDS), appToken: null, signingSecret: null })
     expect(install.externalIdentity).toEqual({
@@ -452,18 +454,18 @@ describe('wire projections', () => {
   const CLAIM_URL = 'https://console.example.test/googlechat/claim'
   const anchored = createGoogleChatCpProvider({ claimAnchor: { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL } })
 
-  it('gives a customer row every tenant key it knows, and never the claim page', async () => {
+  it('gives a customer row every tenant key it knows, one per domain, and never the claim page', async () => {
     const customer = bot({
       externalTenantId: 'customers/C0000000000',
-      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainId: '0000000000' }
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000,0000000001' }
     })
     expect((await anchored.projectBotAssign!(customer, secrets)).ingress).toEqual({
       apiAppId: PROJECT_NUMBER,
-      tenantIds: ['customers/C0000000000', 'domains/0000000000']
+      tenantIds: ['customers/C0000000000', 'domains/0000000000', 'domains/0000000001']
     })
     const domainOnly = bot({
       externalTenantId: 'domains/0000000000',
-      platformConfig: { projectId: PROJECT_ID, domainId: '0000000000' }
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
     })
     expect((await anchored.projectBotAssign!(domainOnly, secrets)).ingress).toEqual({
       apiAppId: PROJECT_NUMBER,

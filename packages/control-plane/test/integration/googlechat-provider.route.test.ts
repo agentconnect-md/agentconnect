@@ -1,6 +1,6 @@
 /** The Google Chat provider against real Postgres (google-chat-integration.md §3): both credential holders, one bot per Chat app. */
 import { generateKeyPairSync, randomUUID } from 'node:crypto'
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -275,13 +275,18 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
   const DM = 'spaces/DDDDexample'
   const REDIRECT = 'https://chat.google.com/api/config_complete_redirect?token=synthetic'
   const CHAT = 'https://chat.googleapis.com/v1'
+  // The caller's Workspace domain as Google reports it; a test switches it to prove a second domain.
+  let callerDomain = '0000000000'
+  beforeEach(() => {
+    callerDomain = '0000000000'
+  })
 
   /** The Chat reads a claim makes with the deployment key: the caller's Space membership, the Space, and a DM's members. */
   function claimGoogle(): typeof fetch {
     return (async (input: string | URL | Request) => {
       const url = String(input)
       if (url === GOOGLE_TOKEN_ENDPOINT) return Response.json({ access_token: 'synthetic-access-token' })
-      const member = { name: `users/${GOOGLE_USER}`, type: 'HUMAN', domainId: '0000000000' }
+      const member = { name: `users/${GOOGLE_USER}`, type: 'HUMAN', domainId: callerDomain }
       if (url === `${CHAT}/${SPACE}/members/${GOOGLE_USER}`) return Response.json({ affiliation: 'INTERNAL', member })
       if (url === `${CHAT}/${SPACE}`) return Response.json({ name: SPACE, customer: 'customers/C0000000000' })
       if (url === `${CHAT}/${DM}/members?pageSize=100`) return Response.json({ memberships: [{ member }] })
@@ -307,7 +312,7 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
     return { app, relaySends }
   }
 
-  const state = (kind: 'dm' | 'space') =>
+  const state = (kind: 'dm' | 'space', redirect: string | null) =>
     Buffer.from(
       JSON.stringify({
         v: 1,
@@ -315,17 +320,22 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
         space: kind === 'dm' ? DM : SPACE,
         user: `users/${GOOGLE_USER}`,
         kind,
-        tenant: kind === 'dm' ? 'domains/0000000000' : 'customers/C0000000000',
-        redirect: REDIRECT,
+        tenant: kind === 'dm' ? `domains/${callerDomain}` : 'customers/C0000000000',
+        ...(redirect ? { redirect } : {}),
         iat: 1_790_000_000
       })
     ).toString('base64url')
 
-  const claim = (app: HttpApp, kind: 'dm' | 'space', org: string = DEFAULT_ORG_ID) =>
+  const claim = (
+    app: HttpApp,
+    kind: 'dm' | 'space',
+    org: string = DEFAULT_ORG_ID,
+    redirect: string | null = REDIRECT
+  ) =>
     app.app.inject({
       method: 'POST',
       url: `/api/v1/orgs/${org}/integrations/googlechat/claim`,
-      payload: { state: state(kind) }
+      payload: { state: state(kind, redirect) }
     })
 
   const lastAssign = (sends: { type: string; payload: unknown }[]) =>
@@ -353,7 +363,7 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
       prebuilt: true,
       externalAppId: PROJECT_NUMBER,
       externalTenantId: 'domains/0000000000',
-      platformConfig: { projectId: PROJECT_ID, domainId: '0000000000' }
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
     })
     expect(bot.secret?.botToken).toBe(KEY)
     expect(lastAssign(relaySends).ingress).toEqual({ apiAppId: PROJECT_NUMBER, tenantIds: ['domains/0000000000'] })
@@ -363,11 +373,25 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
     expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(1)
     expect(await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).toMatchObject({
       externalTenantId: 'domains/0000000000',
-      platformConfig: { projectId: PROJECT_ID, domainId: '0000000000', customerId: 'C0000000000' }
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000', customerId: 'C0000000000' }
     })
     expect(lastAssign(relaySends).ingress).toEqual({
       apiAppId: PROJECT_NUMBER,
       tenantIds: ['customers/C0000000000', 'domains/0000000000']
+    })
+
+    // A second domain of the same customer, proven in a DM without a completion URL, joins the one row.
+    callerDomain = '0000000001'
+    const joined = await claim(app, 'dm', DEFAULT_ORG_ID, null)
+    expect(joined.statusCode).toBe(200)
+    expect(joined.json()).toEqual({})
+    expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(1)
+    expect(await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).toMatchObject({
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000,0000000001', customerId: 'C0000000000' }
+    })
+    expect(lastAssign(relaySends).ingress).toEqual({
+      apiAppId: PROJECT_NUMBER,
+      tenantIds: ['customers/C0000000000', 'domains/0000000000', 'domains/0000000001']
     })
   })
 

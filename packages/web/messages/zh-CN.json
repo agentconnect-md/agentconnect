@@ -986,6 +986,9 @@
       "refresh": "刷新",
       "connect": "连接",
       "connecting": "正在连接…",
+      "doneTitle": "Google Chat 已连接",
+      "doneBody": "请回到 Google Chat，再发一次你的消息。从现在起由 Agent 回复。",
+      "backToChat": "返回 Google Chat",
       "selectOrganization": "请选择一个组织以继续。",
       "loadError": "无法加载你的组织。请刷新页面重试。",
       "errors": {

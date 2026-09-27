@@ -16,6 +16,7 @@ const ORG = OrgId('11111111-1111-4111-8111-111111111111')
 const OTHER_ORG = OrgId('22222222-2222-4222-8222-222222222222')
 const PRESET = AgentId('77777777-7777-4777-8777-777777777777')
 const BOT = BotId('88888888-8888-4888-8888-888888888888')
+const OTHER_BOT = BotId('99999999-9999-4999-8999-999999999999')
 const PROJECT_ID = 'example-project'
 const PROJECT_NUMBER = '123456789012'
 const GOOGLE_USER = '100000000000000000009'
@@ -47,7 +48,7 @@ interface StateFields {
   user: string
   kind: 'dm' | 'space'
   tenant: string
-  redirect: string
+  redirect?: string
   iat: number
 }
 
@@ -73,13 +74,37 @@ function customerRow(over: Partial<BotRecord> = {}): BotRecord {
     name: `Google Chat · ${PROJECT_ID}`,
     externalAppId: PROJECT_NUMBER,
     externalTenantId: 'domains/0000000000',
-    platformConfig: { projectId: PROJECT_ID, domainId: '0000000000' },
+    platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' },
     agentIds: [PRESET],
     ...over
   } as BotRecord
 }
 
 type GoogleAnswers = Record<string, Response | 'offline'>
+
+/** Google's answers to a Space claim: the caller's INTERNAL membership in `domainId`, and the Space's customer. */
+function spaceAnswers(domainId = '0000000000', customer = 'customers/C0000000000'): GoogleAnswers {
+  return {
+    [`${GOOGLE_CHAT_API_ROOT}/${SPACE}/members/${GOOGLE_USER}`]: Response.json({
+      name: `${SPACE}/members/${GOOGLE_USER}`,
+      affiliation: 'INTERNAL',
+      member: { name: `users/${GOOGLE_USER}`, type: 'HUMAN', domainId }
+    }),
+    [`${GOOGLE_CHAT_API_ROOT}/${SPACE}`]: Response.json({ name: SPACE, customer })
+  }
+}
+
+/** Google's answer to a DM claim: the caller alone, in `domainId`. */
+function dmAnswers(domainId = '0000000000'): GoogleAnswers {
+  return {
+    [`${GOOGLE_CHAT_API_ROOT}/${DM}/members?pageSize=100`]: Response.json({
+      memberships: [{ member: { name: `users/${GOOGLE_USER}`, type: 'HUMAN', domainId } }]
+    })
+  }
+}
+
+const dmState = (over: Partial<StateFields> = {}) =>
+  state({ kind: 'dm', space: DM, tenant: 'domains/0000000000', ...over })
 
 let running: FastifyInstance | undefined
 afterEach(async () => {
@@ -101,14 +126,7 @@ async function harness(
   } = {}
 ) {
   const googleCalls: string[] = []
-  const answers: GoogleAnswers = opts.google ?? {
-    [`${GOOGLE_CHAT_API_ROOT}/${SPACE}/members/${GOOGLE_USER}`]: Response.json({
-      name: `${SPACE}/members/${GOOGLE_USER}`,
-      affiliation: 'INTERNAL',
-      member: { name: `users/${GOOGLE_USER}`, type: 'HUMAN', domainId: '0000000000' }
-    }),
-    [`${GOOGLE_CHAT_API_ROOT}/${SPACE}`]: Response.json({ name: SPACE, customer: 'customers/C0000000000' })
-  }
+  const answers: GoogleAnswers = opts.google ?? spaceAnswers()
   const fetchImpl = (async (input: string | URL | Request) => {
     const url = String(input)
     googleCalls.push(url)
@@ -130,7 +148,16 @@ async function harness(
   const put = vi.fn(async () => {})
   const integrationCreate = vi.fn(async (input: Record<string, unknown>) => ({ ...input, status: 'active' }))
   const syncBot = vi.fn(async () => {})
-  const addPlatformConfigEntries = vi.fn(async () => {})
+  const merged: { orgId: OrgId; id: BotId; entries: Record<string, string> }[] = []
+  // Applies the route's merge to the row's bag, as the repository does under the row lock.
+  const mergePlatformConfig = vi.fn(
+    async (orgId: OrgId, id: BotId, merge: (current: Record<string, unknown>) => Record<string, string>) => {
+      const entries = merge((opts.rows ?? []).find((row) => row.id === id)?.platformConfig ?? {})
+      if (Object.keys(entries).length === 0) return false
+      merged.push({ orgId, id, entries })
+      return true
+    }
+  )
   const credentialInstall = vi.fn(async () => 2)
   const addBotMembership = vi.fn(async (input: Record<string, unknown>) => ({ outcome: 'added', integration: input }))
   const deps = {
@@ -150,7 +177,7 @@ async function harness(
       },
       bot: {
         listForPlatform: async () => opts.rows ?? [],
-        addPlatformConfigEntries,
+        mergePlatformConfig,
         create
       },
       botSecret: { put },
@@ -184,7 +211,7 @@ async function harness(
     put,
     integrationCreate,
     syncBot,
-    addPlatformConfigEntries,
+    merged,
     credentialInstall,
     addBotMembership
   }
@@ -212,6 +239,12 @@ describe('the claim state', () => {
     expect(isGoogleChatRedirect('https://console.example.test/')).toBe(false)
     expect(decodeGoogleChatClaimState(state({ redirect: 'https://console.example.test/' }))).toBeUndefined()
   })
+
+  it('accepts a state without a completion URL, as the welcome card’s click mints', () => {
+    const decoded = decodeGoogleChatClaimState(state({ redirect: undefined }))
+    expect(decoded).toMatchObject({ app: PROJECT_NUMBER, kind: 'space' })
+    expect(decoded).not.toHaveProperty('redirect')
+  })
 })
 
 describe('POST /integrations/googlechat/claim: a new customer', () => {
@@ -228,7 +261,7 @@ describe('POST /integrations/googlechat/claim: a new customer', () => {
         transport: 'http',
         prebuilt: true,
         externalAppId: PROJECT_NUMBER,
-        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainId: '0000000000' }
+        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
       })
     )
     // A copy of the deployment key in canonical JSON, exactly as the deployment-app install stores it.
@@ -245,18 +278,58 @@ describe('POST /integrations/googlechat/claim: a new customer', () => {
   })
 
   it('binds a DM claim to the claimant’s own domain', async () => {
-    const h = await harness({
-      google: {
-        [`${GOOGLE_CHAT_API_ROOT}/${DM}/members?pageSize=100`]: Response.json({
-          memberships: [{ member: { name: `users/${GOOGLE_USER}`, type: 'HUMAN', domainId: '0000000000' } }]
-        })
-      }
-    })
+    const h = await harness({ google: dmAnswers() })
 
-    const res = await h.claim(state({ kind: 'dm', space: DM, tenant: 'domains/0000000000' }))
+    const res = await h.claim(dmState())
     expect(res.statusCode).toBe(201)
     expect(h.create).toHaveBeenCalledWith(
-      expect.objectContaining({ platformConfig: { projectId: PROJECT_ID, domainId: '0000000000' } })
+      expect.objectContaining({ platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' } })
+    )
+  })
+
+  it('answers success without a completion URL when the state carried none', async () => {
+    const h = await harness()
+
+    const res = await h.claim(state({ redirect: undefined }))
+    expect(res.statusCode).toBe(201)
+    expect(res.json()).toEqual({})
+    expect(h.create).toHaveBeenCalledOnce()
+  })
+
+  it('gives a Space claim its customer’s own row even when the organization holds another customer', async () => {
+    const other = customerRow({
+      externalTenantId: 'customers/C0000000001',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000001', domainIds: '0000000009' }
+    })
+    const h = await harness({ rows: [other], google: spaceAnswers('0000000000') })
+
+    expect((await h.claim()).statusCode).toBe(201)
+    expect(h.merged).toEqual([])
+    expect(h.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+      })
+    )
+  })
+
+  it('gives a DM domain its own row when the organization holds several customer rows', async () => {
+    const rows = [
+      customerRow({
+        externalTenantId: 'customers/C0000000001',
+        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000001' }
+      }),
+      customerRow({
+        id: OTHER_BOT,
+        externalTenantId: 'customers/C0000000002',
+        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000002' }
+      })
+    ]
+    const h = await harness({ rows, google: dmAnswers('0000000003') })
+
+    expect((await h.claim(dmState())).statusCode).toBe(201)
+    expect(h.merged).toEqual([])
+    expect(h.create).toHaveBeenCalledWith(
+      expect.objectContaining({ platformConfig: { projectId: PROJECT_ID, domainIds: '0000000003' } })
     )
   })
 
@@ -286,9 +359,70 @@ describe('POST /integrations/googlechat/claim: a customer that already has a row
     const res = await h.claim()
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ redirect: REDIRECT })
-    expect(h.addPlatformConfigEntries).toHaveBeenCalledWith(ORG, BOT, { customerId: 'C0000000000' })
+    expect(h.merged).toEqual([{ orgId: ORG, id: BOT, entries: { customerId: 'C0000000000' } }])
     expect(h.syncBot).toHaveBeenCalledWith(BOT)
     expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('answers 200 without a completion URL for this organization’s own customer when the state carried none', async () => {
+    const h = await harness({ rows: [customerRow()] })
+
+    const res = await h.claim(state({ redirect: undefined }))
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({})
+  })
+
+  it('attaches a second domain from a Space claim to its customer’s row, writing no new row', async () => {
+    const row = customerRow({
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+    })
+    const h = await harness({ rows: [row], google: spaceAnswers('0000000001') })
+
+    const res = await h.claim()
+    expect(res.statusCode).toBe(200)
+    expect(h.merged).toEqual([{ orgId: ORG, id: BOT, entries: { domainIds: '0000000000,0000000001' } }])
+    expect(h.syncBot).toHaveBeenCalledWith(BOT)
+    expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('joins a second domain from a DM claim to the organization’s only customer row', async () => {
+    const row = customerRow({
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+    })
+    const h = await harness({ rows: [row], google: dmAnswers('0000000001') })
+
+    const res = await h.claim(dmState({ tenant: 'domains/0000000001' }))
+    expect(res.statusCode).toBe(200)
+    expect(h.merged).toEqual([{ orgId: ORG, id: BOT, entries: { domainIds: '0000000000,0000000001' } }])
+    expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('refuses a DM domain another organization’s customer row already lists, whatever that row’s key', async () => {
+    const row = customerRow({
+      orgId: OTHER_ORG,
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000,0000000001' }
+    })
+    const h = await harness({ rows: [row], google: dmAnswers('0000000001') })
+
+    const res = await h.claim(dmState({ tenant: 'domains/0000000001' }))
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('GOOGLE_CHAT_CLAIM_TAKEN')
+    expect(h.merged).toEqual([])
+    expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('refuses a Space claim whose domain another organization holds, even for an unheld customer', async () => {
+    const h = await harness({
+      rows: [customerRow({ orgId: OTHER_ORG })],
+      google: spaceAnswers('0000000000', 'customers/C0000000005')
+    })
+
+    const res = await h.claim()
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('GOOGLE_CHAT_CLAIM_TAKEN')
   })
 
   it('is a no-op when the row already knows every proven id', async () => {
@@ -296,13 +430,13 @@ describe('POST /integrations/googlechat/claim: a customer that already has a row
       rows: [
         customerRow({
           externalTenantId: 'customers/C0000000000',
-          platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainId: '0000000000' }
+          platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
         })
       ]
     })
 
     expect((await h.claim()).statusCode).toBe(200)
-    expect(h.addPlatformConfigEntries).not.toHaveBeenCalled()
+    expect(h.merged).toEqual([])
     expect(h.syncBot).not.toHaveBeenCalled()
   })
 

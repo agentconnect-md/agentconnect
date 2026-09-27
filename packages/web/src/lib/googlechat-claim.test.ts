@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { claimGoogleChatCustomer } from './api'
-import { decodeGoogleChatClaimState, googleChatClaimErrorKey, isGoogleChatRedirect } from './googlechat-claim'
+import {
+  decodeGoogleChatClaimState,
+  googleChatClaimErrorKey,
+  googleChatConversationUrl,
+  isGoogleChatRedirect
+} from './googlechat-claim'
 
 const REDIRECT = 'https://chat.google.com/api/config_complete_redirect?token=synthetic'
 
@@ -44,6 +49,29 @@ describe('decodeGoogleChatClaimState', () => {
     expect(isGoogleChatRedirect(REDIRECT)).toBe(true)
     expect(isGoogleChatRedirect('https://chat.google.com.example.test/')).toBe(false)
     expect(isGoogleChatRedirect('javascript:alert(1)')).toBe(false)
+  })
+
+  it('accepts a state without a completion URL, as the welcome card’s click mints, but not a malformed one', () => {
+    const { redirect: _, ...withoutRedirect } = FIELDS
+    expect(decodeGoogleChatClaimState(encode(withoutRedirect))).toEqual({
+      app: '123456789012',
+      space: 'spaces/AAAAexample',
+      user: 'users/100000000000000000009',
+      kind: 'space'
+    })
+    expect(decodeGoogleChatClaimState(encode({ ...FIELDS, redirect: 42 }))).toBeNull()
+    expect(decodeGoogleChatClaimState(encode({ ...FIELDS, redirect: '' }))).toBeNull()
+  })
+})
+
+describe('googleChatConversationUrl', () => {
+  it('leads back to the Space’s room or to the DM', () => {
+    expect(googleChatConversationUrl({ kind: 'space', space: 'spaces/AAAAexample' })).toBe(
+      'https://chat.google.com/room/AAAAexample'
+    )
+    expect(googleChatConversationUrl({ kind: 'dm', space: 'spaces/DDDDexample' })).toBe(
+      'https://chat.google.com/dm/DDDDexample'
+    )
   })
 })
 
