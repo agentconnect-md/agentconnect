@@ -1,10 +1,16 @@
-// `POST /chat` over real HTTP, read with the `ai` package's own client; the daemon and the CP verdict are faked.
+// `POST /ai-sdk/chat/:conversationId` over real HTTP, read with the `ai` package's own client; the daemon and the CP verdict are faked.
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { AddressInfo } from 'node:net'
 import { DefaultChatTransport, readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai'
 import type { RcVerifyResult, RdAck, RdMsgWebchat, WebchatEvent } from '@agentconnect.md/protocol'
-import { registerChatRoute, chatTurnText, chatRefusalStatus, RELAY_CHAT_PATH, type ChatRoute } from './chat-route.js'
+import {
+  registerAiSdkChatRoute,
+  chatTurnText,
+  chatRefusalStatus,
+  RELAY_AI_SDK_CHAT_PATH,
+  type ChatRoute
+} from './ai-sdk-chat-route.js'
 import { WebchatRouter } from './webchat-router.js'
 import { WebchatVerdictCache } from './webchat-verdict-cache.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -99,7 +105,7 @@ async function start(
   const info = vi.fn<(m: string) => void>()
   const log: Logger = { debug: () => {}, info, warn: () => {}, error: () => {} }
   app = Fastify({ logger: false, forceCloseConnections: true })
-  route = registerChatRoute(app, {
+  route = registerAiSdkChatRoute(app, {
     verify: (token) => cache.verify(token),
     daemons: () => ({
       get: (id: string) =>
@@ -125,11 +131,11 @@ const userMessage = (id: string, ...texts: string[]): UIMessage => ({
 async function chat(
   h: Harness,
   messages: UIMessage[] = [userMessage('u1', 'hello')],
-  opts: { token?: string; signal?: AbortSignal } = {}
+  opts: { token?: string; signal?: AbortSignal; conversationId?: string } = {}
 ): Promise<{ stream: ReadableStream<UIMessageChunk>; headers: Headers }> {
   let headers: Headers | undefined
   const transport = new DefaultChatTransport<UIMessage>({
-    api: `${h.base}${RELAY_CHAT_PATH}`,
+    api: chatUrl(h, opts.conversationId),
     headers: { Authorization: `Bearer ${opts.token ?? TOKEN}` },
     fetch: (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const res = await fetch(input, init)
@@ -159,9 +165,12 @@ async function read(stream: ReadableStream<UIMessageChunk>): Promise<{ message: 
   return { message: message!, errors }
 }
 
+const chatUrl = (h: Harness, conversationId = CONV): string =>
+  `${h.base}${RELAY_AI_SDK_CHAT_PATH.replace(':conversationId', conversationId)}`
+
 /** A raw POST, for the answers that come before any stream. */
-async function post(h: Harness, body: unknown, token: string | null = TOKEN): Promise<Response> {
-  return fetch(`${h.base}${RELAY_CHAT_PATH}`, {
+async function post(h: Harness, body: unknown, token: string | null = TOKEN, conversationId = CONV): Promise<Response> {
+  return fetch(chatUrl(h, conversationId), {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: typeof body === 'string' ? body : JSON.stringify(body)
@@ -190,7 +199,7 @@ function finish(h: Harness, turnId: string, over: { stopReason?: string; error?:
   })
 }
 
-describe('POST /chat', () => {
+describe('POST /ai-sdk/chat/:conversationId', () => {
   it('streams one turn as a UI message: text, reasoning, data parts, metadata, finish', async () => {
     const h = await start()
     const { stream, headers } = await chat(h, [
@@ -349,6 +358,18 @@ describe('POST /chat', () => {
     expect(expired.status).toBe(401)
     expect(h.verify).toHaveBeenCalledTimes(2)
     expect(h.daemon.sent).toHaveLength(2)
+  })
+
+  it("answers 404 when the path names a conversation other than the token's, and matches it case-insensitively", async () => {
+    const h = await start()
+    expect((await post(h, turnBody(), TOKEN, FOREIGN_TURN)).status).toBe(404)
+    expect((await post(h, turnBody(), TOKEN, 'not-a-uuid')).status).toBe(404)
+    expect(h.daemon.sent).toHaveLength(0)
+
+    const { stream } = await chat(h, undefined, { conversationId: CONV.toUpperCase() })
+    expect(h.daemon.sent.map((m) => m.chatId)).toEqual([CONV])
+    finish(h, h.daemon.turns()[0]!)
+    expect((await read(stream)).errors).toEqual([])
   })
 
   it('refuses a missing or unverifiable token with 401', async () => {

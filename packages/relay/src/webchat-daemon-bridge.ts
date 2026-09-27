@@ -1,4 +1,4 @@
-// The daemon-facing half of a webchat op, shared by the browser socket and `POST /chat`: find the live rd/* socket, deliver one rd/msg.
+// The daemon-facing half of a webchat op, shared by the browser socket and the AI SDK chat route: find the live rd/* socket, deliver one rd/msg.
 import { randomUUID } from 'node:crypto'
 import {
   ErrorCode,

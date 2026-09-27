@@ -31,7 +31,7 @@ const done = (over: Partial<WebchatDone> = {}): WebchatDone => ({ conversationId
 /** Serve `wire` to the AI SDK's `DefaultChatTransport` and assemble the assistant message the way `useChat` does. */
 async function decode(wire: string): Promise<{ message: UIMessage; chunks: UIMessageChunk[]; errors: string[] }> {
   const transport = new DefaultChatTransport<UIMessage>({
-    api: 'https://relay.example.test/chat',
+    api: 'https://relay.example.test/ai-sdk/chat/' + CONV,
     fetch: (async () => new Response(wire, { headers: UI_MESSAGE_STREAM_HEADERS })) as typeof fetch
   })
   const stream = await transport.sendMessages({

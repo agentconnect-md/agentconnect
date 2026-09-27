@@ -25,7 +25,7 @@ import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { WebchatRouter, bindWebchatPostAuthor } from './webchat-router.js'
 import { WebchatVerdictCache } from './webchat-verdict-cache.js'
-import { registerChatRoute } from './chat-route.js'
+import { registerAiSdkChatRoute } from './ai-sdk-chat-route.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
 import { relayIngressPlugins } from './platforms/registry.js'
 import { CollaborationRouter } from './collaboration-router.js'
@@ -315,13 +315,13 @@ async function main(): Promise<void> {
     log
   })
 
-  // The webchat router (chatId → browser or /chat turn) — a daemon's rd/chat is delivered here.
+  // The webchat router (chatId → browser or AI SDK chat turn) — a daemon's rd/chat is delivered here.
   const router = new WebchatRouter()
-  // One verdict per token until its `exp`, shared by the browser socket and `/chat` (§10.4).
+  // One verdict per token until its `exp`, shared by the browser socket and the AI SDK chat route (§10.4).
   const webchatVerdicts = new WebchatVerdictCache((token) => client.verify('webchat-token', token))
 
-  // Agent chat API (POST /chat, §10.4); registered before listen, the rd/* server is late-bound.
-  const chatRoute = registerChatRoute(server, {
+  // Agent chat API (POST /ai-sdk/chat/:conversationId, §10.4); registered before listen, the rd/* server is late-bound.
+  const chatRoute = registerAiSdkChatRoute(server, {
     verify: (token) => webchatVerdicts.verify(token),
     daemons: () => held.rdServer,
     router,
