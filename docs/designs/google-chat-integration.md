@@ -427,7 +427,7 @@ for private DM turns as part of the acceptance checks.
 
 | Area                    | Required contribution                                                                                                                                                                             |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protocol and message    | Register the known platform, conservative manifest values, and pure Google event normalization.                                                                                                   |
+| Protocol and message    | The platform id, conservative manifest values, and pure Google event normalization; `KNOWN_PLATFORMS` registration lands with the host modules.                                                   |
 | Relay platform module   | HTTPS route, project-audience verification, demux, normalization, membership reports, and strict admission responses.                                                                             |
 | Daemon platform module  | Config schema, Chat REST connection/read port, the relay-ingress strategy promoted to a contract member, renderer, turn output, and lifecycle registration.                                       |
 | Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals. |
@@ -444,9 +444,11 @@ The current database stores platform IDs as strings and already provides platfor
 configuration and encrypted bot secrets. This design requires no new Control Plane
 database table or Google credential columns. Known-platform writers, capability
 reporting, API schemas, and registry consistency checks still need explicit
-registration. Use the established four-host platform architecture. No feature
-flag, separate relay service, public adapter protocol, or broad refactor is
-required.
+registration. `KNOWN_PLATFORMS` joins that registration rather than the protocol
+step: the Control Plane's session filter and its MCP tool must accept every listed
+id, and a manifest row without a wire-vocabulary entry already serves Linear. Use
+the established four-host platform architecture. No feature flag, separate relay
+service, public adapter protocol, or broad refactor is required.
 
 ## 8. Pub/Sub alternative and cost
 

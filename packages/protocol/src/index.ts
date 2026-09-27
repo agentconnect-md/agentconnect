@@ -201,7 +201,7 @@ export {
 export { MAX_REPO_SUBDIR_LENGTH, RepoSubdirError, normalizeRepoSubdir } from './repo-subdir.js'
 
 // ── §5 platform manifest — pre-dispatch capability table, read by every host ──
-export { DEFAULT_MANIFEST, manifestFor } from './platform-manifest.js'
+export { DEFAULT_MANIFEST, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'
 export type { MembershipEnumeration, PlatformManifest } from './platform-manifest.js'
 
 // ── exact money — the decimal amount every reported/stored/served cost uses ──

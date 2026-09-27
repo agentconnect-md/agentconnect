@@ -110,6 +110,9 @@ export interface PlatformManifest {
   readonly addressedByConstruction: boolean
 }
 
+// Google Chat's id; it joins `KNOWN_PLATFORMS` with its host modules (google-chat-integration.md §7).
+export const GOOGLE_CHAT_PLATFORM = 'googlechat'
+
 /** The conservative arm of every axis — see the fail-closed note above. */
 export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   consoleContinuation: false,
@@ -211,6 +214,20 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       ownerAsDefault: true,
       // A follow-up prompt in a session the agent already holds continues it rather than addressing anew.
       addressedByConstruction: true
+    }
+  ],
+  // Conservative on every axis; no `dmChannelPattern` because a DM Space name looks like any other `spaces/…` name.
+  [
+    GOOGLE_CHAT_PLATFORM,
+    {
+      consoleContinuation: false,
+      membershipEnumeration: 'observed',
+      botSenderRouting: false,
+      leaveGranularity: 'conversation',
+      multiAgentShareable: false,
+      publicChannelJoin: false,
+      ownerAsDefault: false,
+      addressedByConstruction: false
     }
   ]
 ])

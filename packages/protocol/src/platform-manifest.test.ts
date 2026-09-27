@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { originKindOf } from './frames/route.js'
-import { DEFAULT_MANIFEST, manifestFor } from './platform-manifest.js'
+import { DEFAULT_MANIFEST, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'
 
 /**
  * The §5 manifest's load-bearing claim is not its field values — those are
@@ -89,6 +89,17 @@ describe('platform manifest', () => {
     expect(m.botSenderRouting).toBe(DEFAULT_MANIFEST.botSenderRouting)
     expect(m.leaveGranularity).toBe(DEFAULT_MANIFEST.leaveGranularity)
     expect(m.dmChannelPattern).toBeUndefined()
+  })
+
+  it('keeps Google Chat on the conservative arm of every axis, with DM-ness left to the normalized message', () => {
+    // An explicit row, so a later change to the defaults cannot move Google Chat onto a path it has not earned.
+    const { platform, ...axes } = manifestFor(GOOGLE_CHAT_PLATFORM)
+    expect(platform).toBe('googlechat')
+    expect(axes).toEqual(DEFAULT_MANIFEST)
+    expect(axes.consoleContinuation).toBe(false)
+    expect(axes.dmChannelPattern).toBeUndefined()
+    // Not yet a wire-vocabulary entry: that registration lands with the host modules.
+    expect(originKindOf(GOOGLE_CHAT_PLATFORM)).toBeUndefined()
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {
