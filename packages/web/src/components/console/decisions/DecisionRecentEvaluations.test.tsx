@@ -87,6 +87,9 @@ describe('DecisionRecentEvaluations', () => {
     const routed = all.find((row) => row.textContent?.includes('Support bot'))!
     expect(routed.textContent).toContain('#help')
     expect(routed.textContent).not.toContain('help-channel')
+    // Outcomes are worded per history: routing rows use the router's words, gate rows the gate's.
+    expect(all.map((row) => row.textContent).join(' ')).toMatch(/Routed|Partially routed|Fallback/)
+    expect(all.map((row) => row.textContent).join(' ')).toMatch(/Triggered|Skipped/)
   })
 
   it('narrows to one place with its chain note, settings link, and panel', async () => {

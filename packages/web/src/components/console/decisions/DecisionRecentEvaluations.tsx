@@ -6,7 +6,12 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
-import type { DecisionAnswerSummary, DecisionQuestion } from '@agentconnect.md/protocol/decision'
+import type {
+  DecisionAnswerSummary,
+  DecisionEvaluationOutcome,
+  DecisionQuestion,
+  DecisionRoutingEvaluationOutcome
+} from '@agentconnect.md/protocol/decision'
 import type { DecisionUsage } from '@agentconnect.md/protocol/decision-api'
 import { Icon } from '@/components/ui'
 import { fetchAgentModelEvaluations, type CodeHostRoutingKey } from '@/lib/api'
@@ -37,6 +42,7 @@ interface Row {
   seq: number
   at: string
   answer: DecisionAnswerSummary | null
+  /** The raw outcome of this place's history, worded at render. */
   outcome: string
   latencyMs: number | null
   title: string | null
@@ -137,7 +143,7 @@ export function DecisionRecentEvaluations({
       return {
         items: page.items.map((item) => ({
           ...common(item),
-          outcome: t(`routing.evaluations.outcomes.${item.outcome}`),
+          outcome: item.outcome,
           title: item.title,
           channel: item.channel,
           channelName: names.get(item.channel) ?? item.channel
@@ -153,7 +159,7 @@ export function DecisionRecentEvaluations({
       return {
         items: page.items.map((item) => ({
           ...common(item),
-          outcome: modelT(`outcome.${item.outcome}`),
+          outcome: item.outcome,
           title: `${item.target.runtime} · ${item.target.model}`
         })),
         more: page.nextCursor !== null
@@ -173,7 +179,7 @@ export function DecisionRecentEvaluations({
     return {
       items: page.items.map((item) => ({
         ...common(item),
-        outcome: t(`evaluations.outcomes.${item.outcome}`),
+        outcome: item.outcome,
         title: item.title
       })),
       more: page.nextCursor !== null
@@ -237,6 +243,13 @@ export function DecisionRecentEvaluations({
   })
   const note = (text: string) => <p className="m-0 px-4 py-3 text-[12.5px] text-(--text-tertiary)">{text}</p>
   const kindWord = (kind: Kind) => t(`usedBy.kind.${kind}`)
+  // Outcomes stay raw in the cache and are worded here, so a language switch rewords rows already loaded.
+  const outcomeText = (row: Row, kind: Kind) =>
+    kind === 'model_selection'
+      ? modelT(`outcome.${row.outcome as 'selected' | 'fallback'}`)
+      : kind === 'shared_bot_routing'
+        ? t(`routing.evaluations.outcomes.${row.outcome as DecisionRoutingEvaluationOutcome}`)
+        : t(`evaluations.outcomes.${row.outcome as DecisionEvaluationOutcome}`)
   const hint = (place: Place) =>
     [
       place.label,
@@ -389,7 +402,7 @@ export function DecisionRecentEvaluations({
                               <span className="mono flex-none text-[12.5px] text-(--text-primary)">{answer}</span>
                             ) : (
                               <span className="badge flex-none bg-(--surface-active) text-(--text-secondary)">
-                                {row.outcome}
+                                {outcomeText(row, place.kind)}
                               </span>
                             )}
                           </span>
@@ -403,7 +416,9 @@ export function DecisionRecentEvaluations({
                               </span>
                             </span>
                             <span className="flex-none">
-                              {[answer ? row.outcome : null, latencyText(row.latencyMs)].filter(Boolean).join(' · ')}
+                              {[answer ? outcomeText(row, place.kind) : null, latencyText(row.latencyMs)]
+                                .filter(Boolean)
+                                .join(' · ')}
                             </span>
                           </span>
                         </button>
