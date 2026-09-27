@@ -378,7 +378,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
       <section id="googlechat-section" class="panel setup-section" aria-labelledby="googlechat-heading">
         <div class="provider-head">
-          <div><h3 id="googlechat-heading">Google Chat</h3><p class="muted">One Chat app for the preset AgentConnect agent.</p></div>
+          <div><h3 id="googlechat-heading">Google Chat</h3><p class="muted">One Chat app for the deployment, installed on one agent at a time.</p></div>
           <span id="googlechat-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
