@@ -287,7 +287,7 @@ requires the caller's own GitHub permission for the tier requested.
     exposed (`createGithubTrigger`): they mint no capability, reach only a
     repository an installation the org already owns covers, and an agent that
     cannot be given its trigger cannot be finished from chat at all;
-  - **its own host agent** — the "cannot unlock itself" property. The cancelled design got this from guards on `kind='assistant'`; with the toolset inside an ordinary agent, the successor must re-establish it against whatever configures that agent's admin sessions.
+  - **deleting its own host agent**, which would end the conversation carrying the approval. Changing that agent's configuration or workspace is allowed: a delegated write executes only after the owner approves its exact arguments in the browser, the same change the owner could make in the console, so refusing it only pushed the owner out of the conversation.
 
 ### 6.4 Destructive Operations Require Schema-Level Confirmation
 

@@ -618,6 +618,20 @@ describe('MCP write tools — bodies and upsert semantics', () => {
     expect(scratch.calls[1]!.body).toEqual({ mode: 'scratch' })
   })
 
+  it('a webchat conversation may change its own host agent but not delete it', async () => {
+    const update = await run('updateAgent', { agentId: HOST_AGENT_UUID, model: 'opus' })
+    expect(update.calls).toEqual([
+      { method: 'PATCH', path: `/orgs/${ORG_ID}/agents/${HOST_AGENT_UUID}`, body: { model: 'opus' } }
+    ])
+    const workspace = await run('setAgentWorkspace', { agentId: HOST_AGENT_UUID, confirm: 'my-agent', mode: 'scratch' })
+    expect(workspace.calls.filter((c) => c.method !== 'GET')).toEqual([
+      { method: 'PUT', path: `/orgs/${ORG_ID}/agents/${HOST_AGENT_UUID}/workspace`, body: { mode: 'scratch' } }
+    ])
+    const deletion = await run('deleteAgent', { agentId: HOST_AGENT_UUID, confirm: 'my-agent' })
+    expect(deletion.result.statusCode).toBe(403)
+    expect(deletion.calls).toEqual([])
+  })
+
   it('createGithubTrigger POSTs a github-kind hook, and the webhook kind stays out of the catalog', async () => {
     const { calls } = await run('createGithubTrigger')
     expect(calls).toEqual([

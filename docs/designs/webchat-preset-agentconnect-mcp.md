@@ -104,9 +104,9 @@ runtime.
 6. Every MCP request re-checks current membership, role, resource visibility, the
    conversation's webchat owner binding, agent placement where relevant, catalog
    scope, and confirmation policy.
-7. Delegated calls cannot mutate their own host agent. `updateAgent` and
-   `deleteAgent` fail before REST dispatch when their target is the grant's
-   `agentId`.
+7. Delegated calls may change their own host agent's configuration and workspace
+   through the same approval as any other write (item 8), but cannot delete it:
+   `deleteAgent` fails before REST dispatch when its target is the grant's `agentId`.
 8. A delegated MCP request never directly executes a write. The CP first creates or
    reuses an open operation bound to the conversation, authority generation, acting
    user, canonical intent hash, and confirmation policy. Only browser approval may

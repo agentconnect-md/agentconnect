@@ -56,7 +56,7 @@ type UsageToolRange = 'd1' | 'd7' | 'd30' | 'd90'
  *  against the versioned REST surface (`/api/v1`-relative paths). */
 export interface McpToolCtx {
   orgId: string
-  /** Present only for a webchat assertion; its host agent may not mutate itself. */
+  /** Present only for a webchat assertion; its host agent may change itself but not delete itself. */
   delegatedAgentId?: string
   /** The webchat conversation a delegated assertion speaks for. Server-supplied:
    *  the operation reads below are scoped to it, so no caller can name another. */
@@ -174,12 +174,12 @@ const notFound = (what: string): RestResult => ({
   body: JSON.stringify({ error: 'Not Found', statusCode: 404, message: `${what} not found` })
 })
 
-const delegatedSelfMutationDenied = (): RestResult => ({
+const delegatedSelfDeleteDenied = (): RestResult => ({
   statusCode: 403,
   body: JSON.stringify({
     error: 'Forbidden',
     statusCode: 403,
-    message: 'a delegated webchat invocation cannot update or delete its host agent'
+    message: 'a delegated webchat invocation cannot delete its host agent'
   })
 })
 
@@ -973,9 +973,7 @@ export const MCP_TOOLS: McpToolDef[] = [
     call: async (ctx, a) => {
       const agentId = canonicalUuid(a.agentId)
       if (!agentId) return invalidAgentId()
-      return sameUuid(ctx.delegatedAgentId, agentId)
-        ? delegatedSelfMutationDenied()
-        : ctx.send('PATCH', org(ctx, `/agents/${seg(agentId)}`), bodyOf(a, 'agentId'))
+      return ctx.send('PATCH', org(ctx, `/agents/${seg(agentId)}`), bodyOf(a, 'agentId'))
     }
   },
   {
@@ -999,7 +997,6 @@ export const MCP_TOOLS: McpToolDef[] = [
     call: async (ctx, a) => {
       const agentId = canonicalUuid(a.agentId)
       if (!agentId) return invalidAgentId()
-      if (sameUuid(ctx.delegatedAgentId, agentId)) return delegatedSelfMutationDenied()
       const target = await ctx.get(org(ctx, `/agents/${seg(agentId)}`))
       if (target.statusCode !== 200) return target
       const name = (JSON.parse(target.body) as { name?: unknown }).name
@@ -1022,7 +1019,7 @@ export const MCP_TOOLS: McpToolDef[] = [
     call: async (ctx, a) => {
       const agentId = canonicalUuid(a.agentId)
       if (!agentId) return invalidAgentId()
-      if (sameUuid(ctx.delegatedAgentId, agentId)) return delegatedSelfMutationDenied()
+      if (sameUuid(ctx.delegatedAgentId, agentId)) return delegatedSelfDeleteDenied()
       const target = await ctx.get(org(ctx, `/agents/${seg(agentId)}`))
       if (target.statusCode !== 200) return target
       const name = (JSON.parse(target.body) as { name?: unknown }).name
