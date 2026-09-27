@@ -1,7 +1,5 @@
+import { GOOGLE_CHAT_EVENTS_PATH } from '@agentconnect.md/protocol'
 import type { ProviderAppConfig } from './provider-app.js'
-
-/** Relay-terminated Chat interaction events (google-chat-integration.md §2); the relay module must mount this same path. */
-export const GOOGLE_CHAT_EVENTS_PATH = '/googlechat/events'
 
 /** The authentication audience the Chat app configuration must select (§2). */
 export const GOOGLE_CHAT_AUDIENCE_SETTING = 'Project Number'

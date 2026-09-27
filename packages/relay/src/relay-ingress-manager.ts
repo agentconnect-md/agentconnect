@@ -779,19 +779,19 @@ export class RelayIngressManager {
     const { plugin, pool, demux } = entry
     const now = this.deps.clock.now()
     const hints = plugin.extractDemuxHints(rawBody, body, headers)
-    const tryCandidate = (botId: string | undefined) => {
+    const tryCandidate = async (botId: string | undefined) => {
       const ingest = botId ? pool.get(botId) : undefined
       if (!ingest || !this.tenantFencePasses(botId!, hints.tenantId)) return undefined
-      const verified = plugin.verify(ingest, rawBody, body, headers, now)
+      const verified = await plugin.verify(ingest, rawBody, body, headers, now)
       return verified === undefined ? undefined : { ingest, verified }
     }
     // Composite fast path — assign-derived, so a hit is exact (still verified).
-    let hit = hints.appId && hints.tenantId ? tryCandidate(demux.resolve(hints)) : undefined
-    hit ??= hints.appId ? tryCandidate(demux.resolve({ appId: hints.appId })) : undefined
+    let hit = hints.appId && hints.tenantId ? await tryCandidate(demux.resolve(hints)) : undefined
+    hit ??= hints.appId ? await tryCandidate(demux.resolve({ appId: hints.appId })) : undefined
     if (!hit) {
       for (const [botId, ingest] of pool.entries()) {
         if (!this.tenantFencePasses(botId, hints.tenantId)) continue
-        const verified = plugin.verify(ingest, rawBody, body, headers, now)
+        const verified = await plugin.verify(ingest, rawBody, body, headers, now)
         if (verified !== undefined) {
           // Learn only the app-only mapping; the index itself refuses a
           // tenant-scoped bot (registry.test.ts), keeping the invariant even if

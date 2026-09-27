@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@agentconnect.md/control-plane": "workspace:*",
+    "@agentconnect.md/protocol": "workspace:*",
     "fastify": "^5.12.5",
     "jose": "^6.2.12",
     "zod": "^4.6.5"

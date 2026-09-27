@@ -34,7 +34,9 @@ const EXPECTED_MOUNTS: Record<string, string[]> = {
   slack: ['POST /slack/events', 'POST /slack/interactions'],
   feishu: ['POST /feishu/events'],
   // One static, shared URL — a Linear app configures exactly one webhook endpoint.
-  linear: ['POST /linear/events']
+  linear: ['POST /linear/events'],
+  // The HTTPS endpoint the Setup Server tells the operator to enter in the Chat app configuration.
+  googlechat: ['POST /googlechat/events']
 }
 
 const routeDeps = (): RelayIngressRouteDeps => ({

@@ -115,7 +115,7 @@ describe('slack ingress plugin — review-pinned regressions', () => {
     expect(slackIngressPlugin.verify(ingest, raw, envelope, headers(sign('other-bots-secret')), now)).toBeUndefined()
     expect(h.forwardAction).not.toHaveBeenCalled()
 
-    const verified = slackIngressPlugin.verify(ingest, raw, envelope, headers(sign('sig')), now)!
+    const verified = (await slackIngressPlugin.verify(ingest, raw, envelope, headers(sign('sig')), now))!
     expect(verified).toMatchObject({ kind: 'event', eventId: 'Ev-stop' })
     await slackIngressPlugin.handle(ingest, verified, h)
     await new Promise((resolve) => setTimeout(resolve, 0))

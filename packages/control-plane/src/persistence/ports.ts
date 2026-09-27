@@ -3353,9 +3353,9 @@ export interface BotRepo {
    *  and fenced by its own `slackAppId IS NULL` CAS predicate, so an org
    *  parameter re-derived from that worklist would be tautological (§3.4). */
   setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean>
-  /** Backfill only a missing Slack member id; never replace an established identity.
-   *  System-tier like {@link BotRepo.setSlackAppIdIfMissing}. */
-  setSlackBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean>
+  /** Backfill only a missing provider bot identity (a Slack member id, a Chat app's `users/…` name); never replace
+   *  an established one. System-tier like {@link BotRepo.setSlackAppIdIfMissing}. */
+  setBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean>
   /** Stamp the freed-bot display hints when its LAST integration is removed.
    *  Org-fenced: a cross-org id writes nothing. */
   markFreed(orgId: OrgId, id: BotId, at: Date, lastAgentName: string | null): Promise<void>
