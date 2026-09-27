@@ -7,7 +7,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
-import { LoadingState } from '@/components/marks'
+import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { groupPlacementValue, poolLabel, POOL_PLACEMENT } from '@/lib/data'
@@ -151,7 +151,7 @@ function DecisionEditor() {
   const t = useTranslations('Decisions')
   const placementT = useTranslations('Agents.dialog.daemonSelect')
   const { orgPath, myRole } = useOrgs()
-  const { memberSets, integrations } = useConsoleData()
+  const { memberSets, integrations, bots, agents } = useConsoleData()
   const router = useRouter()
   const search = useSearchParams()
   const { id } = useParams<{ id?: string }>()
@@ -303,6 +303,23 @@ function DecisionEditor() {
   const usages = usageState.usages
   const usageNames = [...usages.map((usage) => usage.label), ...gated.map((usage) => usage.channelName)].join(', ')
   const hrefFor = (usage: DecisionUsage) => decisionUsageHref(usage, orgPath, integrations)
+  // A place is known by its integration's platform, its bot's, its code host, or its agent's own icon.
+  const markFor = (usage: DecisionUsage): ReactNode => {
+    const platform =
+      usage.kind === 'gate'
+        ? integrations.find((row) => row.id === usage.integrationId)?.platform
+        : usage.kind === 'shared_bot_routing'
+          ? bots.find((bot) => bot.id === usage.id)?.platform
+          : usage.kind === 'code_host_routing'
+            ? usage.provider
+            : undefined
+    if (platform) return <PlatformMark platform={platform} fillPct={100} />
+    const agent =
+      usage.kind === 'model_selection' || usage.kind === 'agent_tool'
+        ? agents.find((row) => row.id === usage.id)
+        : undefined
+    return agent ? <AgentIconView icon={agent.icon} runtime={agent.runtime} size={14} /> : null
+  }
 
   if (!draft) {
     return (
@@ -878,6 +895,7 @@ function DecisionEditor() {
               hiddenCount={hiddenUsageCount}
               inUse={refusedInUse}
               hrefFor={hrefFor}
+              markFor={markFor}
             />
           )}
         </div>

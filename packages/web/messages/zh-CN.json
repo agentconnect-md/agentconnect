@@ -4374,7 +4374,8 @@
       "openPanel": "打开面板",
       "notRecorded": "此处不记录评估。",
       "emptyAll": "近期还没有评估记录。",
-      "partialError": "{count, plural, other {有 # 处无法加载。}}"
+      "partialError": "{count, plural, other {有 # 处无法加载。}}",
+      "hidden": "你无权查看此处的评估记录。"
     },
     "errors": {
       "name": "保存前请先为决策命名。",

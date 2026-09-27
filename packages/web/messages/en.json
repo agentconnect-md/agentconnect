@@ -4374,7 +4374,8 @@
       "openPanel": "Open panel",
       "notRecorded": "This place does not record evaluations.",
       "emptyAll": "No recent evaluations yet.",
-      "partialError": "{count, plural, one {1 place could not be loaded.} other {# places could not be loaded.}}"
+      "partialError": "{count, plural, one {1 place could not be loaded.} other {# places could not be loaded.}}",
+      "hidden": "You cannot see this place's evaluations."
     },
     "errors": {
       "name": "Give the decision a name before saving.",

@@ -26,7 +26,13 @@ function StoreProbe() {
 }
 
 vi.mock('@/lib/data-context', () => ({
-  useConsoleData: () => ({ members: [], memberSets, integrations: [{ id: 'int-1', agentId: 'agent-1' }] })
+  useConsoleData: () => ({
+    members: [],
+    memberSets,
+    integrations: [{ id: 'int-1', agentId: 'agent-1', platform: 'slack' }],
+    bots: [],
+    agents: []
+  })
 }))
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push, replace: vi.fn() }),

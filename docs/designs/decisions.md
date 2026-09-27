@@ -1438,7 +1438,10 @@ days. The CP proxies these reads without persisting their content.
 Decision detail shows its places of use and their recent evaluations in one card:
 a tab per place (conversation gates, Shared Bot Routing, repository routing, Agent
 model selection, and agent tools, which record none) after an **All** tab that merges
-every recorded place's latest page by time. Hovering a tab names the place's kind and,
+every recorded place's latest page by time. Each place shows its integration's, bot's,
+code host's, or agent's mark; a place whose conversation the viewer cannot read is
+shown as hidden rather than failed, and a row whose bodies have expired says so.
+Hovering a tab names the place's kind and,
 for a gate, whether its condition needs review; a selected place offers its settings
 and its full list in a drawer, and places the viewer cannot see are counted below.
 Each source retains its own list, retention, detail drawer, and access checks;
