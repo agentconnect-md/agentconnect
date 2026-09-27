@@ -24,7 +24,17 @@ import type {
 } from '@agentconnect.md/protocol/decision'
 import { conditionSummary } from '../DecisionConditionFields'
 import { DecisionModelResult } from '../DecisionModelResult'
-import { BackLink, ExpiredBanner, Facts, formatEvaluationTime, Message, Note, Row, Section } from '../EvaluationParts'
+import {
+  BackLink,
+  DetailTitle,
+  ExpiredBanner,
+  Facts,
+  formatEvaluationTime,
+  Message,
+  Note,
+  Row,
+  Section
+} from '../EvaluationParts'
 
 export function RoutingOutcomeBadge({
   record
@@ -123,6 +133,7 @@ export function DecisionRoutingEvaluationDetail({
   return (
     <div className="flex flex-col gap-[14px] px-[18px] py-4" data-testid="routing-evaluation-detail">
       <BackLink onClick={onBack} />
+      <DetailTitle title={record?.title} />
       {record && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="mono text-[11.5px] text-(--text-tertiary)">

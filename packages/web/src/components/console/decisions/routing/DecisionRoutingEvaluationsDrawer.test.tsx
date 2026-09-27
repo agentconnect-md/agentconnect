@@ -90,20 +90,26 @@ async function click(node: Element | undefined | null) {
 }
 
 describe('DecisionRoutingEvaluationsDrawer', () => {
-  it('lists each routing outcome with channel, matched rules, targets, and latency', async () => {
+  it('lists each routing outcome with its title, channel, matched rules, targets, and latency', async () => {
     const view = await render(decisionMock.createDecisionMockApi())
     const list = rows(view)
     expect(list).toHaveLength(8)
-    expect(list.map((row) => row.querySelector('.badge')?.textContent)).toEqual([
+    // An answered row states its outcome beside the latency; one without an answer shows it as a badge.
+    const outcomes = [
       'Pending',
       'Routed',
       'Partially routed',
       'Skipped',
-      'Fallback · Timed out',
-      'Unavailable · Provider error',
-      'Canceled · Stopped',
+      'Fallback',
+      'Unavailable',
+      'Canceled',
       'Routed'
-    ])
+    ]
+    list.forEach((row, index) => expect(row.textContent).toContain(outcomes[index]))
+    expect(list[4]!.querySelector('.badge')?.textContent).toBe('Fallback · Timed out')
+    expect(list[5]!.querySelector('.badge')?.textContent).toBe('Unavailable · Provider error')
+    expect(list[1]!.querySelector('.badge')).toBeNull()
+    expect(list[1]!.textContent).toContain('My billing API request failed with a 500.')
     expect(list[1]!.textContent).toContain('#help')
     expect(list[1]!.textContent).toContain('Rules 1, 2 (billing, technical)')
     expect(list[1]!.textContent).toContain('Billing ✓, Technical ✓')
@@ -117,6 +123,7 @@ describe('DecisionRoutingEvaluationsDrawer', () => {
     expect(view.textContent).toContain('Support bot · shared bot routing')
     await click(rows(view)[2])
     const sheet = detail()!
+    expect(sheet.querySelector('h3')?.textContent).toBe('The export fails and I was charged for it.')
     expect(sheet.textContent).toContain('Admitted')
     expect(sheet.textContent).toContain('Unavailable')
     expect(sheet.textContent).toContain('Routing at evaluation')

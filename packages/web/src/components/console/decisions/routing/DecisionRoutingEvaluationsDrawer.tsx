@@ -8,14 +8,13 @@ import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
-import { answerText, latencyText } from '@/lib/decisions/evaluations'
+import { answerText } from '@/lib/decisions/evaluations'
 import { matchedRuleNumbers, targetsText } from '@/lib/decisions/routing-evaluations'
 import type { DecisionRoutingEvaluationRecord } from '@agentconnect.md/protocol/decision'
-import { EvaluationsDrawer, formatEvaluationTime } from '../EvaluationParts'
+import { EvaluationRow, EvaluationsDrawer } from '../EvaluationParts'
 import { DecisionRoutingEvaluationDetail, RoutingOutcomeBadge } from './DecisionRoutingEvaluationDetail'
 
 const PAGE = 20
-const COLUMNS = 'desktop:grid desktop:grid-cols-[96px_minmax(0,1fr)_auto_60px] desktop:items-center desktop:gap-3'
 
 function unavailableKind(cause: unknown): 'offline' | 'unsupported' | null {
   const parts = errorParts(cause)
@@ -143,66 +142,40 @@ export function DecisionRoutingEvaluationsDrawer({
   else
     body = (
       <>
-        <div
-          className={`hidden border-b border-(--border-subtle) bg-(--surface-sunken) px-[18px] py-[7px] font-sans text-[11px] font-medium leading-normal text-(--text-tertiary) ${COLUMNS}`}
-        >
-          <span>{t('evaluations.columns.time')}</span>
-          <span>{t('evaluations.columns.channelAnswer')}</span>
-          <span>{t('evaluations.columns.outcome')}</span>
-          <span className="text-right">{t('evaluations.columns.latency')}</span>
-        </div>
         <ul ref={listRef} className="m-0 list-none p-0">
           {items.map((record) => {
-            const answer =
-              answerText(record.answer, words) ??
-              (!record.evaluated
-                ? t('evaluations.notEvaluated')
-                : record.detailsExpired
-                  ? tDecisions('evaluations.expired')
-                  : '—')
             const numbers = matchedRuleNumbers(record, ruleNumbers)
             const keys = record.matchedKeys.length ? ` (${record.matchedKeys.join(', ')})` : ''
             const matched = record.usedOtherwise
               ? t('evaluations.otherwise')
               : numbers.length
                 ? `${t('evaluations.rules', { numbers: numbers.join(', ') })}${keys}`
-                : record.matchedKeys.join(', ') || '—'
+                : record.matchedKeys.join(', ') || null
             const rowKey = `${record.channel}:${record.seq}`
             return (
               <li key={rowKey} className="border-b border-(--border-subtle)">
-                <button
-                  type="button"
+                <EvaluationRow
                   data-row={rowKey}
+                  padX="px-[18px]"
+                  title={record.title}
+                  expired={record.detailsExpired}
+                  answer={answerText(record.answer, words)}
+                  outcome={tDecisions(`routing.evaluations.outcomes.${record.outcome}`)}
+                  badge={<RoutingOutcomeBadge record={record} />}
+                  meta={
+                    <span className="truncate">
+                      {[channelName(record.channel), matched, targetsText(record, agentNames)]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                  }
+                  at={record.at}
+                  latencyMs={record.latencyMs}
                   onClick={() => {
                     opener.current = rowKey
                     setOpen({ seq: record.seq, channel: record.channel })
                   }}
-                  className={`flex w-full cursor-pointer flex-col gap-[5px] border-0 bg-transparent px-[18px] py-[10px] text-left hover:bg-(--surface-hover) ${COLUMNS}`}
-                >
-                  <span className="flex items-center justify-between gap-2 desktop:contents">
-                    <span className="mono text-[11px] text-(--text-tertiary)">
-                      {formatEvaluationTime(record.at, locale)}
-                    </span>
-                    <span className="desktop:hidden">
-                      <RoutingOutcomeBadge record={record} />
-                    </span>
-                  </span>
-                  <span className="flex min-w-0 flex-col gap-[3px]">
-                    <span className="truncate font-sans text-[12.5px] font-normal leading-[1.4] text-(--text-primary)">
-                      <span className="mono text-(--text-secondary)">{channelName(record.channel)}</span> · {answer}
-                    </span>
-                    <span className="mono truncate text-[11px] text-(--text-tertiary)">
-                      {matched} · {targetsText(record, agentNames) ?? '—'}
-                    </span>
-                  </span>
-                  <span className="hidden min-w-0 desktop:flex">
-                    <RoutingOutcomeBadge record={record} />
-                  </span>
-                  <span className="mono text-[11px] text-(--text-tertiary) desktop:text-right">
-                    <span className="font-sans desktop:hidden">{t('evaluations.columns.latency')}: </span>
-                    {latencyText(record.latencyMs) ?? '—'}
-                  </span>
-                </button>
+                />
               </li>
             )
           })}
