@@ -40,6 +40,12 @@
       "import": "./dist/gitlab/config.js",
       "default": "./dist/gitlab/config.js"
     },
+    "./google-chat-credential": {
+      "development": "./src/platforms/googlechat/credential.ts",
+      "types": "./dist/platforms/googlechat/credential.d.ts",
+      "import": "./dist/platforms/googlechat/credential.js",
+      "default": "./dist/platforms/googlechat/credential.js"
+    },
     "./gitea-config": {
       "development": "./src/gitea/config.ts",
       "types": "./dist/gitea/config.d.ts",

@@ -7,7 +7,7 @@ import {
   type DeploymentConfigStore,
   type DeploymentConfigValuesV1
 } from '@agentconnect.md/control-plane/deployment-config-store'
-import { GOOGLE_CHAT_PROBE_URL, GOOGLE_TOKEN_ENDPOINT } from '../src/google-chat-probe.js'
+import { GOOGLE_CHAT_PROBE_URL, GOOGLE_TOKEN_ENDPOINT } from '@agentconnect.md/control-plane/google-chat-credential'
 import { buildSetupServer } from '../src/server/index.js'
 
 const PROJECT_ID = 'example-project'

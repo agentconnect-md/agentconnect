@@ -13,6 +13,12 @@ import {
 import { createFeishuAppSetupAuditor, type FeishuAppSetupAuditor } from '@agentconnect.md/control-plane/feishu-identity'
 import { createSlackConfigApi, type SlackConfigApi } from '@agentconnect.md/control-plane/slack-config-api'
 import {
+  checkServiceAccountKey,
+  isGoogleCloudProjectNumber,
+  probeFailureIsConnectivity,
+  probeGoogleChatCredential
+} from '@agentconnect.md/control-plane/google-chat-credential'
+import {
   DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
   DEPLOYMENT_CONFIG_SCHEMA_VERSION,
   DEPLOYMENT_SECRET_KEYS,
@@ -55,7 +61,6 @@ import { probeBlocksSave, probeGitlabInstance } from '../gitlab-probe.js'
 import { probeBlocksSave as giteaProbeBlocksSave, probeGiteaInstance } from '../gitea-probe.js'
 import { linearConfiguredUrls } from '../linear-app.js'
 import { googleChatConfiguredUrls } from '../google-chat-app.js'
-import { checkServiceAccountKey, probeFailureIsConnectivity, probeGoogleChatCredential } from '../google-chat-probe.js'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -1005,7 +1010,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       })
     }
     const { projectId, projectNumber } = application
-    if (!/^[1-9]\d{0,19}$/.test(projectNumber)) {
+    if (!isGoogleCloudProjectNumber(projectNumber)) {
       return problem(
         reply,
         400,

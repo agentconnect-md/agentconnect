@@ -7,10 +7,11 @@ import {
   GOOGLE_CHAT_PROBE_URL,
   GOOGLE_TOKEN_ENDPOINT,
   checkServiceAccountKey,
+  isGoogleCloudProjectNumber,
   probeFailureIsConnectivity,
   probeGoogleChatCredential,
   type GoogleServiceAccountKey
-} from '../src/google-chat-probe.js'
+} from './credential.js'
 
 const PROJECT_ID = 'example-project'
 const CLIENT_EMAIL = `agentconnect-chat@${PROJECT_ID}.iam.gserviceaccount.com`
@@ -105,6 +106,15 @@ describe('checkServiceAccountKey', () => {
     expect(checked).toMatchObject({ status: 'project_mismatch' })
     if (checked.status === 'ok') return
     expect(checked.message).not.toContain('PRIVATE KEY')
+  })
+})
+
+describe('isGoogleCloudProjectNumber', () => {
+  it('accepts only the numeric project number', () => {
+    expect(isGoogleCloudProjectNumber('123456789012')).toBe(true)
+    for (const value of ['', '0123', '12ab', 'example-project', ' 123', '1'.repeat(21)]) {
+      expect(isGoogleCloudProjectNumber(value), value).toBe(false)
+    }
   })
 })
 

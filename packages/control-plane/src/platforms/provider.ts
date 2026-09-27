@@ -195,6 +195,8 @@ export interface CpNewBotInstall {
         | 'discordAppId'
         | 'feishuAppId'
         | 'feishuRegion'
+        | 'externalAppId'
+        | 'platformConfig'
         | 'shareable'
         | 'grantedScopes'
       >

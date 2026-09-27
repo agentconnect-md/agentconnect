@@ -23,6 +23,7 @@ import { createDiscordCpProvider } from './discord/provider.js'
 import { createSlackCpProvider } from './slack/provider.js'
 import { createFeishuCpProvider } from './feishu/provider.js'
 import { createLinearCpProvider } from './linear/provider.js'
+import { createGoogleChatCpProvider } from './googlechat/provider.js'
 
 /** Every supported deployment key. */
 const EXPECTED_KEYS = [
@@ -45,6 +46,9 @@ const EXPECTED_KEYS = [
   'GITLAB_BASE_URL',
   'GITLAB_CLIENT_ID',
   'GITLAB_CLIENT_SECRET',
+  'GOOGLE_CHAT_PLATFORM_PROJECT_ID',
+  'GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER',
+  'GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY',
   'HEARTBEAT_SEC',
   'HOST',
   'LARK_PLATFORM_APP_ID',
@@ -159,7 +163,10 @@ describe('composed AppConfigSchema', () => {
       LARK_PLATFORM_APP_SECRET: 'lsecret',
       LINEAR_PLATFORM_CLIENT_ID: 'lin_client',
       LINEAR_PLATFORM_CLIENT_SECRET: 'lin_secret',
-      LINEAR_PLATFORM_SIGNING_SECRET: 'lin_sig'
+      LINEAR_PLATFORM_SIGNING_SECRET: 'lin_sig',
+      GOOGLE_CHAT_PLATFORM_PROJECT_ID: 'example-project',
+      GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER: '123456789012',
+      GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY: '{"type":"service_account"}'
     } as NodeJS.ProcessEnv)
 
     // Coerced number + the reaper default that is NOT in the environment.
@@ -169,6 +176,7 @@ describe('composed AppConfigSchema', () => {
     expect(config.FEISHU_PLATFORM_APP_SECRET).toBe('fsecret')
     expect(config.LARK_PLATFORM_APP_ID).toBe('cli_lark')
     expect(config.LINEAR_PLATFORM_CLIENT_ID).toBe('lin_client')
+    expect(config.GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER).toBe('123456789012')
   })
 
   it('leaves every platform key optional — an unset one never fail-fasts a boot', () => {
@@ -176,6 +184,7 @@ describe('composed AppConfigSchema', () => {
     expect(config.SLACK_PLATFORM_APP_ID).toBeUndefined()
     expect(config.FEISHU_PLATFORM_APP_ID).toBeUndefined()
     expect(config.LINEAR_PLATFORM_CLIENT_ID).toBeUndefined()
+    expect(config.GOOGLE_CHAT_PLATFORM_PROJECT_ID).toBeUndefined()
     expect(config.SLACK_INSTALL_TTL_SEC).toBe(3600)
   })
 })
@@ -187,7 +196,8 @@ describe('platform env declarations', () => {
       createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
       createSlackCpProvider({}),
       createFeishuCpProvider({}),
-      createLinearCpProvider({})
+      createLinearCpProvider({}),
+      createGoogleChatCpProvider()
     ])
     const fromProviders = registry
       .all()

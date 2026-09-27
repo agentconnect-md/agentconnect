@@ -115,15 +115,25 @@ See Google's [per-app project requirement](https://developers.google.com/workspa
 
 Two credential holders exist, mirroring Slack. The deployment-owned app is
 configured once in the Setup Server, which keeps its project ID and project number
-in the typed deployment document and its key as a write-only deployment secret,
-and is bound to the preset `agentconnect` agent. Per-agent apps are configured
-from an agent's integrations page in the Console. Both produce the same bot row,
-uniqueness key, and relay assignment; only the surface that collects the
-credential differs. The Setup Server runs the validation below before it stores
-anything and shows the HTTPS callback and **Project Number** audience to copy. A
-`chat.bot` credential does not reveal its project number, so the Setup Server
-checks only its shape; a wrong number fails callback verification, which the
-end-to-end test exposes.
+in the typed deployment document and its key as a write-only deployment secret.
+The Control Plane receives them as `GOOGLE_CHAT_PLATFORM_PROJECT_ID`,
+`GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER`, and
+`GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY`. Google has no install consent to
+round-trip, so `POST /integrations/googlechat/platform-install` installs that app
+directly on the preset `agentconnect` agent, or on a named one: it validates the
+stored key again, creates a prebuilt HTTP bot, and copies the key into that bot's
+encrypted secret row, so a later key change reaches the bot only through secret
+rotation. Per-agent apps are configured from an agent's integrations page in the
+Console through `POST /integrations` with a `googlechat` credential block on the
+HTTP transport. Both produce the same bot row, uniqueness key, and relay
+assignment; only the surface that collects the credential differs.
+
+The key check and the `chat.bot` probe live in the Control Plane's Google Chat
+module, which the Setup Server imports. The Setup Server runs the validation below
+before it stores anything and shows the HTTPS callback and **Project Number**
+audience to copy. A `chat.bot` credential does not reveal its project number, so
+validation checks only its shape; a wrong number fails callback verification,
+which the end-to-end test exposes.
 
 In this version the deployment-owned app serves one agent. Google requires one
 Cloud project per Chat app and this design keeps one app per agent, so a hosted
@@ -168,13 +178,13 @@ distribution requirements. See [testing visibility](https://developers.google.co
 The Console wizard, or the Setup Server for the deployment-owned app, collects
 credentials and shows the derived installation metadata:
 
-| Value                           | Storage and meaning                                                                                           |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Google Cloud project ID         | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                         |
-| Verified project number         | Canonical numeric app identity and expected token audience; resolve and verify against the declared project.  |
-| HTTPS callback URL              | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings. |
-| Service-account key JSON        | Write-only credential in the encrypted bot secret store, or a deployment secret for the deployment app.       |
-| Verified Chat app user identity | Provider identity metadata for mention matching and bot attribution; obtain from Google, not a display name.  |
+| Value                           | Storage and meaning                                                                                                         |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Google Cloud project ID         | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                                       |
+| Verified project number         | Canonical numeric app identity and expected token audience; its shape is checked, as `chat.bot` cannot reveal it.           |
+| HTTPS callback URL              | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings.               |
+| Service-account key JSON        | Write-only credential in the encrypted bot secret store; the deployment app's deployment secret is copied there at install. |
+| Verified Chat app user identity | Provider identity metadata for mention matching and bot attribution; obtain from Google, not a display name.                |
 
 Keep the app and service account in one project for the first version. Configure
 Chat API interaction events with an HTTPS endpoint and **Project Number** audience,
@@ -201,7 +211,8 @@ Use the existing external app identity and uniqueness contract to prevent bindin
 the same app to multiple agents: the bot row's `(platform, externalAppId,
 externalTenantId)` unique key, with the verified project number as
 `externalAppId` and the tenantless sentinel `-` as `externalTenantId`, because a
-null tenant does not participate in that constraint. Preserve the installation's
+null tenant does not participate in that constraint; the project ID rides the
+row's public `platformConfig` metadata. Preserve the installation's
 transport scope across key rotation; neither a private-key hash nor a callback
 attempt ID defines a person's or session's identity. Changing the app project
 requires a new installation. The app's Google `users/...` identity must be
@@ -445,12 +456,12 @@ for private DM turns as part of the acceptance checks.
 
 | Area                    | Required contribution                                                                                                                                                                             |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protocol and message    | The platform id, conservative manifest values, and pure Google event normalization; `KNOWN_PLATFORMS` registration lands with the host modules.                                                   |
+| Protocol and message    | The platform id and its `KNOWN_PLATFORMS` entry, conservative manifest values, the daemon config payload schema, and pure Google event normalization.                                             |
 | Relay platform module   | HTTPS route, project-audience verification, demux, normalization, membership reports, and strict admission responses.                                                                             |
 | Daemon platform module  | Config schema, Chat REST connection/read port, its `relayIngress` contract member, renderer, turn output, and lifecycle registration.                                                             |
 | Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals. |
 | Daemon output           | Persist stable create intent/results and serialize Google sends through the platform output surface.                                                                                              |
-| Control Plane provider  | Credential validation/storage, app identity, uniqueness, secret rotation, daemon spec, and relay assignment projection.                                                                           |
+| Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment-owned app's install, secret rotation, daemon spec, and relay assignment projection.         |
 | Console platform module | Chat picker, setup wizard, connection diagnostics, conversation semantics, and explicit scope limitations.                                                                                        |
 
 Start with observed membership discovery and no bot-sender routing or multi-agent
@@ -461,12 +472,12 @@ a demonstrated missing contract member, not add Google-specific switches.
 The current database stores platform IDs as strings and already provides platform
 configuration and encrypted bot secrets. This design requires no new Control Plane
 database table or Google credential columns. Known-platform writers, capability
-reporting, API schemas, and registry consistency checks still need explicit
-registration. `KNOWN_PLATFORMS` joins that registration rather than the protocol
-step: the Control Plane's session filter and its MCP tool must accept every listed
-id, and a manifest row without a wire-vocabulary entry already serves Linear. Use
-the established four-host platform architecture. No feature flag, separate relay
-service, public adapter protocol, or broad refactor is required.
+reporting, API schemas, and registry consistency checks register `googlechat`
+explicitly. `KNOWN_PLATFORMS` joined with the Control Plane provider rather than
+the protocol step, because the Control Plane's session filter and its MCP tool
+must accept every listed id. Use the established four-host platform architecture.
+No feature flag, separate relay service, public adapter protocol, or broad
+refactor is required.
 
 ## 8. Pub/Sub alternative and cost
 

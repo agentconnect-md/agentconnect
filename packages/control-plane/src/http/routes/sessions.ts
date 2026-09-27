@@ -68,7 +68,17 @@ import {
   SessionExternalAccessDto
 } from '../dto/index.js'
 
-const SESSION_PLATFORM_IDS = ['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream', 'qq'] as const
+const SESSION_PLATFORM_IDS = [
+  'slack',
+  'telegram',
+  'webchat',
+  'discord',
+  'feishu',
+  'hook',
+  'dream',
+  'qq',
+  'googlechat'
+] as const
 
 const SessionFilterQueryDto = z.object({
   // Repeatable: `?agentId=a` scopes to one agent's rows (unchanged), while

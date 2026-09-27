@@ -1,4 +1,4 @@
-/** Google Chat credential validation (google-chat-integration.md §3): key shape, project identity, then one app-authenticated Chat API read. */
+/** Google Chat credential validation shared by the Setup Server and the Control Plane (google-chat-integration.md §3). */
 import { createPrivateKey, type KeyObject } from 'node:crypto'
 import { SignJWT } from 'jose'
 
@@ -39,6 +39,11 @@ export interface GoogleChatProbeResult {
 /** Connectivity failures are retryable; every other failure is the credential's or the project's. */
 export function probeFailureIsConnectivity(status: GoogleChatProbeStatus): boolean {
   return status === 'unreachable' || status === 'google_unavailable'
+}
+
+/** The numeric Project number from the Google Cloud dashboard; it is also the Chat token audience (§2). */
+export function isGoogleCloudProjectNumber(value: string): boolean {
+  return /^[1-9]\d{0,19}$/.test(value)
 }
 
 /** Accept only a service-account key of the declared project; every other credential shape is refused (§3). */
@@ -179,7 +184,7 @@ export async function probeGoogleChatCredential(
 function unreachable(target: string): GoogleChatProbeResult {
   return {
     status: 'unreachable',
-    message: `Connection failed: the Setup Server could not reach ${target}. Check outbound HTTPS access to Google and try again; nothing was saved.`
+    message: `Connection failed: ${target} could not be reached. Check outbound HTTPS access to Google and try again; nothing was saved.`
   }
 }
 
