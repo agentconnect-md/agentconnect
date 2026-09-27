@@ -873,8 +873,11 @@ turn the switch on instead. A key the relay learns is reported as `rc/bot-tenant
 Plane, and sent only to a Control Plane advertising `bot-tenant-v1`); the
 Control Plane records it through the row's identity merge, refusing a second
 customer, and re-syncs the row so its assignment and daemon config carry the
-keys and the fence survives restarts and re-assigns. Until the report lands the
-relay applies the same fence in memory. The daemon reads the same keys (§10.8).
+keys and the fence survives restarts and re-assigns. The row commits before the
+push, so a report is acknowledged only once the push succeeded, and a report of
+a key the row already holds re-syncs it all the same: the relay's redelivery
+after a failed push is what carries the fence to the daemon. Until the report
+lands the relay applies the same fence in memory. The daemon reads the same keys (§10.8).
 That is the safety line §1 lists as outside the first version.
 
 ### 10.4 Relay: demux by app, fence by customer, claim the unknown

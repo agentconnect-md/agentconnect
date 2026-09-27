@@ -1138,7 +1138,7 @@ export const RcBotTenant = z.object({
 })
 export type RcBotTenant = z.infer<typeof RcBotTenant>
 
-// C→R REP (corr = rc/bot-tenant id) — committed; `applied: false` means the row already knew the key, refused it, or is not one that learns, and nothing was written.
+// C→R REP (corr = rc/bot-tenant id) — committed and pushed; `applied: false` means the row already knew the key (re-synced all the same), refused it, or is not one that learns, and nothing was written.
 export const RcBotTenantOk = z.object({
   botId: z.string().uuid(),
   applied: z.boolean()

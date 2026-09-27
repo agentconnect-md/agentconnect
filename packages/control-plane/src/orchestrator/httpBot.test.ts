@@ -2299,14 +2299,27 @@ describe('HttpBotOrchestrator — a reported tenant key (google-chat-integration
     return { orch, synced, warns, config: () => platformConfig }
   }
 
-  it('records the key on the row and re-syncs it once; a repeat is deduplicated without a sync', async () => {
+  it('records the key on the row and re-syncs it; a repeat writes nothing but re-syncs all the same', async () => {
     const { orch, synced, config } = rig()
     expect(await orch.recordTenant(GC_BOT, 'customers/C0000000001')).toEqual({ applied: true })
     expect(config()).toEqual({ projectId: 'example-project', customerId: 'C0000000001' })
     expect(await orch.recordTenant(GC_BOT, 'customers/C0000000001')).toEqual({ applied: false })
     expect(await orch.recordTenant(GC_BOT, 'domains/0000000001')).toEqual({ applied: true })
     expect(config()).toEqual({ projectId: 'example-project', customerId: 'C0000000001', domainIds: '0000000001' })
-    expect(synced).toEqual([GC_BOT, GC_BOT])
+    expect(synced).toEqual([GC_BOT, GC_BOT, GC_BOT])
+  })
+
+  it('a push that fails after the row write rejects the report, and the redelivery of the now-known key pushes again', async () => {
+    const { orch, synced, config } = rig()
+    const syncBot = orch.syncBot
+    orch.syncBot = async () => {
+      throw new Error('spec push failed')
+    }
+    await expect(orch.recordTenant(GC_BOT, 'customers/C0000000001')).rejects.toThrow('spec push failed')
+    expect(config()).toEqual({ projectId: 'example-project', customerId: 'C0000000001' })
+    orch.syncBot = syncBot
+    expect(await orch.recordTenant(GC_BOT, 'customers/C0000000001')).toEqual({ applied: false })
+    expect(synced).toEqual([GC_BOT])
   })
 
   it('refuses a second customer with a warning, an unknown bot, and a platform that learns nothing', async () => {

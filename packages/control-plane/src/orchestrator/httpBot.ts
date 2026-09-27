@@ -497,7 +497,7 @@ export class HttpBotOrchestrator {
     return { applied: true }
   }
 
-  /** `rc/bot-tenant`: record what the bot's platform makes of a tenant key its own traffic named, and re-sync the row when something was written (google-chat-integration.md §10.3). */
+  /** `rc/bot-tenant`: record what the bot's platform makes of a tenant key its own traffic named, then re-sync the row (google-chat-integration.md §10.3). */
   async recordTenant(botId: string, tenantId: string): Promise<{ applied: boolean }> {
     const bot = await this.bots.getUnscoped(BotId(botId))
     const learn = bot ? this.platforms.get(bot.platform)?.learnTenant : undefined
@@ -511,7 +511,8 @@ export class HttpBotOrchestrator {
       this.log.warn({ botId: bot.id, reason: outcome.verdict.reason }, 'http-bot: tenant report refused')
       return { applied: false }
     }
-    if (written) await this.syncBot(bot.id)
+    // A known key re-syncs too: the row commits before the push, so a push that failed is redone by the relay's redelivery, never acknowledged unfenced.
+    await this.syncBot(bot.id)
     return { applied: written }
   }
 
