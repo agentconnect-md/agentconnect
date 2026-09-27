@@ -442,6 +442,19 @@ environment used by both processes or prefer Claude settings. If neither is set,
 the Claude config directory is the intentional trusted default. Installations
 whose settings already select an `agentconnect-auth` directory continue using it.
 
+The private Claude config also carries the host's first-start bookkeeping
+(`firstStartTime`, `machineID`, migration flags and the like — never sessions,
+projects, MCP servers or the account record). A Claude CLI starting on an empty
+config spends its first ~100 ms writing that bookkeeping, and the
+`claude auth status --json` probe claude-agent-acp runs at initialize and before
+every prompt exits inside that window: with the access token expired, the CLI has
+already started a background OAuth refresh, the exit strands the rotated refresh
+token, and every later process finds the shared sign-in blanked. Seeded, the probe
+exits ~20 ms after taking the refresh lock, before the request leaves — the timing
+of a host CLI on its own config. This narrows the race rather than closing it: a
+CLI release that adds first-start writes reopens it, which is the first thing to
+check when a shared sign-in starts expiring every few hours again.
+
 Read access outside the explicitly denied agent/runtime-state roots remains
 unchanged in this rollout. This is not yet a whole-host read allowlist: unrelated
 host files and another runtime's credential source require a separate policy.

@@ -125,7 +125,15 @@ describe('prepareRuntimeLaunch', () => {
       join(customClaudeConfig, '.claude.json'),
       JSON.stringify({
         additionalModelOptionsCache: [{ value: 'custom-fable', label: 'Custom Fable', description: 'test' }],
-        source: 'do-not-copy-custom-config-dir'
+        // First-start bookkeeping travels; the CLI then exits before its startup OAuth refresh leaves (probe.ts).
+        firstStartTime: '2026-01-01T00:00:00.000Z',
+        migrationVersion: 14,
+        opusProMigrationComplete: true,
+        seenNotifications: {},
+        source: 'do-not-copy-custom-config-dir',
+        projects: { '/host/project': { allowedTools: ['Bash'] } },
+        mcpServers: { host: { command: 'do-not-copy' } },
+        oauthAccount: { emailAddress: 'do-not-copy@example.test' }
       })
     )
     writeFileSync(
@@ -185,7 +193,11 @@ describe('prepareRuntimeLaunch', () => {
     const privateClaudeGlobal = realpathSync(join(scopeDir, 'home', '.claude.json'))
     expect(existsSync(join(privateClaudeConfig, 'settings.json'))).toBe(false)
     expect(JSON.parse(readFileSync(join(privateClaudeConfig, '.claude.json'), 'utf8'))).toEqual({
-      additionalModelOptionsCache: [{ value: 'custom-fable', label: 'Custom Fable', description: 'test' }]
+      additionalModelOptionsCache: [{ value: 'custom-fable', label: 'Custom Fable', description: 'test' }],
+      firstStartTime: '2026-01-01T00:00:00.000Z',
+      migrationVersion: 14,
+      opusProMigrationComplete: true,
+      seenNotifications: {}
     })
     expect(JSON.parse(readFileSync(privateClaudeGlobal, 'utf8'))).toEqual({
       additionalModelOptionsCache: [{ value: 'root-fable', label: 'Root Fable', description: 'test' }]

@@ -160,7 +160,19 @@ const QODER_SEED = (brand: string): readonly string[] => [
   'mcp-oauth-tokens.json',
   'a2a-oauth-tokens.json'
 ]
-const CLAUDE_GLOBAL_SEED_KEYS = ['additionalModelOptionsCache', 'primaryApiKey'] as const
+// A first start's bookkeeping: seeded, `claude auth status` exits before its startup OAuth refresh leaves (~20 ms after the lock, not ~100), so no rotated token is stranded.
+const CLAUDE_FIRST_START_KEYS = [
+  'firstStartTime',
+  'firstStartVersion',
+  'machineID',
+  'userID',
+  'migrationVersion',
+  'opusProMigrationComplete',
+  'sonnet1m45MigrationComplete',
+  'hasResetAutoModeOptInForDefaultOffer',
+  'seenNotifications'
+] as const
+const CLAUDE_GLOBAL_SEED_KEYS = ['additionalModelOptionsCache', 'primaryApiKey', ...CLAUDE_FIRST_START_KEYS] as const
 /** DeepSeek Harness auth: the managed 0600 credential store plus its .env fallback. */
 const DSH_CREDENTIALS = [
   { path: '.credentials.yaml', format: 'dsh' },
