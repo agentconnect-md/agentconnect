@@ -53,6 +53,7 @@ import type {
   RcBotRevoked,
   RdAck,
   RdMsgPlatformAction,
+  RdRouteAck,
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
 import type { BotAssignment, RouteTarget } from '../bot-arbitration.js'
@@ -138,6 +139,9 @@ export interface RelayIngressSidecar {
  *  message; it does not promise a daemon took it (delivery is bounded loss). */
 export type RelayForwardOutcome = 'accepted' | 'refused'
 
+/** Core's strict verdict on one forwarded message, in the `rd/route/ack` vocabulary: `admitted` (a daemon durably took it, or a receipt settles the duplicate), `retry` (a transient refusal a resend can outlive), or `rejected` (a deliberate gate, consumed with no work promised; or `unsupported`: a daemon predating `im-admission-v1`, or an ack with no verdict because the platform has no relay-ingress strategy). */
+export type RelayAdmission = Pick<RdRouteAck, 'disposition' | 'reason'>
+
 /** A definitive credential loss: a platform lifecycle `event` (its time in ms when known) or a `probe` the platform answered with `code`. */
 export interface RelayRevocation {
   reason: RcBotRevoked['reason']
@@ -156,6 +160,8 @@ export interface RelayIngressHost {
    *  plugin supplies conversation content, never target identity. The promise
    *  is the delivery attempt's completion (drop counting rides it). */
   forward(botId: string, message: WireNormalizedMessage, sidecar?: RelayIngressSidecar): Promise<RelayForwardOutcome>
+  /** {@link forward} for a platform whose HTTP answer depends on admission: the same arbitration, then the daemon's strict `rd/ack` verdict mapped as the routed leg maps it; a target without `im-admission-v1` is never sent to (`rejected`/`unsupported`), an `accepted` with no verdict (the shared path: the platform supplies no strategy) is `rejected`/`unsupported` too, a withdrawn grant is `rejected`, and over a fan-out one admission wins, else one retry, else the first rejection. */
+  forwardStrict(botId: string, message: WireNormalizedMessage, sidecar?: RelayIngressSidecar): Promise<RelayAdmission>
   /** Forward one platform interaction as a §6.6 platform_action and return the
    *  daemon's ack — the sync-response race (see the module doc) awaits this.
    *  `msgId` is the DEDUP IDENTITY, and the plugin mints it (it derives from
@@ -232,6 +238,10 @@ export interface RelayIngressHost {
    *  carries it on its verified product into `handle`. True ⇒ already seen
    *  (drop); false ⇒ marked now. An absent identity is never deduped. */
   dedupSeen(identity: string | undefined): boolean
+  /** {@link dedupSeen}'s check without its mark: true ⇒ already seen. For a platform that may answer only from a disposition. */
+  dedupPeek(identity: string | undefined): boolean
+  /** Mark an identity seen once its disposition is settled (admitted or ignored), so a refused or timed-out attempt is forwarded again. */
+  dedupMark(identity: string | undefined): void
   /** Whether `route`'s daemon is connected RIGHT NOW. For interactions whose
    *  platform affordance is one-shot (a Slack shortcut consumes its trigger
    *  id), the plugin must know synchronously that delivery is possible, so it
@@ -260,6 +270,8 @@ export interface RelayIngressHost {
  *  returns. */
 export interface HandledDelivery {
   syncResponse?: unknown
+  /** The delivery's admission verdict, when the platform's route answers from it (`retry` ⇒ ask the provider to resend); absent for a route that always acks. */
+  admission?: RelayAdmission
 }
 
 /** The relay-core INBOUND seam a platform's HTTP route drives: demux + verify

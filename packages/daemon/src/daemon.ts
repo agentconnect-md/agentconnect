@@ -14,6 +14,7 @@ import {
   HOOK_DECISION_ROUTING_V2_FEATURE,
   type DecisionBundle,
   type RdRouteBackfillRow,
+  type RdRouteReason,
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
@@ -295,7 +296,7 @@ import {
   isUsableSourceDepth,
   routeRules
 } from './router/routing-table.js'
-import { isControlCommandText, parseCommand, requiresTrustedActor } from './commands/commands.js'
+import { isControlCommandText, parseCommand, requiresTrustedActor, type AgentCommand } from './commands/commands.js'
 import { CommandHandlers, type CommandHost } from './commands/handlers.js'
 import {
   rulesFromAgent,
@@ -1005,6 +1006,38 @@ interface GateDispatchOptions {
   onRefused?: (reason: string) => void
   /** A target-scoped inbox id, for a routed message admitted to more than one agent here. */
   deliveryId?: string
+}
+
+/** The strict verdict on a pre-addressed relay `im` (`im-admission-v1`): a durable admission, a duplicate its receipt settles included. */
+const imAdmitted = (msgId: string): RdAck => ({ msgId, accepted: true, routeAdmission: 'admitted' })
+
+/** A refused relay `im`: `accepted` and `reason` stay what the shared path always sent; `recoverable` says whether a resend can succeed. */
+function imRejected(
+  msgId: string,
+  accepted: boolean,
+  reason: RdRouteReason | 'unauthorized' | undefined,
+  recoverable: boolean
+): RdAck {
+  return { msgId, accepted, ...(reason !== undefined ? { reason } : {}), routeAdmission: 'rejected', recoverable }
+}
+
+/** The ack for a dispatch admission result: only `durability` was ever refused outright; transient gates resend, deliberate ones do not. */
+function imAdmissionAck(msgId: string, result: { accepted: boolean; reason?: string }): RdAck {
+  if (result.accepted) return imAdmitted(msgId)
+  switch (result.reason) {
+    case 'durability':
+      return imRejected(msgId, false, 'durability', true)
+    case 'draining':
+      return imRejected(msgId, true, 'draining', true)
+    // The routed path's names for the same two refusals: queue pressure, and work held back while an interrupt unwinds.
+    case 'queue_full':
+      return imRejected(msgId, true, 'capacity', true)
+    case 'busy':
+      return imRejected(msgId, true, 'not_ready', true)
+    // Paused, loop protection, a malformed turn: the delivery is consumed and a resend changes nothing.
+    default:
+      return imRejected(msgId, true, undefined, false)
+  }
 }
 
 export class Daemon {
@@ -2044,8 +2077,20 @@ export class Daemon {
       emitStatusBar: (p) => this.emitStatusBar(p),
       interruptTurn: (agentId, key, reason, acpSessionId, opts) =>
         this.interruptTurn(agentId, key, reason, acpSessionId, opts),
-      dispatchQueueCommand: async (agentId, msg, integrationId) => {
-        await this.dispatch(agentId, msg, integrationId, undefined, undefined, { isQueueCmd: true })
+      dispatchQueueCommand: async (agentId, msg, integrationId, admission) => {
+        // A caller acking from admission gets the write required, under its receipt, and the admission reported.
+        const turn = this.dispatch(agentId, msg, integrationId, undefined, undefined, {
+          isQueueCmd: true,
+          ...(admission
+            ? {
+                requireDurable: true,
+                ...(admission.receiptId ? { receiptId: admission.receiptId(msg) } : {}),
+                onAdmission: admission.onAdmission
+              }
+            : {})
+        })
+        admission?.onDispatched?.(turn)
+        await turn
       },
       replyConnFor: (agentId, integrationId) => this.commandConnFor(agentId, integrationId),
       sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
@@ -9355,7 +9400,7 @@ export class Daemon {
       })
       .then((settled) => {
         this.pendingRelayMsgAcks.delete(dedupKey)
-        // A recoverable routed refusal is not cached, so the host's retry of the same delivery is re-attempted.
+        // A recoverable refusal is not cached, so a retry of the same delivery is re-attempted.
         if (settled.routeAdmission === 'rejected' && settled.recoverable === true) return settled
         if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear() // bound the window
         this.relayMsgAcks.set(dedupKey, settled)
@@ -9527,7 +9572,7 @@ export class Daemon {
   private async handleRelayIm(msg: RdMsgIm, trace: RelayAckTrace = { stage: 'received' }): Promise<RdAck> {
     if (!this.agents.get(msg.agentId)) {
       this.log.warn(`relay: rd/msg(im) for unknown agent ${msg.agentId} — dropping`)
-      return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
+      return imRejected(msg.msgId, false, 'no_agent', false)
     }
     trace.stage = 'normalize'
     const normalized = fromPlatformMessage(msg.payload, this.transportScopeForIntegrationIds([msg.integrationId]))
@@ -9598,7 +9643,8 @@ export class Daemon {
       if (!admitted) {
         this.log.debug(`relay: consumed AgentConnect bot message ${msg.msgId} without waking ${msg.agentId}`)
       }
-      return { msgId: msg.msgId, accepted: true }
+      // A woken agent is a fire-and-forget dispatch with no admission proof, so no verdict; a consumed copy is a deliberate gate.
+      return admitted ? { msgId: msg.msgId, accepted: true } : imRejected(msg.msgId, true, 'rejected', false)
     }
     // Relay arbitration normally forwards only enabled routes. A receive-only
     // Feishu relay may also hand the sole gated install an explicitly-addressed
@@ -9617,7 +9663,7 @@ export class Daemon {
       this.log.debug(
         `relay: dropped ${msg.msgId} for gated integration ${msg.integrationId} (${normalized.platform} conversation ${normalized.channel} off)`
       )
-      return { msgId: msg.msgId, accepted: true }
+      return imRejected(msg.msgId, true, 'off', false)
     }
     // HTTP-bot IM bypasses onInbound() because the relay already arbitrated the
     // target. It must still intercept control commands before dispatch — especially
@@ -9628,15 +9674,14 @@ export class Daemon {
       // arrive, so an event carrying neither a user nor a bot id lands here, not there.
       if (requiresTrustedActor(command.kind) && !isTrustedHumanTurn(normalized)) {
         this.log.warn(`command: ignored unauthenticated relay ${command.kind} for ${loopGuardScope(normalized)}`)
-        return { msgId: msg.msgId, accepted: false, reason: 'unauthorized' }
+        return imRejected(msg.msgId, false, 'unauthorized', false)
       }
       const target = this.commands.resolveExplicitCommandTarget(msg.agentId, msg.integrationId, normalized)
       if (!target) {
         this.log.warn(`relay: unauthorized command from ${normalized.sender.id} for agent ${msg.agentId}`)
-        return { msgId: msg.msgId, accepted: false, reason: 'unauthorized' }
+        return imRejected(msg.msgId, false, 'unauthorized', false)
       }
-      await this.commands.handleCommand(command, normalized, target)
-      return { msgId: msg.msgId, accepted: true }
+      return await this.admitRelayCommand(command, msg, normalized, target, trace)
     }
     // The ACK follows the durable reservation (decisions.md §8.3); a record the gate cannot use is retried.
     const { searchActionToken: _searchActionToken, ...rd } = msg
@@ -9646,12 +9691,75 @@ export class Daemon {
       delivery: { origin: 'relay', rd, msg: normalized }
     })
     if (decision.kind === 'held' && decision.reason === 'record_unavailable')
-      return { msgId: msg.msgId, accepted: false, reason: 'durability' }
-    if (decision.kind === 'held' && decision.reason === 'closed')
-      return { msgId: msg.msgId, accepted: false, reason: 'draining' }
+      return imRejected(msg.msgId, false, 'durability', true)
+    if (decision.kind === 'held' && decision.reason === 'closed') return imRejected(msg.msgId, false, 'draining', true)
+    // A reservation, a pending verdict, or a duplicate of one: durably recorded, and the Decision owns what follows.
     if (decision.kind === 'held' || decision.kind === 'pending' || decision.kind === 'duplicate')
-      return { msgId: msg.msgId, accepted: true }
+      return imAdmitted(msg.msgId)
     return await this.admitRelayImTarget(msg, normalized, trace)
+  }
+
+  /** A control command on the relay im path: at most once per receipt, acked from what it durably did (google-chat-integration.md §4). */
+  private async admitRelayCommand(
+    command: AgentCommand,
+    msg: RdMsgIm,
+    normalized: NormalizedMessage,
+    target: NonNullable<ReturnType<CommandHandlers['resolveExplicitCommandTarget']>>,
+    trace: RelayAckTrace
+  ): Promise<RdAck> {
+    trace.stage = `command:${command.kind}`
+    const receiptId = this.platformModules.get(normalized.platform)?.relayIngress?.receiptId
+    // A reply, a refusal or a no-op is consumed: nothing durable was promised, so a resend changes nothing.
+    const consumed = imRejected(msg.msgId, true, undefined, false)
+    if (command.kind === 'queue') {
+      // The queued message rides dispatch's durable fence itself, so the ack waits for its row, under the strategy's receipt.
+      let report!: (ack: RdAck) => void
+      const admitted = new Promise<RdAck>((resolve) => (report = resolve))
+      const effect = await this.commands.handleCommand(command, normalized, target, undefined, {
+        queueAdmission: {
+          ...(receiptId ? { receiptId } : {}),
+          onAdmission: (result) => report(imAdmissionAck(msg.msgId, result)),
+          // Resolved without an admission report: no proof of a row; rejected before one: the write failed.
+          onDispatched: (turn) =>
+            void turn.then(
+              () => report({ msgId: msg.msgId, accepted: true }),
+              () => report(imRejected(msg.msgId, false, 'durability', true))
+            )
+        }
+      })
+      return effect === 'admitting' ? await admitted : consumed
+    }
+    if (receiptId) {
+      // Minted before the command runs: a redelivery finds the receipt and re-runs nothing, so a cancel never reaches later work.
+      let minted: boolean
+      try {
+        minted = await this.store.appendInbox({
+          id: receiptId(normalized),
+          sessionKey: sessionKey(
+            normalized.platform,
+            normalized.channel,
+            normalized.thread ?? normalized.msgId,
+            msg.agentId,
+            normalized.transportScope
+          ),
+          agentId: msg.agentId,
+          msg: JSON.stringify(normalized),
+          integrationId: msg.integrationId,
+          completedAt: this.clock.now(),
+          loopGuardCounted: 1,
+          enqueuedAt: monotonicTs()
+        })
+      } catch (err) {
+        this.log.warn(`relay: command receipt for ${msg.msgId} failed: ${formatErr(err)}`)
+        return imRejected(msg.msgId, false, 'durability', true)
+      }
+      if (!minted) {
+        this.log.info(`relay: redelivered ${command.kind} ${msg.msgId} already ran — consumed`)
+        return consumed
+      }
+    }
+    const effect = await this.commands.handleCommand(command, normalized, target)
+    return effect === 'applied' ? imAdmitted(msg.msgId) : consumed
   }
 
   /** Step 6 for a pre-addressed relay IM: coordinate, mute, the platform's ingress strategy, then dispatch. */
@@ -9684,7 +9792,7 @@ export class Daemon {
       if (normalized.trigger !== 'mention') {
         this.log.debug(`relay: dropping ${msg.msgId} for agent "${msg.agentId}" (muted by !stop; awaiting @mention)`)
         gate?.onRefused?.('muted')
-        return { msgId: msg.msgId, accepted: true }
+        return imRejected(msg.msgId, true, 'muted', false)
       }
       await this.commands.setSessionMuted(muteKey, false)
       this.log.info(`relay: agent "${msg.agentId}" un-muted in ch=${normalized.channel} (explicit @mention)`)
@@ -9694,18 +9802,18 @@ export class Daemon {
     trace.stage = `prepare:${normalized.platform}`
     const prepared = ingress ? await ingress.prepare(msg, normalized, trace) : 'dispatch'
     trace.stage = 'dispatch'
-    // `settled` ⇒ the platform answered it itself. `refused` ⇒ it could not record the
-    // delivery, so nothing ran and the provider must send it again.
-    if (prepared === 'settled') return { msgId: msg.msgId, accepted: true }
-    if (prepared === 'refused') return { msgId: msg.msgId, accepted: false, reason: 'durability' }
+    // `settled` ⇒ the platform answered it itself, no turn. `refused` ⇒ unrecorded, so the provider must send it again.
+    if (prepared === 'settled') return imRejected(msg.msgId, true, undefined, false)
+    if (prepared === 'refused') return imRejected(msg.msgId, false, 'durability', true)
     // Read BEFORE the dispatch that would claim it: whether the session is already working is
     // what an admission hook reports, and the entry this delivery creates is not that work.
     // Bound, so a class-based strategy keeps its `this` when the hook runs later inside dispatch.
     const onAdmitted = ingress?.onAdmitted?.bind(ingress)
     const busy = onAdmitted ? this.inflight.has(muteKey) : false
+    // Any admission member makes the ACK wait for the durable admission; a strategy with none keeps the shared call as it was.
+    const awaited = onAdmitted !== undefined || ingress?.requireDurable === true || ingress?.receiptId !== undefined
     if (gate && !gate.beforeDispatch()) return { msgId: msg.msgId, accepted: true }
-    // A platform contributing no admission hook keeps the shared call exactly as it was.
-    if (!onAdmitted) {
+    if (!awaited) {
       const plain = gate
         ? this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
             requireDurable: true,
@@ -9718,6 +9826,7 @@ export class Daemon {
       void plain.catch((err) =>
         this.log.error(`relay im dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
       )
+      // The shared call acks on dispatch, before durability, so it carries no strict verdict; a platform that answers from admission supplies a strategy.
       return { msgId: msg.msgId, accepted: true }
     }
     // §10.1: the hook runs on the FIRST admission only — a replay or a concurrent same-`msgId`
@@ -9728,7 +9837,8 @@ export class Daemon {
     let report!: (ack: RdAck) => void
     const admitted = new Promise<RdAck>((resolve) => (report = resolve))
     const dispatched = this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
-      ...(ingress?.requireDurable || gate ? { requireDurable: true } : {}),
+      // The platform answers from admission, so a failed write refuses instead of running best-effort.
+      requireDurable: true,
       // The gate's receipt wins: a By decision delivery must never be dispatched twice for its verdict.
       ...(gate
         ? { receiptId: gate.receiptId, ...(gate.deliveryId ? { deliveryId: gate.deliveryId } : {}) }
@@ -9738,21 +9848,15 @@ export class Daemon {
       onAdmission: async (result) => {
         trace.stage = 'admitted'
         try {
-          if (result.accepted && !result.duplicate) await onAdmitted(msg, normalized, busy, result.steered === true)
+          if (onAdmitted && result.accepted && !result.duplicate)
+            await onAdmitted(msg, normalized, busy, result.steered === true)
         } catch (err) {
           gate?.onAdmission({ accepted: false, reason: 'durability' })
           throw err
         }
         gate?.onAdmission(result)
-        // A durability refusal is the ONE outcome the provider must send again: nothing was
-        // recorded, so nothing will replay it either. Every other non-acceptance is a
-        // deliberate local gate — paused, draining, loop protection — whose delivery is
-        // consumed exactly as it always was.
-        report(
-          result.accepted || result.reason !== 'durability'
-            ? { msgId: msg.msgId, accepted: true }
-            : { msgId: msg.msgId, accepted: false, reason: 'durability' }
-        )
+        // `accepted` refuses only a durability failure, as it always did; the strict verdict also names the consumed refusals a resend outlives.
+        report(imAdmissionAck(msg.msgId, result))
       }
     })
     gate?.onDispatched(dispatched)
@@ -9760,10 +9864,11 @@ export class Daemon {
     // record the delivery — surfaces as the dispatch promise rejecting instead. A rejection
     // AFTER a settled admission (an ordinary turn failure) finds this already resolved.
     void dispatched
+      // Resolved without an admission report: nothing proves a row, so no strict verdict rides the ack.
       .then(() => report({ msgId: msg.msgId, accepted: true }))
       .catch((err) => {
         this.log.error(`relay im dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
-        report({ msgId: msg.msgId, accepted: false, reason: 'durability' })
+        report(imRejected(msg.msgId, false, 'durability', true))
       })
     return await admitted
   }
@@ -19309,11 +19414,11 @@ export class Daemon {
   ): Promise<RdAck> {
     const routing = msg.trustedRouting!
     trace.stage = 'decision-router'
-    if (this.isAgentBotMessage(normalized)) return { msgId: msg.msgId, accepted: false, reason: 'rejected' }
+    if (this.isAgentBotMessage(normalized)) return imRejected(msg.msgId, false, 'rejected', false)
     await this.discoverConversations(normalized, [msg.integrationId])
-    if (!this.gatedAdmission(msg.integrationId, normalized)) return { msgId: msg.msgId, accepted: true }
+    if (!this.gatedAdmission(msg.integrationId, normalized)) return imRejected(msg.msgId, true, 'off', false)
     const command = parseCommand(normalized.text)
-    if (command) return { msgId: msg.msgId, accepted: false, reason: 'rejected' }
+    if (command) return imRejected(msg.msgId, false, 'rejected', false)
     const int = this.integrationConfigById(msg.integrationId)
     const routed = int ? integrationRouting(int).routingFor(normalized.channel) : undefined
     // A daemon that is not the projected host holds the message in its record and never evaluates.
@@ -19323,13 +19428,14 @@ export class Daemon {
         normalized.channel,
         'routed message for a conversation this daemon does not host'
       )
-      return { msgId: msg.msgId, accepted: false, reason: 'not_host' }
+      // Both fences converge with the CP projection, so a resend may find this daemon hosting.
+      return imRejected(msg.msgId, false, 'not_host', true)
     }
     if (routed.routing.definition.id !== routing.decisionId) {
       this.decisionHoldLog(msg.integrationId, normalized.channel, `relay decision ${routing.decisionId} is stale`)
-      return { msgId: msg.msgId, accepted: false, reason: 'stale' }
+      return imRejected(msg.msgId, false, 'stale', true)
     }
-    if (!record) return { msgId: msg.msgId, accepted: false, reason: 'durability' }
+    if (!record) return imRejected(msg.msgId, false, 'durability', true)
     const { searchActionToken: _searchActionToken, ...rd } = msg
     const relayId = routing.relayId ?? this.relayIngressOf.get(msg)
     const outcome = await this.decisionRouter.intake({
@@ -19350,10 +19456,9 @@ export class Daemon {
     })
     // The ACK follows the durable reservation (decisions.md §8.3).
     if (outcome.kind === 'held' && outcome.reason === 'record_unavailable')
-      return { msgId: msg.msgId, accepted: false, reason: 'durability' }
-    if (outcome.kind === 'held' && outcome.reason === 'closed')
-      return { msgId: msg.msgId, accepted: false, reason: 'draining' }
-    return { msgId: msg.msgId, accepted: true }
+      return imRejected(msg.msgId, false, 'durability', true)
+    if (outcome.kind === 'held' && outcome.reason === 'closed') return imRejected(msg.msgId, false, 'draining', true)
+    return imAdmitted(msg.msgId)
   }
 
   /** A routed forward to one of this daemon's agents: fences, then step 6 WITHOUT evaluating, acknowledged per target. */

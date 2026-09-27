@@ -289,18 +289,33 @@ interaction response after admission and send all visible output asynchronously.
 Do not hold the request open for an agent turn. See
 [interaction handling and retries](https://developers.google.com/workspace/chat/receive-respond-interactions).
 
-The current `RelayIngressHost.forward` result means the relay handled the message;
-it explicitly does not prove daemon admission. The daemon's `rd/ack` for an `im`
-delivery does refuse entry-path failures such as no agent, unauthorized, draining,
-a wrong duty holder, or a failed durable write, but once dispatch begins it
-reports every deliberate gate refusal as accepted. The routed path in
-[shared-bot relay](shared-bot-relay.md) §7.2 already carries the
-strict shape: `rd/ack` gains `routeAdmission` and `recoverable`, and the relay's
-route forwarder maps them onto the `admitted` / `retry` / `rejected` dispositions
-and reasons of `rd/route/ack`. Extend the `im` ack with those same fields and
-expose that disposition through the host seam; do not define a Google-specific
-vocabulary. A Google module must not convert the old `accepted` result into an
-HTTP success by default.
+`RelayIngressHost.forward` answers `accepted` when the relay handled the
+message; it does not prove daemon admission, and the daemon's `rd/ack` keeps
+that shape: `accepted`/`reason` refuse only entry-path failures (no agent,
+unauthorized, a failed durable write) and report every deliberate gate as
+accepted. A daemon advertising `im-admission-v1` (`RD_IM_ADMISSION_V1`) also
+fills `routeAdmission` and `recoverable` — the fields the routed path in
+[shared-bot relay](shared-bot-relay.md) §7.2 already carried — beside that
+unchanged pair on every `im` ack that goes through a platform strategy with an
+admission member (`requireDurable`, `receiptId`, or `onAdmitted`): `admitted`
+for a durable admission, a duplicate its receipt settles included; `rejected`
+with `recoverable: true` for a transient refusal (`durability`, `draining`,
+`capacity`, `not_ready`, `not_host`, `stale`); `rejected` with
+`recoverable: false` for a deliberate gate (`off`, `muted`, `no_agent`,
+`unauthorized`, an agent-authored copy, a delivery the platform strategy
+settled itself). A gate named in the `rd/route/ack` vocabulary rides in
+`reason`; one without a name there (paused, loop protection) reads as
+`rejected`. The shared best-effort path, which a platform without such a
+strategy takes, acks on dispatch before durability and carries no verdict; the
+host reads that as `rejected`/`unsupported`, so a platform that answers from
+admission supplies a relay-ingress strategy with at least `receiptId` (Google
+Chat will). The host exposes the verdict as
+`RelayIngressHost.forwardStrict(botId, message, sidecar?)`: the same
+arbitration as `forward`, returning a `RelayAdmission` — the `disposition` and
+`reason` of `rd/route/ack` — through the mapping the route forwarder uses
+(`admissionFrom`). Over a fan-out one admission settles the delivery, else one
+retry does, else the first rejection. The Google module calls `forwardStrict`
+and never converts the old `accepted` result into an HTTP success.
 
 | Disposition           | Relay verdict                                                                                                | HTTP behavior                                                                         |
 | --------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
@@ -310,11 +325,11 @@ HTTP success by default.
 | Retryable or unknown  | `retry` (`durability`, `draining`, `capacity`, `not_ready`, `offline`) or an admission timeout               | 503 so Google may redeliver.                                                          |
 | Invalid request       | never forwarded                                                                                              | 401 for failed authentication; 400 for malformed payloads; never route either.        |
 
-The relay's inbound seam returns `HandledDelivery`, which today carries only a
-synchronous response body: the Slack route answers 200 for every handled
-delivery and 401 only when no assigned bot owns it. Carry the admission
-disposition on `HandledDelivery` as a platform-neutral member so the module's
-own route can answer 503.
+The relay's inbound seam returns `HandledDelivery`; its optional `admission`
+member carries the `RelayAdmission` unchanged from the plugin's `handle` to the
+platform's own route in `installRoutes`, which answers 503 for `retry` and 200
+otherwise. The Slack route reads only `syncResponse` and keeps answering 200 for
+every handled delivery and 401 when no assigned bot owns it.
 
 Use a bounded admission deadline inside the provider and relay request budgets.
 An HTTP timeout after a daemon commit is an unknown outcome, not a reason to
@@ -329,12 +344,16 @@ optional `relayIngress` member of the daemon platform contract
 registry, with Linear as its first implementer; Google Chat implements the same
 member and adds one registry line, rather than adding a `googlechat` entry to
 core. Preserve routing and
-authorization while distinguishing transient draining/placement failures from
-intentional gates. The current `im` ACK mapping is insufficient for that
-distinction. Gate the ingress on the existing feature advertisement, as the relay
-already does with `daemon.supports(...)` for decision routing: a host that does
-not advertise the strict admission contract is refused, never served with the
-old ack semantics. Changes to any shared wire fields must update and validate
+authorization; the `im` ack above distinguishes transient draining/placement
+failures from intentional gates. Any admission member on the strategy
+(`requireDurable`, `receiptId`, `onAdmitted`) makes the ack wait for the durable
+admission and makes that admission required, so a failed write is the
+`durability` refusal and `admitted` is never reported ahead of the row and its
+receipt. `forwardStrict` gates each target on
+`daemon.supports(RD_IM_ADMISSION_V1)`, as the relay gates routed forwards on
+decision routing: a daemon that does not advertise it is answered
+`rejected`/`unsupported` and never sent to, so the old ack semantics are never
+read as admission. Changes to any shared wire fields must update and validate
 both consumers together.
 
 Scope receipts to the installed app and stable Google message identity.
@@ -342,13 +361,23 @@ Concurrent copies elect one admission in the store transaction; receipts outlive
 turn completion, steering, and inbox removal. Check them before an in-memory dedup
 fast path can settle a delivery: the relay host's `dedupSeen` marks an identity
 on first sight and answers a repeat with 200 before any admission result exists,
-which suits Slack's bounded-loss path and not this one. The Google module marks
-the identity only after an accepted or ignored disposition, so a retry of a
-refused or timed-out attempt is forwarded again. A failed durable write remains
-retryable.
+which suits Slack's bounded-loss path and not this one. The Google module uses
+the host's split pair instead — `dedupPeek(identity)` checks without marking,
+`dedupMark(identity)` marks after an `admitted` or `rejected` disposition — so
+a retry of a `retry` or timed-out attempt is forwarded again. A failed durable
+write remains retryable.
 
 Commands require a completed, replay-safe disposition too. Bind cancellation to
-its original operation/turn so a repeated callback cannot cancel later work.
+its original operation/turn so a repeated callback cannot cancel later work. On
+the daemon, `!queue` acks only after its queued message's durable admission,
+under the strategy's `receiptId` when one exists, so a redelivery is a
+duplicate rather than a second queued turn; every other command is minted a
+born-completed receipt under that same `receiptId` before it runs, so a
+redelivered `!cancel` finds it and cancels nothing, and its ack is `admitted`
+when a durable effect completed (a mute, a cleared context, an interrupted turn)
+and `rejected`/`recoverable: false` when it only replied or refused. A platform
+without a `receiptId` keeps the bounded replay window of the relay dedup and the
+daemon's ack cache.
 Lifecycle updates are idempotent observations: use event kind, Space, actor, and
 event time when no message resource exists, and confirm conflicting membership
 hints through provider reads. Do not collapse all add/remove events for a Space.

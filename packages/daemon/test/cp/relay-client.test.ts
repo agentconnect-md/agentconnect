@@ -16,6 +16,7 @@ import {
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   RD_WEBCHAT_ATTACH_V1,
+  RD_IM_ADMISSION_V1,
   RELAY_DAEMON_SUBPROTOCOL,
   type RelayDaemonFrame,
   type RdMsg,
@@ -135,7 +136,8 @@ describe('RelayClient (daemon → one relay)', () => {
         DECISION_TRIGGER_V1_FEATURE,
         DECISION_ROUTING_V1_FEATURE,
         HOOK_DECISION_ROUTING_V1_FEATURE,
-        HOOK_DECISION_ROUTING_V2_FEATURE
+        HOOK_DECISION_ROUTING_V2_FEATURE,
+        RD_IM_ADMISSION_V1
       ]
     })
     expect(client.state).toBe('READY')
