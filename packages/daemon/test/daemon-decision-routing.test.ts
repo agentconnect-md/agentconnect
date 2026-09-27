@@ -242,7 +242,8 @@ describe('By decision routing (daemon)', () => {
     evaluate.mockResolvedValue(all)
     const payload = human()
     const ack = await (daemon as any).handleRelayIm(frame(payload, routing()))
-    expect(ack).toEqual({ msgId: payload.msgId, accepted: true })
+    // The host copy is admitted once the router holds its durable reservation.
+    expect(ack).toEqual({ msgId: payload.msgId, accepted: true, routeAdmission: 'admitted' })
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
     await router.idle()
     expect(evaluate).toHaveBeenCalledTimes(1)
@@ -280,7 +281,8 @@ describe('By decision routing (daemon)', () => {
     // A relay retransmit replays the ACK and evaluates nothing.
     expect(await (daemon as any).handleRelayIm(frame(payload, routing()))).toEqual({
       msgId: payload.msgId,
-      accepted: true
+      accepted: true,
+      routeAdmission: 'admitted'
     })
     await router.idle()
     expect(evaluate).toHaveBeenCalledTimes(1)
@@ -294,10 +296,13 @@ describe('By decision routing (daemon)', () => {
     ] as const) {
       const { daemon, store, host, evaluate, channel } = await boot({ hosted })
       const payload = human()
+      // Recoverable: the projection this fence reads converges, so a resend may find this daemon hosting.
       expect(await (daemon as any).handleRelayIm(frame(payload, routing(over)))).toEqual({
         msgId: payload.msgId,
         accepted: false,
-        reason: 'not_host'
+        reason: 'not_host',
+        routeAdmission: 'rejected',
+        recoverable: true
       })
       expect(await admissions(store, channel)).toEqual([])
       const rows = (await store.db.prepare('SELECT text FROM transcript WHERE channel = ?').all(channel)) as unknown[]

@@ -21,13 +21,15 @@ import {
   RD_AGENT_IMPLICIT_ROUTING_V1,
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
-  RD_ACK_NOT_HOLDER
+  RD_ACK_NOT_HOLDER,
+  RD_IM_ADMISSION_V1
 } from '@agentconnect.md/protocol'
 import { parseCommand } from '@agentconnect.md/activation-policy'
 import type {
   RdMsg,
   RdRoute,
   RdRouteAck,
+  RdRouteReason,
   RdRouteReport,
   RdRouteReportAck,
   RdAck,
@@ -53,6 +55,7 @@ import {
 import { DemuxIndex, IngressPool, relayIngressPlugins } from './platforms/registry.js'
 import type {
   HandledDelivery,
+  RelayAdmission,
   RelayBotIngress,
   RelayCredentialCheck,
   RelayForwardOutcome,
@@ -61,8 +64,21 @@ import type {
   RelayPlatformIngressPlugin
 } from './platforms/contract.js'
 import { SlackEventDedup } from './slack-event-dedup.js'
-import { createRouteForwarder, type RouteForward } from './route-forwarder.js'
+import { admissionFrom, createRouteForwarder, type RouteForward } from './route-forwarder.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
+
+const rejected = (reason: RdRouteReason): RelayAdmission => ({ disposition: 'rejected', reason })
+const retry = (reason: RdRouteReason): RelayAdmission => ({ disposition: 'retry', reason })
+
+/** One delivery's verdict over its fan-out: one admission settles it, else one retry does, else the first rejection. */
+export function aggregateAdmission(verdicts: readonly RelayAdmission[]): RelayAdmission {
+  return (
+    verdicts.find((v) => v.disposition === 'admitted') ??
+    verdicts.find((v) => v.disposition === 'retry') ??
+    verdicts[0] ??
+    rejected('rejected')
+  )
+}
 
 /** Cap on the learned `api_app_id → botId` demux index before it is flushed. */
 /** Cap on the retry buffer for thread-assign reports dropped while the CP link was
@@ -198,6 +214,7 @@ export class RelayIngressManager {
   private buildIngressHost(): RelayIngressHost {
     return {
       forward: (botId, message, sidecar) => this.forward(botId, message, sidecar),
+      forwardStrict: (botId, message, sidecar) => this.forwardStrict(botId, message, sidecar),
       forwardAction: async (msg, route) => {
         // An interaction is as pre-addressed as an `rd/msg` and its recorded member is
         // as likely to have handed the duty on, so it takes the SAME rendezvous path:
@@ -246,6 +263,8 @@ export class RelayIngressManager {
         soleTarget: (botId) => this.router.soleTarget(botId)
       },
       dedupSeen: (identity) => this.eventDedup.seen(identity),
+      dedupPeek: (identity) => this.eventDedup.peek(identity),
+      dedupMark: (identity) => this.eventDedup.mark(identity),
       canDeliver: (route) => this.deps.getDaemon(route.daemonId) !== undefined,
       setChannelAgent: (botId, channelId, agentId) => this.deps.setChannelAgent(botId, channelId, agentId),
       selectThreadAgent: (botId, channelId, threadTs, agentId) =>
@@ -371,14 +390,16 @@ export class RelayIngressManager {
     botId: string,
     msg: WireNormalizedMessage,
     sidecar: RelayIngressSidecar | undefined,
-    routed: { decisionId: string; evaluationDaemonId: string }
-  ): Promise<RelayForwardOutcome> {
+    routed: { decisionId: string; evaluationDaemonId: string },
+    strict: boolean
+  ): Promise<RelayAdmission> {
     const sessionKey = sessionKeyOf(msg)
-    const drop = (why: string): RelayForwardOutcome => {
+    // Counted as the bounded loss it is for `forward`; the strict verdict says whether a resend can still land.
+    const drop = (why: string, verdict: RelayAdmission): RelayAdmission => {
       const n = (this.dropped.get(botId) ?? 0) + 1
       this.dropped.set(botId, n)
       this.deps.log.warn(`relay-ingress(${botId}): routed ${msg.msgId} dropped — ${why} (dropped ${n})`)
-      return 'accepted'
+      return verdict
     }
     // A reply in a thread this relay knows nobody in asks the CP first, so its participants constrain it.
     if (this.router.routedThreadNeedsLookup(botId, msg)) {
@@ -386,7 +407,7 @@ export class RelayIngressManager {
       try {
         lookup = await this.deps.lookupThread({ botId, sessionKey })
       } catch {
-        return drop('thread lookup unavailable') // §10.2 bounded loss; a mention re-anchors the thread.
+        return drop('thread lookup unavailable', retry('not_ready')) // §10.2 bounded loss; a mention re-anchors the thread.
       }
       for (const participant of lookup.participants) {
         const current = this.router.agentTarget(botId, participant.agentId, msg.channel)
@@ -397,10 +418,13 @@ export class RelayIngressManager {
     }
     const host = this.deps.getDaemon(routed.evaluationDaemonId)
     // Never per-candidate delivery: an unavailable host is backpressure, not permission to classify elsewhere.
-    if (!host) return drop(`evaluation host ${routed.evaluationDaemonId} is not on this relay`)
-    if (!host.supports(DECISION_ROUTING_V1_FEATURE)) return drop(`host ${routed.evaluationDaemonId} predates routing`)
+    if (!host) return drop(`evaluation host ${routed.evaluationDaemonId} is not on this relay`, retry('offline'))
+    if (!host.supports(DECISION_ROUTING_V1_FEATURE))
+      return drop(`host ${routed.evaluationDaemonId} predates routing`, rejected('unsupported'))
+    if (strict && !host.supports(RD_IM_ADMISSION_V1))
+      return drop(`host ${routed.evaluationDaemonId} predates strict admission`, rejected('unsupported'))
     const carrier = this.router.hostCarrier(botId, msg.channel, routed.evaluationDaemonId)
-    if (!carrier) return drop(`no member of this bot on host ${routed.evaluationDaemonId}`)
+    if (!carrier) return drop(`no member of this bot on host ${routed.evaluationDaemonId}`, rejected('not_member'))
     const assignment = this.router.get(botId)
     const namesBot = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
     const relayId = this.deps.selfRelayId()
@@ -427,10 +451,10 @@ export class RelayIngressManager {
     try {
       const ack = await this.sendWithRendezvous(host, rd, botId, `relay-ingress(${botId}) routed`)
       if (!ack.accepted) this.deps.log.warn(`relay-ingress(${botId}): host refused routed ${msg.msgId} (${ack.reason})`)
+      return admissionFrom(ack)
     } catch (err) {
-      return drop(`forward to host failed: ${(err as Error).message}`)
+      return drop(`forward to host failed: ${(err as Error).message}`, retry('offline'))
     }
-    return 'accepted'
   }
 
   /** Emit a thread-assign report; on a non-READY CP link stash it for retry. */
@@ -1103,16 +1127,36 @@ export class RelayIngressManager {
    *  thread follow-up with no local affinity, pulls the persisted owner from the CP. */
   private async forward(
     botId: string,
-    msg: import('@agentconnect.md/protocol').WireNormalizedMessage,
+    msg: WireNormalizedMessage,
     sidecar?: RelayIngressSidecar
   ): Promise<RelayForwardOutcome> {
+    return (await this.arbitrateAndForward(botId, msg, sidecar, false)) === 'refused' ? 'refused' : 'accepted'
+  }
+
+  /** {@link forward} with the daemon's strict verdict: the same ladder, gated per target on `im-admission-v1`. */
+  private async forwardStrict(
+    botId: string,
+    msg: WireNormalizedMessage,
+    sidecar?: RelayIngressSidecar
+  ): Promise<RelayAdmission> {
+    const outcome = await this.arbitrateAndForward(botId, msg, sidecar, true)
+    return outcome === 'refused' ? rejected('rejected') : outcome
+  }
+
+  /** The one ladder behind both host verdicts: `refused` is the §6.2 grant withdrawal, everything else a strict verdict. */
+  private async arbitrateAndForward(
+    botId: string,
+    msg: WireNormalizedMessage,
+    sidecar: RelayIngressSidecar | undefined,
+    strict: boolean
+  ): Promise<RelayAdmission | 'refused'> {
     // send-message-routing-rework.md §2.3/§6: agent-authored traffic takes its OWN
     // ladder and never continues into the human one. Handled BEFORE arbitration for the
     // same reason the blanket filter used to be: an agent's platform copy must not mutate
     // thread affinity or produce a CP assignment report on its way through.
     if (this.isAgentBotMessage(botId, msg)) {
       await this.forwardVerifiedAgentMessage(botId, msg, sidecar)
-      return 'accepted'
+      return rejected('rejected')
     }
     const sessionKey = sessionKeyOf(msg)
     const assignment = this.router.get(botId)
@@ -1131,8 +1175,8 @@ export class RelayIngressManager {
     if (routed) {
       const command = parseCommand(msg.text)
       // Commands, !queue included, are never judged (message-intake §5 step 2); they take the command path.
-      if (!command) return await this.forwardRoutedToHost(botId, msg, sidecar, routed)
-      return await this.forwardRoutedCommand(botId, msg, sidecar, routed.decisionId, namesThisBot)
+      if (!command) return await this.forwardRoutedToHost(botId, msg, sidecar, routed, strict)
+      return await this.forwardRoutedCommand(botId, msg, sidecar, routed.decisionId, namesThisBot, strict)
     }
     const prior = this.router.peekAffinity(botId, sessionKey)
     const arbitration = this.router.routeResult(botId, msg)
@@ -1192,18 +1236,18 @@ export class RelayIngressManager {
           if (!this.ingestFor(botId)?.egress) tgt = this.router.soleGatedTarget(botId) ?? null
           if (!tgt) {
             await this.noticeGatedUnrouted(botId, msg)
-            return 'accepted'
+            return rejected('off')
           }
         }
       }
       // Backstop leg: only a real un-mentioned threaded follow-up is worth a CP lookup.
       if (!tgt) {
-        if (!this.router.isUnmentionedThreadFollowup(botId, msg)) return 'accepted'
+        if (!this.router.isUnmentionedThreadFollowup(botId, msg)) return rejected('rejected')
         let lookup: Awaited<ReturnType<RelayIngressManagerDeps['lookupThread']>>
         try {
           lookup = await this.deps.lookupThread({ botId, sessionKey })
         } catch {
-          return 'accepted' // CP down — drop (bounded loss); a mention re-anchors the thread.
+          return retry('not_ready') // CP down — drop (bounded loss); a mention re-anchors the thread.
         }
         for (const participant of lookup.participants) {
           const current = this.router.agentTarget(botId, participant.agentId, msg.channel)
@@ -1213,11 +1257,11 @@ export class RelayIngressManager {
         }
         if (!lookup.target && lookup.participants.length === 0) {
           this.router.rememberNoAffinity(botId, sessionKey)
-          return 'accepted'
+          return rejected('rejected')
         }
         // Seeded from the CP — do NOT report it back (it came from the CP).
         if (lookup.target) {
-          if (!this.router.seedLookupTarget(botId, sessionKey, lookup.target)) return 'accepted'
+          if (!this.router.seedLookupTarget(botId, sessionKey, lookup.target)) return rejected('rejected')
           const seeded = this.router.routeResult(botId, msg)
           if (seeded.kind === 'refused') {
             this.deps.log.debug(`relay-ingress(${botId}): refused ${msg.msgId} in ${sessionKey} — ${seeded.reason}`)
@@ -1232,7 +1276,7 @@ export class RelayIngressManager {
           : this.router.conversationTargets(botId, msg, tgt, undefined, [], (target) =>
               this.reportHumanParticipant(botId, sessionKey, msg.channel, tgt, target)
             )
-        if (!tgt && conversationTargets.length === 0) return 'accepted'
+        if (!tgt && conversationTargets.length === 0) return rejected('rejected')
       }
     }
     // A single-owner route is only the compatibility/reporting primary. Delivery is to
@@ -1252,16 +1296,19 @@ export class RelayIngressManager {
     }
     // A By decision conversation: every delivery names its Decision, and only a daemon that can hold it receives one.
     const decisionId = this.router.decisionIdFor(botId, msg.channel)
+    const verdicts: RelayAdmission[] = []
     for (const { target: participant, via } of conversationTargets) {
       const daemon = this.deps.getDaemon(participant.daemonId)
       if (!daemon) {
         const n = (this.dropped.get(botId) ?? 0) + 1
         this.dropped.set(botId, n)
         this.deps.log.warn(`relay-ingress(${botId}): daemon ${participant.daemonId} offline — dropped (total ${n})`)
+        verdicts.push(retry('offline'))
         continue
       }
       if (decisionId && !daemon.supports(DECISION_TRIGGER_V1_FEATURE)) {
         this.deps.log.debug(`relay-ingress(${botId}): daemon ${participant.daemonId} predates decision-trigger-v1`)
+        verdicts.push(rejected('unsupported'))
         continue
       }
       if (
@@ -1270,6 +1317,13 @@ export class RelayIngressManager {
         !daemon.supports(RD_AGENT_IMPLICIT_ROUTING_V1)
       ) {
         this.deps.log.debug(`relay-ingress(${botId}): daemon ${participant.daemonId} predates per-target routing cause`)
+        verdicts.push(rejected('unsupported'))
+        continue
+      }
+      // Fail closed: an older daemon's `accepted` never proves admission, so the strict path does not send to it at all.
+      if (strict && !daemon.supports(RD_IM_ADMISSION_V1)) {
+        this.deps.log.debug(`relay-ingress(${botId}): daemon ${participant.daemonId} predates strict admission`)
+        verdicts.push(rejected('unsupported'))
         continue
       }
       const rd: RdMsgIm = {
@@ -1286,16 +1340,17 @@ export class RelayIngressManager {
         trustedRouteVia: via
       }
       try {
-        await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)
+        verdicts.push(admissionFrom(await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)))
       } catch (err) {
         const n = (this.dropped.get(botId) ?? 0) + 1
         this.dropped.set(botId, n)
         this.deps.log.warn(
           `relay-ingress(${botId}): forward to ${participant.daemonId} failed: ${(err as Error).message} (dropped ${n})`
         )
+        verdicts.push(retry('offline'))
       }
     }
-    return 'accepted'
+    return aggregateAdmission(verdicts)
   }
 
   /** A control command in a routed conversation reaches the owner and remembered participants, and joins nobody. */
@@ -1304,18 +1359,25 @@ export class RelayIngressManager {
     msg: WireNormalizedMessage,
     sidecar: RelayIngressSidecar | undefined,
     decisionId: string,
-    namesThisBot: boolean
-  ): Promise<RelayForwardOutcome> {
+    namesThisBot: boolean,
+    strict: boolean
+  ): Promise<RelayAdmission> {
     const sessionKey = sessionKeyOf(msg)
     const targets = new Map<string, RouteTarget>()
     const owner = this.router.peekAffinity(botId, sessionKey) ?? this.router.channelDecisionOwner(botId, msg.channel)
     const ownerTarget = owner ? this.router.agentTarget(botId, owner.agentId, msg.channel) : null
     if (ownerTarget) targets.set(ownerTarget.agentId, ownerTarget)
     for (const t of this.router.conversationParticipants(botId, sessionKey, msg.channel)) targets.set(t.agentId, t)
+    const verdicts: RelayAdmission[] = []
     for (const target of targets.values()) {
       const daemon = this.deps.getDaemon(target.daemonId)
-      if (!daemon || !daemon.supports(DECISION_TRIGGER_V1_FEATURE)) {
+      if (
+        !daemon ||
+        !daemon.supports(DECISION_TRIGGER_V1_FEATURE) ||
+        (strict && !daemon.supports(RD_IM_ADMISSION_V1))
+      ) {
         this.deps.log.debug(`relay-ingress(${botId}): command for ${target.agentId} not deliverable`)
+        verdicts.push(daemon ? rejected('unsupported') : retry('offline'))
         continue
       }
       const rd: RdMsgIm = {
@@ -1332,12 +1394,13 @@ export class RelayIngressManager {
         trustedRouteVia: namesThisBot ? 'mention' : 'implicit'
       }
       try {
-        await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)
+        verdicts.push(admissionFrom(await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)))
       } catch (err) {
         this.deps.log.warn(`relay-ingress(${botId}): command forward failed: ${(err as Error).message}`)
+        verdicts.push(retry('offline'))
       }
     }
-    return 'accepted'
+    return aggregateAdmission(verdicts)
   }
 
   /**

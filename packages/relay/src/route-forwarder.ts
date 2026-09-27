@@ -13,6 +13,7 @@ import {
 import type { RouteTarget } from './bot-arbitration.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
+import type { RelayAdmission } from './platforms/contract.js'
 
 const DEDUP_MAX = 4000
 /** The inner forward's bound; the host's own request timeout is longer, so a slow target reads as `retry`. */
@@ -32,23 +33,28 @@ export interface RouteForwarderDeps {
 
 const RETRY_REASONS = new Set(['durability', 'draining', 'capacity', 'not_ready', 'offline'])
 
-/** Map the target's `rd/ack` onto the host-facing verdict. */
-export function routeAckFrom(deliveryId: string, daemonId: string, ack: RdAck): RdRouteAck {
+/** The strict verdict an `rd/ack` maps onto, shared by the routed leg and the host's strict `im` forward. */
+export function admissionFrom(ack: RdAck): RelayAdmission {
   const reason = (value: string | undefined): RdRouteReason => {
     const parsed = RdRouteReason.safeParse(value)
     return parsed.success ? parsed.data : 'rejected'
   }
-  if (ack.routeAdmission === 'admitted') return { deliveryId, disposition: 'admitted', daemonId }
+  if (ack.routeAdmission === 'admitted') return { disposition: 'admitted' }
   if (ack.routeAdmission === 'rejected') {
     return ack.recoverable
-      ? { deliveryId, disposition: 'retry', reason: reason(ack.reason), daemonId }
-      : { deliveryId, disposition: 'rejected', reason: reason(ack.reason), daemonId }
+      ? { disposition: 'retry', reason: reason(ack.reason) }
+      : { disposition: 'rejected', reason: reason(ack.reason) }
   }
-  // No routed verdict: a transport-level refusal (duty, drain, durability) or a target that ignored the selection.
-  if (ack.reason === RD_ACK_NOT_HOLDER) return { deliveryId, disposition: 'retry', reason: 'not_ready', daemonId }
+  // No strict verdict: a transport-level refusal (duty, drain, durability) or a daemon that ignored the selection.
+  if (ack.reason === RD_ACK_NOT_HOLDER) return { disposition: 'retry', reason: 'not_ready' }
   if (!ack.accepted && ack.reason && RETRY_REASONS.has(ack.reason))
-    return { deliveryId, disposition: 'retry', reason: reason(ack.reason), daemonId }
-  return { deliveryId, disposition: 'rejected', reason: ack.accepted ? 'rejected' : reason(ack.reason), daemonId }
+    return { disposition: 'retry', reason: reason(ack.reason) }
+  return { disposition: 'rejected', reason: ack.accepted ? 'rejected' : reason(ack.reason) }
+}
+
+/** Map the target's `rd/ack` onto the host-facing verdict. */
+export function routeAckFrom(deliveryId: string, daemonId: string, ack: RdAck): RdRouteAck {
+  return { deliveryId, ...admissionFrom(ack), daemonId }
 }
 
 export function createRouteForwarder(deps: RouteForwarderDeps) {

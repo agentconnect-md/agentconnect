@@ -133,6 +133,9 @@ export type RdHookNotice = z.infer<typeof RdHookNotice>
  */
 export const RD_WEBCHAT_ATTACH_V1 = 'webchat-attach-v1'
 
+/** `im-admission-v1`: this daemon fills `routeAdmission`/`recoverable` on every pre-addressed `im` ack beside the unchanged `accepted`/`reason`; the relay's strict forward refuses a daemon without it instead of reading the old ack. */
+export const RD_IM_ADMISSION_V1 = 'im-admission-v1'
+
 // D→R REQ → rd/hello/ok. The daemon presents the same credential it uses on the CP
 // socket — an API key, or an in-cluster daemon's projected ServiceAccount token. The
 // relay holds no database, so it delegates either to the CP via `rc/verify` and caches
@@ -770,9 +773,9 @@ export const RdAck = z.object({
    *  module. (The Feishu-named `feishuCardAction` slot retired with the legacy
    *  interaction members.) */
   response: z.unknown().optional(),
-  /** A routed forward's target-side verdict: admitted, or rejected with `reason`. */
+  /** The strict verdict of a routed target, or of a pre-addressed `im` behind `im-admission-v1`: admitted, or rejected with `reason`. */
   routeAdmission: z.enum(['admitted', 'rejected']).optional(),
-  /** Set with a routed rejection the host may retry with the same delivery id. */
+  /** Set with a rejection the sender may retry with the same delivery id. */
   recoverable: z.boolean().optional()
 })
 export type RdAck = z.infer<typeof RdAck>
