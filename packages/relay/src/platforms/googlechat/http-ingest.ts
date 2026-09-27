@@ -24,6 +24,11 @@ export function googleChatDedupId(event: GoogleChatEvent): string | undefined {
   return space && message ? `${GOOGLE_CHAT_PLATFORM}:${space}:${message}` : undefined
 }
 
+/** The relay's dedup key: the shared table is scoped by bot, since one Space message mentioning two apps reaches the relay once per app. */
+export function googleChatDedupKey(botId: string, msgId: string | undefined): string | undefined {
+  return msgId === undefined ? undefined : `${botId}\0${msgId}`
+}
+
 // Bot `users/…` names carried by USER_MENTION annotations of one mention type.
 function mentionedBots(event: GoogleChatEvent, mentionType: string): string[] {
   const names = new Set<string>()

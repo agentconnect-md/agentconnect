@@ -437,9 +437,12 @@ the host's split pair instead: `dedupPeek(msgId)` before forwarding answers a
 settled repeat with 200 and forwards nothing; after `forwardStrict`,
 `dedupMark(msgId)` marks an `admitted` or `rejected` disposition and never a
 `retry`, so a retry of a `retry` or timed-out attempt is forwarded again; an
-`ignored` or `unsupported` event is marked settled too. The identity is the
-normalizer's `googlechat:<space>:<message name>`, so every callback attempt
-shares one. A failed durable write remains retryable.
+`ignored` or `unsupported` event is marked settled too. The forwarded message's
+identity is the normalizer's `googlechat:<space>:<message name>`, so every
+callback attempt shares one; the relay's key prefixes it with the receiving
+bot's id, because the host's table is shared by every bot and a Space message
+that mentions two installed apps is delivered once per app with its own
+audience. A failed durable write remains retryable.
 
 Commands require a completed, replay-safe disposition too. Bind cancellation to
 its original operation/turn so a repeated callback cannot cancel later work. On

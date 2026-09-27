@@ -250,6 +250,8 @@ describe('googlechat ingress plugin — bearer-token verification (§2)', () => 
 
 describe('googlechat ingress plugin — dispositions and dedup (§4)', () => {
   const MSG_ID = `googlechat:${DM}:${DM}/messages/EXAMPLE_THREAD_1.EXAMPLE_MSG_ROOT`
+  // The relay's key carries the bot; the forwarded message's own `msgId` stays the bare Google identity.
+  const DEDUP_KEY = `${BOT_ID}\0${MSG_ID}`
 
   it('marks the identity after an admitted or rejected verdict, never after a retry', async () => {
     for (const admission of [
@@ -262,7 +264,7 @@ describe('googlechat ingress plugin — dispositions and dedup (§4)', () => {
       const { handled } = await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)
       expect(handled).toEqual({ admission })
       if (admission.disposition === 'retry') expect(h.dedupMark).not.toHaveBeenCalled()
-      else expect(h.dedupMark).toHaveBeenCalledWith(MSG_ID)
+      else expect(h.dedupMark).toHaveBeenCalledWith(DEDUP_KEY)
       expect(h.dedupSeen).not.toHaveBeenCalled()
     }
   })
@@ -272,7 +274,7 @@ describe('googlechat ingress plugin — dispositions and dedup (§4)', () => {
     vi.mocked(h.dedupPeek).mockReturnValue(true)
     const { handled } = await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)
     expect(handled).toEqual({})
-    expect(h.dedupPeek).toHaveBeenCalledWith(MSG_ID)
+    expect(h.dedupPeek).toHaveBeenCalledWith(DEDUP_KEY)
     expect(h.forwardStrict).not.toHaveBeenCalled()
     expect(h.dedupMark).not.toHaveBeenCalled()
   })
@@ -284,10 +286,43 @@ describe('googlechat ingress plugin — dispositions and dedup (§4)', () => {
       message: { ...dmMessage.message, sender: { name: APP, displayName: 'Probe', type: 'BOT' } }
     }
     expect((await deliver(plugin, ingest, h, appAuthored, `Bearer ${await token()}`)).handled).toEqual({})
-    expect(h.dedupMark).toHaveBeenCalledWith(MSG_ID)
+    expect(h.dedupMark).toHaveBeenCalledWith(DEDUP_KEY)
     const groupDm = { ...dmMessage, space: { ...dmMessage.space, spaceType: 'GROUP_CHAT' } }
     expect((await deliver(plugin, ingest, h, groupDm, `Bearer ${await token()}`)).handled).toEqual({})
     expect(h.forwardStrict).not.toHaveBeenCalled()
+  })
+
+  it('forwards a message to each of two apps it mentions, since the shared table is keyed by bot', async () => {
+    // One Space message mentioning two installed apps reaches the relay once per app, each with its own audience.
+    const OTHER_BOT = '22222222-2222-4222-8222-222222222222'
+    const settled = new Set<string>()
+    const h = host({
+      dedupPeek: vi.fn((id?: string) => id !== undefined && settled.has(id)),
+      dedupMark: vi.fn((id?: string) => {
+        if (id !== undefined) settled.add(id)
+      })
+    })
+    const certificates = fakeCertificates()
+    const plugin = createGoogleChatIngressPlugin({ fetch: certificates.fetchImpl })
+    const first = plugin.buildIngest(assignment(), h)!
+    const second = plugin.buildIngest(assignment({ botId: OTHER_BOT, apiAppId: '200000000002' }), h)!
+    expect((await deliver(plugin, first, h, dmMessage, `Bearer ${await token()}`)).handled).toEqual({
+      admission: { disposition: 'admitted' }
+    })
+    expect(
+      (await deliver(plugin, second, h, dmMessage, `Bearer ${await token({ aud: '200000000002' })}`)).handled
+    ).toEqual({
+      admission: { disposition: 'admitted' }
+    })
+    expect(h.forwardStrict).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(h.forwardStrict).mock.calls.map(([botId, msg]) => [botId, msg.msgId])).toEqual([
+      [BOT_ID, MSG_ID],
+      [OTHER_BOT, MSG_ID]
+    ])
+    expect([...settled]).toEqual([DEDUP_KEY, `${OTHER_BOT}\0${MSG_ID}`])
+    // The same app's repeat is still settled.
+    expect((await deliver(plugin, first, h, dmMessage, `Bearer ${await token()}`)).handled).toEqual({})
+    expect(h.forwardStrict).toHaveBeenCalledTimes(2)
   })
 
   it('drops a permanently malformed event with a 200 and a log line, forwarding and marking nothing', async () => {

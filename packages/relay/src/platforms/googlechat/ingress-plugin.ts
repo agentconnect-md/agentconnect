@@ -7,6 +7,7 @@ import {
   GoogleChatHttpIngest,
   UNKNOWN_APP_USER_NAME,
   googleChatDedupId,
+  googleChatDedupKey,
   provenAppUserName,
   type VerifiedGoogleChatDelivery
 } from './http-ingest.js'
@@ -76,7 +77,7 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
         return {}
       }
       if (result.kind === 'ignored' || result.kind === 'unsupported') {
-        host.dedupMark(googleChatDedupId(event))
+        host.dedupMark(googleChatDedupKey(botId, googleChatDedupId(event)))
         return {}
       }
       // Both remaining kinds may carry a membership change; a message-bearing add reports it before forwarding.
@@ -92,10 +93,12 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
       const message = { ...result.message, trigger: result.message.isDm ? ('dm' as const) : ('mention' as const) }
       if (appUserName === undefined && ingest.firstUnknownIdentity())
         host.log.warn(`relay-ingress(${botId}): the Chat app's identity is not known yet — forwarding text unstripped`)
-      // A repeat of a settled attempt answers 200 without forwarding; an unsettled one is forwarded again.
-      if (host.dedupPeek(message.msgId)) return {}
+      // A repeat of a settled attempt answers 200 without forwarding; an unsettled one is forwarded again. The key is
+      // scoped by bot: the manager's table is shared, and a Space message mentioning two apps is delivered once per app.
+      const dedupKey = googleChatDedupKey(botId, message.msgId)
+      if (host.dedupPeek(dedupKey)) return {}
       const admission = await host.forwardStrict(botId, message)
-      if (admission.disposition !== 'retry') host.dedupMark(message.msgId)
+      if (admission.disposition !== 'retry') host.dedupMark(dedupKey)
       return { admission }
     }
   }
