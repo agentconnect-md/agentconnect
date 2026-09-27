@@ -1465,9 +1465,9 @@ user mentions named from the daemon's display names as a session title's are, ca
 at 80 characters. It leaves with the input when retention strips the bodies,
 and the CP returns it only to a caller who could also read that evaluation's detail;
 other summary readers get the row without it. A model selection row is titled by its
-session instead: its input expires within a day, but the session's title persists, and
-the CP fills it from the session record it already reads to check that the caller can
-view that session.
+session instead, since its input expires within a day but the session's title persists:
+the daemon reads its session record's title and names its mentions as the console's
+session list does, and the CP returns the row only to a caller who can view that session.
 
 Details display the evaluated Decision and consumer snapshots, input/history,
 requested/actual model, all matched actions, and effective targets. Mention/thread

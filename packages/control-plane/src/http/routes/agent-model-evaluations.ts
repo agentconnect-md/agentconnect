@@ -74,16 +74,15 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
       await reply.code(503).send(error(503, 'the evaluation host is offline', 'DAEMON_OFFLINE'))
       return null
     }
-    // The sessions the caller may view, each with the title its evaluation row carries.
     const readable = async (req: FastifyRequest, agentId: string, ids: string[]) => {
       const sessions = (await Promise.all(ids.map((id) => deps.repos.session.get(orgOf(req), SessionId(id))))).filter(
         (session): session is NonNullable<typeof session> => session !== null && session.agentId === agentId
       )
       const audience = await access.forSessions(req, sessions)
-      return new Map<string, string | null>(
+      return new Set<string>(
         sessions
           .filter((session) => canViewSession(session, ctxOf(req), audience.identitySet, audience.externalAccess))
-          .map((session) => [session.id, session.title ? [...session.title].slice(0, 256).join('') : null])
+          .map((session) => session.id)
       )
     }
 
@@ -94,7 +93,7 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
           tags: [Tag.Decisions],
           summary: 'List recent model selection evaluations',
           description:
-            "Lists this agent's recent session-start model choices from its serving daemon. `decisionId` optionally filters by the recorded root Decision before paging. Rows from sessions the caller cannot view are omitted, and each row's `title` is its session's title. Detail bodies expire after 24 hours or 20 newer choices; summaries expire after seven days.",
+            "Lists this agent's recent session-start model choices from its serving daemon. `decisionId` optionally filters by the recorded root Decision before paging. Rows from sessions the caller cannot view are omitted; each row's `title` is its session's title with mentions named. Detail bodies expire after 24 hours or 20 newer choices; summaries expire after seven days.",
           operationId: 'listAgentModelEvaluations',
           params: Params,
           querystring: z.object({
@@ -125,12 +124,7 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
           agent.id,
           result.items.map((item) => item.sessionId)
         )
-        return {
-          items: result.items
-            .filter((item) => allowed.has(item.sessionId))
-            .map((item) => ({ ...item, title: allowed.get(item.sessionId) ?? null })),
-          nextCursor: result.nextCursor
-        }
+        return { items: result.items.filter((item) => allowed.has(item.sessionId)), nextCursor: result.nextCursor }
       }
     )
 
@@ -161,7 +155,7 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
         if (!evaluation) return reply.code(404).send(error(404, 'evaluation not found'))
         const allowed = await readable(req, agent.id, [evaluation.sessionId])
         if (!allowed.has(evaluation.sessionId)) return reply.code(404).send(error(404, 'evaluation not found'))
-        return { ...evaluation, title: allowed.get(evaluation.sessionId) ?? null }
+        return evaluation
       }
     )
   }

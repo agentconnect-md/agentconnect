@@ -19,7 +19,7 @@ const row = (seq: number, sessionId: string): DecisionModelEvaluationRecord => (
   seq,
   at: '2026-01-01T00:00:00.000Z',
   sessionId,
-  title: null,
+  title: 'PR #42: Fix the parser',
   decisionId: DECISION,
   outcome: 'selected',
   reason: null,
@@ -39,14 +39,13 @@ afterEach(async () => {
 })
 
 describe('agent model evaluation reads', () => {
-  it('keeps the Agent entrypoint scoped to visible sessions and titles each row by its session', async () => {
+  it('keeps the Agent entrypoint scoped to visible sessions', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: DAEMON })
     const publicId = randomUUID()
     const privateId = randomUUID()
     await seedSessionMeta(prisma, publicId, agentId)
-    await prisma.sessionMeta.update({ where: { id: publicId }, data: { title: 'PR #42: Fix the parser' } })
     await seedSessionMeta(prisma, privateId, agentId, { visibility: 'private', ownerIdentity: 'other-user' })
     const email = `${randomUUID()}@example.test`
     const user = new PgUserRepo(prisma)
@@ -87,15 +86,14 @@ describe('agent model evaluation reads', () => {
     running.push(app)
     const list = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations` })
     expect(list.statusCode, list.body).toBe(200)
-    const titled = { ...rows[1], title: 'PR #42: Fix the parser' }
-    expect(list.json().items).toEqual([titled])
+    expect(list.json().items).toEqual([rows[1]])
     const filtered = await app.app.inject({
       method: 'GET',
       url: `${ORG}/agents/${agentId}/model-evaluations?decisionId=${DECISION}`
     })
     expect(filtered.statusCode, filtered.body).toBe(200)
     expect(requestedDecisionId).toBe(DECISION)
-    expect(filtered.json().items).toEqual([titled])
+    expect(filtered.json().items).toEqual([rows[1]])
     features = [DECISION_MODEL_EVALUATIONS_V1_FEATURE]
     const oldHost = await app.app.inject({
       method: 'GET',
