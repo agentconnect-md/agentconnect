@@ -2409,7 +2409,6 @@
           "reason": "Reason",
           "noTarget": "No rule selected a supported model",
           "unavailable": "Decision unavailable",
-          "noAnswer": "No answer",
           "expired": "Details expired",
           "expiredBody": "The input and full answer have expired; the selection summary remains available.",
           "rules": "Rules as evaluated",
@@ -4539,14 +4538,10 @@
       },
       "error": "Couldn't load recent evaluations. {message}",
       "loadMore": "Load more",
-      "expired": "Expired",
       "columns": {
-        "time": "Time",
         "answer": "Answer",
         "matched": "Matched",
-        "outcome": "Outcome",
-        "latency": "Latency",
-        "result": "Decision / result"
+        "latency": "Latency"
       },
       "outcomes": {
         "triggered": "Triggered",
@@ -4815,14 +4810,11 @@
         "notEvaluated": "Not evaluated",
         "rules": "Rules {numbers}",
         "columns": {
-          "time": "Time",
           "channel": "Channel",
           "answer": "Decision answer",
           "matched": "Matched",
           "targets": "Targets",
-          "outcome": "Outcome",
-          "latency": "Latency",
-          "channelAnswer": "Channel / answer"
+          "latency": "Latency"
         },
         "outcomes": {
           "routed": "Routed",
