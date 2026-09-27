@@ -10,6 +10,7 @@ import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
+import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { groupPlacementValue, poolLabel, POOL_PLACEMENT } from '@/lib/data'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
@@ -152,6 +153,7 @@ function DecisionEditor() {
   const placementT = useTranslations('Agents.dialog.daemonSelect')
   const { orgPath, myRole } = useOrgs()
   const { memberSets, integrations, bots, agents } = useConsoleData()
+  const registry = useAcpRegistry()
   const router = useRouter()
   const search = useSearchParams()
   const { id } = useParams<{ id?: string }>()
@@ -318,7 +320,10 @@ function DecisionEditor() {
       usage.kind === 'model_selection' || usage.kind === 'agent_tool'
         ? agents.find((row) => row.id === usage.id)
         : undefined
-    return agent ? <AgentIconView icon={agent.icon} runtime={agent.runtime} size={14} /> : null
+    // A runtime mark renders nothing until the registry loads, so the card's own glyph stands in until then.
+    return agent && (agent.icon || acpRuntime(registry, agent.runtime)?.icon) ? (
+      <AgentIconView icon={agent.icon} runtime={agent.runtime} size={14} />
+    ) : null
   }
 
   if (!draft) {
