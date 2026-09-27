@@ -945,6 +945,7 @@
     "callback": {
       "genericError": "登录失败",
       "failed": "登录失败：{error}",
+      "backToLogin": "返回登录页",
       "signingIn": "正在登录…"
     },
     "socialCallback": {
