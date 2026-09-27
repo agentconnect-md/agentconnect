@@ -5,8 +5,11 @@ import { SignJWT } from 'jose'
 /** Google's fixed OAuth token endpoint; the key's own `token_uri` is never followed. */
 export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 
+/** The Chat REST root; every read this module and the app-identity lookup perform is beneath it. */
+export const GOOGLE_CHAT_API_ROOT = 'https://chat.googleapis.com/v1'
+
 /** The one bounded read that proves the credential; nothing is ever posted. */
-export const GOOGLE_CHAT_PROBE_URL = 'https://chat.googleapis.com/v1/spaces?pageSize=1'
+export const GOOGLE_CHAT_PROBE_URL = `${GOOGLE_CHAT_API_ROOT}/spaces?pageSize=1`
 
 /** App authentication only: no user impersonation and no domain-wide delegation (§3). */
 export const GOOGLE_CHAT_BOT_SCOPE = 'https://www.googleapis.com/auth/chat.bot'
@@ -301,8 +304,8 @@ export async function checkGoogleChatApp(
 
 type MintFailure = { status: 'key_rejected' | 'unreachable' | 'google_unavailable'; message: string }
 
-/** One app-authenticated access token for `scope`, from Google's fixed token endpoint. */
-async function mintAccessToken(
+/** One app-authenticated access token for `scope`, from Google's fixed token endpoint; the app-identity lookup shares it. */
+export async function mintAccessToken(
   key: GoogleServiceAccountKey,
   scope: string,
   fetchImpl: typeof fetch,

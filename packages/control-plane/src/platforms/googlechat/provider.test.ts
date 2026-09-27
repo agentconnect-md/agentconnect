@@ -1,6 +1,6 @@
 /** Google Chat CpPlatformProvider (google-chat-integration.md §3, §7) — unit, against a fake Google HTTP layer. */
 import { generateKeyPairSync } from 'node:crypto'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { FastifyPluginAsync } from 'fastify'
 import { IntegrationGoogleChatConfig, manifestFor, type IntegrationCoreEnvelope } from '@agentconnect.md/protocol'
 import {
@@ -403,6 +403,11 @@ describe('wire projections', () => {
     expect(JSON.stringify(bags)).not.toContain('PRIVATE KEY')
     expect(googleChatBotAssignBags(bot({ externalAppId: null }))).toEqual({ secrets: {}, ingress: {} })
   })
+
+  it("carries the app's users/… identity to the relay once the loop has learned it", async () => {
+    const bags = await provider.projectBotAssign!(bot({ botUserId: 'users/100000000000000000009' }), secrets)
+    expect(bags.ingress).toEqual({ apiAppId: PROJECT_NUMBER, appUserName: 'users/100000000000000000009' })
+  })
 })
 
 describe('composition', () => {
@@ -418,5 +423,16 @@ describe('composition', () => {
       'GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY'
     ])
     expect(provider.envSchema).toBe(GoogleChatCpEnvSchema)
+    expect(provider.backgroundLoops).toBeUndefined()
+  })
+
+  it('wraps the injected app-identity loop as its one background loop', () => {
+    const identityReconciler = { start: vi.fn(), stop: vi.fn() }
+    const composed = createGoogleChatCpProvider({ identityReconciler })
+    expect(composed.backgroundLoops?.map((loop) => loop.label)).toEqual(['googlechat-app-identity'])
+    composed.backgroundLoops![0]!.start()
+    composed.backgroundLoops![0]!.stop()
+    expect(identityReconciler.start).toHaveBeenCalledTimes(1)
+    expect(identityReconciler.stop).toHaveBeenCalledTimes(1)
   })
 })

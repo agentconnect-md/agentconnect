@@ -93,7 +93,7 @@ export class SlackBotIdentityReconciler {
             }
           }
           if (identity.botUserId && SLACK_MEMBER_ID.test(identity.botUserId)) {
-            if (await this.bots.setSlackBotUserIdIfMissing(bot.id, identity.botUserId)) {
+            if (await this.bots.setBotUserIdIfMissing(bot.id, identity.botUserId)) {
               this.log?.info(
                 { botId: bot.id, botUserId: identity.botUserId },
                 'slack-bot-identity: backfilled bot user id'
