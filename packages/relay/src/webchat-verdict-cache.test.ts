@@ -40,13 +40,21 @@ describe('WebchatVerdictCache', () => {
   it('answers a live token from the cache until its exp, then asks the CP again', async () => {
     const { cache, verify, advance } = build()
     const t = token(T0 / 1000 + 300)
-    expect(await cache.verify(t)).toEqual(OK)
+    expect(await cache.verify(t)).toMatchObject(OK)
     advance(299_000)
-    expect(await cache.verify(t)).toEqual(OK)
+    expect(await cache.verify(t)).toMatchObject(OK)
     expect(verify).toHaveBeenCalledTimes(1)
     advance(1_000) // exactly exp: expired
     await cache.verify(t)
     expect(verify).toHaveBeenCalledTimes(2)
+  })
+
+  it('dates a verdict by its CP verification, which a cache hit keeps', async () => {
+    const { cache, advance } = build()
+    const t = token(T0 / 1000 + 300)
+    expect((await cache.verify(t)).verifiedAtMs).toBe(T0)
+    advance(60_000)
+    expect((await cache.verify(t)).verifiedAtMs).toBe(T0)
   })
 
   it('keys by token, so a different token is its own verification', async () => {
@@ -61,8 +69,8 @@ describe('WebchatVerdictCache', () => {
     const refusal: RcVerifyResult = { ok: false, reason: 'daemon offline' }
     const { cache, verify } = build(async () => refusal)
     const t = token(T0 / 1000 + 300)
-    expect(await cache.verify(t)).toEqual(refusal)
-    expect(await cache.verify(t)).toEqual(refusal)
+    expect(await cache.verify(t)).toMatchObject(refusal)
+    expect(await cache.verify(t)).toMatchObject(refusal)
     expect(verify).toHaveBeenCalledTimes(2)
 
     verify.mockRejectedValueOnce(new Error('link down'))

@@ -18,9 +18,10 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import type { FastifyInstance } from 'fastify'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
-import { MAX_FRAME_BYTES, type RcVerifyResult } from '@agentconnect.md/protocol'
+import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { WsServerTransport, attachKeepalive } from '@agentconnect.md/connection'
 import { RelayBrowserConnection } from './relay-browser-connection.js'
+import type { WebchatVerdict } from './webchat-verdict-cache.js'
 import type { WebchatRouter } from './webchat-router.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
 import type { Logger } from './log.js'
@@ -31,7 +32,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export interface RelayBrowserServerDeps {
   /** Delegate webchat-token verification to the CP (`RelayCpClient.verify`). */
-  verify: (kind: 'webchat-token', token: string) => Promise<RcVerifyResult>
+  verify: (kind: 'webchat-token', token: string) => Promise<WebchatVerdict>
   /** The daemon-facing server — resolves a live rd/* connection to the target daemon. */
   daemons: RelayDaemonServer
   /** chatId → browser index; the daemon's rd/chat is delivered here. */
@@ -78,7 +79,7 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
     // Verify + resolve placement BEFORE handleUpgrade, so a rejected browser never
     // completes the handshake (mirrors the old CP webchat gateway).
     void (async () => {
-      let result: RcVerifyResult
+      let result: WebchatVerdict
       try {
         result = await deps.verify('webchat-token', token)
       } catch {
@@ -110,7 +111,8 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
           agentId: p.agentId,
           ...(p.daemonId ? { daemonId: p.daemonId } : {}),
           ...(p.recordedDaemonId ? { recordedDaemonId: p.recordedDaemonId } : {})
-        }))
+        })),
+        result.verifiedAtMs
       )
 
       wss.handleUpgrade(req, socket, head, (raw: WebSocket) => {

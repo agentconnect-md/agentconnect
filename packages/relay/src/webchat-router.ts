@@ -65,7 +65,7 @@ export function bindWebchatPostAuthor(
 
 export class WebchatRouter {
   private byChatId = new Map<string, Set<ChatSink>>()
-  private rosterByChatId = new Map<string, CachedParticipant[]>()
+  private rosterByChatId = new Map<string, { participants: CachedParticipant[]; asOfMs: number }>()
 
   register(chatId: string, sink: ChatSink): void {
     let sinks = this.byChatId.get(chatId)
@@ -73,13 +73,13 @@ export class WebchatRouter {
     sinks.add(sink)
   }
 
-  /** Cache a conversation's CP-verified roster (called on every browser connect,
-   *  including the rebuild after a mid-conversation join). Survives the browser
-   *  socket closing, so `rd/webchat-post` fan-out keeps reaching peer daemons. */
-  rememberRoster(chatId: string, participants: CachedParticipant[]): void {
+  /** Cache a conversation's CP-verified roster as of `asOfMs`; a roster older than the cached one (a reused token's) never replaces it. */
+  rememberRoster(chatId: string, participants: CachedParticipant[], asOfMs: number = Date.now()): void {
+    const cached = this.rosterByChatId.get(chatId)
+    if (cached && cached.asOfMs > asOfMs) return
     // Re-inserting moves the entry to the back of the eviction order.
     this.rosterByChatId.delete(chatId)
-    this.rosterByChatId.set(chatId, participants)
+    this.rosterByChatId.set(chatId, { participants, asOfMs })
     while (this.rosterByChatId.size > ROSTER_CACHE_MAX) {
       const oldest = this.rosterByChatId.keys().next().value
       if (oldest === undefined) break
@@ -89,7 +89,7 @@ export class WebchatRouter {
 
   /** The cached roster for a conversation ([] when never seen / evicted). */
   rosterOf(chatId: string): CachedParticipant[] {
-    return this.rosterByChatId.get(chatId) ?? []
+    return this.rosterByChatId.get(chatId)?.participants ?? []
   }
 
   /** Remove only this connection; sibling tabs and reconnects remain subscribed. */

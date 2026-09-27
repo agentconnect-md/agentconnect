@@ -2,7 +2,8 @@
 import { randomUUID } from 'node:crypto'
 import type { ServerResponse } from 'node:http'
 import type { FastifyInstance, FastifyReply } from 'fastify'
-import type { RcVerifyResult, RdChat, RelayWebchatOp } from '@agentconnect.md/protocol'
+import type { RdChat, RelayWebchatOp } from '@agentconnect.md/protocol'
+import type { WebchatVerdict } from './webchat-verdict-cache.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { ChatSink, WebchatRouter } from './webchat-router.js'
@@ -52,7 +53,7 @@ export class ChatTurnAdmission {
 
 export interface ChatRouteDeps {
   /** `rc/verify(webchat-token)` through the per-token verdict cache. */
-  verify: (token: string) => Promise<RcVerifyResult>
+  verify: (token: string) => Promise<WebchatVerdict>
   /** The rd/* server, late-bound because it is created after `listen`. */
   daemons: () => Pick<RelayDaemonServer, 'get' | 'rendezvousCandidate'> | undefined
   router: Pick<WebchatRouter, 'register' | 'unregister' | 'rememberRoster'>
@@ -253,7 +254,7 @@ export function registerAiSdkChatRoute(app: FastifyInstance, deps: ChatRouteDeps
     async (req, reply) => {
       const token = bearerToken(req.headers.authorization)
       if (!token) return refuse(reply, 401, 'missing bearer token')
-      let verdict: RcVerifyResult
+      let verdict: WebchatVerdict
       try {
         verdict = await deps.verify(token)
       } catch {
@@ -283,13 +284,15 @@ export function registerAiSdkChatRoute(app: FastifyInstance, deps: ChatRouteDeps
       const roster = verdict.participants?.length
         ? verdict.participants
         : [{ agentId, ...(verdict.daemonId ? { daemonId: verdict.daemonId } : {}), primary: true }]
+      // Dated by its verification, so a reused token's cached verdict cannot replace a roster verified since (a join).
       deps.router.rememberRoster(
         conversationId,
         roster.map((p) => ({
           agentId: p.agentId,
           ...(p.daemonId ? { daemonId: p.daemonId } : {}),
           ...(p.recordedDaemonId ? { recordedDaemonId: p.recordedDaemonId } : {})
-        }))
+        })),
+        verdict.verifiedAtMs
       )
       // A copy: a placement healed by this delivery must not leak into the cached verdict.
       const verified = roster.find((p) => p.agentId === agentId)

@@ -399,6 +399,27 @@ describe('POST /ai-sdk/chat/:conversationId', () => {
     expect(h.daemon.sent).toHaveLength(0)
   })
 
+  it('keeps a roster verified since the cached verdict, such as a browser reconnect after a join', async () => {
+    const h = await start()
+    const first = await chat(h)
+    finish(h, h.daemon.turns()[0]!)
+    await read(first.stream)
+    expect(h.router.rosterOf(CONV)).toEqual([{ agentId: AGENT, daemonId: DAEMON }])
+
+    // A browser reconnects with a fresh mint after a join; its verdict is newer than the cached one.
+    const joined = [
+      { agentId: AGENT, daemonId: DAEMON },
+      { agentId: OTHER_AGENT, daemonId: DAEMON }
+    ]
+    h.router.rememberRoster(CONV, joined, T0 + 60_000)
+    h.setNow(T0 + 120_000)
+    const second = await chat(h, [userMessage('u2', 'again')])
+    expect(h.verify).toHaveBeenCalledTimes(1) // served from the cache, verified at T0
+    finish(h, h.daemon.turns()[1]!)
+    await read(second.stream)
+    expect(h.router.rosterOf(CONV)).toEqual(joined)
+  })
+
   it('addresses the token’s agent alone in a multi-participant conversation', async () => {
     const h = await start({
       verdict: async () => ({

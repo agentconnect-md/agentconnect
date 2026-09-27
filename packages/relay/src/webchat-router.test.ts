@@ -61,6 +61,16 @@ describe('WebchatRouter', () => {
     expect(second.onChat).toHaveBeenCalledOnce()
     expect(first.onChat).not.toHaveBeenCalled()
   })
+
+  it('keeps the newest roster: an older verdict never replaces a newer one', () => {
+    const r = new WebchatRouter()
+    const joined = [{ agentId: CHAT_A }, { agentId: CHAT_B }]
+    r.rememberRoster(CHAT_A, joined, 2_000)
+    r.rememberRoster(CHAT_A, [{ agentId: CHAT_A }], 1_000)
+    expect(r.rosterOf(CHAT_A)).toEqual(joined)
+    r.rememberRoster(CHAT_A, [{ agentId: CHAT_A }], 3_000)
+    expect(r.rosterOf(CHAT_A)).toEqual([{ agentId: CHAT_A }])
+  })
 })
 
 // webchat-multi-agents.md §5.2a: an rd/webchat-post's authorship claim must be bound

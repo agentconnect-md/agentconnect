@@ -8,7 +8,11 @@ const MAX_ENTRIES = 10_000
 interface Entry {
   verdict: RcVerifyResult
   expiresAtMs: number
+  verifiedAtMs: number
 }
+
+/** A verdict plus the moment the CP produced it, so a cached one can never outrank a fresher roster. */
+export type WebchatVerdict = RcVerifyResult & { verifiedAtMs?: number }
 
 /** The token's `exp` in epoch ms, read without verification (the CP verified the signature), or undefined. */
 export function webchatTokenExpiryMs(token: string): number | undefined {
@@ -31,20 +35,21 @@ export class WebchatVerdictCache {
   ) {}
 
   /** The cached verdict while the token is live, else the CP's; failures and throws are never cached. */
-  async verify(token: string): Promise<RcVerifyResult> {
+  async verify(token: string): Promise<WebchatVerdict> {
     const key = createHash('sha256').update(token).digest('hex')
     const hit = this.entries.get(key)
     if (hit) {
-      if (hit.expiresAtMs > this.now()) return structuredClone(hit.verdict)
+      if (hit.expiresAtMs > this.now()) return { ...structuredClone(hit.verdict), verifiedAtMs: hit.verifiedAtMs }
       this.entries.delete(key)
     }
     const verdict = await this.verifyWithCp(token)
+    const verifiedAtMs = this.now()
     const expiresAtMs = webchatTokenExpiryMs(token)
-    if (verdict.ok && expiresAtMs !== undefined && expiresAtMs > this.now()) {
+    if (verdict.ok && expiresAtMs !== undefined && expiresAtMs > verifiedAtMs) {
       this.sweep()
-      this.entries.set(key, { verdict: structuredClone(verdict), expiresAtMs })
+      this.entries.set(key, { verdict: structuredClone(verdict), expiresAtMs, verifiedAtMs })
     }
-    return verdict
+    return { ...verdict, verifiedAtMs }
   }
 
   size(): number {
