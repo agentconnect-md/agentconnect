@@ -198,7 +198,7 @@ describe('GoogleChatWizardBody', () => {
       'ConnectedThe callback endpoint is live and the agent is online.'
     ])
     expect(text()).toContain('Send it a direct message or mention it in a space')
-    expect(text()).toContain('no one can open them in this console')
+    expect(text()).toContain('after signing in to this console with the same Google account')
     expect(identity?.hidden).toBe(true)
     expect(footer?.hidden).toBe(true)
     await act(async () => buttonWith('Done')?.click())

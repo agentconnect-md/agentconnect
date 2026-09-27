@@ -5498,7 +5498,7 @@
         "addedDone": "The app is in a space or a direct conversation.",
         "addedPending": "Add the app to a space in Google Chat, or open a direct message with it.",
         "sendMessage": "Send it a direct message or mention it in a space; it replies there.",
-        "dmPrivate": "Direct messages stay private to the person who sent them; no one can open them in this console.",
+        "dmPrivate": "Direct messages stay private to the person who sent them, who can open them after signing in to this console with the same Google account.",
         "spacesOrg": "Conversations in a space are visible to this organization, whoever is in the space.",
         "done": "Done"
       },

@@ -9,8 +9,10 @@
  */
 import Fastify, { type FastifyInstance } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
+import { classifySession } from '../../domain/session-visibility.js'
 import type { HttpDeps } from '../deps.js'
-import type { SessionAccessViewer } from '../session-access-plugin.js'
+import { GoogleChatSessionAccessService } from '../googlechat-session-access.js'
+import type { SessionAccessPlugin, SessionAccessViewer } from '../session-access-plugin.js'
 import { installZod } from '../plugins/zod.js'
 import { sessionRoutes } from './sessions.js'
 
@@ -72,6 +74,7 @@ function slackDmSession() {
 function fakeDeps(overrides: {
   slackIdentityFor?: () => Promise<{ teamId: string; userId: string } | null>
   session?: ReturnType<typeof slackDmSession>
+  plugins?: SessionAccessPlugin[]
 }) {
   const listPage = vi.fn(async () => ({ sessions: [], total: 0, hasMore: false }))
   const listConversationPage = vi.fn(async () => ({ conversations: [], total: 0, hasMore: false }))
@@ -102,6 +105,7 @@ function fakeDeps(overrides: {
       integrationChannel: { namesForOrg: vi.fn(async () => []) }
     },
     clock: { now: () => Date.now() },
+    ...(overrides.plugins ? { sessionAccessPlugins: overrides.plugins } : {}),
     ...(overrides.slackIdentityFor
       ? {
           sessionAccessPlugins: [
@@ -213,6 +217,44 @@ describe('session routes × viewer identity', () => {
       expect((await app.inject({ method: 'GET', url: '/sessions/sess-1' })).statusCode).toBe(404)
     } finally {
       await app.close()
+    }
+  })
+
+  it('serves a private Google Chat DM only to the console user whose Google account sent it', async () => {
+    const classified = classifySession({
+      platform: 'googlechat',
+      conversationKind: 'dm',
+      transportScope: '123456789012',
+      triggeredBy: 'users/100000000000000000001'
+    })
+    const session = {
+      ...slackDmSession(),
+      platform: 'googlechat',
+      channel: 'spaces/AAAAAAAAAAA',
+      thread: 'spaces/AAAAAAAAAAA',
+      triggeredBy: 'users/100000000000000000001',
+      ownerIdentity: classified.inherit ? '' : (classified.ownerIdentity ?? '')
+    }
+    const googleChat = (account: string) =>
+      new GoogleChatSessionAccessService({
+        bots: { listForOrg: async () => [{ platform: 'googlechat', externalAppId: '123456789012' }] as never },
+        users: { getGoogleAccountId: async () => account, setGoogleAccountId: async () => {} },
+        identity: { googleAccountIdFor: async () => account }
+      })
+    const owner = await appAs(fakeDeps({ session, plugins: [googleChat('100000000000000000001')] }).deps, {
+      userId: 'u-1',
+      oidcSubject: 'logto-sub'
+    })
+    const other = await appAs(fakeDeps({ session, plugins: [googleChat('100000000000000000002')] }).deps, {
+      userId: 'u-2',
+      oidcSubject: 'logto-sub-2'
+    })
+    try {
+      expect((await owner.inject({ method: 'GET', url: '/sessions/sess-1' })).statusCode).toBe(200)
+      expect((await other.inject({ method: 'GET', url: '/sessions/sess-1' })).statusCode).toBe(404)
+    } finally {
+      await owner.close()
+      await other.close()
     }
   })
 

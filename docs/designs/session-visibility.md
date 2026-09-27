@@ -96,8 +96,9 @@ matches the same three-part tuple.
 
 Matching is set membership: at request time the BFF computes the viewer's
 **identity set** — `{ user:<userId> }` for every caller, plus the caller's
-verified Slack identity (`slack:<teamId>:<userId>`) or a same-developer-org
-Feishu/Lark identity (`feishu:<region>:<botAppId>:<unionId>`) when linked by its
+verified Slack identity (`slack:<teamId>:<userId>`), a same-developer-org
+Feishu/Lark identity (`feishu:<region>:<botAppId>:<unionId>`), or a Google Chat
+identity (`googlechat:<projectNumber>:users/<googleAccountId>`) when linked by its
 Session-access plugin (§7) — and a `private` session is
 visible when `ownerIdentity ∈ identitySet`.
 
@@ -790,6 +791,15 @@ pasted credentials, and allows any member of the same organization to authorize
 the one-click flow. The comparison does not persist either `tenant_key`; the
 Login App ID/Secret remain deployment configuration, and no human access token
 is stored.
+
+**Google Chat (shipped for DMs).** A Chat user id is the Google account's OIDC
+`sub`, and the Control Plane records the id of the viewer's linked Google
+identity ([google-chat-integration.md §10.6](google-chat-integration.md)). The
+Google Chat Session-access plugin projects it into every Google Chat app of the
+organization as `googlechat:<projectNumber>:users/<googleAccountId>`, the owner a
+DM records, so a DM's sender opens it after signing in with the same Google
+account. Space sessions keep organization visibility; Google Chat binds no
+external audience.
 
 **Other platform session access (future, separate design).** Telegram and
 Discord still need an explicit verified identity binding before their platform
