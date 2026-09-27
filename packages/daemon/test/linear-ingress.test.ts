@@ -11,6 +11,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { PlatformModuleRegistry } from '../src/platforms/registry.js'
 import { LINEAR_GRAPHQL_ENDPOINT } from '../src/platforms/linear/connection.js'
 import { stableMessageId } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
@@ -446,7 +447,8 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
   it('names the acting agent and the issue, after the durable inbox admitted the delivery', async () => {
     const { daemon, posted } = await boot()
     const ack = await im(daemon, delivery())
-    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    // The strict verdict beside the shared `accepted`: admitted, and only once the durable row is owned.
+    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true, routeAdmission: 'admitted' })
     await vi.waitFor(() => expect(acks(posted).length).toBe(1))
     expect(acks(posted)[0]!.activity.body).toBe('**Review Bot** · reading TEAM-123 …')
     expect(acks(posted)[0]!.sessionId).toBe(SESSION)
@@ -480,7 +482,13 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     // durable receipt can absorb this. Without it the whole turn re-runs, not just the ack.
     const dispatch = vi.fn(async () => null)
     ;(daemon as any).dispatch = dispatch
-    expect(await im(daemon, delivery())).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    // The strategy settled it from the receipt: consumed (`accepted`), and strictly a gate a resend cannot change.
+    expect(await im(daemon, delivery())).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: true,
+      routeAdmission: 'rejected',
+      recoverable: false
+    })
     expect(dispatch).not.toHaveBeenCalled()
     expect(posted.filter((entry) => entry.activity.type === 'thought')).toHaveLength(1)
     await daemon.stop()
@@ -507,7 +515,12 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     const handle = vi.fn()
     ;(daemon as any).sessions.handle = handle
 
-    expect(await im(daemon, delivery())).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    // The receipt CAS reads back as a duplicate, which is a durable admission the sibling already owns.
+    expect(await im(daemon, delivery())).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: true,
+      routeAdmission: 'admitted'
+    })
     await turnSettled()
     expect(posted).toEqual([])
     expect(handle).not.toHaveBeenCalled()
@@ -523,7 +536,9 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     expect(await im(daemon, delivery())).toEqual({
       msgId: `linear:${SESSION}:created`,
       accepted: false,
-      reason: 'durability'
+      reason: 'durability',
+      routeAdmission: 'rejected',
+      recoverable: true
     })
     await turnSettled()
     expect(posted).toEqual([])
@@ -542,7 +557,9 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     expect(await im(daemon, delivery())).toEqual({
       msgId: `linear:${SESSION}:created`,
       accepted: false,
-      reason: 'durability'
+      reason: 'durability',
+      routeAdmission: 'rejected',
+      recoverable: true
     })
     await turnSettled()
     expect(posted).toEqual([])
@@ -741,7 +758,13 @@ describe('§4.5 the issue-less surface', () => {
     const dispatch = vi.fn(async () => null)
     ;(daemon as any).dispatch = dispatch
     const ack = await im(daemon, issueless())
-    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    // Answered by the strategy itself: consumed, and strictly a gate — no turn is promised and a resend changes nothing.
+    expect(ack).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: true,
+      routeAdmission: 'rejected',
+      recoverable: false
+    })
     expect(dispatch).not.toHaveBeenCalled()
     expect(responses(posted).map((p) => p.activity.body)).toEqual([LINEAR_UNSUPPORTED_SURFACE_BODY])
     expect(responses(posted)[0]!.sessionId).toBe(SESSION)
@@ -1260,7 +1283,8 @@ describe('§10.1 a follow-up and the acknowledgement watchdog', () => {
     const { daemon, posted, turnSettled } = await boot()
     expect(await im(daemon, delivery({}, { event: 'created', issueId: 'issue-1' }))).toEqual({
       msgId: `linear:${SESSION}:created`,
-      accepted: true
+      accepted: true,
+      routeAdmission: 'admitted'
     })
     await vi.waitFor(() => expect(acks(posted).length).toBe(1))
     await turnSettled()
@@ -1270,7 +1294,11 @@ describe('§10.1 a follow-up and the acknowledgement watchdog', () => {
       { event: 'prompted', issueId: 'issue-1' }
     )
     followUp.msgId = 'linear:activity-1'
-    expect(await im(daemon, followUp)).toEqual({ msgId: 'linear:activity-1', accepted: true })
+    expect(await im(daemon, followUp)).toEqual({
+      msgId: 'linear:activity-1',
+      accepted: true,
+      routeAdmission: 'admitted'
+    })
     await vi.waitFor(() => expect(acks(posted).length).toBe(2))
     await turnSettled()
     // The follow-up neither reopens the issue state nor re-attaches the session resource.
@@ -1289,10 +1317,49 @@ describe('§10.1 a follow-up and the acknowledgement watchdog', () => {
       return hasInbox(id)
     }
     const ack = await (daemon as any).handleRelayMsg(delivery({}, { event: 'created', issueId: 'issue-1' }), () => {})
-    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true, routeAdmission: 'admitted' })
     const lines = warn.mock.calls.map((c) => String(c[0]))
     expect(lines.some((l) => /unacknowledged after \d+ms — stage linear:receipt/.test(l))).toBe(true)
     expect(lines.some((l) => /acknowledged after \d+ms — last stage admitted/.test(l))).toBe(true)
+    await turnSettled()
+    await daemon.stop()
+  })
+})
+
+describe('the strict admission verdict beside the shared ack (google-chat-integration.md §4)', () => {
+  it('reports a draining refusal as consumed for the shared path and recoverable for the strict one', async () => {
+    const { daemon, posted, turnSettled } = await boot()
+    ;(daemon as any).drainingAgents.add(AGENT)
+    expect(await im(daemon, delivery())).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: true,
+      reason: 'draining',
+      routeAdmission: 'rejected',
+      recoverable: true
+    })
+    await turnSettled()
+    expect(posted).toEqual([])
+    await daemon.stop()
+  })
+
+  it('waits for the durable admission whenever the strategy asks for durability, even without an admission hook', async () => {
+    const { daemon, store, turnSettled } = await boot()
+    const linear = (daemon as any).platformModules.get('linear').relayIngress
+    ;(daemon as any).platformModules = new PlatformModuleRegistry([
+      {
+        platformId: 'linear',
+        relayIngress: { prepare: linear.prepare, requireDurable: true, receiptId: linear.receiptId }
+      }
+    ])
+    vi.spyOn(store, 'appendInboxWithReceipt').mockRejectedValue(new Error('disk is gone'))
+    // Without the wait this would be an `admitted` ack for a row that was never written.
+    expect(await im(daemon, delivery())).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: false,
+      reason: 'durability',
+      routeAdmission: 'rejected',
+      recoverable: true
+    })
     await turnSettled()
     await daemon.stop()
   })

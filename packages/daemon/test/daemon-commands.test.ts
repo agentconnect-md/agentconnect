@@ -244,7 +244,9 @@ describe('Daemon in-conversation commands', () => {
       {
         msgId: 'relay-bot',
         accepted: false,
-        reason: 'unauthorized'
+        reason: 'unauthorized',
+        routeAdmission: 'rejected',
+        recoverable: false
       }
     )
     expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
@@ -253,7 +255,8 @@ describe('Daemon in-conversation commands', () => {
       await (daemon as any).handleRelayMsg(relayResume('relay-human', { id: 'U1', isBot: false }), () => {})
     ).toEqual({
       msgId: 'relay-human',
-      accepted: true
+      accepted: true,
+      routeAdmission: 'admitted'
     })
     expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Resumed'), 'T1', CHROME_REPLY)
@@ -283,7 +286,11 @@ describe('Daemon in-conversation commands', () => {
       payload
     }
 
-    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-names', accepted: true })
+    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({
+      msgId: 'relay-names',
+      accepted: true,
+      routeAdmission: 'admitted'
+    })
     expect(noteMessage).toHaveBeenCalledWith(conn, expect.objectContaining(payload))
     expect(dispatch).toHaveBeenCalledWith('bot-a', expect.objectContaining(payload), 'int-a')
   })
@@ -307,7 +314,11 @@ describe('Daemon in-conversation commands', () => {
       chatId: 'C1',
       payload: { ...bare, mentionedBots: ['U-OTHER', 'U-SELF'] } as any
     }
-    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-mention', accepted: true })
+    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({
+      msgId: 'relay-mention',
+      accepted: true,
+      routeAdmission: 'admitted'
+    })
     expect(dispatch).toHaveBeenCalledWith('bot-a', expect.objectContaining({ trigger: 'mention' }), 'int-a')
   })
 
@@ -385,15 +396,18 @@ describe('Daemon in-conversation commands', () => {
 
     expect(await (daemon as any).handleRelayMsg(botA, () => {})).toEqual({
       msgId: botA.msgId,
-      accepted: true
+      accepted: true,
+      routeAdmission: 'admitted'
     })
     expect(await (daemon as any).handleRelayMsg(botA, () => {})).toEqual({
       msgId: botA.msgId,
-      accepted: true
+      accepted: true,
+      routeAdmission: 'admitted'
     })
     expect(await (daemon as any).handleRelayMsg(botB, () => {})).toEqual({
       msgId: botB.msgId,
-      accepted: true
+      accepted: true,
+      routeAdmission: 'admitted'
     })
 
     expect(dispatch).toHaveBeenCalledTimes(2)
@@ -430,9 +444,13 @@ describe('Daemon in-conversation commands', () => {
       payload
     }
 
+    // Consumed as always (`accepted`); the strict verdict names the gate, and a resend cannot change it.
     expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({
       msgId: 'relay-feishu-gated',
-      accepted: true
+      accepted: true,
+      reason: 'off',
+      routeAdmission: 'rejected',
+      recoverable: false
     })
     expect(discover).toHaveBeenCalledWith(expect.objectContaining(payload), ['int-a'])
     expect(notice).toHaveBeenCalledWith(expect.objectContaining(payload), ['int-a'])
@@ -463,10 +481,13 @@ describe('Daemon in-conversation commands', () => {
       payload: { ...dm(msgId, text), trigger }
     })
 
-    // Implicit thread traffic while muted: accepted (consumed) but the agent is NOT woken.
+    // Implicit thread traffic while muted: accepted (consumed) but the agent is NOT woken; strictly a `muted` gate.
     expect(await (daemon as any).handleRelayMsg(relayIm('m-implicit', 'still there?', 'dm'), () => {})).toEqual({
       msgId: 'm-implicit',
-      accepted: true
+      accepted: true,
+      reason: 'muted',
+      routeAdmission: 'rejected',
+      recoverable: false
     })
     expect(blocked.prompts).toHaveLength(0)
     expect(await (daemon as any).store.isSessionMuted(muteKey)).toBe(true)
@@ -474,7 +495,8 @@ describe('Daemon in-conversation commands', () => {
     // An explicit @mention clears the mute and dispatches.
     expect(await (daemon as any).handleRelayMsg(relayIm('m-mention', 'hey again', 'mention'), () => {})).toEqual({
       msgId: 'm-mention',
-      accepted: true
+      accepted: true,
+      routeAdmission: 'admitted'
     })
     await vi.waitFor(() => expect(blocked.prompts).toHaveLength(1), WAIT)
     expect(await (daemon as any).store.isSessionMuted(muteKey)).toBe(false)
@@ -1297,7 +1319,14 @@ describe('Daemon managed-agent bot ingress', () => {
       } satisfies RdMsgIm,
       () => {}
     )
-    expect(relayAck).toEqual({ msgId: relayManaged.msgId, accepted: true })
+    // Consumed without waking anyone: the strict verdict is the routed path's `rejected` for agent-authored traffic.
+    expect(relayAck).toEqual({
+      msgId: relayManaged.msgId,
+      accepted: true,
+      reason: 'rejected',
+      routeAdmission: 'rejected',
+      recoverable: false
+    })
     expect(host.prompt).not.toHaveBeenCalled()
 
     await (daemon as any).onInboundOutcome(botMessage('external-mention', 'AEXTERNAL', ['UBOTA']))

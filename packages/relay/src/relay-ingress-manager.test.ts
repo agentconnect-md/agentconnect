@@ -15,12 +15,13 @@ import type {
 import {
   DECISION_TRIGGER_V1_FEATURE,
   RD_ACK_NOT_HOLDER,
+  RD_IM_ADMISSION_V1,
   MAX_AGENT_CALL_HOPS,
   buildRelayCpFrame,
   decodeRelayCpFrame
 } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
-import { RelayIngressManager, type RelayIngressManagerDeps } from './relay-ingress-manager.js'
+import { RelayIngressManager, aggregateAdmission, type RelayIngressManagerDeps } from './relay-ingress-manager.js'
 // The dedup-id minters belong to their platform plugins (§8: the plugin mints
 // the identity, core owns the table). This suite was the last importer of the
 // core re-export shim that outlived the #571 route migration (audit F7).
@@ -1946,6 +1947,12 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
 
       expect(await internals.forward(BOT_ID, delegation('agent-session-1'))).toBe('refused')
       expect(sendMsg).toHaveBeenCalledTimes(1)
+      // The strict verdict of the same refusal: rejected, and still nothing forwarded.
+      expect(await internals.ingressHost.forwardStrict(BOT_ID, delegation('agent-session-1'))).toEqual({
+        disposition: 'rejected',
+        reason: 'rejected'
+      })
+      expect(sendMsg).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -2119,6 +2126,95 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
 
     expect(lookupThread).toHaveBeenCalledTimes(1)
     expect(sendMsg).not.toHaveBeenCalled()
+  })
+
+  describe('forwardStrict — the admission verdict behind im-admission-v1 (google-chat-integration.md §4)', () => {
+    const mention = (msgId = 'slack:C123:1720000000.000100') => followUp({ msgId, mentionedBots: ['UBOT'] })
+    const daemonWith = (sendMsg: (m: RdMsgIm) => Promise<RdAck>, supports: (c: string) => boolean = () => true) =>
+      ({ sendMsg, supports }) as unknown as RelayDaemonConnection
+
+    it('returns the daemon verdict, and refuses a daemon that predates the feature without sending to it', async () => {
+      const capable = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({
+        msgId: m.msgId,
+        accepted: true,
+        routeAdmission: 'admitted'
+      }))
+      const strict = internalsOf(new RelayIngressManager(deps({ getDaemon: () => daemonWith(capable) })))
+      strict.router.upsert(channelOwned())
+      expect(await strict.ingressHost.forwardStrict(BOT_ID, mention())).toEqual({ disposition: 'admitted' })
+      expect(capable).toHaveBeenCalledTimes(1)
+
+      // An older daemon's `accepted` would prove nothing, so the strict path never asks it.
+      const older = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const legacy = internalsOf(
+        new RelayIngressManager(deps({ getDaemon: () => daemonWith(older, (c) => c !== RD_IM_ADMISSION_V1) }))
+      )
+      legacy.router.upsert(channelOwned())
+      expect(await legacy.ingressHost.forwardStrict(BOT_ID, mention())).toEqual({
+        disposition: 'rejected',
+        reason: 'unsupported'
+      })
+      expect(older).not.toHaveBeenCalled()
+      // The two-value forward keeps serving that daemon exactly as before.
+      expect(await legacy.ingressHost.forward(BOT_ID, mention())).toBe('accepted')
+      expect(older).toHaveBeenCalledTimes(1)
+    })
+
+    it('never reads an old-shape accepted ack as admission, and maps a recoverable rejection to retry', async () => {
+      let verdict: Partial<RdAck> = {}
+      const sendMsg = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true, ...verdict }))
+      const internals = internalsOf(new RelayIngressManager(deps({ getDaemon: () => daemonWith(sendMsg) })))
+      internals.router.upsert(channelOwned())
+      const strict = (msgId: string) => internals.ingressHost.forwardStrict(BOT_ID, mention(msgId))
+
+      expect(await strict('slack:C123:1')).toEqual({ disposition: 'rejected', reason: 'rejected' })
+      verdict = { reason: 'draining', routeAdmission: 'rejected', recoverable: true }
+      expect(await strict('slack:C123:2')).toEqual({ disposition: 'retry', reason: 'draining' })
+      verdict = { reason: 'muted', routeAdmission: 'rejected', recoverable: false }
+      expect(await strict('slack:C123:3')).toEqual({ disposition: 'rejected', reason: 'muted' })
+    })
+
+    it('answers retry when the target daemon is not connected to this relay', async () => {
+      const internals = internalsOf(new RelayIngressManager(deps({ getDaemon: () => undefined })))
+      internals.router.upsert(channelOwned())
+      expect(await internals.ingressHost.forwardStrict(BOT_ID, mention())).toEqual({
+        disposition: 'retry',
+        reason: 'offline'
+      })
+    })
+
+    it('settles a fan-out by one admission, else one retry, else the first rejection', () => {
+      expect(aggregateAdmission([{ disposition: 'retry', reason: 'offline' }, { disposition: 'admitted' }])).toEqual({
+        disposition: 'admitted'
+      })
+      expect(
+        aggregateAdmission([
+          { disposition: 'rejected', reason: 'muted' },
+          { disposition: 'retry', reason: 'draining' }
+        ])
+      ).toEqual({ disposition: 'retry', reason: 'draining' })
+      expect(aggregateAdmission([])).toEqual({ disposition: 'rejected', reason: 'rejected' })
+    })
+  })
+})
+
+describe('RelayIngressManager dedup — check without marking, mark after a disposition', () => {
+  it('peeks without marking and marks on demand, leaving dedupSeen as it was', () => {
+    const clock = new FakeClock(1_720_000_000_000)
+    const { ingressHost: host } = internalsOf(new RelayIngressManager(deps({ clock })))
+    expect(host.dedupPeek('e1')).toBe(false)
+    expect(host.dedupPeek('e1')).toBe(false)
+    host.dedupMark('e1')
+    expect(host.dedupPeek('e1')).toBe(true)
+    expect(host.dedupSeen('e1')).toBe(true)
+    // The mark-on-first-sight member is unchanged, and the peek reads its mark.
+    expect(host.dedupSeen('e2')).toBe(false)
+    expect(host.dedupPeek('e2')).toBe(true)
+    // An absent identity is never marked nor deduped, and a mark expires with the table's TTL.
+    host.dedupMark(undefined)
+    expect(host.dedupPeek(undefined)).toBe(false)
+    clock.advance(5 * 60 * 1000 + 1)
+    expect(host.dedupPeek('e1')).toBe(false)
   })
 })
 
@@ -2867,6 +2963,19 @@ describe('RelayIngressManager lifecycle is registry-driven (a third platform)', 
     expect(internals.entryFor('slack')).toBeDefined()
     expect(internals.entryFor('feishu')).toBeDefined()
     expect(internals.entryFor(SYNTHETIC)).toBeDefined()
+  })
+
+  it('hands the platform route the admission verdict its handler produced, untouched', async () => {
+    const admission = { disposition: 'retry' as const, reason: 'draining' as const }
+    const plugin: RelayPlatformIngressPlugin = {
+      ...syntheticPlugin([]),
+      extractDemuxHints: () => ({ appId: 'SYNTH_APP', tenantId: 'SYNTH_TENANT' }),
+      verify: () => ({}),
+      handle: async () => ({ admission })
+    }
+    const manager = new RelayIngressManager(deps(), [...relayIngressPlugins, plugin])
+    await manager.assign(syntheticAssignment())
+    expect(await manager.handleInbound(SYNTHETIC, Buffer.alloc(0), {}, {})).toEqual({ admission })
   })
 
   it('unassign stops the ingest, drops the pool entry, and forgets the demux entries', async () => {
