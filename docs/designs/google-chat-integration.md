@@ -40,7 +40,8 @@ cards, dialogs, app-home surfaces, Google-native commands, shared bots, Google
 identity linking, and synchronization of Google membership into Console session
 permissions are outside the first version. Interactive elicitation requires a
 separate collectable response surface; unsupported requests must fail explicitly,
-never invent an answer or approval.
+never invent an answer or approval. Serving many Workspace customers from one
+published app, and the identity link that comes with it, are designed in §10.
 
 Google Chat exists for both personal and Workspace accounts. Developing and
 configuring this Chat app follows Google's Workspace prerequisites; the initial
@@ -617,7 +618,7 @@ authorization support is designed.
 Follow [session visibility](session-visibility.md): DMs are private to the verified
 originator, with no organization-owner bypass. Without a Google account link, the
 private owner tuple has no matching human Console identity, so these transcripts
-remain inaccessible there. Space sessions follow AgentConnect's normal
+remain inaccessible there (§10.6 designs that link). Space sessions follow AgentConnect's normal
 organization visibility; Google Space membership does not become a Console ACL.
 Explain both consequences during setup, especially for restricted Google Spaces.
 
@@ -714,3 +715,189 @@ Use focused contract and recovery tests around these boundaries plus the live
 round trip. Do not add broad mock tests that merely restate the mapping table.
 App identity discovery, exact thread behavior, and Markdown persistence across
 patches remain provider-validation gates, not claims of completed support.
+
+## 10. Marketplace distribution and multi-tenant installs
+
+Status: **draft** — a design delta, not implemented. Every provider fact below was
+verified on September 27, 2026, either in Google's reference documentation or
+against a live Chat app; the items in §10.9 still need a live check.
+
+### 10.1 Goal and shape
+
+One published Chat app serves many Google Workspace customers, each mapped to one
+organization, so an organization no longer has to create a Google Cloud project
+to use Google Chat. The bring-your-own-app path of §3 stays as it is: a per-agent
+app or the deployment app remains one app for one organization, and nothing in
+this section changes how it is configured.
+
+Google offers exactly one way for another organization to install a Chat app: a
+[Google Workspace Marketplace](https://developers.google.com/workspace/chat/apps-publish)
+listing. There is no install link outside the Marketplace, a private listing is
+installable only inside the developer's own Workspace organization, and before a
+listing exists the Chat API configuration makes the app visible only to people
+and groups of that organization
+([testing](https://developers.google.com/workspace/chat/test-interactive-features)).
+The design therefore targets Marketplace distribution even while the listing is
+pending: the code paths below are exercised inside the operator's own
+organization first, the listing is an operations step, and a second Workspace
+organization proves the cross-customer path once the listing is approved.
+
+### 10.2 Provider facts this design rests on
+
+| Fact                                                                                                                                                                                                                                                                                                                                                                             | Source                                                                                                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Every event's `user.domainId` is the "unique identifier of the user's Google Workspace domain". A named Space carries `space.customer` (`customers/{customer}`); a DM does not.                                                                                                                                                                                                  | [User](https://developers.google.com/workspace/chat/api/reference/rest/v1/User), [Space](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces) |
+| A Chat user id is the Google account's OIDC `sub`: "the `sub` value can be converted to Chat's user format by prepending `users/`". Google recommends guarding a configuration page with Google Sign-In and validating the identity token before trusting the asserted user.                                                                                                     | [Connect a Chat app with web services](https://developers.google.com/workspace/chat/connect-web-services-tools)                                                     |
+| `{ "actionResponse": { "type": "REQUEST_CONFIG", "url": … } }` shows the user a private prompt; the event carries `configCompleteRedirectUrl`, which the configuration page must redirect to on completion, after which Chat removes the prompt and sends the original event again. A `REQUEST_CONFIG` response carries no message.                                              | Same page; observed live on a published app                                                                                                                         |
+| `spaces.list` under app authentication lists every Space the app is in, across all customers, and filters only by `spaceType`; DMs appear only after their first message.                                                                                                                                                                                                        | [spaces.list](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces/list)                                                                       |
+| Quotas are per Cloud project: 3,000 message writes and 3,000 reads per minute, 60 space writes per minute, 1 write per second per space.                                                                                                                                                                                                                                         | [Limits](https://developers.google.com/workspace/chat/limits)                                                                                                       |
+| A membership's `affiliation` says whether the member is `INTERNAL` to the Workspace organization that owns the space, `EXTERNAL` (a consumer account or another organization), or `MANAGED_EXTERNAL` (a guest the owning organization provisioned); a named Space may admit external users (`externalUserAllowed`). App authentication reads a human membership with that field. | [Membership](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.members), observed live                                                      |
+| An administrator can install the app for a domain, an organizational unit, or a group; the resulting DM spaces carry `adminInstalled: true` and users cannot uninstall them.                                                                                                                                                                                                     | [Admin install](https://workspaceupdates.googleblog.com/2023/03/admins-install-chat-apps-for-use-in-direct-messages.html)                                           |
+| A listing is public or private, and the choice is final. A public listing is reviewed by Google (OAuth verification, listing accuracy, functionality, assets) and may be **unlisted**: absent from browse and search, reachable by direct URL.                                                                                                                                   | [Publish](https://developers.google.com/workspace/chat/apps-publish), [Marketplace SDK](https://developers.google.com/workspace/marketplace/enable-configure-sdk)   |
+
+### 10.3 Data model: one row per customer, as Slack does per team
+
+The published app is a deployment-owned platform app whose bot rows follow the
+Slack platform app: `externalAppId` stays the verified project number and
+`externalTenantId` becomes the Workspace customer instead of the tenantless
+sentinel of §3, one row per `(app, customer)`, each owned by one organization.
+The row carries two ids for the same customer, because a DM event names only
+the sender's `user.domainId` and a Space event names the Space's
+`space.customer`: the claim writes whichever the claim proved (§10.5), and the
+other is attached the first time an event supplies it together with proof that
+its sender belongs to the customer, which is the sender's membership in that
+Space carrying `affiliation: INTERNAL`. A sender's domain never binds a Space's
+customer on its own: a Space may admit external members, so the pair would tie a
+foreign organization's Space to the sender's row. One customer maps to one
+organization, exactly as one Slack team does; a second organization cannot claim
+a customer another one holds, and the refusal names no organization.
+
+A bring-your-own app keeps its single row. It gains the same fence for free: the
+first verified event stamps the row's customer and domain, and events from any
+other domain are refused from then on. That is the safety line §1 lists as
+outside the first version and should land with this section regardless of the
+listing.
+
+### 10.4 Relay: demux by app, fence by customer, claim the unknown
+
+The relay keeps demuxing on the verified audience (§2), which now selects the
+platform app rather than a single bot. After verification it derives the tenant
+from the event itself: a Space event's `space.customer`, a DM event's
+`user.domainId`, never a Space sender's domain, since that sender may be an
+external member. A row for that tenant routes as today under
+[ingress tenant fencing](ingress-tenant-fence.md). No row means the event is
+answered privately with `REQUEST_CONFIG` pointing at the claim page of §10.5 and
+is never forwarded, stored, or acknowledged as admitted; the relay answers in
+the HTTP response body itself, within Google's window and without a daemon,
+which requires `HandledDelivery` to carry an optional response body. A bounded
+per-tenant memo keeps the prompt from being minted for every message of an
+unclaimed domain; the prompt is private to its sender in any case, so an
+administrator installing the app for a whole domain produces no session and no
+stored data, only one private prompt per person who writes to the app before the
+claim.
+
+`CARD_CLICKED` on the welcome card's button is answered the same way. It is the
+first interaction event the relay handles; no other card is introduced.
+
+### 10.5 Claiming a customer
+
+The claim page is the console's, reached only through `REQUEST_CONFIG`:
+
+1. The relay signs a state with a Control Plane secret: the app, the tenant ids
+   it saw, the space, the initiating `users/{id}`, the event's
+   `configCompleteRedirectUrl`, and an expiry.
+2. The page signs the person in through the console, which is Logto with its
+   Google connector, and reads the signed-in user's Google identity: the
+   provider's user id on that identity (§10.6), not the console token's `sub`,
+   which is the issuer's own user id. It accepts the claim only when that
+   Google account id equals the initiating user id in the state, Google's
+   recommendation for a configuration page, so a forwarded link claims
+   nothing. A user without a Google identity is taken through the Google
+   sign-in or link first.
+3. It binds only the claimant's own Workspace customer. A claim that started in
+   a DM proves it by construction: the DM's `user.domainId` is the claimant's
+   organization. A claim that started in a Space proves it by reading the
+   claimant's membership in that Space with the app's key and requiring
+   `affiliation: INTERNAL`; an `EXTERNAL` or `MANAGED_EXTERNAL` claimant is
+   refused and told to connect the app from their own Workspace, because
+   `space.customer` names the Space's organization, which may not be theirs.
+   Google's identity check alone does not establish that relationship.
+4. It shows the Google Chat account, the app, and the conversation, then the
+   organizations the person administers. A new organization is created the
+   ordinary way when they have none.
+5. It writes the bot row for the customer, installs the app on that
+   organization's preset agent through the same install path the deployment app
+   uses (§3), and redirects to `configCompleteRedirectUrl`.
+6. Chat removes the prompt and sends the original event again; it now routes
+   like any other delivery.
+
+Removing the last integration of a customer's row releases the customer, and a
+later claim starts over. The install-time welcome message (§10.7) points people
+at the claim before they write anything, but the claim also works from a
+person's first message, which is what an administrator-installed DM produces.
+
+### 10.6 Identity: nothing extra to bind
+
+Because a Chat user id is the Google account's `sub`, a console user who signed
+in with Google already carries the identity that appears as `users/{sub}` in
+every event. The console's own token comes from Logto, whose `sub` is Logto's
+user id and never matches; the Google account id is the provider user id on
+the user's Google social identity. The Control Plane records that id on the
+user row when the identity is created or linked, and the
+private owner tuple of [session visibility](session-visibility.md) then matches
+a human console identity: a DM's originator can open their own transcript, which
+lifts the §6 restriction for linked people without any matching by email or
+display name. The same equality is what the claim page checks. Space sessions
+keep their organization visibility; Google membership still does not become a
+console ACL.
+
+### 10.7 Cards and the welcome message
+
+The published app posts one card: a welcome message on `ADDED_TO_SPACE` with a
+single sign-in button, mirroring what published Chat apps do. The button's
+`CARD_CLICKED` and any message from an unclaimed tenant get the `REQUEST_CONFIG`
+answer of §10.4. Rendering, replies, and everything in §5 stay text; cards for
+elicitation are a separate change that would build on the same `CARD_CLICKED`
+path.
+
+### 10.8 Daemon, quotas, privacy
+
+- **Discovery**: a daemon serving a claimed customer never lists the whole app.
+  `spaces.list` is bounded and filtered locally on each Space's `customer`, and
+  DMs surface from traffic as today (§5). Nothing from another customer is
+  reported as an observed conversation.
+- **Quota**: every organization on the published app shares one project's
+  3,000 writes per minute. The per-Space queue stays; a per-app write budget is
+  added on each daemon, sized from the pool size, so one busy organization
+  degrades into backoff rather than into `429` for everyone.
+- **Privacy**: an unclaimed tenant's events are never persisted, and the only
+  tenant data the Control Plane stores is the claimed customer and domain ids.
+  Other customers' email addresses and display names never enter it.
+- **Personal accounts**: an event without a Workspace domain is refused; the
+  first version supports Workspace customers only.
+
+### 10.9 Distribution and rollout
+
+The hosted app lives in its own Cloud project, because the listing type is
+final: it is published public and unlisted first, then listed. A self-hosted
+deployment keeps bring-your-own-app or a private listing of its own app. Listing
+assets (privacy policy, terms, icon, screenshots, the OAuth consent screen) are
+prepared in parallel with the code, since review takes days and cannot start
+without them.
+
+Order of work:
+
+- **A**: the welcome card, `CARD_CLICKED` and `REQUEST_CONFIG` on the relay, the
+  claim page, and the Google account id on the user row.
+- **B**: per-customer rows on the platform app, the customer fence for both
+  install paths, filtered discovery, and the per-app write budget.
+- **C**: the listing, the unlisted publication, and the cross-customer round
+  trip from a second Workspace organization.
+
+Still to verify live before B: whether a domain-wide administrator install
+delivers one `ADDED_TO_SPACE` per user; that a `REQUEST_CONFIG` body answered by
+the relay is honoured within Google's window; that a sign-in's `sub` equals the
+Chat user id for a real account; and that an app-authenticated
+`spaces.members.get` returns `affiliation` for a human member as the list call
+did, so a Space-initiated claim and the customer attachment of §10.3 have their
+proof.
