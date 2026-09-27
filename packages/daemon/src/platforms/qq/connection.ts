@@ -49,6 +49,7 @@ export class QQConnection implements PlatformConnection {
   private readonly channels = new Set<string>()
   private readonly references = new QQReferences()
   private readonly attachmentTypes = new Map<string, string>()
+  private readonly cardAnchors = new Map<string, string>()
 
   constructor(
     readonly group: QQConnectionGroup,
@@ -222,6 +223,20 @@ export class QQConnection implements PlatformConnection {
 
   async sendText(channel: string, replyId: string, text: string): Promise<void> {
     await (await this.ensureSender()).sendText(QQTargetForChannel(channel), replyId, text)
+  }
+
+  // A card keeps the final answer's group slot and remembers its passive-reply anchor for follow-ups.
+  async sendCard(channel: string, replyId: string, text: string): Promise<string | undefined> {
+    const id = await (await this.ensureSender()).sendCard(QQTargetForChannel(channel), replyId, text, 1)
+    if (id) this.cardAnchors.set(JSON.stringify([channel, id]), replyId)
+    while (this.cardAnchors.size > 2000) this.cardAnchors.delete(this.cardAnchors.keys().next().value!)
+    return id
+  }
+
+  // QQ cannot edit a sent message, so a card's settlement or hint is a follow-up on the card's anchor.
+  async followCard(channel: string, cardId: string, text: string): Promise<void> {
+    const replyId = this.cardAnchors.get(JSON.stringify([channel, cardId]))
+    if (replyId) await (await this.ensureSender()).sendCard(QQTargetForChannel(channel), replyId, text, 1)
   }
 
   async sendProgress(channel: string, replyId: string, text: string, signal?: AbortSignal): Promise<boolean> {

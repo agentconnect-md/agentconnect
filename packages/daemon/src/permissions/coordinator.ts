@@ -1531,11 +1531,8 @@ export class PermissionCoordinator {
         ? await this.awaitWebchatUrlElicitation(agentId, sessionId, params, p, p.webchat, url)
         : await this.awaitWebchatElicitation(agentId, sessionId, params, p, p.webchat)
     }
-    // A platform name is never core knowledge (integration-plugin-architecture.md): the turn
-    // surface's own elicitation-card facet says whether this chat can collect an answer, and the
-    // lookup is EXACT so a hook or dream turn rendering through the core surface does not inherit
-    // Slack's cards. No connection means no surface at all, headless included.
-    const facet = p.conn ? this.host.elicitCardFacet(p.plan.platform) : undefined
+    // The surface's own facet (EXACT lookup) decides; no transport, reply or leased egress, means no surface.
+    const facet = (p.conn ?? p.egress) ? this.host.elicitCardFacet(p.plan.platform) : undefined
     if (!facet) return this.noticeUnrenderableElicit(p, params, isApproval)
     // A second SURFACE for #1810's URL mode: the notice is only for an ask this chat still cannot
     // render. A consent card is never an approval, so it takes the approval-free path.
@@ -1577,7 +1574,10 @@ export class PermissionCoordinator {
         const res = this.awaitWebchatElicitation(agentId, sessionId, params, p, p.webchat)
         return memoryWriteApprovalFrom(await this.trackHumanApprovalWait(p, res))
       }
-      const facet = p.conn && !p.plan.approvalSurfaceSuppressed ? this.host.elicitCardFacet(p.plan.platform) : undefined
+      const facet =
+        (p.conn ?? p.egress) && !p.plan.approvalSurfaceSuppressed
+          ? this.host.elicitCardFacet(p.plan.platform)
+          : undefined
       const form = facet ? elicitForm(params, facet.reduction) : null
       if (facet && form) {
         const res = this.awaitChatElicitation(agentId, sessionId, params, p, facet, { form }, false)
@@ -1645,7 +1645,7 @@ export class PermissionCoordinator {
       approval: isApproval,
       surface: 'chat',
       facet,
-      conn: p.conn,
+      conn: p.conn ?? p.egress,
       // Where the card actually LANDS, which is not always the turn's channel: a Discord thread is
       // a channel of its own, and a card edited against its parent is a card never edited at all.
       channel: facet.cardChannel?.(p) ?? p.plan.channel,
@@ -1694,7 +1694,7 @@ export class PermissionCoordinator {
       const settled = this.takeSettledBeforePost(requestId)
       if (ts && settled)
         facet.settle(
-          { conn: p.conn, channel: facet.cardChannel?.(p) ?? p.plan.channel, ts },
+          { conn: p.conn ?? p.egress, channel: facet.cardChannel?.(p) ?? p.plan.channel, ts },
           elicitSettlement(params, !!url, settled)
         )
       return await result
@@ -2091,39 +2091,25 @@ export class PermissionCoordinator {
     await this.submitElicitForm({ requestId: a.requestId, fields: folded.fields, ...actor })
   }
 
-  /**
-   * Offer one typed message to the live cards of its own conversation, answering the first that
-   * claims it. True ⇒ it WAS an answer and must never also reach the agent as a prompt.
-   *
-   * A surface with no typed control claims nothing, so this is a no-op on every chat but the one
-   * that asked someone to type. Where it does claim, the reply is validated by the same
-   * {@link submitElicitForm} a Confirm goes through — a number that is not a number, a string
-   * breaking its own `pattern`, are refused with the field's own words and the card left live.
-   *
-   * The claim is per CARD, never per person: anyone who can see a card may answer it, which is the
-   * same rule its buttons follow. What keeps one answer to one card is the message it replies TO.
-   */
+  /** Offer a typed reply to its conversation's live cards (per card, anyone who sees it); true ⇒ it was an answer, never a prompt. */
   async claimElicitReply(reply: ElicitCardReply & { actor?: InteractionActor }): Promise<boolean> {
     if (reply.replyTo === undefined) return false
     for (const [requestId, rec] of this.pendingElicits) {
-      if (rec.surface !== 'chat' || !rec.facet.claimReply || !rec.form) continue
-      // Matched on the BOT-QUALIFIED conversation, never the bare channel: a person's DMs with two
-      // Telegram bots share one chat id and one message-number sequence, so a bare channel would
-      // let a reply to bot B's prompt settle bot A's card — and suppress B's own delivery with it.
+      if (rec.surface !== 'chat' || !rec.facet.claimReply || rec.url) continue
+      // The BOT-QUALIFIED conversation: two bots' DMs with one person share a chat id and message numbers.
       if (rec.answerConv !== reply.conversation) continue
-      const form = this.cardForm(rec)
+      // A one-tap card has no form of its own; its single field is re-derived from its params (#1815).
+      const form = rec.form ? this.cardForm(rec) : elicitForm(rec.params, surfaceOf(rec))
       if (!form) continue
       const claimed = rec.facet.claimReply(rec, { requestId, params: rec.params, form }, reply)
       if (!claimed) continue
-      // `pending` is still a CLAIM: the words answered this card, they just filled one field of a
-      // form the reader has yet to Confirm. Treating it as unclaimed would send that field's own
-      // answer on to the agent as a fresh prompt.
-      if (claimed.kind === 'submit')
-        await this.submitElicitForm({
-          requestId,
-          fields: claimed.fields,
-          ...(reply.actor ? { actor: reply.actor } : {})
-        })
+      // `pending` still claims the words: they filled a field the reader has yet to Confirm.
+      if (claimed.kind === 'submit') {
+        const actor = reply.actor ? { actor: reply.actor } : {}
+        const value = claimed.fields[elicitFormBlockId(0)]
+        if (rec.form) await this.submitElicitForm({ requestId, fields: claimed.fields, ...actor })
+        else if (typeof value === 'string') await this.handleElicitChoice({ requestId, value, ...actor })
+      }
       return true
     }
     return false

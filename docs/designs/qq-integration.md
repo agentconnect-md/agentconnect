@@ -23,7 +23,7 @@ QQ adopts those contracts once agreed and available.
 | Replies and Markdown  | Native quoted replies and supported Markdown, with readable formatting fallbacks.                                                                   |
 | Streaming             | Native DM streaming. Groups receive limited progress and final replies; QQ does not provide group streaming.                                        |
 | Attachments           | Receive images/files and send images. Non-image sending is conditional on the small common extension in section 4.                                  |
-| Interactive questions | Correlated text replies through `ElicitCardFacet`; buttons when permitted. Only fully collectable question shapes are supported.                    |
+| Interactive questions | A numbered text card through `ElicitCardFacet`, answered by quoting it. Single-choice and yes/no questions; other shapes keep the decline notice.   |
 | Tool approvals        | Existing Console approval; QQ-side approval awaits a common interface.                                                                              |
 | Feedback and results  | DM typing hints or brief group acknowledgement; retained results remain available in the Console if delivery fails. No native read-receipt promise. |
 
@@ -61,7 +61,7 @@ flowchart LR
     O -->|Official API| Q
     A --> E[Existing elicitation interface]
     E -->|Question| O
-    X -->|Correlated reply or button| E
+    X -->|Quoted reply| E
     E -->|Resume request| A
     A -->|Permission required| C[Existing Console approval]
     C -->|Decision| A
@@ -124,18 +124,29 @@ contract: a delivered file with a failed caption must not be sent again.
 
 ### Interactive questions
 
-Reuse `ElicitCardFacet`, core schema validation, and request settlement. Text
-replies must identify the original request; buttons are optional because QQ
-button access is separate from Markdown access. Interaction events use the same
-WebSocket and receive timely acknowledgement.
+Reuse `ElicitCardFacet`, core schema validation, and request settlement. Message
+buttons need a separate provider grant (an approved template or an invitation),
+so the card is text a self-hosted bot can always send: the question, its options
+numbered, and how to answer. The reader quotes the card and replies with a
+number or an option label; in a group the reply must also mention the bot,
+because QQ delivers nothing else. The quote identifies the card: QQ's reference
+index resolves to the card's own message id, and core matches the bot-qualified
+conversation and the pending request, so ordinary chat, other quotes, and stale
+answers settle nothing. A quote naming no option is still claimed, so it never
+reaches the agent as a prompt, and the instruction is repeated.
 
-Collect complete answers for supported choice, text, numeric, and multi-field
-requests. Decline unsupported shapes explicitly, without dropping fields. Match
-the bot, conversation, and pending request; ordinary chat, duplicates, and stale
-answers must not settle unrelated or completed requests. Without editing, post a
-short outcome and invalidate old controls server-side. Interaction acknowledgement
-is not tool approval. No generic answer command or shared multi-user form system
-is introduced.
+The card supports single-choice and yes/no questions, which one reply answers
+whole. Typed, multi-select, and multi-field requests keep the decline notice.
+This is also the private-session managed-memory write approval (Allow once,
+Allow for this session, Deny), so a DM user decides it in the chat rather than
+waiting on the Console.
+
+QQ turns post through a leased egress rather than a reply connection, so core
+offers a card to a turn with either transport. A card and its follow-ups are
+passive replies to the triggering message; in a group each keeps one reply slot
+free for the final answer. QQ cannot edit a sent message, so settlement posts a
+short outcome under the card, when the reply budget allows it. Tool approvals
+stay on the Console.
 
 ## 4. Shared capabilities and ownership
 
@@ -206,8 +217,8 @@ Use sanitized event fixtures and a mock service for deterministic behavior,
 then a real official bot for provider/client behavior:
 
 - Shared group tasks, isolated groups/DMs, and no ambient task or command execution.
-- Correct question correlation, validation, expiry, and duplicate handling, with
-  and without button access.
+- Correct question correlation, validation, expiry, and duplicate handling for
+  quoted replies, including a quote of a card sent while a DM stream is open.
 - DM streaming, quotes, Markdown, image exchange, inbound files, size limits,
   and expired links on mobile and desktop.
 - Reconnects, duplicate events, reply expiry, rate limits, and ambiguous sends

@@ -14716,6 +14716,7 @@ export class Daemon {
         ...(run.egressConn ? { egress: run.egressConn } : {})
       }),
       conn: run.replyConn,
+      ...(run.egressConn ? { egress: run.egressConn } : {}),
       ...(callMeta ? { callMeta } : {}),
       ...(turn.webchat ? { webchat: turn.webchat } : {}),
       ...(plan.githubTurnEligible && githubReply
