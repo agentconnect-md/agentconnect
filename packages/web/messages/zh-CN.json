@@ -1245,7 +1245,7 @@
     }
   },
   "Integrations": {
-    "description": "此组织已安装的消息机器人和代码托管平台，以及与它们绑定的 Agent。",
+    "description": "此组织已安装的消息应用和代码托管平台，以及与它们绑定的 Agent。",
     "trustedUsers": {
       "title": "受信任用户"
     },

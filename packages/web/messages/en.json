@@ -1245,7 +1245,7 @@
     }
   },
   "Integrations": {
-    "description": "Messaging bots and code hosts installed for this organization, and the agents bound to them.",
+    "description": "Messaging apps and code hosts installed for this organization, and the agents bound to them.",
     "trustedUsers": {
       "title": "Trusted users"
     },
