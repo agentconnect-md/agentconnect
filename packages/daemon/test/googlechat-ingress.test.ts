@@ -98,7 +98,6 @@ beforeEach(() => {
     chatCalls.push({ method: (init as { method?: string }).method ?? 'GET', path })
     if (path === 'spaces')
       return json(200, { spaces: [{ name: SPACE, spaceType: 'SPACE', displayName: 'Example Space' }] })
-    if (path === `${SPACE}/members/app`) return json(200, { member: { name: APP_USER, type: 'BOT' } })
     if (path === SPACE) return json(200, { name: SPACE, spaceType: 'SPACE', displayName: 'Example Space' })
     return json(404, { error: { message: 'not found' } })
   })
@@ -225,20 +224,19 @@ describe('§4 admission and receipts through the daemon', () => {
     await daemon.stop()
   })
 
-  it('learns the app identity at connect and reports the named Spaces it is in', async () => {
+  it('reports the named Spaces it is in at connect without reading the app identity there', async () => {
     const { daemon } = await boot()
-    // Boot's own reconcile owns the in-flight connect, so the identity lands asynchronously.
-    await vi.waitFor(() => {
-      expect((daemon as any).gcConnByIntegration.get(INTEGRATION)?.botUserId).toBe(APP_USER)
-      expect((daemon as any).botUserIds[INTEGRATION]).toBe(APP_USER)
-    })
+    // Boot's own reconcile owns the in-flight connect, so the report lands asynchronously.
     await vi.waitFor(() =>
       expect((daemon as any).channelSnapshots.get(INTEGRATION)).toEqual({
         authoritative: false,
         channels: [{ id: SPACE, name: 'Example Space', isPrivate: false, kind: 'channel' }]
       })
     )
+    // Google refuses `members/app` under app authentication; the identity waits for the app's first reply.
+    expect(chatCalls.some((c) => c.path.endsWith('/members/app'))).toBe(false)
     expect(chatCalls.some((c) => c.method === 'POST')).toBe(false)
+    expect((daemon as any).gcConnByIntegration.get(INTEGRATION)?.botUserId).toBeUndefined()
     await daemon.stop()
   })
 })
