@@ -87,6 +87,15 @@ describe('agent model evaluation reads', () => {
     const list = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations` })
     expect(list.statusCode, list.body).toBe(200)
     expect(list.json().items).toEqual([rows[1]])
+    // A row the daemon could not title, its session row aged out, takes the CP's session title.
+    await prisma.sessionMeta.update({ where: { id: publicId }, data: { title: 'Deploy the hotfix' } })
+    rows[1] = { ...rows[1]!, title: null }
+    const fallback = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations` })
+    expect(fallback.json().items).toEqual([{ ...rows[1], title: 'Deploy the hotfix' }])
+    expect(
+      (await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations/1` })).json().title
+    ).toBe('Deploy the hotfix')
+    rows[1] = { ...rows[1], title: 'PR #42: Fix the parser' }
     const filtered = await app.app.inject({
       method: 'GET',
       url: `${ORG}/agents/${agentId}/model-evaluations?decisionId=${DECISION}`

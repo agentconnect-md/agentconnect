@@ -1468,6 +1468,8 @@ other summary readers get the row without it. A model selection row is titled by
 session instead, since its input expires within a day but the session's title persists:
 the daemon reads its session record's title and names its mentions as the console's
 session list does, and the CP returns the row only to a caller who can view that session.
+When session retention shorter than the summaries' week has removed the daemon's
+record, the CP supplies its own copy of the session title, whose mentions stay raw.
 
 Details display the evaluated Decision and consumer snapshots, input/history,
 requested/actual model, all matched actions, and effective targets. Mention/thread
