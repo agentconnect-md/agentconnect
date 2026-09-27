@@ -425,6 +425,38 @@ export const PROFILES: Profile[] = [
     }
   },
   {
+    // @openma/deepseek-harness-acp@0.4.33: loadSession, http MCP, sandbox-mode/model/effort selectors, usage.
+    id: 'dsh',
+    registryId: 'dsh-acp',
+    memory: {
+      runtime: runtime('npx', ['-y', '-p', '@openma/deepseek-harness-acp@0.4.33', 'dsh-acp']),
+      expected: { managed: true, none: true, native: false }
+    },
+    scenario: {
+      agentCapabilities: {
+        loadSession: true,
+        mcpCapabilities: { http: true, sse: false },
+        promptCapabilities: { image: true }
+      },
+      configOptions: [
+        select('mode', 'mode', ['read-only', 'workspace-write', 'danger-full-access'], 'workspace-write'),
+        select('model', 'model', ['deepseek-v4-pro', 'deepseek-v4-flash']),
+        select('effort', 'thought_level', ['off', 'low', 'high', 'max'], 'high')
+      ],
+      prompt: { usage: { used: 900, size: 1_000_000 } },
+      load: { replay: [], title: 'DeepSeek Harness session' }
+    },
+    caps: {
+      loadSession: true,
+      mcp: { http: true, sse: false },
+      promptImage: true,
+      models: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+      permissionModes: ['read-only', 'workspace-write', 'danger-full-access'],
+      usage: true,
+      skillsAgentId: 'universal'
+    }
+  },
+  {
     // Qoder CLI (@qoder-ai/qodercli) — native ACP via `qodercli --acp`. A
     // Gemini-CLI fork with bundled memory and no reviewed off-switch, so managed
     // is the sole verified mode (same classification as Maki).
