@@ -69,6 +69,17 @@ describe('Google Chat HTTP ingress route', () => {
     }
   })
 
+  it('sends the handled delivery’s synchronous body on the 200: the welcome card or the claim prompt (§10.4)', async () => {
+    const prompt = {
+      actionResponse: { type: 'REQUEST_CONFIG', url: 'https://console.example.test/googlechat/claim?state=e30' }
+    }
+    app = makeApp(answering({ syncResponse: prompt }))
+    const response = await post(app, JSON.stringify(dmMessage))
+    expect(response.statusCode).toBe(200)
+    expect(response.headers['content-type']).toMatch(/application\/json/)
+    expect(response.json()).toEqual(prompt)
+  })
+
   it('answers 503 for a retry verdict so Google may redeliver', async () => {
     app = makeApp(answering({ admission: { disposition: 'retry', reason: 'draining' } }))
     expect((await post(app, JSON.stringify(dmMessage))).statusCode).toBe(503)

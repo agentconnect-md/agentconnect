@@ -62,6 +62,10 @@ export interface BotAssignment {
    *  workspace, which a same-secret sibling in another organization would
    *  otherwise satisfy just as well. */
   workspaceId?: string
+  /** Every tenant key this bot serves: one customer row of a multi-tenant app (google-chat-integration.md §10.3), whose siblings share the audience, so it is demuxed only on the composite `(apiAppId, tenant)` keys and fenced strictly. */
+  tenantIds?: string[]
+  /** The console's claim page, present only on a multi-tenant app's anchor row: the plugin answers an event no sibling serves with it (§10.4). */
+  claimUrl?: string
   /** Install GENERATION of `secrets` (CP-assigned). Echoed back on `rc/bot-revoked`
    *  so the CP can refuse a revocation that was observed under a credential a
    *  re-install has since replaced — Slack does not order lifecycle events. */
@@ -831,6 +835,23 @@ export class BotArbitrationRouter {
   }
 }
 
+// A non-empty list of non-empty strings, deduplicated; null for anything else.
+function tenantKeyList(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null
+  if (!value.every((id): id is string => typeof id === 'string' && id.length > 0)) return null
+  return [...new Set(value)]
+}
+
+// An absolute https URL; null for anything else.
+function httpsUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  try {
+    return new URL(value).protocol === 'https:' ? value : null
+  } catch {
+    return null
+  }
+}
+
 /** Map the CP's `rc/bot-assign` frame to the manager's {@link BotAssignment}
  *  (drop absent optionals so the strict-optional shape holds). Returns null for a
  *  secret bag neither typed shape matches (§6.7 open reader: a platform this build
@@ -848,8 +869,15 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     workspaceId?: unknown
     botUserId?: unknown
     appUserName?: unknown
+    tenantIds?: unknown
+    claimUrl?: unknown
   }
   const apiAppId = typeof ingress.apiAppId === 'string' ? ingress.apiAppId : undefined
+  // A multi-tenant app's rows: a malformed tenant list or claim page refuses the assignment outright, since reading
+  // either as absent would turn the row into one that serves every tenant of its audience.
+  const tenantIds = ingress.tenantIds === undefined ? undefined : tenantKeyList(ingress.tenantIds)
+  const claimUrl = ingress.claimUrl === undefined ? undefined : httpsUrl(ingress.claimUrl)
+  if (tenantIds === null || claimUrl === null) return null
   const secrets: BotAssignment['secrets'] | null =
     'botToken' in a.secrets && typeof a.secrets.botToken === 'string' && typeof a.secrets.signingSecret === 'string'
       ? { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret }
@@ -890,6 +918,8 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     ...(apiAppId ? { apiAppId } : {}),
     ...(teamId ? { teamId } : {}),
     ...(workspaceId ? { workspaceId } : {}),
+    ...(tenantIds ? { tenantIds } : {}),
+    ...(claimUrl ? { claimUrl } : {}),
     ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
     ...(botUserId ? { botUserId } : {}),
     members: a.members,

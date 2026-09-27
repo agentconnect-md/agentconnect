@@ -8,6 +8,9 @@ export const OTHER_APP = 'users/100000000000000000008'
 export const PERSON = 'users/100000000000000000001'
 export const DM = 'spaces/EXAMPLE_DM'
 export const SPACE = 'spaces/EXAMPLE_SPACE'
+/** The Workspace customer that owns the named Space, and the person's domain as a DM's tenant key (design §10.4). */
+export const CUSTOMER = 'customers/C0000000000'
+export const DOMAIN = 'domains/0000000000'
 
 const person = {
   name: PERSON,
@@ -15,7 +18,7 @@ const person = {
   avatarUrl: 'https://example.test/avatar.png',
   email: 'person@example.test',
   type: 'HUMAN',
-  domainId: 'example'
+  domainId: '0000000000'
 }
 
 const dmSpace = {
@@ -37,7 +40,8 @@ const namedSpace = {
   spaceType: 'SPACE',
   spaceHistoryState: 'HISTORY_ON',
   membershipCount: { joinedDirectHumanUserCount: 1 },
-  spaceUri: 'https://chat.example.test/space'
+  spaceUri: 'https://chat.example.test/space',
+  customer: CUSTOMER
 }
 
 const appMention = (type: 'ADD' | 'MENTION') => ({
@@ -138,4 +142,29 @@ export const spaceRemoved = {
   eventTime: '2026-09-27T05:00:00.000000Z',
   user: person,
   space: namedSpace
+} as GoogleChatEvent
+
+/** A click on the welcome card's button (design §10.7), documentation-shaped: the card message is the app's own. */
+export const cardClicked = {
+  type: 'CARD_CLICKED',
+  eventTime: '2026-09-27T04:40:00.000000Z',
+  message: {
+    name: `${SPACE}/messages/EXAMPLE_CARD.EXAMPLE_CARD`,
+    sender: { name: APP, displayName: 'AgentConnect Probe', type: 'BOT' },
+    createTime: '2026-09-27T04:39:00.000000Z',
+    thread: { name: `${SPACE}/threads/EXAMPLE_CARD`, retentionSettings: { state: 'PERMANENT' } },
+    space: namedSpace
+  },
+  user: person,
+  space: namedSpace,
+  action: { actionMethodName: 'agentconnect.claim', parameters: [] },
+  common: {
+    invokedFunction: 'agentconnect.claim',
+    userLocale: 'en',
+    hostApp: 'CHAT',
+    timeZone: { id: 'Asia/Tokyo', offset: 32400000 }
+  },
+  configCompleteRedirectUrl: 'https://chat.example.test/config-complete?token=REDACTED',
+  isDialogEvent: false,
+  thread: { name: `${SPACE}/threads/EXAMPLE_CARD` }
 } as GoogleChatEvent

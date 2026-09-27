@@ -152,7 +152,9 @@ async function main(): Promise<void> {
       if (!assignment) {
         // §6.7: an opaque secret bag for a platform this build predates — ids only,
         // never the material. The S3 platform module takes this shape over.
-        log.warn(`relay: bot-assign for ${a.botId} carried a secret shape this build does not support — skipped`)
+        log.warn(
+          `relay: bot-assign for ${a.botId} carried a secret or ingress shape this build does not support — skipped`
+        )
         return
       }
       void held.relayIngress?.assign(assignment).catch((err) => log.error(`relay: bot-assign failed: ${String(err)}`))

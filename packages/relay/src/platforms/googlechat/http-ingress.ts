@@ -69,7 +69,8 @@ export function registerGoogleChatHttpIngress(
       if (!outcome.handled) return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 })
       if (outcome.handled.admission?.disposition === 'retry')
         return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503 })
-      return reply.code(200).send({})
+      // An unclaimed tenant's welcome card or claim prompt (§10.4) rides the 200 body; every other answer is empty.
+      return reply.code(200).send(outcome.handled.syncResponse ?? {})
     })
   })
 }

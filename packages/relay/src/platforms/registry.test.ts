@@ -57,4 +57,46 @@ describe('DemuxIndex', () => {
     expect(idx.resolve({ appId: 'A6', tenantId: 'T6' })).toBeUndefined()
     expect(idx.indexes.byAppTenant.size).toBe(0)
   })
+
+  // A multi-tenant app (google-chat-integration.md §10.4): customer rows known by several keys beside one anchor.
+  it('a bot known by several tenant keys takes one composite entry per key and never the app index', () => {
+    const idx = new DemuxIndex()
+    idx.indexAssign('bot-7', { appId: 'A7', tenantIds: ['customers/C1', 'domains/D1'] })
+    expect(idx.resolve({ appId: 'A7', tenantId: 'customers/C1' })).toBe('bot-7')
+    expect(idx.resolve({ appId: 'A7', tenantId: 'domains/D1' })).toBe('bot-7')
+    expect(idx.resolve({ appId: 'A7' })).toBeUndefined()
+    expect(idx.resolve({ appId: 'A7', tenantId: 'customers/C2' })).toBeUndefined()
+    idx.learn('A7', 'bot-7')
+    expect(idx.resolve({ appId: 'A7' })).toBeUndefined()
+    // The anchor sits in the app index beside the rows, so a tenant no row knows falls to it and a known one does not.
+    idx.indexAssign('anchor', { appId: 'A7' })
+    expect(idx.resolve({ appId: 'A7', tenantId: 'customers/C2' })).toBe('anchor')
+    expect(idx.resolve({ appId: 'A7', tenantId: 'customers/C1' })).toBe('bot-7')
+    // Forgetting the row drops every key; its tenants fall to the anchor from then on.
+    idx.forget('bot-7')
+    expect(idx.resolve({ appId: 'A7', tenantId: 'domains/D1' })).toBe('anchor')
+    expect(idx.indexes.byAppTenant.size).toBe(0)
+    expect(idx.resolve({ appId: 'A7' })).toBe('anchor')
+  })
+
+  it('gaining tenant keys evicts the stale app-only entry, and an empty list is app-only', () => {
+    const idx = new DemuxIndex()
+    idx.indexAssign('bot-8', { appId: 'A8' })
+    idx.indexAssign('bot-8', { appId: 'A8', tenantIds: ['customers/C8'] })
+    expect(idx.resolve({ appId: 'A8' })).toBeUndefined()
+    expect(idx.resolve({ appId: 'A8', tenantId: 'customers/C8' })).toBe('bot-8')
+    idx.indexAssign('bot-9', { appId: 'A9', tenantIds: [] })
+    expect(idx.resolve({ appId: 'A9' })).toBe('bot-9')
+  })
+
+  it('forget removes only the composite entries the bot still owns', () => {
+    // Two rows indexed under one key: the later owner survives the earlier one's forget.
+    const idx = new DemuxIndex()
+    idx.indexAssign('bot-a', { appId: 'A', tenantIds: ['customers/C'] })
+    idx.indexAssign('bot-b', { appId: 'A', tenantIds: ['customers/C'] })
+    idx.forget('bot-a')
+    expect(idx.resolve({ appId: 'A', tenantId: 'customers/C' })).toBe('bot-b')
+    idx.forget('bot-b')
+    expect(idx.indexes.byAppTenant.size).toBe(0)
+  })
 })

@@ -471,6 +471,73 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     expect(a && 'teamId' in a).toBe(false)
     expect(a && 'botUserId' in a).toBe(false)
   })
+
+  // A multi-tenant app's rows (google-chat-integration.md §10.3): customer rows carry the keys they are known by,
+  // the anchor carries the claim page, and today's single-tenant row carries neither.
+  const googlechat = { ...base, platform: 'googlechat', secrets: {} }
+  const CLAIM_URL = 'https://console.example.test/googlechat/claim'
+
+  it('reads the tenant keys and the claim page from the ingress bag, deduplicated and only when present', () => {
+    const customer = toBotAssignment({
+      ...googlechat,
+      ingress: {
+        apiAppId: '100000000000',
+        tenantIds: ['customers/C0000000000', 'domains/0000000000', 'customers/C0000000000']
+      }
+    } as never)
+    expect(customer).toMatchObject({
+      apiAppId: '100000000000',
+      tenantIds: ['customers/C0000000000', 'domains/0000000000']
+    })
+    expect(customer && 'claimUrl' in customer).toBe(false)
+    const anchor = toBotAssignment({
+      ...googlechat,
+      ingress: { apiAppId: '100000000000', claimUrl: CLAIM_URL }
+    } as never)
+    expect(anchor).toMatchObject({ claimUrl: CLAIM_URL })
+    expect(anchor && 'tenantIds' in anchor).toBe(false)
+    const single = toBotAssignment({ ...googlechat, ingress: { apiAppId: '100000000000' } } as never)
+    expect(single && 'tenantIds' in single).toBe(false)
+    expect(single && 'claimUrl' in single).toBe(false)
+    // The slots are core's, not the platform's: another platform's bag reads the same way.
+    expect(
+      toBotAssignment({ ...base, secrets, ingress: { apiAppId: 'A9', tenantIds: ['T9'] } } as never)
+    ).toMatchObject({ tenantIds: ['T9'] })
+  })
+
+  it('refuses a malformed tenant list or a claim page that is not https, since absent would serve every tenant', () => {
+    const refused = [
+      { apiAppId: 'A', tenantIds: [] },
+      { apiAppId: 'A', tenantIds: 'customers/C' },
+      { apiAppId: 'A', tenantIds: ['customers/C', 42] },
+      { apiAppId: 'A', tenantIds: ['customers/C', ''] },
+      { apiAppId: 'A', tenantIds: null },
+      { apiAppId: 'A', claimUrl: 'http://console.example.test/googlechat/claim' },
+      { apiAppId: 'A', claimUrl: '/googlechat/claim' },
+      { apiAppId: 'A', claimUrl: 'javascript:alert(1)' },
+      { apiAppId: 'A', claimUrl: '' },
+      { apiAppId: 'A', claimUrl: 42 },
+      { apiAppId: 'A', claimUrl: null }
+    ]
+    for (const ingress of refused) {
+      expect(toBotAssignment({ ...googlechat, ingress } as never), JSON.stringify(ingress)).toBeNull()
+    }
+    // The bag still carries no secret: a customer row's key stays on the daemon.
+    expect(
+      toBotAssignment({
+        ...googlechat,
+        secrets: { botToken: 'x' },
+        ingress: { apiAppId: 'A', tenantIds: ['customers/C'] }
+      } as never)
+    ).toBeNull()
+    expect(
+      toBotAssignment({
+        ...googlechat,
+        secrets: { serviceAccountKey: '{}' },
+        ingress: { apiAppId: 'A', claimUrl: CLAIM_URL }
+      } as never)
+    ).toBeNull()
+  })
 })
 
 /**
