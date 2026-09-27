@@ -396,7 +396,7 @@ export interface RelayIngressStrategy {
   onAdmitted?(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean, steered: boolean): Promise<void>
   /** Refuse rather than run best-effort when the durable row cannot be written, for a hook that dedups on that row. */
   requireDurable?: boolean
-  /** Permanent receipt id minted with the admission row in one transaction; its prior existence makes a duplicate. */
+  /** Permanent receipt id minted with the admission row in one transaction; its prior existence makes a duplicate. A relay control command is minted one before it runs, so a redelivery re-runs nothing. */
   receiptId?(normalized: NormalizedMessage): string
 }
 

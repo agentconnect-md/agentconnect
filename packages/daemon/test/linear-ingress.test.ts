@@ -11,6 +11,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { PlatformModuleRegistry } from '../src/platforms/registry.js'
 import { LINEAR_GRAPHQL_ENDPOINT } from '../src/platforms/linear/connection.js'
 import { stableMessageId } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
@@ -446,7 +447,8 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
   it('names the acting agent and the issue, after the durable inbox admitted the delivery', async () => {
     const { daemon, posted } = await boot()
     const ack = await im(daemon, delivery())
-    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    // The strict verdict beside the shared `accepted`: admitted, and only once the durable row is owned.
+    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true, routeAdmission: 'admitted' })
     await vi.waitFor(() => expect(acks(posted).length).toBe(1))
     expect(acks(posted)[0]!.activity.body).toBe('**Review Bot** · reading TEAM-123 …')
     expect(acks(posted)[0]!.sessionId).toBe(SESSION)
@@ -480,7 +482,13 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     // durable receipt can absorb this. Without it the whole turn re-runs, not just the ack.
     const dispatch = vi.fn(async () => null)
     ;(daemon as any).dispatch = dispatch
-    expect(await im(daemon, delivery())).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    // The strategy settled it from the receipt: consumed (`accepted`), and strictly a gate a resend cannot change.
+    expect(await im(daemon, delivery())).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: true,
+      routeAdmission: 'rejected',
+      recoverable: false
+    })
     expect(dispatch).not.toHaveBeenCalled()
     expect(posted.filter((entry) => entry.activity.type === 'thought')).toHaveLength(1)
     await daemon.stop()
@@ -507,7 +515,12 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     const handle = vi.fn()
     ;(daemon as any).sessions.handle = handle
 
-    expect(await im(daemon, delivery())).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    // The receipt CAS reads back as a duplicate, which is a durable admission the sibling already owns.
+    expect(await im(daemon, delivery())).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: true,
+      routeAdmission: 'admitted'
+    })
     await turnSettled()
     expect(posted).toEqual([])
     expect(handle).not.toHaveBeenCalled()
@@ -523,7 +536,9 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     expect(await im(daemon, delivery())).toEqual({
       msgId: `linear:${SESSION}:created`,
       accepted: false,
-      reason: 'durability'
+      reason: 'durability',
+      routeAdmission: 'rejected',
+      recoverable: true
     })
     await turnSettled()
     expect(posted).toEqual([])
@@ -542,7 +557,9 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     expect(await im(daemon, delivery())).toEqual({
       msgId: `linear:${SESSION}:created`,
       accepted: false,
-      reason: 'durability'
+      reason: 'durability',
+      routeAdmission: 'rejected',
+      recoverable: true
     })
     await turnSettled()
     expect(posted).toEqual([])
@@ -741,7 +758,13 @@ describe('§4.5 the issue-less surface', () => {
     const dispatch = vi.fn(async () => null)
     ;(daemon as any).dispatch = dispatch
     const ack = await im(daemon, issueless())
-    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    // Answered by the strategy itself: consumed, and strictly a gate — no turn is promised and a resend changes nothing.
+    expect(ack).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: true,
+      routeAdmission: 'rejected',
+      recoverable: false
+    })
     expect(dispatch).not.toHaveBeenCalled()
     expect(responses(posted).map((p) => p.activity.body)).toEqual([LINEAR_UNSUPPORTED_SURFACE_BODY])
     expect(responses(posted)[0]!.sessionId).toBe(SESSION)
@@ -1260,7 +1283,8 @@ describe('§10.1 a follow-up and the acknowledgement watchdog', () => {
     const { daemon, posted, turnSettled } = await boot()
     expect(await im(daemon, delivery({}, { event: 'created', issueId: 'issue-1' }))).toEqual({
       msgId: `linear:${SESSION}:created`,
-      accepted: true
+      accepted: true,
+      routeAdmission: 'admitted'
     })
     await vi.waitFor(() => expect(acks(posted).length).toBe(1))
     await turnSettled()
@@ -1270,7 +1294,11 @@ describe('§10.1 a follow-up and the acknowledgement watchdog', () => {
       { event: 'prompted', issueId: 'issue-1' }
     )
     followUp.msgId = 'linear:activity-1'
-    expect(await im(daemon, followUp)).toEqual({ msgId: 'linear:activity-1', accepted: true })
+    expect(await im(daemon, followUp)).toEqual({
+      msgId: 'linear:activity-1',
+      accepted: true,
+      routeAdmission: 'admitted'
+    })
     await vi.waitFor(() => expect(acks(posted).length).toBe(2))
     await turnSettled()
     // The follow-up neither reopens the issue state nor re-attaches the session resource.
@@ -1289,11 +1317,172 @@ describe('§10.1 a follow-up and the acknowledgement watchdog', () => {
       return hasInbox(id)
     }
     const ack = await (daemon as any).handleRelayMsg(delivery({}, { event: 'created', issueId: 'issue-1' }), () => {})
-    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true, routeAdmission: 'admitted' })
     const lines = warn.mock.calls.map((c) => String(c[0]))
     expect(lines.some((l) => /unacknowledged after \d+ms — stage linear:receipt/.test(l))).toBe(true)
     expect(lines.some((l) => /acknowledged after \d+ms — last stage admitted/.test(l))).toBe(true)
     await turnSettled()
+    await daemon.stop()
+  })
+})
+
+describe('the strict admission verdict beside the shared ack (google-chat-integration.md §4)', () => {
+  it('reports a draining refusal as consumed for the shared path and recoverable for the strict one', async () => {
+    const { daemon, posted, turnSettled } = await boot()
+    ;(daemon as any).drainingAgents.add(AGENT)
+    expect(await im(daemon, delivery())).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: true,
+      reason: 'draining',
+      routeAdmission: 'rejected',
+      recoverable: true
+    })
+    await turnSettled()
+    expect(posted).toEqual([])
+    await daemon.stop()
+  })
+
+  /** Replace Linear's strategy with its `prepare` plus only the named admission members, so the verdict is what those members earn. */
+  const strategyWith = (daemon: Daemon, members: (linear: any) => Record<string, unknown>) => {
+    const linear = (daemon as any).platformModules.get('linear').relayIngress
+    ;(daemon as any).platformModules = new PlatformModuleRegistry([
+      { platformId: 'linear', relayIngress: { prepare: linear.prepare, ...members(linear) } }
+    ])
+  }
+  const durabilityRefusal = {
+    msgId: `linear:${SESSION}:created`,
+    accepted: false,
+    reason: 'durability',
+    routeAdmission: 'rejected',
+    recoverable: true
+  }
+
+  it('refuses a failed durable write for a strategy with only `receiptId`, instead of acking admitted', async () => {
+    const { daemon, store, turnSettled } = await boot()
+    strategyWith(daemon, (linear) => ({ receiptId: linear.receiptId }))
+    vi.spyOn(store, 'appendInboxWithReceipt').mockRejectedValue(new Error('disk is gone'))
+    // Without the required write this would be an `admitted` ack for a row that was never written.
+    expect(await im(daemon, delivery())).toEqual(durabilityRefusal)
+    await turnSettled()
+    await daemon.stop()
+  })
+
+  it('refuses a failed durable write for a strategy with only `onAdmitted`, which then never runs', async () => {
+    const { daemon, store, turnSettled } = await boot()
+    const onAdmitted = vi.fn(async () => {})
+    strategyWith(daemon, () => ({ onAdmitted }))
+    vi.spyOn(store, 'appendInbox').mockRejectedValue(new Error('disk is gone'))
+    expect(await im(daemon, delivery())).toEqual(durabilityRefusal)
+    expect(onAdmitted).not.toHaveBeenCalled()
+    await turnSettled()
+    await daemon.stop()
+  })
+
+  it('acks a delivery with no strategy on dispatch, before durability, without a strict verdict', async () => {
+    const { daemon, turnSettled } = await boot()
+    ;(daemon as any).platformModules = new PlatformModuleRegistry([])
+    expect(await im(daemon, delivery())).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    await turnSettled()
+    await daemon.stop()
+  })
+})
+
+describe('control commands on the relay path (google-chat-integration.md §4)', () => {
+  /** A host whose prompts each block until released in order, so a turn can be cancelled or queued behind. */
+  function gatedHost() {
+    const releases: Array<() => void> = []
+    const host = {
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      prompt: vi.fn(async () => {
+        await new Promise<void>((resolve) => releases.push(resolve))
+        return 'end_turn'
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn()
+    }
+    return { host, release: () => releases.shift()?.() }
+  }
+  /** A command typed on the issue's session thread, keyed like a follow-up activity. */
+  const command = (id: string, text: string) => {
+    const d = delivery(
+      { msgId: `linear:${id}`, traceId: `linear:${id}`, text },
+      { event: 'prompted', issueId: 'issue-1' }
+    )
+    d.msgId = `linear:${id}`
+    return d
+  }
+  const consumed = (msgId: string) => ({ msgId, accepted: true, routeAdmission: 'rejected', recoverable: false })
+  const WAIT = { timeout: 10_000 }
+
+  it('acks `!queue` only after its queued message is durably admitted, refusing a failed write', async () => {
+    const host = fakeHost()
+    const { daemon, store, turnSettled } = await boot({ host: () => host })
+    vi.spyOn(store, 'appendInboxWithReceipt').mockRejectedValue(new Error('disk is gone'))
+    expect(await im(daemon, command('q1', '!queue do it'))).toEqual({
+      msgId: 'linear:q1',
+      accepted: false,
+      reason: 'durability',
+      routeAdmission: 'rejected',
+      recoverable: true
+    })
+    await turnSettled()
+    expect(host.prompt).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('treats a redelivered `!queue` as a duplicate under the receipt, not a second queued turn', async () => {
+    const host = fakeHost()
+    const { daemon, turnSettled } = await boot({ host: () => host })
+    const queue = command('q2', '!queue do it')
+    expect(await im(daemon, queue)).toEqual({ msgId: 'linear:q2', accepted: true, routeAdmission: 'admitted' })
+    await turnSettled()
+    expect(host.prompt).toHaveBeenCalledTimes(1)
+    // The row went with the turn; only the receipt can recognize the redelivery.
+    expect(await im(daemon, queue)).toEqual({ msgId: 'linear:q2', accepted: true, routeAdmission: 'admitted' })
+    await turnSettled()
+    expect(host.prompt).toHaveBeenCalledTimes(1)
+    expect((daemon as any).serialQueue.size).toBe(0)
+    await daemon.stop()
+  })
+
+  it('binds `!cancel` to the turn it found: redelivered after that turn ended, it is consumed and cancels nothing', async () => {
+    const gated = gatedHost()
+    const { daemon, turnSettled } = await boot({ host: () => gated.host })
+    await im(daemon, delivery())
+    await vi.waitFor(() => expect(gated.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+    const cancel = command('cancel-1', '!cancel')
+    expect(await im(daemon, cancel)).toEqual({ msgId: 'linear:cancel-1', accepted: true, routeAdmission: 'admitted' })
+    expect(gated.host.cancel).toHaveBeenCalledTimes(1)
+    gated.release()
+    await turnSettled()
+    // Later work in the same session, which the redelivered cancel must never reach.
+    await im(daemon, command('m2', 'and the second half?'))
+    await vi.waitFor(() => expect(gated.host.prompt).toHaveBeenCalledTimes(2), WAIT)
+    expect(await im(daemon, cancel)).toEqual(consumed('linear:cancel-1'))
+    expect(gated.host.cancel).toHaveBeenCalledTimes(1)
+    gated.release()
+    await turnSettled()
+    await daemon.stop()
+  })
+
+  it('acks each other command from what it durably did: applied is admitted, a reply or refusal is consumed', async () => {
+    const { daemon, turnSettled } = await boot()
+    await im(daemon, delivery())
+    await turnSettled()
+    const verdict = async (id: string, text: string) => {
+      const ack = await im(daemon, command(id, text))
+      if (ack.routeAdmission === 'admitted') return 'applied'
+      return ack.routeAdmission === 'rejected' && ack.accepted === true && ack.recoverable === false ? 'consumed' : ack
+    }
+    expect(await verdict('status', '/status')).toBe('consumed')
+    expect(await verdict('stop', '!stop')).toBe('applied') // the mute latch
+    expect(await verdict('resume', '!resume')).toBe('applied') // clears it
+    expect(await verdict('resume-again', '!resume')).toBe('consumed') // nothing latched: a reply
+    expect(await verdict('cancel', '!cancel')).toBe('consumed') // nothing running
+    expect(await verdict('fast', '/fast on')).toBe('consumed') // refused by the Agent-level guard
+    expect(await verdict('new', '!new')).toBe('applied') // the cleared context
     await daemon.stop()
   })
 })

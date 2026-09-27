@@ -79,8 +79,13 @@ export interface CommandHost {
     acpSessionId?: string,
     opts?: { actor?: InteractionActor }
   ): Promise<void>
-  /** `!queue` admission through the unified per-sessionKey gate — it decides run-now vs enqueue. */
-  dispatchQueueCommand(agentId: string, msg: NormalizedMessage, integrationId: string): Promise<void>
+  /** `!queue` admission through the unified per-sessionKey gate — it decides run-now vs enqueue; `admission` makes the write required and reports it. */
+  dispatchQueueCommand(
+    agentId: string,
+    msg: NormalizedMessage,
+    integrationId: string,
+    admission?: QueueAdmission
+  ): Promise<void>
   replyConnFor(agentId: string, integrationId?: string): PlatformConnection | undefined
   /** Takes the session's OUTWARD id (session-concept.md §1.1), which {@link outwardSessionId} resolves. */
   sessionLink(sessionId: string, source?: string): string
@@ -111,7 +116,22 @@ export interface CommandHost {
   clearEnforcedLoopScope(scope: string): void
 }
 
-/** Everything `handleCommand`'s shared pre-dispatch resolves once, handed to the per-kind handler. */
+/** What a handled command did: a durable effect completed before returning, a reply or refusal with nothing durable to prove, or a `!queue` whose admission the caller awaits. */
+export type CommandEffect = 'applied' | 'consumed' | 'admitting'
+
+/** How a caller that acks from admission follows a `!queue` dispatch: the receipt that makes a redelivery a duplicate, and the admission it acks from. */
+export interface QueueAdmission {
+  receiptId?: (payload: NormalizedMessage) => string
+  onAdmission: (result: {
+    accepted: boolean
+    reason?: string
+    duplicate?: boolean
+    steered?: boolean
+  }) => void | Promise<void>
+  /** The dispatch promise, so a dispatch that ends before admission still settles the caller. */
+  onDispatched?: (turn: Promise<unknown>) => void
+}
+
 /** The human behind a chat command, in the same shape a Block Kit click reports. */
 function senderActor(msg: NormalizedMessage): InteractionActor {
   const name = msg.sender.name?.trim()
@@ -139,13 +159,15 @@ interface CommandContext {
   acpSessionId: string | undefined
   /** A turn currently owns this logical session key (gate-owned or queued), per §6.9 #390. */
   inflight: boolean
+  /** Set by a caller that acks `!queue` from its durable admission. */
+  queueAdmission?: QueueAdmission
 }
 
 /** One registry entry: the handler plus the shared guards dispatch applies before it. */
 interface CommandEntry<K extends AgentCommand['kind']> {
   /** Kinds that write runtime settings and so need the Agent-level chat-changes permission. */
   readonly runtimeChange?: boolean
-  readonly run: (command: Extract<AgentCommand, { kind: K }>, ctx: CommandContext) => Promise<boolean>
+  readonly run: (command: Extract<AgentCommand, { kind: K }>, ctx: CommandContext) => Promise<CommandEffect>
 }
 
 type CommandRegistry = { readonly [K in AgentCommand['kind']]: CommandEntry<K> }
@@ -500,14 +522,15 @@ export class CommandHandlers {
    * Handle an in-conversation control command. Resolves the target agent via the
    * same routing ladder as a normal message (so thread affinity and conversation
    * admission apply), then acts on that agent's session in this
-   * (channel, thread).
+   * (channel, thread). `false` when no admitted target took it; otherwise what it did.
    */
   async handleCommand(
     command: AgentCommand,
     msg: NormalizedMessage,
     explicitTarget?: { agentId: string; integrationId: string; via: RouteVia },
-    srcIntegrationIds?: readonly string[]
-  ): Promise<boolean> {
+    srcIntegrationIds?: readonly string[],
+    opts: { queueAdmission?: QueueAdmission } = {}
+  ): Promise<CommandEffect | false> {
     let target: { agentId: string; integrationId: string; via: RouteVia } | null | undefined = explicitTarget
     if (!target) {
       // Prefetched for the ONE thread key `routeRules` can ask about — its own message's.
@@ -607,17 +630,18 @@ export class CommandHandlers {
       typedKey,
       rec,
       acpSessionId: acpSessionId ?? undefined,
-      inflight
+      inflight,
+      ...(opts.queueAdmission ? { queueAdmission: opts.queueAdmission } : {})
     }
 
     const entry = this.registry[command.kind]
     // The Agent-level chat-changes guard, applied for every runtime-setting command before its handler runs.
     if (entry.runtimeChange && this.host.agents().get(target.agentId)?.allowRuntimeChangesInChat !== true) {
       reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
-      return true
+      return 'consumed'
     }
     // The entry is the one registered for this exact kind; the union-keyed index can't narrow that.
-    return await (entry.run as (c: AgentCommand, x: CommandContext) => Promise<boolean>)(command, ctx)
+    return await (entry.run as (c: AgentCommand, x: CommandContext) => Promise<CommandEffect>)(command, ctx)
   }
 
   /** Per-kind command handlers, plus the shared guards dispatch applies ahead of each. */
@@ -635,7 +659,7 @@ export class CommandHandlers {
   }
 
   /** `!resume` — reset the latched conversation loop guard and clear a standing thread mute. */
-  private async runResume(ctx: CommandContext): Promise<boolean> {
+  private async runResume(ctx: CommandContext): Promise<CommandEffect> {
     const { msg, key, thread, replyThread, reply } = ctx
     // Commands sent outside the session thread (notably bare Telegram commands)
     // may have resolved `thread` through latestSession above. Reset the scope the
@@ -659,7 +683,7 @@ export class CommandHandlers {
       })
     if (stillStopping) {
       reply('Loop protection is still stopping the previous turn. Try `!resume` again in a moment.')
-      return true
+      return 'consumed'
     }
     const wasOpen = await this.host.store().isLoopGuardOpen(scope)
     await this.host.store().resetLoopGuard(scope)
@@ -669,10 +693,10 @@ export class CommandHandlers {
     if (wasOpen || wasMuted) {
       this.host.log().info(`loop guard: explicitly reset ${scope} by ${msg.sender.id}`)
       reply('▶️ Resumed. Loop protection is reset; send a new message to continue.')
-    } else {
-      reply('Loop protection is not active in this conversation.')
+      return 'applied'
     }
-    return true
+    reply('Loop protection is not active in this conversation.')
+    return 'consumed'
   }
 
   /** `!stop` — interrupt any in-flight turn AND mute the thread until the agent is @mentioned again. */
@@ -685,7 +709,7 @@ export class CommandHandlers {
    * had; in `createNew` the thread is not going anywhere, so its session keeps its identity
    * and loses its context.
    */
-  private async runNew(ctx: CommandContext): Promise<boolean> {
+  private async runNew(ctx: CommandContext): Promise<CommandEffect> {
     const { target, msg, key, thread, typedKey, rec, inflight, reply } = ctx
     if (isAppendCoordinate(thread)) {
       // Rotating does not touch a running turn: it finishes on the old coordinate and posts
@@ -698,7 +722,7 @@ export class CommandHandlers {
       // Deliberately not "the next message": coordinates are resolved at ingress, so a turn
       // already running and anything queued behind it finish on the retired coordinate.
       reply('🆕 Started a new session. New messages from here on begin it.')
-      return true
+      return 'applied'
     }
     // BEFORE the in-flight check: a retargeted command would otherwise be told to `!cancel`
     // first, and `!cancel` retargets the same way — so following the instruction would
@@ -709,17 +733,17 @@ export class CommandHandlers {
     // working in the cleared one would never be told. Make them say it there.
     if (key !== typedKey) {
       reply('Run `!new` in the conversation you want to clear — it only clears the one it is sent in.')
-      return true
+      return 'consumed'
     }
     // Clearing nulls the acpSessionId the running turn is identified by, so it would pull
     // that turn's identity out from under it (§7.3).
     if (inflight) {
       reply('A turn is still running — `!cancel` it first, then `!new`.')
-      return true
+      return 'consumed'
     }
     if (!rec) {
       reply('Nothing to clear here yet — the next message starts a session.')
-      return true
+      return 'consumed'
     }
     // The cursor is "the moment this ran" IN THE PLATFORM'S OWN ID SPACE, derived from the
     // command message exactly as a turn derives its own. A wall-clock stamp is an id the
@@ -736,7 +760,7 @@ export class CommandHandlers {
       // The row went away, or a turn started in the window and minted a different runtime
       // session. Either way this must not report a clear that did not happen.
       reply('A turn started just now — `!cancel` it first, then `!new`.')
-      return true
+      return 'consumed'
     }
     // The pin above covers only the interleaving that CHANGED the runtime id. A turn that
     // started in the same window on an unchanged id has already read the row, and its own
@@ -745,14 +769,14 @@ export class CommandHandlers {
     // the session's own gate; §7.2 records that.)
     if (this.gateActiveFor(key)) {
       reply('A turn started while clearing — run `!new` again once it finishes.')
-      return true
+      return 'consumed'
     }
     this.logSessionAction('new', key, senderActor(msg))
     reply('🆕 Cleared. This thread continues with a fresh context.')
-    return true
+    return 'applied'
   }
 
-  private async runStop(ctx: CommandContext): Promise<boolean> {
+  private async runStop(ctx: CommandContext): Promise<CommandEffect> {
     const { target, key, thread, rec, acpSessionId, inflight, reply } = ctx
     // decisions.md §8.3: a stop never waits on Jev, so pending verdicts go first.
     const canceled = (await this.host.cancelDecisionVerdicts?.(target.agentId, ctx.msg, 'stop')) ?? 0
@@ -771,41 +795,42 @@ export class CommandHandlers {
     if (!inflight) {
       if (canceled > 0) reply(`🛑 Stopped.${rec ? ` ${muteNote}` : ''}`)
       else reply(rec ? `${mutes ? '🔇 ' : ''}Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
-      return true
+      // The mute latch and the cancelled verdicts are the durable effects; with neither, nothing happened.
+      return canceled > 0 || (mutes && rec !== undefined) ? 'applied' : 'consumed'
     }
     await this.host.interruptTurn(target.agentId, key, mutes ? 'stop' : 'cancel', acpSessionId ?? undefined, {
       actor: senderActor(ctx.msg)
     })
     reply(`🛑 Stopped. ${muteNote}`)
-    return true
+    return 'applied'
   }
 
   /** `!cancel` — interrupt the in-flight turn without muting the session. */
-  private async runCancel(ctx: CommandContext): Promise<boolean> {
+  private async runCancel(ctx: CommandContext): Promise<CommandEffect> {
     const { target, key, acpSessionId, inflight, reply } = ctx
     const canceled = (await this.host.cancelDecisionVerdicts?.(target.agentId, ctx.msg, 'cancel')) ?? 0
     // `!cancel` interrupts the in-flight turn but does NOT mute — the session stays
     // live so a follow-up message dispatches normally. No-op (with a note) when idle.
     if (!inflight) {
       reply(canceled > 0 ? '🛑 Cancelled.' : 'Nothing is running to cancel.')
-      return true
+      return canceled > 0 ? 'applied' : 'consumed'
     }
     await this.host.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined, {
       actor: senderActor(ctx.msg)
     })
     reply('🛑 Cancelled.')
-    return true
+    return 'applied'
   }
 
   /** `/status` — reply with the session's model / context / tokens on the platform's own surface. */
-  private async runStatus(ctx: CommandContext): Promise<boolean> {
+  private async runStatus(ctx: CommandContext): Promise<CommandEffect> {
     const { msg, target, conn, chrome, chromeCtx, key, rec, acpSessionId, reply } = ctx
     // `/status` — the on-demand replacement for Telegram's (removed) status bar:
     // reply with the session's model / context / tokens (the latest session in this
     // channel, per the resolution above). No-op note when there's none.
     if (!rec) {
       reply('No active session here yet — send me a message to start one.')
-      return true
+      return 'consumed'
     }
     const info = this.host.statusInfoFrom(target.agentId, key, acpSessionId ?? undefined)
     // The View link goes to the console, which knows this session by its outward id (§1.1).
@@ -817,29 +842,33 @@ export class CommandHandlers {
     // markdown + a real link button on Discord, plain text + a 🔗 line on Feishu,
     // the compact pipe-linked status line on Slack.
     if (conn) chrome.status(conn, msg, chromeCtx, await info, link)
-    return true
+    // A reply is presentation, not a durable effect: nothing here is promised or replayed.
+    return 'consumed'
   }
 
   /** `/fast on|off` — toggle the session's fast mode. */
-  private async runFast(command: Extract<AgentCommand, { kind: 'fast' }>, ctx: CommandContext): Promise<boolean> {
+  private async runFast(command: Extract<AgentCommand, { kind: 'fast' }>, ctx: CommandContext): Promise<CommandEffect> {
     const { key, rec, reply } = ctx
     // `/fast on|off` — toggle the session's fast mode (the control the status-bar
     // Fast button used to offer). Records the sticky override + applies live if warm.
     if (!rec) {
       reply('No active session here to configure.')
-      return true
+      return 'consumed'
     }
     if (command.enable === null) {
       reply('Usage: `/fast on` or `/fast off`.')
-      return true
+      return 'consumed'
     }
-    await this.setFastByKey(key, command.enable)
+    const applied = await this.setFastByKey(key, command.enable)
     reply(command.enable ? '⚡ Fast mode on.' : '🐢 Fast mode off.')
-    return true
+    return applied ? 'applied' : 'consumed'
   }
 
   /** `/models` `/effort` `/permission` — list the selectable values or apply the chosen one. */
-  private async runSelect(command: Extract<AgentCommand, { kind: SelectKind }>, ctx: CommandContext): Promise<boolean> {
+  private async runSelect(
+    command: Extract<AgentCommand, { kind: SelectKind }>,
+    ctx: CommandContext
+  ): Promise<CommandEffect> {
     const { msg, target, conn, chrome, chromeCtx, key, rec, acpSessionId, reply } = ctx
     // `/models`, `/effort`, `/permission` — on-demand session controls.
     // Telegram status-bar dropdowns. A bare command renders a tappable card on Telegram
@@ -847,7 +876,7 @@ export class CommandHandlers {
     // the sticky per-session override + applies it live when the ACP session is warm.
     if (!rec) {
       reply('No active session here to configure.')
-      return true
+      return 'consumed'
     }
     // Platforms with tappable cards render one (§7.4), replied under the command;
     // false falls back to the numbered text list (Slack, or a Discord select over
@@ -858,7 +887,7 @@ export class CommandHandlers {
         ? (kind: SelectKind, current: string | undefined, options: string[]) =>
             selectCard(conn, msg, chromeCtx, { kind, current, options, header: selectCardText(kind, current) })
         : undefined
-    await this.handleSelectCommand(
+    const applied = await this.handleSelectCommand(
       command.kind,
       command.value,
       target.agentId,
@@ -867,11 +896,14 @@ export class CommandHandlers {
       reply,
       renderCard
     )
-    return true
+    return applied ? 'applied' : 'consumed'
   }
 
   /** `!queue <text>` — admission through the unified per-sessionKey gate, with the queue ACK wording. */
-  private async runQueue(command: Extract<AgentCommand, { kind: 'queue' }>, ctx: CommandContext): Promise<boolean> {
+  private async runQueue(
+    command: Extract<AgentCommand, { kind: 'queue' }>,
+    ctx: CommandContext
+  ): Promise<CommandEffect> {
     const { msg, target, key, thread, inflight, reply } = ctx
     // queue — now just admission through the UNIFIED per-sessionKey gate (§6.9 #390): the
     // gate itself decides run-now vs enqueue-behind-the-turn; `!queue` only differs in the
@@ -879,7 +911,7 @@ export class CommandHandlers {
     // gate (dispatch → QueueFullError), so there is no second FIFO here anymore.
     if (!command.text) {
       reply('Usage: `!queue <message>` — runs when the current turn finishes.')
-      return true
+      return 'consumed'
     }
     // Dispatch/queue into the resolved session (the fallback may have retargeted it from the
     // bare command thread to the channel's latest session). A synthetic coordinate rides
@@ -895,12 +927,14 @@ export class CommandHandlers {
     if (inflight && (this.host.serialQueue().get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION) {
       this.host.log().warn(`command: queue → agent "${target.agentId}" session ${key} full, rejected`)
       reply(`Queue is full (${MAX_QUEUED_PER_SESSION} pending) — wait for the current turn to finish.`)
-      return true
+      return 'consumed'
     }
-    void this.host.dispatchQueueCommand(target.agentId, payload, target.integrationId).catch((err) => {
-      if (err instanceof QueueFullError) return // already reported above; race-safe no-op
-      this.host.log().error(`queued dispatch failed for agent "${target.agentId}": ${(err as Error).stack ?? err}`)
-    })
+    void this.host
+      .dispatchQueueCommand(target.agentId, payload, target.integrationId, ctx.queueAdmission)
+      .catch((err) => {
+        if (err instanceof QueueFullError) return // already reported above; race-safe no-op
+        this.host.log().error(`queued dispatch failed for agent "${target.agentId}": ${(err as Error).stack ?? err}`)
+      })
     if (!inflight) {
       this.host.log().info(`command: queue → agent "${target.agentId}" idle, dispatching now`)
       reply(`▶️ Running now — the session was idle.`)
@@ -909,7 +943,8 @@ export class CommandHandlers {
       this.host.log().info(`command: queue → agent "${target.agentId}" session ${key} (depth ${depth})`)
       reply(`📥 Queued (#${depth}) — will run when the current turn finishes.`)
     }
-    return true
+    // The queued message's admission is what a caller acking from durability waits for.
+    return 'admitting'
   }
 
   /** Sticky-override setters handed to the pure select projections. */
@@ -925,7 +960,7 @@ export class CommandHandlers {
    * (Telegram), else a numbered text list. An argument applies a choice, matched by exact
    * id, unique case-insensitive substring, or 1-based list index. Options come from the
    * live host's config selectors (statusInfoFrom); when the host is cold a given value is
-   * accepted optimistically and takes effect on the next turn.
+   * accepted optimistically and takes effect on the next turn. True iff a value was applied.
    */
   async handleSelectCommand(
     kind: SelectKind,
@@ -935,7 +970,7 @@ export class CommandHandlers {
     acpSessionId: string | undefined,
     reply: (text: string) => void,
     renderCard?: (kind: SelectKind, current: string | undefined, options: string[]) => boolean
-  ): Promise<void> {
+  ): Promise<boolean> {
     const label = selectLabel(kind)
     const info = this.host.statusInfoFrom(agentId, key, acpSessionId)
     const { current, options } = selectOptions(kind, await info)
@@ -950,13 +985,13 @@ export class CommandHandlers {
             ? `${label}: ${disp(current)} (no other options offered${kind === 'effort' ? ' — the current model may not support effort' : ''}).`
             : `No ${label.toLowerCase()} options available yet — send me a message first, then try /${cmd} again.`
         )
-        return
+        return false
       }
       // A tappable card (Telegram / Discord) when available; false ⇒ fall back to text.
-      if (renderCard?.(kind, current, options)) return
+      if (renderCard?.(kind, current, options)) return false
       const lines = options.map((o, i) => `${i + 1}. ${disp(o)}${o === current ? '  ✓ (current)' : ''}`)
       reply(`${label} — reply \`/${cmd} <name or number>\`:\n${lines.join('\n')}`)
-      return
+      return false
     }
 
     // Resolve the chosen value against the offered options (when we have them). Match
@@ -979,17 +1014,18 @@ export class CommandHandlers {
       reply(
         `Unknown ${label.toLowerCase()} "${value.trim()}".${options.length ? ` Options: ${options.map(disp).join(', ')}` : ''}`
       )
-      return
+      return false
     }
     if (!(await applySelect(kind, key, resolved, this.selectSetters))) {
       reply('Runtime settings can only be changed by an Agent editor from the Agent page.')
-      return
+      return false
     }
     reply(
       options.length === 0
         ? `${label} set to ${disp(resolved)} — applies on your next message.`
         : `✅ ${label} set to ${disp(resolved)}.`
     )
+    return true
   }
 
   /**

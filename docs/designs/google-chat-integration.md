@@ -115,15 +115,41 @@ See Google's [per-app project requirement](https://developers.google.com/workspa
 
 Two credential holders exist, mirroring Slack. The deployment-owned app is
 configured once in the Setup Server, which keeps its project ID and project number
-in the typed deployment document and its key as a write-only deployment secret,
-and is bound to the preset `agentconnect` agent. Per-agent apps are configured
-from an agent's integrations page in the Console. Both produce the same bot row,
-uniqueness key, and relay assignment; only the surface that collects the
-credential differs. The Setup Server runs the validation below before it stores
-anything and shows the HTTPS callback and **Project Number** audience to copy. A
-`chat.bot` credential does not reveal its project number, so the Setup Server
-checks only its shape; a wrong number fails callback verification, which the
-end-to-end test exposes.
+in the typed deployment document and its key as a write-only deployment secret.
+The Control Plane receives them as `GOOGLE_CHAT_PLATFORM_PROJECT_ID`,
+`GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER`, and
+`GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY`. Google has no install consent to
+round-trip, so `POST /integrations/googlechat/platform-install` installs that app
+directly on the preset `agentconnect` agent, or on a named one: it validates the
+stored key again, creates a prebuilt HTTP bot, and copies the key into that bot's
+encrypted secret row. A rotated deployment key reaches the installed bot by
+running the install again for the agent that holds it, which re-stamps the same
+bot; the app never moves to another agent or organization that way. Per-agent
+apps are configured from an agent's integrations page in the Console through
+`POST /integrations` with a `googlechat` credential block on the HTTP transport.
+Both produce the same bot row, uniqueness key, and relay assignment; only the
+surface that collects the credential differs.
+
+The key check, the project-number resolution, and the `chat.bot` probe live in
+the Control Plane's Google Chat module, which the Setup Server imports. The Setup
+Server runs the validation below before it stores anything and shows the HTTPS
+callback and **Project Number** audience to copy.
+
+The token exchange authenticates only the key's `client_email` and private key;
+the JSON's `project_id` is an editable field. The owning project is therefore
+taken from the authenticated email: only a user-managed service account created
+in the Chat app's project is accepted, whose email has the exact form
+`name@project-id.iam.gserviceaccount.com`. Default compute, App Engine, and any
+other account forms are refused. The JSON's `project_id` and the entered project
+must both equal that owning project.
+
+A `chat.bot` token cannot read its project, so validation mints a second token
+for the same service account with the `cloud-platform.read-only` scope and reads
+the owning project from Cloud Resource Manager (`GET /v1/projects/{projectId}`).
+The number it returns is the app identity; an entered number is optional and
+must match it. The service account therefore needs the Browser role
+(`resourcemanager.projects.get`) on its project, and that project needs the Cloud
+Resource Manager API enabled.
 
 In this version the deployment-owned app serves one agent. Google requires one
 Cloud project per Chat app and this design keeps one app per agent, so a hosted
@@ -146,9 +172,11 @@ The wizard should present these concrete steps:
 2. Complete Google's Cloud project, API, and configuration prerequisites.
 3. Copy the generated app information, HTTPS callback, and audience setting into
    Google Cloud Console; configure who can find and use the app.
-4. Create the service account, provide its credential through the secret form,
-   and validate it. Show an actionable setup error if organization policy prevents
-   creating a key; do not imply that ordinary Google sign-in supplies an app key.
+4. Create the service account in the Chat app's own project, grant it the Browser
+   role on that project, and enable the Cloud Resource Manager API; then provide
+   its credential through the secret form and validate it. Show an actionable
+   setup error if organization policy prevents creating a key; do not imply that
+   ordinary Google sign-in supplies an app key.
 5. Add the configured app in Google Chat, then send a DM or Space mention to test
    the complete path.
 
@@ -168,13 +196,13 @@ distribution requirements. See [testing visibility](https://developers.google.co
 The Console wizard, or the Setup Server for the deployment-owned app, collects
 credentials and shows the derived installation metadata:
 
-| Value                           | Storage and meaning                                                                                           |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Google Cloud project ID         | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                         |
-| Verified project number         | Canonical numeric app identity and expected token audience; resolve and verify against the declared project.  |
-| HTTPS callback URL              | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings. |
-| Service-account key JSON        | Write-only credential in the encrypted bot secret store, or a deployment secret for the deployment app.       |
-| Verified Chat app user identity | Provider identity metadata for mention matching and bot attribution; obtain from Google, not a display name.  |
+| Value                           | Storage and meaning                                                                                                             |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Google Cloud project ID         | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                                           |
+| Verified project number         | Canonical app identity and token audience, resolved through Cloud Resource Manager with the key; must match any entered number. |
+| HTTPS callback URL              | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings.                   |
+| Service-account key JSON        | Write-only credential in the encrypted bot secret store; the deployment app's deployment secret is copied there at install.     |
+| Verified Chat app user identity | Provider identity metadata for mention matching and bot attribution; obtain from Google, not a display name.                    |
 
 Keep the app and service account in one project for the first version. Configure
 Chat API interaction events with an HTTPS endpoint and **Project Number** audience,
@@ -201,7 +229,8 @@ Use the existing external app identity and uniqueness contract to prevent bindin
 the same app to multiple agents: the bot row's `(platform, externalAppId,
 externalTenantId)` unique key, with the verified project number as
 `externalAppId` and the tenantless sentinel `-` as `externalTenantId`, because a
-null tenant does not participate in that constraint. Preserve the installation's
+null tenant does not participate in that constraint; the project ID rides the
+row's public `platformConfig` metadata. Preserve the installation's
 transport scope across key rotation; neither a private-key hash nor a callback
 attempt ID defines a person's or session's identity. Changing the app project
 requires a new installation. The app's Google `users/...` identity must be
@@ -209,13 +238,16 @@ verified in the live probe before mention matching is finalized; do not
 synthesize it from a project ID or assume the service-account email is the bot
 user.
 
-Validation checks credential structure, project identity, and a bounded Chat API
-read with app authentication. It must not send a test message from the Control
-Plane or the Setup Server. A saved configuration is not proof of working ingress.
-Combine relay assignment and daemon readiness, distinguish authentication and
-connectivity failures, and provide an explicit DM/mention test to verify the
-complete round trip. A Google credential passing validation does not prove the
-operator copied the endpoint and audience settings correctly.
+Validation checks credential structure, resolves the project number with the
+key, and makes a bounded Chat API read with app authentication. It must not send
+a test message from the Control Plane or the Setup Server. A saved configuration
+is not proof of working ingress. Combine relay assignment and daemon readiness,
+distinguish authentication and connectivity failures, and provide an explicit
+DM/mention test to verify the complete round trip. Two resolution failures have
+their own answers: a disabled Cloud Resource Manager API asks the operator to
+enable it in the key's project, and a denied project read asks for the Browser
+role on the service account. A Google credential passing validation does not
+prove the operator copied the endpoint and audience settings correctly.
 
 ### Operating cost
 
@@ -289,18 +321,33 @@ interaction response after admission and send all visible output asynchronously.
 Do not hold the request open for an agent turn. See
 [interaction handling and retries](https://developers.google.com/workspace/chat/receive-respond-interactions).
 
-The current `RelayIngressHost.forward` result means the relay handled the message;
-it explicitly does not prove daemon admission. The daemon's `rd/ack` for an `im`
-delivery does refuse entry-path failures such as no agent, unauthorized, draining,
-a wrong duty holder, or a failed durable write, but once dispatch begins it
-reports every deliberate gate refusal as accepted. The routed path in
-[shared-bot relay](shared-bot-relay.md) §7.2 already carries the
-strict shape: `rd/ack` gains `routeAdmission` and `recoverable`, and the relay's
-route forwarder maps them onto the `admitted` / `retry` / `rejected` dispositions
-and reasons of `rd/route/ack`. Extend the `im` ack with those same fields and
-expose that disposition through the host seam; do not define a Google-specific
-vocabulary. A Google module must not convert the old `accepted` result into an
-HTTP success by default.
+`RelayIngressHost.forward` answers `accepted` when the relay handled the
+message; it does not prove daemon admission, and the daemon's `rd/ack` keeps
+that shape: `accepted`/`reason` refuse only entry-path failures (no agent,
+unauthorized, a failed durable write) and report every deliberate gate as
+accepted. A daemon advertising `im-admission-v1` (`RD_IM_ADMISSION_V1`) also
+fills `routeAdmission` and `recoverable` — the fields the routed path in
+[shared-bot relay](shared-bot-relay.md) §7.2 already carried — beside that
+unchanged pair on every `im` ack that goes through a platform strategy with an
+admission member (`requireDurable`, `receiptId`, or `onAdmitted`): `admitted`
+for a durable admission, a duplicate its receipt settles included; `rejected`
+with `recoverable: true` for a transient refusal (`durability`, `draining`,
+`capacity`, `not_ready`, `not_host`, `stale`); `rejected` with
+`recoverable: false` for a deliberate gate (`off`, `muted`, `no_agent`,
+`unauthorized`, an agent-authored copy, a delivery the platform strategy
+settled itself). A gate named in the `rd/route/ack` vocabulary rides in
+`reason`; one without a name there (paused, loop protection) reads as
+`rejected`. The shared best-effort path, which a platform without such a
+strategy takes, acks on dispatch before durability and carries no verdict; the
+host reads that as `rejected`/`unsupported`, so a platform that answers from
+admission supplies a relay-ingress strategy with at least `receiptId` (Google
+Chat will). The host exposes the verdict as
+`RelayIngressHost.forwardStrict(botId, message, sidecar?)`: the same
+arbitration as `forward`, returning a `RelayAdmission` — the `disposition` and
+`reason` of `rd/route/ack` — through the mapping the route forwarder uses
+(`admissionFrom`). Over a fan-out one admission settles the delivery, else one
+retry does, else the first rejection. The Google module calls `forwardStrict`
+and never converts the old `accepted` result into an HTTP success.
 
 | Disposition           | Relay verdict                                                                                                | HTTP behavior                                                                         |
 | --------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
@@ -310,11 +357,11 @@ HTTP success by default.
 | Retryable or unknown  | `retry` (`durability`, `draining`, `capacity`, `not_ready`, `offline`) or an admission timeout               | 503 so Google may redeliver.                                                          |
 | Invalid request       | never forwarded                                                                                              | 401 for failed authentication; 400 for malformed payloads; never route either.        |
 
-The relay's inbound seam returns `HandledDelivery`, which today carries only a
-synchronous response body: the Slack route answers 200 for every handled
-delivery and 401 only when no assigned bot owns it. Carry the admission
-disposition on `HandledDelivery` as a platform-neutral member so the module's
-own route can answer 503.
+The relay's inbound seam returns `HandledDelivery`; its optional `admission`
+member carries the `RelayAdmission` unchanged from the plugin's `handle` to the
+platform's own route in `installRoutes`, which answers 503 for `retry` and 200
+otherwise. The Slack route reads only `syncResponse` and keeps answering 200 for
+every handled delivery and 401 when no assigned bot owns it.
 
 Use a bounded admission deadline inside the provider and relay request budgets.
 An HTTP timeout after a daemon commit is an unknown outcome, not a reason to
@@ -329,12 +376,16 @@ optional `relayIngress` member of the daemon platform contract
 registry, with Linear as its first implementer; Google Chat implements the same
 member and adds one registry line, rather than adding a `googlechat` entry to
 core. Preserve routing and
-authorization while distinguishing transient draining/placement failures from
-intentional gates. The current `im` ACK mapping is insufficient for that
-distinction. Gate the ingress on the existing feature advertisement, as the relay
-already does with `daemon.supports(...)` for decision routing: a host that does
-not advertise the strict admission contract is refused, never served with the
-old ack semantics. Changes to any shared wire fields must update and validate
+authorization; the `im` ack above distinguishes transient draining/placement
+failures from intentional gates. Any admission member on the strategy
+(`requireDurable`, `receiptId`, `onAdmitted`) makes the ack wait for the durable
+admission and makes that admission required, so a failed write is the
+`durability` refusal and `admitted` is never reported ahead of the row and its
+receipt. `forwardStrict` gates each target on
+`daemon.supports(RD_IM_ADMISSION_V1)`, as the relay gates routed forwards on
+decision routing: a daemon that does not advertise it is answered
+`rejected`/`unsupported` and never sent to, so the old ack semantics are never
+read as admission. Changes to any shared wire fields must update and validate
 both consumers together.
 
 Scope receipts to the installed app and stable Google message identity.
@@ -342,13 +393,23 @@ Concurrent copies elect one admission in the store transaction; receipts outlive
 turn completion, steering, and inbox removal. Check them before an in-memory dedup
 fast path can settle a delivery: the relay host's `dedupSeen` marks an identity
 on first sight and answers a repeat with 200 before any admission result exists,
-which suits Slack's bounded-loss path and not this one. The Google module marks
-the identity only after an accepted or ignored disposition, so a retry of a
-refused or timed-out attempt is forwarded again. A failed durable write remains
-retryable.
+which suits Slack's bounded-loss path and not this one. The Google module uses
+the host's split pair instead — `dedupPeek(identity)` checks without marking,
+`dedupMark(identity)` marks after an `admitted` or `rejected` disposition — so
+a retry of a `retry` or timed-out attempt is forwarded again. A failed durable
+write remains retryable.
 
 Commands require a completed, replay-safe disposition too. Bind cancellation to
-its original operation/turn so a repeated callback cannot cancel later work.
+its original operation/turn so a repeated callback cannot cancel later work. On
+the daemon, `!queue` acks only after its queued message's durable admission,
+under the strategy's `receiptId` when one exists, so a redelivery is a
+duplicate rather than a second queued turn; every other command is minted a
+born-completed receipt under that same `receiptId` before it runs, so a
+redelivered `!cancel` finds it and cancels nothing, and its ack is `admitted`
+when a durable effect completed (a mute, a cleared context, an interrupted turn)
+and `rejected`/`recoverable: false` when it only replied or refused. A platform
+without a `receiptId` keeps the bounded replay window of the relay dedup and the
+daemon's ack cache.
 Lifecycle updates are idempotent observations: use event kind, Space, actor, and
 event time when no message resource exists, and confirm conflicting membership
 hints through provider reads. Do not collapse all add/remove events for a Space.
@@ -445,12 +506,12 @@ for private DM turns as part of the acceptance checks.
 
 | Area                    | Required contribution                                                                                                                                                                             |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protocol and message    | The platform id, conservative manifest values, and pure Google event normalization; `KNOWN_PLATFORMS` registration lands with the host modules.                                                   |
+| Protocol and message    | The platform id and its `KNOWN_PLATFORMS` entry, conservative manifest values, the daemon config payload schema, and pure Google event normalization.                                             |
 | Relay platform module   | HTTPS route, project-audience verification, demux, normalization, membership reports, and strict admission responses.                                                                             |
 | Daemon platform module  | Config schema, Chat REST connection/read port, its `relayIngress` contract member, renderer, turn output, and lifecycle registration.                                                             |
 | Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals. |
 | Daemon output           | Persist stable create intent/results and serialize Google sends through the platform output surface.                                                                                              |
-| Control Plane provider  | Credential validation/storage, app identity, uniqueness, secret rotation, daemon spec, and relay assignment projection.                                                                           |
+| Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment-owned app's install, secret rotation, daemon spec, and relay assignment projection.         |
 | Console platform module | Chat picker, setup wizard, connection diagnostics, conversation semantics, and explicit scope limitations.                                                                                        |
 
 Start with observed membership discovery and no bot-sender routing or multi-agent
@@ -461,12 +522,12 @@ a demonstrated missing contract member, not add Google-specific switches.
 The current database stores platform IDs as strings and already provides platform
 configuration and encrypted bot secrets. This design requires no new Control Plane
 database table or Google credential columns. Known-platform writers, capability
-reporting, API schemas, and registry consistency checks still need explicit
-registration. `KNOWN_PLATFORMS` joins that registration rather than the protocol
-step: the Control Plane's session filter and its MCP tool must accept every listed
-id, and a manifest row without a wire-vocabulary entry already serves Linear. Use
-the established four-host platform architecture. No feature flag, separate relay
-service, public adapter protocol, or broad refactor is required.
+reporting, API schemas, and registry consistency checks register `googlechat`
+explicitly. `KNOWN_PLATFORMS` joined with the Control Plane provider rather than
+the protocol step, because the Control Plane's session filter and its MCP tool
+must accept every listed id. Use the established four-host platform architecture.
+No feature flag, separate relay service, public adapter protocol, or broad
+refactor is required.
 
 ## 8. Pub/Sub alternative and cost
 
@@ -497,9 +558,11 @@ Before implementing the full module, run a small live probe with an operator-own
 test app. Confirm canonical project/credential binding, authoritative app-user
 identity, signed HTTPS callbacks, DM and Space mention payloads, thread coordinates,
 and app-authenticated create/patch with Markdown and stable IDs. Record anonymized
-fixtures. Specifically test whether an unmentioned reply arrives, but keep it
-outside the supported contract unless a
-follow-up design deliberately expands event coverage.
+fixtures. The project/credential binding is verified: a read-only token for the
+Chat app's service account reads the project's number from Cloud Resource Manager,
+while the `chat.bot` token is refused that read for insufficient scopes.
+Specifically test whether an unmentioned reply arrives, but keep it outside the
+supported contract unless a follow-up design deliberately expands event coverage.
 
 The implementation must then demonstrate:
 

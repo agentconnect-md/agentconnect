@@ -18,10 +18,10 @@ import { MarkSlot } from '@/components/marks'
 import { fetchAgentModelEvaluations, type CodeHostRoutingKey } from '@/lib/api'
 import { useDecisionsPrototype, type DecisionGateUsage } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
-import { answerText, latencyText } from '@/lib/decisions/evaluations'
+import { answerText } from '@/lib/decisions/evaluations'
 import { codeHostRoutingEvaluations } from '@/lib/decisions/evaluation-source'
 import { ruleNumbers } from '@/lib/decisions/routing-draft'
-import { formatEvaluationTime } from './EvaluationParts'
+import { EvaluationRow } from './EvaluationParts'
 import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
 import { ModelSelectionEvaluationsDrawer } from './ModelSelectionEvaluations'
 import { DecisionRoutingEvaluationsDrawer } from './routing/DecisionRoutingEvaluationsDrawer'
@@ -402,10 +402,23 @@ export function DecisionRecentEvaluations({
                         key={`${row.place}:${row.channel ?? ''}:${row.seq}`}
                         className="border-b border-(--border-subtle) last:border-b-0"
                       >
-                        <button
-                          type="button"
+                        <EvaluationRow
                           data-at={row.at}
-                          className="flex w-full flex-col gap-[3px] border-0 bg-transparent px-4 py-[10px] text-left hover:bg-(--surface-hover)"
+                          title={row.title}
+                          expired={row.detailsExpired}
+                          answer={answer}
+                          outcome={outcomeText(row, place.kind)}
+                          meta={
+                            <>
+                              {markOf(place, 12)}
+                              <span className="truncate">
+                                {[place.label, row.channelName].filter(Boolean).join(' · ')}
+                                {row.target ? ` → ${row.target}` : ''}
+                              </span>
+                            </>
+                          }
+                          at={row.at}
+                          latencyMs={row.latencyMs}
                           onClick={() =>
                             setOpened({
                               key: row.place,
@@ -413,41 +426,7 @@ export function DecisionRecentEvaluations({
                               ...(row.channel ? { channel: row.channel } : {})
                             })
                           }
-                        >
-                          {/* Each line keeps its right side whole and wraps it below when the card is too narrow. */}
-                          <span className="flex w-full flex-wrap items-center justify-between gap-x-4">
-                            <span
-                              className={`min-w-0 flex-[1_1_140px] truncate text-[13px] leading-normal ${
-                                row.title ? 'text-(--text-primary)' : 'text-(--text-tertiary)'
-                              }`}
-                            >
-                              {row.title ?? (row.detailsExpired ? t('evaluations.sheet.detailsExpired') : '—')}
-                            </span>
-                            {answer ? (
-                              <span className="mono flex-none text-[12.5px] text-(--text-primary)">{answer}</span>
-                            ) : (
-                              <span className="badge flex-none bg-(--surface-active) text-(--text-secondary)">
-                                {outcomeText(row, place.kind)}
-                              </span>
-                            )}
-                          </span>
-                          <span className="flex w-full flex-wrap items-center justify-between gap-x-4 font-mono text-[11.5px] leading-normal text-(--text-tertiary)">
-                            <span className="flex min-w-0 flex-[1_1_140px] items-center gap-[6px]">
-                              <span className="flex-none">{formatEvaluationTime(row.at, locale)}</span>
-                              <span aria-hidden>·</span>
-                              {markOf(place, 12)}
-                              <span className="truncate">
-                                {[place.label, row.channelName].filter(Boolean).join(' · ')}
-                                {row.target ? ` → ${row.target}` : ''}
-                              </span>
-                            </span>
-                            <span className="flex-none">
-                              {[answer ? outcomeText(row, place.kind) : null, latencyText(row.latencyMs)]
-                                .filter(Boolean)
-                                .join(' · ')}
-                            </span>
-                          </span>
-                        </button>
+                        />
                       </li>
                     )
                   })}

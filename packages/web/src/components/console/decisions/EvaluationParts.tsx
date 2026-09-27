@@ -4,14 +4,90 @@
 
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import type { DecisionEvaluationEntry } from '@agentconnect.md/protocol/decision'
+import { latencyText } from '@/lib/decisions/evaluations'
 
 export function formatEvaluationTime(at: string, locale: string): string {
   const date = new Date(at)
   if (Number.isNaN(date.getTime())) return at
   return date.toLocaleString(locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+/** One Recent evaluations row as every list shows it: what was judged and its answer, then when, where, and how it ended. */
+export function EvaluationRow({
+  title,
+  expired,
+  answer,
+  outcome,
+  badge,
+  meta,
+  at,
+  latencyMs,
+  padX = 'px-4',
+  onClick,
+  ...data
+}: {
+  title: string | null
+  expired: boolean
+  answer: string | null
+  outcome: string
+  /** The outcome as a badge, in the answer's place when the row kept no answer; a neutral badge by default. */
+  badge?: ReactNode
+  /** Where the evaluation ran, after its time on the second line. */
+  meta: ReactNode
+  at: string
+  latencyMs: number | null
+  padX?: string
+  onClick: () => void
+} & { [attribute: `data-${string}`]: string | number }) {
+  const t = useTranslations('Decisions')
+  const locale = useLocale()
+  return (
+    <button
+      type="button"
+      {...data}
+      className={`flex w-full cursor-pointer flex-col gap-[3px] border-0 bg-transparent ${padX} py-[10px] text-left hover:bg-(--surface-hover)`}
+      onClick={onClick}
+    >
+      {/* Each line keeps its right side whole and wraps it below when the list is too narrow. */}
+      <span className="flex w-full flex-wrap items-center justify-between gap-x-4">
+        <span
+          className={`min-w-0 flex-[1_1_140px] truncate text-[13px] leading-normal ${
+            title ? 'text-(--text-primary)' : 'text-(--text-tertiary)'
+          }`}
+        >
+          {title ?? (expired ? t('evaluations.sheet.detailsExpired') : '—')}
+        </span>
+        {answer ? (
+          <span className="mono flex-none text-[12.5px] text-(--text-primary)">{answer}</span>
+        ) : (
+          (badge ?? <span className="badge flex-none bg-(--surface-active) text-(--text-secondary)">{outcome}</span>)
+        )}
+      </span>
+      <span className="flex w-full flex-wrap items-center justify-between gap-x-4 font-mono text-[11.5px] leading-normal text-(--text-tertiary)">
+        <span className="flex min-w-0 flex-[1_1_140px] items-center gap-[6px]">
+          <span className="flex-none">{formatEvaluationTime(at, locale)}</span>
+          <span aria-hidden>·</span>
+          {meta}
+        </span>
+        <span className="flex-none">
+          {[answer ? outcome : null, latencyText(latencyMs)].filter(Boolean).join(' · ')}
+        </span>
+      </span>
+    </button>
+  )
+}
+
+/** A detail's heading: the evaluation's title, above its facts. */
+export function DetailTitle({ title }: { title: string | null | undefined }) {
+  if (!title) return null
+  return (
+    <h3 className="m-0 font-sans text-[14px] font-semibold leading-[1.45] break-words text-(--text-primary)">
+      {title}
+    </h3>
+  )
 }
 
 /** The right-side drawer both lists open in; Escape steps back from a detail before it closes. */

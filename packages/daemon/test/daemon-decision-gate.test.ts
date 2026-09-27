@@ -380,11 +380,23 @@ describe('By decision gate (daemon)', () => {
       decisionId: DECISION,
       payload
     }
-    expect(await (daemon as any).handleRelayIm(frame)).toEqual({ msgId: payload.msgId, accepted: true })
-    expect(await (daemon as any).handleRelayIm(frame)).toEqual({ msgId: payload.msgId, accepted: true })
+    expect(await (daemon as any).handleRelayIm(frame)).toEqual({
+      msgId: payload.msgId,
+      accepted: true,
+      routeAdmission: 'admitted'
+    })
+    expect(await (daemon as any).handleRelayIm(frame)).toEqual({
+      msgId: payload.msgId,
+      accepted: true,
+      routeAdmission: 'admitted'
+    })
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
     expect(evaluate).toHaveBeenCalledTimes(1)
-    expect(await (daemon as any).handleRelayIm(frame)).toEqual({ msgId: payload.msgId, accepted: true })
+    expect(await (daemon as any).handleRelayIm(frame)).toEqual({
+      msgId: payload.msgId,
+      accepted: true,
+      routeAdmission: 'admitted'
+    })
     await g.idle()
     expect(evaluate).toHaveBeenCalledTimes(1)
     expect(await admissions(store, channel)).toEqual([{ text: 'relayed help', agentId: 'bot-a' }])
@@ -418,7 +430,13 @@ describe('By decision gate (daemon)', () => {
         decisionId: DECISION,
         payload
       })
-    ).toEqual({ msgId: payload.msgId, accepted: false, reason: 'durability' })
+    ).toEqual({
+      msgId: payload.msgId,
+      accepted: false,
+      reason: 'durability',
+      routeAdmission: 'rejected',
+      recoverable: true
+    })
     await daemon.stop()
   })
 })

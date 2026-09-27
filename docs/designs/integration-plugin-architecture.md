@@ -526,9 +526,12 @@ relay `im` path (arbitration echo, conversation gating, control commands, the
 itself (`settled`) or refuse it as unrecorded (`refused`); `onAdmitted?` runs
 once inside dispatch's durable admission fence; `requireDurable?` and
 `receiptId?` bind the delivery to a permanent receipt minted with its admission
-row. A platform without the member takes the shared path unchanged. Linear is
-the first implementer (`platforms/linear/relay-ingress.ts`, reaching the daemon
-through a narrow host port); Google Chat is the second.
+row. On the relay path a control command is minted a receipt under `receiptId?`
+before it runs, and `!queue` dispatches under it, so a redelivered command
+re-runs nothing and cancels no later work. A platform without the member takes
+the shared path unchanged. Linear is the first implementer
+(`platforms/linear/relay-ingress.ts`, reaching the daemon through a narrow host
+port); Google Chat is the second.
 
 ### 7.5 The connection registry
 
@@ -592,7 +595,10 @@ interface RelayPlatformIngressPlugin<TIngest, TVerified> {
   // misbehaving plugin cannot pin the HTTP worker. Events are ACK'd inside
   // that window and handled asynchronously — the plugin pushes through the
   // host rather than returning work the route would have to wait for.
-  handle(ingest, verified, host): Promise<{ syncResponse?: unknown }>
+  // `admission` rides through `handleInbound` untouched, so a platform whose
+  // HTTP answer depends on admission can answer 503 for `retry` from its route.
+  handle(ingest, verified, host):
+    Promise<{ syncResponse?: unknown; admission?: RelayAdmission }>
 }
 
 interface RelayBotIngress {
@@ -609,6 +615,15 @@ interface RelayHostServices {
   // NORMALIZED messages, not pre-addressed deliveries: arbitration and the
   // routing ladder stay in core (§12), so a plugin never resolves a target.
   forward(botId, WireNormalizedMessage)
+  // The same ladder returning the daemon's strict `rd/ack` verdict as an
+  // `rd/route/ack` disposition, for a platform whose HTTP answer depends on
+  // admission. Gated per target on `im-admission-v1` and fails closed: an
+  // older daemon is answered `rejected`/`unsupported`, never sent to, and so
+  // is an ack with no verdict — the daemon's shared path, taken by a platform
+  // with no relay-ingress strategy, acks on dispatch before durability. A
+  // platform that answers from admission therefore supplies a strategy with
+  // at least `receiptId`.
+  forwardStrict(botId, WireNormalizedMessage): Promise<RelayAdmission>
   // The one call that carries a route — and it must not re-resolve one.
   forwardAction(msg, route): Promise<AckResponse>
   // Fenced with the revision the OBSERVING ingest was built from, never the
@@ -650,7 +665,10 @@ Relay core keeps: bot arbitration, the 3-leg thread-affinity dance, pending
 report queues, fencing, retry backoff, and event-identity dedup _storage_.
 Dedup identity is per-assignment composite, per §5.1 — the plugin mints
 `(appId, tenantId, eventId)` because it derives from parsed action semantics,
-and core owns the TTL table. Four platform reads that would otherwise sit in
+and core owns the TTL table, offered two ways: `dedupSeen` marks on first sight
+(Slack's bounded-loss path), while `dedupPeek`/`dedupMark` let a platform that
+answers from an admission disposition check first and mark only once the
+disposition is settled. Four platform reads that would otherwise sit in
 core are capability reads per D2: Slack-only bot-mention admission
 (`botSenderRouting`), thread-root detection (adapter `isThreadRoot` or the
 threading capability), the Feishu egress-ownership fork (`relayOwnsEgress`

@@ -8,15 +8,14 @@ import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
-import { answerText, latencyText } from '@/lib/decisions/evaluations'
+import { answerText } from '@/lib/decisions/evaluations'
 import { conversationEvaluations, type DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import type { DecisionEvaluationRecord } from '@agentconnect.md/protocol/decision'
 import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
 import { DecisionEvaluationDetail, OutcomeBadge } from './DecisionEvaluationDetail'
-import { EvaluationsDrawer, formatEvaluationTime } from './EvaluationParts'
+import { EvaluationRow, EvaluationsDrawer } from './EvaluationParts'
 
 const PAGE = 20
-const COLUMNS = 'desktop:grid desktop:grid-cols-[96px_minmax(0,1fr)_auto_60px] desktop:items-center desktop:gap-3'
 
 /** 503 splits into an outage and an upgrade prompt by the machine code. */
 function unavailableKind(cause: unknown): 'offline' | 'unsupported' | null {
@@ -135,55 +134,31 @@ export function DecisionEvaluationsDrawer({
   else
     body = (
       <>
-        <div
-          className={`hidden border-b border-(--border-subtle) bg-(--surface-sunken) px-[18px] py-[7px] font-sans text-[11px] font-medium leading-normal text-(--text-tertiary) ${COLUMNS}`}
-        >
-          <span>{t('evaluations.columns.time')}</span>
-          <span>{t('evaluations.columns.result')}</span>
-          <span>{t('evaluations.columns.outcome')}</span>
-          <span className="text-right">{t('evaluations.columns.latency')}</span>
-        </div>
         <ul ref={listRef} className="m-0 list-none p-0">
           {items.map((record) => {
-            const answer = answerText(record.answer, words) ?? (record.detailsExpired ? t('evaluations.expired') : '—')
+            const answer = answerText(record.answer, words)
             return (
               <li key={record.seq} className="border-b border-(--border-subtle)">
-                <button
-                  type="button"
+                <EvaluationRow
                   data-seq={record.seq}
+                  padX="px-[18px]"
+                  title={record.title}
+                  expired={record.detailsExpired}
+                  answer={answer && record.matchedKeys.length ? `${answer} → ${record.matchedKeys.join(', ')}` : answer}
+                  outcome={t(`evaluations.outcomes.${record.outcome}`)}
+                  badge={<OutcomeBadge record={record} />}
+                  meta={
+                    <span className="truncate">
+                      {decisionName(record.decisionId)} · {record.actualModel ?? record.requestedModel}
+                    </span>
+                  }
+                  at={record.at}
+                  latencyMs={record.latencyMs}
                   onClick={() => {
                     opener.current = record.seq
                     setOpen(record.seq)
                   }}
-                  className={`flex w-full cursor-pointer flex-col gap-[5px] border-0 bg-transparent px-[18px] py-[10px] text-left hover:bg-(--surface-hover) ${COLUMNS}`}
-                >
-                  <span className="flex items-center justify-between gap-2 desktop:contents">
-                    <span className="mono text-[11px] text-(--text-tertiary)">
-                      {formatEvaluationTime(record.at, locale)}
-                    </span>
-                    <span className="desktop:hidden">
-                      <OutcomeBadge record={record} />
-                    </span>
-                  </span>
-                  <span className="flex min-w-0 flex-col gap-[3px]">
-                    <span className="truncate font-sans text-[12.5px] font-normal leading-[1.4] text-(--text-primary)">
-                      {answer}
-                      {record.matchedKeys.length > 0 && (
-                        <span className="text-(--text-tertiary)"> → {record.matchedKeys.join(', ')}</span>
-                      )}
-                    </span>
-                    <span className="mono truncate text-[11px] text-(--text-tertiary)">
-                      {decisionName(record.decisionId)} · {record.actualModel ?? record.requestedModel}
-                    </span>
-                  </span>
-                  <span className="hidden min-w-0 desktop:flex">
-                    <OutcomeBadge record={record} />
-                  </span>
-                  <span className="mono text-[11px] text-(--text-tertiary) desktop:text-right">
-                    <span className="font-sans desktop:hidden">{t('evaluations.columns.latency')}: </span>
-                    {latencyText(record.latencyMs) ?? '—'}
-                  </span>
-                </button>
+                />
               </li>
             )
           })}

@@ -129,6 +129,8 @@ import { LinearApiClient } from '../../src/platforms/linear/api.js'
 import { LinearTokenService } from '../../src/platforms/linear/token-service.js'
 import { LinearOrphanTokenSweeper } from '../../src/platforms/linear/orphan-token-sweeper.js'
 import { linearConnectRoutes, linearOauthCallbackRoutes } from '../../src/platforms/linear/routes.js'
+import { createGoogleChatCpProvider } from '../../src/platforms/googlechat/provider.js'
+import { googleChatPlatformInstallRoutes } from '../../src/platforms/googlechat/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from '../../src/http/routes/slack-install.js'
 import {
   slackPlatformInstallRoutes,
@@ -140,6 +142,7 @@ import { slackBotTokenRoutes } from '../../src/http/routes/slack-bot-token.js'
 import { telegramCheckRoutes } from '../../src/http/routes/telegram-check.js'
 import type {
   FeishuRouteSeams,
+  GoogleChatRouteSeams,
   LinearRouteSeams,
   SlackRouteSeams,
   TelegramRouteSeams
@@ -148,6 +151,7 @@ import type { SlackConfigApi } from '../../src/http/slack-config-api.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from '../../src/http/slack-identity.js'
 import type { SlackPlatformAppConfig } from '../../src/config/slack-platform.js'
 import type { LinearPlatformAppConfig } from '../../src/config/linear-platform.js'
+import type { GoogleChatPlatformAppConfig } from '../../src/config/google-chat-platform.js'
 import type { FetchLike } from '../../src/github/api.js'
 import type { TelegramBotVerifier } from '../../src/http/telegram-identity.js'
 import type { TelegramBotIconSyncer } from '../../src/http/telegram-bot-profile.js'
@@ -200,6 +204,10 @@ export interface PlatformStubs {
   linearPlatformApp?: LinearPlatformAppConfig
   /** Linear's OAuth/GraphQL edge, stubbed: the whole connect lifecycle runs offline. */
   linearFetch?: FetchLike
+  /** The deployment-owned Google Chat app; set before the first request, since its install route registers on it. */
+  googleChatPlatformApp?: GoogleChatPlatformAppConfig
+  /** Google's token endpoint and Chat API, stubbed; absent ⇒ every credential probe is a connectivity failure. */
+  googleChatFetch?: typeof fetch
 }
 
 /** The keys `buildHttpApp` peels out of its overrides bag into
@@ -220,7 +228,9 @@ const PLATFORM_STUB_KEYS = [
   'syncFeishuAppIcon',
   'feishuAppRegistration',
   'linearPlatformApp',
-  'linearFetch'
+  'linearFetch',
+  'googleChatPlatformApp',
+  'googleChatFetch'
 ] as const satisfies readonly (keyof PlatformStubs)[]
 
 export interface HttpApp {
@@ -749,6 +759,15 @@ export function buildHttpApp(
     service: linearTokenService,
     clock
   })
+  const googleChatSeams: GoogleChatRouteSeams = {
+    get app() {
+      return platformStubs.googleChatPlatformApp
+    },
+    fetch: (input, init) =>
+      platformStubs.googleChatFetch
+        ? platformStubs.googleChatFetch(input, init)
+        : Promise.reject(new TypeError('no google chat fetch stub installed'))
+  }
   const feishuSeams: FeishuRouteSeams = {
     verifyBot: async (appId, appSecret, region) =>
       platformStubs.verifyFeishuBot
@@ -822,6 +841,10 @@ export function buildHttpApp(
       },
       pendingInstalls: { installStates: linearInstallStateStore, intervalMs: 60_000 },
       orphanTokenSweeper: linearOrphanTokenSweeper
+    }),
+    createGoogleChatCpProvider({
+      fetch: googleChatSeams.fetch,
+      installRoutes: { org: [googleChatPlatformInstallRoutes(deps, googleChatSeams)], publicCallback: [] }
     })
   ])
 

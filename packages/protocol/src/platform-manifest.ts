@@ -110,7 +110,7 @@ export interface PlatformManifest {
   readonly addressedByConstruction: boolean
 }
 
-// Google Chat's id; it joins `KNOWN_PLATFORMS` with its host modules (google-chat-integration.md §7).
+// Google Chat's platform id, registered in `KNOWN_PLATFORMS` with its Control Plane provider (google-chat-integration.md §7).
 export const GOOGLE_CHAT_PLATFORM = 'googlechat'
 
 /** The conservative arm of every axis — see the fail-closed note above. */

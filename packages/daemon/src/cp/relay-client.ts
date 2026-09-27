@@ -39,6 +39,7 @@ import {
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
   RD_DECISION_ROUTE_V1,
+  RD_IM_ADMISSION_V1,
   type RdRoute,
   type RdRouteAck,
   type RdRouteReport,
@@ -83,7 +84,9 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   // The relay sends hook host copies (`routing`) and routed fires (`routeSelection`) only here.
   HOOK_DECISION_ROUTING_V1_FEATURE,
   // The relay sends GitLab and Gitea host copies and routed fires only here.
-  HOOK_DECISION_ROUTING_V2_FEATURE
+  HOOK_DECISION_ROUTING_V2_FEATURE,
+  // An im ack answered through a platform strategy carries the strict routeAdmission/recoverable verdict; the shared path carries none, which the relay's strict forward reads as unsupported.
+  RD_IM_ADMISSION_V1
 ]
 
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'

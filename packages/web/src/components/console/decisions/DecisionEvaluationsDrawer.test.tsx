@@ -103,13 +103,15 @@ async function escape() {
 }
 
 describe('DecisionEvaluationsDrawer', () => {
-  it('lists each outcome with its answer, decision, model and latency, and keeps Unavailable apart from Skipped', async () => {
+  it('lists each outcome with its title, answer, decision, model and latency, and keeps Unavailable apart from Skipped', async () => {
     await render(decisionMock.createDecisionMockApi())
     expect(drawer().getAttribute('role')).toBe('dialog')
     expect(drawer().textContent).toContain('#help · Support')
     const list = rows()
     expect(list).toHaveLength(6)
     expect(list[0]!.textContent).toContain('Yes · 86%')
+    // Each row leads with what was judged, as the Decision page's places card does.
+    expect(list[0]!.textContent).toContain('Our invoice charged us twice this month.')
     expect(list[0]!.textContent).toContain('Triggered')
     expect(list[0]!.textContent).toContain('jev-1.13.0')
     expect(list[0]!.textContent).toContain('640 ms')
@@ -119,7 +121,7 @@ describe('DecisionEvaluationsDrawer', () => {
     expect(list[2]!.textContent).not.toContain('Skipped')
     expect(list[3]!.textContent).toContain('Canceled · Stopped')
     expect(list[4]!.textContent).toContain('Pending')
-    expect(list[5]!.textContent).toContain('Expired')
+    expect(list[5]!.textContent).toContain('Details expired')
   })
 
   it('opens a detail in place, steps back with Escape to the row that opened it, then closes', async () => {

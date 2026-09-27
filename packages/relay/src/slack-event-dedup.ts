@@ -30,15 +30,24 @@ export class SlackEventDedup {
     this.maxEntries = opts.maxEntries ?? 50_000
   }
 
-  /** True iff `identity` was seen (and not expired); otherwise marks it and returns
-   *  false. An absent identity is never deduped (some envelopes carry no event id). */
+  /** True iff `identity` was seen and not expired; otherwise marks it and returns false. An absent identity is never deduped. */
   seen(identity: string | undefined): boolean {
-    if (!identity) return false
-    const now = this.clock.now()
-    const expiry = this.seenAt.get(identity)
-    if (expiry !== undefined && expiry > now) return true
-    if (this.seenAt.size >= this.maxEntries) this.seenAt.clear()
-    this.seenAt.set(identity, now + this.ttlMs)
+    if (this.peek(identity)) return true
+    this.mark(identity)
     return false
+  }
+
+  /** {@link seen} without the mark: true iff `identity` is currently deduped. */
+  peek(identity: string | undefined): boolean {
+    if (!identity) return false
+    const expiry = this.seenAt.get(identity)
+    return expiry !== undefined && expiry > this.clock.now()
+  }
+
+  /** Mark `identity` seen from now; an absent identity is never marked. */
+  mark(identity: string | undefined): void {
+    if (!identity) return
+    if (this.seenAt.size >= this.maxEntries) this.seenAt.clear()
+    this.seenAt.set(identity, this.clock.now() + this.ttlMs)
   }
 }

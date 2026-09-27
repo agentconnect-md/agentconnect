@@ -433,8 +433,18 @@ describe('§6.1 origin-kind classification on the wire', () => {
 })
 
 describe('writer-side vocabulary stays closed until the fleet gate (S1b)', () => {
-  it('KNOWN_PLATFORMS includes the shipped QQ integration', () => {
-    expect([...KNOWN_PLATFORMS]).toEqual(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream', 'qq'])
+  it('KNOWN_PLATFORMS includes the QQ and Google Chat integrations', () => {
+    expect([...KNOWN_PLATFORMS]).toEqual([
+      'slack',
+      'telegram',
+      'webchat',
+      'discord',
+      'feishu',
+      'hook',
+      'dream',
+      'qq',
+      'googlechat'
+    ])
   })
 
   it('isKnownPlatform narrows known ids and refuses unknown ones', () => {

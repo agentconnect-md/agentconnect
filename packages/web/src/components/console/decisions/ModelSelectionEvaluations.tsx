@@ -13,6 +13,8 @@ import { DecisionChainResults } from './DecisionChainResults'
 import { DecisionModelResult } from './DecisionModelResult'
 import {
   BackLink,
+  DetailTitle,
+  EvaluationRow,
   EvaluationsDrawer,
   ExpiredBanner,
   Facts,
@@ -140,29 +142,28 @@ function ModelEvaluationsBody({ state, padX }: { state: ModelEvaluations; padX: 
           <ul className="m-0 list-none p-0">
             {items.map((item) => (
               <li key={item.seq} className="border-b border-(--border-subtle)">
-                <button
-                  type="button"
-                  onClick={() => setOpen(item.seq)}
-                  className={`flex w-full flex-col gap-1 border-0 bg-transparent ${padX} py-[9px] text-left hover:bg-(--surface-hover)`}
-                >
-                  <span className="flex items-center justify-between gap-3">
-                    <span className="mono text-[11px] text-(--text-tertiary)">
-                      {formatEvaluationTime(item.at, locale)}
-                    </span>
+                <EvaluationRow
+                  padX={padX}
+                  title={item.title}
+                  expired={item.detailsExpired}
+                  answer={answerText(item.answer, { yes: decisions('condition.yes'), no: decisions('condition.no') })}
+                  outcome={t(`outcome.${item.outcome}`)}
+                  badge={
                     <span
-                      className={`badge ${item.outcome === 'selected' ? 'bg-(--status-online-soft) text-(--status-online)' : 'bg-(--surface-active) text-(--text-secondary)'}`}
+                      className={`badge flex-none ${item.outcome === 'selected' ? 'bg-(--status-online-soft) text-(--status-online)' : 'bg-(--surface-active) text-(--text-secondary)'}`}
                     >
                       {t(`outcome.${item.outcome}`)}
                     </span>
-                  </span>
-                  <span className="font-sans text-[12.5px] text-(--text-primary)">
-                    {item.target.runtime} · {item.target.model}
-                  </span>
-                  <span className="mono text-[11px] text-(--text-tertiary)">
-                    {answerText(item.answer, { yes: decisions('condition.yes'), no: decisions('condition.no') }) ??
-                      t('noAnswer')}
-                  </span>
-                </button>
+                  }
+                  meta={
+                    <span className="truncate">
+                      {item.target.runtime} · {item.target.model}
+                    </span>
+                  }
+                  at={item.at}
+                  latencyMs={item.latencyMs}
+                  onClick={() => setOpen(item.seq)}
+                />
               </li>
             ))}
           </ul>
@@ -186,6 +187,7 @@ function ModelEvaluationsBody({ state, padX }: { state: ModelEvaluations; padX: 
   return (
     <div className={`flex flex-col gap-4 ${padX} py-[14px]`}>
       <BackLink onClick={() => setOpen(null)} />
+      <DetailTitle title={shown?.title} />
       {detail.error && (
         <p role="alert" className="m-0 text-[12px] text-(--status-error)">
           {t('error')}

@@ -244,7 +244,9 @@ describe('Daemon in-conversation commands', () => {
       {
         msgId: 'relay-bot',
         accepted: false,
-        reason: 'unauthorized'
+        reason: 'unauthorized',
+        routeAdmission: 'rejected',
+        recoverable: false
       }
     )
     expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
@@ -253,7 +255,8 @@ describe('Daemon in-conversation commands', () => {
       await (daemon as any).handleRelayMsg(relayResume('relay-human', { id: 'U1', isBot: false }), () => {})
     ).toEqual({
       msgId: 'relay-human',
-      accepted: true
+      accepted: true,
+      routeAdmission: 'admitted'
     })
     expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Resumed'), 'T1', CHROME_REPLY)
@@ -283,6 +286,7 @@ describe('Daemon in-conversation commands', () => {
       payload
     }
 
+    // The shared path acks on dispatch, before durability, so it carries no strict verdict.
     expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-names', accepted: true })
     expect(noteMessage).toHaveBeenCalledWith(conn, expect.objectContaining(payload))
     expect(dispatch).toHaveBeenCalledWith('bot-a', expect.objectContaining(payload), 'int-a')
@@ -430,9 +434,13 @@ describe('Daemon in-conversation commands', () => {
       payload
     }
 
+    // Consumed as always (`accepted`); the strict verdict names the gate, and a resend cannot change it.
     expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({
       msgId: 'relay-feishu-gated',
-      accepted: true
+      accepted: true,
+      reason: 'off',
+      routeAdmission: 'rejected',
+      recoverable: false
     })
     expect(discover).toHaveBeenCalledWith(expect.objectContaining(payload), ['int-a'])
     expect(notice).toHaveBeenCalledWith(expect.objectContaining(payload), ['int-a'])
@@ -463,15 +471,18 @@ describe('Daemon in-conversation commands', () => {
       payload: { ...dm(msgId, text), trigger }
     })
 
-    // Implicit thread traffic while muted: accepted (consumed) but the agent is NOT woken.
+    // Implicit thread traffic while muted: accepted (consumed) but the agent is NOT woken; strictly a `muted` gate.
     expect(await (daemon as any).handleRelayMsg(relayIm('m-implicit', 'still there?', 'dm'), () => {})).toEqual({
       msgId: 'm-implicit',
-      accepted: true
+      accepted: true,
+      reason: 'muted',
+      routeAdmission: 'rejected',
+      recoverable: false
     })
     expect(blocked.prompts).toHaveLength(0)
     expect(await (daemon as any).store.isSessionMuted(muteKey)).toBe(true)
 
-    // An explicit @mention clears the mute and dispatches.
+    // An explicit @mention clears the mute and dispatches — on the shared path, so without a strict verdict.
     expect(await (daemon as any).handleRelayMsg(relayIm('m-mention', 'hey again', 'mention'), () => {})).toEqual({
       msgId: 'm-mention',
       accepted: true
@@ -1297,7 +1308,14 @@ describe('Daemon managed-agent bot ingress', () => {
       } satisfies RdMsgIm,
       () => {}
     )
-    expect(relayAck).toEqual({ msgId: relayManaged.msgId, accepted: true })
+    // Consumed without waking anyone: the strict verdict is the routed path's `rejected` for agent-authored traffic.
+    expect(relayAck).toEqual({
+      msgId: relayManaged.msgId,
+      accepted: true,
+      reason: 'rejected',
+      routeAdmission: 'rejected',
+      recoverable: false
+    })
     expect(host.prompt).not.toHaveBeenCalled()
 
     await (daemon as any).onInboundOutcome(botMessage('external-mention', 'AEXTERNAL', ['UBOTA']))

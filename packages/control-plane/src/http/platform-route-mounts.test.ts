@@ -41,13 +41,21 @@ import { createLinearCpProvider } from '../platforms/linear/provider.js'
 import { LinearApiClient } from '../platforms/linear/api.js'
 import { LinearTokenService } from '../platforms/linear/token-service.js'
 import { linearConnectRoutes, linearOauthCallbackRoutes } from '../platforms/linear/routes.js'
+import { createGoogleChatCpProvider } from '../platforms/googlechat/provider.js'
+import { googleChatPlatformInstallRoutes } from '../platforms/googlechat/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from './routes/slack-bot-refresh.js'
 import { slackBotTokenRoutes } from './routes/slack-bot-token.js'
 import { telegramCheckRoutes } from './routes/telegram-check.js'
-import type { FeishuRouteSeams, LinearRouteSeams, SlackRouteSeams, TelegramRouteSeams } from './platform-route-seams.js'
+import type {
+  FeishuRouteSeams,
+  GoogleChatRouteSeams,
+  LinearRouteSeams,
+  SlackRouteSeams,
+  TelegramRouteSeams
+} from './platform-route-seams.js'
 
 /**
  * TODAY'S TABLE — captured from the routing table the pre-refactor `server.ts`
@@ -80,7 +88,8 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
       'GET /integrations/linear/connect/:id',
       'POST /bots/:id/linear/reconnect',
       'POST /bots/:id/linear/disconnect'
-    ]
+    ],
+    googleChatPlatformInstallRoutesPlugin: ['POST /integrations/googlechat/platform-install']
   },
   'public-callback': {
     slackOauthCallbackRoutesPlugin: ['GET /integrations/slack/oauth/callback'],
@@ -134,6 +143,13 @@ const LINEAR_SEAMS: LinearRouteSeams = {
   api: LINEAR_API,
   tokens: {} as unknown as LinearTokenService
 }
+/** Google Chat's install route registers only with the deployment-owned app configured. */
+const GOOGLE_CHAT_SEAMS: GoogleChatRouteSeams = {
+  app: { projectId: 'example-project', projectNumber: '123456789012', serviceAccountKey: '{}' },
+  fetch: async () => {
+    throw new Error('the route table never calls Google')
+  }
+}
 
 /** The production provider set, with the route plugins pre-bound exactly as
  *  `buildContainer` pre-binds them. */
@@ -165,6 +181,9 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
         org: [linearConnectRoutes(deps, LINEAR_SEAMS)],
         publicCallback: [linearOauthCallbackRoutes(deps, LINEAR_SEAMS)]
       }
+    }),
+    createGoogleChatCpProvider({
+      installRoutes: { org: [googleChatPlatformInstallRoutes(deps, GOOGLE_CHAT_SEAMS)], publicCallback: [] }
     })
   ])
 }

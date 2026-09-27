@@ -55,6 +55,7 @@ import { unionGiteaWebhookEvents } from './gitea/webhook-events.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
 import { resolveLinearPlatformAppConfig } from './config/linear-platform.js'
+import { resolveGoogleChatPlatformAppConfig } from './config/google-chat-platform.js'
 import type { FetchLike } from './github/api.js'
 import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/index.js'
 import { GithubService } from './github/service.js'
@@ -287,6 +288,8 @@ import { LinearApiClient } from './platforms/linear/api.js'
 import { LinearTokenService } from './platforms/linear/token-service.js'
 import { LinearOrphanTokenSweeper } from './platforms/linear/orphan-token-sweeper.js'
 import { linearConnectRoutes, linearOauthCallbackRoutes } from './platforms/linear/routes.js'
+import { createGoogleChatCpProvider } from './platforms/googlechat/provider.js'
+import { googleChatPlatformInstallRoutes } from './platforms/googlechat/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
@@ -295,6 +298,7 @@ import { slackBotTokenRoutes } from './http/routes/slack-bot-token.js'
 import { telegramCheckRoutes } from './http/routes/telegram-check.js'
 import type {
   FeishuRouteSeams,
+  GoogleChatRouteSeams,
   LinearRouteSeams,
   SlackRouteSeams,
   TelegramRouteSeams
@@ -780,6 +784,9 @@ export function buildContainer(
   // The deployment's one Linear OAuth app (linear-integration.md §7.1) — undefined ⇒ the platform
   // self-disables (no workspace can be connected); partial set ⇒ fail-fast.
   const linearPlatformApp = resolveLinearPlatformAppConfig(config)
+
+  // The deployment-owned Google Chat app (google-chat-integration.md §3); undefined ⇒ only per-agent apps, partial set ⇒ fail-fast.
+  const googleChatPlatformApp = resolveGoogleChatPlatformAppConfig(config)
 
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.
@@ -2161,6 +2168,12 @@ export function buildContainer(
     log: { info: (obj, msg) => http.log.info(obj, msg), warn: (obj, msg) => http.log.warn(obj, msg) }
   })
 
+  // The deployment-owned Google Chat app's install route reads the app and Google's HTTP layer from here.
+  const googleChatSeams: GoogleChatRouteSeams = {
+    ...(googleChatPlatformApp ? { app: googleChatPlatformApp } : {}),
+    fetch: (input, init) => fetch(input, init)
+  }
+
   // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
   // instances — all four platforms — constructed with the SAME verify/sync
   // functions, route-dep bundle, funnel stores, and background-loop instances
@@ -2247,6 +2260,11 @@ export function buildContainer(
         intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000
       },
       orphanTokenSweeper: linearOrphanTokenSweeper
+    }),
+    // Registered unconditionally for per-agent apps; the deployment-owned app only adds its install route.
+    createGoogleChatCpProvider({
+      fetch: googleChatSeams.fetch,
+      installRoutes: { org: [googleChatPlatformInstallRoutes(httpDeps, googleChatSeams)], publicCallback: [] }
     })
   ])
 

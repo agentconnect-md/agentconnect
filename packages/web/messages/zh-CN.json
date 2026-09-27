@@ -2419,7 +2419,6 @@
           "reason": "原因",
           "noTarget": "没有规则选出可用模型",
           "unavailable": "Decision 不可用",
-          "noAnswer": "无答案",
           "expired": "详情已过期",
           "expiredBody": "输入和完整答案已过期；选择摘要仍可查看。",
           "rules": "评估时的规则",
@@ -4549,14 +4548,10 @@
       },
       "error": "无法加载最近评估。{message}",
       "loadMore": "加载更多",
-      "expired": "已过期",
       "columns": {
-        "time": "时间",
         "answer": "回答",
         "matched": "匹配",
-        "outcome": "结果",
-        "latency": "延迟",
-        "result": "决策 / 结果"
+        "latency": "延迟"
       },
       "outcomes": {
         "triggered": "已触发",
@@ -4825,14 +4820,11 @@
         "notEvaluated": "未评估",
         "rules": "规则 {numbers}",
         "columns": {
-          "time": "时间",
           "channel": "频道",
           "answer": "决策回答",
           "matched": "匹配",
           "targets": "目标",
-          "outcome": "结果",
-          "latency": "延迟",
-          "channelAnswer": "频道 / 回答"
+          "latency": "延迟"
         },
         "outcomes": {
           "routed": "已路由",

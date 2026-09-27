@@ -63,9 +63,11 @@ it('lists recent selections and opens one in place', async () => {
   expect(api.fetchAgentModelEvaluations).toHaveBeenCalledWith('agent-1', { limit: 20 }, 'example-org')
   const row = document.body.querySelector<HTMLButtonElement>('li button')!
   expect(row.textContent).toContain('claude · model-large')
+  expect(row.textContent).toContain('PR #42: Fix the parser')
   await act(async () => row.click())
   await act(async () => {})
   expect(api.fetchAgentModelEvaluation).toHaveBeenCalledWith('agent-1', 7, 'example-org')
   expect(document.body.textContent).toContain('Details expired')
+  expect(document.body.querySelector('h3')?.textContent).toBe('PR #42: Fix the parser')
   expect(document.body.querySelector('li')).toBeNull()
 })

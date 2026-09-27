@@ -147,6 +147,14 @@ export const IntegrationLinearConfig = z.object({
 })
 export type IntegrationLinearConfig = z.infer<typeof IntegrationLinearConfig>
 
+// The Google Chat payload (google-chat-integration.md §3): relay-terminated ingress, so the daemon gets egress material only.
+export const IntegrationGoogleChatConfig = z.object({
+  projectId: z.string().min(1), // Google Cloud project ID of the Chat app
+  projectNumber: z.string().regex(/^[1-9]\d{0,19}$/), // numeric project number, the app's identity and token audience
+  serviceAccountKey: z.string().min(1) // service-account key JSON for chat.bot calls (plaintext — never log)
+})
+export type IntegrationGoogleChatConfig = z.infer<typeof IntegrationGoogleChatConfig>
+
 /**
  * Which session an activation in a conversation joins (channel-session-mode.md §4).
  * `createNew` is today's behavior — a message opens a session, a thread reply continues
