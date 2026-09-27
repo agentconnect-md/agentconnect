@@ -664,4 +664,19 @@ export class PgUserRepo implements UserRepo {
     const row = await this.db.user.findUnique({ where: { id: userId }, select: { oidcSubject: true } })
     return row?.oidcSubject ?? null
   }
+
+  async getGoogleAccountId(userId: string): Promise<string | null> {
+    const row = await this.db.user.findUnique({ where: { id: userId }, select: { googleAccountId: true } })
+    return row?.googleAccountId ?? null
+  }
+
+  async setGoogleAccountId(userId: string, googleAccountId: string | null): Promise<void> {
+    await withAmbientTx(this.db, async (tx) => {
+      // The identity provider moved the Google account to this user, so a stale holder lets go of it first.
+      if (googleAccountId !== null) {
+        await tx.user.updateMany({ where: { googleAccountId, NOT: { id: userId } }, data: { googleAccountId: null } })
+      }
+      await tx.user.updateMany({ where: { id: userId }, data: { googleAccountId } })
+    })
+  }
 }

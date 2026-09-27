@@ -31,6 +31,7 @@ const MANAGED_KEYS = [
   'GOOGLE_CHAT_PLATFORM_PROJECT_ID',
   'GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER',
   'GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY',
+  'GOOGLE_CHAT_PLATFORM_MULTI_TENANT',
   'FEISHU_PLATFORM_APP_ID',
   'FEISHU_PLATFORM_APP_SECRET',
   'LARK_PLATFORM_APP_ID',
@@ -99,6 +100,7 @@ export function applyDeploymentEnvironment(
     set('GOOGLE_CHAT_PLATFORM_PROJECT_ID', values.googleChat.projectId)
     set('GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER', values.googleChat.projectNumber)
     set('GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY', secrets['googleChat.serviceAccountKey'])
+    if (values.googleChat.multiTenant) set('GOOGLE_CHAT_PLATFORM_MULTI_TENANT', 'true')
   }
 
   if (values.feishu) {

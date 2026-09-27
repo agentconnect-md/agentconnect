@@ -176,6 +176,15 @@ Cloud project per Chat app and this design keeps one app per agent, so a hosted
 deployment serving every organization's preset agent through one app is the
 shared-bot follow-up, not this version.
 
+The Setup Server's Google Chat card has one more setting under the app's fields,
+**Serves other Google Workspace organizations** (`googleChat.multiTenant` in the
+deployment document, projected to the Control Plane as
+`GOOGLE_CHAT_PLATFORM_MULTI_TENANT`; off by default). Turned on, the installed
+row of the deployment app becomes the anchor of §10: its relay assignment
+carries the console's claim page, and every other Google Workspace customer
+claims a row of its own there, installed on its organization's preset agent.
+The deployment app must still be installed on one agent for the anchor to exist.
+
 The initial experience is guided setup, not one-click app creation. Slack offers
 both manifest-prefilled creation links and `apps.manifest.create`, which our
 [Slack install flow](slack-install-smoothing.md) uses. The Google configuration
@@ -729,13 +738,16 @@ patches remain provider-validation gates, not claims of completed support.
 
 ## 10. Marketplace distribution and multi-tenant installs
 
-Status: **partially implemented**. Step A1 is merged: the message package's
-tenant keys and `interaction` event, the relay's per-customer demux and fence,
-the welcome card, and the `REQUEST_CONFIG` answer (§10.4, §10.7, and the relay's
-half of §10.5: the state the prompt carries). The rest is still a draft: the
-per-customer rows and the claim route on the Control Plane, the claim page, the
-Google account id on the user row, and the daemon items (§10.3, §10.5 from step
-2 on, §10.6, §10.8), plus the rollout (§10.9). Every provider fact below was
+Status: **step A implemented, step B pending**. Both halves of step A are
+merged: the message package's tenant keys and `interaction` event, the
+relay's per-customer demux and fence, the welcome card, and the
+`REQUEST_CONFIG` answer (§10.4, §10.7); the Setup switch (§3), the customer
+rows and their relay assignment (§10.3), the claim route and page (§10.5), and
+the Google account id on the user row (§10.6). Step B is not implemented
+(§10.8 and the items in §10.9). Until it filters discovery and fences replies
+by customer, a customer row's daemon lists every Space the app is in and can
+address any of them with the shared key, so the Setup switch is for testing
+inside the operator's own Google Workspace. Every provider fact below was
 verified on September 27, 2026, either in Google's reference documentation or
 against a live Chat app; the items in §10.9 still need a live check.
 
@@ -775,19 +787,68 @@ organization proves the cross-customer path once the listing is approved.
 ### 10.3 Data model: one row per customer, as Slack does per team
 
 The published app is a deployment-owned platform app whose bot rows follow the
-Slack platform app: `externalAppId` stays the verified project number and
-`externalTenantId` becomes the Workspace customer instead of the tenantless
-sentinel of §3, one row per `(app, customer)`, each owned by one organization.
-The row carries two ids for the same customer, because a DM event names only
-the sender's `user.domainId` and a Space event names the Space's
-`space.customer`: the claim writes whichever the claim proved (§10.5), and the
-other is attached the first time an event supplies it together with proof that
-its sender belongs to the customer, which is the sender's membership in that
-Space carrying `affiliation: INTERNAL`. A sender's domain never binds a Space's
-customer on its own: a Space may admit external members, so the pair would tie a
-foreign organization's Space to the sender's row. One customer maps to one
-organization, exactly as one Slack team does; a second organization cannot claim
-a customer another one holds, and the refusal names no organization.
+Slack platform app. The deployment app's existing row, keyed by the project
+number and the tenantless sentinel of §3, is the **anchor**; when the Setup
+switch of §3 is on, its relay assignment carries `claimUrl`, the console's
+claim page (`<PUBLIC_WEB_URL>/googlechat/claim`). Every claimed customer gets a
+**customer row** of its own: the same `externalAppId`, and as
+`externalTenantId` the customer's primary tenant key, `customers/{customer}`
+when the claim proved it and `domains/{domainId}` otherwise, one row per
+`(app, customer)`, each owned by one organization. Its public `platformConfig`
+keeps the project ID beside the bare `customerId` and `domainIds`, its credential
+is a copy of the deployment key exactly as the deployment-app install copies it,
+and it is marked prebuilt, so the key follows the Setup Server rather than a
+console paste. Its relay assignment carries `tenantIds`, every tenant key the
+row knows, beside the unchanged `apiAppId`; a single-tenant row and the anchor
+carry none.
+
+The row identifies its customer twice over, because a DM event names only the
+sender's `user.domainId` and a Space event names the Space's `space.customer`.
+A customer may own several domains and `domainId` is per domain, so the row
+keeps one customer id and a set of domains: `domainIds` is the comma-joined
+list of bare ids, since the bag holds strings, and the assignment's `tenantIds`
+carries one `domains/…` key per domain.
+
+A claim proves one of two things (§10.5). A DM claim proves a domain alone: the
+claimant's. It never names a customer, so it only ever matches the row that
+already lists that domain, or writes a `domains/…` row of its own; it never
+joins another row, however many rows the organization holds, because a DM from
+an unrelated Workspace customer would otherwise land on this organization's
+customer row. A Space claim proves a pair, the Space's customer and, because the
+claimant's own membership is `INTERNAL`, the claimant's domain, and the pair
+reconciles the rows it touches: the row listing the domain and the row keyed by
+the customer.
+
+- Either row held by another organization refuses the claim, naming no
+  organization.
+- Both are the same row: nothing to attach.
+- Only the customer's row: the domain is appended to it.
+- Only the domain's row, with no customer yet: it is upgraded, gaining the
+  customer id and re-keyed from `domains/…` to `customers/…`; no customer row
+  exists, so the new key is free.
+- Both, as two rows of this organization: they are consolidated. The domain
+  row's domains are appended to the customer row, which is re-synced, and the
+  domain row is removed through the same teardown the console uses to remove an
+  integration and then its bot, so exactly one row keys the customer. A direct
+  message whose earlier turns ran on the retired row starts a fresh session on
+  the surviving one.
+- The domain's row already bound to a different customer is a contradiction —
+  a domain moved between Workspace customers — and is refused as
+  `GOOGLE_CHAT_CLAIM_CONFLICT` and logged, never overwritten.
+
+Every re-key and merge runs under the row's lock. A known customer id is
+therefore never replaced, as a consequence of these rules rather than a check
+that would hide a mismatch. Attaching an id from a Space event, with the same
+proof (the sender's membership in that Space carrying `affiliation: INTERNAL`),
+is step B. A sender's domain never binds a Space's customer on its own: a Space
+may admit external members, so the pair would tie a foreign organization's
+Space to the sender's row. One customer maps to one organization, exactly as
+one Slack team does; a second organization cannot claim a customer or a domain
+another one holds.
+
+Customer rows copy the deployment key when a claim writes them, so a rotated
+deployment key does not reach them yet; re-stamping every customer row on
+rotation is step B.
 
 A bring-your-own app keeps its single row. It gains the same fence for free: the
 first verified event stamps the row's customer and domain, and events from any
@@ -835,42 +896,72 @@ fence is part of step B (§10.3).
 
 ### 10.5 Claiming a customer
 
-The claim page is the console's, reached only through `REQUEST_CONFIG`:
+The claim page is the console's `/googlechat/claim?state=…`, reached only through
+`REQUEST_CONFIG`, and it posts to
+`POST /orgs/:orgId/integrations/googlechat/claim` (`{ state }`, owner or
+collaborator):
 
-1. The relay puts a `state` on the prompt's URL: base64url JSON of
-   `{ v: 1, app, space, user, kind, tenant, redirect, iat }` — the app's project
-   number, the Space, the initiating `users/{id}`, `dm` or `space`, the tenant
-   key it saw, the event's `configCompleteRedirectUrl` (omitted when the event
-   carried none), and the unix time. It is unsigned: the page re-derives every
-   fact it acts on from Google and from the signed-in identity, so a forged
-   state can only claim what the signed-in person is entitled to claim anyway.
-2. The page signs the person in through the console, which is Logto with its
-   Google connector, and reads the signed-in user's Google identity: the
-   provider's user id on that identity (§10.6), not the console token's `sub`,
-   which is the issuer's own user id. It accepts the claim only when that
-   Google account id equals the initiating user id in the state, Google's
-   recommendation for a configuration page, so a forwarded link claims
-   nothing. A user without a Google identity is taken through the Google
-   sign-in or link first.
-3. It binds only the claimant's own Workspace customer. A claim that started in
-   a DM proves it by construction: the DM's `user.domainId` is the claimant's
-   organization. A claim that started in a Space proves it by reading the
-   claimant's membership in that Space with the app's key and requiring
-   `affiliation: INTERNAL`; an `EXTERNAL` or `MANAGED_EXTERNAL` claimant is
-   refused and told to connect the app from their own Workspace, because
-   `space.customer` names the Space's organization, which may not be theirs.
-   Google's identity check alone does not establish that relationship.
-4. It shows the Google Chat account, the app, and the conversation, then the
-   organizations the person administers. A new organization is created the
-   ordinary way when they have none.
-5. It writes the bot row for the customer, installs the app on that
-   organization's preset agent through the same install path the deployment app
-   uses (§3), and redirects to `configCompleteRedirectUrl`.
+1. The relay's `state` is base64url JSON, deliberately unsigned: the app's
+   project number, the space, the initiating `users/{id}`, whether the event
+   came from a DM or a Space, the tenant key it saw, the event's
+   `configCompleteRedirectUrl` when it carried one, and when it was minted.
+   Google documents that URL for `MESSAGE`, `ADDED_TO_SPACE`, and `APP_COMMAND`
+   but not for `CARD_CLICKED`, so the welcome card's Connect button yields a
+   state without it. The route re-derives every fact it acts on from Google and
+   from the signed-in identity, so a forged state claims only what its bearer
+   could claim anyway. A state for any app other than the deployment's
+   multi-tenant one is refused (404), as is a present completion URL outside
+   `https://chat.google.com/`.
+2. The page signs the person in with Google through the console, which is
+   Logto with its Google connector. The route compares the caller's Google
+   account id (§10.6), never the console token's `sub`, which is the issuer's
+   own user id, with the initiating user id in the state, Google's
+   recommendation for a configuration page, so a forwarded link claims nothing
+   (403 `GOOGLE_CHAT_CLAIM_IDENTITY`). A caller without a Google identity is
+   told to sign in with Google or link it on their profile first.
+3. It binds only the claimant's own Workspace customer, reading Google with the
+   app's key. A claim that started in a DM lists the DM's members: exactly one
+   human, the claimant, whose `domainId` is the claimant's organization. A
+   claim that started in a Space reads the claimant's membership in that Space
+   and requires `affiliation: INTERNAL`, then reads the Space for its
+   `customer`; an `EXTERNAL` or `MANAGED_EXTERNAL` claimant is refused
+   (`GOOGLE_CHAT_CLAIM_EXTERNAL`) and told to connect the app from their own
+   Workspace, because `space.customer` names the Space's organization, which
+   may not be theirs. Google's identity check alone does not establish that
+   relationship. A claimant with no Workspace domain is refused.
+4. The page shows the Google Chat account, the app, and the conversation from
+   the state, then the organizations the person can edit. With none, it links
+   to creating one the ordinary way and refreshes the list afterwards.
+5. The route resolves the proof against the app's customer rows by the rules
+   of §10.3. A DM claim matches only the row that already lists its domain. A
+   Space claim's pair touches the row listing its domain and the row keyed by
+   its customer: it appends the domain to the customer's row, upgrades a
+   domain-only row to the customer and re-keys it, or consolidates the two rows
+   into the customer's, retiring the domain row. A consolidation first takes
+   the agent-move lease of the domain row's installs, and only then merges,
+   re-syncs, removes, and deletes; if the lease is busy it answers 409
+   (`GOOGLE_CHAT_CLAIM_UNAVAILABLE`) having written nothing, and a later claim
+   that finds a `domains/…` row beside a customer row already listing its
+   domain retires that leftover the same way. A row another organization
+   holds answers 409 (`GOOGLE_CHAT_CLAIM_TAKEN`) naming no organization, and a
+   domain bound to a different customer answers 409
+   (`GOOGLE_CHAT_CLAIM_CONFLICT`). A row this organization holds answers 200,
+   re-syncs the relay assignment when it changed, and goes back on the preset
+   agent if its integration was removed. With no row, the route writes the
+   customer row (`customers/…` for a Space claim, `domains/…` for a DM claim),
+   installs the app on the organization's preset agent through the same install
+   path the deployment app uses (§3), syncs the assignment, and answers 201.
+   Either way it answers the completion URL when the state carried one, which
+   the page follows.
 6. Chat removes the prompt and sends the original event again; it now routes
-   like any other delivery.
+   like any other delivery. Without a completion URL the page ends on a link
+   back to the conversation (`https://chat.google.com/room/{id}` for a Space,
+   `https://chat.google.com/dm/{id}` for a DM) and asks the person to send
+   their message again.
 
-Removing the last integration of a customer's row releases the customer, and a
-later claim starts over. The install-time welcome message (§10.7) points people
+A customer row whose integration is removed stays with its organization, so the
+same organization's next claim reinstalls it; releasing it to another
+organization is step B. The install-time welcome message (§10.7) points people
 at the claim before they write anything, but the claim also works from a
 person's first message, which is what an administrator-installed DM produces.
 
@@ -880,13 +971,22 @@ Because a Chat user id is the Google account's `sub`, a console user who signed
 in with Google already carries the identity that appears as `users/{sub}` in
 every event. The console's own token comes from Logto, whose `sub` is Logto's
 user id and never matches; the Google account id is the provider user id on
-the user's Google social identity. The Control Plane records that id on the
-user row when the identity is created or linked, and the
-private owner tuple of [session visibility](session-visibility.md) then matches
-a human console identity: a DM's originator can open their own transcript, which
-lifts the §6 restriction for linked people without any matching by email or
-display name. The same equality is what the claim page checks. Space sessions
-keep their organization visibility; Google membership still does not become a
+the user's Google social identity (`identities.google.userId`). The Control
+Plane records it on the user row (`googleAccountId`, unique and nullable) from
+the same Management API read the GitHub session-access path uses: once per
+subject at sign-in when the Management API client is configured, and again,
+uncached, when a claim finds it missing or different, so a Google account
+linked after sign-in still claims. A stale holder of the same id releases it,
+and an unlinked identity clears it. No response carries it. The same equality
+is what the claim route checks.
+
+The private owner tuple of [session visibility](session-visibility.md) can then
+match a human console identity: a DM's originator could open their own
+transcript, which lifts the §6 restriction for linked people without any
+matching by email or display name. That link is a follow-up, not implemented:
+it needs a Google Chat session-access plugin that adds the viewer's `users/{id}`
+to the identity set, not a change to the policy predicates. Space sessions keep
+their organization visibility; Google membership still does not become a
 console ACL.
 
 ### 10.7 Cards and the welcome message
@@ -928,10 +1028,12 @@ without them.
 
 Order of work:
 
-- **A**: the welcome card, `CARD_CLICKED` and `REQUEST_CONFIG` on the relay
-  (done), the claim page, and the Google account id on the user row.
-- **B**: per-customer rows on the platform app, the customer fence for both
-  install paths, filtered discovery, and the per-app write budget.
+- **A** (done): the welcome card, `CARD_CLICKED` and `REQUEST_CONFIG` on the
+  relay; the claim page and route with the customer rows they write; and the
+  Google account id on the user row.
+- **B**: the customer fence for both install paths, attaching a customer id
+  learned from a Space event, re-stamping customer rows on key rotation,
+  releasing a freed customer, filtered discovery, and the per-app write budget.
 - **C**: the listing, the unlisted publication, and the cross-customer round
   trip from a second Workspace organization.
 

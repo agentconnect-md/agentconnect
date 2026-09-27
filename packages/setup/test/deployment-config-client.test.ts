@@ -151,6 +151,17 @@ describe('googleChatDeploymentPut', () => {
     expect(googleChatDeploymentPut(saved, { ...app, projectNumber: '210987654321' }).secrets).toBeUndefined()
   })
 
+  it('writes the multi-tenant switch only when it is on', () => {
+    expect(googleChatDeploymentPut(saved, { ...app, multiTenant: true }).values.googleChat).toEqual({
+      ...app,
+      multiTenant: true
+    })
+    const multiTenantSaved = {
+      values: { ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1, googleChat: { ...app, multiTenant: true } }
+    }
+    expect(googleChatDeploymentPut(multiTenantSaved, { ...app, multiTenant: false }).values.googleChat).toEqual(app)
+  })
+
   it('clears the app and its key together', () => {
     const result = googleChatDeploymentPut(saved, null)
 

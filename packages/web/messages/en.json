@@ -937,7 +937,8 @@
       "waitlist": "Waitlist · AgentConnect",
       "activate": "Activate account · AgentConnect",
       "join": "Join organization · AgentConnect",
-      "welcome": "Get started · AgentConnect"
+      "welcome": "Get started · AgentConnect",
+      "googleChatClaim": "Connect Google Chat · AgentConnect"
     },
     "login": {
       "brandLead": "Run your agents from the tools your team already lives in.",
@@ -966,6 +967,44 @@
       "goToAgentConnect": "Go to AgentConnect",
       "joining": "Joining organization…",
       "role": "You’ll join as a Collaborator."
+    },
+    "googleChatClaim": {
+      "preparing": "Preparing…",
+      "returning": "Returning to Google Chat…",
+      "unavailable": "Link unavailable",
+      "goToAgentConnect": "Go to AgentConnect",
+      "title": "Connect Google Chat",
+      "description": "Choose the organization whose agent answers your Google Workspace in Google Chat.",
+      "account": "Google Chat account",
+      "app": "App",
+      "conversation": "Conversation",
+      "directMessage": "Direct message",
+      "space": "Space {name}",
+      "organization": "Organization",
+      "noOrganizations": "You have no organization you can add apps to yet. Create one, then refresh this page.",
+      "createOrganization": "Create an organization",
+      "refresh": "Refresh",
+      "connect": "Connect",
+      "connecting": "Connecting…",
+      "doneTitle": "Google Chat is connected",
+      "doneBody": "Go back to Google Chat and send your message again. The agent answers from now on.",
+      "backToChat": "Back to Google Chat",
+      "selectOrganization": "Select an organization to continue.",
+      "loadError": "Your organizations could not be loaded. Refresh the page to try again.",
+      "errors": {
+        "invalidLink": "This link is not valid. Send the app a message in Google Chat to get a new one.",
+        "appUnknown": "This Google Chat app cannot be connected here.",
+        "identity": "Sign in with the Google account you use in Google Chat. If you signed in another way, link that Google account on your profile first.",
+        "external": "You are a guest in this space. Connect the app from a conversation in your own Google Workspace.",
+        "workspaceRequired": "Only a Google Workspace account can connect this app.",
+        "conversation": "The app can no longer see this conversation. Send it a message in Google Chat again.",
+        "taken": "Your Google Workspace is already connected to another organization.",
+        "noAgent": "This organization has no agent that can answer in Google Chat. Choose another organization.",
+        "unavailable": "Google Chat cannot be connected right now. Try again later.",
+        "noPermission": "You cannot add apps to this organization. Choose another organization.",
+        "tryAgain": "Something went wrong while checking with Google. Try again in a moment.",
+        "generic": "Google Chat could not be connected."
+      }
     },
     "callback": {
       "genericError": "sign-in failed",

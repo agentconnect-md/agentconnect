@@ -1,5 +1,5 @@
 // Installs the deployment-owned Google Chat app on an agent, the preset `agentconnect` agent by default (google-chat-integration.md §3).
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../../http/plugins/zod.js'
@@ -13,7 +13,7 @@ import { relayIngress } from '../../http/relay-ingress.js'
 import { integrationPlatformAvailability } from '../../http/daemon-platform-capability.js'
 import { installNewBot } from '../../http/install-bot.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
-import { TENANTLESS_SENTINEL } from '../../persistence/ports.js'
+import { TENANTLESS_SENTINEL, type AgentRecord } from '../../persistence/ports.js'
 import { BotDto, ErrorDto, IdParam, IntegrationDto } from '../../http/dto/index.js'
 import { toDto as toIntegrationDto } from '../../http/routes/integrations.js'
 import { toBotDto } from '../../http/routes/bots.js'
@@ -37,6 +37,59 @@ const ReplaceGoogleChatKeyBody = z.object({ serviceAccountKey: z.string().trim()
 /** The 409 copy when a pasted key would replace the deployment-owned app's, which the Setup Server holds. */
 export const GOOGLE_CHAT_DEPLOYMENT_KEY_MESSAGE =
   'The deployment’s Google Chat app takes its key from the Setup Server; update it there, then install the app again.'
+
+/** Why the deployment app cannot land on an agent: its status and the operator-facing sentence. */
+export interface GoogleChatInstallTargetRefusal {
+  status: 403 | 404 | 409
+  message: string
+}
+
+/** The agent the deployment app lands on, the preset unless named, once the caller may edit it and its daemon runs Google Chat. */
+export async function googleChatInstallTarget(
+  deps: HttpDeps,
+  req: FastifyRequest,
+  agentId?: string
+): Promise<{ agent: AgentRecord } | GoogleChatInstallTargetRefusal> {
+  const orgId = orgOf(req)
+  const targetId = agentId ?? (await deps.repos.presetAgent.get(orgId, 'general'))?.agentId
+  if (!targetId) {
+    return {
+      status: 409,
+      message: 'no target agent: pass agentId (the agentconnect preset is absent in this organization)'
+    }
+  }
+  const agent = await deps.repos.agent.get(orgId, AgentId(targetId))
+  if (!agent || !canView(agent, ctxOf(req))) return { status: 404, message: 'agent not found' }
+  if (!canEdit(agent, ctxOf(req))) return { status: 403, message: 'cannot edit this agent' }
+  // An unplaced agent is allowed, as for the Slack app; a placed one must be served by a daemon that runs Google Chat.
+  const servingDaemonId = await deps.placementResolver.servingDaemon(agent)
+  if (servingDaemonId) {
+    const availability = await integrationPlatformAvailability(deps, {
+      daemonId: servingDaemonId,
+      orgId,
+      viewer: ctxOf(req),
+      platform: GOOGLE_CHAT_PLATFORM
+    })
+    if (availability === 'not_found') return { status: 404, message: 'daemon not found' }
+    if (availability === 'unsupported') {
+      return { status: 409, message: `daemon does not support ${GOOGLE_CHAT_PLATFORM} integrations` }
+    }
+  }
+  return { agent }
+}
+
+/** The HTTP reason phrase for a refusal status. */
+export function googleChatErrorLabel(status: number): string {
+  const labels: Record<number, string> = {
+    400: 'Bad Request',
+    401: 'Unauthorized',
+    403: 'Forbidden',
+    404: 'Not Found',
+    409: 'Conflict',
+    503: 'Service Unavailable'
+  }
+  return labels[status] ?? 'Error'
+}
 
 export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: GoogleChatRouteSeams) {
   return async function googleChatPlatformInstallRoutesPlugin(app: FastifyInstance): Promise<void> {
@@ -99,41 +152,13 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: ingress.message })
         }
 
-        const agentId = req.body.agentId ?? (await deps.repos.presetAgent.get(orgId, 'general'))?.agentId
-        if (!agentId) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'no target agent: pass agentId (the agentconnect preset is absent in this organization)'
-          })
+        const target = await googleChatInstallTarget(deps, req, req.body.agentId)
+        if (!('agent' in target)) {
+          return reply
+            .code(target.status)
+            .send({ error: googleChatErrorLabel(target.status), statusCode: target.status, message: target.message })
         }
-        const agent = await deps.repos.agent.get(orgOf(req), AgentId(agentId))
-        if (!agent || !canView(agent, ctxOf(req))) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        }
-        if (!canEdit(agent, ctxOf(req))) {
-          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
-        }
-        // An unplaced agent is allowed, as for the Slack app; a placed one must be served by a daemon that runs Google Chat.
-        const servingDaemonId = await deps.placementResolver.servingDaemon(agent)
-        if (servingDaemonId) {
-          const availability = await integrationPlatformAvailability(deps, {
-            daemonId: servingDaemonId,
-            orgId,
-            viewer: ctxOf(req),
-            platform: GOOGLE_CHAT_PLATFORM
-          })
-          if (availability === 'not_found') {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
-          }
-          if (availability === 'unsupported') {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: `daemon does not support ${GOOGLE_CHAT_PLATFORM} integrations`
-            })
-          }
-        }
+        const { agent } = target
 
         // Validation takes the project from the key's authenticated account and its number from Google; those are the identity.
         const resolved = await resolveGoogleChatApp(platform, googleChat.fetch)

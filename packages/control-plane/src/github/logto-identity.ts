@@ -318,6 +318,12 @@ export class LogtoIdentityService {
     return feishuIdentitiesOf(await this.logtoUser(sub, this.identityTtlMs))
   }
 
+  /** The linked Google identity's provider user id, which a Google Chat `users/{id}` names; `fresh` skips the cache. */
+  async googleAccountIdFor(sub: string, fresh = false): Promise<string | null> {
+    const user = fresh ? await this.lookupUser(sub) : await this.logtoUser(sub, this.identityTtlMs)
+    return firstString(user?.identities?.google?.userId)
+  }
+
   /**
    * Warm-at-touch trigger (session-access-cold-visit.md §3): start, fire-and-forget,
    * the background lookups a later authorization read of this subject would block on.

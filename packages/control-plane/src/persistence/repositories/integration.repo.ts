@@ -29,6 +29,8 @@ import { lockDecisionChain } from '../decision-binding-fence.js'
 import { recomputeCredentialMarks } from './bot-credential-mark.js'
 import { BotExternalIdentityTaken, BotMissing, BotStillShared } from '../errors.js'
 import type {
+  BotIdentityChange,
+  BotIdentitySnapshot,
   BotRepo,
   BotCredentialCheck,
   BotIdentityProjector,
@@ -277,6 +279,41 @@ export class PgBotRepo implements BotRepo {
       data: { botUserId }
     })
     return result.count === 1
+  }
+
+  async mergeBotIdentity(
+    orgId: OrgId,
+    id: BotId,
+    merge: (current: BotIdentitySnapshot) => BotIdentityChange
+  ): Promise<boolean> {
+    return withAmbientTx(this.db, async (tx) => {
+      const locked = await tx.$queryRaw<
+        { platform: string; platformConfig: unknown; externalTenantId: string | null }[]
+      >`SELECT platform, "platformConfig", "externalTenantId" FROM bot WHERE id = ${id} AND "orgId" = ${orgId} FOR UPDATE`
+      if (locked.length === 0) throw new BotMissing(id)
+      const row = locked[0]!
+      const bag = (row.platformConfig as Record<string, unknown> | null) ?? {}
+      const change = merge({ platformConfig: bag, externalTenantId: row.externalTenantId })
+      const entries = change.platformConfig ?? {}
+      const rekey = change.externalTenantId !== undefined && change.externalTenantId !== row.externalTenantId
+      if (Object.keys(entries).length === 0 && !rekey) return false
+      try {
+        await tx.bot.update({
+          where: { id, orgId },
+          data: {
+            ...(Object.keys(entries).length > 0
+              ? { platformConfig: { ...bag, ...entries } as Prisma.InputJsonObject }
+              : {}),
+            ...(rekey ? { externalTenantId: change.externalTenantId } : {})
+          }
+        })
+      } catch (err) {
+        // The composite unique fired: another row already holds the new tenant key.
+        if ((err as { code?: string }).code === 'P2002') throw new BotExternalIdentityTaken(row.platform)
+        throw err
+      }
+      return true
+    })
   }
 
   async markFreed(orgId: OrgId, id: BotId, at: Date, lastAgentName: string | null): Promise<void> {

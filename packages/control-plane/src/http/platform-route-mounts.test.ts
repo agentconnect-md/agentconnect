@@ -43,6 +43,7 @@ import { LinearTokenService } from '../platforms/linear/token-service.js'
 import { linearConnectRoutes, linearOauthCallbackRoutes } from '../platforms/linear/routes.js'
 import { createGoogleChatCpProvider } from '../platforms/googlechat/provider.js'
 import { googleChatKeyRoutes, googleChatPlatformInstallRoutes } from '../platforms/googlechat/routes.js'
+import { googleChatClaimRoutes } from '../platforms/googlechat/claim.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
@@ -93,7 +94,8 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
       'GET /integrations/googlechat/platform-install',
       'POST /integrations/googlechat/platform-install'
     ],
-    googleChatKeyRoutesPlugin: ['PUT /bots/:id/googlechat/key']
+    googleChatKeyRoutesPlugin: ['PUT /bots/:id/googlechat/key'],
+    googleChatClaimRoutesPlugin: ['POST /integrations/googlechat/claim']
   },
   'public-callback': {
     slackOauthCallbackRoutesPlugin: ['GET /integrations/slack/oauth/callback'],
@@ -149,7 +151,7 @@ const LINEAR_SEAMS: LinearRouteSeams = {
 }
 /** Google Chat's install route registers only with the deployment-owned app configured. */
 const GOOGLE_CHAT_SEAMS: GoogleChatRouteSeams = {
-  app: { projectId: 'example-project', projectNumber: '123456789012', serviceAccountKey: '{}' },
+  app: { projectId: 'example-project', projectNumber: '123456789012', serviceAccountKey: '{}', multiTenant: false },
   fetch: async () => {
     throw new Error('the route table never calls Google')
   }
@@ -188,7 +190,11 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
     }),
     createGoogleChatCpProvider({
       installRoutes: {
-        org: [googleChatPlatformInstallRoutes(deps, GOOGLE_CHAT_SEAMS), googleChatKeyRoutes(deps, GOOGLE_CHAT_SEAMS)],
+        org: [
+          googleChatPlatformInstallRoutes(deps, GOOGLE_CHAT_SEAMS),
+          googleChatKeyRoutes(deps, GOOGLE_CHAT_SEAMS),
+          googleChatClaimRoutes(deps, GOOGLE_CHAT_SEAMS)
+        ],
         publicCallback: []
       }
     })

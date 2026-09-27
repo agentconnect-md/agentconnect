@@ -172,6 +172,8 @@ model User {
   // the active photo and cache-busts its public URL.
   profilePictureUpdatedAt DateTime? @db.Timestamptz(6)
   oidcSubject             String?   @unique // OIDC `sub` → user
+  // The provider user id of the linked Google identity, never the console token's `sub`; a Chat `users/{id}` names it.
+  googleAccountId         String?   @unique
   // The moment the user redeemed their waitlist join link = "formal / activated"
   // user. Non-null ⇒ may enter the app
   // and create orgs under WAITLIST_MODE. ONLY the CP's redeem path writes this (the

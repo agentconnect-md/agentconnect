@@ -278,6 +278,8 @@ export interface GoogleChatDeploymentApp {
   projectNumber: string
   /** Validated key JSON; omitted keeps the sealed key, which only the same project may reuse. */
   serviceAccountKey?: string
+  /** The app also serves other Google Workspace organizations (google-chat-integration.md §10); omitted means off. */
+  multiTenant?: boolean
 }
 
 /** Null clears the app. Google Chat apps are configured by hand in Google Cloud Console (google-chat-integration.md §3). */
@@ -292,7 +294,13 @@ export function googleChatDeploymentPut(
   return DeploymentConfigPutSchema.parse({
     values: {
       ...current.values,
-      googleChat: app ? { projectId: app.projectId, projectNumber: app.projectNumber } : null
+      googleChat: app
+        ? {
+            projectId: app.projectId,
+            projectNumber: app.projectNumber,
+            ...(app.multiTenant ? { multiTenant: true } : {})
+          }
+        : null
     },
     ...(secret === undefined ? {} : { secrets: { 'googleChat.serviceAccountKey': secret } })
   })

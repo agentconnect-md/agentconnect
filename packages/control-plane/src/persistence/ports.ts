@@ -3347,6 +3347,18 @@ export interface BotRecord {
   createdAt: Date
 }
 
+/** A bot row's public identity as {@link BotRepo.mergeBotIdentity} reads it under the row lock. */
+export interface BotIdentitySnapshot {
+  platformConfig: Record<string, unknown>
+  externalTenantId: string | null
+}
+
+/** What {@link BotRepo.mergeBotIdentity} writes: `platformConfig` entries merged over the bag, and a new tenant key. */
+export interface BotIdentityChange {
+  platformConfig?: Record<string, string>
+  externalTenantId?: string
+}
+
 /** The console-editable bot columns ({@link BotRepo.update}); omitted ⇒ left alone. */
 export interface BotUpdate {
   /** Shared-bot (multi-agent) opt-in; `false` is recounted under the row lock. */
@@ -3389,6 +3401,12 @@ export interface BotRepo {
   /** Backfill only a missing provider bot identity (a Slack member id, a Chat app's `users/…` name); never replace
    *  an established one. System-tier like {@link BotRepo.setSlackAppIdIfMissing}. */
   setBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean>
+  /** Write the `platformConfig` entries and tenant key `merge` derives from the locked row; false when it derived none. Org-fenced; a taken key throws `BotExternalIdentityTaken`. */
+  mergeBotIdentity(
+    orgId: OrgId,
+    id: BotId,
+    merge: (current: BotIdentitySnapshot) => BotIdentityChange
+  ): Promise<boolean>
   /** Stamp the freed-bot display hints when its LAST integration is removed.
    *  Org-fenced: a cross-org id writes nothing. */
   markFreed(orgId: OrgId, id: BotId, at: Date, lastAgentName: string | null): Promise<void>
@@ -5920,6 +5938,10 @@ export interface UserRepo {
    * that as "no identity", never as a pass.
    */
   getOidcSubject(userId: string): Promise<string | null>
+  /** The provider user id of the user's linked Google identity, which a Chat `users/{id}` names (google-chat-integration.md §10.6). */
+  getGoogleAccountId(userId: string): Promise<string | null>
+  /** Record what the identity provider reported (null clears); the id moves off any other row that held it. */
+  setGoogleAccountId(userId: string, googleAccountId: string | null): Promise<void>
 }
 
 export interface OrgRepo {

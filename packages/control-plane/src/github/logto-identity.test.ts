@@ -432,3 +432,34 @@ describe('LogtoIdentityService subject-cache bounds', () => {
     expect(calls.user).toBe(10_002)
   })
 })
+
+describe('LogtoIdentityService.googleAccountIdFor (google-chat-integration.md §10.6)', () => {
+  it('reads the Google identity’s provider user id, never the subject', async () => {
+    const clock = new FakeClock(0)
+    const users: Record<string, unknown> = {
+      'sub-1': { identities: { google: { userId: '100000000000000000009' } } },
+      'sub-2': slackUser()
+    }
+    const { fetchImpl, calls } = fakeLogto(users)
+    const svc = svcOf(fetchImpl, clock)
+
+    await expect(svc.googleAccountIdFor('sub-1')).resolves.toBe('100000000000000000009')
+    await expect(svc.googleAccountIdFor('sub-2')).resolves.toBeNull()
+    await expect(svc.googleAccountIdFor('sub-missing')).resolves.toBeNull()
+    expect(calls.user).toBe(3)
+  })
+
+  it('serves a cached read, and a fresh read sees a just-linked identity', async () => {
+    const clock = new FakeClock(0)
+    const users: Record<string, unknown> = { 'sub-1': slackUser() }
+    const { fetchImpl, calls } = fakeLogto(users)
+    const svc = svcOf(fetchImpl, clock)
+
+    await expect(svc.googleAccountIdFor('sub-1')).resolves.toBeNull()
+    users['sub-1'] = { identities: { ...slackUser().identities, google: { userId: '100000000000000000009' } } }
+    await expect(svc.googleAccountIdFor('sub-1')).resolves.toBeNull()
+    expect(calls.user).toBe(1)
+    await expect(svc.googleAccountIdFor('sub-1', true)).resolves.toBe('100000000000000000009')
+    expect(calls.user).toBe(2)
+  })
+})

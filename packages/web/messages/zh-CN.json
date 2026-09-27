@@ -937,7 +937,8 @@
       "waitlist": "候补名单 · AgentConnect",
       "activate": "激活账户 · AgentConnect",
       "join": "加入组织 · AgentConnect",
-      "welcome": "开始使用 · AgentConnect"
+      "welcome": "开始使用 · AgentConnect",
+      "googleChatClaim": "连接 Google Chat · AgentConnect"
     },
     "login": {
       "brandLead": "在团队已在使用的工具中运行你的 Agent。",
@@ -966,6 +967,44 @@
       "goToAgentConnect": "前往 AgentConnect",
       "joining": "正在加入组织…",
       "role": "你将以协作者身份加入。"
+    },
+    "googleChatClaim": {
+      "preparing": "正在准备…",
+      "returning": "正在返回 Google Chat…",
+      "unavailable": "链接不可用",
+      "goToAgentConnect": "前往 AgentConnect",
+      "title": "连接 Google Chat",
+      "description": "选择由哪个组织的 Agent 在 Google Chat 中回复你的 Google Workspace。",
+      "account": "Google Chat 账号",
+      "app": "应用",
+      "conversation": "对话",
+      "directMessage": "私信",
+      "space": "空间 {name}",
+      "organization": "组织",
+      "noOrganizations": "你还没有可以添加应用的组织。先创建一个，再刷新此页面。",
+      "createOrganization": "创建组织",
+      "refresh": "刷新",
+      "connect": "连接",
+      "connecting": "正在连接…",
+      "doneTitle": "Google Chat 已连接",
+      "doneBody": "请回到 Google Chat，再发一次你的消息。从现在起由 Agent 回复。",
+      "backToChat": "返回 Google Chat",
+      "selectOrganization": "请选择一个组织以继续。",
+      "loadError": "无法加载你的组织。请刷新页面重试。",
+      "errors": {
+        "invalidLink": "此链接无效。请在 Google Chat 中给应用发一条消息以获取新链接。",
+        "appUnknown": "无法在这里连接此 Google Chat 应用。",
+        "identity": "请使用你在 Google Chat 中使用的 Google 账号登录。如果你用其他方式登录，请先在个人资料中关联该 Google 账号。",
+        "external": "你是此空间的访客。请在你自己的 Google Workspace 中的对话里连接此应用。",
+        "workspaceRequired": "只有 Google Workspace 账号可以连接此应用。",
+        "conversation": "应用已无法访问此对话。请在 Google Chat 中再给它发一条消息。",
+        "taken": "你的 Google Workspace 已连接到另一个组织。",
+        "noAgent": "此组织没有可以在 Google Chat 中回复的 Agent。请选择其他组织。",
+        "unavailable": "目前无法连接 Google Chat。请稍后再试。",
+        "noPermission": "你无法向此组织添加应用。请选择其他组织。",
+        "tryAgain": "向 Google 核验时出错。请稍后再试。",
+        "generic": "无法连接 Google Chat。"
+      }
     },
     "callback": {
       "genericError": "登录失败",

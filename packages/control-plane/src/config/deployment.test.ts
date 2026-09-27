@@ -162,6 +162,22 @@ describe('applyDeploymentEnvironment', () => {
     expect(cleared.GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY).toBeUndefined()
   })
 
+  it('projects the Google Chat multi-tenant switch only when the document turns it on', () => {
+    const base = runtime()
+    const googleChat = { projectId: 'example-project', projectNumber: '123456789012' }
+    const secrets = { 'googleChat.serviceAccountKey': '{"type":"service_account"}' }
+    const on = applyDeploymentEnvironment(
+      bootstrap,
+      runtime({ values: { ...base.values, googleChat: { ...googleChat, multiTenant: true } }, secrets })
+    )
+    expect(on.GOOGLE_CHAT_PLATFORM_MULTI_TENANT).toBe('true')
+    const off = applyDeploymentEnvironment(
+      { ...bootstrap, GOOGLE_CHAT_PLATFORM_MULTI_TENANT: 'true' },
+      runtime({ values: { ...base.values, googleChat }, secrets })
+    )
+    expect(off.GOOGLE_CHAT_PLATFORM_MULTI_TENANT).toBeUndefined()
+  })
+
   it('keeps regional Login Apps owned by the deployment document', () => {
     const base = runtime()
     const managed = applyDeploymentEnvironment(
