@@ -39,6 +39,9 @@ const ROW = 'grid grid-cols-1 items-center gap-2 border-b border-(--border-subtl
 const ROW_ACTION =
   'flex h-6 w-6 items-center justify-center rounded-[5px] text-(--text-tertiary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:pointer-events-none disabled:opacity-35'
 const NUMBER_INPUT = 'inp mn h-[30px] min-h-0 w-full px-[6px] py-0 text-center text-[12px] font-medium'
+// Every picker sits right-aligned at one width beside a slot as wide as the next-Decision control, so rules and the fallback line up.
+const PICKER = 'min-w-0 flex-1 desktop:flex-[0_1_250px]'
+const CHAIN_SLOT = 'flex w-[49px] flex-none justify-end'
 
 function nextCondition(question: DecisionQuestion, rules: AgentModelSelection['rules']): DecisionCondition {
   if (question.type === 'score') return { type: 'score', min: 0, max: question.criteria.length - 1 }
@@ -152,14 +155,18 @@ export function ModelSelectionField({
     />
   )
   const fallbackPanel = (
-    <div className="grid grid-cols-1 items-center gap-3 rounded-b-lg bg-(--surface-sunken) px-3 py-[10px] desktop:grid-cols-[minmax(0,1fr)_minmax(0,250px)]">
+    <div className="grid grid-cols-1 items-center gap-3 rounded-b-lg bg-(--surface-sunken) px-3 py-[10px] desktop:grid-cols-[minmax(0,1fr)_minmax(0,303px)_28px] desktop:gap-x-2">
       <span className="flex min-w-0 flex-col gap-[2px]">
         <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
           {t('fallbackTitle')}
         </span>
         <span className="font-sans text-[11.5px] leading-normal text-(--text-tertiary)">{t('fallback')}</span>
       </span>
-      {fallbackPicker(true)}
+      <div className="flex min-w-0 items-center gap-1 desktop:justify-end">
+        <div className={PICKER}>{fallbackPicker(true)}</div>
+        <span className={`${CHAIN_SLOT} max-desktop:hidden`} />
+      </div>
+      <span className="max-desktop:hidden" />
     </div>
   )
   // One level of the chain: the first Decision in place, or a later one inside its sheet.
@@ -221,9 +228,9 @@ export function ModelSelectionField({
         retained?.find((entry) => entry.id === next?.decisionId)?.name ??
         t('nextDecision')
       return (
-        <div className="flex min-w-0 items-center gap-1">
+        <div className="flex min-w-0 items-center gap-1 desktop:justify-end">
           {'runtime' in rule ? (
-            <div className="min-w-0 flex-1">
+            <div className={PICKER}>
               <RuntimeModelSelect
                 dense
                 runSettings
@@ -241,30 +248,34 @@ export function ModelSelectionField({
               />
             </div>
           ) : (
-            <NextDecisionChip
-              decision={decisions.find((entry) => entry.id === next?.decisionId)}
-              name={nextName}
-              label={t('editNext', { name: nextName })}
-              removeLabel={t('useModel')}
-              onOpen={() => enter(rule.nextStepId)}
-              onRemove={() => onPick(fallback)}
-            />
+            <div className={PICKER}>
+              <NextDecisionChip
+                decision={decisions.find((entry) => entry.id === next?.decisionId)}
+                name={nextName}
+                label={t('editNext', { name: nextName })}
+                removeLabel={t('useModel')}
+                onOpen={() => enter(rule.nextStepId)}
+                onRemove={() => onPick(fallback)}
+              />
+            </div>
           )}
-          {'runtime' in rule && (
-            <NextDecision
-              decisions={decisions}
-              ariaLabel={`${ariaLabel}: ${t('nextDecision')}`}
-              disabled={(configuration?.steps?.length ?? 0) >= DECISION_CHAIN_MAX_STEPS - 1}
-              onSelect={(entry) => {
-                const id = crypto.randomUUID()
-                onPick({ nextStepId: id }, [
-                  ...(configuration?.steps ?? []),
-                  { id, decisionId: entry.id, rules: [{ when: nextCondition(entry.question, []), ...fallback }] }
-                ])
-                enter(id)
-              }}
-            />
-          )}
+          <span className={CHAIN_SLOT}>
+            {'runtime' in rule && (
+              <NextDecision
+                decisions={decisions}
+                ariaLabel={`${ariaLabel}: ${t('nextDecision')}`}
+                disabled={(configuration?.steps?.length ?? 0) >= DECISION_CHAIN_MAX_STEPS - 1}
+                onSelect={(entry) => {
+                  const id = crypto.randomUUID()
+                  onPick({ nextStepId: id }, [
+                    ...(configuration?.steps ?? []),
+                    { id, decisionId: entry.id, rules: [{ when: nextCondition(entry.question, []), ...fallback }] }
+                  ])
+                  enter(id)
+                }}
+              />
+            )}
+          </span>
         </div>
       )
     }
@@ -323,6 +334,12 @@ export function ModelSelectionField({
         <Icon name="info" size={11} />
       </span>
     )
+    const pickerHead = (
+      <span className="flex min-w-0 justify-end gap-1">
+        <span className={PICKER}>{t('providerModel')}</span>
+        <span className={CHAIN_SLOT} />
+      </span>
+    )
     const arrow = (
       <Icon name="arrow-right" size={13} className="hidden flex-none text-(--text-tertiary) desktop:block" />
     )
@@ -337,7 +354,7 @@ export function ModelSelectionField({
             {hint(t('choiceHelp'))}
           </span>
           <span />
-          <span>{t('providerModel')}</span>
+          {pickerHead}
           {addButton}
         </div>
         {selection.rules.map((rule, index) => {
@@ -426,7 +443,7 @@ export function ModelSelectionField({
           </span>
           <span>{t('toColumn')}</span>
           <span />
-          <span>{t('providerModel')}</span>
+          {pickerHead}
           {addButton}
         </div>
         {selection.rules.map((rule, index) => {
@@ -479,7 +496,7 @@ export function ModelSelectionField({
         <div className={`${HEAD} ${BOOLEAN_COLS}`}>
           <span>{t('answerColumn')}</span>
           <span />
-          <span>{t('providerModel')}</span>
+          {pickerHead}
           <span />
         </div>
         {([true, false] as const).map((answer) => {
@@ -496,18 +513,15 @@ export function ModelSelectionField({
             >
               <span className="font-mono text-[12.5px] font-medium leading-normal text-(--text-primary)">{label}</span>
               {arrow}
-              <div className="min-w-0 desktop:max-w-[300px]">
-                {rulePicker(rule, t('answerModel', { answer: label }), (target, steps) =>
-                  onChange({ ...selection, rules: setBooleanTarget(selection.rules, answer, target) }, steps)
-                )}
-              </div>
+              {rulePicker(rule, t('answerModel', { answer: label }), (target, steps) =>
+                onChange({ ...selection, rules: setBooleanTarget(selection.rules, answer, target) }, steps)
+              )}
               <span className="flex justify-end">
-                {index >= 0 && (
+                {/* The last rule stays: a binding needs one, and Fixed is how to drop it. */}
+                {index >= 0 && clearBooleanTarget(selection.rules, answer).length > 0 && (
                   <button
                     type="button"
                     className={ROW_ACTION}
-                    // The last rule stays: a binding needs one, and Fixed is how to drop it.
-                    disabled={clearBooleanTarget(selection.rules, answer).length === 0}
                     aria-label={t('useFallback', { answer: label })}
                     title={t('useFallback', { answer: label })}
                     onClick={() => onChange({ ...selection, rules: clearBooleanTarget(selection.rules, answer) })}
