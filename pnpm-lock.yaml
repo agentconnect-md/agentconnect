@@ -583,6 +583,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      ai:
+        specifier: ^6.0.287
+        version: 6.0.287(zod@4.6.5)
       tsx:
         specifier: ^4.23.15
         version: 4.23.15

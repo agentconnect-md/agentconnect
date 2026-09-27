@@ -2,7 +2,7 @@
  * `http/routes/webchat-token.ts` — mints the short-lived browser webchat token
  * (shared-bot-relay.md §10, milestone A4).
  *
- *   POST /orgs/:orgId/agents/:agentId/webchat/token → { token, relayUrl, conversationId }
+ *   POST /orgs/:orgId/agents/:agentId/webchat/token → { token, relayUrl, conversationId, expiresAt }
  *
  * The console calls this (authenticated as the human, org-scoped) BEFORE dialing the
  * relay pool: the CP checks the caller can view the agent, registers or verifies the
@@ -36,7 +36,9 @@ const Body = z.object({
 const WebchatTokenDto = z.object({
   token: z.string(),
   relayUrl: z.string(),
-  conversationId: z.string()
+  conversationId: z.string(),
+  // The token's own `exp`; a caller reuses the token until then instead of minting per turn.
+  expiresAt: z.string().datetime()
 })
 
 const ConversationParams = z.object({ orgId: z.string() })
@@ -196,14 +198,14 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         } else {
           await deps.repos.webchatConversation.create(binding)
         }
-        const token = await deps.webchatTokens.mint({
+        const { token, expiresAt } = await deps.webchatTokens.mint({
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),
           agentId: agent.id,
           orgId: agent.orgId,
           conversationId
         })
-        return reply.send({ token, relayUrl, conversationId })
+        return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString() })
       }
     )
 
@@ -272,7 +274,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           { orgId: agent.orgId, agentId: agent.id, userId },
           s.id
         )
-        const token = await deps.webchatTokens.mint({
+        const { token, expiresAt } = await deps.webchatTokens.mint({
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),
           agentId: agent.id,
@@ -280,7 +282,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           conversationId,
           ...(s.visibility === 'private' && s.ownerIdentity ? { privateSessionOwnerIdentity: s.ownerIdentity } : {})
         })
-        return reply.send({ token, relayUrl, conversationId })
+        return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString() })
       }
     )
 
@@ -334,14 +336,14 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           if (!(await everyTurnReachesItsContent(orgId, resumable.currentSessionIds))) {
             return reply.code(409).send(AGENT_MOVED)
           }
-          const token = await deps.webchatTokens.mint({
+          const { token, expiresAt } = await deps.webchatTokens.mint({
             userId,
             ...(await authorIdentity(userId, req.principal!.email)),
             agentId: primary.id,
             orgId,
             conversationId
           })
-          return reply.send({ token, relayUrl, conversationId })
+          return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString() })
         }
 
         const agentIds = [...new Set(req.body.agentIds!)]
@@ -371,14 +373,14 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           { conversationId, userId, agentId: primary!.id, orgId },
           members.map((a) => a.id)
         )
-        const token = await deps.webchatTokens.mint({
+        const { token, expiresAt } = await deps.webchatTokens.mint({
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),
           agentId: primary!.id,
           orgId,
           conversationId
         })
-        return reply.send({ token, relayUrl, conversationId })
+        return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString() })
       }
     )
 

@@ -516,7 +516,9 @@ block at the daemon, and is never persisted by the relay or Control Plane.
 
 ### 10.4 Agent chat API
 
-**Status:** Proposed.
+**Status:** Milestone 1 is implemented: the relay's `/ai-sdk/chat` route, the UI
+message stream encoder, turn admission, the per-token verdict cache, and
+`expiresAt` on the token routes. The rest is proposed.
 
 Chat frontends built on the AI SDK's `useChat`, such as a documentation site's
 Ask AI panel, speak the AI SDK UI message stream protocol: one HTTP POST per
@@ -546,11 +548,14 @@ The proxy mints a token per conversation, not per turn:
    the token's claims carry that permission and the agent
    ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#key-permissions-and-agent-selection)),
    and `rc/verify` returns them with the verdict.
-2. For each turn, the proxy calls `POST <relayUrl>/chat` with
-   `Authorization: Bearer <token>` and forwards the `useChat` request body.
+2. For each turn, the proxy calls `POST <relayUrl>/ai-sdk/chat/:conversationId`
+   with `Authorization: Bearer <token>` and forwards the `useChat` request body.
+   The path names the conversation and must match the token's binding, or the
+   relay answers 404.
    - The relay turns the last user message's text into a webchat turn. It
      ignores the earlier messages, because the daemon session already holds the
-     history.
+     history. The turn carries no delegated MCP entitlement, which stays with
+     the console's own socket.
    - The relay streams the turn's `rd/chat` output back as UI message parts.
 
 The token is the browser webchat token, with its five-minute TTL. The proxy
@@ -576,7 +581,7 @@ socket refuses it at the handshake, one check beside the verify call, so the
 socket's other operations, runtime and permission changes, per-turn overrides,
 `targets`, `mentions`, elicitation, and MCP App calls, are out of the key
 holder's reach, and so is any other participant of a conversation that has
-gained one since. `/chat` exposes one operation, a text turn, and addresses it
+gained one since. `/ai-sdk/chat` exposes one operation, a text turn, and addresses it
 to the token's agent alone; a `useChat` request has no representation for
 anything else. A token without the claim, the console's own, is accepted by
 both entry points as today. The daemon's `allowRuntimeChangesInChat` gate is
@@ -591,35 +596,42 @@ unaffected.
 | `session_info`                           | `message-metadata` with the title                       |
 | `notice`                                 | `data-notice`                                           |
 | `done`                                   | `finish`                                                |
-| rejected ack, `error`                    | `error`, with the ack reason                            |
+| `done` with `error`                      | `error`, with the reason                                |
 | elicitation, MCP App, `superseded` kinds | dropped                                                 |
+
+A rejected ack arrives before any output, so the relay answers it with an HTTP
+status instead of a stream: 409 for `busy`, 503 when the agent cannot take the
+turn now (`no_agent`, `paused`, `draining`), 502 otherwise, with the ack reason
+in the body. A daemon link that drops mid-turn ends the stream with `error`.
 
 Tool activity arrives as `data-tool` parts rather than AI SDK tool parts,
 because webchat carries a tool's title and status but not its name or
 arguments. A client that ignores data parts shows text only. The encoder sits
-behind one interface over the `rd/chat` stream, so an AG-UI encoder could later
-serve the same route. The stream's framing, `start`, the step parts, the
+behind one interface over the `rd/chat` stream, so another protocol such as
+AG-UI could later reuse it under its own prefix (`/ag-ui/…`). The stream's framing, `start`, the step parts, the
 terminator, and the response headers, is pinned by tests that parse the
 relay's output with the `ai` package's own client, not by string assertions.
 
 **Turn admission:**
 
-- The relay allows one turn in flight per conversation. A second `POST /chat`
-  answers 409. This is correctness, not a rate bound: the daemon never queues
+- The relay allows one turn in flight per conversation. A second POST for the
+  same conversation answers 409. This is correctness, not a rate bound: the daemon never queues
   a webchat turn, it steers a second message into the live turn or refuses
   `busy` (#1847), so a forwarded second POST would land inside the first turn
   and get no stream of its own.
 - The slot is held until the daemon's `done` for that turn, not until the HTTP
   response ends. Closing the HTTP stream does not cancel the turn; the AI
   SDK's `stop()` aborts only the fetch, and the turn finishes into the session
-  transcript.
+  transcript. The slot is also released when the daemon link that admitted
+  the turn drops, since its `done` can no longer arrive there, and after a
+  30-minute silence as a last resort.
 - The response carries only output whose `turnId` is the admitted turn's.
   Output from another participant on the same conversation, such as a browser
   socket, is not forwarded.
 
 **Resume (later milestone):**
 
-- `GET <relayUrl>/chat/:conversationId/stream`, called with the conversation's
+- `GET <relayUrl>/ai-sdk/chat/:conversationId/stream`, called with the conversation's
   token, issues `attach` and then `resume` from index `-1` against the daemon's
   bounded output window (§10.3).
 - The replay works only while that window still holds the turn from its first
@@ -655,7 +667,7 @@ two can coexist.
 
 **Milestones:**
 
-1. **Relay:** `/chat`, the UI message stream encoder, turn admission, the
+1. **Relay:** `/ai-sdk/chat`, the UI message stream encoder, turn admission, the
    per-token verdict cache, and `expiresAt` on the token route's response. A
    `full` personal key works from this point.
 2. **CP and Web:** key permissions and agent selection

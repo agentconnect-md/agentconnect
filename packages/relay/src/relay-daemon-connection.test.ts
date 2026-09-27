@@ -213,6 +213,21 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     expect(onClosed).toHaveBeenCalledWith(DAEMON_ID, conn)
   })
 
+  it('runs each onceClosed listener exactly once, skips an unsubscribed one, and runs a late one at once', async () => {
+    const { conn } = build()
+    const kept = vi.fn()
+    const dropped = vi.fn()
+    conn.onceClosed(kept)
+    conn.onceClosed(dropped)()
+    conn.close(4409, 'revoked') // the fake transport also fires its own close callback
+    expect(kept).toHaveBeenCalledTimes(1)
+    expect(dropped).not.toHaveBeenCalled()
+    const late = vi.fn()
+    conn.onceClosed(late)
+    await Promise.resolve()
+    expect(late).toHaveBeenCalledTimes(1)
+  })
+
   it('answers rd/route and rd/route/report bound to the authenticated daemon', async () => {
     const onRoute = vi.fn(async (_from: string, msg: { deliveryId: string }) => ({
       deliveryId: msg.deliveryId,

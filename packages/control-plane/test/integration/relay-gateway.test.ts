@@ -13,6 +13,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
+import { decodeJwt } from 'jose'
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   WEBCHAT_MULTI_AGENT_FEATURE,
@@ -455,15 +456,22 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
 
   // ── webchat token mint route + rc/verify(webchat-token) (§10, milestone A4) ──
 
-  it('POST …/webchat/token mints {token, relayUrl, conversationId} for a visible agent', async () => {
+  it('POST …/webchat/token mints {token, relayUrl, conversationId, expiresAt} for a visible agent', async () => {
     const { app } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
     await seedAgent(prisma, AGENT)
+    const before = Date.now()
     const res = await mintWebchatToken(app, AGENT)
+    const after = Date.now()
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { token: string; relayUrl: string; conversationId: string }
+    const body = res.json() as { token: string; relayUrl: string; conversationId: string; expiresAt: string }
     expect(body.relayUrl).toBe(RELAY_URL)
     expect(body.token.split('.')).toHaveLength(3) // a compact JWS (header.payload.sig)
     expect(body.conversationId).toMatch(/^[0-9a-f-]{36}$/) // a fresh conversation id
+    // `expiresAt` is the token's own `exp` (whole seconds), five minutes out.
+    const expiresAt = Date.parse(body.expiresAt)
+    expect(expiresAt).toBe(decodeJwt(body.token).exp! * 1000)
+    expect(expiresAt).toBeGreaterThan(before + 299_000)
+    expect(expiresAt).toBeLessThanOrEqual(after + 300_000)
   })
 
   it('POST …/webchat/token resumes the caller’s own conversation; unknown ids and another member’s turnless one are 404', async () => {
@@ -669,7 +677,8 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
       payload: { agentIds: [AGENT, AGENT_B] }
     })
     expect(res.statusCode).toBe(200)
-    const minted = res.json() as { token: string; conversationId: string }
+    const minted = res.json() as { token: string; conversationId: string; expiresAt: string }
+    expect(Date.parse(minted.expiresAt)).toBe(decodeJwt(minted.token).exp! * 1000)
 
     const roster = await prisma.webchatConversationAgent.findMany({
       where: { conversationId: minted.conversationId },

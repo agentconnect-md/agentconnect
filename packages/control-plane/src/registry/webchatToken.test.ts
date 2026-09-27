@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createHmac } from 'node:crypto'
-import { SignJWT, jwtVerify } from 'jose'
+import { SignJWT, decodeJwt, jwtVerify } from 'jose'
 import { WebchatTokenService, type WebchatTokenClaims } from './webchatToken.js'
 
 const PEPPER = 'webchat-token-test-pepper-0123456789abcdef'
@@ -15,24 +15,34 @@ const CLAIMS: WebchatTokenClaims = {
 describe('WebchatTokenService', () => {
   it('mints a token that verifies back to the same claims', async () => {
     const svc = new WebchatTokenService(PEPPER)
-    const token = await svc.mint(CLAIMS)
+    const { token } = await svc.mint(CLAIMS)
     expect(await svc.verify(token)).toEqual(CLAIMS)
+  })
+
+  it('returns the expiry the token is signed with, five minutes out', async () => {
+    const svc = new WebchatTokenService(PEPPER)
+    const before = Date.now()
+    const { token, expiresAt } = await svc.mint(CLAIMS)
+    const after = Date.now()
+    expect(expiresAt.getTime()).toBe(decodeJwt(token).exp! * 1000)
+    expect(expiresAt.getTime()).toBeGreaterThan(before + 299_000)
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(after + 300_000)
   })
 
   it("round-trips the author's avatar URL when the profile has one", async () => {
     const svc = new WebchatTokenService(PEPPER)
     const claims = { ...CLAIMS, userPicture: 'https://cdn.example.test/avatars/user-1.png' }
-    expect(await svc.verify(await svc.mint(claims))).toEqual(claims)
+    expect(await svc.verify((await svc.mint(claims)).token)).toEqual(claims)
   })
 
   it('round-trips an exact private-session owner proof', async () => {
     const svc = new WebchatTokenService(PEPPER)
     const claims = { ...CLAIMS, privateSessionOwnerIdentity: 'slack:T1:U1' }
-    expect(await svc.verify(await svc.mint(claims))).toEqual(claims)
+    expect(await svc.verify((await svc.mint(claims)).token)).toEqual(claims)
   })
 
   it('rejects a token minted with a DIFFERENT pepper (bad signature)', async () => {
-    const minted = await new WebchatTokenService(PEPPER).mint(CLAIMS)
+    const { token: minted } = await new WebchatTokenService(PEPPER).mint(CLAIMS)
     const other = new WebchatTokenService('a-totally-different-pepper-0123456789ab')
     expect(await other.verify(minted)).toBeNull()
   })
@@ -53,19 +63,19 @@ describe('WebchatTokenService', () => {
     const current = new WebchatTokenService(PEPPER)
     expect(await current.verify(legacyToken)).toBeNull()
 
-    const currentToken = await current.mint(CLAIMS)
+    const { token: currentToken } = await current.mint(CLAIMS)
     await expect(jwtVerify(currentToken, legacyKey, { algorithms: ['HS256'] })).rejects.toThrow()
   })
 
   it('rejects an EXPIRED token', async () => {
     const svc = new WebchatTokenService(PEPPER, -10) // exp 10s in the past ⇒ already expired
-    const token = await svc.mint(CLAIMS)
+    const { token } = await svc.mint(CLAIMS)
     expect(await new WebchatTokenService(PEPPER).verify(token)).toBeNull()
   })
 
   it('rejects a tampered token', async () => {
     const svc = new WebchatTokenService(PEPPER)
-    const token = await svc.mint(CLAIMS)
+    const { token } = await svc.mint(CLAIMS)
     const [h, p, s] = token.split('.')
     // Flip a byte in the payload segment — signature no longer matches.
     const tampered = `${h}.${p!.slice(0, -1)}${p!.at(-1) === 'A' ? 'B' : 'A'}.${s}`

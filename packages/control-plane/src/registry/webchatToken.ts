@@ -32,6 +32,12 @@ export interface WebchatTokenClaims {
   privateSessionOwnerIdentity?: string
 }
 
+/** A minted token and the instant its `exp` claim names. */
+export interface MintedWebchatToken {
+  token: string
+  expiresAt: Date
+}
+
 // v2 is intentionally incompatible with the pre-conversation-binding verifier:
 // a new token must not be accepted by an old CP during a rolling deployment.
 const KEY_INFO = 'agentconnect.webchat-token.v2'
@@ -50,8 +56,10 @@ export class WebchatTokenService {
   }
 
   /** Mint a short-lived token for `claims` (call ONLY after human-auth + canView). */
-  async mint(claims: WebchatTokenClaims): Promise<string> {
-    return new SignJWT({
+  async mint(claims: WebchatTokenClaims): Promise<MintedWebchatToken> {
+    // One `exp` for the signature and the returned `expiresAt`, so a caller renews on the token's own clock.
+    const exp = Math.floor(Date.now() / 1000) + this.ttlSec
+    const token = await new SignJWT({
       user: claims.user,
       ...(claims.userPicture ? { userPicture: claims.userPicture } : {}),
       agentId: claims.agentId,
@@ -62,8 +70,9 @@ export class WebchatTokenService {
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(claims.userId)
       .setIssuedAt()
-      .setExpirationTime(`${this.ttlSec}s`)
+      .setExpirationTime(exp)
       .sign(this.key)
+    return { token, expiresAt: new Date(exp * 1000) }
   }
 
   /** Verify signature + expiry and return the claims, or null on any failure. */

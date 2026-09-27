@@ -96,6 +96,7 @@ export class RelayDaemonConnection {
   private capabilities: ReadonlySet<string> = new Set()
 
   private readonly correlator: ReqRep<RelayDaemonFrame>
+  private readonly closeListeners = new Set<() => void>()
 
   constructor(
     private readonly transport: ServerTransport,
@@ -348,15 +349,33 @@ export class RelayDaemonConnection {
     return 'BAD_PAYLOAD'
   }
 
+  /** Run `listener` once when this socket closes (at once if it already has); returns the unsubscribe. */
+  onceClosed(listener: () => void): () => void {
+    if (this.state === 'CLOSED') {
+      queueMicrotask(listener)
+      return () => {}
+    }
+    this.closeListeners.add(listener)
+    return () => this.closeListeners.delete(listener)
+  }
+
   close(code: number, reason: string): void {
     this.state = 'CLOSED'
     this.correlator.rejectAll(new WireError('INTERNAL', 'connection closed', true))
     this.transport.close(code, reason)
+    this.fireClosed()
   }
 
   private onClose(): void {
     this.state = 'CLOSED'
     this.correlator.rejectAll(new WireError('INTERNAL', 'connection closed', true))
     if (this.daemonId) this.deps.onClosed(this.daemonId, this)
+    this.fireClosed()
+  }
+
+  private fireClosed(): void {
+    const listeners = [...this.closeListeners]
+    this.closeListeners.clear()
+    for (const listener of listeners) listener()
   }
 }
