@@ -48,6 +48,8 @@ interface Row {
   title: string | null
   channel?: string
   channelName?: string
+  /** The runtime and model a model selection chose. */
+  target?: string
 }
 
 type Loaded = { items: Row[]; more: boolean } | { error: unknown }
@@ -160,7 +162,8 @@ export function DecisionRecentEvaluations({
         items: page.items.map((item) => ({
           ...common(item),
           outcome: item.outcome,
-          title: `${item.target.runtime} · ${item.target.model}`
+          title: item.title,
+          target: `${item.target.runtime} · ${item.target.model}`
         })),
         more: page.nextCursor !== null
       }
@@ -413,6 +416,7 @@ export function DecisionRecentEvaluations({
                               <Icon name={ICONS[place.kind]} size={12} className="flex-none" />
                               <span className="truncate">
                                 {[place.label, row.channelName].filter(Boolean).join(' · ')}
+                                {row.target ? ` → ${row.target}` : ''}
                               </span>
                             </span>
                             <span className="flex-none">

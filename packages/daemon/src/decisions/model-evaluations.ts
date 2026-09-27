@@ -10,6 +10,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { LocalStore, DecisionModelEvaluationRow } from '../store/local-store.js'
 import { DecisionEvaluationScopeError } from './evaluations.js'
+import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
 
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength
 
@@ -28,6 +29,7 @@ export class DecisionModelEvaluationReader {
   private summary(row: DecisionModelEvaluationRow): DecisionModelEvaluationRecord | null {
     try {
       const value = DecisionModelEvaluationRecord.safeParse({
+        title: null,
         ...JSON.parse(row.summaryJson),
         seq: Number(row.seq),
         detailsExpired: row.detailJson === null
@@ -38,6 +40,23 @@ export class DecisionModelEvaluationReader {
     }
   }
 
+  // Each row reads as its session's title does in the console: the stored title with its mentions named.
+  private async titled(
+    items: DecisionModelEvaluationRecord[],
+    agentId: string
+  ): Promise<DecisionModelEvaluationRecord[]> {
+    const store = this.deps.store()
+    const raw = new Map<string, string | null>()
+    for (const { sessionId } of items)
+      if (!raw.has(sessionId))
+        raw.set(sessionId, (await store.getSessionByOutwardId(sessionId, agentId))?.title?.trim() || null)
+    const names = await store.getDisplayNames([...raw.values()].flatMap((title) => mentionedUserIds(title)))
+    return items.map((item) => {
+      const title = raw.get(item.sessionId)
+      return { ...item, title: title ? [...substituteUserMentions(title, names)].slice(0, 256).join('') : null }
+    })
+  }
+
   async list(orgId: string, req: DecisionModelEvaluationsRequest): Promise<DecisionModelEvaluationsReply> {
     this.assertScope(orgId, req.agentId)
     const rows = await this.deps
@@ -45,9 +64,11 @@ export class DecisionModelEvaluationReader {
       .listDecisionModelEvaluations(orgId, req.agentId, req.cursor, req.limit + 1, req.decisionId)
     const items: DecisionModelEvaluationRecord[] = []
     let more = rows.length > req.limit
-    for (const row of rows.slice(0, req.limit)) {
+    const summaries = rows.slice(0, req.limit).flatMap((row) => {
       const summary = this.summary(row)
-      if (!summary || (req.decisionId && summary.decisionId !== req.decisionId)) continue
+      return summary && (!req.decisionId || summary.decisionId === req.decisionId) ? [summary] : []
+    })
+    for (const summary of await this.titled(summaries, req.agentId)) {
       if (bytes({ items: [...items, summary], nextCursor: Number.MAX_SAFE_INTEGER }) > DECISION_LIST_MAX_BYTES) {
         more = true
         break
@@ -61,8 +82,9 @@ export class DecisionModelEvaluationReader {
   async get(orgId: string, req: DecisionModelEvaluationRequest): Promise<DecisionModelEvaluationReply> {
     this.assertScope(orgId, req.agentId)
     const row = await this.deps.store().getDecisionModelEvaluation(orgId, req.agentId, req.seq)
-    const summary = row && this.summary(row)
-    if (!row || !summary) return { evaluation: null }
+    const stored = row && this.summary(row)
+    if (!row || !stored) return { evaluation: null }
+    const [summary] = await this.titled([stored], req.agentId)
     let kept: Record<string, unknown> = {}
     if (row.detailJson) {
       try {

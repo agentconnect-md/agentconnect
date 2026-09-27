@@ -23,6 +23,7 @@ const record: DecisionModelEvaluationRecord = {
   seq: 7,
   at: '2026-09-26T10:00:00.000Z',
   sessionId: '11111111-1111-4111-8111-111111111111',
+  title: 'PR #42: Fix the parser',
   decisionId: '22222222-2222-4222-8222-222222222222',
   outcome: 'selected',
   reason: null,

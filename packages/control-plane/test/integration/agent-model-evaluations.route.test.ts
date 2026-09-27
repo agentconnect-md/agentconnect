@@ -19,6 +19,7 @@ const row = (seq: number, sessionId: string): DecisionModelEvaluationRecord => (
   seq,
   at: '2026-01-01T00:00:00.000Z',
   sessionId,
+  title: 'PR #42: Fix the parser',
   decisionId: DECISION,
   outcome: 'selected',
   reason: null,
@@ -86,6 +87,15 @@ describe('agent model evaluation reads', () => {
     const list = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations` })
     expect(list.statusCode, list.body).toBe(200)
     expect(list.json().items).toEqual([rows[1]])
+    // A row the daemon could not title, its session row aged out, takes the CP's session title.
+    await prisma.sessionMeta.update({ where: { id: publicId }, data: { title: 'Deploy the hotfix' } })
+    rows[1] = { ...rows[1]!, title: null }
+    const fallback = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations` })
+    expect(fallback.json().items).toEqual([{ ...rows[1], title: 'Deploy the hotfix' }])
+    expect(
+      (await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations/1` })).json().title
+    ).toBe('Deploy the hotfix')
+    rows[1] = { ...rows[1], title: 'PR #42: Fix the parser' }
     const filtered = await app.app.inject({
       method: 'GET',
       url: `${ORG}/agents/${agentId}/model-evaluations?decisionId=${DECISION}`
@@ -102,6 +112,7 @@ describe('agent model evaluation reads', () => {
     expect(oldHost.json().code).toBe('DAEMON_UPGRADE_REQUIRED')
     const allowed = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations/1` })
     expect(allowed.statusCode, allowed.body).toBe(200)
+    expect(allowed.json().title).toBe('PR #42: Fix the parser')
     const denied = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/model-evaluations/2` })
     expect(denied.statusCode).toBe(404)
     expect(denied.body).not.toContain('SECRET-BODY')

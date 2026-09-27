@@ -556,6 +556,8 @@ export const DecisionModelEvaluationRecord = z.strictObject({
   seq: z.number().int().positive(),
   at: z.string().max(64),
   sessionId: Id,
+  // The session's title with its mentions named, as the console reads it.
+  title: DecisionEvaluationTitle,
   decisionId: Id,
   outcome: z.enum(['selected', 'fallback']),
   reason: z.string().max(128).nullable(),

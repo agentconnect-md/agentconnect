@@ -6255,7 +6255,7 @@ export class LocalStore {
   async saveDecisionModelEvaluation(
     agentId: string,
     sessionId: string,
-    summary: Omit<DecisionModelEvaluationRecord, 'seq' | 'detailsExpired'>,
+    summary: Omit<DecisionModelEvaluationRecord, 'seq' | 'title' | 'detailsExpired'>,
     detail: Pick<
       DecisionModelEvaluationRecordDetail,
       'selection' | 'question' | 'input' | 'fullAnswer' | 'chain' | 'rawRequest' | 'rawResponse'

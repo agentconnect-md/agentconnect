@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DecisionModelEvaluationReader } from '../src/decisions/model-evaluations.js'
 import type { LocalStore } from '../src/store/local-store.js'
 import { STORE_RETENTION_RULES, StoreRetentionSweeper } from '../src/store/retention.js'
@@ -34,6 +34,8 @@ describe('model selection evaluation history', () => {
       { seq: 1, summaryJson: summary, detailJson: null, bodiesStrippedAt: null }
     ]
     const store = {
+      getSessionByOutwardId: async () => undefined,
+      getDisplayNames: async () => new Map(),
       listDecisionModelEvaluations: async (
         _orgId: string,
         _agentId: string,
@@ -74,17 +76,26 @@ describe('model selection evaluation history', () => {
     await save(1, DECISION)
     await save(2, OTHER)
     await save(3, DECISION)
+    // A row reads as its session's title does: the stored title with a known mention named.
+    await store.setDisplayName('U0KNOWN1', 'Dana Reyes', AT)
+    const titles: Record<string, string> = { [sessionId(3)]: '<@U0KNOWN1> hi' }
+    vi.spyOn(store, 'getSessionByOutwardId').mockImplementation(
+      async (id: string) => (titles[id] ? { title: titles[id] } : undefined) as never
+    )
     const page = await reader.list('', { agentId: AGENT, decisionId: DECISION, limit: 1 })
     expect(page.items.map((item) => item.sessionId)).toEqual([sessionId(3)])
+    expect(page.items[0]!.title).toBe('@Dana Reyes hi')
+    expect((await reader.get('', { agentId: AGENT, seq: page.items[0]!.seq })).evaluation?.title).toBe('@Dana Reyes hi')
     expect(page.nextCursor).toBe(page.items[0]!.seq)
     expect(
       (await reader.list('', { agentId: AGENT, decisionId: DECISION, cursor: page.nextCursor!, limit: 1 })).items.map(
         (item) => item.sessionId
       )
     ).toEqual([sessionId(1)])
-    expect(
-      (await reader.list('', { agentId: AGENT, decisionId: OTHER, limit: 20 })).items.map((item) => item.sessionId)
-    ).toEqual([sessionId(2)])
+    // A session the daemon no longer holds leaves its row untitled.
+    expect((await reader.list('', { agentId: AGENT, decisionId: OTHER, limit: 20 })).items).toMatchObject([
+      { sessionId: sessionId(2), title: null }
+    ])
     await store.close()
   })
 

@@ -31,6 +31,7 @@ import { transcriptChannelKey, type DecisionVerdictRow, type LocalStore } from '
 import { routerSubject } from './router.js'
 import { hookRouterSubject } from '../codehost/hook-routing.js'
 import { clampSessionTitle } from '../messages/hook-message.js'
+import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
 
 /** Refused because this daemon does not serve the lane the frame names (answered as SCOPE_DENIED). */
 export class DecisionEvaluationScopeError extends Error {
@@ -116,22 +117,23 @@ const SUBJECT_LABELS = new Map([
   ['issue', 'Issue #']
 ])
 const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim()
+type Names = Map<string, string>
 
 /** What was judged, as a session title reads: a code-host subject by number and title, else the message's first line. */
-function titleOf(input: Record<string, unknown> | undefined): string | null {
+function titleOf(input: Record<string, unknown> | undefined, names: Names): string | null {
   const subject = record(input?.subject)
   const label = typeof subject?.kind === 'string' ? SUBJECT_LABELS.get(subject.kind) : undefined
   if (subject && label) {
     const prefix = typeof subject.number === 'number' ? `${label}${subject.number}` : label.slice(0, -2)
     const detail = typeof subject.title === 'string' ? oneLine(subject.title) : ''
-    return clampSessionTitle(detail ? `${prefix}: ${detail}` : prefix)
+    return clampSessionTitle(substituteUserMentions(detail ? `${prefix}: ${detail}` : prefix, names))
   }
   const text = record(input?.currentMessage)?.text
   const line = typeof text === 'string' ? text.split('\n').map(oneLine).find(Boolean) : undefined
-  return line ? clampSessionTitle(line) : null
+  return line ? clampSessionTitle(substituteUserMentions(line, names)) : null
 }
 
-function summaryRow(row: VerdictRow): DecisionEvaluationRecord {
+function summaryRow(row: VerdictRow, names: Names = new Map()): DecisionEvaluationRecord {
   const { answer, matchedKeys } = answerOf(row)
   const input = record(parseJson(row.inputJson))
   const currentId = record(input?.currentMessage)?.id
@@ -141,7 +143,7 @@ function summaryRow(row: VerdictRow): DecisionEvaluationRecord {
     seq: Number(row.seq),
     at: new Date(Number(row.createdAt)).toISOString(),
     messageId: clip(row.ts ?? (typeof currentId === 'string' ? currentId : null), 256),
-    title: titleOf(input),
+    title: titleOf(input, names),
     decisionId: row.decisionId,
     outcome: outcomeOf(row),
     reason: clip(row.unavailableReason ?? row.cancelReason ?? hookRouteReasonOf(row), 128),
@@ -225,8 +227,8 @@ function routerTargets(row: DecisionVerdictRow): DecisionRoutingEvaluationRecord
   })
 }
 
-function routerSummaryRow(row: VerdictRow): DecisionRoutingEvaluationRecord {
-  const base = summaryRow(row)
+function routerSummaryRow(row: VerdictRow, names: Names = new Map()): DecisionRoutingEvaluationRecord {
+  const base = summaryRow(row, names)
   const config = record(parseJson(row.configJson))
   const stored = record(parseJson(row.answerJson))
   const ids = Array.isArray(stored?.matchedRuleIds) ? stored.matchedRuleIds : []
@@ -421,6 +423,12 @@ export class DecisionEvaluationReader {
     }
   }
 
+  // One lookup per page names the `<@U…>` mentions its titles quote, as a session title reads.
+  private async mentionNames(rows: readonly VerdictRow[]): Promise<Names> {
+    const ids = [...new Set(rows.flatMap((row) => mentionedUserIds(row.inputJson)))]
+    return ids.length ? await this.deps.store().getDisplayNames(ids) : new Map()
+  }
+
   // Each reply names the lane's session namespace so the CP gates it on that install's audience alone.
   async list(orgId: string, req: DecisionEvaluationsRequest): Promise<DecisionEvaluationsReply> {
     const { lane, conversation } = await this.lane(orgId, req)
@@ -432,8 +440,10 @@ export class DecisionEvaluationReader {
     })
     const items: DecisionEvaluationRecord[] = []
     let more = rows.length > req.limit
-    for (const row of rows.slice(0, req.limit)) {
-      const parsed = DecisionEvaluationRecord.safeParse(summaryRow(row))
+    const page = rows.slice(0, req.limit)
+    const names = await this.mentionNames(page)
+    for (const row of page) {
+      const parsed = DecisionEvaluationRecord.safeParse(summaryRow(row, names))
       if (!parsed.success) continue
       // The cursor placeholder is the widest a seq can print, so the real page never exceeds the cap.
       if (
@@ -453,7 +463,7 @@ export class DecisionEvaluationReader {
     const { lane, conversation } = await this.lane(orgId, req)
     const [row] = await this.deps.store().listDecisionVerdicts({ ...lane, seq: req.seq, limit: 1 })
     if (!row) return { evaluation: null, conversation }
-    const summary = DecisionEvaluationRecord.safeParse(summaryRow(row))
+    const summary = DecisionEvaluationRecord.safeParse(summaryRow(row, await this.mentionNames([row])))
     if (!summary.success) return { evaluation: null, conversation }
     const expired = summary.data.detailsExpired
     const fullAnswer = expired ? null : answerOf(row).answer
@@ -493,8 +503,10 @@ export class DecisionEvaluationReader {
     })
     const items: DecisionRoutingEvaluationRecord[] = []
     let more = rows.length > req.limit
-    for (const row of rows.slice(0, req.limit)) {
-      const parsed = DecisionRoutingEvaluationRecord.safeParse(routerSummaryRow(row))
+    const page = rows.slice(0, req.limit)
+    const names = await this.mentionNames(page)
+    for (const row of page) {
+      const parsed = DecisionRoutingEvaluationRecord.safeParse(routerSummaryRow(row, names))
       if (!parsed.success) continue
       // The cursor placeholder is the widest a seq can print, so the real page never exceeds the cap.
       if (
@@ -516,7 +528,7 @@ export class DecisionEvaluationReader {
       .store()
       .listRouterVerdicts({ orgId, subject, channels: [channel(req.channel)], seq: req.seq, limit: 1 })
     if (!row) return { evaluation: null, conversation }
-    const summary = DecisionRoutingEvaluationRecord.safeParse(routerSummaryRow(row))
+    const summary = DecisionRoutingEvaluationRecord.safeParse(routerSummaryRow(row, await this.mentionNames([row])))
     if (!summary.success) return { evaluation: null, conversation }
     const expired = summary.data.detailsExpired
     const detail: DecisionRoutingEvaluationRecordDetail = {
