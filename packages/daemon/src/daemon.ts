@@ -735,21 +735,14 @@ import {
   type LinearTurnState
 } from './platforms/linear/turn-output.js'
 import {
-  applyLinearMessageStrategy,
-  isLinearIssuelessSurface,
-  linearAckBody,
-  linearChannelName,
-  linearDeliveryReceiptId,
   linearFailureBody,
-  linearTeamGlyph,
-  linearTeamLink,
   readLinearExt,
   LinearStopActionSchema,
-  type LinearAdapterExt,
   type LinearStopAction,
-  LINEAR_STOP_RESPONSE_BODY,
-  LINEAR_UNSUPPORTED_SURFACE_BODY
+  LINEAR_STOP_RESPONSE_BODY
 } from './platforms/linear/message-strategy.js'
+import { linearPlatformModule, type LinearRelayIngressHost } from './platforms/linear/relay-ingress.js'
+import { PlatformModuleRegistry } from './platforms/registry.js'
 import {
   canonicalizeTelegramThread as canonicalizeTelegramThreadExternal,
   telegramMessageId as telegramMessageIdExternal,
@@ -992,9 +985,6 @@ type HostRetirement = {
   /** Settles once the process is stopped (or the shutdown drain took over). */
   retired: Promise<void>
 }
-
-/** How long a Linear delivery waits for the delegator's name before dispatching with the id. */
-const LINEAR_ACTOR_LOOKUP_MS = 1500
 
 /** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
  *  try is logged with the stage it sat in, so a silent stall names its step. */
@@ -1473,9 +1463,6 @@ export class Daemon {
   // Sessions whose console link already sits in the issue's Resources (Linear keys the entry
   // on the URL, so a restart re-sending it refreshes rather than duplicates).
   private readonly linearResourcesAttached = new Set<string>()
-  // `<integrationId>\u0000<teamId>` for every team already reported on the delivery fast path (§9.2),
-  // so a team earns at most one report per integration however much traffic it carries.
-  private readonly linearReportedTeams = new Set<string>()
   // agentId → the in-flight (or resolved) host-startup promise. Resolves to the
   // STARTED host (startHostWithRetry may build several across retries — the last,
   // successful one wins). `.has()` doubles as "is this agent starting / started?".
@@ -9702,9 +9689,8 @@ export class Daemon {
       await this.commands.setSessionMuted(muteKey, false)
       this.log.info(`relay: agent "${msg.agentId}" un-muted in ch=${normalized.channel} (explicit @mention)`)
     }
-    // §7.4 ingress strategy: the platform's own module shapes the prompt, records its session
-    // metadata, and may settle the delivery itself. Absent ⇒ the shared path, byte for byte.
-    const ingress = this.relayIngressStrategies.get(normalized.platform)
+    // §7.4 `relayIngress`: the module shapes the prompt, records its metadata, may settle it; absent ⇒ the shared path.
+    const ingress = this.platformModules.get(normalized.platform)?.relayIngress
     trace.stage = `prepare:${normalized.platform}`
     const prepared = ingress ? await ingress.prepare(msg, normalized, trace) : 'dispatch'
     trace.stage = 'dispatch'
@@ -9781,267 +9767,21 @@ export class Daemon {
     return await admitted
   }
 
-  /**
-   * §7.4 per-platform relay-ingress strategies, one registry entry per platform that needs one.
-   *
-   * Everything before this point on the `rd/msg(im)` path is core policy — arbitration echo,
-   * conversation gating, control commands, the `!stop` mute. What is NOT core is how one
-   * platform turns its delivered event into a prompt, and whether a delivery is something this
-   * build can serve at all. A platform with no entry keeps the shared path untouched.
-   */
-  private readonly relayIngressStrategies = new Map<
-    string,
-    {
-      /** Shape the delivery. `settled` ⇒ the platform answered it and no ACP turn follows;
-       *  `refused` ⇒ it could not be recorded, so the provider must deliver it again. */
-      prepare(
-        msg: RdMsgIm,
-        normalized: NormalizedMessage,
-        trace: RelayAckTrace
-      ): Promise<'dispatch' | 'settled' | 'refused'>
-      /** Run once, INSIDE dispatch's durable admission fence, the first time this delivery is
-       *  admitted. Rejecting refuses the delivery — nothing runs that could not be recorded. */
-      onAdmitted?(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean, steered: boolean): Promise<void>
-      /** Refuse the delivery when the durable row cannot be written, rather than running it
-       *  best-effort — for a platform whose admission hook USES that row as its dedup. */
-      requireDurable?: boolean
-      /** The permanent receipt id for this delivery, minted with the admission row in one
-       *  transaction. Its prior existence makes the delivery a duplicate: nothing runs. */
-      receiptId?(normalized: NormalizedMessage): string
-    }
-  >([
-    [
-      'linear',
-      {
-        prepare: async (msg, normalized, trace) => await this.prepareLinearDelivery(msg, normalized, trace),
-        onAdmitted: async (msg, normalized, busy, steered) => this.onLinearAdmitted(msg, normalized, busy, steered),
-        requireDurable: true,
-        receiptId: (normalized) => linearDeliveryReceiptId(stableMessageId(normalized))
-      }
-    ]
-  ])
+  /** The per-platform daemon modules core looks up by platform id (§7.4), one line per platform. */
+  private readonly platformModules = new PlatformModuleRegistry([linearPlatformModule(this.linearRelayIngressHost())])
 
-  /**
-   * Linear's §8 prompt assembly plus the §4.5 unsupported-surface answer.
-   *
-   * A malformed or absent adapter bag fails CLOSED into an ordinary dispatch: the member's own
-   * text is still their instruction, and inventing a header from nothing would be worse than
-   * shipping the turn without one.
-   */
-  private async prepareLinearDelivery(
-    msg: RdMsgIm,
-    normalized: NormalizedMessage,
-    trace: RelayAckTrace = { stage: 'received' }
-  ): Promise<'dispatch' | 'settled' | 'refused'> {
-    const ext = readLinearExt(normalized)
-    if (!ext) {
-      this.log.warn(`linear: delivery ${msg.msgId} carries no adapter bag — dispatching the raw text`)
-      return 'dispatch'
+  /** The narrow port Linear's relay-ingress strategy reaches the daemon through. */
+  private linearRelayIngressHost(): LinearRelayIngressHost {
+    return {
+      log: () => this.log,
+      store: () => this.store,
+      now: () => this.clock.now(),
+      connection: (integrationId) => this.lnConnByIntegration.get(integrationId),
+      agent: (agentId) => this.agents.get(agentId),
+      noteMessage: (conn, msg) => this.channelNameResolver?.noteMessage(conn, msg),
+      observePlatformChat: (platform, chat, integrationIds) =>
+        this.observedChannelsSync.observePlatformChat(platform, chat, integrationIds)
     }
-    trace.stage = 'linear:receipt'
-    // §4.5's "the daemon's durable inbox absorbs the rest": a delivery this daemon already
-    // served is dropped here, before anything reaches the feed. The ordinary dispatch row
-    // cannot answer that question — core deletes it the moment the turn settles, while
-    // Linear's 1 min / 1 h / 6 h ladder always redelivers well after — so the receipt below is
-    // the record that outlives the turn.
-    if (await this.linearDeliveryServed(normalized)) {
-      this.log.info(`linear: delivery ${msg.msgId} was already served — no turn, no activity`)
-      return 'settled'
-    }
-    // §4.5: the bag carries no issue, so this session sits on a surface v1 cannot serve. Answer
-    // once, start no turn — and answer only AFTER the durable receipt is minted, exactly like
-    // the acknowledgement (§10.1).
-    if (isLinearIssuelessSurface(ext)) {
-      let minted: boolean
-      try {
-        minted = await this.mintLinearDeliveryReceipt(msg, normalized)
-      } catch (err) {
-        // Nothing ran and nothing was recorded, so ask for the delivery again rather than
-        // answering an append-only feed with no way to recognize the redelivery.
-        this.log.warn(`linear: unsupported-surface receipt failed for ${msg.msgId}: ${formatErr(err)}`)
-        return 'refused'
-      }
-      // Lost the race: a sibling delivery owns the one answer this surface gets.
-      if (!minted) return 'settled'
-      const conn = this.lnConnByIntegration.get(msg.integrationId)
-      await conn
-        ?.postActivity(ext.agentSessionId, { type: 'response', body: LINEAR_UNSUPPORTED_SURFACE_BODY })
-        .catch((err: unknown) => this.log.warn(`linear: unsupported-surface reply failed: ${formatErr(err)}`))
-      this.log.info(`linear: session ${ext.agentSessionId} has no issue — answered without starting a turn`)
-      return 'settled'
-    }
-    const conn = this.lnConnByIntegration.get(msg.integrationId)
-    if (conn) {
-      // Sender and mentions resolve off the hot path, as on every platform whose messages carry
-      // ids alone — the session list and its avatars read the cache this fills.
-      this.channelNameResolver?.noteMessage(conn, normalized)
-      // The §8 header names the delegator, and a `created` event carries only `creatorId`: a
-      // bounded lookup fills the name the relay could not, the cache first. A miss keeps the id.
-      if (!normalized.sender.name) {
-        trace.stage = 'linear:actor-name'
-        const name = await this.linearActorName(conn, normalized.sender.id)
-        if (name) normalized.sender = { ...normalized.sender, name }
-      }
-    }
-    // §8: the per-turn prompt plus the session-stable standing block, both off the bag — no read.
-    applyLinearMessageStrategy(normalized)
-    // §9.2's fast path for a team created after the install: the label is the TEAM's, so it comes
-    // off the bag — never the issue, which would thrash the one display slot every sibling session
-    // in the team shares. The issue rides `threadUrl` and the §8 trusted header, both session-scoped.
-    this.noteLinearTeam(msg.integrationId, ext)
-    return 'dispatch'
-  }
-
-  /**
-   * §9.2 fast path: the first delivery for a team this daemon has not reported on this
-   * integration mints its conversation row from the bag, so a team created after the install has
-   * one from its first event instead of waiting for the CP reconciler tick that guarantees it.
-   *
-   * Non-authoritative and bounded: one report per (integration, team), tracked in memory and
-   * released again on failure so a later delivery retries. Fire-and-forget — the report is
-   * console bookkeeping and must never sit inside the ≤10 s acknowledgement budget (§10.1).
-   */
-  private noteLinearTeam(integrationId: string, ext: LinearAdapterExt): void {
-    const team = ext.team
-    if (!team?.id) return
-    const key = `${integrationId}\u0000${team.id}`
-    if (this.linearReportedTeams.has(key)) return
-    this.linearReportedTeams.add(key)
-    // The connection carries the workspace name the label leads with and the URL segment the
-    // team link is built on; without either the row is still named by its team alone.
-    const conn = this.lnConnByIntegration.get(integrationId)
-    const name = linearChannelName(team, conn)
-    void this.observedChannelsSync
-      .observePlatformChat(
-        'linear',
-        {
-          id: team.id,
-          ...(name ? { name } : {}),
-          ...linearTeamGlyph(team),
-          ...linearTeamLink(team, conn),
-          isPrivate: false
-        },
-        [integrationId]
-      )
-      .catch((err: unknown) => {
-        this.linearReportedTeams.delete(key)
-        this.log.warn(`linear: reporting team ${team.id} as an observed conversation failed: ${formatErr(err)}`)
-      })
-  }
-
-  /** The delegator's display name for the §8 header: the cache, else one lookup bounded by
-   *  {@link LINEAR_ACTOR_LOOKUP_MS} so a slow provider never holds the delivery. */
-  private async linearActorName(conn: LinearConnection, senderId: string): Promise<string | undefined> {
-    const cached = (await this.store.getDisplayNames([senderId])).get(senderId)
-    if (cached) return cached
-    // The full name first, as the resolver caches it for the session list — one spelling
-    // in the header and the list, not the handle in one and the name in the other.
-    const lookup = conn
-      .getUserProfile(senderId)
-      .then((p) => p.realName || p.name || undefined)
-      .catch(() => undefined)
-    const deadline = new Promise<undefined>((resolve) => {
-      const timer = setTimeout(() => resolve(undefined), LINEAR_ACTOR_LOOKUP_MS)
-      timer.unref?.()
-    })
-    return await Promise.race([lookup, deadline])
-  }
-
-  /** Has this daemon already served this exact Linear delivery? A read failure answers NO:
-   *  re-running a turn is recoverable, dropping the member's message is not. */
-  private async linearDeliveryServed(normalized: NormalizedMessage): Promise<boolean> {
-    try {
-      return await this.store.hasInbox(linearDeliveryReceiptId(stableMessageId(normalized)))
-    } catch (err) {
-      this.log.warn(`linear: receipt read failed for ${normalized.msgId}: ${formatErr(err)}`)
-      return false
-    }
-  }
-
-  /**
-   * Mint the durable "already served" receipt for one delivery, and report whether THIS call
-   * is the one that minted it. `INSERT OR IGNORE` is the CAS, so concurrent deliveries of the
-   * same `msgId` resolve to exactly one winner and only the winner may write to the feed.
-   *
-   * The row is born completed: nothing will ever run it, so startup replay skips it by
-   * construction and it ages out under its own retention rule rather than living forever.
-   *
-   * THROWS when the store cannot record it. Every caller is inside a fence that refuses the
-   * delivery on that: work whose permanent dedup record does not exist must not run, or the
-   * provider's next redelivery runs it a second time.
-   */
-  private async mintLinearDeliveryReceipt(msg: RdMsgIm, normalized: NormalizedMessage): Promise<boolean> {
-    const key = sessionKey(
-      normalized.platform,
-      normalized.channel,
-      normalized.thread ?? normalized.msgId,
-      msg.agentId,
-      normalized.transportScope
-    )
-    return await this.store.appendInbox({
-      id: linearDeliveryReceiptId(stableMessageId(normalized)),
-      sessionKey: key,
-      agentId: msg.agentId,
-      msg: JSON.stringify(normalized),
-      integrationId: msg.integrationId,
-      completedAt: this.clock.now(),
-      loopGuardCounted: 1,
-      enqueuedAt: monotonicTs()
-    })
-  }
-
-  /**
-   * The ≤10 s pre-spawn acknowledgement (§10.1) — the ONE activity posted outside the
-   * converger, and the reason a suppressed turn can still be ack-only — plus the §10.2
-   * auto-start of a freshly delegated issue. Fire-and-forget: both are chrome, and the turn
-   * they precede must never wait on a Linear write.
-   *
-   * Reached only on an admission that WON the receipt CAS, so the strict order §10.1 asks for
-   * holds by construction: the admission row and the permanent receipt were committed together
-   * before this can run, and a losing copy of the delivery never reaches it at all — which is
-   * also what keeps a redelivered `created` from moving the issue twice.
-   */
-  private onLinearAdmitted(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean, steered = false): void {
-    const conn = this.lnConnByIntegration.get(msg.integrationId)
-    const ext = readLinearExt(normalized)
-    if (!conn || !ext) return
-    const agent = this.agents.get(msg.agentId)
-    const agentName = agent?.displayName?.trim() || agent?.name || msg.agentId
-    void (async () => {
-      const key = sessionKey(
-        normalized.platform,
-        normalized.channel,
-        normalized.thread ?? normalized.msgId,
-        msg.agentId,
-        normalized.transportScope
-      )
-      // `none` is truly silent (§5.2): no ack, no activities, no issue write — transcript only.
-      const mode = (await this.store.getOutputModeOverride(key)) ?? agent?.output?.mode ?? 'low'
-      if (mode === 'none') return
-      await conn.postActivity(ext.agentSessionId, {
-        type: 'thought',
-        body: linearAckBody(agentName, ext, steered ? { steered: true } : { queued: busy }),
-        ephemeral: true
-      })
-      // The session opened on this delivery: the issue moves to "started" once the ack is OUT —
-      // both ride the connection's one FIFO queue, so enqueuing the state read first would let a
-      // slow or retried read eat the ≤10 s acknowledgement budget (§10.1). A follow-up on an
-      // existing session leaves the state where the humans put it.
-      if (ext.event === 'created' && ext.issueId) {
-        const issue = ext.issueIdentifier ?? ext.issueId
-        conn
-          .startIssue(ext.issueId)
-          .then((result) => {
-            if (result.outcome === 'moved')
-              this.log.info(`linear: moved ${issue} from "${result.from}" to "${result.state}" on delegation`)
-            else
-              this.log.debug(
-                `linear: left ${issue} alone on delegation (${result.outcome}: ${'reason' in result ? result.reason : result.state})`
-              )
-          })
-          .catch((err: unknown) => this.log.warn(`linear: auto-start of ${issue} failed: ${formatErr(err)}`))
-      }
-    })().catch((err: unknown) => this.log.warn(`linear: acknowledgement failed: ${formatErr(err)}`))
   }
 
   /** Apply one HTTP-bot interaction after relay routing. Re-check every daemon-owned
