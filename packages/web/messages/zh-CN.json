@@ -352,9 +352,34 @@
     "webchatApproval": {
       "approvalRequired": "需要审批",
       "description": "Agent 请求执行此更改，只有你的批准才能执行。",
+      "denying": "拒绝中…",
+      "deny": "拒绝",
+      "approving": "批准中…",
+      "approve": "批准并执行",
       "checking": "检查中…",
       "checkStatus": "检查状态",
-      "dismiss": "忽略"
+      "dismiss": "忽略",
+      "outcomes": {
+        "awaitingConfirmation": "等待确认",
+        "executing": "执行中…",
+        "completed": "已完成",
+        "failed": "失败",
+        "ambiguous": "结果不确定",
+        "stale": "已过期",
+        "denied": "已拒绝",
+        "unknown": "结果未知"
+      },
+      "notes": {
+        "lost": "审批决定的响应已丢失。请检查状态，确认操作是否已执行。",
+        "ambiguous": "操作可能已执行，也可能未执行。重试前请手动核实结果。",
+        "executing": "操作仍在执行。请再次检查状态以获取最终结果。",
+        "stale": "此确认在执行前已过期或被取代。"
+      },
+      "errors": {
+        "notApplied": "审批决定未生效，请重试。",
+        "responseLost": "审批决定的响应已丢失。请检查操作状态以确认结果。",
+        "checkFailed": "无法检查操作状态。"
+      }
     },
     "mcpApp": {
       "outcomes": {

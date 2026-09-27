@@ -352,9 +352,34 @@
     "webchatApproval": {
       "approvalRequired": "Approval required",
       "description": "The agent requested this change. Only your approval can execute it.",
+      "denying": "Denying…",
+      "deny": "Deny",
+      "approving": "Approving…",
+      "approve": "Approve and run",
       "checking": "Checking…",
       "checkStatus": "Check status",
-      "dismiss": "Dismiss"
+      "dismiss": "Dismiss",
+      "outcomes": {
+        "awaitingConfirmation": "Awaiting confirmation",
+        "executing": "Executing…",
+        "completed": "Completed",
+        "failed": "Failed",
+        "ambiguous": "Outcome uncertain",
+        "stale": "Expired",
+        "denied": "Denied",
+        "unknown": "Outcome unknown"
+      },
+      "notes": {
+        "lost": "The decision response was lost. Check the status to verify whether the operation ran.",
+        "ambiguous": "The operation may or may not have run. Verify the result manually before retrying it.",
+        "executing": "The operation is still running. Check the status again for its final result.",
+        "stale": "The confirmation expired or was superseded before it could run."
+      },
+      "errors": {
+        "notApplied": "The decision was not applied. Try again.",
+        "responseLost": "The decision response was lost. Check the operation status to verify the outcome.",
+        "checkFailed": "Could not check the operation status."
+      }
     },
     "mcpApp": {
       "outcomes": {
