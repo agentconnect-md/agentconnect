@@ -31,10 +31,12 @@ export class PlatformSendQueue {
     private readonly taskTimeoutMs = 30_000
   ) {}
 
-  enqueue<T>(task: () => Promise<T>): Promise<T> {
+  enqueue<T>(task: () => Promise<T>, gate?: () => Promise<void>): Promise<T> {
     const run = this.chain.then(async () => {
       const wait = this.minIntervalMs - (this.now() - this.lastStart)
       if (wait > 0) await this.sleep(wait)
+      // A gate (a shared write budget) waits outside the task's timeout, so saturation delays and never abandons.
+      if (gate) await gate()
       this.lastStart = this.now()
       return this.withTimeout(task())
     })

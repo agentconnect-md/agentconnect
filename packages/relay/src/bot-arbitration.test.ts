@@ -505,6 +505,22 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     ).toMatchObject({ tenantIds: ['T9'] })
   })
 
+  it('reads a single-tenant row’s recorded own keys, deduplicated, and refuses a malformed list', () => {
+    const own = toBotAssignment({
+      ...googlechat,
+      ingress: {
+        apiAppId: '100000000000',
+        ownTenantIds: ['customers/C0000000000', 'domains/0000000000', 'domains/0000000000']
+      }
+    } as never)
+    expect(own).toMatchObject({ ownTenantIds: ['customers/C0000000000', 'domains/0000000000'] })
+    expect(own && 'tenantIds' in own).toBe(false)
+    expect(toBotAssignment({ ...googlechat, ingress: { apiAppId: 'A', ownTenantIds: [] } } as never)).toBeNull()
+    expect(
+      toBotAssignment({ ...googlechat, ingress: { apiAppId: 'A', ownTenantIds: 'customers/C' } } as never)
+    ).toBeNull()
+  })
+
   it('refuses a malformed tenant list or a claim page that is not https, since absent would serve every tenant', () => {
     const refused = [
       { apiAppId: 'A', tenantIds: [] },

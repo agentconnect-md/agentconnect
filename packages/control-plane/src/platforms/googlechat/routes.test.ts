@@ -74,7 +74,7 @@ afterEach(async () => {
 
 async function harness(
   bot: BotRecord | null,
-  opts: { google?: 'ok' | 'rejected'; app?: GoogleChatPlatformAppConfig } = {}
+  opts: { google?: 'ok' | 'rejected'; app?: GoogleChatPlatformAppConfig; rows?: BotRecord[]; spaces?: unknown[] } = {}
 ) {
   const googleCalls: string[] = []
   const fetchImpl = (async (input: string | URL | Request) => {
@@ -86,13 +86,31 @@ async function harness(
         : Response.json({ access_token: 'synthetic-access-token' })
     }
     if (url === CRM_URL) return Response.json({ projectNumber: PROJECT_NUMBER, projectId: PROJECT_ID })
-    if (url === GOOGLE_CHAT_PROBE_URL) return Response.json({ spaces: [] })
+    if (url === GOOGLE_CHAT_PROBE_URL) return Response.json({ spaces: opts.spaces ?? [] })
     throw new Error(`unexpected request to ${url}`)
   }) as typeof fetch
-  const install = vi.fn(async () => 2)
-  const syncBot = vi.fn(async () => {})
+  const install = vi.fn(async (_org: OrgId, _id: BotId, _secrets: unknown, _at: Date) => 2)
+  const syncBot = vi.fn(async (_id: BotId) => {})
   const listForBot = vi.fn(async () => (bot?.id === BOT ? [HELD] : []))
   const getByExternalIdentity = vi.fn(async () => bot)
+  // The merge, applied to the held row as the repository would under its lock.
+  const merges: Record<string, unknown>[] = []
+  const mergeBotIdentity = vi.fn(
+    async (
+      _org: OrgId,
+      _id: BotId,
+      merge: (current: { platformConfig: Record<string, unknown>; externalTenantId: string | null }) => {
+        platformConfig?: Record<string, string>
+      }
+    ) => {
+      const change = merge({
+        platformConfig: bot?.platformConfig ?? {},
+        externalTenantId: bot?.externalTenantId ?? null
+      })
+      merges.push(change)
+      return Object.keys(change.platformConfig ?? {}).length > 0
+    }
+  )
   const deps = {
     config: { PUBLIC_RELAY_URL: 'https://relay.example.test' },
     httpBot: { hasConnectedRelay: () => true, syncBot },
@@ -102,7 +120,7 @@ async function harness(
       agent: {
         get: async (_org: OrgId, id: AgentId) => ({ id, orgId: ORG, name: 'agentconnect', visibility: 'org' })
       },
-      bot: { getByExternalIdentity },
+      bot: { getByExternalIdentity, listForPlatform: async () => opts.rows ?? [], mergeBotIdentity },
       integration: { listForBot },
       integrationChannel: { listForIntegration: async () => [] },
       botCredential: { install }
@@ -118,7 +136,7 @@ async function harness(
   running = app
   const post = (payload: Record<string, unknown> = {}) =>
     app.inject({ method: 'POST', url: '/integrations/googlechat/platform-install', payload })
-  return { post, googleCalls, install, syncBot, listForBot, getByExternalIdentity }
+  return { post, googleCalls, install, syncBot, listForBot, getByExternalIdentity, mergeBotIdentity, merges }
 }
 
 describe('POST /integrations/googlechat/platform-install: the resolved project number', () => {
@@ -159,6 +177,61 @@ describe('POST /integrations/googlechat/platform-install for an app that already
       expect.any(Date)
     )
     expect(h.syncBot).toHaveBeenCalledWith(BOT)
+  })
+
+  it('re-stamps every claimed customer row of the app with the rotated key and re-syncs each (§10.3)', async () => {
+    const anchor = existingBot()
+    const customerA = existingBot({
+      id: BotId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
+      orgId: OTHER_ORG,
+      externalTenantId: 'customers/C0000000001',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000001' }
+    })
+    const customerB = existingBot({
+      id: BotId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),
+      orgId: OrgId('33333333-3333-4333-8333-333333333333'),
+      externalTenantId: 'domains/0000000002',
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000002' }
+    })
+    const otherApp = existingBot({
+      id: BotId('cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
+      externalAppId: '210987654321',
+      externalTenantId: 'customers/C0000000009'
+    })
+    const h = await harness(anchor, {
+      app: { ...DEPLOYMENT_APP, multiTenant: true },
+      rows: [anchor, customerA, customerB, otherApp]
+    })
+
+    expect((await h.post()).statusCode).toBe(200)
+    const secrets = { botToken: JSON.stringify(ROTATED), appToken: null, signingSecret: null }
+    expect(h.install.mock.calls.map(([org, id]) => [org, id])).toEqual([
+      [ORG, BOT],
+      [OTHER_ORG, customerA.id],
+      [customerB.orgId, customerB.id]
+    ])
+    for (const call of h.install.mock.calls) expect(call[2]).toEqual(secrets)
+    expect(h.syncBot.mock.calls.map(([id]) => id)).toEqual([BOT, customerA.id, customerB.id])
+    // The anchor never learns a customer: with the switch on it serves none.
+    expect(h.mergeBotIdentity).not.toHaveBeenCalled()
+  })
+
+  it('stamps the one customer the probe proves on a single-tenant deployment row when it has none (§10.3)', async () => {
+    const spaces = [{ name: 'spaces/A', spaceType: 'SPACE', customer: 'customers/C0000000001' }]
+    const h = await harness(existingBot(), { spaces })
+    expect((await h.post()).statusCode).toBe(200)
+    expect(h.merges).toEqual([{ platformConfig: { customerId: 'C0000000001' } }])
+    expect(h.syncBot).toHaveBeenCalledWith(BOT)
+
+    // A row that already knows its customer is left alone, and the switch on never stamps the anchor.
+    const known = await harness(existingBot({ platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000001' } }), {
+      spaces
+    })
+    expect((await known.post()).statusCode).toBe(200)
+    expect(known.merges).toEqual([{}])
+    const anchored = await harness(existingBot(), { spaces, app: { ...DEPLOYMENT_APP, multiTenant: true } })
+    expect((await anchored.post()).statusCode).toBe(200)
+    expect(anchored.mergeBotIdentity).not.toHaveBeenCalled()
   })
 
   it('writes nothing when the current key no longer validates', async () => {

@@ -71,6 +71,7 @@ function unclaimedAnswer(
 export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps = {}): GoogleChatIngressPlugin {
   const certificates = new GoogleChatCertificateStore((input, init) => (deps.fetch ?? fetch)(input, init))
   const unclaimed = new UnclaimedTenantMemo()
+  const refused = new UnclaimedTenantMemo()
   return {
     platformId: GOOGLE_CHAT_PLATFORM,
     certificates,
@@ -79,9 +80,14 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
     installRoutes: registerGoogleChatHttpIngress,
 
     buildIngest(a: BotAssignment, host: RelayIngressHost): GoogleChatHttpIngest | undefined {
-      // The relay holds no Google secret; the project number IS the credential check (the token audience). A row
-      // that is both a customer (`tenantIds`) and the anchor (`claimUrl`) would prompt the tenants it serves forever.
-      if (!a.apiAppId || Object.keys(a.secrets).length !== 0 || (a.tenantIds && a.claimUrl)) {
+      // No Google secret here, the audience is the check; a row cannot be a customer and the anchor, nor own-fenced and either.
+      const multiTenant = a.tenantIds !== undefined || a.claimUrl !== undefined
+      if (
+        !a.apiAppId ||
+        Object.keys(a.secrets).length !== 0 ||
+        (a.tenantIds && a.claimUrl) ||
+        (a.ownTenantIds && multiTenant)
+      ) {
         host.log.warn(`relay-ingress(${a.botId}): incomplete Google Chat assignment`)
         return undefined
       }
@@ -93,7 +99,8 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
         certificates,
         a.credentialRevision,
         a.tenantIds,
-        a.claimUrl
+        a.claimUrl,
+        a.ownTenantIds
       )
     },
 
@@ -138,6 +145,16 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
         if (unclaimed.first(`${ingest.audience}\0${answer.tenant}`, now))
           host.log.info(`relay-ingress(${botId}): answering an unclaimed Google Chat tenant with the claim prompt`)
         return { syncResponse: answer.body }
+      }
+      // The own-tenant fence (§10.3): a foreign customer's Space gets a 200 Google never retries; a learned key is reported.
+      if (ingest.singleTenant && result.kind !== 'ignored' && result.kind !== 'unsupported' && result.tenant) {
+        const verdict = ingest.admitTenant(result.tenant)
+        if (verdict === 'refused') {
+          if (refused.first(`${botId}\0${result.tenant}`, host.clock.now()))
+            host.log.warn(`relay-ingress(${botId}): refused a Google Chat event from another Workspace customer`)
+          return {}
+        }
+        if (verdict === 'learned') host.reportTenant(botId, result.tenant)
       }
       if (result.kind === 'ignored' || result.kind === 'unsupported') {
         host.dedupMark(googleChatDedupKey(botId, googleChatDedupId(event)))

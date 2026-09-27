@@ -35,6 +35,8 @@ const deps = (): RelayIngressManagerDeps => ({
   reportBotRevoked: vi.fn(async () => true),
   reportBotCredentialCheck: vi.fn(async () => true),
   credentialCheckSupported: () => true,
+  reportBotTenant: vi.fn(async () => true),
+  tenantReportSupported: () => true,
   selfRelayId: () => '88888888-8888-4888-8888-888888888881',
   reportThreadAssign: vi.fn(() => true),
   reportThreadParticipant: vi.fn(() => true),
@@ -145,6 +147,16 @@ describe('googlechat multi-tenant demux (§10.4)', () => {
     // A delivery naming no tenant has no safe owner among tenant-scoped rows either.
     const personal = { ...dmMessage, user: { ...dmMessage.user, domainId: undefined } }
     expect((await deliver(personal)).handled).toBeUndefined()
+  })
+
+  it('keeps a single-tenant row with recorded own keys app-only: core routes every tenant to it and the plugin fences', async () => {
+    const { manager, demux, deliver } = setup()
+    await manager.assign(row(ANCHOR, { ownTenantIds: [CUSTOMER, DOMAIN] }))
+    expect(demux.indexes.byApp.get(AUDIENCE)).toBe(ANCHOR)
+    expect(demux.indexes.byAppTenant.size).toBe(0)
+    for (const event of [dmMessage, spaceMention, otherCustomerMention, unknownDomainAdd]) {
+      expect((await deliver(event)).by).toBe(ANCHOR)
+    }
   })
 
   it("a single-tenant deployment's one row keeps serving every tenant, including one naming none", async () => {

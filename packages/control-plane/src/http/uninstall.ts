@@ -60,6 +60,19 @@ export async function removeIntegrationRow(
   })
 }
 
+/** Delete a freed bot whose platform releases it (`releasesFreedBot`) so its identity can be claimed anew; false when it is kept or still installed. */
+export async function releaseFreedBot(
+  deps: HttpDeps,
+  log: TeardownLog,
+  orgId: OrgId,
+  bot: BotRecord
+): Promise<boolean> {
+  if (!deps.platforms.get(bot.platform)?.releasesFreedBot?.(bot)) return false
+  if ((await deps.repos.integration.listForBot(bot.id)).length > 0) return false
+  await deleteBotIdentity(deps, log, orgId, bot)
+  return true
+}
+
 /**
  * Delete one bot identity and run the platform teardown the cascade cannot reach
  * (provider contract §9 `onBotDelete` — Linear's upstream grant revoke).

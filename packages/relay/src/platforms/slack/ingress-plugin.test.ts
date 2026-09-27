@@ -16,6 +16,7 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   reportChannels: () => {},
   reportRevoked: vi.fn(),
   reportCredentialCheck: vi.fn(),
+  reportTenant: vi.fn(),
   credentialCheckSupported: () => true,
   directory: {
     agents: () => [],

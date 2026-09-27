@@ -1,5 +1,5 @@
 // Installs the deployment-owned Google Chat app on an agent, the preset `agentconnect` agent by default (google-chat-integration.md §3).
-import type { FastifyInstance, FastifyRequest } from 'fastify'
+import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../../http/plugins/zod.js'
@@ -13,11 +13,17 @@ import { relayIngress } from '../../http/relay-ingress.js'
 import { integrationPlatformAvailability } from '../../http/daemon-platform-capability.js'
 import { installNewBot } from '../../http/install-bot.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
-import { TENANTLESS_SENTINEL, type AgentRecord } from '../../persistence/ports.js'
+import { TENANTLESS_SENTINEL, type AgentRecord, type BotSecretMaterial } from '../../persistence/ports.js'
 import { BotDto, ErrorDto, IdParam, IntegrationDto } from '../../http/dto/index.js'
 import { toDto as toIntegrationDto } from '../../http/routes/integrations.js'
 import { toBotDto } from '../../http/routes/bots.js'
-import { GOOGLE_CHAT_APP_TAKEN_MESSAGE, buildGoogleChatInstall, resolveGoogleChatApp } from './provider.js'
+import {
+  GOOGLE_CHAT_APP_TAKEN_MESSAGE,
+  buildGoogleChatInstall,
+  googleChatRowKind,
+  resolveGoogleChatApp
+} from './provider.js'
+import { googleChatTenantOf } from './tenant.js'
 
 /** The 409 copy when the deployment's project ID no longer matches the installed bot of the same project number. */
 export const GOOGLE_CHAT_PROJECT_CHANGED_MESSAGE =
@@ -76,6 +82,25 @@ export async function googleChatInstallTarget(
     }
   }
   return { agent }
+}
+
+/** Re-stamp the current deployment key on every claimed customer row of the app and re-sync each, the way the anchor is (§10.3). */
+export async function restampGoogleChatCustomerRows(
+  deps: HttpDeps,
+  log: FastifyBaseLogger,
+  projectNumber: string,
+  secrets: BotSecretMaterial
+): Promise<number> {
+  const rows = (await deps.repos.bot.listForPlatform(GOOGLE_CHAT_PLATFORM)).filter(
+    (bot) => bot.externalAppId === projectNumber && googleChatRowKind(bot) === 'customer'
+  )
+  for (const row of rows) {
+    await deps.repos.botCredential.install(row.orgId, row.id, secrets, new Date())
+    await deps.httpBot.syncBot(row.id)
+  }
+  if (rows.length > 0)
+    log.info({ rows: rows.length }, 'google chat: re-stamped the deployment key on the customer rows')
+  return rows.length
 }
 
 /** The HTTP reason phrase for a refusal status. */
@@ -194,12 +219,22 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
             message: GOOGLE_CHAT_PROJECT_CHANGED_MESSAGE
           })
         }
-        const install = buildGoogleChatInstall(resolved)
+        // With the switch on this row is the anchor, which serves no tenant; off, the probed customer is its own fence (§10.3).
+        const own = !platform.multiTenant && resolved.customerId ? { customerId: resolved.customerId } : {}
+        const install = buildGoogleChatInstall(resolved, own, 'single')
 
         if (existing && held) {
           // Re-stamp the current deployment key as a fresh credential generation, then re-push the spec.
           await deps.repos.botCredential.install(orgId, existing.id, install.secrets, new Date())
+          if (own.customerId) {
+            const customerId = own.customerId
+            await deps.repos.bot.mergeBotIdentity(orgId, existing.id, (current) =>
+              googleChatTenantOf(current.platformConfig).customerId ? {} : { platformConfig: { customerId } }
+            )
+          }
           await deps.httpBot.syncBot(existing.id)
+          // A rotated deployment key reaches every claimed customer row the same way (§10.3).
+          await restampGoogleChatCustomerRows(deps, req.log, projectNumber, install.secrets)
           return reply
             .code(200)
             .send(toIntegrationDto(held, await deps.repos.integrationChannel.listForIntegration(held.id)))

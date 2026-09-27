@@ -65,7 +65,7 @@ import { defaultMemberOf, isGatedAgent, httpIntegrationToSpec, placedMembers } f
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
-import type { CpPlatformRegistry } from '../platforms/provider.js'
+import type { CpPlatformRegistry, CpTenantLearning } from '../platforms/provider.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 import {
   decisionRoutingSupported,
@@ -495,6 +495,25 @@ export class HttpBotOrchestrator {
       'http-bot: bot revoked by workspace'
     )
     return { applied: true }
+  }
+
+  /** `rc/bot-tenant`: record what the bot's platform makes of a tenant key its own traffic named, then re-sync the row (google-chat-integration.md §10.3). */
+  async recordTenant(botId: string, tenantId: string): Promise<{ applied: boolean }> {
+    const bot = await this.bots.getUnscoped(BotId(botId))
+    const learn = bot ? this.platforms.get(bot.platform)?.learnTenant : undefined
+    if (!bot || !learn) return { applied: false }
+    const outcome: { verdict?: CpTenantLearning } = {}
+    const written = await this.bots.mergeBotIdentity(bot.orgId, bot.id, (current) => {
+      outcome.verdict = learn(bot, current, tenantId)
+      return outcome.verdict.kind === 'record' ? outcome.verdict.change : {}
+    })
+    if (outcome.verdict?.kind === 'refused') {
+      this.log.warn({ botId: bot.id, reason: outcome.verdict.reason }, 'http-bot: tenant report refused')
+      return { applied: false }
+    }
+    // A known key re-syncs too: the row commits before the push, so a push that failed is redone by the relay's redelivery, never acknowledged unfenced.
+    await this.syncBot(bot.id)
+    return { applied: written }
   }
 
   /** `rc/bot-credential-check` from `relayId`: records that relay's observation and re-aggregates the mark — never a revocation, an integration flip, a spec pull or a release. */

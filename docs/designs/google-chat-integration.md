@@ -323,7 +323,10 @@ synthesize the identity from a project ID or assume the service-account email is
 the bot user.
 
 Validation checks credential structure, resolves the project number with the
-key, and makes a bounded Chat API read with app authentication. It must not send
+key, and makes a bounded Chat API read with app authentication: one page of the
+named Spaces the app is in. When every listed Space belongs to one Workspace
+customer, a single-tenant row is stamped with that customer as its own fence from
+the start (§10.3); the multi-tenant anchor is never stamped. It must not send
 a test message from the Control Plane or the Setup Server. A saved configuration
 is not proof of working ingress. Combine relay assignment and daemon readiness,
 distinguish authentication and connectivity failures, and provide an explicit
@@ -593,9 +596,11 @@ for the envelope; the segments beyond the first take the next segment index.
 One per-Space send queue covers creates, edits, chrome, and final replies across
 threads: the daemon instantiates the shared `PlatformSendQueue` once per Space,
 keyed by Space name, with a one-second minimum spacing instead of its 350 ms
-default. Space message writes share a one-per-second quota with every app acting
-in that Space; project message writes are limited to 3,000 per minute. See
-Google's [quota documentation](https://developers.google.com/workspace/chat/limits).
+default. Under it, every create and patch takes one token of the app's write
+budget on that daemon before it runs (§10.8); a saturated budget delays a write
+and never abandons it. Space message writes share a one-per-second quota with
+every app acting in that Space; project message writes are limited to 3,000 per
+minute. See Google's [quota documentation](https://developers.google.com/workspace/chat/limits).
 A `429` is retried after its `Retry-After`; a `5xx` or a lost answer on an
 idempotent request retries with bounded, jittered backoff, three attempts in
 all; a create takes the read-back path above instead. Other apps or daemons can
@@ -739,18 +744,18 @@ patches remain provider-validation gates, not claims of completed support.
 
 ## 10. Marketplace distribution and multi-tenant installs
 
-Status: **step A implemented, step B pending**. Both halves of step A are
-merged: the message package's tenant keys and `interaction` event, the
-relay's per-customer demux and fence, the welcome card, and the
-`REQUEST_CONFIG` answer (§10.4, §10.7); the Setup switch (§3), the customer
-rows and their relay assignment (§10.3), the claim route and page (§10.5), and
-the Google account id on the user row (§10.6). Step B is not implemented
-(§10.8 and the items in §10.9). Until it filters discovery and fences replies
-by customer, a customer row's daemon lists every Space the app is in and can
-address any of them with the shared key, so the Setup switch is for testing
-inside the operator's own Google Workspace. Every provider fact below was
-verified on September 27, 2026, either in Google's reference documentation or
-against a live Chat app; the items in §10.9 still need a live check.
+Status: **steps A and B implemented, step C pending**. Step A: the message
+package's tenant keys and `interaction` event, the relay's per-customer demux
+and fence, the welcome card, and the `REQUEST_CONFIG` answer (§10.4, §10.7);
+the Setup switch (§3), the customer rows and their relay assignment (§10.3),
+the claim route and page (§10.5), and the Google account id on the user row
+(§10.6). Step B: the customer fence of both install paths, the tenant a
+single-tenant row records from its traffic and reports as `rc/bot-tenant`
+(§10.3), filtered discovery and the fenced writes on the daemon, the per-app
+write budget (§10.8), re-stamping customer rows on key rotation (§10.3), and
+releasing a freed customer (§10.5). Every provider fact below was verified on
+September 27, 2026, either in Google's reference documentation or against a
+live Chat app; the items left in §10.9 still need a live check.
 
 ### 10.1 Goal and shape
 
@@ -800,8 +805,9 @@ keeps the project ID beside the bare `customerId` and `domainIds`, its credentia
 is a copy of the deployment key exactly as the deployment-app install copies it,
 and it is marked prebuilt, so the key follows the Setup Server rather than a
 console paste. Its relay assignment carries `tenantIds`, every tenant key the
-row knows, beside the unchanged `apiAppId`; a single-tenant row and the anchor
-carry none.
+row knows, beside the unchanged `apiAppId`; the anchor carries none, and a
+single-tenant row carries the keys it has recorded as `ownTenantIds` (below),
+which core neither indexes nor fences on.
 
 The row identifies its customer twice over, because a DM event names only the
 sender's `user.domainId` and a Space event names the Space's `space.customer`.
@@ -839,23 +845,40 @@ the customer.
 
 Every re-key and merge runs under the row's lock. A known customer id is
 therefore never replaced, as a consequence of these rules rather than a check
-that would hide a mismatch. Attaching an id from a Space event, with the same
-proof (the sender's membership in that Space carrying `affiliation: INTERNAL`),
-is step B. A sender's domain never binds a Space's customer on its own: a Space
-may admit external members, so the pair would tie a foreign organization's
-Space to the sender's row. One customer maps to one organization, exactly as
-one Slack team does; a second organization cannot claim a customer or a domain
-another one holds.
+that would hide a mismatch. A customer id reaches a domain-only row through a
+Space claim alone, whose INTERNAL membership is the proof (§10.5): a Space event
+naming a customer no row knows resolves to the anchor, never to a domain row. A
+sender's domain never binds a Space's customer on its own: a Space may admit
+external members, so the pair would tie a foreign organization's Space to the
+sender's row. One customer maps to one organization, exactly as one Slack team
+does; a second organization cannot claim a customer or a domain another one
+holds.
 
-Customer rows copy the deployment key when a claim writes them, so a rotated
-deployment key does not reach them yet; re-stamping every customer row on
-rotation is step B.
+Customer rows copy the deployment key when a claim writes them, and a rotated
+deployment key reaches them the way it reaches the anchor: running the
+deployment-app install again re-stamps the anchor and then every customer row of
+the app with the current key, re-syncing each.
 
-A bring-your-own app keeps its single row. It gains the same fence for free: the
-first verified event stamps the row's customer and domain, and events from any
-other domain are refused from then on. That is the safety line §1 lists as
-outside the first version and should land with this section regardless of the
-listing.
+A bring-your-own app keeps its single row, and so does the deployment app while
+the switch is off. Such a single-tenant row records its own tenant beside the
+tenantless key rather than being keyed by it: the customer the install probe
+proves (§3) or the `customers/…` key of its first Space event, and the
+`domains/…` key of every DM it serves. The relay's Google Chat plugin, not core,
+fences it (§10.4): a Space of another customer is refused with a 200 that Google
+never retries and one log line a minute, while a DM passes and its domain is
+recorded, because Google shows an unlisted app only to its own organization's
+people, so a DM's domain is that organization's; an app listed publicly must
+turn the switch on instead. A key the relay learns is reported as `rc/bot-tenant`
+(`{ botId, tenantId }`, at least once, acknowledged, deduplicated by the Control
+Plane, and sent only to a Control Plane advertising `bot-tenant-v1`); the
+Control Plane records it through the row's identity merge, refusing a second
+customer, and re-syncs the row so its assignment and daemon config carry the
+keys and the fence survives restarts and re-assigns. The row commits before the
+push, so a report is acknowledged only once the push succeeded, and a report of
+a key the row already holds re-syncs it all the same: the relay's redelivery
+after a failed push is what carries the fence to the daemon. Until the report
+lands the relay applies the same fence in memory. The daemon reads the same keys (§10.8).
+That is the safety line §1 lists as outside the first version.
 
 ### 10.4 Relay: demux by app, fence by customer, claim the unknown
 
@@ -891,9 +914,11 @@ own log line to one per tenant per minute, since a domain-wide administrator
 install can turn a chatty domain into one prompt per message; the answer is
 always the prompt. The prompt is private to its sender, so such an install
 produces no session and no stored data, only one private prompt per person who
-writes to the app before the claim. A single-tenant deployment's row, with
-neither `tenantIds` nor `claimUrl`, routes everything as before; its first-event
-fence is part of step B (§10.3).
+writes to the app before the claim. A single-tenant row, with neither
+`tenantIds` nor `claimUrl`, stays in the app-only index and core routes every
+tenant of its audience to it; the plugin then applies the row's own fence
+(§10.3) from the `ownTenantIds` its assignment carries and what its traffic has
+taught it since.
 
 ### 10.5 Claiming a customer
 
@@ -960,11 +985,16 @@ collaborator):
    `https://chat.google.com/dm/{id}` for a DM) and asks the person to send
    their message again.
 
-A customer row whose integration is removed stays with its organization, so the
-same organization's next claim reinstalls it; releasing it to another
-organization is step B. The install-time welcome message (§10.7) points people
-at the claim before they write anything, but the claim also works from a
-person's first message, which is what an administrator-installed DM produces.
+Removing the last integration of a customer row deletes the row and its
+credential: the provider declares such a row released, and the integration
+removal runs the same bot deletion the console uses, so another organization
+can claim that customer later, and a later claim by the same organization
+starts over with a new row (201). A row that loses its installs another way, an
+agent deleted with its integrations, is freed rather than released, and that
+organization's next claim puts it back on the preset agent. The install-time
+welcome message (§10.7) points people at the claim before they write anything,
+but the claim also works from a person's first message, which is what an
+administrator-installed DM produces.
 
 ### 10.6 Identity: nothing extra to bind
 
@@ -1010,13 +1040,33 @@ text; cards for elicitation are a separate change that would build on the same
 ### 10.8 Daemon, quotas, privacy
 
 - **Discovery**: a daemon serving a claimed customer never lists the whole app.
-  `spaces.list` is bounded and filtered locally on each Space's `customer`, and
-  DMs surface from traffic as today (§5). Nothing from another customer is
-  reported as an observed conversation.
+  Its integration config carries the row's `tenantIds`; `spaces.list` is bounded
+  and filtered locally on each Space's `customer`, a row without a `customers/…`
+  key lists nothing, the anchor (an empty list, since it serves no tenant) lists
+  nothing, and DMs surface from traffic as today (§5). A single-tenant row
+  (`ownTenantIds`) lists everything until its customer is known, then that
+  customer's Spaces alone. Nothing from another customer is reported as an
+  observed conversation.
+- **Fence**: every write, whether a create, a patch, chrome, or a tool-driven
+  send through the connection, first resolves the target Space's tenant,
+  `spaces.get` for a named Space's `customer` and the one human member's
+  `domainId` for a DM, cached per Space, and refuses a Space outside the row's
+  keys with the `tenant_refused` category, which the turn output records in the
+  daemon log while the reply stays in the transcript, never a silent drop. A
+  single-tenant row refuses another customer's Space and writes into any DM
+  (§10.3); a row without keys keeps today's behaviour. Two rows of one app on
+  one daemon never share a connection: the connection key includes the row's
+  tenant keys.
 - **Quota**: every organization on the published app shares one project's
-  3,000 writes per minute. The per-Space queue stays; a per-app write budget is
-  added on each daemon, sized from the pool size, so one busy organization
-  degrades into backoff rather than into `429` for everyone.
+  3,000 writes per minute. The per-Space queue stays; under it, one token
+  bucket per app on each daemon, keyed by the project number so a rotation's
+  overlapping connections share it, admits creates and patches. Its refill
+  defaults to 3,000 a minute divided by `googleChat.poolSize` in the daemon's
+  config (default 4, so 750 a minute per daemon) and its capacity to that
+  refill; `googleChat.writesPerMinute` and `googleChat.writeBurst` override
+  either. A saturated bucket delays a write, outside the Space queue's task
+  timeout, and never drops it, so one busy organization degrades into backoff
+  rather than into `429` for everyone.
 - **Privacy**: an unclaimed tenant's events are never persisted, and the only
   tenant data the Control Plane stores is the claimed customer and domain ids.
   Other customers' email addresses and display names never enter it.
@@ -1037,16 +1087,17 @@ Order of work:
 - **A** (done): the welcome card, `CARD_CLICKED` and `REQUEST_CONFIG` on the
   relay; the claim page and route with the customer rows they write; and the
   Google account id on the user row.
-- **B**: the customer fence for both install paths, attaching a customer id
-  learned from a Space event, re-stamping customer rows on key rotation,
-  releasing a freed customer, filtered discovery, and the per-app write budget.
+- **B** (done): the customer fence for both install paths, the tenant a
+  single-tenant row records and reports, re-stamping customer rows on key
+  rotation, releasing a freed customer, filtered discovery, and the per-app
+  write budget. An app-authenticated `spaces.members.get` was verified live to
+  return `affiliation`, `member.domainId`, and `role` for a human member in
+  Spaces and DMs, and `spaces.get` to return `customer` for a named Space and
+  nothing for a DM, which is what the fences and the claim read.
 - **C**: the listing, the unlisted publication, and the cross-customer round
   trip from a second Workspace organization.
 
-Still to verify live before B: whether a domain-wide administrator install
-delivers one `ADDED_TO_SPACE` per user; that a `REQUEST_CONFIG` body answered by
-the relay is honoured within Google's window; that a sign-in's `sub` equals the
-Chat user id for a real account; and that an app-authenticated
-`spaces.members.get` returns `affiliation` for a human member as the list call
-did, so a Space-initiated claim and the customer attachment of §10.3 have their
-proof.
+Still to verify live: whether a domain-wide administrator install delivers one
+`ADDED_TO_SPACE` per user; that a `REQUEST_CONFIG` body answered by the relay is
+honoured within Google's window; and that a sign-in's `sub` equals the Chat user
+id for a real account.

@@ -70,7 +70,10 @@ export function googleChatClaimPrompt(
   return { actionResponse: { type: 'REQUEST_CONFIG', url: url.toString() } }
 }
 
-/** A bounded per-tenant once-a-window latch (LRU): a chatty unclaimed domain costs one log line a minute, never a different answer. */
+/** How a single-tenant row's fence answers one event's tenant key (design §10.3). */
+export type OwnTenantVerdict = 'pass' | 'learned' | 'refused'
+
+/** A bounded per-tenant once-a-window latch (LRU): a chatty unclaimed or refused tenant costs one log line a minute, never a different answer. */
 export class UnclaimedTenantMemo {
   private readonly lastAt = new Map<string, number>()
 
@@ -132,6 +135,9 @@ export class GoogleChatHttpIngest {
   private learnedAppUserName: string | undefined
   private readonly observed = new Map<string, IntegrationChannel>()
   private warnedUnknownIdentity = false
+  /** A single-tenant row's own customer and domains (§10.3): seeded from the assignment, grown by its traffic. */
+  private ownCustomer: string | undefined
+  private readonly ownDomains = new Set<string>()
 
   constructor(
     readonly botId: string,
@@ -145,8 +151,35 @@ export class GoogleChatHttpIngest {
     /** The tenant keys this row is known by: a customer row of a multi-tenant app (design §10.3), else absent. */
     readonly tenantIds?: readonly string[],
     /** The console's claim page, present only on a multi-tenant app's anchor, which routes nothing itself (§10.4). */
-    readonly claimUrl?: string
-  ) {}
+    readonly claimUrl?: string,
+    /** A single-tenant row's recorded keys (§10.3), the fence's memory across relay restarts. */
+    ownTenantIds?: readonly string[]
+  ) {
+    for (const key of ownTenantIds ?? []) this.admitTenant(key)
+  }
+
+  /** A row with neither customer keys nor the claim page: one organization's own app, fenced by what its traffic proves. */
+  get singleTenant(): boolean {
+    return this.tenantIds === undefined && this.claimUrl === undefined
+  }
+
+  /** The own-tenant fence: one customer, learned from the first Space; any DM domain, recorded; anything else refused. */
+  admitTenant(key: string): OwnTenantVerdict {
+    if (key.startsWith('customers/')) {
+      if (this.ownCustomer === undefined) {
+        this.ownCustomer = key
+        return 'learned'
+      }
+      return this.ownCustomer === key ? 'pass' : 'refused'
+    }
+    // Google shows an unlisted app only to its own organization, so a DM's domain is that organization's (§10.3).
+    if (key.startsWith('domains/')) {
+      if (this.ownDomains.has(key)) return 'pass'
+      this.ownDomains.add(key)
+      return 'learned'
+    }
+    return 'refused'
+  }
 
   /** §8 RelayBotIngress: a pure decoder has nothing to release. */
   stop(): void {}

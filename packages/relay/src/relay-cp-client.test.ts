@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
+  BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
   GITEA_V1_FEATURE,
@@ -517,6 +518,30 @@ describe('RelayCpClient', () => {
     await completeHandshake(older.transport)
     await expect(older.client.reportBotCredentialCheck(check)).resolves.toBe(false)
     expect(older.transport.lastReq('rc/bot-credential-check')).toBeUndefined()
+  })
+
+  it('reports a learned tenant only to a CP that advertises it, settled by any reply', async () => {
+    const report = { botId: RELAY_ID, tenantId: 'customers/C0000000000' }
+    const { client, transport } = makeClient()
+    await expect(client.reportBotTenant(report)).resolves.toBe(false) // link down
+
+    client.start()
+    await flush()
+    await completeHandshake(transport, 15, undefined, [BOT_TENANT_FEATURE])
+    const pending = client.reportBotTenant(report)
+    await flush()
+    const request = transport.lastReq('rc/bot-tenant')!
+    expect(request.payload).toEqual(report)
+    // `applied: false` (a key the row knew, or refused) settles it just the same.
+    transport.inject(buildRelayCpFrame('rc/bot-tenant/ok', { botId: RELAY_ID, applied: false }, { corr: request.id }))
+    await expect(pending).resolves.toBe(true)
+
+    const older = makeClient()
+    older.client.start()
+    await flush()
+    await completeHandshake(older.transport)
+    await expect(older.client.reportBotTenant(report)).resolves.toBe(false)
+    expect(older.transport.lastReq('rc/bot-tenant')).toBeUndefined()
   })
 
   // v1's single bot-wide watermark let replicas overwrite each other, so only v2's per-relay observations are fed.

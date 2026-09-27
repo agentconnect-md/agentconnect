@@ -5,6 +5,7 @@ import type { IntegrationRevoked, IntegrationRevokedOk } from '@agentconnect.md/
 import type { LoadedAgent } from '../src/agents/load-agents.js'
 import { ConnectionReconciler, type ConnectionReconcilerHost } from '../src/platforms/connection-reconciler.js'
 import { CredentialRevocationReporter } from '../src/platforms/credential-revocation.js'
+import { GoogleChatWriteBudgets, googleChatWriteBudgetSettings } from '../src/platforms/googlechat/write-budget.js'
 import { FakeClock } from './cp/fake-clock.js'
 
 const CP_INTEGRATION = '0f0e0d0c-0b0a-4908-8706-050403020100'
@@ -56,6 +57,7 @@ async function openSocket(
     clock: () => clock,
     draining: () => false,
     boltDebug: () => false,
+    googleChatWriteBudgets: () => new GoogleChatWriteBudgets(googleChatWriteBudgetSettings()),
     slackAppFactory: () => () => ({
       message() {},
       event(type: string, h: (a: { event: unknown; body?: unknown }) => unknown) {

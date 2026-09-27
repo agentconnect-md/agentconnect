@@ -17,7 +17,7 @@ import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { ErrorDto } from '../../http/dto/index.js'
 import type { BotRecord } from '../../persistence/ports.js'
 import { checkServiceAccountKey, googleChatAppReader, type GoogleChatAppRead } from './credential.js'
-import { buildGoogleChatInstall, googleChatRowTenantKeys } from './provider.js'
+import { buildGoogleChatInstall, googleChatRowKind, googleChatRowTenantKeys } from './provider.js'
 import { googleChatErrorLabel, googleChatInstallTarget } from './routes.js'
 import {
   GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE,
@@ -353,9 +353,9 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
         )
         if (!proof.ok) return refuse(reply, proof.status, proof.code, proof.message)
 
-        // One customer maps to one organization: the customer rows of this app that know a proven key decide.
+        // One customer maps to one organization: the customer rows of this app decide; the anchor may carry keys stamped while the switch was off and is never one.
         const rows = (await deps.repos.bot.listForPlatform(GOOGLE_CHAT_PLATFORM)).filter(
-          (bot) => bot.externalAppId === platform.projectNumber && googleChatRowTenantKeys(bot).length > 0
+          (bot) => bot.externalAppId === platform.projectNumber && googleChatRowKind(bot) === 'customer'
         )
         const plan = planGoogleChatClaim(rows, orgId, proof.tenant)
         if (plan.kind === 'taken') return refuse(reply, 409, 'GOOGLE_CHAT_CLAIM_TAKEN', GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE)

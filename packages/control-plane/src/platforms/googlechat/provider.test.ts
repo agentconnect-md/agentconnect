@@ -8,6 +8,7 @@ import {
   GOOGLE_CHAT_APP_TAKEN_MESSAGE,
   GoogleChatCpEnvSchema,
   googleChatBotAssignBags,
+  googleChatRowKind,
   buildGoogleChatInstall
 } from './provider.js'
 import { GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE } from './tenant.js'
@@ -56,7 +57,7 @@ type GoogleAnswer = 'ok' | 'rejected' | 'offline' | 'no_app' | 'crm_disabled' | 
 const CRM_URL = googleCloudProjectUrl(PROJECT_ID)
 
 /** Answers Google's token endpoint, Cloud Resource Manager, and the one Chat API read, recording every call and token scope. */
-function fakeGoogle(answer: GoogleAnswer = 'ok') {
+function fakeGoogle(answer: GoogleAnswer = 'ok', spaces: unknown[] = []) {
   const calls: { method: string; url: string; scope?: string }[] = []
   const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = String(input)
@@ -85,7 +86,7 @@ function fakeGoogle(answer: GoogleAnswer = 'ok') {
     if (url === GOOGLE_CHAT_PROBE_URL) {
       return answer === 'no_app'
         ? Response.json({ error: { code: 404, message: 'Google Chat app not found.' } }, { status: 404 })
-        : Response.json({ spaces: [] })
+        : Response.json({ spaces })
     }
     throw new Error(`unexpected request to ${url}`)
   }) as typeof fetch
@@ -301,6 +302,35 @@ describe('validateConfig', () => {
     })
   })
 
+  it('stamps the one customer the probe’s Space list proves as the row’s own fence, and none for several (§10.3)', async () => {
+    const provider = createGoogleChatCpProvider({
+      fetch: fakeGoogle('ok', [{ name: 'spaces/A', spaceType: 'SPACE', customer: 'customers/C0000000001' }]).fetchImpl
+    })
+    const one = await provider.validateConfig(CREDENTIALS, 'http')
+    expect(one).toMatchObject({ ok: true, identity: { platformConfig: { customerId: 'C0000000001' } } })
+    const install = provider.buildNewBotInstall({
+      credentials: CREDENTIALS,
+      identity: (one as { identity: { externalAppId: string; platformConfig?: Record<string, string> } }).identity,
+      transport: 'http',
+      shareable: false
+    })
+    // Stamped beside the tenantless key: a single-tenant row is never keyed by its customer.
+    expect(install.bot).toEqual({
+      externalAppId: PROJECT_NUMBER,
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000001' }
+    })
+    expect(install.externalIdentity).toMatchObject({ externalAppId: PROJECT_NUMBER, externalTenantId: '-' })
+    const two = createGoogleChatCpProvider({
+      fetch: fakeGoogle('ok', [
+        { name: 'spaces/A', spaceType: 'SPACE', customer: 'customers/C0000000001' },
+        { name: 'spaces/B', spaceType: 'SPACE', customer: 'customers/C0000000002' }
+      ]).fetchImpl
+    })
+    const several = await two.validateConfig(CREDENTIALS, 'http')
+    if (!several.ok) throw new Error('expected the app to validate')
+    expect(several.identity).not.toHaveProperty('platformConfig')
+  })
+
   it('never echoes the key in a refusal', async () => {
     for (const answer of ['rejected', 'offline', 'no_app'] as const) {
       const result = await createGoogleChatCpProvider({ fetch: fakeGoogle(answer).fetchImpl }).validateConfig(
@@ -473,6 +503,45 @@ describe('wire projections', () => {
     })
   })
 
+  it('hands the daemon a customer row’s strict keys, the anchor none at all, and a single-tenant row its own keys', async () => {
+    const customer = bot({
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+    })
+    expect(await anchored.projectIntegrationConfig(integration(), customer, CORE, secrets)).toMatchObject({
+      tenantIds: ['customers/C0000000000', 'domains/0000000000']
+    })
+    const stamped = bot({
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+    })
+    // The anchor serves no tenant, whatever was stamped on it while the switch was off.
+    const anchor = await anchored.projectIntegrationConfig(integration(), stamped, CORE, secrets)
+    expect(anchor).toMatchObject({ tenantIds: [] })
+    expect(anchor).not.toHaveProperty('ownTenantIds')
+    const own = await provider.projectIntegrationConfig(integration(), stamped, CORE, secrets)
+    expect(own).toMatchObject({ ownTenantIds: ['customers/C0000000000', 'domains/0000000000'] })
+    expect(own).not.toHaveProperty('tenantIds')
+    const bare = await provider.projectIntegrationConfig(integration(), bot(), CORE, secrets)
+    expect(bare).not.toHaveProperty('tenantIds')
+    expect(bare).not.toHaveProperty('ownTenantIds')
+    expect(googleChatRowKind(customer, { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL })).toBe('customer')
+    expect(googleChatRowKind(stamped, { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL })).toBe('anchor')
+    expect(googleChatRowKind(stamped)).toBe('single')
+  })
+
+  it('gives the relay a single-tenant row’s recorded keys as its own, never as customer keys', async () => {
+    const stamped = bot({ platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000' } })
+    expect((await provider.projectBotAssign!(stamped, secrets)).ingress).toEqual({
+      apiAppId: PROJECT_NUMBER,
+      ownTenantIds: ['customers/C0000000000']
+    })
+    // The stamped anchor stays the anchor: the claim page and nothing else.
+    expect((await anchored.projectBotAssign!(stamped, secrets)).ingress).toEqual({
+      apiAppId: PROJECT_NUMBER,
+      claimUrl: CLAIM_URL
+    })
+  })
+
   it('points only the multi-tenant anchor row at the claim page', async () => {
     expect((await anchored.projectBotAssign!(bot(), secrets)).ingress).toEqual({
       apiAppId: PROJECT_NUMBER,
@@ -504,5 +573,51 @@ describe('composition', () => {
     expect(provider.envSchema).toBe(GoogleChatCpEnvSchema)
     // Google offers no app-authenticated read of the app's own identity, so there is nothing to poll.
     expect(provider.backgroundLoops).toBeUndefined()
+  })
+})
+
+describe('a single-tenant row learns its tenant, and a freed customer row is released (§10.3, §10.5)', () => {
+  const CLAIM_URL = 'https://console.example.test/googlechat/claim'
+  const single = createGoogleChatCpProvider()
+  const anchored = createGoogleChatCpProvider({ claimAnchor: { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL } })
+  const snapshot = (platformConfig: Record<string, unknown>, externalTenantId: string | null = '-') => ({
+    platformConfig,
+    externalTenantId
+  })
+
+  it('records a single-tenant row’s first customer and each new domain, knows them again, and refuses a second customer', () => {
+    const row = bot()
+    expect(single.learnTenant!(row, snapshot({ projectId: PROJECT_ID }), 'customers/C0000000001')).toEqual({
+      kind: 'record',
+      change: { platformConfig: { customerId: 'C0000000001' } }
+    })
+    const stamped = snapshot({ projectId: PROJECT_ID, customerId: 'C0000000001' })
+    expect(single.learnTenant!(row, stamped, 'customers/C0000000001')).toEqual({ kind: 'known' })
+    expect(single.learnTenant!(row, stamped, 'customers/C0000000002')).toMatchObject({ kind: 'refused' })
+    expect(single.learnTenant!(row, stamped, 'domains/0000000001')).toEqual({
+      kind: 'record',
+      change: { platformConfig: { domainIds: '0000000001' } }
+    })
+  })
+
+  it('refuses a report for a customer row, which learns only through claims, and for the anchor', () => {
+    const customer = bot({ externalTenantId: 'customers/C0000000001' })
+    expect(
+      single.learnTenant!(customer, snapshot({ projectId: PROJECT_ID }, 'customers/C0000000001'), 'domains/0000000001')
+    ).toMatchObject({ kind: 'refused' })
+    expect(anchored.learnTenant!(bot(), snapshot({ projectId: PROJECT_ID }), 'customers/C0000000001')).toMatchObject({
+      kind: 'refused'
+    })
+    // The same row is single-tenant to a deployment whose switch is off.
+    expect(single.learnTenant!(bot(), snapshot({ projectId: PROJECT_ID }), 'customers/C0000000001')).toMatchObject({
+      kind: 'record'
+    })
+  })
+
+  it('releases a freed customer row for a new claim, and keeps a single-tenant row and the anchor', () => {
+    expect(anchored.releasesFreedBot!(bot({ externalTenantId: 'customers/C0000000001' }))).toBe(true)
+    expect(anchored.releasesFreedBot!(bot({ externalTenantId: 'domains/0000000001' }))).toBe(true)
+    expect(anchored.releasesFreedBot!(bot())).toBe(false)
+    expect(single.releasesFreedBot!(bot())).toBe(false)
   })
 })

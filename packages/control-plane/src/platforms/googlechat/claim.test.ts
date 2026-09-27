@@ -300,6 +300,24 @@ describe('the claim state', () => {
 })
 
 describe('POST /integrations/googlechat/claim: a new customer', () => {
+  it('writes a new customer row even when the anchor carries that customer from single-tenant days (§10.3)', async () => {
+    const anchor = customerRow({
+      id: BotId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
+      externalTenantId: '-',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+    })
+    const h = await harness({ rows: [anchor] })
+
+    const res = await h.claim()
+    expect(res.statusCode).toBe(201)
+    expect(h.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+      })
+    )
+    expect(h.merged).toEqual([])
+  })
+
   it('binds a Space claim to the Space’s customer and the INTERNAL member’s domain, on the preset agent', async () => {
     const h = await harness()
 
