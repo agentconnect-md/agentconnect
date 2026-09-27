@@ -28,6 +28,9 @@ const MANAGED_KEYS = [
   'LINEAR_PLATFORM_CLIENT_ID',
   'LINEAR_PLATFORM_CLIENT_SECRET',
   'LINEAR_PLATFORM_SIGNING_SECRET',
+  'GOOGLE_CHAT_PLATFORM_PROJECT_ID',
+  'GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER',
+  'GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY',
   'FEISHU_PLATFORM_APP_ID',
   'FEISHU_PLATFORM_APP_SECRET',
   'LARK_PLATFORM_APP_ID',
@@ -89,6 +92,13 @@ export function applyDeploymentEnvironment(
     set('LINEAR_PLATFORM_CLIENT_ID', values.linear.clientId)
     set('LINEAR_PLATFORM_CLIENT_SECRET', secrets['linear.clientSecret'])
     set('LINEAR_PLATFORM_SIGNING_SECRET', secrets['linear.signingSecret'])
+  }
+
+  // All three or none: a partial set fails fast in resolveGoogleChatPlatformAppConfig.
+  if (values.googleChat) {
+    set('GOOGLE_CHAT_PLATFORM_PROJECT_ID', values.googleChat.projectId)
+    set('GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER', values.googleChat.projectNumber)
+    set('GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY', secrets['googleChat.serviceAccountKey'])
   }
 
   if (values.feishu) {

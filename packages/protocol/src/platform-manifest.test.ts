@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { originKindOf } from './frames/route.js'
+import { continuableOrigin, originKindOf } from './frames/route.js'
 import { DEFAULT_MANIFEST, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'
 
 /**
@@ -98,8 +98,9 @@ describe('platform manifest', () => {
     expect(axes).toEqual(DEFAULT_MANIFEST)
     expect(axes.consoleContinuation).toBe(false)
     expect(axes.dmChannelPattern).toBeUndefined()
-    // Not yet a wire-vocabulary entry: that registration lands with the host modules.
-    expect(originKindOf(GOOGLE_CHAT_PLATFORM)).toBeUndefined()
+    // A chat origin the console composer may not continue.
+    expect(originKindOf(GOOGLE_CHAT_PLATFORM)).toBe('chat')
+    expect(continuableOrigin(GOOGLE_CHAT_PLATFORM)).toBe(false)
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {

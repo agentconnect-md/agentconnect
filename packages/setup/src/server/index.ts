@@ -12,6 +12,7 @@ import {
 } from '@agentconnect.md/control-plane/feishu-registration-provider'
 import { createFeishuAppSetupAuditor, type FeishuAppSetupAuditor } from '@agentconnect.md/control-plane/feishu-identity'
 import { createSlackConfigApi, type SlackConfigApi } from '@agentconnect.md/control-plane/slack-config-api'
+import { checkGoogleChatApp, probeFailureIsConnectivity } from '@agentconnect.md/control-plane/google-chat-credential'
 import {
   DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
   DEPLOYMENT_CONFIG_SCHEMA_VERSION,
@@ -55,7 +56,6 @@ import { probeBlocksSave, probeGitlabInstance } from '../gitlab-probe.js'
 import { probeBlocksSave as giteaProbeBlocksSave, probeGiteaInstance } from '../gitea-probe.js'
 import { linearConfiguredUrls } from '../linear-app.js'
 import { googleChatConfiguredUrls } from '../google-chat-app.js'
-import { checkServiceAccountKey, probeFailureIsConnectivity, probeGoogleChatCredential } from '../google-chat-probe.js'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -159,7 +159,8 @@ const ConfigureGoogleChatBody = z.strictObject({
   application: z
     .strictObject({
       projectId: z.string().trim().min(1).max(100),
-      projectNumber: z.string().trim().min(1).max(40),
+      /** Optional cross-check; the stored number is the one resolved from the key's own project. */
+      projectNumber: z.string().trim().min(1).max(40).optional(),
       /** The downloaded key file's JSON; omitted re-validates the stored key of the same project. */
       serviceAccountKey: z.string().trim().min(1).max(20_000).optional()
     })
@@ -990,7 +991,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
   app.post('/api/v1/configure/google-chat', { preHandler: requireConfigurationAccess }, async (request, reply) => {
     const parsed = ConfigureGoogleChatBody.safeParse(request.body)
     if (!parsed.success) {
-      return problem(reply, 400, 'a Google Cloud project ID, project number, and service-account key are required')
+      return problem(reply, 400, 'a Google Cloud project ID and service-account key are required')
     }
     const application = parsed.data.application
     if (!application) {
@@ -1004,14 +1005,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         return { revision: saved.revision, restartRequired: true as const }
       })
     }
-    const { projectId, projectNumber } = application
-    if (!/^[1-9]\d{0,19}$/.test(projectNumber)) {
-      return problem(
-        reply,
-        400,
-        'the project number must be the numeric Project number from the Google Cloud dashboard'
-      )
-    }
+    const { projectId } = application
     let urls: ReturnType<typeof googleChatConfiguredUrls>
     try {
       urls = googleChatConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
@@ -1032,11 +1026,14 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       }
       rawKey = stored
     }
-    const checked = checkServiceAccountKey(rawKey, projectId)
-    if (checked.status !== 'ok') return problem(reply, 400, checked.message, checked.status)
-    const probe = await probeGoogleChatCredential(checked.key, fetchImpl, deps.now)
-    if (probe.status !== 'ok') {
-      return problem(reply, probeFailureIsConnectivity(probe.status) ? 502 : 400, probe.message, probe.status)
+    // The key check, the project number resolved with the key, and the chat.bot read, shared with the Control Plane.
+    const checked = await checkGoogleChatApp(
+      { projectId, projectNumber: application.projectNumber, serviceAccountKey: rawKey },
+      fetchImpl,
+      deps.now
+    )
+    if (checked.status !== 'ok') {
+      return problem(reply, probeFailureIsConnectivity(checked.status) ? 502 : 400, checked.message, checked.status)
     }
     return serializeMutation(async () => {
       const current = await deps.store.getAdmin()
@@ -1044,8 +1041,8 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       let put: ReturnType<typeof googleChatDeploymentPut>
       try {
         put = googleChatDeploymentPut(current, {
-          projectId,
-          projectNumber,
+          projectId: checked.key.projectId,
+          projectNumber: checked.projectNumber,
           ...(application.serviceAccountKey ? { serviceAccountKey: checked.key.json } : {})
         })
       } catch (error) {
@@ -1057,8 +1054,8 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         revision: saved.revision,
         restartRequired: true as const,
         callbackUrl: urls.callbackUrl,
-        audience: { setting: urls.audienceSetting, value: projectNumber },
-        probe: { status: probe.status, message: probe.message }
+        audience: { setting: urls.audienceSetting, value: checked.projectNumber },
+        probe: { status: checked.status, message: checked.message }
       }
     })
   })

@@ -140,6 +140,28 @@ describe('applyDeploymentEnvironment', () => {
     expect(config).not.toHaveProperty('GITHUB_APP_WEBHOOK_SECRET')
   })
 
+  it('projects the deployment-owned Google Chat app with its key, and clears stale startup values', () => {
+    const base = runtime()
+    const key = '{"type":"service_account","project_id":"example-project"}'
+    const managed = applyDeploymentEnvironment(
+      { ...bootstrap, GOOGLE_CHAT_PLATFORM_PROJECT_ID: 'startup-project' },
+      runtime({
+        values: { ...base.values, googleChat: { projectId: 'example-project', projectNumber: '123456789012' } },
+        secrets: { 'googleChat.serviceAccountKey': key }
+      })
+    )
+    expect(managed.GOOGLE_CHAT_PLATFORM_PROJECT_ID).toBe('example-project')
+    expect(managed.GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER).toBe('123456789012')
+    expect(managed.GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY).toBe(key)
+
+    const cleared = applyDeploymentEnvironment(
+      { ...bootstrap, GOOGLE_CHAT_PLATFORM_PROJECT_ID: 'startup-project' },
+      runtime()
+    )
+    expect(cleared.GOOGLE_CHAT_PLATFORM_PROJECT_ID).toBeUndefined()
+    expect(cleared.GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY).toBeUndefined()
+  })
+
   it('keeps regional Login Apps owned by the deployment document', () => {
     const base = runtime()
     const managed = applyDeploymentEnvironment(

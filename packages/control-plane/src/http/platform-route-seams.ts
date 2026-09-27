@@ -32,6 +32,7 @@ import type { FeishuAppTenantGuard, FeishuBotVerifier } from './feishu-identity.
 import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
 import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { LinearPlatformAppConfig } from '../config/linear-platform.js'
+import type { GoogleChatPlatformAppConfig } from '../config/google-chat-platform.js'
 import type { LinearApiClient } from '../platforms/linear/api.js'
 import type { LinearTokenService } from '../platforms/linear/token-service.js'
 import type { CpProviderToolingCredentials } from '../platforms/provider.js'
@@ -72,6 +73,14 @@ export interface LinearRouteSeams {
   /** The SAME token-custody instance the provider advertises, so the callback's step-1 write and
    *  the disconnect edge's revoke cannot drift on which store answers. */
   tokens: LinearTokenService
+}
+
+/** Seams for the deployment-owned Google Chat app's install route (google-chat-integration.md §3). */
+export interface GoogleChatRouteSeams {
+  /** The deployment-owned Chat app; absent ⇒ `GOOGLE_CHAT_PLATFORM_*` unset and the route 404s. Secret material — NEVER log or DTO. */
+  app?: GoogleChatPlatformAppConfig
+  /** The Google HTTP layer the credential probe calls; suites pass a fake. */
+  fetch: typeof fetch
 }
 
 /** Seams for the Telegram route plugin (the credential-probe route). */

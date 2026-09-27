@@ -95,7 +95,11 @@ function toChannelDto(c: IntegrationChannelRecord, view?: DecisionView): Integra
   }
 }
 
-function toDto(i: IntegrationRecord, channels: IntegrationChannelRecord[] = [], view?: DecisionView): IntegrationDtoT {
+export function toDto(
+  i: IntegrationRecord,
+  channels: IntegrationChannelRecord[] = [],
+  view?: DecisionView
+): IntegrationDtoT {
   return {
     id: i.id,
     name: i.name,

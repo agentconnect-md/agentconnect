@@ -344,14 +344,15 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <li>Use a Google Workspace account that may create a Cloud project and service-account keys. An organization policy can block key creation.</li>
           <li>Create a Google Cloud project for this app and enable the Google Chat API in it.</li>
           <li>On the Chat API Configuration page, set the HTTP endpoint URL and the Project Number audience above, allow 1:1 messages and joining spaces, and choose who can use the app.</li>
-          <li>In the same project, create a service account and a JSON key for it, then save the project ID, project number, and key here.</li>
+          <li>In the same project, create a service account and a JSON key for it, grant it the Browser role on the project, and enable the Cloud Resource Manager API; AgentConnect reads the project number with that key.</li>
+          <li>Save the project ID and key here. The project number is optional: when entered, it must match the number read from the key's project.</li>
           <li>Add the app in Google Chat, then send it a direct message or mention it in a space to test.</li>
         </ol>
         <div class="row"><a id="googlechat-configuration" class="button" href="https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat" target="_blank" rel="noopener">Open Chat API configuration</a></div>
         <div id="googlechat-config-controls" class="subsection">
           <h3 id="googlechat-edit-heading" hidden>Edit Google Chat App identity</h3>
           <label class="field">Project ID<input id="googlechat-project-id-input" autocomplete="off"></label>
-          <label class="field">Project number<input id="googlechat-project-number-input" inputmode="numeric" autocomplete="off"></label>
+          <label class="field">Project number (optional)<input id="googlechat-project-number-input" inputmode="numeric" autocomplete="off" placeholder="Read from the key's project"></label>
           <label class="field">Service-account key JSON<input id="googlechat-key" type="password" autocomplete="off" placeholder="Required when the project ID changes"></label>
         </div>
         <div class="row"><button id="save-googlechat">Save Google Chat app</button><button id="cancel-googlechat-configuration" hidden>Cancel</button><button id="clear-googlechat" class="danger" hidden>Clear configuration</button></div>
@@ -1497,9 +1498,10 @@ export const SETUP_HTML = String.raw`<!doctype html>
     }
 
     async function saveGoogleChat() {
+      const projectNumber = el('googlechat-project-number-input').value.trim();
       const application = {
         projectId: requiredInput('googlechat-project-id-input', 'the Google Cloud project ID'),
-        projectNumber: requiredInput('googlechat-project-number-input', 'the Google Cloud project number')
+        ...(projectNumber ? { projectNumber } : {})
       };
       const serviceAccountKey = el('googlechat-key').value.trim();
       let saved;

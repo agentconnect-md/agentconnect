@@ -7,11 +7,16 @@ import {
   type DeploymentConfigStore,
   type DeploymentConfigValuesV1
 } from '@agentconnect.md/control-plane/deployment-config-store'
-import { GOOGLE_CHAT_PROBE_URL, GOOGLE_TOKEN_ENDPOINT } from '../src/google-chat-probe.js'
+import {
+  GOOGLE_CHAT_PROBE_URL,
+  GOOGLE_TOKEN_ENDPOINT,
+  googleCloudProjectUrl
+} from '@agentconnect.md/control-plane/google-chat-credential'
 import { buildSetupServer } from '../src/server/index.js'
 
 const PROJECT_ID = 'example-project'
 const PROJECT_NUMBER = '123456789012'
+const CRM_URL = googleCloudProjectUrl(PROJECT_ID)
 const { privateKey: PRIVATE_KEY } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
   publicKeyEncoding: { type: 'spki', format: 'pem' },
@@ -40,7 +45,7 @@ interface Replaced {
   secrets?: Record<string, string | null>
 }
 
-type GoogleAnswer = 'ok' | 'rejected' | 'offline'
+type GoogleAnswer = 'ok' | 'rejected' | 'offline' | 'crm_disabled' | 'crm_forbidden'
 
 function server(
   options: {
@@ -93,6 +98,13 @@ function server(
         ? Response.json({ error: 'invalid_grant', error_description: 'Invalid JWT Signature.' }, { status: 400 })
         : Response.json({ access_token: 'synthetic-access-token' })
     }
+    if (url === CRM_URL) {
+      if (google === 'crm_disabled' || google === 'crm_forbidden') {
+        const details = google === 'crm_disabled' ? [{ reason: 'SERVICE_DISABLED' }] : []
+        return Response.json({ error: { code: 403, status: 'PERMISSION_DENIED', details } }, { status: 403 })
+      }
+      return Response.json({ projectNumber: PROJECT_NUMBER, projectId: PROJECT_ID })
+    }
     if (url === GOOGLE_CHAT_PROBE_URL) return Response.json({ spaces: [] })
     throw new Error(`unexpected request to ${url}`)
   }) as typeof fetch
@@ -132,7 +144,7 @@ describe('POST /api/v1/configure/google-chat (§3)', () => {
       audience: { setting: 'Project Number', value: PROJECT_NUMBER },
       probe: { status: 'ok' }
     })
-    expect(requests).toEqual([GOOGLE_TOKEN_ENDPOINT, GOOGLE_CHAT_PROBE_URL])
+    expect(requests).toEqual([GOOGLE_TOKEN_ENDPOINT, CRM_URL, GOOGLE_TOKEN_ENDPOINT, GOOGLE_CHAT_PROBE_URL])
     expect(writes[0]?.values.googleChat).toEqual({ projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER })
     expect(JSON.parse(writes[0]?.secrets?.['googleChat.serviceAccountKey'] ?? '{}')).toEqual(JSON.parse(KEY))
     expect(response.body).not.toContain('PRIVATE KEY')
@@ -152,6 +164,22 @@ describe('POST /api/v1/configure/google-chat (§3)', () => {
       expect.arrayContaining([expect.objectContaining({ key: 'googleChat.serviceAccountKey', configured: true })])
     )
     expect(status.body).not.toContain('PRIVATE KEY')
+  })
+
+  it('refuses a key whose project_id was edited away from its service account’s project', async () => {
+    const { app, writes, requests } = server()
+
+    const response = await configure(app, {
+      projectId: 'other-example-project',
+      serviceAccountKey: JSON.stringify({ ...JSON.parse(KEY), project_id: 'other-example-project' })
+    })
+    expect(response.statusCode).toBe(400)
+    expect(response.json()).toMatchObject({
+      code: 'invalid_key',
+      message: `the key's project_id other-example-project does not match its service account's project ${PROJECT_ID}`
+    })
+    expect(requests).toEqual([])
+    expect(writes).toEqual([])
   })
 
   it('refuses a key from another project before calling Google', async () => {
@@ -222,13 +250,58 @@ describe('POST /api/v1/configure/google-chat (§3)', () => {
     expect(writes).toEqual([])
   })
 
-  it('re-validates the stored key when only the project number is corrected', async () => {
+  it('stores the number resolved from the key when none is entered, and shows it as the audience', async () => {
+    const { app, writes } = server()
+
+    const response = await configure(app, { projectId: PROJECT_ID, serviceAccountKey: KEY })
+    expect(response.statusCode).toBe(200)
+    expect(response.json().audience).toEqual({ setting: 'Project Number', value: PROJECT_NUMBER })
+    expect(writes[0]?.values.googleChat).toEqual({ projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER })
+  })
+
+  it('refuses an entered number that is not the key’s project and saves nothing', async () => {
+    const { app, writes, requests } = server()
+
+    const response = await configure(app, {
+      projectId: PROJECT_ID,
+      projectNumber: '210987654321',
+      serviceAccountKey: KEY
+    })
+    expect(response.statusCode).toBe(400)
+    expect(response.json()).toMatchObject({
+      code: 'project_number_mismatch',
+      message: `the project number 210987654321 does not match project ${PROJECT_ID}, whose number is ${PROJECT_NUMBER}`
+    })
+    expect(requests).not.toContain(GOOGLE_CHAT_PROBE_URL)
+    expect(writes).toEqual([])
+  })
+
+  it('names the Cloud Resource Manager API and the Browser role when the project cannot be read', async () => {
+    const disabled = await configure(server({ google: 'crm_disabled' }).app, {
+      projectId: PROJECT_ID,
+      serviceAccountKey: KEY
+    })
+    expect(disabled.statusCode).toBe(400)
+    expect(disabled.json()).toMatchObject({
+      code: 'crm_disabled',
+      message: expect.stringMatching(/^Enable the Cloud Resource Manager API/)
+    })
+    await running?.close()
+    const forbidden = await configure(server({ google: 'crm_forbidden' }).app, {
+      projectId: PROJECT_ID,
+      serviceAccountKey: KEY
+    })
+    expect(forbidden.statusCode).toBe(400)
+    expect(forbidden.json()).toMatchObject({ code: 'crm_forbidden', message: expect.stringMatching(/Browser role/) })
+  })
+
+  it('re-validates the stored key when the project is unchanged', async () => {
     const { app, writes, requests } = server({ values: configured, storedKey: KEY })
 
-    const response = await configure(app, { projectId: PROJECT_ID, projectNumber: '210987654321' })
+    const response = await configure(app, { projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER })
     expect(response.statusCode).toBe(200)
-    expect(requests).toEqual([GOOGLE_TOKEN_ENDPOINT, GOOGLE_CHAT_PROBE_URL])
-    expect(writes[0]?.values.googleChat).toEqual({ projectId: PROJECT_ID, projectNumber: '210987654321' })
+    expect(requests).toEqual([GOOGLE_TOKEN_ENDPOINT, CRM_URL, GOOGLE_TOKEN_ENDPOINT, GOOGLE_CHAT_PROBE_URL])
+    expect(writes[0]?.values.googleChat).toEqual({ projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER })
     expect(writes[0]?.secrets).toBeUndefined()
   })
 

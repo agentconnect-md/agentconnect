@@ -29,7 +29,17 @@ import { manifestFor } from '../platform-manifest.js'
 //   - `event/session` — store the value verbatim (session rows are text).
 //   - `rd/msg` — decode succeeds; the daemon may refuse the ITEM on semantic
 //     grounds (fail-closed coordinate checks), but never the socket.
-export const KNOWN_PLATFORMS = ['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream', 'qq'] as const
+export const KNOWN_PLATFORMS = [
+  'slack',
+  'telegram',
+  'webchat',
+  'discord',
+  'feishu',
+  'hook',
+  'dream',
+  'qq',
+  'googlechat'
+] as const
 export type KnownPlatform = (typeof KNOWN_PLATFORMS)[number]
 export function isKnownPlatform(p: string): p is KnownPlatform {
   return (KNOWN_PLATFORMS as readonly string[]).includes(p)

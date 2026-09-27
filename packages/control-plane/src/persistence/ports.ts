@@ -3163,6 +3163,10 @@ export interface CreateBotInput {
   /** Feishu/Lark gateway region; only set for platform 'feishu'. Durable home for the
    *  region so a freed bot reinstalls against the same gateway. */
   feishuRegion?: FeishuRegion
+  /** Public app identity of a platform with no legacy column; only its `projectBotIdentity` reads it. */
+  externalAppId?: string
+  /** Public metadata such a platform keeps in the generic bag; only its `projectBotIdentity` reads it. */
+  platformConfig?: Record<string, string>
   /** Opt into shared-bot mode at create (shared-bot-relay.md §4.1). Default false. */
   shareable?: boolean
   /** Inbound transport. Default 'socket'. */
