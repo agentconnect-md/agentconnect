@@ -3389,6 +3389,8 @@ export interface BotRepo {
   /** Backfill only a missing provider bot identity (a Slack member id, a Chat app's `users/…` name); never replace
    *  an established one. System-tier like {@link BotRepo.setSlackAppIdIfMissing}. */
   setBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean>
+  /** Add public `platformConfig` entries the row lacks, under its row lock; an existing entry is never replaced. Org-fenced. */
+  addPlatformConfigEntries(orgId: OrgId, id: BotId, entries: Record<string, string>): Promise<void>
   /** Stamp the freed-bot display hints when its LAST integration is removed.
    *  Org-fenced: a cross-org id writes nothing. */
   markFreed(orgId: OrgId, id: BotId, at: Date, lastAgentName: string | null): Promise<void>
@@ -5920,6 +5922,10 @@ export interface UserRepo {
    * that as "no identity", never as a pass.
    */
   getOidcSubject(userId: string): Promise<string | null>
+  /** The provider user id of the user's linked Google identity, which a Chat `users/{id}` names (google-chat-integration.md §10.6). */
+  getGoogleAccountId(userId: string): Promise<string | null>
+  /** Record what the identity provider reported (null clears); the id moves off any other row that held it. */
+  setGoogleAccountId(userId: string, googleAccountId: string | null): Promise<void>
 }
 
 export interface OrgRepo {

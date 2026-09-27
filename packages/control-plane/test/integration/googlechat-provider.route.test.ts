@@ -4,7 +4,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { provisionPresetAgents } from '../../src/persistence/index.js'
 import {
   GOOGLE_CHAT_PROBE_URL,
@@ -30,7 +30,12 @@ const KEY = JSON.stringify({
   private_key: PRIVATE_KEY,
   client_email: `agentconnect-chat@${PROJECT_ID}.iam.gserviceaccount.com`
 })
-const DEPLOYMENT_APP = { projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER, serviceAccountKey: KEY }
+const DEPLOYMENT_APP = {
+  projectId: PROJECT_ID,
+  projectNumber: PROJECT_NUMBER,
+  serviceAccountKey: KEY,
+  multiTenant: false
+}
 const CRM_URL = googleCloudProjectUrl(PROJECT_ID)
 
 let running: HttpApp | undefined
@@ -261,5 +266,123 @@ describe('POST /integrations/googlechat/platform-install', () => {
     const res = await install(app)
     expect(res.statusCode).toBe(409)
     expect(res.json().message).toMatch(/no target agent/)
+  })
+})
+
+describe('POST /integrations/googlechat/claim (§10.5)', () => {
+  const GOOGLE_USER = '100000000000000000009'
+  const SPACE = 'spaces/AAAAexample'
+  const DM = 'spaces/DDDDexample'
+  const REDIRECT = 'https://chat.google.com/api/config_complete_redirect?token=synthetic'
+  const CHAT = 'https://chat.googleapis.com/v1'
+
+  /** The Chat reads a claim makes with the deployment key: the caller's Space membership, the Space, and a DM's members. */
+  function claimGoogle(): typeof fetch {
+    return (async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url === GOOGLE_TOKEN_ENDPOINT) return Response.json({ access_token: 'synthetic-access-token' })
+      const member = { name: `users/${GOOGLE_USER}`, type: 'HUMAN', domainId: '0000000000' }
+      if (url === `${CHAT}/${SPACE}/members/${GOOGLE_USER}`) return Response.json({ affiliation: 'INTERNAL', member })
+      if (url === `${CHAT}/${SPACE}`) return Response.json({ name: SPACE, customer: 'customers/C0000000000' })
+      if (url === `${CHAT}/${DM}/members?pageSize=100`) return Response.json({ memberships: [{ member }] })
+      throw new Error(`unexpected request to ${url}`)
+    }) as typeof fetch
+  }
+
+  function claimHarness() {
+    const relaySends: { type: string; payload: unknown }[] = []
+    const app = buildHttpApp(
+      prisma,
+      { PUBLIC_RELAY_URL: 'https://relay.example.test' },
+      undefined,
+      new SpyControl() as unknown as ControlSender,
+      { googleChatFetch: claimGoogle(), googleChatPlatformApp: { ...DEPLOYMENT_APP, multiTenant: true } }
+    )
+    app.relayReg.add({
+      relayId: 'r1',
+      send: (type: string, payload: unknown) => relaySends.push({ type, payload }),
+      close() {}
+    } as unknown as RelayChannel)
+    running = app
+    return { app, relaySends }
+  }
+
+  const state = (kind: 'dm' | 'space') =>
+    Buffer.from(
+      JSON.stringify({
+        v: 1,
+        app: PROJECT_NUMBER,
+        space: kind === 'dm' ? DM : SPACE,
+        user: `users/${GOOGLE_USER}`,
+        kind,
+        tenant: kind === 'dm' ? 'domains/0000000000' : 'customers/C0000000000',
+        redirect: REDIRECT,
+        iat: 1_790_000_000
+      })
+    ).toString('base64url')
+
+  const claim = (app: HttpApp, kind: 'dm' | 'space', org: string = DEFAULT_ORG_ID) =>
+    app.app.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${org}/integrations/googlechat/claim`,
+      payload: { state: state(kind) }
+    })
+
+  const lastAssign = (sends: { type: string; payload: unknown }[]) =>
+    sends.filter((send) => send.type === 'rc/bot-assign').at(-1)?.payload as { ingress: Record<string, unknown> }
+
+  it('writes a customer row on the preset agent, then learns the customer id from a Space claim', async () => {
+    await provisionPresetAgents(prisma, { orgId: DEFAULT_ORG_ID })
+    // A placed preset, so the relay assignment is broadcast rather than deferred to placement.
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { platforms: ['googlechat'], runtimes: ['claude'], acp: true, features: [] }
+    })
+    await prisma.agent.update({
+      where: { orgId_name: { orgId: DEFAULT_ORG_ID, name: 'agentconnect' } },
+      data: { daemonId: DAEMON }
+    })
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { googleAccountId: GOOGLE_USER } })
+    const { app, relaySends } = claimHarness()
+
+    const created = await claim(app, 'dm')
+    expect(created.statusCode).toBe(201)
+    expect(created.json()).toEqual({ redirect: REDIRECT })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { platform: 'googlechat' }, include: { secret: true } })
+    expect(bot).toMatchObject({
+      orgId: DEFAULT_ORG_ID,
+      prebuilt: true,
+      externalAppId: PROJECT_NUMBER,
+      externalTenantId: 'domains/0000000000',
+      platformConfig: { projectId: PROJECT_ID, domainId: '0000000000' }
+    })
+    expect(bot.secret?.botToken).toBe(KEY)
+    expect(lastAssign(relaySends).ingress).toEqual({ apiAppId: PROJECT_NUMBER, tenantIds: ['domains/0000000000'] })
+
+    const learned = await claim(app, 'space')
+    expect(learned.statusCode).toBe(200)
+    expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(1)
+    expect(await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).toMatchObject({
+      externalTenantId: 'domains/0000000000',
+      platformConfig: { projectId: PROJECT_ID, domainId: '0000000000', customerId: 'C0000000000' }
+    })
+    expect(lastAssign(relaySends).ingress).toEqual({
+      apiAppId: PROJECT_NUMBER,
+      tenantIds: ['customers/C0000000000', 'domains/0000000000']
+    })
+  })
+
+  it('refuses the same customer to a second organization', async () => {
+    await provisionPresetAgents(prisma, { orgId: DEFAULT_ORG_ID })
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { googleAccountId: GOOGLE_USER } })
+    const other = await prisma.org.create({ data: { slug: 'second-example-org' } })
+    await prisma.membership.create({ data: { orgId: other.id, userId: DEFAULT_OWNER_ID, role: 'owner' } })
+    const { app } = claimHarness()
+
+    expect((await claim(app, 'space')).statusCode).toBe(201)
+    const taken = await claim(app, 'dm', other.id)
+    expect(taken.statusCode).toBe(409)
+    expect(taken.json().code).toBe('GOOGLE_CHAT_CLAIM_TAKEN')
+    expect(taken.body).not.toContain(DEFAULT_ORG_ID)
+    expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(1)
   })
 })

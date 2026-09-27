@@ -17,6 +17,14 @@ import {
   serviceAccountProject,
   type GoogleChatAppFailure
 } from './credential.js'
+import {
+  GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE,
+  googleChatPrimaryTenant,
+  googleChatTenantEntries,
+  googleChatTenantKeys,
+  googleChatTenantOf,
+  type GoogleChatTenant
+} from './tenant.js'
 
 /** The `googlechat` block of `POST /integrations`; an entered project number is only a cross-check of the resolved one. */
 export const GoogleChatCreateCredentials = z.object({
@@ -39,7 +47,12 @@ export function refineGoogleChatCreateBody(
 export const GoogleChatCpEnvSchema = {
   GOOGLE_CHAT_PLATFORM_PROJECT_ID: z.string().optional(),
   GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER: z.string().optional(),
-  GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY: z.string().optional()
+  GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY: z.string().optional(),
+  // Explicit enum, not z.coerce.boolean(), so 'false' stays false.
+  GOOGLE_CHAT_PLATFORM_MULTI_TENANT: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true')
 } satisfies ZodRawShape
 
 /** The 409 copy of the one-bot-per-app fence; a Chat app cannot move between agents or organizations. */
@@ -109,11 +122,12 @@ export function googleChatKeyProject(serviceAccountKey: string): string {
   return projectId
 }
 
-/** The rows one Chat app writes, keyed by its resolved identity. */
-export function buildGoogleChatInstall(app: ResolvedGoogleChatApp): CpNewBotInstall {
+/** The rows one Chat app writes, keyed by its resolved identity and, for a claimed customer, by that customer (§10.3). */
+export function buildGoogleChatInstall(app: ResolvedGoogleChatApp, tenant: GoogleChatTenant = {}): CpNewBotInstall {
   const { projectId, projectNumber } = app
+  const primary = googleChatPrimaryTenant(tenant)
   return {
-    bot: { externalAppId: projectNumber, platformConfig: { projectId } },
+    bot: { externalAppId: projectNumber, platformConfig: { projectId, ...googleChatTenantEntries(tenant) } },
     // The key's canonical JSON in the `botToken` slot; it reaches the assigned daemon only.
     secrets: {
       botToken: JSON.stringify(JSON.parse(app.serviceAccountKey)),
@@ -122,10 +136,24 @@ export function buildGoogleChatInstall(app: ResolvedGoogleChatApp): CpNewBotInst
     },
     externalIdentity: {
       externalAppId: projectNumber,
-      externalTenantId: TENANTLESS_SENTINEL,
-      conflictMessage: GOOGLE_CHAT_APP_TAKEN_MESSAGE
+      externalTenantId: primary ?? TENANTLESS_SENTINEL,
+      conflictMessage: primary ? GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE : GOOGLE_CHAT_APP_TAKEN_MESSAGE
     }
   }
+}
+
+/** Every tenant key a bot row is known by; empty for a single-tenant row and for the anchor. */
+export function googleChatRowTenantKeys(bot: Pick<BotRecord, 'externalTenantId' | 'platformConfig'>): string[] {
+  const keys = googleChatTenantKeys(googleChatTenantOf(bot.platformConfig))
+  const primary = bot.externalTenantId
+  if (primary && primary !== TENANTLESS_SENTINEL && !keys.includes(primary)) keys.unshift(primary)
+  return keys
+}
+
+/** The multi-tenant deployment app's anchor: its project number and the console's claim page (§10.5). */
+export interface GoogleChatClaimAnchor {
+  projectNumber: string
+  claimUrl: string
 }
 
 /** The daemon spec payload; undefined when the row lacks its app identity or key, which withholds the integration. */
@@ -138,16 +166,26 @@ export function googleChatIntegrationConfig(
   return { projectId, projectNumber: bot.externalAppId, serviceAccountKey: secrets.botToken }
 }
 
-/** The relay assignment: no secret, the project number as demux key and token audience (§2), and the app's identity once learned. */
-export function googleChatBotAssignBags(bot: Pick<BotRecord, 'externalAppId' | 'botUserId'>): {
+/** The relay assignment: no secret, the project number as audience (§2), the app's identity, a customer row's tenant keys, and the anchor's claim page. */
+export function googleChatBotAssignBags(
+  bot: Pick<BotRecord, 'externalAppId' | 'botUserId'> & Partial<Pick<BotRecord, 'externalTenantId' | 'platformConfig'>>,
+  anchor?: GoogleChatClaimAnchor
+): {
   secrets: Record<string, unknown>
   ingress: Record<string, unknown>
 } {
+  const tenantIds = googleChatRowTenantKeys({
+    externalTenantId: bot.externalTenantId ?? null,
+    platformConfig: bot.platformConfig ?? null
+  })
+  const isAnchor = !!anchor && bot.externalAppId === anchor.projectNumber && tenantIds.length === 0
   return {
     secrets: {},
     ingress: {
       ...(bot.externalAppId ? { apiAppId: bot.externalAppId } : {}),
-      ...(bot.botUserId ? { appUserName: bot.botUserId } : {})
+      ...(bot.botUserId ? { appUserName: bot.botUserId } : {}),
+      ...(tenantIds.length > 0 ? { tenantIds } : {}),
+      ...(isAnchor ? { claimUrl: anchor.claimUrl } : {})
     }
   }
 }
@@ -157,6 +195,8 @@ export interface GoogleChatCpProviderDeps {
   fetch?: typeof fetch
   /** The deployment-app install route, pre-bound by the composition root. */
   installRoutes?: { org: FastifyPluginAsync[]; publicCallback: FastifyPluginAsync[] }
+  /** Present only when the deployment app is multi-tenant: its anchor row's assignment carries the claim page. */
+  claimAnchor?: GoogleChatClaimAnchor
 }
 
 export function createGoogleChatCpProvider(
@@ -186,17 +226,20 @@ export function createGoogleChatCpProvider(
       })
     },
 
-    // App-scoped with no tenant axis: the project number plus the tenantless sentinel, and the project ID as public metadata.
-    projectBotIdentity: (input) =>
-      input.externalAppId
-        ? {
-            externalAppId: input.externalAppId,
-            externalTenantId: TENANTLESS_SENTINEL,
-            ...(input.platformConfig?.projectId
-              ? { platformConfig: { projectId: input.platformConfig.projectId } }
-              : {})
-          }
-        : {},
+    // The project number plus the claimed customer's primary key (the tenantless sentinel otherwise), and the ids as public metadata.
+    projectBotIdentity: (input) => {
+      if (!input.externalAppId) return {}
+      const tenant = googleChatTenantOf(input.platformConfig)
+      const platformConfig = {
+        ...(input.platformConfig?.projectId ? { projectId: input.platformConfig.projectId } : {}),
+        ...googleChatTenantEntries(tenant)
+      }
+      return {
+        externalAppId: input.externalAppId,
+        externalTenantId: googleChatPrimaryTenant(tenant) ?? TENANTLESS_SENTINEL,
+        ...(Object.keys(platformConfig).length > 0 ? { platformConfig } : {})
+      }
+    },
 
     secretShape: {
       slots: { botToken: 'Google Chat service-account key JSON (daemon egress only; never sent to the relay)' },
@@ -212,7 +255,7 @@ export function createGoogleChatCpProvider(
     },
 
     async projectBotAssign(bot) {
-      return googleChatBotAssignBags(bot)
+      return googleChatBotAssignBags(bot, deps.claimAnchor)
     }
   }
 }

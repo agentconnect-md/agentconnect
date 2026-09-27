@@ -40,7 +40,8 @@ const ROTATED = {
 const DEPLOYMENT_APP: GoogleChatPlatformAppConfig = {
   projectId: PROJECT_ID,
   projectNumber: PROJECT_NUMBER,
-  serviceAccountKey: JSON.stringify(ROTATED, null, 2)
+  serviceAccountKey: JSON.stringify(ROTATED, null, 2),
+  multiTenant: false
 }
 
 const HELD: IntegrationRecord = {

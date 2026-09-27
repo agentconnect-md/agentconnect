@@ -290,6 +290,7 @@ import { LinearOrphanTokenSweeper } from './platforms/linear/orphan-token-sweepe
 import { linearConnectRoutes, linearOauthCallbackRoutes } from './platforms/linear/routes.js'
 import { createGoogleChatCpProvider } from './platforms/googlechat/provider.js'
 import { googleChatKeyRoutes, googleChatPlatformInstallRoutes } from './platforms/googlechat/routes.js'
+import { googleChatClaimRoutes } from './platforms/googlechat/claim.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
@@ -2168,11 +2169,20 @@ export function buildContainer(
     log: { info: (obj, msg) => http.log.info(obj, msg), warn: (obj, msg) => http.log.warn(obj, msg) }
   })
 
-  // The deployment-owned Google Chat app's install route reads the app and Google's HTTP layer from here.
+  // The deployment-owned Google Chat app's install and claim routes read the app, Google, and the caller's Google identity from here.
   const googleChatSeams: GoogleChatRouteSeams = {
     ...(googleChatPlatformApp ? { app: googleChatPlatformApp } : {}),
-    fetch: (input, init) => fetch(input, init)
+    fetch: (input, init) => fetch(input, init),
+    ...(logtoIdentity ? { identity: logtoIdentity } : {})
   }
+  // A multi-tenant deployment app's anchor row points unclaimed customers at the console's claim page (§10.5).
+  const googleChatClaimAnchor =
+    googleChatPlatformApp?.multiTenant && webAppUrl
+      ? {
+          projectNumber: googleChatPlatformApp.projectNumber,
+          claimUrl: `${webAppUrl.replace(/\/+$/, '')}/googlechat/claim`
+        }
+      : undefined
 
   // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
   // instances — all four platforms — constructed with the SAME verify/sync
@@ -2267,10 +2277,12 @@ export function buildContainer(
       installRoutes: {
         org: [
           googleChatPlatformInstallRoutes(httpDeps, googleChatSeams),
-          googleChatKeyRoutes(httpDeps, googleChatSeams)
+          googleChatKeyRoutes(httpDeps, googleChatSeams),
+          googleChatClaimRoutes(httpDeps, googleChatSeams)
         ],
         publicCallback: []
-      }
+      },
+      ...(googleChatClaimAnchor ? { claimAnchor: googleChatClaimAnchor } : {})
     })
   ])
 

@@ -20,6 +20,7 @@ import cors from '@fastify/cors'
 import { hasZodFastifySchemaValidationErrors, isResponseSerializationError } from 'fastify-type-provider-zod'
 import type { HttpDeps } from './deps.js'
 import { createIdentityWarmTrigger } from './identity-warm.js'
+import { syncGoogleAccountId } from './google-account-id.js'
 import { installZod } from './plugins/zod.js'
 import { installOpenapi } from './plugins/openapi.js'
 import { humanAuthPlugin } from './plugins/auth.js'
@@ -154,7 +155,17 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
   // personal key in front of the JWT/dev path (daemon-api-key-auth.md §8).
   void app.register(humanAuthPlugin, {
     ...deps.config,
-    resolveUser: (input) => deps.repos.user.provisionOidcUser(input),
+    resolveUser: async (input) => {
+      const user = await deps.repos.user.provisionOidcUser(input)
+      // Record the linked Google identity once per subject (google-chat-integration.md §10.6); a miss is read again on a claim.
+      if (deps.logtoIdentity) {
+        void syncGoogleAccountId(
+          { identity: deps.logtoIdentity, users: deps.repos.user },
+          { userId: user.userId, oidcSubject: input.oidcSubject }
+        ).catch((err: unknown) => app.log.debug({ err }, 'google account id sync failed'))
+      }
+      return user
+    },
     verifyApiKey: (token) => deps.apiKeys.authenticateUser(token),
     internalInvocationAuth: deps.internalInvocationAuth,
     // Identity warm-at-touch (session-access-cold-visit.md §3): every authenticated

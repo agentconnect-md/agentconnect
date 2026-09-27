@@ -19,6 +19,33 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 
 const repo = () => new PgUserRepo(prisma)
 
+describe('PgUserRepo Google account id (google-chat-integration.md §10.6)', () => {
+  it('records, moves off a stale holder, and clears the id', async () => {
+    const first = await repo().provisionOidcUser({
+      oidcSubject: 'sub-google-a',
+      email: 'a@acme.com',
+      emailVerified: true
+    })
+    const second = await repo().provisionOidcUser({
+      oidcSubject: 'sub-google-b',
+      email: 'b@acme.com',
+      emailVerified: true
+    })
+    expect(await repo().getGoogleAccountId(first.userId)).toBeNull()
+
+    await repo().setGoogleAccountId(first.userId, '100000000000000000009')
+    expect(await repo().getGoogleAccountId(first.userId)).toBe('100000000000000000009')
+
+    // The identity provider now reports the account on another user, so the unique id moves there.
+    await repo().setGoogleAccountId(second.userId, '100000000000000000009')
+    expect(await repo().getGoogleAccountId(second.userId)).toBe('100000000000000000009')
+    expect(await repo().getGoogleAccountId(first.userId)).toBeNull()
+
+    await repo().setGoogleAccountId(second.userId, null)
+    expect(await repo().getGoogleAccountId(second.userId)).toBeNull()
+  })
+})
+
 describe('PgUserRepo.provisionOidcUser — signup creates no organization', () => {
   it('creates the user (real email + display name) and no membership at all', async () => {
     const { userId } = await repo().provisionOidcUser({

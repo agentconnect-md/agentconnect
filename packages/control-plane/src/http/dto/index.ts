@@ -2668,6 +2668,7 @@ const RESERVED_SLUGS = new Set([
   'login',
   'join',
   'welcome', // the org-onboarding page a member-less account lands on
+  'googlechat', // the Google Chat claim page
   'auth',
   'api',
   'orgs',

@@ -5,8 +5,8 @@ import { SignJWT } from 'jose'
 /** Google's fixed OAuth token endpoint; the key's own `token_uri` is never followed. */
 export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 
-/** The Chat REST root; the probe below is the only Chat read this module performs. */
-const GOOGLE_CHAT_API_ROOT = 'https://chat.googleapis.com/v1'
+/** The Chat REST root; the probe and the claim's reads below are the only Chat calls this module makes. */
+export const GOOGLE_CHAT_API_ROOT = 'https://chat.googleapis.com/v1'
 
 /** The one bounded read that proves the credential; nothing is ever posted. */
 export const GOOGLE_CHAT_PROBE_URL = `${GOOGLE_CHAT_API_ROOT}/spaces?pageSize=1`
@@ -300,6 +300,43 @@ export async function checkGoogleChatApp(
   const probe = await probeGoogleChatCredential(checked.key, fetchImpl, now)
   if (probe.status !== 'ok') return { status: probe.status, message: probe.message }
   return { status: 'ok', key: checked.key, projectNumber: resolved.projectNumber, message: probe.message }
+}
+
+export type GoogleChatAppRead =
+  | { status: 'ok'; body: Record<string, unknown> }
+  | { status: 'not_found' | 'refused' | 'key_rejected' | 'unreachable' | 'google_unavailable'; message: string }
+
+/** App-authenticated Chat API reads under one lazily minted `chat.bot` token; nothing is ever written. */
+export function googleChatAppReader(
+  key: GoogleServiceAccountKey,
+  fetchImpl: typeof fetch,
+  now: () => Date = () => new Date()
+): (path: string) => Promise<GoogleChatAppRead> {
+  let token: Promise<{ accessToken: string } | MintFailure> | undefined
+  return async (path) => {
+    token ??= mintAccessToken(key, GOOGLE_CHAT_BOT_SCOPE, fetchImpl, now)
+    const minted = await token
+    if ('status' in minted) return minted
+    let response: Response
+    try {
+      response = await fetchImpl(`${GOOGLE_CHAT_API_ROOT}/${path}`, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${minted.accessToken}`, accept: 'application/json' },
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
+      })
+    } catch {
+      return unreachable('the Google Chat API')
+    }
+    if (response.status >= 500 || response.status === 429) return unavailable('the Google Chat API', response.status)
+    const body = await readJson(response)
+    if (response.ok && body) return { status: 'ok', body }
+    const reason = detail((body?.error as Record<string, unknown> | undefined)?.message) ?? `HTTP ${response.status}`
+    if (response.status === 401)
+      return { status: 'key_rejected', message: `the Google Chat API rejected the app token (${reason})` }
+    if (response.status === 404)
+      return { status: 'not_found', message: `the Google Chat API found no ${path} (${reason})` }
+    return { status: 'refused', message: `the Google Chat API refused to read ${path} (${reason})` }
+  }
 }
 
 type MintFailure = { status: 'key_rejected' | 'unreachable' | 'google_unavailable'; message: string }
