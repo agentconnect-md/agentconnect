@@ -211,6 +211,14 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       label: 'Linear',
       sessionTools: LINEAR_SESSION_TOOLS
     }
+  ],
+  // Declares nothing: no attachment read (unsupported both ways), no history, no reactions (google-chat-integration.md §5).
+  [
+    'googlechat',
+    {
+      platform: 'googlechat',
+      label: 'Google Chat'
+    }
   ]
 ])
 

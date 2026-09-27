@@ -51,6 +51,21 @@ describe('connection identity (transport scope)', () => {
     expect(
       connectionIdentityFor({ id: 'i4', platform: 'feishu', config: { appId: 'cli_1', appSecret: 's' } } as never)
     ).toBe('feishu:cli_1')
+    // Google Chat scopes on the app's project number, never on the key, so a rotation keeps the scope.
+    expect(
+      connectionIdentityFor({
+        id: 'i7',
+        platform: 'googlechat',
+        config: { projectId: 'example-project', projectNumber: '100000000000', serviceAccountKey: '{"k":1}' }
+      } as never)
+    ).toBe('100000000000')
+    expect(
+      connectionIdentityFor({
+        id: 'i7',
+        platform: 'googlechat',
+        config: { projectId: 'example-project', projectNumber: '100000000000', serviceAccountKey: '{"k":2}' }
+      } as never)
+    ).toBe('100000000000')
   })
 
   it('fails CLOSED (integration-id isolation) on a payload the module schema refuses — never a throw', () => {
@@ -99,6 +114,21 @@ describe('tenant scope (durable owner identity)', () => {
         config: { region: 'lark', appId: 'c1', appSecret: 's' }
       } as never)
     ).toBe('lark:c1')
+    // The Chat app's project is the durable anchor; a payload the schema refuses falls back to the minted scope.
+    expect(
+      await tenantScopeFor(host(undefined, 'm8'), {
+        id: 'i7',
+        platform: 'googlechat',
+        config: { projectId: 'example-project', projectNumber: '100000000000', serviceAccountKey: '{"k":1}' }
+      } as never)
+    ).toBe('100000000000')
+    expect(
+      await tenantScopeFor(host(undefined, 'm9'), {
+        id: 'i7',
+        platform: 'googlechat',
+        config: { projectId: 'example-project', projectNumber: 'not-a-number', serviceAccountKey: '{"k":1}' }
+      } as never)
+    ).toBe('m9')
   })
 
   it('falls back to the minted scope on a payload the module schema refuses — never a throw', async () => {

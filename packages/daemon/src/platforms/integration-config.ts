@@ -33,6 +33,7 @@ import type { BindRuleConfig, Integration } from '../agents/agent-schema.js'
 import {
   DiscordConfigSchema,
   FeishuConfigSchema,
+  GoogleChatConfigSchema,
   LinearConfigSchema,
   SlackConfigSchema,
   TelegramConfigSchema
@@ -47,7 +48,8 @@ const CONFIG_SCHEMAS = {
   discord: DiscordConfigSchema,
   feishu: FeishuConfigSchema,
   linear: LinearConfigSchema,
-  qq: IntegrationQQConfig
+  qq: IntegrationQQConfig,
+  googlechat: GoogleChatConfigSchema
 } as const
 
 /** The union of every platform's validated config, derived from the registry

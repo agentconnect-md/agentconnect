@@ -10,6 +10,7 @@ import {
   IntegrationCoreEnvelope,
   IntegrationDiscordConfig,
   IntegrationFeishuConfig,
+  IntegrationGoogleChatConfig,
   IntegrationLinearConfig,
   IntegrationSlackConfig,
   IntegrationTelegramConfig,
@@ -60,6 +61,10 @@ export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
  *  access-token snapshot plus its expiry, refreshed over `linearcred` (§4.4/§7.2). */
 export const LinearConfigSchema = IntegrationLinearConfig
 export type LinearConfig = z.infer<typeof LinearConfigSchema>
+
+/** Google Chat carries the app's project identity plus its service-account key; ingress is relay-terminated (§3). */
+export const GoogleChatConfigSchema = IntegrationGoogleChatConfig
+export type GoogleChatConfig = z.infer<typeof GoogleChatConfigSchema>
 
 /**
  * One integration entry — §6.4 FINAL SHAPE, migrated together with the protocol

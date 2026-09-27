@@ -52,6 +52,7 @@ import {
 import { consolidateDiscord, discordConnKey, DiscordConnection, type DiscordDeps } from '../discord/connection.js'
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from '../feishu/connection.js'
 import { consolidateLinear, linearConnKey, LinearConnection } from './linear/connection.js'
+import { consolidateGoogleChat, GoogleChatConnection } from './googlechat/connection.js'
 import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
@@ -63,7 +64,13 @@ const LINEAR_TEAM_LIST_MS = 5_000
 
 /** Any live platform client this lifecycle opens, prunes or binds. */
 export type PlatformConnection =
-  SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | LinearConnection | QQConnection
+  | SlackConnection
+  | TelegramConnection
+  | DiscordConnection
+  | FeishuConnection
+  | LinearConnection
+  | QQConnection
+  | GoogleChatConnection
 
 /**
  * The UI-action callbacks every platform connection is constructed with — a status-bar tap,
@@ -125,6 +132,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
     feishu: ReadonlyMap<string, FeishuConnection>
     linear: ReadonlyMap<string, LinearConnection>
     qq?: ReadonlyMap<string, QQConnection>
+    googlechat: ReadonlyMap<string, GoogleChatConnection>
   }
   /** Point an integration at a live connection and record the identity mention-routing
    *  matches — the bot user id on Slack/Discord, the @username on Telegram, the open_id on
@@ -136,6 +144,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindQQ?(integrationId: string, conn: QQConnection, botUserId: string): void
   /** Linear's app user IS the bot identity — the id the ingress self-echo guard matches (§7.2). */
   bindLinear(integrationId: string, conn: LinearConnection, appUserId: string): void
+  /** The Chat app's `users/…` identity, once discovered; '' until then. */
+  bindGoogleChat(integrationId: string, conn: GoogleChatConnection, appUserName: string): void
   /** Drop an integration's connection binding, bot identity and channel snapshot together. */
   unbindIntegration(integrationId: string): void
   slackNameResolver(): SlackNameResolver | undefined
@@ -219,6 +229,8 @@ export class ConnectionReconciler {
   readonly linearPool = new ConnectionPool<LinearConnection>('linear', (conn) =>
     linearConnKey({ integrationId: conn.integrationId, workspaceId: conn.workspaceId() })
   )
+  // Keyed by app AND key: a rotated key is a new client, and the old one drains through the turn leases.
+  readonly googleChatPool = new ConnectionPool<GoogleChatConnection>('googlechat', (conn) => conn.key)
   // Pending background retry timers for Slack connections that failed to open
   // at startup (keyed by appToken). Cleared on daemon stop.
   private readonly slackRetryTimers = new Map<string, TimerHandle>()
@@ -256,7 +268,8 @@ export class ConnectionReconciler {
       this.discordPool,
       this.feishuPool,
       this.linearPool,
-      this.QQPool
+      this.QQPool,
+      this.googleChatPool
     ]
   }
 
@@ -387,6 +400,11 @@ export class ConnectionReconciler {
     const linearByIntegration = new Map<string, string>()
     for (const group of linear.values())
       for (const { integrationId } of group.integrations) linearByIntegration.set(integrationId, group.key)
+    // Google Chat keys on the app AND its key: a rotated key must drain the old client, not keep writing with it.
+    const googleChat = consolidateGoogleChat(agents, this.log)
+    const googleChatByIntegration = new Map<string, string>()
+    for (const group of googleChat.values())
+      for (const { integrationId } of group.integrations) googleChatByIntegration.set(integrationId, group.key)
 
     const QQGroups = consolidateQQ(agents)
     const QQByIntegration = new Map<string, string>()
@@ -399,7 +417,8 @@ export class ConnectionReconciler {
       ...telegramByIntegration.keys(),
       ...discordByIntegration.keys(),
       ...feishuByIntegration.keys(),
-      ...linearByIntegration.keys()
+      ...linearByIntegration.keys(),
+      ...googleChatByIntegration.keys()
     ])
     const evaluation = this.host.evaluationIntegrationIds()
     const bindings = this.host.bindings()
@@ -444,6 +463,9 @@ export class ConnectionReconciler {
       const key = linearConnKey({ integrationId: conn.integrationId, workspaceId: conn.workspaceId() })
       if (key !== linearByIntegration.get(integrationId)) this.host.unbindIntegration(integrationId)
     }
+    for (const [integrationId, conn] of bindings.googlechat) {
+      if (conn.key !== googleChatByIntegration.get(integrationId)) this.host.unbindIntegration(integrationId)
+    }
 
     // A startup retry captures only the stable appToken and re-reads the live
     // group when it fires. Cancel timers for keys whose final reference vanished.
@@ -475,6 +497,7 @@ export class ConnectionReconciler {
     await this.prunePool(this.feishuPool, new Set([...feishu.values()].map(feishuConnKey)))
     await this.prunePool(this.QQPool, new Set(QQGroups.keys()))
     await this.prunePool(this.linearPool, new Set([...linear.values()].map((group) => group.key)))
+    await this.prunePool(this.googleChatPool, new Set(googleChat.keys()))
   }
 
   /** Close every connection in `pool` whose opaque identity consolidation no
@@ -905,6 +928,62 @@ export class ConnectionReconciler {
       // failed must still refresh the rows every later delegation routes through.
       this.reportLinearTeams(conn, group.integrations)
     }
+  }
+
+  /** Reconcile the Google Chat app clients (§5): no socket, so the client is published before `start()` warms the token and learns the identity. */
+  async reconcileGoogleChatConnections(): Promise<void> {
+    for (const group of consolidateGoogleChat(this.host.transportAgents(), this.log).values()) {
+      const existing = this.googleChatPool.find(group.key)
+      if (existing) {
+        for (const { integrationId } of group.integrations) {
+          if (this.host.bindings().googlechat.get(integrationId) !== existing) {
+            this.host.bindGoogleChat(integrationId, existing, existing.botUserId ?? '')
+            this.log.info(`googlechat: bound integration ${integrationId} onto existing app client`)
+          }
+        }
+        this.reportGoogleChatSpaces(existing, group.integrations)
+        continue
+      }
+      if (!this.googleChatPool.beginConnect(group.key)) continue
+      const conn = new GoogleChatConnection({ group, log: this.log })
+      try {
+        this.googleChatPool.add(conn)
+        for (const { integrationId } of group.integrations)
+          this.host.bindGoogleChat(integrationId, conn, conn.botUserId ?? '')
+        await conn.start()
+        // The identity arrives with start(): rebind so mention routing and the self-echo guard read it.
+        for (const { integrationId } of group.integrations)
+          this.host.bindGoogleChat(integrationId, conn, conn.botUserId ?? '')
+        this.log.info(`googlechat: app client ready for integration ${group.integrationId}`)
+      } catch (err) {
+        this.log.warn(`googlechat: app client warm-up failed for integration ${group.integrationId}: ${formatErr(err)}`)
+      } finally {
+        this.googleChatPool.endConnect(group.key)
+      }
+      this.reportGoogleChatSpaces(conn, group.integrations)
+    }
+  }
+
+  /** The named Spaces the app is in, as its observed conversations (§5); detached and deadline-bound like the Linear report. */
+  private reportGoogleChatSpaces(conn: GoogleChatConnection, integrations: readonly { integrationId: string }[]): void {
+    void (async () => {
+      try {
+        const spaces = await conn.listChannels({ signal: AbortSignal.timeout(LINEAR_TEAM_LIST_MS) })
+        if (spaces.length === 0) return
+        const chats: ObservedChat[] = spaces.map((space) => ({
+          id: space.id,
+          ...(space.name ? { name: space.name } : {}),
+          isPrivate: space.isPrivate ?? false
+        }))
+        await this.host.observePlatformChats(
+          'googlechat',
+          chats,
+          integrations.map((i) => i.integrationId)
+        )
+      } catch (err) {
+        this.log.warn(`googlechat: reporting the Space list as observed conversations failed: ${formatErr(err)}`)
+      }
+    })()
   }
 
   /** Start the team-list refresh without joining it to the reconcile — see

@@ -73,7 +73,9 @@ const CHROME = new Map<string, TurnChrome>([
   // declaration at all (the legacy default arm).
   ['telegram', { statusSurface: 'on-demand' }],
   ['discord', { statusSurface: 'on-demand', noticeMarkup: 'markdown' }],
-  ['feishu', { statusSurface: 'on-demand' }]
+  ['feishu', { statusSurface: 'on-demand' }],
+  // No status bar, and notices render as Markdown, so agent text quoted in one is defused first.
+  ['googlechat', { statusSurface: 'on-demand', noticeMarkup: 'markdown' }]
 ])
 
 const NONE: TurnChrome = {}

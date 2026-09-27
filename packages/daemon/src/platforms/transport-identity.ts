@@ -61,7 +61,9 @@ const CONNECTION_IDENTITY = new Map<string, (integration: Integration) => string
       // `region` is schema-defaulted ('feishu'), so a validated payload always has it.
       return feishu && `${feishu.region}:${feishu.appId}`
     }
-  ]
+  ],
+  // The Chat app's project number, not its key: a rotated key must keep the installation's scope (google-chat-integration.md §3).
+  ['googlechat', (int) => platformIntegrationConfig('googlechat', int)?.projectNumber]
 ])
 
 /** The credential string identifying `integration`'s physical connection —
@@ -106,6 +108,11 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integr
       const feishu = platformIntegrationConfig('feishu', int)
       return feishu ? `${feishu.region}:${feishu.appId}` : await host.minted(int.id)
     }
+  ],
+  // The Chat app's project is the durable tenant anchor Google exposes; it survives key rotation.
+  [
+    'googlechat',
+    async (host, int) => platformIntegrationConfig('googlechat', int)?.projectNumber ?? (await host.minted(int.id))
   ]
 ])
 

@@ -142,9 +142,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <a href="#gitlab-section">GitLab</a>
       <a href="#gitea-section">Gitea</a>
       <a href="#slack-section">Slack</a>
-      <a href="#googlechat-section">Google Chat</a>
       <a href="#linear-section">Linear</a>
       <a href="#google-section">Google</a>
+      <a href="#googlechat-section">Google Chat</a>
       <a href="#feishu-section">Feishu</a>
       <a href="#lark-section">Lark</a>
       <a href="#options-section">Options</a>
@@ -326,38 +326,6 @@ export const SETUP_HTML = String.raw`<!doctype html>
         </div>
       </section>
 
-      <section id="googlechat-section" class="panel setup-section" aria-labelledby="googlechat-heading">
-        <div class="provider-head">
-          <div><h3 id="googlechat-heading">Google Chat</h3><p class="muted">One Chat app for the preset AgentConnect agent.</p></div>
-          <span id="googlechat-match" class="badge">Not configured</span>
-        </div>
-        <dl class="credentials">
-          <dt>Project ID</dt><dd class="value-line"><code id="googlechat-project-id">Not configured</code><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
-          <dt>Project number</dt><dd class="value-line"><code id="googlechat-project-number">Not configured</code><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
-          <dt>Service-account key</dt><dd class="value-line"><span id="googlechat-key-display" class="muted">Not configured</span><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
-        </dl>
-        <p id="googlechat-status" class="muted"></p>
-        <div id="googlechat-drift" class="notice" hidden></div>
-        <p>HTTP endpoint URL:</p><ul id="googlechat-callbacks" class="uris"></ul>
-        <p>Authentication audience:</p><ul id="googlechat-audience" class="uris"></ul>
-        <ol class="muted">
-          <li>Use a Google Workspace account that may create a Cloud project and service-account keys. An organization policy can block key creation.</li>
-          <li>Create a Google Cloud project for this app and enable the Google Chat API in it.</li>
-          <li>On the Chat API Configuration page, set the HTTP endpoint URL and the Project Number audience above, allow 1:1 messages and joining spaces, and choose who can use the app.</li>
-          <li>In the same project, create a service account and a JSON key for it, grant it the Browser role on the project, and enable the Cloud Resource Manager API; AgentConnect reads the project number with that key.</li>
-          <li>Save the project ID and key here. The project number is optional: when entered, it must match the number read from the key's project.</li>
-          <li>Add the app in Google Chat, then send it a direct message or mention it in a space to test.</li>
-        </ol>
-        <div class="row"><a id="googlechat-configuration" class="button" href="https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat" target="_blank" rel="noopener">Open Chat API configuration</a></div>
-        <div id="googlechat-config-controls" class="subsection">
-          <h3 id="googlechat-edit-heading" hidden>Edit Google Chat App identity</h3>
-          <label class="field">Project ID<input id="googlechat-project-id-input" autocomplete="off"></label>
-          <label class="field">Project number (optional)<input id="googlechat-project-number-input" inputmode="numeric" autocomplete="off" placeholder="Read from the key's project"></label>
-          <label class="field">Service-account key JSON<input id="googlechat-key" type="password" autocomplete="off" placeholder="Required when the project ID changes"></label>
-        </div>
-        <div class="row"><button id="save-googlechat">Save Google Chat app</button><button id="cancel-googlechat-configuration" hidden>Cancel</button><button id="clear-googlechat" class="danger" hidden>Clear configuration</button></div>
-      </section>
-
       <section id="linear-section" class="panel setup-section" aria-labelledby="linear-heading">
         <div class="provider-head">
           <div><h3 id="linear-heading">Linear</h3><p class="muted">One OAuth application for the whole deployment. Every workspace connects through it.</p></div>
@@ -406,6 +374,38 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <label id="google-initial-secret-field" class="field">Client secret<input id="google-secret" type="password" autocomplete="new-password" placeholder="Required when Client ID changes"></label>
         </div>
         <div class="row"><button id="save-google">Save Google client</button><button id="cancel-google-configuration" hidden>Cancel</button><button id="check-google" hidden>Check match</button><button id="clear-google" class="danger" hidden>Clear configuration</button></div>
+      </section>
+
+      <section id="googlechat-section" class="panel setup-section" aria-labelledby="googlechat-heading">
+        <div class="provider-head">
+          <div><h3 id="googlechat-heading">Google Chat</h3><p class="muted">One Chat app for the preset AgentConnect agent.</p></div>
+          <span id="googlechat-match" class="badge">Not configured</span>
+        </div>
+        <dl class="credentials">
+          <dt>Project ID</dt><dd class="value-line"><code id="googlechat-project-id">Not configured</code><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
+          <dt>Project number</dt><dd class="value-line"><code id="googlechat-project-number">Not configured</code><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
+          <dt>Service-account key</dt><dd class="value-line"><span id="googlechat-key-display" class="muted">Not configured</span><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
+        </dl>
+        <p id="googlechat-status" class="muted"></p>
+        <div id="googlechat-drift" class="notice" hidden></div>
+        <p>HTTP endpoint URL:</p><ul id="googlechat-callbacks" class="uris"></ul>
+        <p>Authentication audience:</p><ul id="googlechat-audience" class="uris"></ul>
+        <ol class="muted">
+          <li>Use a Google Workspace account that may create a Cloud project and service-account keys. An organization policy can block key creation.</li>
+          <li>Create a Google Cloud project for this app and enable the Google Chat API in it.</li>
+          <li>On the Chat API Configuration page, set the HTTP endpoint URL and the Project Number audience above, allow 1:1 messages and joining spaces, and choose who can use the app.</li>
+          <li>In the same project, create a service account and a JSON key for it, grant it the Browser role on the project, and enable the Cloud Resource Manager API; AgentConnect reads the project number with that key.</li>
+          <li>Save the project ID and key here. The project number is optional: when entered, it must match the number read from the key's project.</li>
+          <li>Add the app in Google Chat, then send it a direct message or mention it in a space to test.</li>
+        </ol>
+        <div class="row"><a id="googlechat-configuration" class="button" href="https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat" target="_blank" rel="noopener">Open Chat API configuration</a></div>
+        <div id="googlechat-config-controls" class="subsection">
+          <h3 id="googlechat-edit-heading" hidden>Edit Google Chat App identity</h3>
+          <label class="field">Project ID<input id="googlechat-project-id-input" autocomplete="off"></label>
+          <label class="field">Project number (optional)<input id="googlechat-project-number-input" inputmode="numeric" autocomplete="off" placeholder="Read from the key's project"></label>
+          <label class="field">Service-account key JSON<input id="googlechat-key" type="password" autocomplete="off" placeholder="Required when the project ID changes"></label>
+        </div>
+        <div class="row"><button id="save-googlechat">Save Google Chat app</button><button id="cancel-googlechat-configuration" hidden>Cancel</button><button id="clear-googlechat" class="danger" hidden>Clear configuration</button></div>
       </section>
 
       <section id="feishu-section" class="panel setup-section" aria-labelledby="feishu-heading">
