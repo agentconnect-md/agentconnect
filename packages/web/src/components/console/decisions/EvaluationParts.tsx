@@ -61,7 +61,7 @@ export function EvaluationRow({
           {title ?? (expired ? t('evaluations.sheet.detailsExpired') : '—')}
         </span>
         {answer ? (
-          <span className="mono flex-none text-[12.5px] text-(--text-primary)">{answer}</span>
+          <span className="mono min-w-0 max-w-full truncate text-[12.5px] text-(--text-primary)">{answer}</span>
         ) : (
           (badge ?? <span className="badge flex-none bg-(--surface-active) text-(--text-secondary)">{outcome}</span>)
         )}

@@ -74,7 +74,7 @@ function makeApp(secrets: { verificationToken: string; encryptKey?: string } = {
   } as unknown as import('../contract.js').RelayIngressHost
   const resolver: RelayInboundSeam = {
     handleInbound: async (_platformId, rawBody, body, headers) => {
-      const verified = feishuIngressPlugin.verify(
+      const verified = await feishuIngressPlugin.verify(
         ingest,
         rawBody,
         body,

@@ -88,11 +88,25 @@ Credential replacement drains old output connections using existing egress lease
 ### Verify the app before routing
 
 Use one module-owned HTTPS route with Google's **Project Number** authentication
-audience. A decoded token audience is only a candidate lookup key. Before any
-discovery or forwarding, verify the signature using Google's published Chat
-certificates, the Chat issuer, token validity, and the exact assigned project
-number. Reject failed verification with 401 and keep certificate refresh bounded.
-Do not use an unverified body field, header, or URL parameter as an authority.
+audience, mounted at `GOOGLE_CHAT_EVENTS_PATH` (`/googlechat/events`), a
+constant the protocol package owns so the Setup Server's published callback URL
+and the relay's route cannot drift. Google posts each event with
+`Authorization: Bearer <JWT>`. The live probe fixed the token's shape: RS256
+with a `kid` header, issuer `chat@system.gserviceaccount.com`, audience the Cloud
+project number as a decimal string, and a one-hour lifetime. A decoded token
+audience is only a candidate lookup key. Before any discovery or forwarding, the
+relay verifies with `jose` (`importX509` + `jwtVerify`): the certificate whose
+`kid` matches from Google's map at
+`https://www.googleapis.com/service_accounts/v1/metadata/x509/chat@system.gserviceaccount.com`,
+RS256 only, that issuer, the bot's exact project number as the audience, and
+`exp`/`iat` with a minute of clock tolerance. One process-wide certificate cache
+serves every Google Chat bot: it honors the response's `max-age` (clamped between
+one minute and a day; one hour without one), keeps the last good map when a
+refresh fails, and refetches for an unknown `kid` at most once every five
+minutes. Any failure is a 401 and nothing is routed. Do not use an unverified
+body field, header, or URL parameter as an authority. Because the proof is a
+fetched certificate, this is the first plugin whose `verify` returns a promise;
+the relay seam awaits either form.
 
 Google also supports URL-audience OIDC tokens. Project-number verification makes
 the intended app explicit on a shared relay endpoint. Google documents both modes
@@ -196,13 +210,13 @@ distribution requirements. See [testing visibility](https://developers.google.co
 The Console wizard, or the Setup Server for the deployment-owned app, collects
 credentials and shows the derived installation metadata:
 
-| Value                           | Storage and meaning                                                                                                             |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Google Cloud project ID         | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                                           |
-| Verified project number         | Canonical app identity and token audience, resolved through Cloud Resource Manager with the key; must match any entered number. |
-| HTTPS callback URL              | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings.                   |
-| Service-account key JSON        | Write-only credential in the encrypted bot secret store; the deployment app's deployment secret is copied there at install.     |
-| Verified Chat app user identity | Provider identity metadata for mention matching and bot attribution; obtain from Google, not a display name.                    |
+| Value                    | Storage and meaning                                                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| Google Cloud project ID  | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                                           |
+| Verified project number  | Canonical app identity and token audience, resolved through Cloud Resource Manager with the key; must match any entered number. |
+| HTTPS callback URL       | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings.                   |
+| Service-account key JSON | Write-only credential in the encrypted bot secret store; the deployment app's deployment secret is copied there at install.     |
+| Chat app user identity   | The app's own `users/…` name, read from Google by the Control Plane and stored as the bot's `botUserId`; never a display name.  |
 
 Keep the app and service account in one project for the first version. Configure
 Chat API interaction events with an HTTPS endpoint and **Project Number** audience,
@@ -233,10 +247,24 @@ null tenant does not participate in that constraint; the project ID rides the
 row's public `platformConfig` metadata. Preserve the installation's
 transport scope across key rotation; neither a private-key hash nor a callback
 attempt ID defines a person's or session's identity. Changing the app project
-requires a new installation. The app's Google `users/...` identity must be
-verified in the live probe before mention matching is finalized; do not
-synthesize it from a project ID or assume the service-account email is the bot
-user.
+requires a new installation.
+
+The app's Google `users/…` identity is in neither its key nor its assignment at
+install. The Control Plane provider's `googlechat-app-identity` background loop
+(`platforms/googlechat/app-identity.ts`, after the Slack bot-identity
+reconciler) reads it for every Google Chat bot whose `botUserId` is unset: it
+mints a `chat.bot` token from the stored key, lists one Space
+(`GET /v1/spaces?pageSize=1`), reads the app's own membership there
+(`GET /v1/{space}/members/app`), stores `member.name` through the
+platform-neutral `setBotUserIdIfMissing`, and re-broadcasts the assignment,
+which then carries `ingress.appUserName`. An app in no Space yet is retried on
+the next pass. Until that lands, the relay bridges from Google's own data: the
+one `ADD` annotation on a message-bearing `ADDED_TO_SPACE` names the app being
+added, and a Space `MESSAGE` that mentions exactly one app names this one,
+because Google delivers Space messages only to the apps they mention. The ingest
+keeps what it learned and reports it through `reportBotUserId`; an assignment
+that carries the identity always wins. Do not synthesize the identity from a
+project ID or assume the service-account email is the bot user.
 
 Validation checks credential structure, resolves the project number with the
 key, and makes a bounded Chat API read with app authentication. It must not send
@@ -272,17 +300,18 @@ installed app and integration scope; payloads cannot choose an AgentConnect orga
 integration, agent, or session. Validate that nested message and thread resource
 names belong to the event's Space before routing or replying.
 
-| Normalized field     | Google input / rule                                                                                                            |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `platform`           | `googlechat`                                                                                                                   |
-| `msgId`              | Stable Google message resource name, scoped by the installed app for admission.                                                |
-| `channel`            | Full `space.name`; never its mutable display name.                                                                             |
-| `thread`             | Full message thread resource for named Spaces; use the existing conversation session semantics for 1:1 DMs.                    |
-| `sender.id`          | Google user resource name within the installation's stable transport scope.                                                    |
-| `text`               | Message text with the receiving app's mention removed using structured mention data. Preserve other mentions and user content. |
-| `mentionedBots`      | Verified receiving app identity when explicitly mentioned.                                                                     |
-| `isDm` / `isGroupDm` | Explicit Space type; unknown types fail closed. Group DMs are not admitted in this version.                                    |
-| Provider timestamp   | Message creation time, with event time as a validated fallback.                                                                |
+| Normalized field     | Google input / rule                                                                                                                                                                                                         |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform`           | `googlechat`                                                                                                                                                                                                                |
+| `msgId`              | Stable Google message resource name, scoped by the installed app for admission.                                                                                                                                             |
+| `channel`            | Full `space.name`; never its mutable display name.                                                                                                                                                                          |
+| `thread`             | Full message thread resource for named Spaces; use the existing conversation session semantics for 1:1 DMs.                                                                                                                 |
+| `sender.id`          | Google user resource name within the installation's stable transport scope.                                                                                                                                                 |
+| `text`               | Message text with the receiving app's mention removed using structured mention data. Preserve other mentions and user content.                                                                                              |
+| `mentionedBots`      | Verified receiving app identity when explicitly mentioned.                                                                                                                                                                  |
+| `trigger`            | `mention` for every Space delivery, since Google delivers one only to the apps it mentions or adds; `dm` for a DM. The relay reads the stamp as an explicit address (`trustedRouteVia`) before the app's identity is known. |
+| `isDm` / `isGroupDm` | Explicit Space type; unknown types fail closed. Group DMs are not admitted in this version.                                                                                                                                 |
+| Provider timestamp   | Message creation time, with event time as a validated fallback.                                                                                                                                                             |
 
 The [message resource](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages)
 provides message, thread, sender, and mention coordinates. `argumentText` strips
@@ -302,7 +331,13 @@ Google documents this combined event in its
 `REMOVED_FROM_SPACE` updates membership and disables delivery there without
 starting a turn or attempting a farewell message. Reconcile stale or conflicting
 membership hints with bounded provider reads. Unsupported event types do not
-activate an agent.
+activate an agent. The relay ingest keeps the Spaces it has observed the app in
+and reports that snapshot through `reportChannels` on every add and remove: the
+Space name, its display name when present, and `im` for a DM. The Control Plane
+applies whole-bot snapshots only to platforms whose manifest declares
+authoritative membership enumeration, and Google Chat declares observed
+enumeration, so it does not persist this snapshot yet; accepting observed
+snapshots, or enumerating membership through `spaces.list`, is a follow-up.
 
 Run the existing discovery, conversation gate, trigger, command, session routing,
 and Decision checks. Off stays silent, including for commands. Restricted agents
@@ -349,13 +384,14 @@ arbitration as `forward`, returning a `RelayAdmission` — the `disposition` and
 retry does, else the first rejection. The Google module calls `forwardStrict`
 and never converts the old `accepted` result into an HTTP success.
 
-| Disposition           | Relay verdict                                                                                                | HTTP behavior                                                                         |
-| --------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| Accepted              | `admitted`                                                                                                   | 200 with an empty response only after durable inbox admission and its receipt commit. |
-| Duplicate             | `admitted` against an existing receipt                                                                       | 200 when a durable receipt proves prior acceptance; do not run the message again.     |
-| Intentionally ignored | `rejected` with a gate reason (`off`, `muted`, `stopped`), or an unsupported event the module never forwards | 200 after that completed decision; no work is promised.                               |
-| Retryable or unknown  | `retry` (`durability`, `draining`, `capacity`, `not_ready`, `offline`) or an admission timeout               | 503 so Google may redeliver.                                                          |
-| Invalid request       | never forwarded                                                                                              | 401 for failed authentication; 400 for malformed payloads; never route either.        |
+| Disposition           | Relay verdict                                                                                                | HTTP behavior                                                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Accepted              | `admitted`                                                                                                   | 200 with an empty response only after durable inbox admission and its receipt commit.                                              |
+| Duplicate             | `admitted` against an existing receipt                                                                       | 200 when a durable receipt proves prior acceptance; do not run the message again.                                                  |
+| Intentionally ignored | `rejected` with a gate reason (`off`, `muted`, `stopped`), or an unsupported event the module never forwards | 200 after that completed decision; no work is promised.                                                                            |
+| Retryable or unknown  | `retry` (`durability`, `draining`, `capacity`, `not_ready`, `offline`) or an admission timeout               | 503 so Google may redeliver.                                                                                                       |
+| Invalid request       | never forwarded                                                                                              | 401 when no assigned bot owns the token or it fails verification; 400 when the body is not a JSON object with a string `type`.     |
+| Malformed event       | never forwarded                                                                                              | 200 with a log line after verification: the normalizer's `invalid` is permanent, and a 4xx would make Google redeliver it forever. |
 
 The relay's inbound seam returns `HandledDelivery`; its optional `admission`
 member carries the `RelayAdmission` unchanged from the plugin's `handle` to the
@@ -363,11 +399,14 @@ platform's own route in `installRoutes`, which answers 503 for `retry` and 200
 otherwise. The Slack route reads only `syncResponse` and keeps answering 200 for
 every handled delivery and 401 when no assigned bot owns it.
 
-Use a bounded admission deadline inside the provider and relay request budgets.
-An HTTP timeout after a daemon commit is an unknown outcome, not a reason to
-erase that work: a retry must find the same receipt. The relay does not gain a
-durable message queue. If the daemon is unavailable beyond Google's retry window,
-delivery can be lost; report this limitation rather than promise offline recovery.
+Use a bounded admission deadline inside the provider and relay request budgets:
+the route settles the whole handling within 20 seconds, comfortably inside
+Google's 30-second window, and answers 503 on expiry while the handling runs on,
+so a late admission still marks its identity. An HTTP timeout after a daemon
+commit is an unknown outcome, not a reason to erase that work: a retry must find
+the same receipt. The relay does not gain a durable message queue. If the daemon
+is unavailable beyond Google's retry window, delivery can be lost; report this
+limitation rather than promise offline recovery.
 
 Reuse the daemon's existing relay-ingress strategy, `requireDurable`, `receiptId`,
 `onAdmission`, and atomic inbox-with-receipt machinery. That strategy is now the
@@ -394,10 +433,16 @@ turn completion, steering, and inbox removal. Check them before an in-memory ded
 fast path can settle a delivery: the relay host's `dedupSeen` marks an identity
 on first sight and answers a repeat with 200 before any admission result exists,
 which suits Slack's bounded-loss path and not this one. The Google module uses
-the host's split pair instead — `dedupPeek(identity)` checks without marking,
-`dedupMark(identity)` marks after an `admitted` or `rejected` disposition — so
-a retry of a `retry` or timed-out attempt is forwarded again. A failed durable
-write remains retryable.
+the host's split pair instead: `dedupPeek(msgId)` before forwarding answers a
+settled repeat with 200 and forwards nothing; after `forwardStrict`,
+`dedupMark(msgId)` marks an `admitted` or `rejected` disposition and never a
+`retry`, so a retry of a `retry` or timed-out attempt is forwarded again; an
+`ignored` or `unsupported` event is marked settled too. The forwarded message's
+identity is the normalizer's `googlechat:<space>:<message name>`, so every
+callback attempt shares one; the relay's key prefixes it with the receiving
+bot's id, because the host's table is shared by every bot and a Space message
+that mentions two installed apps is delivered once per app with its own
+audience. A failed durable write remains retryable.
 
 Commands require a completed, replay-safe disposition too. Bind cancellation to
 its original operation/turn so a repeated callback cannot cancel later work. On
@@ -534,12 +579,12 @@ for private DM turns as part of the acceptance checks.
 
 | Area                    | Required contribution                                                                                                                                                                                                                                                                                                                             |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protocol and message    | The platform id and its `KNOWN_PLATFORMS` entry, conservative manifest values, the daemon config payload schema, and pure Google event normalization.                                                                                                                                                                                             |
-| Relay platform module   | HTTPS route, project-audience verification, demux, normalization, membership reports, and strict admission responses.                                                                                                                                                                                                                             |
+| Protocol and message    | The platform id and its `KNOWN_PLATFORMS` entry, conservative manifest values, the daemon config payload schema, the `GOOGLE_CHAT_EVENTS_PATH` constant the Setup Server and the relay share, and pure Google event normalization.                                                                                                                |
+| Relay platform module   | The `googlechat` plugin: the route at the protocol path, RS256 verification against Google's published certificates through one shared cache, demux on the unverified audience, the app-identity bridge, observed-membership snapshots, `forwardStrict` with the split dedup pair, and the 20-second admission deadline.                          |
 | Daemon platform module  | Done in `packages/daemon/src/platforms/googlechat/`: the config schema registration, the app-authenticated Chat REST connection and read port, the `relayIngress` member on the shared relay-ingress host port, the Markdown renderer and byte-budget splitter, the streaming turn output, command chrome, and the connection-registry lifecycle. |
 | Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals.                                                                                                                                                 |
 | Daemon output           | Done: client ids derive from the durable delivery identity, results land on transcript rows keyed by the message resource name, an ambiguous create reconciles by `GET` on its client id, and every write goes through one per-Space `PlatformSendQueue`.                                                                                         |
-| Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment-owned app's install, secret rotation, daemon spec, and relay assignment projection.                                                                                                                                                         |
+| Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment-owned app's install, secret rotation, daemon spec, relay assignment projection, and the `googlechat-app-identity` loop that stores the app's `users/…` name as `botUserId` and projects it as `ingress.appUserName`.                        |
 | Console platform module | Chat picker, setup wizard, connection diagnostics, conversation semantics, and explicit scope limitations.                                                                                                                                                                                                                                        |
 
 Start with observed membership discovery and no bot-sender routing or multi-agent

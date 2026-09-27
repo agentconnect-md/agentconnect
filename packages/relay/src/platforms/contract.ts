@@ -348,7 +348,9 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
    * then the bounded scan the assignment's identity scope permits) and calls
    * this per candidate; the plugin owns the cryptography (HMAC window, AES
    * decrypt, token compare) — and hands back the DECRYPTED result exactly once,
-   * so handling never re-derives it.
+   * so handling never re-derives it. A platform whose proof is a provider-signed
+   * token checked against fetched certificates (Google Chat) answers with a
+   * promise; core awaits either form.
    */
   verify(
     ingest: TIngest,
@@ -358,7 +360,7 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
     /** Host-clock "now" (ms) — HMAC replay windows are time-based, and the
      *  injection is what keeps verification testable under a fake clock. */
     now: number
-  ): TVerified | undefined
+  ): TVerified | undefined | Promise<TVerified | undefined>
   /**
    * Handle one verified delivery: decode events into normalized messages and
    * interactions, emit them through the host, and produce the synchronous HTTP

@@ -271,7 +271,7 @@ export class PgBotRepo implements BotRepo {
     return result.count === 1
   }
 
-  async setSlackBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean> {
+  async setBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean> {
     const result = await this.db.bot.updateMany({
       where: { id, botUserId: null },
       data: { botUserId }

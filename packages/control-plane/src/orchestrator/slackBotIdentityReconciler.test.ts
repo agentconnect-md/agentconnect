@@ -47,12 +47,12 @@ function bot(): BotRecord {
 describe('SlackBotIdentityReconciler', () => {
   it('resolves and backfills missing Slack app/workspace/member identity without exposing the token', async () => {
     const setSlackAppIdIfMissing = vi.fn(async () => true)
-    const setSlackBotUserIdIfMissing = vi.fn(async () => true)
+    const setBotUserIdIfMissing = vi.fn(async () => true)
     const setWorkspaceMetadata = vi.fn(async () => {})
     const bots = {
       listSlackMissingIdentity: async () => [bot()],
       setSlackAppIdIfMissing,
-      setSlackBotUserIdIfMissing,
+      setBotUserIdIfMissing,
       setWorkspaceMetadata
     } as unknown as BotRepo
     const secrets = {
@@ -82,7 +82,7 @@ describe('SlackBotIdentityReconciler', () => {
 
     expect(resolve).toHaveBeenCalledWith('xoxb-secret')
     expect(setSlackAppIdIfMissing).toHaveBeenCalledWith(BOT, 'AHTTPBOT')
-    expect(setSlackBotUserIdIfMissing).toHaveBeenCalledWith(BOT, 'UHTTPBOT')
+    expect(setBotUserIdIfMissing).toHaveBeenCalledWith(BOT, 'UHTTPBOT')
     // Org-fenced write (org-scoped-data-layer.md §3): the reconciler passes the
     // org of the row its fleet-wide worklist yielded, ahead of the bot id.
     expect(setWorkspaceMetadata).toHaveBeenCalledWith(bot().orgId, BOT, 'TWORKSPACE', 'Acme')
@@ -92,12 +92,12 @@ describe('SlackBotIdentityReconciler', () => {
 
   it('keeps unresolved rows retryable and never stores a malformed id', async () => {
     const setSlackAppIdIfMissing = vi.fn(async () => true)
-    const setSlackBotUserIdIfMissing = vi.fn(async () => true)
+    const setBotUserIdIfMissing = vi.fn(async () => true)
     const setWorkspaceMetadata = vi.fn(async () => {})
     const bots = {
       listSlackMissingIdentity: async () => [bot()],
       setSlackAppIdIfMissing,
-      setSlackBotUserIdIfMissing,
+      setBotUserIdIfMissing,
       setWorkspaceMetadata
     } as unknown as BotRepo
     const secrets = {
@@ -118,7 +118,7 @@ describe('SlackBotIdentityReconciler', () => {
     ).tick()
 
     expect(setSlackAppIdIfMissing).not.toHaveBeenCalled()
-    expect(setSlackBotUserIdIfMissing).not.toHaveBeenCalled()
+    expect(setBotUserIdIfMissing).not.toHaveBeenCalled()
     expect(setWorkspaceMetadata).not.toHaveBeenCalled()
   })
 
