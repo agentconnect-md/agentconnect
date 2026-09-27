@@ -4665,7 +4665,7 @@
         "doNotTrigger": "Do not trigger",
         "useOtherwise": "Use Otherwise",
         "hiddenAgent": "An agent you cannot see",
-        "otherwiseHint": "No rule matches, or evaluation unavailable",
+        "otherwiseHint": "No rule matches",
         "openBot": "Open bot configuration",
         "enabled": "Routing enabled",
         "pausedLabel": "Routing paused",
