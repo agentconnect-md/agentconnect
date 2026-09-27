@@ -3,14 +3,13 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
-import { completeLogin, currentSubject, isAuthConfigured } from '@/lib/auth'
+import { completeLogin, currentSubject, isAuthConfigured, redirectExpiredSession } from '@/lib/auth'
 import { takeFlowState } from '@/lib/flow-state'
 import { promoteActivationProof } from '@/lib/activation-handshake'
 import { Spinner } from '@/components/marks'
+import { Button } from '@/components/ui'
 
-// Logto redirect landing page. Exchanges the authorization code (PKCE) for tokens
-// via @logto/browser, then enters the console. Only reached when Logto is enabled;
-// with auth disabled it just bounces home.
+// Complete the Logto sign-in before returning to the console or the stashed destination.
 export default function AuthCallback() {
   const router = useRouter()
   const t = useTranslations('Auth.callback')
@@ -23,16 +22,10 @@ export default function AuthCallback() {
     }
     completeLogin()
       .then(async () => {
-        // A sign-in has now actually completed, which is the ONLY thing that turns a
-        // pending activation into proof that this browser re-authenticated for that
-        // link (see lib/activation-handshake). Bound to the subject that just signed
-        // in, so a later identity swap invalidates it. No pending activation ⇒ no-op.
+        // Only a completed sign-in grants pending activation proof, bound to the signed-in subject.
         promoteActivationProof(await currentSubject())
-        // Return to a stashed same-origin destination (e.g. the OAuth consent page
-        // that bounced the user through login), else the console home.
         let dest = '/'
-        // takeFlowState also reads the cookie fallback, so a flow that had to resume
-        // without sessionStorage (activation links) still lands where it started.
+        // Read the same-origin return destination, including the cookie fallback for blocked sessionStorage.
         const stashed = takeFlowState('returnTo')
         if (stashed && stashed.startsWith('/') && !stashed.startsWith('//')) dest = stashed
         router.replace(dest)
@@ -42,9 +35,10 @@ export default function AuthCallback() {
 
   return (
     <div className="authpage">
-      <div className="m-auto flex flex-col items-center gap-[18px] text-center font-sans text-[14px] font-normal leading-normal text-(--text-secondary)">
+      <div className="m-auto flex max-w-[640px] flex-col items-center gap-[18px] px-6 text-center font-sans text-[14px] font-normal leading-normal text-(--text-secondary)">
         {!error && <Spinner size={48} />}
         {error ? t('failed', { error }) : t('signingIn')}
+        {error && <Button onClick={() => void redirectExpiredSession()}>{t('backToLogin')}</Button>}
       </div>
     </div>
   )

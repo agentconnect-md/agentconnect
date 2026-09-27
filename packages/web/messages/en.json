@@ -1009,6 +1009,7 @@
     "callback": {
       "genericError": "sign-in failed",
       "failed": "Sign-in failed: {error}",
+      "backToLogin": "Back to sign in",
       "signingIn": "Signing you in…"
     },
     "socialCallback": {
