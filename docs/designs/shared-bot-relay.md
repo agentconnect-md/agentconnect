@@ -523,21 +523,26 @@ Ask AI panel, speak the AI SDK UI message stream protocol: one HTTP POST per
 turn, answered with SSE parts under `x-vercel-ai-ui-message-stream: v1`. The
 agent chat API serves that protocol from the relay, over the same token,
 conversation binding, and `rd/*` bridge as webchat. A thin proxy that the
-organization runs holds an agent key
-([daemon-api-key-auth.md §6](daemon-api-key-auth.md#agent-keys)). No browser
-ever sees the key or a token.
+organization runs holds an API key. No browser ever sees the key or a token.
+
+The key is an ordinary API key whose permission is `agent:chat` and whose
+selection includes the agent
+([daemon-api-key-auth.md §6](daemon-api-key-auth.md#key-permissions-and-agent-selection)).
+A personal key with that permission is the complete v1 credential; the
+conversations it opens are its user's. A service-account member, a
+non-signing-in member that an owner creates and whose keys an owner mints, is
+later work. Its keys use the same permission and selection, and its sessions
+are org-visible by identity. Nothing on this path forks on which of the two
+holds the key.
 
 The proxy mints a token per conversation, not per turn:
 
-1. The proxy calls `POST /api/v1/orgs/:orgId/agents/:agentId/chat/token` with
-   `Authorization: Bearer <agent key>` and an optional `conversationId`. CP
-   returns `{token, relayUrl, conversationId, expiresAt}`.
-   - Without an id, CP creates a conversation owned by the key. The
-     `WebchatConversation` row gains a nullable `apiKeyId`, `userId` becomes
-     nullable, and exactly one of the two must be set.
-   - A resume succeeds only for the key that owns the conversation. It keeps
-     webchat's 409 fence for an agent that moved. Any other conversation,
-     including one owned by a user, returns 404.
+1. The proxy calls `POST /api/v1/orgs/:orgId/agents/:agentId/webchat/token`,
+   the route the console already uses, with `Authorization: Bearer <key>` and
+   an optional `conversationId`. The response gains `expiresAt`. Without an id,
+   CP creates a conversation owned by the key's user. A resume follows the
+   route's existing rules: the caller's own conversation, the 409 fence for an
+   agent that moved, 404 otherwise.
 2. For each turn, the proxy calls `POST <relayUrl>/chat` with
    `Authorization: Bearer <token>` and forwards the `useChat` request body.
    - The relay turns the last user message's text into a webchat turn. It
@@ -545,38 +550,29 @@ The proxy mints a token per conversation, not per turn:
      history.
    - The relay streams the turn's `rd/chat` output back as UI message parts.
 
-A chat token is a bearer credential for one conversation, reusable across that
-conversation's turns until `expiresAt`. Its TTL is 30 minutes, longer than a
-browser webchat token's five. Each relay instance caches the `rc/verify` verdict,
-keyed by the token's hash, for the token's lifetime rather than per socket.
+The token is the browser webchat token, with its five-minute TTL. The proxy
+reuses it until `expiresAt`, and each relay instance caches the `rc/verify`
+verdict, keyed by the token's hash, until the same moment. So a turn on a live
+token never touches CP, on the instance that verified it. The cache is per
+instance, and a turn can land on any instance behind `PUBLIC_RELAY_URL`, so
+during a CP outage a turn keeps working only where its token was already
+verified. New conversations and renewals wait for CP. The same cache serves
+the browser socket, which verifies once per handshake today.
 
-This keeps CP where webchat already has it: at conversation open and at token
-renewal, never inside a turn. The verdict cache is per relay instance, and a
-turn can land on any instance behind `PUBLIC_RELAY_URL`. So during a CP outage,
-a turn on a live token keeps working only on an instance that has already
-verified that token. New conversations and renewals fail until CP returns.
-
-Revoking the key takes effect when its outstanding tokens expire. If a faster
-cutoff is ever needed, CP pushes the revocation to the pool the way
-`rc/daemon-revoke` does, and relays drop their cached verdicts. Shortening the
-TTL instead would pull CP back toward the turn path.
+Revoking the key takes effect when its outstanding tokens expire, within five
+minutes.
 
 The proxy maps each visitor to a conversation id and token itself, for example
-through a cookie. It must not trust the client-generated chat id, since any id
-the key owns can be resumed through the proxy.
+through a cookie. It must not trust the client-generated chat id, since any
+conversation the key's user owns can be resumed through the proxy. A request
+whose history holds a single user message is a new conversation; `useChat`
+clears its history client-side without telling the server.
 
-Chat tokens use their own signing domain, so a chat token cannot open the
-browser webchat socket, and a browser token cannot call `/chat`. On this path
-the relay admits only three operations: a text turn, `attach`, and `resume`.
-It rejects everything else the browser socket accepts:
-
-- `set_model`, `set_effort`, `set_permission_mode`, and `set_fast`;
-- per-turn `runtime` and `worktree` overrides;
-- `targets` and `mentions`, because this path has one agent;
-- elicitation choices and MCP App operations.
-
-The daemon's `allowRuntimeChangesInChat` gate remains the second line of
-defense.
+The route exposes one operation, a text turn. The browser socket's other
+operations, runtime and permission changes, per-turn overrides, `targets`,
+`mentions`, elicitation, and MCP App calls, have no representation in a
+`useChat` request, so no allowlist is needed. The daemon's
+`allowRuntimeChangesInChat` gate is unaffected.
 
 | `rd/chat` output                         | UI message stream                                       |
 | ---------------------------------------- | ------------------------------------------------------- |
@@ -594,12 +590,27 @@ Tool activity arrives as `data-tool` parts rather than AI SDK tool parts,
 because webchat carries a tool's title and status but not its name or
 arguments. A client that ignores data parts shows text only. The encoder sits
 behind one interface over the `rd/chat` stream, so an AG-UI encoder could later
-serve the same route.
+serve the same route. The stream's framing, `start`, the step parts, the
+terminator, and the response headers, is pinned by tests that parse the
+relay's output with the `ai` package's own client, not by string assertions.
 
-**Disconnect and resume:**
+**Turn admission:**
 
-- Closing the HTTP stream does not cancel the turn. The turn finishes into the
-  session transcript. In v1, the AI SDK's `stop()` aborts only the fetch.
+- The relay allows one turn in flight per conversation. A second `POST /chat`
+  answers 409. This is correctness, not a rate bound: the daemon never queues
+  a webchat turn, it steers a second message into the live turn or refuses
+  `busy` (#1847), so a forwarded second POST would land inside the first turn
+  and get no stream of its own.
+- The slot is held until the daemon's `done` for that turn, not until the HTTP
+  response ends. Closing the HTTP stream does not cancel the turn; the AI
+  SDK's `stop()` aborts only the fetch, and the turn finishes into the session
+  transcript.
+- The response carries only output whose `turnId` is the admitted turn's.
+  Output from another participant on the same conversation, such as a browser
+  socket, is not forwarded.
+
+**Resume (later milestone):**
+
 - `GET <relayUrl>/chat/:conversationId/stream`, called with the conversation's
   token, issues `attach` and then `resume` from index `-1` against the daemon's
   bounded output window (§10.3).
@@ -613,25 +624,22 @@ serve the same route.
 
 **Sessions and limits:**
 
-- A key-owned conversation has no human owner. It classifies like automation:
-  `org`-visible, with no owner identity. This rule precedes the user-owned
-  webchat rule in
-  [session-visibility.md §4.2](session-visibility.md#42-default-rules).
-- The console labels the session's source as API, with the key's name. The
-  transcript sender is the key.
-- Turns are bounded where they are admitted. The relay allows one turn in
-  flight per conversation, and a second `POST /chat` answers 409. It also caps
-  concurrent turns per key.
-- CP applies a per-key sliding-window limit to chat-token mints, which bounds
-  how fast conversations open. It is in-memory, like the MCP limiter in
-  `agent-assistant.md` §6.5.
-- Both bounds are per instance, per relay or per CP replica, not global caps.
-- Per-visitor limits belong to the proxy.
+- The session is a webchat session of the key's user, classified by the
+  existing webchat rule in
+  [session-visibility.md §4.2](session-visibility.md#42-default-rules):
+  `private`, owned by that user. The console shows the key's name as the
+  session's source.
+- The admission bound above is per relay instance, not a global cap. There is
+  no per-key limit on token mints; personal keys are unlimited on every route,
+  and this route is no exception. Per-visitor limits belong to the proxy.
 - Usage is metered on the agent, as for any other turn.
 - The key adds no tool restriction. An agent behind a public proxy receives
   untrusted input on every turn, so its own configuration is the boundary: no
   secrets, no write access to repositories, and a sandbox backend that isolates
   untrusted input ([daemon-sandbox-backends.md](daemon-sandbox-backends.md)).
+  An audience narrower than the organization is drawn with an organization:
+  a documentation agent whose visitor conversations should stay with its
+  maintainers lives in an organization of its own.
 
 **Relation to ACP:** this path is a lossy projection for chat UIs. A remote ACP
 endpoint for agent clients such as editors would carry full fidelity, and the
@@ -639,14 +647,18 @@ two can coexist.
 
 **Milestones:**
 
-1. **CP:** the agent principal and its key routes, the chat-token route, the
-   conversation owner columns, the visibility row, and the mint limiter.
-2. **Relay:** `/chat` and its stream-resume route, the per-token verdict cache,
-   the operation allowlist, the turn admission limits, and the UI message
-   stream encoder.
-3. **Web:** the agent detail page's API tab, hidden since it shipped
-   unfinished, returns. It manages agent keys and shows the two endpoints with
-   a proxy example.
+1. **Relay:** `/chat`, the UI message stream encoder, turn admission, the
+   per-token verdict cache, and `expiresAt` on the token route's response. A
+   `full` personal key works from this point.
+2. **CP and Web:** key permissions and agent selection
+   ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#key-permissions-and-agent-selection)),
+   the token route's `agent:chat` declaration, and the personal key dialog's
+   two new choices.
+3. **Relay:** the stream-resume route.
+4. **Web:** the agent detail page's API tab, hidden since it shipped
+   unfinished, returns with the two endpoints and a proxy example.
+
+Later, separately: the service-account member.
 
 ## 11. Daemon Responsibilities
 

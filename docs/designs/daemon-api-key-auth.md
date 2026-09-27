@@ -6,8 +6,8 @@
 
 Daemon-to-Control-Plane authentication uses a long-lived, database-backed,
 revocable API key in the WebSocket `auth` frame. The same credential primitive
-also supports personal, relay, OAuth access, and (proposed) agent keys, while
-each principal type remains confined to its intended trust boundary.
+also supports personal, relay, and OAuth access tokens, while each principal
+type remains confined to its intended trust boundary.
 
 In-cluster daemons do not use this credential. A cloud daemon authenticates with
 the projected ServiceAccount token its pod carries, verified by TokenReview —
@@ -193,7 +193,7 @@ They never include the plaintext key or stored hash.
 
 ---
 
-## 6. Personal, relay, OAuth, and agent keys
+## 6. Personal, relay, and OAuth keys
 
 The principal type is stored only in the database row. The opaque token format
 is shared, but authentication services enforce strict separation.
@@ -222,43 +222,57 @@ OAuth access tokens use `principalType = oauth`, are bound to a user,
 organization, scopes, and an OAuth grant, and have a finite expiry. Revoking an
 OAuth grant revokes its access-token rows.
 
-### Agent keys
+### Key permissions and agent selection
 
-**Status:** Proposed. This is the credential behind the agent chat API in
-[shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api).
+**Status:** Proposed. The agent chat API in
+[shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api) is the
+first consumer.
 
-An agent key lets a server that an organization runs, such as a documentation
-site's backend or a support widget's proxy, open conversations with one agent.
-It follows the installation-token model rather than the personal-token model:
-the key belongs to the agent, not to the person who minted it.
+A personal key today carries its user's whole role. A server that an
+organization runs, such as a documentation site's backend, needs a key that can
+do one thing with one agent. The model follows a GitHub App installation: a
+permission set and a resource selection, on the credential rather than on the
+person. There is no separate principal type for it. The same two columns
+describe every key that human authentication admits, so a future service-account
+member's key ([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api),
+later work) differs from a personal key only in whose identity it carries.
 
-- Agent keys use `principalType = agent`. The row binds `orgId` and a new
-  nullable `agentId` column, a foreign key that cascades when the agent is
-  deleted. `userId` stays null, and `createdByUserId` records the minter for
-  audit only.
-- A key's entire authority is the chat-token mint for its own agent. Human
-  authentication rejects this principal type the same way it rejects daemon
-  keys. So every other REST route, the daemon WebSocket, and the MCP endpoint
-  refuse the key without any per-route scope check, and any route added later
-  is closed to it by default. The `scopes` column stays empty; a second
-  agent-key capability would be the first reason to use it.
-- `GET`, `POST`, and `DELETE /orgs/:orgId/agents/:agentId/keys` list, mint, and
-  revoke keys. All three require edit access to the agent. A request
-  authenticated by any API key cannot mint an agent key.
-- The mint policy matches personal keys: a 90-day default expiry, an optional
-  non-expiring key, and a plaintext value shown exactly once.
-- The key outlives its minter's membership and edit access. Deleting the agent
-  deletes its keys. Revoking a key stops new mints at once; chat tokens it
-  already minted expire within their 30-minute TTL.
+- `ApiKey.permission` is one of `full`, `read`, or `agent:chat`. `full` is the
+  default and is today's behavior. `read` admits only `GET`, `HEAD`, and
+  `OPTIONS`. `agent:chat` admits only routes that declare it. The existing
+  `scopes` column keeps its OAuth meaning and is not reused.
+- Agent selection is `ApiKey.allAgents` plus an `ApiKeyAgent` join table whose
+  rows cascade when the agent is deleted. It applies only to agent-level
+  permissions, `agent:chat` in v1; `full` and `read` always cover every agent.
+  A key with `allAgents = false` and no rows reaches no agent. An empty
+  selection never means all.
+- Enforcement lives in one place, `humanAuth`. A route declares the permission
+  it accepts through its Fastify route config. A key whose permission is not
+  `full` is admitted only by a route that declares that permission, so every
+  undeclared route, including `/me/*`, the MCP endpoint, and any route added
+  later, refuses it. When the declaring route carries an `:agentId` parameter,
+  `humanAuth` also checks the key's selection and answers 404 for an agent
+  outside it. `read` keeps the read-only check that OAuth tokens already pass
+  through in the org-scope guard.
+- The only v1 route that declares `agent:chat` is
+  `POST /orgs/:orgId/agents/:agentId/webchat/token`. On a resume, the
+  conversation's bound agent must also be in the selection.
+- `POST /me/keys` takes `permission` and, for an agent-level permission,
+  `agents: 'all' | string[]`. The console's personal key dialog shows the two
+  choices. The rest of the mint policy is unchanged: a 90-day default expiry,
+  an optional non-expiring key, and a plaintext value shown exactly once.
+- Nothing changes for the key's identity. It still acts as its user in its
+  organization, and a session it opens is that user's session.
 
 Tests should cover:
 
-- rejection of agent keys by human authentication, the daemon WebSocket, and
-  MCP;
-- 404 for another agent's or another organization's chat-token mint;
-- edit-access gating on the three key routes, and refusal of a mint made with
-  any API key;
-- cascade on agent deletion.
+- a `read` key refused on a write and a `agent:chat` key refused on every
+  undeclared route, including `/me/keys` and MCP;
+- 404 from the token route for an agent outside the selection, and for a
+  resume whose conversation is bound to such an agent;
+- `full` keys ignoring the selection, and a selection emptied by agent deletion
+  reaching no agent;
+- existing rows defaulting to `full` after the migration.
 
 ---
 
