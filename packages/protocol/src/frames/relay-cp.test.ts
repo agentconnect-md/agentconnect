@@ -148,6 +148,27 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(RcVerifyResult.safeParse({ ok: false }).success).toBe(true)
   })
 
+  // The minting key's permission rides the verdict (daemon-api-key-auth.md §6). The field is optional and the object is not strict, so a relay ahead of its CP reads none, and a relay behind its CP drops the key it does not know instead of refusing the frame.
+  it('rc/verify/ok carries the minting key’s permission and tolerates a peer on either side of it', () => {
+    const base = {
+      ok: true,
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      conversationId: '33333333-3333-4333-8333-333333333333'
+    }
+    const confined = RcVerifyResult.safeParse({ ...base, permission: 'agent:chat' })
+    expect(confined.success).toBe(true)
+    expect(confined.success && confined.data.permission).toBe('agent:chat')
+    // An older CP omits it.
+    const plain = RcVerifyResult.safeParse(base)
+    expect(plain.success && plain.data.permission).toBeUndefined()
+    // An older relay strips a field it has never heard of rather than failing the verdict.
+    const newer = RcVerifyResult.safeParse({ ...base, futureField: 'x' })
+    expect(newer.success).toBe(true)
+    expect(newer.success && 'futureField' in newer.data).toBe(false)
+    expect(RcVerifyResult.safeParse({ ...base, permission: '' }).success).toBe(false)
+  })
+
   it('round-trips webchat verification results with and without remote-MCP entitlement', () => {
     const legacyPayload = {
       ok: true,

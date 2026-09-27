@@ -516,9 +516,12 @@ block at the daemon, and is never persisted by the relay or Control Plane.
 
 ### 10.4 Agent chat API
 
-**Status:** Milestone 1 is implemented: the relay's `/ai-sdk/chat` route, the UI
-message stream encoder, turn admission, the per-token verdict cache, and
-`expiresAt` on the token routes. The rest is proposed.
+**Status:** Milestones 1 and 2 are implemented: the relay's `/ai-sdk/chat`
+route, the UI message stream encoder, turn admission, the per-token verdict
+cache, and `expiresAt` on the token routes; then key permissions and agent
+selection, the token route's `agent:chat` declaration and claim stamping, the
+browser socket's claim check, and the personal key dialog's two new choices.
+The rest is proposed.
 
 Chat frontends built on the AI SDK's `useChat`, such as a documentation site's
 Ask AI panel, speak the AI SDK UI message stream protocol: one HTTP POST per

@@ -21,6 +21,7 @@ import type {
   RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import type { AgentId, DaemonId, LeaseId, OrgId } from './domain/ids.js'
+import type { AgentSelection, ApiKeyPermission } from './domain/api-key-permission.js'
 import type { DaemonStatus, HealthState, AcpSupport, ResourceVisibility, ViewCtx } from './persistence/ports.js'
 
 /** Per-connection client context handed to auth (protocol §3, audit). */
@@ -81,6 +82,10 @@ export interface MintedKeyView {
   /** Full `ac_<role>_<secret><crc>` plaintext; shown exactly once, never retrievable. */
   token: string
   displayTail: string
+  /** The minted key's permission and selection (daemon-api-key-auth.md §6); `full` for daemon, relay and OAuth keys. */
+  permission: ApiKeyPermission
+  allAgents: boolean
+  agentIds: string[]
 }
 
 /** Onboarding result: a new (provisioned) daemon identity + its first key. */
@@ -93,6 +98,10 @@ export interface ApiKeyView {
   id: string
   displayTail: string
   name: string | null
+  /** What the key may do and, for an agent-level permission, which agents it reaches (daemon-api-key-auth.md §6). */
+  permission: ApiKeyPermission
+  allAgents: boolean
+  agentIds: string[]
   createdAt: Date
   lastUsedAt: Date | null
   expiresAt: Date | null
@@ -117,6 +126,9 @@ export interface UserKeyPrincipal {
    *  full RBAC). Non-empty = confined to these (an OAuth access token: `mcp:read` /
    *  `mcp:write`) — the enforcement point is the org-scope guard (agent-assistant.md §6.3). */
   scopes: string[]
+  /** What the key may do and which agents it reaches; enforced by `humanAuth` (daemon-api-key-auth.md §6). */
+  permission: ApiKeyPermission
+  selection: AgentSelection
 }
 
 /**
@@ -151,6 +163,9 @@ export interface ApiKeyAdmin {
     orgId: string
     name?: string
     expiresInDays?: number | null
+    /** Defaults to `full`; an agent-level permission takes the selection (`all`, or agent ids the caller has already resolved). */
+    permission?: ApiKeyPermission
+    agents?: 'all' | readonly string[]
   }): Promise<MintedKeyView>
   /** A user's personal keys across all their orgs, active-only by default for the profile list. */
   listForUser(userId: string, opts?: { includeRevoked?: boolean }): Promise<UserApiKeyView[]>

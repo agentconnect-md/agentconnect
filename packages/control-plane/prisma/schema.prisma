@@ -596,6 +596,13 @@ enum PrincipalType {
   oauth // access token minted by the embedded OAuth AS (agent-assistant.md §7) — same shape as a user key
 }
 
+/// What a key may do (daemon-api-key-auth.md §6, Key permissions and agent selection). `full` is today's behavior.
+enum ApiKeyPermission {
+  full
+  read // GET/HEAD/OPTIONS only; MCP write tools hidden and refused
+  agent_chat @map("agent:chat") // only routes that declare it, on the agents the key's selection names
+}
+
 model ApiKey {
   id            String        @id @default(cuid())
   principalType PrincipalType // daemon | user | relay | oauth
@@ -607,6 +614,8 @@ model ApiKey {
   displayTail     String // "…a2b1" (non-secret) for the console
   name            String? // human label ("ci-runner-east")
   scopes          String[] @default([]) // daemon/user/relay keys use []; oauth keys carry granted mcp:* scopes
+  permission      ApiKeyPermission @default(full) // enforced by humanAuth for user keys; daemon/relay/oauth keys stay `full`
+  allAgents       Boolean          @default(false) // agent selection for an agent-level permission: every agent, else the `agents` rows (none ⇒ no agent)
   createdByUserId String? // operator who minted it (audit)
   oauthGrantId    String? // set iff principalType=oauth — links the access token to its OAuthGrant so revoking the grant kills its tokens
 
@@ -621,12 +630,26 @@ model ApiKey {
   // orphaned credential rows (daemonId-null but still hash-valid) survive.
   daemon Daemon? @relation(fields: [daemonId], references: [id], onDelete: Cascade)
   user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agents ApiKeyAgent[]
 
   @@index([daemonId])
   @@index([userId])
   @@index([orgId, revokedAt])
   @@index([oauthGrantId])
   @@map("api_key")
+}
+
+/// One agent an agent-level key reaches (daemon-api-key-auth.md §6). Cascades with the key and with the agent, so deleting an agent shrinks the selection.
+model ApiKeyAgent {
+  apiKeyId String
+  agentId  String @db.Uuid
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([apiKeyId, agentId])
+  @@index([agentId])
+  @@map("api_key_agent")
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -918,6 +941,7 @@ model Agent {
   webchatParticipations WebchatConversationAgent[]
   webchatMcpDelegations WebchatMcpDelegation[]
   presetRecords         PresetAgent[]
+  apiKeySelections      ApiKeyAgent[]
 
   organizationEnvironmentAssignments OrganizationEnvironmentAssignment[]
   memoryFiles           AgentMemoryFile[]

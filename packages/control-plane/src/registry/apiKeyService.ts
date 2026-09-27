@@ -19,6 +19,7 @@ import type {
 import type { ApiKeyRepo, ApiKeyRecord, UserApiKeyRecord, DaemonRepo, AuditRepo } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
 import { DaemonId, OrgId } from '../domain/ids.js'
+import { isAgentLevelPermission, type ApiKeyPermission } from '../domain/api-key-permission.js'
 import { ApiKeyCodec } from './apiKey.js'
 
 /** Personal keys expire on a fixed clock (daemon keys don't — §4/§8). */
@@ -32,6 +33,9 @@ function toView(r: ApiKeyRecord): ApiKeyView {
     id: r.id,
     displayTail: r.displayTail,
     name: r.name,
+    permission: r.permission,
+    allAgents: r.allAgents,
+    agentIds: r.agentIds,
     createdAt: r.createdAt,
     lastUsedAt: r.lastUsedAt,
     expiresAt: r.expiresAt,
@@ -41,6 +45,18 @@ function toView(r: ApiKeyRecord): ApiKeyView {
 
 function toUserView(r: UserApiKeyRecord): UserApiKeyView {
   return { ...toView(r), orgId: r.orgId, orgSlug: r.orgSlug, orgName: r.orgName }
+}
+
+/** The one-time mint result: the plaintext beside the persisted row's permission and selection. */
+function toMinted(r: ApiKeyRecord, token: string): MintedKeyView {
+  return {
+    apiKeyId: r.id,
+    token,
+    displayTail: r.displayTail,
+    permission: r.permission,
+    allAgents: r.allAgents,
+    agentIds: r.agentIds
+  }
 }
 
 export class ApiKeyService implements ApiKeyAdmin {
@@ -90,7 +106,7 @@ export class ApiKeyService implements ApiKeyAdmin {
         details: { apiKeyId: rec.id, displayTail: rec.displayTail }
       })
       .catch(() => {})
-    return { apiKeyId: rec.id, token: minted.token, displayTail: minted.displayTail }
+    return toMinted(rec, minted.token)
   }
 
   async mintForRelay(opts: { name?: string; createdByUserId?: string } = {}): Promise<MintedKeyView> {
@@ -112,7 +128,7 @@ export class ApiKeyService implements ApiKeyAdmin {
         details: { apiKeyId: rec.id, displayTail: rec.displayTail, principalType: 'relay' }
       })
       .catch(() => {})
-    return { apiKeyId: rec.id, token: minted.token, displayTail: minted.displayTail }
+    return toMinted(rec, minted.token)
   }
 
   async listForDaemon(orgId: OrgId, daemonId: DaemonId): Promise<ApiKeyView[]> {
@@ -139,8 +155,17 @@ export class ApiKeyService implements ApiKeyAdmin {
     orgId: string
     name?: string
     expiresInDays?: number | null
+    permission?: ApiKeyPermission
+    agents?: 'all' | readonly string[]
   }): Promise<MintedKeyView> {
     const orgId = OrgId(input.orgId)
+    const permission: ApiKeyPermission = input.permission ?? 'full'
+    // The selection is stored only for an agent-level permission; `full` and `read` reach every agent regardless.
+    const selection = isAgentLevelPermission(permission)
+      ? input.agents === 'all'
+        ? { allAgents: true, agentIds: [] }
+        : { allAgents: false, agentIds: input.agents ?? [] }
+      : { allAgents: false, agentIds: [] }
     const minted = this.codec.mint()
     // `null` = a non-expiring key (like daemon keys); otherwise a fixed TTL from now.
     const expiresAt =
@@ -154,6 +179,8 @@ export class ApiKeyService implements ApiKeyAdmin {
       hash: minted.hash,
       displayTail: minted.displayTail,
       ...(input.name ? { name: input.name } : {}),
+      permission,
+      ...selection,
       expiresAt,
       createdByUserId: input.userId
     })
@@ -162,10 +189,10 @@ export class ApiKeyService implements ApiKeyAdmin {
         kind: 'api_key_create',
         orgId,
         actorUserId: input.userId,
-        details: { apiKeyId: rec.id, displayTail: rec.displayTail, principalType: 'user' }
+        details: { apiKeyId: rec.id, displayTail: rec.displayTail, principalType: 'user', permission }
       })
       .catch(() => {})
-    return { apiKeyId: rec.id, token: minted.token, displayTail: minted.displayTail }
+    return toMinted(rec, minted.token)
   }
 
   async listForUser(userId: string, opts: { includeRevoked?: boolean } = {}): Promise<UserApiKeyView[]> {
@@ -193,7 +220,7 @@ export class ApiKeyService implements ApiKeyAdmin {
       expiresAt: new Date(this.clock.now() + ttlSeconds * 1000),
       createdByUserId: input.userId
     })
-    return { apiKeyId: rec.id, token: minted.token, displayTail: minted.displayTail }
+    return toMinted(rec, minted.token)
   }
 
   async revokeOauthGrantTokens(oauthGrantId: string): Promise<number> {
@@ -224,6 +251,13 @@ export class ApiKeyService implements ApiKeyAdmin {
     // Carry the granted scopes so the org-scope guard can confine a scoped (OAuth)
     // token; a personal key's scopes are [] (unrestricted). NEVER drop this — an
     // `mcp:read` token must not authorize writes on the REST surface (§6.3).
-    return { userId: row.userId, orgId: row.orgId, apiKeyId: row.id, scopes: row.scopes }
+    return {
+      userId: row.userId,
+      orgId: row.orgId,
+      apiKeyId: row.id,
+      scopes: row.scopes,
+      permission: row.permission,
+      selection: { allAgents: row.allAgents, agentIds: row.agentIds }
+    }
   }
 }

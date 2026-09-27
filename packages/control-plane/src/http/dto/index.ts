@@ -2501,6 +2501,16 @@ export const WaitlistRedeemDto = z.object({
 })
 
 // ── personal API keys (`/me/keys` — the caller's own credentials) ───────────
+/** What a key may do (daemon-api-key-auth.md §6): `full` is the default; `read` admits reads only; `agent:chat` admits the agent chat API for the selected agents. */
+export const ApiKeyPermissionDto = z.enum(['full', 'read', 'agent:chat'])
+
+/** The permission and, for an agent-level permission, the agent selection a key carries. `full` and `read` always cover every agent. */
+const ApiKeyPermissionFields = {
+  permission: ApiKeyPermissionDto,
+  allAgents: z.boolean(),
+  agentIds: z.array(z.string())
+}
+
 /** Console view of a personal key — never the secret/hash; carries the org it
  *  acts in (a user's keys span every org they belong to). */
 export const UserApiKeyDto = z.object({
@@ -2510,6 +2520,7 @@ export const UserApiKeyDto = z.object({
   orgId: z.string(),
   orgSlug: z.string(),
   orgName: z.string().nullable(), // null ⇒ the console falls back to the slug
+  ...ApiKeyPermissionFields,
   createdAt: z.string(), // ISO-8601
   lastUsedAt: z.string().nullable(),
   expiresAt: z.string().nullable(),
@@ -2521,17 +2532,35 @@ export const UserApiKeyListDto = z.array(UserApiKeyDto)
 export const MintedUserKeyDto = z.object({
   apiKeyId: z.string(),
   apiKey: z.string(),
-  displayTail: z.string()
+  displayTail: z.string(),
+  ...ApiKeyPermissionFields
 })
 
 /** `POST /me/keys` body — mint a personal key in ONE of the caller's orgs. The
  *  key then acts as the caller, with their role, in that org. */
-export const CreateUserKeyBody = z.object({
-  orgId: z.string().min(1), // must be an org the caller is a member of (verified in the route)
-  name: z.string().trim().min(1).max(120).optional(),
-  // Bounded fixed lifetime, or `null` for a non-expiring key. The UI defaults to 90.
-  expiresInDays: z.number().int().min(1).max(365).nullable().default(90)
-})
+export const CreateUserKeyBody = z
+  .object({
+    orgId: z.string().min(1), // must be an org the caller is a member of (verified in the route)
+    name: z.string().trim().min(1).max(120).optional(),
+    // Bounded fixed lifetime, or `null` for a non-expiring key. The UI defaults to 90.
+    expiresInDays: z.number().int().min(1).max(365).nullable().default(90),
+    permission: ApiKeyPermissionDto.default('full'),
+    // Required for an agent-level permission (`all`, or agent ids in the key's org); rejected for `full` and `read`, which cover every agent.
+    agents: z.union([z.literal('all'), z.array(z.string().uuid()).min(1).max(200)]).optional()
+  })
+  .superRefine((body, ctx) => {
+    const agentLevel = body.permission === 'agent:chat'
+    if (agentLevel && body.agents === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['agents'],
+        message: `agents is required for the ${body.permission} permission`
+      })
+    }
+    if (!agentLevel && body.agents !== undefined) {
+      ctx.addIssue({ code: 'custom', path: ['agents'], message: `agents applies only to an agent-level permission` })
+    }
+  })
 
 // ── members + orgs (Settings page, org picker) ───────────────────────────
 /** Membership role (Prisma `OrgRole`): owner | collaborator | viewer (§3.2). */

@@ -20,6 +20,9 @@ function record(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
     displayTail: '…abcd',
     name: null,
     scopes: [],
+    permission: 'full',
+    allAgents: false,
+    agentIds: [],
     oauthGrantId: null,
     createdAt: new Date(NOW),
     lastUsedAt: null,
@@ -47,7 +50,14 @@ describe('ApiKeyService.authenticateUser — fail-closed contract', () => {
   it('resolves a live user key to its identity + bound org (unrestricted scopes)', async () => {
     const { token } = codec.mint()
     const p = await service(record()).authenticateUser(token)
-    expect(p).toEqual({ userId: 'usr_1', orgId: 'org_1', apiKeyId: 'key_1', scopes: [] })
+    expect(p).toEqual({
+      userId: 'usr_1',
+      orgId: 'org_1',
+      apiKeyId: 'key_1',
+      scopes: [],
+      permission: 'full',
+      selection: { allAgents: false, agentIds: [] }
+    })
   })
 
   it('resolves an oauth access token and carries its granted scopes (for the write clamp)', async () => {
@@ -57,7 +67,9 @@ describe('ApiKeyService.authenticateUser — fail-closed contract', () => {
       userId: 'usr_1',
       orgId: 'org_1',
       apiKeyId: 'key_1',
-      scopes: ['mcp:read']
+      scopes: ['mcp:read'],
+      permission: 'full',
+      selection: { allAgents: false, agentIds: [] }
     })
   })
 

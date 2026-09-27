@@ -5,12 +5,21 @@
  * site on every `auth`), minted at onboarding/rotation, and killed by `revoke`. The
  * domain record NEVER carries the hash or any secret material.
  */
-import type { ApiKey } from '../../generated/prisma/client.js'
+import type { ApiKey, ApiKeyPermission as DbApiKeyPermission } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import type { ApiKeyRepo, ApiKeyRecord, UserApiKeyRecord, CreateApiKeyInput, PrincipalType } from '../ports.js'
 import { DaemonId, OrgId } from '../../domain/ids.js'
+import type { ApiKeyPermission } from '../../domain/api-key-permission.js'
 
-function toRecord(k: ApiKey): ApiKeyRecord {
+// The selection rows ride every read; the record carries their agent ids.
+const WITH_AGENTS = { agents: { select: { agentId: true } } } as const
+type ApiKeyRow = ApiKey & { agents: Array<{ agentId: string }> }
+
+// Prisma enum values cannot hold `:`, so the client spells `agent:chat` as `agent_chat` (the column keeps the wire spelling via @map).
+const toDbPermission = (p: ApiKeyPermission): DbApiKeyPermission => (p === 'agent:chat' ? 'agent_chat' : p)
+const fromDbPermission = (p: DbApiKeyPermission): ApiKeyPermission => (p === 'agent_chat' ? 'agent:chat' : p)
+
+function toRecord(k: ApiKeyRow): ApiKeyRecord {
   return {
     id: k.id,
     principalType: k.principalType as PrincipalType,
@@ -20,6 +29,9 @@ function toRecord(k: ApiKey): ApiKeyRecord {
     displayTail: k.displayTail,
     name: k.name,
     scopes: k.scopes,
+    permission: fromDbPermission(k.permission),
+    allAgents: k.allAgents,
+    agentIds: k.agents.map((a) => a.agentId),
     oauthGrantId: k.oauthGrantId,
     createdAt: k.createdAt,
     lastUsedAt: k.lastUsedAt,
@@ -42,16 +54,20 @@ export class PgApiKeyRepo implements ApiKeyRepo {
         displayTail: input.displayTail,
         name: input.name ?? null,
         scopes: input.scopes ?? [],
+        permission: toDbPermission(input.permission ?? 'full'),
+        allAgents: input.allAgents ?? false,
+        agents: { create: [...new Set(input.agentIds ?? [])].map((agentId) => ({ agentId })) },
         createdByUserId: input.createdByUserId ?? null,
         oauthGrantId: input.oauthGrantId ?? null,
         expiresAt: input.expiresAt ?? null
-      }
+      },
+      include: WITH_AGENTS
     })
     return toRecord(row)
   }
 
   async findByHash(hash: string): Promise<ApiKeyRecord | null> {
-    const row = await this.db.apiKey.findUnique({ where: { hash } })
+    const row = await this.db.apiKey.findUnique({ where: { hash }, include: WITH_AGENTS })
     return row ? toRecord(row) : null
   }
 
@@ -62,7 +78,8 @@ export class PgApiKeyRepo implements ApiKeyRepo {
   async revoke(id: string, reason: string, at: Date): Promise<ApiKeyRecord> {
     const row = await this.db.apiKey.update({
       where: { id },
-      data: { revokedAt: at, revokedReason: reason }
+      data: { revokedAt: at, revokedReason: reason },
+      include: WITH_AGENTS
     })
     return toRecord(row)
   }
@@ -81,7 +98,8 @@ export class PgApiKeyRepo implements ApiKeyRepo {
     // proof cannot admit a cross-tenant kill.
     const rows = await this.db.apiKey.findMany({
       where: { daemonId, orgId },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
+      include: WITH_AGENTS
     })
     return rows.map(toRecord)
   }
@@ -90,7 +108,7 @@ export class PgApiKeyRepo implements ApiKeyRepo {
     const rows = await this.db.apiKey.findMany({
       where: { userId, principalType: 'user', ...(opts.includeRevoked ? {} : { revokedAt: null }) },
       orderBy: { createdAt: 'desc' },
-      include: { org: { select: { slug: true, name: true } } }
+      include: { ...WITH_AGENTS, org: { select: { slug: true, name: true } } }
     })
     // User keys always carry an org (only relay keys are org-less); the join is
     // typed nullable since orgId became nullable, so skip a (impossible) bare row

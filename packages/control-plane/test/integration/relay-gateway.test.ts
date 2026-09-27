@@ -1337,3 +1337,110 @@ describe('bot credential evidence over the relay wire', () => {
     ws.close()
   })
 })
+
+// ── key permissions on the token route (daemon-api-key-auth.md §6, shared-bot-relay.md §10.4) ──
+
+describe('POST …/webchat/token with an API key', () => {
+  /** Mint a personal key as the devAuth owner; the token route is then called with it. */
+  async function mintKey(app: App, body: Record<string, unknown>): Promise<string> {
+    const res = await app.http.inject({
+      method: 'POST',
+      url: '/api/v1/me/keys',
+      payload: { orgId: DEFAULT_ORG_ID, ...body }
+    })
+    expect(res.statusCode).toBe(201)
+    return (res.json() as { apiKey: string }).apiKey
+  }
+  function mintWithKey(app: App, key: string, agentId: string, body: Record<string, unknown> = {}) {
+    return app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/agents/${agentId}/webchat/token`,
+      headers: { authorization: `Bearer ${key}` },
+      payload: body
+    })
+  }
+
+  it('an agent:chat key mints for a selected agent, and the token carries the claim through rc/verify', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, name: 'agent-b' })
+    const key = await mintKey(app, { permission: 'agent:chat', agents: [AGENT] })
+
+    const res = await mintWithKey(app, key, AGENT)
+    expect(res.statusCode).toBe(200)
+    const minted = res.json() as { token: string; conversationId: string }
+    expect(decodeJwt(minted.token).permission).toBe('agent:chat')
+    // A resume of its own conversation stays within the selection.
+    expect((await mintWithKey(app, key, AGENT, { conversationId: minted.conversationId })).statusCode).toBe(200)
+
+    const { ws, result } = await verifyWebchat(base, minted.token, 'pod-confined')
+    expect(result.ok).toBe(true)
+    expect(result.permission).toBe('agent:chat')
+    expect(result.agentId).toBe(AGENT)
+
+    // The console's own mint, and a full key's, carry no such claim.
+    const consoleMint = (await mintWebchatToken(app, AGENT)).json() as { token: string }
+    expect(decodeJwt(consoleMint.token).permission).toBeUndefined()
+    const fullKey = await mintKey(app, {})
+    const viaFull = (await mintWithKey(app, fullKey, AGENT_B)).json() as { token: string }
+    expect(decodeJwt(viaFull.token).permission).toBeUndefined()
+    sendFrame(ws, 'rc/verify', { kind: 'webchat-token', credential: consoleMint.token, conversationBinding: 'v1' })
+    const plain = (await nextFrame(ws, 'rc/verify/ok')).payload as RcVerifyResult
+    expect(plain.ok).toBe(true)
+    expect(plain.permission).toBeUndefined()
+    ws.close()
+    daemonWs.close()
+  })
+
+  it('answers 404 for an agent outside the selection, on a fresh mint and on a resume bound to it', async () => {
+    const { app } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    await seedAgent(prisma, AGENT)
+    await seedAgent(prisma, AGENT_B, { name: 'agent-b' })
+    const key = await mintKey(app, { permission: 'agent:chat', agents: [AGENT] })
+
+    expect((await mintWithKey(app, key, AGENT_B)).statusCode).toBe(404)
+    // The owner's own conversation with the unselected agent: bound to AGENT_B, so out of reach on either path.
+    const theirs = (await mintWebchatToken(app, AGENT_B)).json() as { conversationId: string }
+    expect((await mintWithKey(app, key, AGENT_B, { conversationId: theirs.conversationId })).statusCode).toBe(404)
+    expect((await mintWithKey(app, key, AGENT, { conversationId: theirs.conversationId })).statusCode).toBe(404)
+    // An empty selection reaches no agent, and `all` reaches every agent.
+    const none = (await app.http
+      .inject({
+        method: 'POST',
+        url: '/api/v1/me/keys',
+        payload: { orgId: DEFAULT_ORG_ID, permission: 'agent:chat', agents: [AGENT_B] }
+      })
+      .then((r) => r.json())) as { apiKeyId: string; apiKey: string }
+    await prisma.apiKeyAgent.deleteMany({ where: { apiKeyId: none.apiKeyId } })
+    expect((await mintWithKey(app, none.apiKey, AGENT)).statusCode).toBe(404)
+    expect((await mintWithKey(app, none.apiKey, AGENT_B)).statusCode).toBe(404)
+    const every = await mintKey(app, { permission: 'agent:chat', agents: 'all' })
+    expect((await mintWithKey(app, every, AGENT_B)).statusCode).toBe(200)
+  })
+
+  it('a full key ignores selection rows, and a read key is refused on the token route', async () => {
+    const { app } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    await seedAgent(prisma, AGENT)
+    await seedAgent(prisma, AGENT_B, { name: 'agent-b' })
+    // Selection rows under a full key: the API never writes them, so they stand for a later widening of the permission.
+    const codec = new ApiKeyCodec({ API_KEY_PEPPER })
+    const stray = codec.mint()
+    await prisma.apiKey.create({
+      data: {
+        principalType: 'user',
+        orgId: DEFAULT_ORG_ID,
+        userId: DEFAULT_OWNER_ID,
+        hash: stray.hash,
+        displayTail: stray.displayTail,
+        agents: { create: [{ agentId: AGENT_B }] }
+      }
+    })
+    expect((await mintWithKey(app, stray.token, AGENT)).statusCode).toBe(200)
+
+    const read = await mintKey(app, { permission: 'read' })
+    const refused = await mintWithKey(app, read, AGENT)
+    expect(refused.statusCode).toBe(403)
+    expect((refused.json() as { message: string }).message).toContain('read-only')
+  })
+})

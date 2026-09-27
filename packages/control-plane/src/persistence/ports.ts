@@ -67,6 +67,7 @@ import type {
   OrgId
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
+import type { ApiKeyPermission } from '../domain/api-key-permission.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
 import type { PlacementKind, PlacementRef, PlacementTarget } from '../domain/placement.js'
 import type {
@@ -427,6 +428,11 @@ export interface CreateApiKeyInput {
   displayTail: string
   name?: string
   scopes?: string[]
+  /** What the key may do (daemon-api-key-auth.md §6); defaults to `full`. */
+  permission?: ApiKeyPermission
+  /** The agent selection an agent-level permission applies to; defaults to no agent. */
+  allAgents?: boolean
+  agentIds?: readonly string[]
   createdByUserId?: string
   /** Set iff principalType='oauth' — links the access token to its OAuthGrant. */
   oauthGrantId?: string
@@ -444,6 +450,10 @@ export interface ApiKeyRecord {
   displayTail: string
   name: string | null
   scopes: string[]
+  permission: ApiKeyPermission
+  /** The agent selection (daemon-api-key-auth.md §6): meaningful for an agent-level permission only. */
+  allAgents: boolean
+  agentIds: string[]
   oauthGrantId: string | null // set iff principalType='oauth'
   createdAt: Date
   lastUsedAt: Date | null

@@ -13,17 +13,22 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
-import { MOCK_MODE } from '@/lib/data'
+import { MOCK_MODE, agentLabel, type Agent } from '@/lib/data'
 import {
   fetchMyApiKeys,
   createMyApiKey,
   revokeMyApiKey,
+  fetchAgents,
   fmtDate,
+  type ApiKeyPermission,
   type UserApiKeyDto,
   type MintedUserKeyDto,
   type OrgDto
 } from '@/lib/api'
-import { profileKeys } from '@/lib/swr-keys'
+import { consoleKeys, profileKeys } from '@/lib/swr-keys'
+
+// The dialog's permission choices, in the order offered (daemon-api-key-auth.md §6).
+const PERMISSIONS: ApiKeyPermission[] = ['full', 'read', 'agent:chat']
 
 // `days: null` mints a non-expiring key (server accepts `expiresInDays: null`).
 const EXPIRY_OPTIONS: { days: number | null }[] = [
@@ -42,6 +47,14 @@ function keyState(k: UserApiKeyDto): KeyState {
 }
 
 const orgLabel = (k: UserApiKeyDto) => k.orgName ?? k.orgSlug
+
+/** The list's permission label; `full` is the default and shows nothing, like an unexpired key. */
+function permissionLabel(k: UserApiKeyDto, t: ReturnType<typeof useTranslations<'Profile'>>): string | null {
+  if (k.permission === 'full') return null
+  if (k.permission === 'read') return t('apiKeys.permissionRead')
+  const agents = k.allAgents ? t('apiKeys.allAgents') : t('apiKeys.agentCount', { count: k.agentIds.length })
+  return `${t('apiKeys.permissionAgentChat')} · ${agents}`
+}
 
 // ── the card ────────────────────────────────────────────────────────────────
 export default function ApiKeysCard({
@@ -98,6 +111,7 @@ export default function ApiKeysCard({
       state === 'expired'
         ? { text: t('apiKeys.expired'), bg: 'var(--surface-active)', fg: 'var(--text-tertiary)' }
         : null
+    const permission = permissionLabel(k, t)
     return (
       <div
         key={k.id}
@@ -119,6 +133,7 @@ export default function ApiKeysCard({
                 {orgLabel(k)}
               </span>
             )}
+            {permission && <span className="badge bg-(--surface-active) text-(--text-secondary)">{permission}</span>}
             {stateBadge && (
               <span className="badge" style={{ background: stateBadge.bg, color: stateBadge.fg }}>
                 {stateBadge.text}
@@ -263,20 +278,39 @@ function CreateApiKeyModal({
   const [orgId, setOrgId] = useState(defaultOrgId ?? orgs[0]?.id ?? '')
   const [name, setName] = useState(defaultName ?? '')
   const [expiresInDays, setExpiresInDays] = useState<number | null>(90)
+  const [permission, setPermission] = useState<ApiKeyPermission>('full')
+  const [agentScope, setAgentScope] = useState<'all' | 'selected'>('all')
+  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([])
   const [minted, setMinted] = useState<MintedUserKeyDto | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
+  // The chosen org's agents, fetched only once a selection is being made and gated on the org (the key is null without one).
+  const agentLevel = permission === 'agent:chat'
+  const selecting = agentLevel && agentScope === 'selected'
+  const { data: agents } = useSWR<Agent[]>(selecting ? consoleKeys.agents(orgId) : null, ([, id]) =>
+    fetchAgents(id as string)
+  )
+  const pickOrg = (next: string) => {
+    setOrgId(next)
+    setSelectedAgentIds([]) // agents belong to one org
+  }
+  const toggleAgent = (id: string) =>
+    setSelectedAgentIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  const canSubmit = !busy && !!orgId && (!selecting || selectedAgentIds.length > 0)
+
   const submit = async () => {
-    if (busy || !orgId) return
+    if (!canSubmit) return
     setBusy(true)
     setErr(null)
     try {
       const m = await createMyApiKey({
         orgId,
         ...(name.trim() ? { name: name.trim() } : {}),
-        expiresInDays
+        expiresInDays,
+        permission,
+        ...(agentLevel ? { agents: agentScope === 'all' ? 'all' : selectedAgentIds } : {})
       })
       setMinted(m)
       onCreated()
@@ -348,7 +382,7 @@ function CreateApiKeyModal({
             <div className="flex flex-col gap-[14px]">
               <div className="flex flex-col gap-[6px]">
                 <span className="fldlbl">{t('apiKeys.organization')}</span>
-                <select className="dsinput-field" value={orgId} onChange={(e) => setOrgId(e.target.value)}>
+                <select className="dsinput-field" value={orgId} onChange={(e) => pickOrg(e.target.value)}>
                   {orgs.map((o) => (
                     <option key={o.id} value={o.id}>
                       {o.name ?? o.slug}
@@ -366,6 +400,64 @@ function CreateApiKeyModal({
                   onChange={(e) => setName(e.target.value)}
                 />
               </div>
+              <div className="flex flex-col gap-[6px]">
+                <span className="fldlbl">{t('apiKeys.permissionLabel')}</span>
+                <select
+                  className="dsinput-field"
+                  value={permission}
+                  onChange={(e) => setPermission(e.target.value as ApiKeyPermission)}
+                >
+                  {PERMISSIONS.map((p) => (
+                    <option key={p} value={p}>
+                      {p === 'full'
+                        ? t('apiKeys.permissionFull')
+                        : p === 'read'
+                          ? t('apiKeys.permissionRead')
+                          : t('apiKeys.permissionAgentChat')}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {agentLevel && (
+                <div className="flex flex-col gap-[6px]">
+                  <span className="fldlbl">{t('apiKeys.agentsLabel')}</span>
+                  <select
+                    className="dsinput-field"
+                    value={agentScope}
+                    onChange={(e) => setAgentScope(e.target.value as 'all' | 'selected')}
+                  >
+                    <option value="all">{t('apiKeys.allAgents')}</option>
+                    <option value="selected">{t('apiKeys.selectedAgents')}</option>
+                  </select>
+                  {selecting && (
+                    <div className="max-h-[180px] overflow-y-auto rounded-sm border border-(--border-subtle)">
+                      {agents === undefined ? (
+                        <div className="px-3 py-[9px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                          {t('apiKeys.agentsLoading')}
+                        </div>
+                      ) : agents.length === 0 ? (
+                        <div className="px-3 py-[9px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                          {t('apiKeys.noAgents')}
+                        </div>
+                      ) : (
+                        agents.map((a) => (
+                          <label key={a.id} className="flex cursor-pointer items-center gap-2 px-3 py-[7px]">
+                            <input
+                              type="checkbox"
+                              className="accent-(--brand)"
+                              checked={selectedAgentIds.includes(a.id)}
+                              onChange={() => toggleAgent(a.id)}
+                            />
+                            <span className="truncate font-sans text-[12.5px] font-normal leading-normal">
+                              {agentLabel(a)}
+                            </span>
+                          </label>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="flex flex-col gap-[6px]">
                 <span className="fldlbl">{t('apiKeys.expiresLabel')}</span>
                 <select
@@ -410,7 +502,7 @@ function CreateApiKeyModal({
             <Button
               variant="primary"
               onClick={() => void submit()}
-              className={busy || !orgId ? 'pointer-events-none opacity-50' : undefined}
+              className={canSubmit ? undefined : 'pointer-events-none opacity-50'}
             >
               <Icon name="key" size={14} />
               {busy ? t('apiKeys.creating') : t('apiKeys.create')}

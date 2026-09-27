@@ -149,7 +149,14 @@ async function appWithOptions(options: Partial<HumanAuthOptions>) {
 }
 
 describe('humanAuthPlugin identity warm trigger (api-key path)', () => {
-  const acceptKey: VerifyApiKey = async () => ({ userId: 'user-1', orgId: 'org-1', apiKeyId: 'key-1', scopes: [] })
+  const acceptKey: VerifyApiKey = async () => ({
+    userId: 'user-1',
+    orgId: 'org-1',
+    apiKeyId: 'key-1',
+    scopes: [],
+    permission: 'full',
+    selection: { allAgents: false, agentIds: [] }
+  })
 
   it('fires with the resolved principal after api-key auth (the trigger resolves the sub itself)', async () => {
     const warm = vi.fn<EnsureIdentityFresh>()
