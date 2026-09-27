@@ -16,7 +16,7 @@ import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { TENANTLESS_SENTINEL } from '../../persistence/ports.js'
 import { ErrorDto, IntegrationDto } from '../../http/dto/index.js'
 import { toDto as toIntegrationDto } from '../../http/routes/integrations.js'
-import { GOOGLE_CHAT_APP_TAKEN_MESSAGE, buildGoogleChatInstall, validateGoogleChatApp } from './provider.js'
+import { GOOGLE_CHAT_APP_TAKEN_MESSAGE, buildGoogleChatInstall, resolveGoogleChatApp } from './provider.js'
 
 /** The 409 copy when the deployment's project ID no longer matches the installed bot of the same project number. */
 export const GOOGLE_CHAT_PROJECT_CHANGED_MESSAGE =
@@ -103,17 +103,17 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
           }
         }
 
-        // Validation resolves the project number from the key itself; that number, not the configured one, is the identity.
-        const validated = await validateGoogleChatApp(platform, googleChat.fetch)
-        if (!validated.ok) {
-          return reply.code(validated.status).send({
-            error: validated.status === 400 ? 'Bad Request' : 'Service Unavailable',
-            statusCode: validated.status,
-            ...(validated.code ? { code: validated.code } : {}),
-            message: validated.message
+        // Validation takes the project from the key's authenticated account and its number from Google; those are the identity.
+        const resolved = await resolveGoogleChatApp(platform, googleChat.fetch)
+        if (!resolved.ok) {
+          return reply.code(resolved.status).send({
+            error: resolved.status === 400 ? 'Bad Request' : 'Service Unavailable',
+            statusCode: resolved.status,
+            ...(resolved.code ? { code: resolved.code } : {}),
+            message: resolved.message
           })
         }
-        const projectNumber = validated.identity.externalAppId!
+        const { projectId, projectNumber } = resolved
 
         // One bot per Chat app, across organizations; only the agent already holding it may run the install again.
         const existing = await deps.repos.bot.getByExternalIdentity(
@@ -129,7 +129,7 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: GOOGLE_CHAT_APP_TAKEN_MESSAGE })
         }
         // The project number is the bot's identity and the project ID its alias, so a different ID is a new installation.
-        if (existing && existing.platformConfig?.projectId !== platform.projectId) {
+        if (existing && existing.platformConfig?.projectId !== projectId) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
@@ -137,7 +137,7 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
             message: GOOGLE_CHAT_PROJECT_CHANGED_MESSAGE
           })
         }
-        const install = buildGoogleChatInstall(platform, projectNumber)
+        const install = buildGoogleChatInstall(resolved)
 
         if (existing && held) {
           // Re-stamp the current deployment key as a fresh credential generation, then re-push the spec.
@@ -154,7 +154,7 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
             orgId,
             agent,
             platform: GOOGLE_CHAT_PLATFORM,
-            name: validated.identity.name ?? agent.name,
+            name: `Google Chat · ${projectId}`,
             transport: 'http',
             prebuilt: true,
             createdByUserId: req.principal.userId

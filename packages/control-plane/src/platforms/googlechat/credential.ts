@@ -80,7 +80,16 @@ export function isGoogleCloudProjectNumber(value: string): boolean {
   return /^[1-9]\d{0,19}$/.test(value)
 }
 
-/** Accept only a service-account key of the declared project; every other credential shape is refused (§3). */
+/** A user-managed service account's email; its domain names the project that owns the account (§3). */
+const USER_MANAGED_SERVICE_ACCOUNT =
+  /^[a-z][a-z0-9-]{4,28}[a-z0-9]@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$/
+
+/** The project that owns a user-managed service account, read from its email; undefined for any other account. */
+export function serviceAccountProject(clientEmail: string): string | undefined {
+  return USER_MANAGED_SERVICE_ACCOUNT.exec(clientEmail)?.[1]
+}
+
+/** Accept only a key of a user-managed service account owned by the declared project; the token exchange authenticates its email, not `project_id` (§3). */
 export function checkServiceAccountKey(raw: string, projectId: string): GoogleChatKeyCheck {
   let parsed: unknown
   try {
@@ -114,10 +123,23 @@ export function checkServiceAccountKey(raw: string, projectId: string): GoogleCh
       message: 'the service-account key is missing project_id, client_email, or private_key'
     }
   }
-  if (keyProjectId !== projectId) {
+  const owningProject = serviceAccountProject(clientEmail)
+  if (!owningProject) {
+    return {
+      status: 'invalid_key',
+      message: `the Chat app needs a service account created in its own project (name@project-id.iam.gserviceaccount.com); ${clientEmail} is not one`
+    }
+  }
+  if (keyProjectId !== owningProject) {
+    return {
+      status: 'invalid_key',
+      message: `the key's project_id ${keyProjectId} does not match its service account's project ${owningProject}`
+    }
+  }
+  if (owningProject !== projectId) {
     return {
       status: 'project_mismatch',
-      message: `the key belongs to project ${keyProjectId}, not ${projectId}; keep the Chat app and its service account in one project`
+      message: `the key belongs to project ${owningProject}, not ${projectId}; keep the Chat app and its service account in one project`
     }
   }
   let signingKey: KeyObject
@@ -132,7 +154,13 @@ export function checkServiceAccountKey(raw: string, projectId: string): GoogleCh
   const privateKeyId = text('private_key_id')
   return {
     status: 'ok',
-    key: { projectId, clientEmail, ...(privateKeyId ? { privateKeyId } : {}), signingKey, json: JSON.stringify(parsed) }
+    key: {
+      projectId: owningProject,
+      clientEmail,
+      ...(privateKeyId ? { privateKeyId } : {}),
+      signingKey,
+      json: JSON.stringify(parsed)
+    }
   }
 }
 

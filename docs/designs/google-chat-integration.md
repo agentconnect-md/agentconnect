@@ -133,13 +133,23 @@ surface that collects the credential differs.
 The key check, the project-number resolution, and the `chat.bot` probe live in
 the Control Plane's Google Chat module, which the Setup Server imports. The Setup
 Server runs the validation below before it stores anything and shows the HTTPS
-callback and **Project Number** audience to copy. A `chat.bot` token cannot read
-its project, so validation mints a second token for the same service account with
-the `cloud-platform.read-only` scope and reads the key's own project from Cloud
-Resource Manager (`GET /v1/projects/{projectId}`). The number it returns is the
-app identity; an entered number is optional and must match it. The service
-account therefore needs the Browser role (`resourcemanager.projects.get`) on the
-project, and the project needs the Cloud Resource Manager API enabled.
+callback and **Project Number** audience to copy.
+
+The token exchange authenticates only the key's `client_email` and private key;
+the JSON's `project_id` is an editable field. The owning project is therefore
+taken from the authenticated email: only a user-managed service account created
+in the Chat app's project is accepted, whose email has the exact form
+`name@project-id.iam.gserviceaccount.com`. Default compute, App Engine, and any
+other account forms are refused. The JSON's `project_id` and the entered project
+must both equal that owning project.
+
+A `chat.bot` token cannot read its project, so validation mints a second token
+for the same service account with the `cloud-platform.read-only` scope and reads
+the owning project from Cloud Resource Manager (`GET /v1/projects/{projectId}`).
+The number it returns is the app identity; an entered number is optional and
+must match it. The service account therefore needs the Browser role
+(`resourcemanager.projects.get`) on its project, and that project needs the Cloud
+Resource Manager API enabled.
 
 In this version the deployment-owned app serves one agent. Google requires one
 Cloud project per Chat app and this design keeps one app per agent, so a hosted
@@ -162,11 +172,11 @@ The wizard should present these concrete steps:
 2. Complete Google's Cloud project, API, and configuration prerequisites.
 3. Copy the generated app information, HTTPS callback, and audience setting into
    Google Cloud Console; configure who can find and use the app.
-4. Create the service account, grant it the Browser role on the project, and
-   enable the Cloud Resource Manager API; then provide its credential through the
-   secret form and validate it. Show an actionable setup error if organization
-   policy prevents creating a key; do not imply that ordinary Google sign-in
-   supplies an app key.
+4. Create the service account in the Chat app's own project, grant it the Browser
+   role on that project, and enable the Cloud Resource Manager API; then provide
+   its credential through the secret form and validate it. Show an actionable
+   setup error if organization policy prevents creating a key; do not imply that
+   ordinary Google sign-in supplies an app key.
 5. Add the configured app in Google Chat, then send a DM or Space mention to test
    the complete path.
 

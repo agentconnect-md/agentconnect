@@ -1041,7 +1041,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       let put: ReturnType<typeof googleChatDeploymentPut>
       try {
         put = googleChatDeploymentPut(current, {
-          projectId,
+          projectId: checked.key.projectId,
           projectNumber: checked.projectNumber,
           ...(application.serviceAccountKey ? { serviceAccountKey: checked.key.json } : {})
         })

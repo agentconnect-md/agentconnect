@@ -30,7 +30,7 @@ const ROTATED = {
   type: 'service_account',
   project_id: PROJECT_ID,
   private_key: PRIVATE_KEY,
-  client_email: 'chat@example.test'
+  client_email: `chat-app@${PROJECT_ID}.iam.gserviceaccount.com`
 }
 const DEPLOYMENT_APP: GoogleChatPlatformAppConfig = {
   projectId: PROJECT_ID,

@@ -4,8 +4,19 @@ import type { ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
 import { GOOGLE_CHAT_PLATFORM, type IntegrationGoogleChatConfig } from '@agentconnect.md/protocol'
 import { TENANTLESS_SENTINEL, type BotRecord, type BotSecretMaterial } from '../../persistence/ports.js'
-import type { CpConfigValidation, CpInstallTransport, CpNewBotInstall, CpPlatformProvider } from '../provider.js'
-import { checkGoogleChatApp, probeFailureIsConnectivity, type GoogleChatAppFailure } from './credential.js'
+import type {
+  CpConfigRefusal,
+  CpConfigValidation,
+  CpInstallTransport,
+  CpNewBotInstall,
+  CpPlatformProvider
+} from '../provider.js'
+import {
+  checkGoogleChatApp,
+  probeFailureIsConnectivity,
+  serviceAccountProject,
+  type GoogleChatAppFailure
+} from './credential.js'
 
 /** The `googlechat` block of `POST /integrations`; an entered project number is only a cross-check of the resolved one. */
 export const GoogleChatCreateCredentials = z.object({
@@ -50,17 +61,26 @@ const REFUSAL_CODES: Record<GoogleChatAppFailure, string> = {
   google_unavailable: 'GOOGLE_CHAT_UNREACHABLE'
 }
 
+/** A Chat app whose identity came from Google: the service account's owning project and that project's resolved number. */
+export interface ResolvedGoogleChatApp {
+  projectId: string
+  projectNumber: string
+  serviceAccountKey: string
+}
+
 /** Key check, the project number resolved with the key, then one bounded `chat.bot` read; no message is ever sent (§3). */
-export async function validateGoogleChatApp(
+export async function resolveGoogleChatApp(
   credentials: GoogleChatCreateCredentials,
   fetchImpl: typeof fetch
-): Promise<CpConfigValidation> {
+): Promise<({ ok: true } & ResolvedGoogleChatApp) | CpConfigRefusal> {
   const checked = await checkGoogleChatApp(credentials, fetchImpl)
   if (checked.status === 'ok') {
-    // The resolved number, never the entered one, is the app identity every later write uses.
+    // Neither the entered project nor the entered number: both come from the authenticated account.
     return {
       ok: true,
-      identity: { name: `Google Chat · ${credentials.projectId}`, externalAppId: checked.projectNumber }
+      projectId: checked.key.projectId,
+      projectNumber: checked.projectNumber,
+      serviceAccountKey: checked.key.json
     }
   }
   // An unreachable Google is inconclusive, never proof the key is bad.
@@ -68,16 +88,35 @@ export async function validateGoogleChatApp(
   return { ok: false, status, code: REFUSAL_CODES[checked.status], message: checked.message }
 }
 
-/** The rows one Chat app writes, keyed by the project number `validateGoogleChatApp` resolved. */
-export function buildGoogleChatInstall(
-  credentials: Pick<GoogleChatCreateCredentials, 'projectId' | 'serviceAccountKey'>,
-  projectNumber: string
-): CpNewBotInstall {
+/** The provider's `validateConfig`: the resolved app becomes the identity core persists. */
+export async function validateGoogleChatApp(
+  credentials: GoogleChatCreateCredentials,
+  fetchImpl: typeof fetch
+): Promise<CpConfigValidation> {
+  const resolved = await resolveGoogleChatApp(credentials, fetchImpl)
+  if (!resolved.ok) return resolved
   return {
-    bot: { externalAppId: projectNumber, platformConfig: { projectId: credentials.projectId } },
+    ok: true,
+    identity: { name: `Google Chat · ${resolved.projectId}`, externalAppId: resolved.projectNumber }
+  }
+}
+
+/** The owning project of a validated key's service account; throws for a key validation would have refused. */
+export function googleChatKeyProject(serviceAccountKey: string): string {
+  const email = (JSON.parse(serviceAccountKey) as Record<string, unknown>).client_email
+  const projectId = typeof email === 'string' ? serviceAccountProject(email) : undefined
+  if (!projectId) throw new Error('googlechat install requires a user-managed service-account key')
+  return projectId
+}
+
+/** The rows one Chat app writes, keyed by its resolved identity. */
+export function buildGoogleChatInstall(app: ResolvedGoogleChatApp): CpNewBotInstall {
+  const { projectId, projectNumber } = app
+  return {
+    bot: { externalAppId: projectNumber, platformConfig: { projectId } },
     // The key's canonical JSON in the `botToken` slot; it reaches the assigned daemon only.
     secrets: {
-      botToken: JSON.stringify(JSON.parse(credentials.serviceAccountKey)),
+      botToken: JSON.stringify(JSON.parse(app.serviceAccountKey)),
       appToken: null,
       signingSecret: null
     },
@@ -133,7 +172,12 @@ export function createGoogleChatCpProvider(
     // One app serves one agent in this version, so a requested `shareable` is dropped.
     buildNewBotInstall: ({ credentials, identity }) => {
       if (!identity.externalAppId) throw new Error('googlechat install requires the resolved project number')
-      return buildGoogleChatInstall(credentials, identity.externalAppId)
+      // The project comes from the authenticated service-account email, as validation required it to.
+      return buildGoogleChatInstall({
+        projectId: googleChatKeyProject(credentials.serviceAccountKey),
+        projectNumber: identity.externalAppId,
+        serviceAccountKey: credentials.serviceAccountKey
+      })
     },
 
     // App-scoped with no tenant axis: the project number plus the tenantless sentinel, and the project ID as public metadata.

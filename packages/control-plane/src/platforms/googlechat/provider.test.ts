@@ -207,6 +207,19 @@ describe('validateConfig', () => {
     expect(google.calls.map((call) => call.url)).not.toContain(GOOGLE_CHAT_PROBE_URL)
   })
 
+  it('refuses a key whose project_id was edited to claim another project, before calling Google', async () => {
+    const google = fakeGoogle()
+    const result = await createGoogleChatCpProvider({ fetch: google.fetchImpl }).validateConfig(
+      {
+        projectId: 'other-example-project',
+        serviceAccountKey: JSON.stringify({ ...KEY_FIELDS, project_id: 'other-example-project' })
+      },
+      'http'
+    )
+    expect(result).toMatchObject({ ok: false, status: 400, code: 'GOOGLE_CHAT_KEY_INVALID' })
+    expect(google.calls).toEqual([])
+  })
+
   it('answers a disabled Cloud Resource Manager API and a missing Browser role with their own codes', async () => {
     const disabled = await createGoogleChatCpProvider({ fetch: fakeGoogle('crm_disabled').fetchImpl }).validateConfig(
       CREDENTIALS,
@@ -318,6 +331,16 @@ describe('the rows one Chat app writes', () => {
     expect(() =>
       provider.buildNewBotInstall({ credentials: CREDENTIALS, identity: {}, transport: 'http', shareable: false })
     ).toThrow(/resolved project number/)
+  })
+
+  it('stores the project of the key’s authenticated account, never the entered one', () => {
+    const install = provider.buildNewBotInstall({
+      credentials: { ...CREDENTIALS, projectId: 'entered-elsewhere' },
+      identity,
+      transport: 'http',
+      shareable: false
+    })
+    expect(install.bot?.platformConfig).toEqual({ projectId: PROJECT_ID })
   })
 
   it('stores the key write-only as canonical JSON in the bot secret row', () => {

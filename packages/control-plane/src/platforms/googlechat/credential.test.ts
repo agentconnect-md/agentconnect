@@ -14,6 +14,7 @@ import {
   probeFailureIsConnectivity,
   probeGoogleChatCredential,
   resolveProjectNumber,
+  serviceAccountProject,
   type GoogleServiceAccountKey
 } from './credential.js'
 
@@ -105,9 +106,38 @@ describe('checkServiceAccountKey', () => {
     })
   })
 
+  it('takes the owning project from the authenticated email, never from the editable project_id', () => {
+    // A key of example-project's account, edited to claim a project it only has Browser access on.
+    const edited = keyJson({ project_id: 'other-example-project' })
+    expect(checkServiceAccountKey(edited, 'other-example-project')).toEqual({
+      status: 'invalid_key',
+      message: `the key's project_id other-example-project does not match its service account's project ${PROJECT_ID}`
+    })
+  })
+
+  it('accepts only a user-managed service account created in a project', () => {
+    for (const clientEmail of [
+      '123456789012-compute@developer.gserviceaccount.com',
+      `${PROJECT_ID}@appspot.gserviceaccount.com`,
+      `agentconnect-chat@${PROJECT_ID}.iam.gserviceaccount.com.example.test`,
+      `Agentconnect-Chat@${PROJECT_ID}.iam.gserviceaccount.com`,
+      `agent.chat-app@${PROJECT_ID}.iam.gserviceaccount.com`,
+      `agentconnect-chat@${PROJECT_ID}.example.test`
+    ]) {
+      expect(checkServiceAccountKey(keyJson({ client_email: clientEmail }), PROJECT_ID), clientEmail).toEqual({
+        status: 'invalid_key',
+        message: `the Chat app needs a service account created in its own project (name@project-id.iam.gserviceaccount.com); ${clientEmail} is not one`
+      })
+    }
+    expect(serviceAccountProject(CLIENT_EMAIL)).toBe(PROJECT_ID)
+  })
+
   it('refuses a key from another project without echoing the private key', () => {
     const checked = checkServiceAccountKey(keyJson(), 'other-example-project')
-    expect(checked).toMatchObject({ status: 'project_mismatch' })
+    expect(checked).toEqual({
+      status: 'project_mismatch',
+      message: `the key belongs to project ${PROJECT_ID}, not other-example-project; keep the Chat app and its service account in one project`
+    })
     if (checked.status === 'ok') return
     expect(checked.message).not.toContain('PRIVATE KEY')
   })
@@ -324,6 +354,44 @@ describe('checkGoogleChatApp', () => {
     })
     // A refused binding never reaches the Chat API.
     expect(cloud.calls.map((call) => call.url)).not.toContain(GOOGLE_CHAT_PROBE_URL)
+  })
+
+  it('reads the number of the project named by the service-account email', async () => {
+    const second = 'second-example-project'
+    const urls: string[] = []
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = String(input)
+      urls.push(url)
+      if (url === GOOGLE_TOKEN_ENDPOINT) return Response.json({ access_token: 'synthetic-access-token' })
+      if (url.startsWith('https://cloudresourcemanager.googleapis.com/')) {
+        return Response.json({ projectNumber: '345678901234', projectId: second })
+      }
+      return Response.json({ spaces: [] })
+    }) as typeof fetch
+    const checked = await checkGoogleChatApp(
+      {
+        projectId: second,
+        serviceAccountKey: keyJson({
+          project_id: second,
+          client_email: `agentconnect-chat@${second}.iam.gserviceaccount.com`
+        })
+      },
+      fetchImpl,
+      () => NOW
+    )
+    expect(checked).toMatchObject({ status: 'ok', projectNumber: '345678901234', key: { projectId: second } })
+    expect(urls).toContain(`https://cloudresourcemanager.googleapis.com/v1/projects/${second}`)
+  })
+
+  it('refuses an edited project_id before any Google call', async () => {
+    const cloud = fakeCloud()
+    const checked = await checkGoogleChatApp(
+      { projectId: 'other-example-project', serviceAccountKey: keyJson({ project_id: 'other-example-project' }) },
+      cloud.fetchImpl,
+      () => NOW
+    )
+    expect(checked.status).toBe('invalid_key')
+    expect(cloud.calls).toEqual([])
   })
 
   it('stops at a refused resolution', async () => {

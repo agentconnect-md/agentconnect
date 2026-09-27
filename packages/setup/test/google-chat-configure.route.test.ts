@@ -166,6 +166,22 @@ describe('POST /api/v1/configure/google-chat (§3)', () => {
     expect(status.body).not.toContain('PRIVATE KEY')
   })
 
+  it('refuses a key whose project_id was edited away from its service account’s project', async () => {
+    const { app, writes, requests } = server()
+
+    const response = await configure(app, {
+      projectId: 'other-example-project',
+      serviceAccountKey: JSON.stringify({ ...JSON.parse(KEY), project_id: 'other-example-project' })
+    })
+    expect(response.statusCode).toBe(400)
+    expect(response.json()).toMatchObject({
+      code: 'invalid_key',
+      message: `the key's project_id other-example-project does not match its service account's project ${PROJECT_ID}`
+    })
+    expect(requests).toEqual([])
+    expect(writes).toEqual([])
+  })
+
   it('refuses a key from another project before calling Google', async () => {
     const { app, writes, requests } = server()
 
