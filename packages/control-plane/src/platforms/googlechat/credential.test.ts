@@ -401,3 +401,32 @@ describe('checkGoogleChatApp', () => {
     expect(cloud.calls.map((call) => call.url)).not.toContain(GOOGLE_CHAT_PROBE_URL)
   })
 })
+
+describe('the probe’s customer scan (§10.3)', () => {
+  const named = (name: string, customer: string) => ({ name, spaceType: 'SPACE', customer })
+
+  it('lists named Spaces in one bounded page and reports the one customer owning every listed Space', async () => {
+    expect(GOOGLE_CHAT_PROBE_URL).toContain('pageSize=100')
+    expect(decodeURIComponent(GOOGLE_CHAT_PROBE_URL)).toContain('filter=spaceType = "SPACE"')
+    const listed = Response.json({
+      spaces: [named('spaces/A', 'customers/C0000000001'), named('spaces/B', 'customers/C0000000001')]
+    })
+    const result = await probeGoogleChatCredential(validKey(), fakeGoogle(issued(), listed).fetchImpl, () => NOW)
+    expect(result).toMatchObject({ status: 'ok', customerId: 'C0000000001' })
+  })
+
+  it('names no customer for an empty list, two customers, a DM without one, or a list with more pages', async () => {
+    const probe = async (body: unknown) =>
+      probeGoogleChatCredential(validKey(), fakeGoogle(issued(), Response.json(body)).fetchImpl, () => NOW)
+    for (const body of [
+      { spaces: [] },
+      { spaces: [named('spaces/A', 'customers/C0000000001'), named('spaces/B', 'customers/C0000000002')] },
+      { spaces: [named('spaces/A', 'customers/C0000000001')], nextPageToken: 'more' },
+      { spaces: [{ name: 'spaces/A', spaceType: 'SPACE' }] }
+    ]) {
+      const result = await probe(body)
+      expect(result.status).toBe('ok')
+      expect(result).not.toHaveProperty('customerId')
+    }
+  })
+})

@@ -38,6 +38,7 @@ import type {
   RcBotConversation,
   RcBotCredentialCheck,
   RcBotRevoked,
+  RcBotTenant,
   WireNormalizedMessage,
   RcThreadAssign,
   RcThreadParticipant,
@@ -150,6 +151,10 @@ export interface RelayIngressManagerDeps {
   reportBotCredentialCheck: (m: RcBotCredentialCheck) => Promise<boolean>
   /** Whether the CP this relay last registered with advertised `bot-credential-check-v2` (kept while the link is down). */
   credentialCheckSupported: () => boolean
+  /** Report a tenant key a single-tenant row learned (→ `rc/bot-tenant`) and wait for the CP's reply; `false` keeps it queued. */
+  reportBotTenant: (m: RcBotTenant) => Promise<boolean>
+  /** Whether the CP this relay last registered with advertised `bot-tenant-v1`; without it the fence stays in memory alone. */
+  tenantReportSupported: () => boolean
   /** Interval between periodic credential probes of each bot; defaults to one hour. */
   credentialProbeIntervalMs?: number
   /** Randomness for the probe schedule's first offset and jitter; defaults to `Math.random`. */
@@ -251,6 +256,7 @@ export class RelayIngressManager {
       reportCredentialCheck: (botId, check, credentialRevision) =>
         this.reportCredentialCheck(botId, check, credentialRevision),
       credentialCheckSupported: () => this.deps.credentialCheckSupported(),
+      reportTenant: (botId, tenantId) => this.reportTenant({ botId, tenantId }),
       directory: {
         agents: (botId) => this.router.get(botId)?.agents ?? [],
         channelOwner: (botId, channelId) => this.router.channelOwner(botId, channelId),
@@ -309,6 +315,8 @@ export class RelayIngressManager {
   private readonly pendingRevokedReports = new Map<string, RcBotRevoked>()
   /** The latest unacknowledged credential check per bot, replayed across reconnects until the CP replies. */
   private readonly pendingCredentialChecks = new Map<string, RcBotCredentialCheck>()
+  /** Learned tenant keys (`botId\0tenantId`) the CP has not acknowledged yet; at-least-once, the CP deduplicates. */
+  private readonly pendingTenantReports = new Map<string, RcBotTenant>()
   /** The last check this relay reported per bot since its (re)assign or CP registration (`revision\0result\0code`), so only a change is sent. */
   private readonly lastCredentialChecks = new Map<string, string>()
   /** Each pooled ingest's next periodic credential probe. */
@@ -596,23 +604,58 @@ export class RelayIngressManager {
       .finally(() => this.armAckRetry())
   }
 
-  private resetAckRetryIfDrained(): void {
-    if (this.pendingRevokedReports.size === 0 && this.pendingCredentialChecks.size === 0) {
-      this.ackRetryDelayMs = ACK_RETRY_INITIAL_MS
+  /** Report a learned tenant key once and keep it queued until the CP replies; a CP without the feature gets none. */
+  private reportTenant(m: RcBotTenant): void {
+    if (!this.deps.tenantReportSupported()) return
+    const key = `${m.botId}\u0000${m.tenantId}`
+    if (this.pendingTenantReports.has(key)) return
+    this.pendingTenantReports.set(key, m)
+    this.sendTenantReport(key, m)
+  }
+
+  /** Send one queued tenant report; any CP reply settles it, while a missing one leaves it for the retry. */
+  private sendTenantReport(key: string, m: RcBotTenant): void {
+    if (!this.deps.tenantReportSupported()) {
+      this.pendingTenantReports.delete(key)
+      this.resetAckRetryIfDrained()
+      return
     }
+    void this.deps
+      .reportBotTenant(m)
+      .then((settled) => {
+        if (settled && this.pendingTenantReports.get(key) === m) {
+          this.pendingTenantReports.delete(key)
+          this.resetAckRetryIfDrained()
+        }
+      })
+      .catch(() => {
+        /* stays queued — the finally below arms the retry */
+      })
+      .finally(() => this.armAckRetry())
+  }
+
+  private ackQueuesDrained(): boolean {
+    return (
+      this.pendingRevokedReports.size === 0 &&
+      this.pendingCredentialChecks.size === 0 &&
+      this.pendingTenantReports.size === 0
+    )
+  }
+
+  private resetAckRetryIfDrained(): void {
+    if (this.ackQueuesDrained()) this.ackRetryDelayMs = ACK_RETRY_INITIAL_MS
   }
 
   /** Arm the READY-link retry for whatever is still queued: one timer, bounded backoff, disarmed by drained queues and reset by `onReady`'s flush. */
   private armAckRetry(): void {
-    if (this.ackRetryTimer || (this.pendingRevokedReports.size === 0 && this.pendingCredentialChecks.size === 0)) {
-      return
-    }
+    if (this.ackRetryTimer || this.ackQueuesDrained()) return
     const delay = this.ackRetryDelayMs
     this.ackRetryDelayMs = Math.min(this.ackRetryDelayMs * 2, ACK_RETRY_MAX_MS)
     this.ackRetryTimer = setTimeout(() => {
       this.ackRetryTimer = undefined
       for (const [, m] of [...this.pendingRevokedReports]) this.reportRevoked(m)
       for (const [, m] of [...this.pendingCredentialChecks]) this.sendCredentialCheck(m)
+      for (const [key, m] of [...this.pendingTenantReports]) this.sendTenantReport(key, m)
     }, delay)
     // Never hold the process open for a retry timer.
     this.ackRetryTimer.unref?.()
@@ -671,6 +714,7 @@ export class RelayIngressManager {
     this.ackRetryDelayMs = ACK_RETRY_INITIAL_MS
     for (const [, m] of [...this.pendingRevokedReports]) this.reportRevoked(m)
     for (const [, m] of [...this.pendingCredentialChecks]) this.sendCredentialCheck(m)
+    for (const [key, m] of [...this.pendingTenantReports]) this.sendTenantReport(key, m)
     // The CP keeps one observation row per relay, and a sweep during an outage drops it with the relayId, so every bot reports afresh.
     this.lastCredentialChecks.clear()
   }

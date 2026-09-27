@@ -744,6 +744,7 @@ import {
 } from './platforms/linear/message-strategy.js'
 import { linearPlatformModule } from './platforms/linear/relay-ingress.js'
 import { GoogleChatConnection } from './platforms/googlechat/connection.js'
+import { GoogleChatWriteBudgets, googleChatWriteBudgetSettings } from './platforms/googlechat/write-budget.js'
 import { googleChatCommandChrome } from './platforms/googlechat/command-chrome.js'
 import { googleChatPlatformModule } from './platforms/googlechat/relay-ingress.js'
 import { createGoogleChatTurnOutput } from './platforms/googlechat/surface.js'
@@ -1511,6 +1512,8 @@ export class Daemon {
   private lnConnByIntegration = new Map<string, LinearConnection>()
   // integrationId -> the GoogleChatConnection that owns it: relay-terminated ingress, daemon-direct Chat API egress.
   private gcConnByIntegration = new Map<string, GoogleChatConnection>()
+  // One Google Chat write budget per app on this daemon (§10.8), built from the config on first use.
+  private googleChatBudgets: GoogleChatWriteBudgets | undefined
   // Sessions whose console link already sits in the issue's Resources (Linear keys the entry
   // on the URL, so a restart re-sending it refreshes rather than duplicates).
   private readonly linearResourcesAttached = new Set<string>()
@@ -2137,6 +2140,8 @@ export class Daemon {
       draining: () => this.draining,
       boltDebug: () => this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace',
       slackAppFactory: () => this.opts.slackAppFactory,
+      googleChatWriteBudgets: () =>
+        (this.googleChatBudgets ??= new GoogleChatWriteBudgets(googleChatWriteBudgetSettings(this.cfg.googleChat))),
       agents: () => this.agents,
       transportAgents: (agents) => this.transportAgents(agents),
       evaluationIntegrationIds: () => this.evaluationIntegrationIds,

@@ -38,7 +38,7 @@ import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js
 import { conversationOwnerRow, pickConversationOwner } from '../../orchestrator/httpBot.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
-import { removeIntegrationRow } from '../uninstall.js'
+import { releaseFreedBot, removeIntegrationRow } from '../uninstall.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { DecisionBindingDenied } from '../../persistence/decision-binding-fence.js'
 import { Prisma } from '../../generated/prisma/client.js'
@@ -1418,6 +1418,8 @@ export function integrationRoutes(deps: HttpDeps) {
           // HTTP bot: recompute the relay's routes + members (or release it if this
           // was the last install).
           if (botBefore?.transport === 'http') await deps.httpBot.syncBot(existing.botId)
+          // A platform may give up its freed bot instead of keeping it (a claimed Google Workspace customer).
+          if (botBefore) await releaseFreedBot(deps, app.log, orgIdOf(req), botBefore)
           return reply.code(204).send(null)
         } finally {
           release()

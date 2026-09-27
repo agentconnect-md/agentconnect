@@ -16,6 +16,23 @@ function fakeClock() {
 }
 
 describe('PlatformSendQueue', () => {
+  it('runs a gate after the spacing and before the task, outside the task’s own timeout', async () => {
+    const clk = fakeClock()
+    // A 20 ms task timeout against a gate that really waits 40 ms: inside the timeout the task would be abandoned.
+    const q = new PlatformSendQueue(100, clk.now, clk.sleep, 20)
+    const order: string[] = []
+    const gate = async () => {
+      order.push('gate')
+      await new Promise((r) => setTimeout(r, 40))
+    }
+    const first = q.enqueue(async () => order.push('a'))
+    const second = q.enqueue(async () => order.push('b'), gate)
+    await expect(first).resolves.toBe(1)
+    await expect(second).resolves.toBe(3)
+    expect(order).toEqual(['a', 'gate', 'b'])
+    expect(clk.sleeps).toEqual([100])
+  })
+
   it('runs the first task immediately (no initial wait) and returns its result', async () => {
     const clk = fakeClock()
     const q = new PlatformSendQueue(1000, clk.now, clk.sleep)

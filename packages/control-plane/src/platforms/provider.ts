@@ -82,7 +82,9 @@ import type { FastifyPluginAsync } from 'fastify'
 import type { ZodRawShape, ZodType } from 'zod'
 import type { IntegrationCoreEnvelope, IntegrationRevoked } from '@agentconnect.md/protocol'
 import type {
+  BotIdentityChange,
   BotIdentityColumns,
+  BotIdentitySnapshot,
   BotRecord,
   BotSecretMaterial,
   CreateBotInput,
@@ -141,7 +143,13 @@ export interface CpValidatedIdentity {
    *  (Slack: `auth.test`'s `x-oauth-scopes`). Omitted when the platform did not
    *  report one — absence is "unknown", never a short grant. */
   grantedScopes?: string[]
+  /** Public metadata the check derived for the bot row's bag; only the platform's own `buildNewBotInstall` reads it back. */
+  platformConfig?: Record<string, string>
 }
+
+/** What a platform makes of a relay's `rc/bot-tenant` for one row: the identity change to record, a key it already knows, or a refusal. */
+export type CpTenantLearning =
+  { kind: 'record'; change: BotIdentityChange } | { kind: 'known' } | { kind: 'refused'; reason: string }
 
 /**
  * Refusal from {@link CpPlatformProvider.validateConfig}: the HTTP status +
@@ -516,6 +524,12 @@ export interface CpPlatformProvider<TCredentials = unknown> {
 
   /** Normalize the provider realm used to fence bot-agnostic SessionMeta thread fallback. */
   threadFallbackRealm?(bot: BotRecord): string | null
+
+  /** A relay's `rc/bot-tenant` for this bot (google-chat-integration.md §10.3), decided under the row lock from its current identity. Pure. Absent ⇒ every report refused. */
+  learnTenant?(bot: BotRecord, current: BotIdentitySnapshot, tenantId: string): CpTenantLearning
+
+  /** Whether a bot whose last install was removed is deleted rather than kept freed (§10.5: a claimed customer row is released for a new claim). Absent ⇒ kept. */
+  releasesFreedBot?(bot: BotRecord): boolean
 
   /** Whether a daemon socket's `integration/revoked` is about this bot's CURRENT credential: the socket identity it reports must match the stored one; absent ⇒ every report refused. */
   socketLifecycleRevocation?(bot: BotRecord, reported: Pick<IntegrationRevoked, 'botUserId' | 'workspaceId'>): boolean

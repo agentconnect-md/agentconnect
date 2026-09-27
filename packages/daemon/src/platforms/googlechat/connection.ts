@@ -13,6 +13,7 @@ import type {
 } from '../contract.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import { PlatformSendQueue } from '../send-queue.js'
+import type { GoogleChatWriteBudget } from './write-budget.js'
 
 /** Google's fixed OAuth token endpoint; the key's own `token_uri` is never followed (§3). */
 export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
@@ -47,6 +48,7 @@ export type GoogleChatFailureKind =
   | 'rate_limited'
   | 'unavailable'
   | 'ambiguous'
+  | 'tenant_refused'
 
 /** A Chat API or token-endpoint refusal; `ambiguous` means the request may have landed. */
 export class GoogleChatApiError extends Error {
@@ -76,12 +78,31 @@ export interface ConsolidatedGoogleChatGroup {
   integrations: { agentId: string; integrationId: string }[]
 }
 
-/** §7.5 opaque identity: the app AND its key, so a rotated key opens a new client and drains the old one. */
-export function googleChatConnKey(c: Pick<IntegrationGoogleChatConfig, 'projectNumber' | 'serviceAccountKey'>): string {
+/** §7.5 opaque identity: the app, its key, and the row's tenant, so a rotated key opens a new client and two customer rows never share one (§10.8). */
+export function googleChatConnKey(
+  c: Pick<IntegrationGoogleChatConfig, 'projectNumber' | 'serviceAccountKey' | 'tenantIds' | 'ownTenantIds'>
+): string {
   return createHash('sha256')
-    .update(JSON.stringify([c.projectNumber, c.serviceAccountKey]))
+    .update(JSON.stringify([c.projectNumber, c.serviceAccountKey, c.tenantIds ?? null, c.ownTenantIds ?? null]))
     .digest('hex')
 }
+
+/** The fence a row's config sets: strict keys for a claimed customer (none for the anchor), the recorded customer for one organization's own app. */
+type TenantFence = { mode: 'strict'; keys: ReadonlySet<string> } | { mode: 'own'; customer?: string }
+
+function tenantFenceOf(
+  config: Pick<IntegrationGoogleChatConfig, 'tenantIds' | 'ownTenantIds'>
+): TenantFence | undefined {
+  if (config.tenantIds) return { mode: 'strict', keys: new Set(config.tenantIds) }
+  if (config.ownTenantIds) {
+    const customer = config.ownTenantIds.find((key) => key.startsWith('customers/'))
+    return { mode: 'own', ...(customer ? { customer } : {}) }
+  }
+  return undefined
+}
+
+/** A Space's tenant as the fence reads it: a named Space's owning customer, a DM's single human member's domain. */
+type SpaceTenant = { kind: 'space'; customer?: string } | { kind: 'dm'; domain?: string }
 
 /** Group an agent set's Google Chat integrations, one connection per (app, key); a rejected config is skipped. */
 export function consolidateGoogleChat(agents: Agent[], log?: Logger): Map<string, ConsolidatedGoogleChatGroup> {
@@ -125,6 +146,8 @@ export interface GoogleChatDeps {
   random?: () => number
   /** Per-request id for chrome creates; injectable for tests. */
   newRequestId?: () => string
+  /** The app's write budget on this daemon, shared by every connection of the app (§10.8); absent ⇒ unbudgeted. */
+  budget?: GoogleChatWriteBudget
 }
 
 /** A Chat message the daemon created, addressed by its resource name and the id it chose. */
@@ -139,10 +162,11 @@ interface SpaceResource {
   name?: string
   displayName?: string
   spaceType?: string
+  customer?: string
 }
 
 interface MembershipResource {
-  member?: { name?: string; displayName?: string; type?: string }
+  member?: { name?: string; displayName?: string; type?: string; domainId?: string }
 }
 
 interface MessageResource {
@@ -243,6 +267,11 @@ export class GoogleChatConnection implements PlatformConnection {
   private readonly sendIntervalMs: number
   /** One write queue per Space (§5): Google's write quota is per Space, shared by every app in it. */
   private readonly queues = new Map<string, PlatformSendQueue>()
+  /** The row's tenant fence (§10.8) and each Space's tenant, read once. */
+  private readonly fence: TenantFence | undefined
+  private readonly spaceTenants = new Map<string, Promise<SpaceTenant>>()
+  /** Every write takes one token of the app's budget before it runs, under the Space's own spacing. */
+  private readonly writeGate: (() => Promise<void>) | undefined
   private cached: CachedToken | undefined
   /** Single-flight mint: concurrent sends inside the margin issue one token request. */
   private minting: Promise<CachedToken> | undefined
@@ -266,6 +295,9 @@ export class GoogleChatConnection implements PlatformConnection {
     this.random = deps.random ?? (() => Math.random())
     this.newRequestId = deps.newRequestId ?? (() => randomUUID())
     this.sendIntervalMs = deps.sendIntervalMs ?? GOOGLE_CHAT_SPACE_INTERVAL_MS
+    this.fence = tenantFenceOf(group.config)
+    const budget = deps.budget
+    this.writeGate = budget ? () => budget.take() : undefined
   }
 
   /** The app's own `users/…` identity, once a create response names it; Google exposes no app-authenticated read of it (§5). */
@@ -307,6 +339,7 @@ export class GoogleChatConnection implements PlatformConnection {
       ...(input.thread ? { thread: { name: input.thread } } : {})
     }
     const byClientId = `${input.space}/messages/${input.clientId}`
+    await this.assertOwnTenant(input.space)
     const send = async (): Promise<GoogleChatMessageRef> => {
       const created = await this.request<MessageResource>('POST', `${input.space}/messages`, {
         query,
@@ -334,17 +367,20 @@ export class GoogleChatConnection implements PlatformConnection {
         // Nothing landed: the same request once more — same id, same body.
         return await send()
       }
-    })
+    }, this.writeGate)
   }
 
   /** Edit a message this daemon created; `allowMissing` stays off so a deleted message is a `not_found`, never recreated. */
   async patchMessage(name: string, text: string): Promise<void> {
-    await this.queueFor(spaceOf(name)).enqueue(() =>
-      this.request<MessageResource>('PATCH', name, {
-        query: { updateMask: 'text' },
-        body: { text, markupSyntax: GOOGLE_CHAT_MARKUP },
-        retry: 'idempotent'
-      })
+    await this.assertOwnTenant(spaceOf(name))
+    await this.queueFor(spaceOf(name)).enqueue(
+      () =>
+        this.request<MessageResource>('PATCH', name, {
+          query: { updateMask: 'text' },
+          body: { text, markupSyntax: GOOGLE_CHAT_MARKUP },
+          retry: 'idempotent'
+        }),
+      this.writeGate
     )
   }
 
@@ -358,6 +394,7 @@ export class GoogleChatConnection implements PlatformConnection {
     const query: Record<string, string> = { requestId: this.newRequestId() }
     if (thread) query.messageReplyOption = 'REPLY_MESSAGE_OR_FAIL'
     const body = { text, markupSyntax: GOOGLE_CHAT_MARKUP, ...(thread ? { thread: { name: thread } } : {}) }
+    await this.assertOwnTenant(space)
     await this.queueFor(space).enqueue(async () => {
       const created = await this.request<MessageResource>('POST', `${space}/messages`, {
         query,
@@ -365,7 +402,55 @@ export class GoogleChatConnection implements PlatformConnection {
         retry: 'idempotent'
       })
       this.noteAppIdentity(created.sender?.name)
+    }, this.writeGate)
+  }
+
+  // ── tenant fence (§10.8) ──
+
+  /** Refuse a write into a Space outside the row's tenant; a row with no fence writes anywhere, as before. */
+  private async assertOwnTenant(space: string): Promise<void> {
+    const fence = this.fence
+    if (!fence) return
+    const tenant = await this.spaceTenant(space)
+    const permitted =
+      fence.mode === 'strict'
+        ? tenant.kind === 'space'
+          ? tenant.customer !== undefined && fence.keys.has(tenant.customer)
+          : tenant.domain !== undefined && fence.keys.has(tenant.domain)
+        : // One organization's own app: its Spaces are its customer's, and its DMs can only be its own people's (§10.3).
+          tenant.kind === 'dm' || fence.customer === undefined || tenant.customer === fence.customer
+    if (!permitted) {
+      throw new GoogleChatApiError(`${space} belongs to another Google Workspace customer`, 'tenant_refused')
+    }
+  }
+
+  /** The Space's tenant, read once per Space; a failed read is not cached. */
+  private spaceTenant(space: string): Promise<SpaceTenant> {
+    let pending = this.spaceTenants.get(space)
+    if (!pending) {
+      pending = this.readSpaceTenant(space).catch((err: unknown) => {
+        this.spaceTenants.delete(space)
+        throw err
+      })
+      this.spaceTenants.set(space, pending)
+    }
+    return pending
+  }
+
+  /** `spaces.get` names a named Space's customer; a DM's tenant is its one human member's domain, read only under a strict fence. */
+  private async readSpaceTenant(space: string): Promise<SpaceTenant> {
+    const resource = await this.request<SpaceResource>('GET', space, { retry: 'idempotent' })
+    if (resource.spaceType !== 'DIRECT_MESSAGE') {
+      return { kind: 'space', ...(resource.customer ? { customer: resource.customer } : {}) }
+    }
+    if (this.fence?.mode !== 'strict') return { kind: 'dm' }
+    const page = await this.request<{ memberships?: MembershipResource[] }>('GET', `${space}/members`, {
+      query: { pageSize: '2', filter: 'member.type = "HUMAN"' },
+      retry: 'idempotent'
     })
+    const humans = (page.memberships ?? []).filter((m) => m.member?.type === 'HUMAN')
+    const domainId = humans.length === 1 ? humans[0]!.member?.domainId : undefined
+    return { kind: 'dm', ...(domainId ? { domain: `domains/${domainId}` } : {}) }
   }
 
   // ── 3. read port ──
@@ -401,9 +486,14 @@ export class GoogleChatConnection implements PlatformConnection {
 
   /** The named Spaces the app is a member of, as the observed conversation rows (§5); DMs surface from traffic. */
   async listChannels(opts: { signal?: AbortSignal } = {}): Promise<PlatformChannelRef[]> {
+    const fence = this.fence
+    // A customer row lists its customer's Spaces alone, and none without a customer key; an own app lists everything until its customer is known (§10.8).
+    const customer =
+      fence?.mode === 'strict' ? [...fence.keys].find((key) => key.startsWith('customers/')) : fence?.customer
+    if (fence?.mode === 'strict' && customer === undefined) return []
     const spaces = await this.listSpaces(opts.signal ?? AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS))
     return spaces
-      .filter((space) => space.spaceType === 'SPACE' && space.name)
+      .filter((space) => space.spaceType === 'SPACE' && space.name && (!customer || space.customer === customer))
       .map((space) => ({
         id: space.name!,
         ...(space.displayName ? { name: space.displayName } : {}),

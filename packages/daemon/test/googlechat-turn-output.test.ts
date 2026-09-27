@@ -305,6 +305,19 @@ describe('applyGoogleChatAction', () => {
     expect(h.warnings[0]).toContain('not_found')
   })
 
+  it('keeps the answer in the transcript and names the refusal when the Space is another customer’s', async () => {
+    const refusal = new GoogleChatApiError(`${SPACE} belongs to another Google Workspace customer`, 'tenant_refused')
+    const { port, writes } = rig({ failCreate: refusal })
+    const h = host()
+    await applyGoogleChatAction(h.host, turn, state(port), { kind: 'post', text: 'answer' })
+    expect(h.recorded).toEqual(['answer'])
+    expect(h.rows).toEqual([])
+    expect(writes).toEqual([])
+    expect(h.warnings).toHaveLength(1)
+    expect(h.warnings[0]).toContain('tenant_refused')
+    expect(refusal.retryable).toBe(false)
+  })
+
   it('records exactly the text on the wire when a replayed create echoed an older draft', async () => {
     const { port, writes, wire } = rig({ createResponse: () => ({ text: 'older draft' }) })
     const h = host()

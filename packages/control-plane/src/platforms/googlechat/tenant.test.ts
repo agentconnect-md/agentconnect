@@ -5,6 +5,7 @@ import {
   googleChatPrimaryTenant,
   googleChatTenantEntries,
   googleChatTenantKeys,
+  googleChatTenantLearning,
   googleChatTenantOf
 } from './tenant.js'
 
@@ -39,5 +40,28 @@ describe('the tenant ids of a customer row', () => {
     expect(googleChatDomainAdditions({ customerId: 'C0000000000' }, ['0000000002'])).toEqual({
       domainIds: '0000000002'
     })
+  })
+})
+
+describe('what a single-tenant row records from a key its traffic named', () => {
+  const current = { projectId: 'example-project', customerId: 'C0000000000', domainIds: '0000000000' }
+
+  it('records the first customer, knows it again, and refuses a second one', () => {
+    expect(googleChatTenantLearning({ projectId: 'example-project' }, 'customers/C0000000000')).toEqual({
+      kind: 'record',
+      entries: { customerId: 'C0000000000' }
+    })
+    expect(googleChatTenantLearning(current, 'customers/C0000000000')).toEqual({ kind: 'known' })
+    expect(googleChatTenantLearning(current, 'customers/C0000000002')).toMatchObject({ kind: 'refused' })
+  })
+
+  it('appends a new domain, knows a listed one, and refuses anything that is not a tenant key', () => {
+    expect(googleChatTenantLearning(current, 'domains/0000000001')).toEqual({
+      kind: 'record',
+      entries: { domainIds: '0000000000,0000000001' }
+    })
+    expect(googleChatTenantLearning(current, 'domains/0000000000')).toEqual({ kind: 'known' })
+    expect(googleChatTenantLearning(current, 'spaces/AAA')).toMatchObject({ kind: 'refused' })
+    expect(googleChatTenantLearning(current, 'customers/not a customer')).toMatchObject({ kind: 'refused' })
   })
 })

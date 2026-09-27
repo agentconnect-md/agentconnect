@@ -22,6 +22,7 @@ import {
   RcGithubRerequestResult,
   RcBotRevoked,
   RcBotCredentialCheck,
+  RcBotTenant,
   RcBotCredentialCheckOk,
   SharedSlackStatusTarget,
   decodeSlackStatusOverflowValue,
@@ -1280,5 +1281,25 @@ describe('bot credential evidence (preset-agents.md §5.3)', () => {
     const { observedAtMs: _observed, ...undated } = ok
     expect(RcBotCredentialCheck.safeParse(undated).success).toBe(false)
     expect(RcBotCredentialCheckOk.safeParse({ botId: BOT }).success).toBe(false)
+  })
+})
+
+describe('rc/bot-tenant (google-chat-integration.md §10.3)', () => {
+  const BOT = '66666666-6666-4666-8666-666666666666'
+
+  it('round-trips a learned tenant key and its acknowledgement', () => {
+    const frame = buildRelayCpFrame('rc/bot-tenant', { botId: BOT, tenantId: 'customers/C0000000000' })
+    const r = decodeRelayCpFrame(JSON.stringify(frame))
+    if (!r.ok || r.frame.type !== 'rc/bot-tenant') throw new Error('expected rc/bot-tenant')
+    expect(r.frame.payload).toEqual({ botId: BOT, tenantId: 'customers/C0000000000' })
+    const ok = decodeRelayCpFrame(envelope('rc/bot-tenant/ok', { botId: BOT, applied: false }))
+    if (!ok.ok || ok.frame.type !== 'rc/bot-tenant/ok') throw new Error('expected rc/bot-tenant/ok')
+    expect(ok.frame.payload).toEqual({ botId: BOT, applied: false })
+  })
+
+  it('refuses an empty or unbounded key and a bot that is not a uuid', () => {
+    expect(RcBotTenant.safeParse({ botId: BOT, tenantId: '' }).success).toBe(false)
+    expect(RcBotTenant.safeParse({ botId: BOT, tenantId: 'x'.repeat(257) }).success).toBe(false)
+    expect(RcBotTenant.safeParse({ botId: 'bot', tenantId: 'domains/0000000000' }).success).toBe(false)
   })
 })

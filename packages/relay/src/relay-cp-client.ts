@@ -14,6 +14,7 @@
  */
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
+  BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   decodeRelayCpFrame,
   GITEA_V1_FEATURE,
@@ -56,6 +57,7 @@ import {
   type RcBotChannels,
   type RcBotConversation,
   type RcBotCredentialCheck,
+  type RcBotTenant,
   type RcBotRevoked,
   type RcNoticePosted,
   type RcThreadAssign,
@@ -501,6 +503,25 @@ export class RelayCpClient {
       return rep.type === 'rc/bot-credential-check/ok'
     } catch (err) {
       this.deps.log.warn(`relay: rc/bot-credential-check for ${m.botId} unacknowledged: ${(err as Error).message}`)
+      return false
+    }
+  }
+
+  /** Report one learned tenant key and wait for the CP's reply, which settles it whether or not it applied; false keeps it queued. */
+  async reportBotTenant(m: RcBotTenant): Promise<boolean> {
+    if (this.state !== 'READY' || !this.transport) {
+      this.deps.log.warn(`relay: deferring rc/bot-tenant for ${m.botId} (link ${this.state})`)
+      return false
+    }
+    if (!this.serverFeatures.has(BOT_TENANT_FEATURE)) return false
+    try {
+      const rep = await this.sendRequest(buildRelayCpFrame('rc/bot-tenant', m), {
+        maxTries: 1,
+        ackTimeoutMs: ACK_TIMEOUT_MS
+      })
+      return rep.type === 'rc/bot-tenant/ok'
+    } catch (err) {
+      this.deps.log.warn(`relay: rc/bot-tenant for ${m.botId} unacknowledged: ${(err as Error).message}`)
       return false
     }
   }

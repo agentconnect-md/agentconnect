@@ -67,6 +67,8 @@ const deps = (over: Partial<RelayIngressManagerDeps> = {}): RelayIngressManagerD
   reportBotRevoked: vi.fn(async () => true),
   reportBotCredentialCheck: vi.fn(async () => true),
   credentialCheckSupported: () => true,
+  reportBotTenant: vi.fn(async () => true),
+  tenantReportSupported: () => true,
   selfRelayId: () => SELF_RELAY,
   reportThreadAssign: vi.fn(() => true),
   reportThreadParticipant: vi.fn(() => true),
@@ -1620,6 +1622,42 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('reports a learned tenant key once per bot and key, keeps it until the CP replies, and retries on the READY timer', async () => {
+    vi.useFakeTimers()
+    try {
+      let settled = false
+      const reportBotTenant = vi.fn(async () => settled)
+      const manager = new RelayIngressManager(deps({ reportBotTenant }))
+      const host = internalsOf(manager).ingressHost
+      host.reportTenant(BOT_ID, 'customers/C0000000000')
+      host.reportTenant(BOT_ID, 'customers/C0000000000')
+      host.reportTenant(BOT_ID, 'domains/0000000000')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reportBotTenant).toHaveBeenCalledTimes(2)
+
+      await vi.advanceTimersByTimeAsync(5_000) // first backoff step: both still queued
+      expect(reportBotTenant).toHaveBeenCalledTimes(4)
+
+      settled = true
+      await vi.advanceTimersByTimeAsync(10_000) // second step: acknowledged now
+      expect(reportBotTenant).toHaveBeenCalledTimes(6)
+      expect(reportBotTenant).toHaveBeenLastCalledWith({ botId: BOT_ID, tenantId: 'domains/0000000000' })
+
+      await vi.advanceTimersByTimeAsync(120_000) // drained ⇒ timer disarmed
+      expect(reportBotTenant).toHaveBeenCalledTimes(6)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sends no tenant report to a CP that does not record tenants; the fence stays in memory', async () => {
+    const reportBotTenant = vi.fn(async () => true)
+    const manager = new RelayIngressManager(deps({ reportBotTenant, tenantReportSupported: () => false }))
+    internalsOf(manager).ingressHost.reportTenant(BOT_ID, 'customers/C0000000000')
+    await Promise.resolve()
+    expect(reportBotTenant).not.toHaveBeenCalled()
   })
 
   it('a delayed OLDER revoke cannot supersede the newer queued report', async () => {

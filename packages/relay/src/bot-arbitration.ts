@@ -66,6 +66,8 @@ export interface BotAssignment {
   tenantIds?: string[]
   /** The console's claim page, present only on a multi-tenant app's anchor row: the plugin answers an event no sibling serves with it (§10.4). */
   claimUrl?: string
+  /** A single-tenant row's own tenant keys, recorded from its traffic (§10.3): the plugin fences with them by its platform's rules; core neither indexes nor fences on them. */
+  ownTenantIds?: string[]
   /** Install GENERATION of `secrets` (CP-assigned). Echoed back on `rc/bot-revoked`
    *  so the CP can refuse a revocation that was observed under a credential a
    *  re-install has since replaced — Slack does not order lifecycle events. */
@@ -871,13 +873,16 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     appUserName?: unknown
     tenantIds?: unknown
     claimUrl?: unknown
+    ownTenantIds?: unknown
   }
   const apiAppId = typeof ingress.apiAppId === 'string' ? ingress.apiAppId : undefined
   // A multi-tenant app's rows: a malformed tenant list or claim page refuses the assignment outright, since reading
   // either as absent would turn the row into one that serves every tenant of its audience.
   const tenantIds = ingress.tenantIds === undefined ? undefined : tenantKeyList(ingress.tenantIds)
   const claimUrl = ingress.claimUrl === undefined ? undefined : httpsUrl(ingress.claimUrl)
-  if (tenantIds === null || claimUrl === null) return null
+  // A single-tenant row's recorded keys: malformed reads as refused too, or the row would forget its fence.
+  const ownTenantIds = ingress.ownTenantIds === undefined ? undefined : tenantKeyList(ingress.ownTenantIds)
+  if (tenantIds === null || claimUrl === null || ownTenantIds === null) return null
   const secrets: BotAssignment['secrets'] | null =
     'botToken' in a.secrets && typeof a.secrets.botToken === 'string' && typeof a.secrets.signingSecret === 'string'
       ? { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret }
@@ -920,6 +925,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     ...(workspaceId ? { workspaceId } : {}),
     ...(tenantIds ? { tenantIds } : {}),
     ...(claimUrl ? { claimUrl } : {}),
+    ...(ownTenantIds ? { ownTenantIds } : {}),
     ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
     ...(botUserId ? { botUserId } : {}),
     members: a.members,

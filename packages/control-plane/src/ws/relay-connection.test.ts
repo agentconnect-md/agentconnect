@@ -3,6 +3,7 @@ import { systemClock } from '../domain/clock.js'
 import { describe, it, expect, vi } from 'vitest'
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
+  BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   PULL_REQUEST_FEEDBACK_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
@@ -103,6 +104,8 @@ function build(
     onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
     onThreadParticipant?: ConstructorParameters<typeof RelayConnection>[1]['onThreadParticipant']
     onBotCredentialCheck?: ConstructorParameters<typeof RelayConnection>[1]['onBotCredentialCheck']
+    /** `null` builds a CP without the tenant handler. */
+    onBotTenant?: ConstructorParameters<typeof RelayConnection>[1]['onBotTenant'] | null
     clock?: Clock
   } = {}
 ) {
@@ -128,6 +131,7 @@ function build(
   const onBotChannels = vi.fn(async () => {})
   const onBotRevoked = vi.fn(async () => ({ applied: true }))
   const onBotCredentialCheck = over.onBotCredentialCheck ?? vi.fn(async () => ({ applied: true }))
+  const onBotTenant = over.onBotTenant ?? vi.fn(async () => ({ applied: true }))
   const onThreadAssign = over.onThreadAssign ?? vi.fn(async () => {})
   const onThreadParticipant = over.onThreadParticipant ?? vi.fn(async () => {})
   const relayReg = new RelayRegistry()
@@ -151,6 +155,7 @@ function build(
     onNoticePosted: vi.fn(async () => {}),
     onBotRevoked,
     onBotCredentialCheck,
+    ...(over.onBotTenant === null ? {} : { onBotTenant }),
     onThreadAssign,
     onThreadParticipant,
     threadLookup: vi.fn(async (m) => ({ ...m, target: null, participants: [] })),
@@ -173,6 +178,7 @@ function build(
     onBotChannels,
     onBotRevoked,
     onBotCredentialCheck,
+    onBotTenant,
     onThreadAssign,
     onThreadParticipant,
     authorizeGithubComment,
@@ -393,7 +399,7 @@ describe('RelayConnection FSM', () => {
     expect(upsertByName).toHaveBeenCalledWith('pod-0', 'wss://pod-0.example.test', new Date(NOW), [])
     expect(transport.lastRep('rc/registered')!.payload).toEqual({
       relayId: RELAY_ID,
-      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE, BOT_CREDENTIAL_CHECK_FEATURE]
+      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE, BOT_CREDENTIAL_CHECK_FEATURE, BOT_TENANT_FEATURE]
     })
     expect(conn.state).toBe('READY')
     expect(conn.relayId).toBe(RELAY_ID)
@@ -633,6 +639,40 @@ describe('RelayConnection FSM', () => {
     await Promise.resolve()
 
     expect(onBotRevoked).toHaveBeenCalledWith(revoked)
+  })
+
+  it('rc/bot-tenant in READY reaches its handler and is acknowledged with its verdict', async () => {
+    const onBotTenant = vi.fn(async () => ({ applied: false }))
+    const { transport } = build({ onBotTenant })
+    await toReady(transport)
+    const report = { botId: '22222222-2222-4222-8222-222222222222', tenantId: 'customers/C0000000001' }
+
+    transport.feed('rc/bot-tenant', report)
+    await Promise.resolve()
+
+    expect(onBotTenant).toHaveBeenCalledWith(report)
+    expect(transport.lastRep('rc/bot-tenant/ok')!.payload).toEqual({ botId: report.botId, applied: false })
+  })
+
+  it('rc/bot-tenant is settled as not applied by a CP without the handler, and retried on a failure', async () => {
+    const { transport } = build({ onBotTenant: null })
+    await toReady(transport)
+    const report = { botId: '22222222-2222-4222-8222-222222222222', tenantId: 'domains/0000000001' }
+    transport.feed('rc/bot-tenant', report)
+    await Promise.resolve()
+    expect(transport.lastRep('rc/bot-tenant/ok')!.payload).toEqual({ botId: report.botId, applied: false })
+
+    const failing = build({
+      onBotTenant: vi.fn(async () => {
+        throw new Error('db down')
+      })
+    })
+    await toReady(failing.transport)
+    failing.transport.feed('rc/bot-tenant', report)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(failing.transport.lastRep('rc/bot-tenant/ok')).toBeUndefined()
+    expect(failing.transport.lastRep('error')!.payload).toMatchObject({ code: 'INTERNAL', retryable: true })
   })
 
   it('rc/bot-credential-check in READY reaches its handler with the reporting relay and is acknowledged', async () => {

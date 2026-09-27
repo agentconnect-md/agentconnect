@@ -183,6 +183,8 @@ export interface RelayIngressHost {
   reportCredentialCheck(botId: string, check: RelayCredentialCheck, credentialRevision?: number): void
   /** Whether the CP accepts credential checks; without them a plugin reports an ambiguous rejection as a revocation, as older CPs expect. */
   credentialCheckSupported(): boolean
+  /** Report a tenant key a single-tenant row's own traffic named (google-chat-integration.md §10.3): queued until the CP acknowledges it, dropped for a CP that does not record tenants. */
+  reportTenant(botId: string, tenantId: string): void
   /** Arbitration reads — never the router object itself. */
   directory: {
     agents(botId: string): { agentId: string; name: string }[]

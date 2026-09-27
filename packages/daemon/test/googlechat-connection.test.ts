@@ -13,6 +13,7 @@ import {
   spaceOf,
   type ConsolidatedGoogleChatGroup
 } from '../src/platforms/googlechat/connection.js'
+import { GoogleChatWriteBudget } from '../src/platforms/googlechat/write-budget.js'
 
 const PROJECT_NUMBER = '100000000000'
 const SPACE = 'spaces/EXAMPLE_SPACE'
@@ -106,7 +107,15 @@ function fakeClock(start = START) {
 type Handler = (call: Call) => Response | Promise<Response>
 
 /** Answers the token endpoint by default and routes Chat API calls to `handler`, recording everything. */
-function harness(handler: Handler, opts: { sendIntervalMs?: number; log?: string[] } = {}) {
+function harness(
+  handler: Handler,
+  opts: {
+    sendIntervalMs?: number
+    log?: string[]
+    config?: Partial<ConsolidatedGoogleChatGroup['config']>
+    budget?: GoogleChatWriteBudget
+  } = {}
+) {
   const clock = fakeClock()
   const calls: Call[] = []
   let tokens = 0
@@ -135,8 +144,9 @@ function harness(handler: Handler, opts: { sendIntervalMs?: number; log?: string
     error: (m: string) => log.push(m)
   }
   const conn = new GoogleChatConnection({
-    group: group(),
+    group: group(opts.config),
     log: logger,
+    ...(opts.budget ? { budget: opts.budget } : {}),
     fetchImpl,
     now: clock.now,
     sleep: clock.sleep,
@@ -165,6 +175,18 @@ describe('consolidation and identity', () => {
     expect([...groups.values()].map((g) => g.integrationId).sort()).toEqual(['int-a', 'int-b'])
     // The pool key never embeds the key material itself.
     for (const key of groups.keys()) expect(key).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('keys a row’s tenant into the connection, so two customer rows of one app never share a client', () => {
+    const shared = { projectId: 'example-project', projectNumber: PROJECT_NUMBER, serviceAccountKey: KEY_JSON }
+    const a = agent('a', { ...shared, tenantIds: ['customers/C1'] })
+    const b = agent('b', { ...shared, tenantIds: ['customers/C2'] })
+    const c = agent('c', { ...shared, tenantIds: ['customers/C1'] })
+    const own = agent('d', { ...shared, ownTenantIds: ['customers/C1'] })
+    const groups = consolidateGoogleChat([a, b, c, own])
+    expect(groups.size).toBe(3)
+    expect([...groups.values()].map((g) => g.integrations.length).sort()).toEqual([1, 1, 2])
+    expect(googleChatConnKey({ ...shared, tenantIds: [] })).not.toBe(googleChatConnKey(shared))
   })
 
   it('names the Space a message resource lives in', () => {
@@ -496,5 +518,142 @@ describe('start() and the app identity', () => {
         : reply(200, { name: DM, spaceType: 'DIRECT_MESSAGE' })
     )
     expect(await crowded.conn.getChannelInfo(DM)).toEqual({ id: DM, isIm: true, isPrivate: true })
+  })
+})
+
+describe('the tenant fence and the write budget (§10.8)', () => {
+  const OTHER_SPACE = 'spaces/EXAMPLE_OTHER'
+  const FOREIGN_DM = 'spaces/EXAMPLE_FOREIGN_DM'
+  const C1 = 'customers/C0000000001'
+  const C2 = 'customers/C0000000002'
+  const spaces = [
+    { name: SPACE, spaceType: 'SPACE', displayName: 'Example Space', customer: C1 },
+    { name: OTHER_SPACE, spaceType: 'SPACE', displayName: 'Other Space', customer: C2 },
+    { name: DM, spaceType: 'DIRECT_MESSAGE' }
+  ]
+  const human = (domainId: string) => ({
+    memberships: [{ member: { name: 'users/100000000000000000001', type: 'HUMAN', domainId } }]
+  })
+  // Google as the fence reads it: each Space's customer, each DM's one human member, every write echoed.
+  const answer = (call: Call): Response => {
+    const path = call.url.pathname.slice('/v1/'.length)
+    if (call.method === 'POST') return created(`${path}/client-x`)
+    if (call.method === 'PATCH') return reply(200, { name: path, text: 'edited' })
+    if (path === 'spaces') return reply(200, { spaces })
+    if (path === SPACE) return reply(200, spaces[0])
+    if (path === OTHER_SPACE) return reply(200, spaces[1])
+    if (path === DM || path === FOREIGN_DM) return reply(200, { name: path, spaceType: 'DIRECT_MESSAGE' })
+    if (path === `${DM}/members`) return reply(200, human('0000000001'))
+    if (path === `${FOREIGN_DM}/members`) return reply(200, human('0000000009'))
+    return reply(404, { error: { message: `no ${path}` } })
+  }
+  const chat = (calls: Call[]) => calls.filter((c) => c.url.toString() !== GOOGLE_TOKEN_ENDPOINT)
+  const gets = (calls: Call[]) =>
+    chat(calls)
+      .filter((c) => c.method === 'GET')
+      .map((c) => c.url.pathname)
+  const writes = (calls: Call[]) =>
+    chat(calls)
+      .filter((c) => c.method !== 'GET')
+      .map((c) => `${c.method} ${c.url.pathname}`)
+  const refused = async (attempt: Promise<unknown>) => {
+    const err = await attempt.then(
+      () => undefined,
+      (e: unknown) => e
+    )
+    expect(err).toBeInstanceOf(GoogleChatApiError)
+    expect((err as GoogleChatApiError).kind).toBe('tenant_refused')
+    expect((err as GoogleChatApiError).retryable).toBe(false)
+  }
+
+  it('a customer row lists only its customer’s Spaces, and nothing at all without a customer key', async () => {
+    const strict = harness(answer, { config: { tenantIds: [C1, 'domains/0000000001'] } })
+    expect(await strict.conn.listChannels()).toEqual([{ id: SPACE, name: 'Example Space', isPrivate: false }])
+    const domainOnly = harness(answer, { config: { tenantIds: ['domains/0000000001'] } })
+    expect(await domainOnly.conn.listChannels()).toEqual([])
+    const anchor = harness(answer, { config: { tenantIds: [] } })
+    expect(await anchor.conn.listChannels()).toEqual([])
+    expect(domainOnly.chatCalls()).toEqual([])
+    expect(anchor.chatCalls()).toEqual([])
+  })
+
+  it('an organization’s own app lists everything until its customer is known, then its customer’s Spaces alone', async () => {
+    const unknown = harness(answer, { config: { ownTenantIds: ['domains/0000000001'] } })
+    expect((await unknown.conn.listChannels()).map((s) => s.id)).toEqual([SPACE, OTHER_SPACE])
+    const known = harness(answer, { config: { ownTenantIds: [C1, 'domains/0000000001'] } })
+    expect((await known.conn.listChannels()).map((s) => s.id)).toEqual([SPACE])
+    const none = harness(answer)
+    expect((await none.conn.listChannels()).map((s) => s.id)).toEqual([SPACE, OTHER_SPACE])
+  })
+
+  it('refuses every write into another customer’s Space before anything is sent, as a recorded refusal', async () => {
+    const { conn, calls } = harness(answer, { config: { tenantIds: [C1, 'domains/0000000001'] } })
+    await refused(conn.createMessage({ space: OTHER_SPACE, clientId: 'client-a', text: 'hi' }))
+    await refused(conn.patchMessage(`${OTHER_SPACE}/messages/client-a`, 'edit'))
+    await refused(conn.postChrome(OTHER_SPACE, undefined, 'notice'))
+    expect(writes(calls)).toEqual([])
+    // The Space's tenant was read once for the three attempts.
+    expect(gets(calls)).toEqual([`/v1/${OTHER_SPACE}`])
+  })
+
+  it('writes into its own customer’s Space and its own people’s DM, reading each Space’s tenant once', async () => {
+    const { conn, calls } = harness(answer, { config: { tenantIds: [C1, 'domains/0000000001'] } })
+    await conn.createMessage({ space: SPACE, thread: THREAD, clientId: 'client-a', text: 'hi' })
+    await conn.patchMessage(`${SPACE}/messages/client-a`, 'edit')
+    await conn.createMessage({ space: DM, clientId: 'client-b', text: 'hello' })
+    await conn.createMessage({ space: DM, clientId: 'client-c', text: 'again' })
+    expect(writes(calls)).toEqual([
+      `POST /v1/${SPACE}/messages`,
+      `PATCH /v1/${SPACE}/messages/client-a`,
+      `POST /v1/${DM}/messages`,
+      `POST /v1/${DM}/messages`
+    ])
+    expect(gets(calls)).toEqual([`/v1/${SPACE}`, `/v1/${DM}`, `/v1/${DM}/members`])
+  })
+
+  it('refuses a DM outside a customer row’s domains, while an own app’s DMs pass without a membership read', async () => {
+    const strict = harness(answer, { config: { tenantIds: [C1, 'domains/0000000001'] } })
+    await refused(strict.conn.createMessage({ space: FOREIGN_DM, clientId: 'client-a', text: 'hi' }))
+    expect(writes(strict.calls)).toEqual([])
+    const own = harness(answer, { config: { ownTenantIds: [C1] } })
+    await own.conn.createMessage({ space: FOREIGN_DM, clientId: 'client-a', text: 'hi' })
+    await refused(own.conn.createMessage({ space: OTHER_SPACE, clientId: 'client-b', text: 'hi' }))
+    expect(writes(own.calls)).toEqual([`POST /v1/${FOREIGN_DM}/messages`])
+    expect(gets(own.calls)).toEqual([`/v1/${FOREIGN_DM}`, `/v1/${OTHER_SPACE}`])
+  })
+
+  it('a row without tenant keys keeps writing anywhere, with no tenant read at all', async () => {
+    const { conn, calls } = harness(answer)
+    await conn.createMessage({ space: OTHER_SPACE, clientId: 'client-a', text: 'hi' })
+    await conn.createMessage({ space: FOREIGN_DM, clientId: 'client-b', text: 'hi' })
+    expect(gets(calls)).toEqual([])
+    expect(writes(calls)).toHaveLength(2)
+  })
+
+  it('takes one token of the app budget per create and patch under the Space queue, delaying and never dropping', async () => {
+    const takes: number[] = []
+    const budget = new GoogleChatWriteBudget({ capacity: 2, refillPerMinute: 60 })
+    const original = budget.take.bind(budget)
+    budget.take = () => {
+      takes.push(takes.length + 1)
+      return original()
+    }
+    // Two writes fit the burst; the third and fourth each wait one refill on the connection's fake clock.
+    const clock = fakeClock()
+    const budgeted = new GoogleChatWriteBudget({ capacity: 2, refillPerMinute: 60 }, clock.now, clock.sleep)
+    const { conn, calls } = harness(answer, { budget: budgeted })
+    await Promise.all([
+      conn.createMessage({ space: SPACE, thread: THREAD, clientId: 'client-a', text: 'one' }),
+      conn.createMessage({ space: OTHER_SPACE, clientId: 'client-b', text: 'two' }),
+      conn.patchMessage(`${SPACE}/messages/client-a`, 'three'),
+      conn.createMessage({ space: DM, clientId: 'client-c', text: 'four' })
+    ])
+    expect(writes(calls)).toHaveLength(4)
+    expect(clock.slept).toEqual([1000, 1000])
+    // Reads never spend the budget.
+    const reader = harness(answer, { budget })
+    await reader.conn.getMessage(`${SPACE}/messages/client-a`)
+    await reader.conn.listChannels()
+    expect(takes).toEqual([])
   })
 })

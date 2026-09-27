@@ -8,8 +8,8 @@ export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 /** The Chat REST root; the probe and the claim's reads below are the only Chat calls this module makes. */
 export const GOOGLE_CHAT_API_ROOT = 'https://chat.googleapis.com/v1'
 
-/** The one bounded read that proves the credential; nothing is ever posted. */
-export const GOOGLE_CHAT_PROBE_URL = `${GOOGLE_CHAT_API_ROOT}/spaces?pageSize=1`
+/** The one bounded read that proves the credential, and shows which Workspace customers own the named Spaces the app is in (§10.3); nothing is ever posted. */
+export const GOOGLE_CHAT_PROBE_URL = `${GOOGLE_CHAT_API_ROOT}/spaces?pageSize=100&filter=${encodeURIComponent('spaceType = "SPACE"')}`
 
 /** App authentication only: no user impersonation and no domain-wide delegation (§3). */
 export const GOOGLE_CHAT_BOT_SCOPE = 'https://www.googleapis.com/auth/chat.bot'
@@ -45,6 +45,8 @@ export type GoogleChatProbeStatus = 'ok' | 'key_rejected' | 'chat_api_refused' |
 export interface GoogleChatProbeResult {
   status: GoogleChatProbeStatus
   message: string
+  /** The one customer owning every named Space the probe listed, when the list was whole and named exactly one (§10.3). */
+  customerId?: string
 }
 
 export type GoogleProjectResolution =
@@ -70,7 +72,7 @@ export type GoogleChatAppFailure =
   | 'google_unavailable'
 
 export type GoogleChatAppCheck =
-  | { status: 'ok'; key: GoogleServiceAccountKey; projectNumber: string; message: string }
+  | { status: 'ok'; key: GoogleServiceAccountKey; projectNumber: string; message: string; customerId?: string }
   | { status: GoogleChatAppFailure; message: string }
 
 /** Connectivity failures are retryable; every other failure is the credential's or the project's. */
@@ -187,9 +189,11 @@ export async function probeGoogleChatCredential(
     return unreachable('the Google Chat API')
   }
   if (chatResponse.ok) {
+    const customerId = soleCustomerOf(await readJson(chatResponse))
     return {
       status: 'ok',
-      message: `${key.clientEmail} authenticated to the Google Chat API as the project's Chat app`
+      message: `${key.clientEmail} authenticated to the Google Chat API as the project's Chat app`,
+      ...(customerId ? { customerId } : {})
     }
   }
   if (chatResponse.status >= 500 || chatResponse.status === 429) {
@@ -299,7 +303,29 @@ export async function checkGoogleChatApp(
   }
   const probe = await probeGoogleChatCredential(checked.key, fetchImpl, now)
   if (probe.status !== 'ok') return { status: probe.status, message: probe.message }
-  return { status: 'ok', key: checked.key, projectNumber: resolved.projectNumber, message: probe.message }
+  return {
+    status: 'ok',
+    key: checked.key,
+    projectNumber: resolved.projectNumber,
+    message: probe.message,
+    ...(probe.customerId ? { customerId: probe.customerId } : {})
+  }
+}
+
+/** The bare id of the one `customers/…` every listed named Space carries; undefined for none, several, or a list with more pages. */
+function soleCustomerOf(body: Record<string, unknown> | undefined): string | undefined {
+  if (!body || body.nextPageToken) return undefined
+  const spaces: unknown[] = Array.isArray(body.spaces) ? body.spaces : []
+  const customers = new Set<string>()
+  for (const space of spaces) {
+    const entry = typeof space === 'object' && space !== null ? (space as Record<string, unknown>) : undefined
+    if (entry?.spaceType !== 'SPACE') continue
+    const customer =
+      typeof entry.customer === 'string' ? /^customers\/([A-Za-z0-9_-]{1,128})$/.exec(entry.customer)?.[1] : undefined
+    if (!customer) return undefined
+    customers.add(customer)
+  }
+  return customers.size === 1 ? [...customers][0] : undefined
 }
 
 export type GoogleChatAppRead =

@@ -1130,6 +1130,21 @@ export const RcBotCredentialCheckOk = z.object({
 })
 export type RcBotCredentialCheckOk = z.infer<typeof RcBotCredentialCheckOk>
 
+// R→C REQ → rc/bot-tenant/ok — the tenant key a single-tenant row's own traffic named (google-chat-integration.md §10.3); at-least-once, so the CP deduplicates; sent only to a CP advertising `bot-tenant-v1`.
+export const RcBotTenant = z.object({
+  botId: z.string().uuid(),
+  // The platform's tenant key as the event named it (`customers/…`, `domains/…`); the platform module decides what it records.
+  tenantId: z.string().min(1).max(256)
+})
+export type RcBotTenant = z.infer<typeof RcBotTenant>
+
+// C→R REP (corr = rc/bot-tenant id) — committed; `applied: false` means the row already knew the key, refused it, or is not one that learns, and nothing was written.
+export const RcBotTenantOk = z.object({
+  botId: z.string().uuid(),
+  applied: z.boolean()
+})
+export type RcBotTenantOk = z.infer<typeof RcBotTenantOk>
+
 // R→C EVT (fire-and-forget) — INCREMENTAL conversation report (resource-visibility
 // §14.3): the relay saw an inbound direct conversation to a shared bot. The CP fans
 // a per-install row across every member, using each agent's visibility-appropriate
@@ -1299,6 +1314,8 @@ export const RELAY_CP_SCHEMAS = {
   'rc/bot-revoked/ok': RcBotRevokedOk,
   'rc/bot-credential-check': RcBotCredentialCheck,
   'rc/bot-credential-check/ok': RcBotCredentialCheckOk,
+  'rc/bot-tenant': RcBotTenant,
+  'rc/bot-tenant/ok': RcBotTenantOk,
   'rc/notice-posted': RcNoticePosted,
   'rc/thread-assign': RcThreadAssign,
   'rc/thread-participant': RcThreadParticipant,
@@ -1353,6 +1370,8 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/bot-revoked/ok', RELAY_CP_SCHEMAS['rc/bot-revoked/ok']),
   frameSchema('rc/bot-credential-check', RELAY_CP_SCHEMAS['rc/bot-credential-check']),
   frameSchema('rc/bot-credential-check/ok', RELAY_CP_SCHEMAS['rc/bot-credential-check/ok']),
+  frameSchema('rc/bot-tenant', RELAY_CP_SCHEMAS['rc/bot-tenant']),
+  frameSchema('rc/bot-tenant/ok', RELAY_CP_SCHEMAS['rc/bot-tenant/ok']),
   frameSchema('rc/notice-posted', RELAY_CP_SCHEMAS['rc/notice-posted']),
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
   frameSchema('rc/thread-participant', RELAY_CP_SCHEMAS['rc/thread-participant']),

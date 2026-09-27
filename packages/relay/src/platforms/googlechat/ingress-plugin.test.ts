@@ -24,6 +24,8 @@ import {
 } from '../../../test/fixtures/google-chat-events.js'
 
 const BOT_ID = '11111111-1111-4111-8111-111111111111'
+const OTHER_CUSTOMER = 'customers/C0000000002'
+const CLAIM_URL = 'https://console.example.test/googlechat/claim'
 
 const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   forward: vi.fn(async () => 'accepted' as const),
@@ -32,6 +34,7 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   reportChannels: vi.fn(),
   reportRevoked: vi.fn(),
   reportCredentialCheck: vi.fn(),
+  reportTenant: vi.fn(),
   credentialCheckSupported: () => true,
   directory: {
     agents: () => [],
@@ -523,5 +526,87 @@ describe('googlechat ingress plugin — a multi-tenant app’s anchor and custom
     expect(h.log.warn).toHaveBeenCalledTimes(1)
     expect(plugin.buildIngest(assignment({ claimUrl: CLAIM_URL }), h)?.claimUrl).toBe(CLAIM_URL)
     expect(plugin.buildIngest(assignment({ tenantIds: [CUSTOMER] }), h)?.tenantIds).toEqual([CUSTOMER])
+  })
+})
+
+describe('googlechat ingress plugin — the own-tenant fence of a single-tenant row (§10.3)', () => {
+  const bearer = async () => `Bearer ${await token()}`
+  const otherCustomerMention = { ...spaceMention, space: { ...spaceMention.space, customer: OTHER_CUSTOMER } }
+  const otherDomainMessage = { ...dmMessage, user: { ...dmMessage.user, domainId: '0000000009' } }
+  const refusals = (h: RelayIngressHost) =>
+    vi.mocked(h.log.warn).mock.calls.filter(([line]) => String(line).includes('another Workspace customer')).length
+
+  it('learns its customer from the first Space, reports it once, and refuses another customer’s Spaces', async () => {
+    const { plugin, h, ingest } = setup()
+    const auth = await bearer()
+    const first = await deliver(plugin, ingest, h, spaceMention, auth)
+    expect(first.handled).toEqual({ admission: { disposition: 'admitted' } })
+    expect(h.reportTenant).toHaveBeenCalledWith(BOT_ID, CUSTOMER)
+    await deliver(plugin, ingest, h, spaceMention, auth)
+    expect(h.reportTenant).toHaveBeenCalledTimes(1)
+    expect(h.forwardStrict).toHaveBeenCalledTimes(2)
+    const marks = vi.mocked(h.dedupMark).mock.calls.length
+    // Another customer's Space: nothing forwarded, reported, or marked, a 200 Google never retries, one log line a minute.
+    expect((await deliver(plugin, ingest, h, otherCustomerMention, auth)).handled).toEqual({})
+    expect((await deliver(plugin, ingest, h, otherCustomerMention, auth)).handled).toEqual({})
+    expect(h.forwardStrict).toHaveBeenCalledTimes(2)
+    expect(h.reportTenant).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(h.dedupMark).mock.calls.length).toBe(marks)
+    expect(refusals(h)).toBe(1)
+  })
+
+  it('passes every DM and records each domain once, whether or not the customer is known yet', async () => {
+    const { plugin, h, ingest } = setup()
+    const auth = await bearer()
+    for (const event of [dmMessage, dmMessage, spaceMention, otherDomainMessage, otherDomainMessage]) {
+      expect((await deliver(plugin, ingest, h, event, auth)).handled).toEqual({
+        admission: { disposition: 'admitted' }
+      })
+    }
+    expect(h.forwardStrict).toHaveBeenCalledTimes(5)
+    expect(vi.mocked(h.reportTenant).mock.calls).toEqual([
+      [BOT_ID, DOMAIN],
+      [BOT_ID, CUSTOMER],
+      [BOT_ID, 'domains/0000000009']
+    ])
+  })
+
+  it('is seeded from the assignment’s recorded keys, so the fence survives a rebuild and reports nothing it knows', async () => {
+    const { plugin, h, ingest } = setup({ ownTenantIds: [OTHER_CUSTOMER, DOMAIN] })
+    const auth = await bearer()
+    expect((await deliver(plugin, ingest, h, spaceMention, auth)).handled).toEqual({})
+    expect(h.forwardStrict).not.toHaveBeenCalled()
+    expect((await deliver(plugin, ingest, h, dmMessage, auth)).handled).toEqual({
+      admission: { disposition: 'admitted' }
+    })
+    expect(h.reportTenant).not.toHaveBeenCalled()
+  })
+
+  it('refuses a foreign customer’s add event before any membership is reported', async () => {
+    const { plugin, h, ingest } = setup({ ownTenantIds: [CUSTOMER] })
+    const foreignAdd = { ...spaceAddedByMention, space: { ...spaceAddedByMention.space, customer: OTHER_CUSTOMER } }
+    expect((await deliver(plugin, ingest, h, foreignAdd, await bearer())).handled).toEqual({})
+    expect(h.reportChannels).not.toHaveBeenCalled()
+    expect(h.forwardStrict).not.toHaveBeenCalled()
+    expect(refusals(h)).toBe(1)
+  })
+
+  it('never reports for a customer row or the anchor: core fences the one and the claim serves the other', async () => {
+    const customer = setup({ tenantIds: [CUSTOMER, DOMAIN] })
+    await deliver(customer.plugin, customer.ingest, customer.h, spaceMention, await bearer())
+    expect(customer.h.forwardStrict).toHaveBeenCalledTimes(1)
+    expect(customer.h.reportTenant).not.toHaveBeenCalled()
+    const anchor = setup({ claimUrl: CLAIM_URL })
+    await deliver(anchor.plugin, anchor.ingest, anchor.h, spaceMention, await bearer())
+    expect(anchor.h.reportTenant).not.toHaveBeenCalled()
+  })
+
+  it('refuses an assignment that records own keys on a customer row or the anchor', () => {
+    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    const h = host()
+    expect(plugin.buildIngest(assignment({ ownTenantIds: [CUSTOMER], tenantIds: [CUSTOMER] }), h)).toBeUndefined()
+    expect(plugin.buildIngest(assignment({ ownTenantIds: [CUSTOMER], claimUrl: CLAIM_URL }), h)).toBeUndefined()
+    expect(plugin.buildIngest(assignment({ ownTenantIds: [CUSTOMER] }), h)?.singleTenant).toBe(true)
+    expect(plugin.buildIngest(assignment({ tenantIds: [CUSTOMER] }), h)?.singleTenant).toBe(false)
   })
 })

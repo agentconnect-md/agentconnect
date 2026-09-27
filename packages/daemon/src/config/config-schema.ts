@@ -278,6 +278,14 @@ export const ConfigSchema = z.object({
         .default('7d')
     })
     .default({ retention: '7d' }),
+  // The Google Chat write budget (google-chat-integration.md §10.8): 3,000 writes a minute per project over the pool; both knobs override.
+  googleChat: z
+    .object({
+      poolSize: z.number().int().min(1).default(4),
+      writesPerMinute: z.number().int().min(1).optional(),
+      writeBurst: z.number().int().min(1).optional()
+    })
+    .default({ poolSize: 4 }),
   limits: z
     .object({
       maxAgents: z.number().int().default(32),

@@ -53,6 +53,7 @@ import { consolidateDiscord, discordConnKey, DiscordConnection, type DiscordDeps
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from '../feishu/connection.js'
 import { consolidateLinear, linearConnKey, LinearConnection } from './linear/connection.js'
 import { consolidateGoogleChat, GoogleChatConnection } from './googlechat/connection.js'
+import type { GoogleChatWriteBudgets } from './googlechat/write-budget.js'
 import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
@@ -110,6 +111,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   boltDebug(): boolean
   /** The test seam that swaps Bolt's App for a fake; undefined in production. */
   slackAppFactory(): SlackAppFactory | undefined
+  /** The daemon's per-app Google Chat write budgets (§10.8), shared by every connection of one app. */
+  googleChatWriteBudgets(): GoogleChatWriteBudgets
   agents(): Map<string, LoadedAgent>
   /** The roster consolidation counts credentials over — evaluation-owned agents excluded. */
   transportAgents(agents?: LoadedAgent[]): LoadedAgent[]
@@ -945,7 +948,11 @@ export class ConnectionReconciler {
         continue
       }
       if (!this.googleChatPool.beginConnect(group.key)) continue
-      const conn = new GoogleChatConnection({ group, log: this.log })
+      const conn = new GoogleChatConnection({
+        group,
+        log: this.log,
+        budget: this.host.googleChatWriteBudgets().for(group.config.projectNumber)
+      })
       try {
         this.googleChatPool.add(conn)
         for (const { integrationId } of group.integrations)

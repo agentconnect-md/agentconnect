@@ -40,6 +40,7 @@ import { createSlackCpProvider } from '../platforms/slack/provider.js'
 import { createTelegramCpProvider } from '../platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../platforms/discord/provider.js'
 import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
+import { createGoogleChatCpProvider } from '../platforms/googlechat/provider.js'
 
 // §9: both `rc/bot-assign` bags and every send-only spec payload come from the
 // platform provider. Offline stubs — the projectors reach no provider API.
@@ -2240,5 +2241,84 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.routes.some((r) => r.scope !== undefined)).toBe(false)
       expect(assign.mutedChannels).toContain('T1')
     })
+  })
+})
+
+describe('HttpBotOrchestrator — a reported tenant key (google-chat-integration.md §10.3)', () => {
+  const GC_BOT = BotId('99999999-9999-4999-8999-999999999999')
+  const GC_ORG = OrgId('11111111-1111-4111-8111-111111111111')
+
+  /** A Google Chat single-tenant row over a merge that applies the change to the row, as the repository does under its lock. */
+  function rig(row: Partial<BotRecord> = {}, provider = createGoogleChatCpProvider()) {
+    let platformConfig: Record<string, unknown> = row.platformConfig ?? { projectId: 'example-project' }
+    const bot = {
+      id: GC_BOT,
+      orgId: GC_ORG,
+      platform: 'googlechat',
+      transport: 'http',
+      externalAppId: '123456789012',
+      externalTenantId: '-',
+      credentialRevision: 1,
+      agentIds: [],
+      ...row
+    } as BotRecord
+    const bots = {
+      getUnscoped: async (id: BotId) => (id === GC_BOT ? { ...bot, platformConfig } : null),
+      mergeBotIdentity: async (
+        _org: OrgId,
+        _id: BotId,
+        merge: (current: { platformConfig: Record<string, unknown>; externalTenantId: string | null }) => {
+          platformConfig?: Record<string, string>
+        }
+      ) => {
+        const change = merge({ platformConfig, externalTenantId: bot.externalTenantId })
+        const entries = change.platformConfig ?? {}
+        if (Object.keys(entries).length === 0) return false
+        platformConfig = { ...platformConfig, ...entries }
+        return true
+      }
+    }
+    const warns: string[] = []
+    const orch = new HttpBotOrchestrator(
+      bots as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      { info() {}, warn: (_b: unknown, m: string) => void warns.push(m), debug() {} },
+      buildCpPlatformRegistry([provider]),
+      undefined as never
+    )
+    const synced: string[] = []
+    orch.syncBot = async (id: string) => void synced.push(id)
+    return { orch, synced, warns, config: () => platformConfig }
+  }
+
+  it('records the key on the row and re-syncs it once; a repeat is deduplicated without a sync', async () => {
+    const { orch, synced, config } = rig()
+    expect(await orch.recordTenant(GC_BOT, 'customers/C0000000001')).toEqual({ applied: true })
+    expect(config()).toEqual({ projectId: 'example-project', customerId: 'C0000000001' })
+    expect(await orch.recordTenant(GC_BOT, 'customers/C0000000001')).toEqual({ applied: false })
+    expect(await orch.recordTenant(GC_BOT, 'domains/0000000001')).toEqual({ applied: true })
+    expect(config()).toEqual({ projectId: 'example-project', customerId: 'C0000000001', domainIds: '0000000001' })
+    expect(synced).toEqual([GC_BOT, GC_BOT])
+  })
+
+  it('refuses a second customer with a warning, an unknown bot, and a platform that learns nothing', async () => {
+    const { orch, synced, warns } = rig({ platformConfig: { projectId: 'example-project', customerId: 'C0000000001' } })
+    expect(await orch.recordTenant(GC_BOT, 'customers/C0000000002')).toEqual({ applied: false })
+    expect(warns).toEqual(['http-bot: tenant report refused'])
+    expect(await orch.recordTenant(BotId('00000000-0000-4000-8000-000000000000'), 'customers/C0000000002')).toEqual({
+      applied: false
+    })
+    const learnsNothing = { ...createGoogleChatCpProvider(), platformId: 'other', learnTenant: undefined }
+    const other = rig({ platform: 'other' }, learnsNothing as never)
+    expect(await other.orch.recordTenant(GC_BOT, 'customers/C0000000002')).toEqual({ applied: false })
+    expect(synced).toEqual([])
   })
 })
