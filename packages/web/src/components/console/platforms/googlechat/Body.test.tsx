@@ -197,7 +197,7 @@ describe('GoogleChatWizardBody', () => {
       'SavedGoogle accepted the key.',
       'ConnectedThe callback endpoint is live and the agent is online.'
     ])
-    expect(text()).toContain('send it a direct message or mention it in a space')
+    expect(text()).toContain('Send it a direct message or mention it in a space')
     expect(text()).toContain('no one can open them in this console')
     expect(identity?.hidden).toBe(true)
     expect(footer?.hidden).toBe(true)
@@ -205,7 +205,7 @@ describe('GoogleChatWizardBody', () => {
     expect(state.close).toHaveBeenCalled()
   })
 
-  it('marks the app tested only once a conversation reached it', async () => {
+  it('marks the app added once a conversation row exists, and still tells the user to message it', async () => {
     mocks.create.mockResolvedValue(CREATED)
     mocks.integrations = [
       {
@@ -219,6 +219,8 @@ describe('GoogleChatWizardBody', () => {
     await type(field('Service account key'), KEY)
     await act(async () => footer?.onSubmit())
     expect(host.querySelectorAll('li[data-done="true"]')).toHaveLength(3)
+    expect(text()).toContain('The app is in a space or a direct conversation.')
+    expect(text()).toContain('Send it a direct message or mention it in a space')
   })
 
   it('sends the entered number and maps a refusal to its fix, clearing the key either way', async () => {

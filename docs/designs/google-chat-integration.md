@@ -215,9 +215,12 @@ the key in a masked field that is cleared after every submission. Each
 project-read refusals name the Browser role and the Cloud Resource Manager API.
 An installation then reaches a test step that keeps three states apart: saved
 (Google accepted the key), connected (the relay, the agent's daemon, and the
-credential are ready), and tested (a conversation row reached the agent), which
-stays an instruction to send a DM or a Space mention until one exists. The step
-states both §6 consequences. Settings → Bots shows the app's project ID and
+credential are ready), and added (a conversation row exists). That row comes
+from the daemon's Space list or from traffic, so it proves membership and not a
+delivered message; the step therefore ends with the instruction to send a DM or
+a Space mention rather than a tested state, since a DM session is private to
+its sender and the console cannot observe that test. The step states both §6
+consequences. Settings → Bots shows the app's project ID and
 number (the bot DTO's public `platformConfig` and `externalAppId`), the endpoint
 and audience to check, the key's state, and the scope limits, and replaces a
 per-agent app's key through `PUT /bots/:id/googlechat/key` under the create

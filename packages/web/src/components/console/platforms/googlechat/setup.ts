@@ -75,11 +75,11 @@ export function deploymentAppOffered(
   return !bots.some((bot) => bot.platform === 'googlechat' && bot.prebuilt && !bot.agentIds.includes(agentId))
 }
 
-/** What the console can honestly say about a new installation (§3): saved is not connected, and connected is not tested. */
+/** What the console can honestly say about a new installation (§3): saved is not connected, and connected does not mean the app is anywhere yet. */
 export interface GoogleChatSetupState {
   saved: boolean
   connected: boolean
-  tested: boolean
+  added: boolean
 }
 
 export function googleChatSetupState(input: {
@@ -92,6 +92,6 @@ export function googleChatSetupState(input: {
 }): GoogleChatSetupState {
   const connected =
     input.saved && input.active && !input.credentialAttention && input.relayAvailable && input.agentReady
-  // A conversation row is the one piece of evidence a message made the whole trip; nothing else counts as tested.
-  return { saved: input.saved, connected, tested: connected && input.conversations > 0 }
+  // A conversation row says the app is in a space or a DM (the daemon lists Spaces and observes traffic); it is not a delivered message.
+  return { saved: input.saved, connected, added: connected && input.conversations > 0 }
 }

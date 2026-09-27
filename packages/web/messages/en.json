@@ -5421,9 +5421,10 @@
         "connected": "Connected",
         "connectedDone": "The callback endpoint is live and the agent is online.",
         "waitingDaemon": "Waiting for the agent to come online.",
-        "tested": "Tested",
-        "testedDone": "A conversation reached the agent.",
-        "testedPending": "Add the app in Google Chat, then send it a direct message or mention it in a space.",
+        "added": "Added",
+        "addedDone": "The app is in a space or a direct conversation.",
+        "addedPending": "Add the app to a space in Google Chat, or open a direct message with it.",
+        "sendMessage": "Send it a direct message or mention it in a space; it replies there.",
         "dmPrivate": "Direct messages stay private to the person who sent them; no one can open them in this console.",
         "spacesOrg": "Conversations in a space are visible to this organization, whoever is in the space.",
         "done": "Done"

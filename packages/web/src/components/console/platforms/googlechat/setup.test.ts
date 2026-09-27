@@ -90,16 +90,16 @@ describe('setup state', () => {
     conversations: 0
   }
 
-  it('never calls a saved app connected, or a connected app tested, without its own evidence', () => {
-    expect(googleChatSetupState(base)).toEqual({ saved: true, connected: true, tested: false })
+  it('never calls a saved app connected, or a connected app added, without its own evidence', () => {
+    expect(googleChatSetupState(base)).toEqual({ saved: true, connected: true, added: false })
     expect(googleChatSetupState({ ...base, agentReady: false, conversations: 2 })).toEqual({
       saved: true,
       connected: false,
-      tested: false
+      added: false
     })
     expect(googleChatSetupState({ ...base, credentialAttention: true })).toMatchObject({ connected: false })
     expect(googleChatSetupState({ ...base, relayAvailable: false })).toMatchObject({ connected: false })
-    expect(googleChatSetupState({ ...base, conversations: 1 })).toEqual({ saved: true, connected: true, tested: true })
+    expect(googleChatSetupState({ ...base, conversations: 1 })).toEqual({ saved: true, connected: true, added: true })
   })
 })
 

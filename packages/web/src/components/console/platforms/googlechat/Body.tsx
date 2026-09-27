@@ -196,11 +196,15 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
             }
           />
           <StateRow
-            done={state.tested}
-            label={t('test.tested')}
-            detail={state.tested ? t('test.testedDone') : t('test.testedPending')}
+            done={state.added}
+            label={t('test.added')}
+            detail={state.added ? t('test.addedDone') : t('test.addedPending')}
           />
         </ul>
+        {/* The console cannot see the test itself: a DM session is private to its sender (§6). */}
+        <p className="mt-[12px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+          {t('test.sendMessage')}
+        </p>
         <div className="mt-[14px] flex flex-col gap-[6px] border-t border-dashed border-(--border-default) pt-[12px]">
           <Fact icon="lock">{t('test.dmPrivate')}</Fact>
           <Fact icon="users">{t('test.spacesOrg')}</Fact>
