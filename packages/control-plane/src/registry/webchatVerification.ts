@@ -104,7 +104,9 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       agentId: claims.agentId,
       daemonId: agentDaemonId,
       orgId: claims.orgId,
-      conversationId: claims.conversationId
+      conversationId: claims.conversationId,
+      // The minting key's agent-level permission, so the relay confines the token to the agent chat API (§10.4).
+      ...(claims.permission ? { permission: claims.permission } : {})
     }
 
     if (targetSessionId !== null) {

@@ -180,7 +180,9 @@ export const RcVerifyResult = z.object({
   // is deliberately the only cross-system coordinate on the wire — every local
   // coordinate comes from the daemon's own session row.
   targetSessionId: z.string().min(1).optional(),
-  remoteMcp: WebchatRemoteMcpEntitlement.optional()
+  remoteMcp: WebchatRemoteMcpEntitlement.optional(),
+  // The minting API key's agent-level permission (daemon-api-key-auth.md §6), `agent:chat` in v1: the relay's agent chat API accepts such a token and the browser socket refuses it. Absent for a console or full-key mint. A plain string, and this object is not strict, so a relay and a CP on either side of this field still agree.
+  permission: z.string().min(1).optional()
 })
 export type RcVerifyResult = z.infer<typeof RcVerifyResult>
 

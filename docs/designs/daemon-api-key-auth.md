@@ -224,7 +224,7 @@ OAuth grant revokes its access-token rows.
 
 ### Key permissions and agent selection
 
-**Status:** Proposed. The agent chat API in
+**Status:** Implemented. The agent chat API in
 [shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api) is the
 first consumer.
 
@@ -250,12 +250,16 @@ later work) differs from a personal key only in whose identity it carries.
   `full` is admitted everywhere. `read` is admitted by every route whose method
   is `GET`, `HEAD`, or `OPTIONS` and refused by every other; that is the
   read-only check the org-scope guard applies to OAuth tokens today, moved to
-  where the key is resolved so it also covers `/me/*` and MCP. An agent-level
-  permission is admitted only by a route that declares it through its Fastify
-  route config, so every undeclared route, including `/me/*`, the MCP endpoint,
-  and any route added later, refuses it. When the declaring route carries an
-  `:agentId` parameter, `humanAuth` also checks the key's selection and answers
-  404 for an agent outside it.
+  where the key is resolved so it also covers `/me/*` and MCP. The one
+  exception is a route that declares `read` through its Fastify route config,
+  which says it gates its own writes: the MCP endpoint, a `POST`, declares it,
+  admits a `read` key, and hides and refuses its write tools for that key
+  exactly as it does for an `mcp:read` token. An agent-level permission is
+  admitted only by a route that declares it through the same route config, so
+  every undeclared route, including `/me/*`, the MCP endpoint, and any route
+  added later, refuses it. When the declaring route carries an `:agentId`
+  parameter, `humanAuth` also checks the key's selection and answers 404 for an
+  agent outside it.
 - The only v1 route that declares `agent:chat` is
   `POST /orgs/:orgId/agents/:agentId/webchat/token`. On a resume, the
   conversation's bound agent must also be in the selection.
@@ -267,8 +271,10 @@ later work) differs from a personal key only in whose identity it carries.
   token does not widen anything, since every token the key mints carries the
   same claims.
 - `POST /me/keys` takes `permission` and, for an agent-level permission,
-  `agents: 'all' | string[]`. The console's personal key dialog shows the two
-  choices. The rest of the mint policy is unchanged: a 90-day default expiry,
+  `agents: 'all' | string[]`, required then and refused with 400 for `full`
+  and `read`, which cover every agent; an id that is not a visible agent of
+  the key's organization answers 404. The console's personal key dialog shows
+  the two choices. The rest of the mint policy is unchanged: a 90-day default expiry,
   an optional non-expiring key, and a plaintext value shown exactly once.
 - Nothing changes for the key's identity. It still acts as its user in its
   organization, and a session it opens is that user's session.

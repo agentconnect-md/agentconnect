@@ -15,6 +15,8 @@ import type { FastifyInstance } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { UserApiKeyView } from '../../ports.js'
+import { AgentId, OrgId } from '../../domain/ids.js'
+import { canView } from '../../authorization/policy.js'
 import {
   UserApiKeyListDto,
   UserApiKeyDto,
@@ -34,6 +36,9 @@ function toDto(v: UserApiKeyView): UserApiKeyDtoT {
     orgId: v.orgId,
     orgSlug: v.orgSlug,
     orgName: v.orgName,
+    permission: v.permission,
+    allAgents: v.allAgents,
+    agentIds: v.agentIds,
     createdAt: v.createdAt.toISOString(),
     lastUsedAt: v.lastUsedAt ? v.lastUsedAt.toISOString() : null,
     expiresAt: v.expiresAt ? v.expiresAt.toISOString() : null,
@@ -72,10 +77,10 @@ export function meKeyRoutes(deps: HttpDeps) {
           tags: [Tag.ApiKeys],
           summary: 'Create an API key',
           description:
-            'Mints a personal API key in one of your organizations (default 90-day expiry; pass `expiresInDays: null` for a non-expiring key). The key acts as you, with your role in that org. The plaintext is returned exactly once and is never retrievable afterward.',
+            'Mints a personal API key in one of your organizations (default 90-day expiry; pass `expiresInDays: null` for a non-expiring key). The key acts as you, with your role in that org, within its `permission`: `full` (the default), `read` (GET only), or `agent:chat` (the agent chat API for the agents in `agents` — `all`, or ids of agents you can see in that org). The plaintext is returned exactly once and is never retrievable afterward.',
           operationId: 'createMyApiKey',
           body: CreateUserKeyBody,
-          response: { 201: MintedUserKeyDto, 403: ErrorDto, 404: ErrorDto }
+          response: { 201: MintedUserKeyDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -92,16 +97,32 @@ export function meKeyRoutes(deps: HttpDeps) {
         if (!role) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'organization not found' })
         }
+        // A selected agent must exist in the key's org and be visible to the caller; anything else reads as absent, like a foreign org.
+        const agentIds = Array.isArray(req.body.agents) ? [...new Set(req.body.agents)] : undefined
+        if (agentIds) {
+          const ctx = { userId: req.principal!.userId, role }
+          for (const id of agentIds) {
+            const agent = await deps.repos.agent.get(OrgId(req.body.orgId), AgentId(id))
+            if (!agent || !canView(agent, ctx)) {
+              return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+            }
+          }
+        }
         const minted = await deps.apiKeys.mintForUser({
           userId: req.principal!.userId,
           orgId: req.body.orgId,
           ...(req.body.name ? { name: req.body.name } : {}),
-          expiresInDays: req.body.expiresInDays
+          expiresInDays: req.body.expiresInDays,
+          permission: req.body.permission,
+          ...(req.body.agents !== undefined ? { agents: agentIds ?? 'all' } : {})
         })
         return reply.code(201).send({
           apiKeyId: minted.apiKeyId,
           apiKey: minted.token,
-          displayTail: minted.displayTail
+          displayTail: minted.displayTail,
+          permission: minted.permission,
+          allAgents: minted.allAgents,
+          agentIds: minted.agentIds
         })
       }
     )

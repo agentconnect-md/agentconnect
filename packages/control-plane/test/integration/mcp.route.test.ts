@@ -1100,6 +1100,56 @@ describe('POST /api/v1/mcp — scope confinement (§6.3)', () => {
   })
 })
 
+// ── key permissions (daemon-api-key-auth.md §6): the endpoint declares `read` and gates its own writes ──
+
+describe('POST /api/v1/mcp — key permissions', () => {
+  /** Mint a key with `permission` for a fresh collaborator, via a devAuth-overridden app. */
+  async function keyWith(permission: string, agents?: unknown): Promise<string> {
+    const sub = `mcp-perm-${randomUUID()}`
+    const users = new PgUserRepo(prisma)
+    const { userId } = await users.provisionOidcUser({
+      oidcSubject: sub,
+      email: `${sub}@acme.dev`,
+      emailVerified: true
+    })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, `${sub}@acme.dev`, 'collaborator')
+    const minter = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId })
+    opened.push(minter)
+    const res = await minter.app.inject({
+      method: 'POST',
+      url: '/api/v1/me/keys',
+      payload: { orgId: DEFAULT_ORG_ID, permission, ...(agents !== undefined ? { agents } : {}) }
+    })
+    expect(res.statusCode).toBe(201)
+    return (res.json() as { apiKey: string }).apiKey
+  }
+
+  it('a read key reaches the endpoint, sees no write tool, and is refused on one', async () => {
+    const app = build()
+    const key = await keyWith('read')
+
+    const res = await rpc(app, key, 'tools/list')
+    expect(res.statusCode).toBe(200)
+    const names = (mcpMessage(res).result!.tools as Array<{ name: string }>).map((t) => t.name)
+    expect(names).toContain('listAgents')
+    expect(names).not.toContain('createAgent')
+
+    const refused = await callTool(app, key, 'createAgent', { name: 'nope-read', runtime: 'claude' })
+    expect(refused.isError).toBe(true)
+    expect(toolText(refused)).toContain('read-only')
+    expect((await callTool(app, key, 'listAgents')).isError).toBeUndefined()
+    expect(await prisma.agent.count({ where: { name: 'nope-read' } })).toBe(0)
+  })
+
+  it('an agent:chat key is refused by the endpoint outright', async () => {
+    const app = build()
+    const key = await keyWith('agent:chat', 'all')
+    const res = await rpc(app, key, 'initialize', INIT_PARAMS)
+    expect(res.statusCode).toBe(403)
+    expect((res.json() as { message: string }).message).toContain('agent:chat')
+  })
+})
+
 describe('POST /api/v1/mcp — rate limits (§6.5)', () => {
   it('the write budget refuses the excess write; reads keep flowing; refusals are not audited', async () => {
     const app = buildHttpApp(prisma, undefined, undefined, undefined, {

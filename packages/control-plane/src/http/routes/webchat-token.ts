@@ -24,6 +24,7 @@ import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { servesSessionContent } from '../../domain/session-content.js'
 import { ctxOf, orgOf } from '../rbac.js'
+import { isAgentLevelPermission } from '../../domain/api-key-permission.js'
 import { ErrorDto } from '../dto/index.js'
 import { resolveProfilePictureUrl } from '../../icons/icon-store.js'
 import { Tag } from '../plugins/openapi.js'
@@ -153,15 +154,17 @@ export function webchatTokenRoutes(deps: HttpDeps) {
     }
     const AGENT_MOVED = { error: 'Conflict', statusCode: 409, message: 'the agent moved since this conversation ran' }
 
+    // The one v1 route an `agent:chat` key reaches (daemon-api-key-auth.md §6): humanAuth admits such a key here alone and fences `:agentId` on its selection.
     r.post(
       '/agents/:agentId/webchat/token',
       {
         preHandler: app.humanAuth,
+        config: { permission: 'agent:chat' },
         schema: {
           tags: [Tag.Agents],
           summary: 'Mint a webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). A resume answers 409 once an agent’s next turn would reach a machine that does not hold its session.',
+            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). A resume answers 409 once an agent’s next turn would reach a machine that does not hold its session. An API key whose permission is `agent:chat` may call this route for the agents in its selection; the token it mints carries that permission and is accepted by the relay’s agent chat API only.',
           operationId: 'mintWebchatToken',
           params: Params,
           body: Body,
@@ -184,7 +187,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         const conversationId = req.body.conversationId?.toLowerCase() ?? randomUUID()
         const binding = { conversationId, userId, agentId: agent.id, orgId: agent.orgId }
         if (req.body.conversationId) {
-          // The asserted agent must be the conversation's primary on this per-agent path.
+          // The asserted agent must be the conversation's primary on this per-agent path, so a resume's bound agent is `:agentId`, which humanAuth already fenced on the key's selection.
           const resumable = await resumableBy(req, conversationId)
           if (
             resumable?.primaryAgentId !== agent.id ||
@@ -198,12 +201,15 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         } else {
           await deps.repos.webchatConversation.create(binding)
         }
+        // A token inherits its minting key's limits: an agent-level permission rides the claims so the relay can confine it; a console or full-key mint carries none.
+        const permission = req.apiKeyPermission
         const { token, expiresAt } = await deps.webchatTokens.mint({
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),
           agentId: agent.id,
           orgId: agent.orgId,
-          conversationId
+          conversationId,
+          ...(isAgentLevelPermission(permission) ? { permission } : {})
         })
         return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString() })
       }

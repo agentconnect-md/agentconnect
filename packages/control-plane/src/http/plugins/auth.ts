@@ -18,6 +18,14 @@ import type { FastifyInstance, FastifyRequest, FastifyReply, preHandlerHookHandl
 import fp from 'fastify-plugin'
 import { createRemoteJWKSet, jwtVerify } from 'jose'
 import type { InternalInvocationAuth } from '../mcp/internal-invocation-auth.js'
+import {
+  isAgentLevelPermission,
+  keyAdmitted,
+  selectionCovers,
+  type AgentSelection,
+  type ApiKeyPermission,
+  type RoutePermission
+} from '../../domain/api-key-permission.js'
 
 /** The authenticated WebUI user attached to a request (`req.principal`).
  *  Identity ONLY — the org a request acts on lives in the URL
@@ -78,9 +86,15 @@ export type ResolveOidcUser = (input: {
  * by the composition root so `auth.ts` stays decoupled from persistence (mirrors
  * {@link ResolveOidcUser}). Absent ⇒ no API-key credential is accepted (JWT/dev only).
  */
-export type VerifyApiKey = (
-  token: string
-) => Promise<{ userId: string; orgId: string; apiKeyId: string; scopes: string[] } | null>
+export type VerifyApiKey = (token: string) => Promise<{
+  userId: string
+  orgId: string
+  apiKeyId: string
+  scopes: string[]
+  /** What the key may do and which agents it reaches (daemon-api-key-auth.md §6). */
+  permission: ApiKeyPermission
+  selection: AgentSelection
+} | null>
 
 /**
  * Does the resolved local user row still exist? An admin can delete an account
@@ -155,6 +169,13 @@ declare module 'fastify' {
      *  non-empty = confined (an OAuth token: `mcp:read`/`mcp:write`) — the org-scope
      *  guard blocks org-resource writes without `mcp:write` (agent-assistant.md §6.3). */
     apiKeyScopes?: string[]
+    /** The authenticating key's permission and agent selection (daemon-api-key-auth.md §6); `full` for an OAuth token. */
+    apiKeyPermission?: ApiKeyPermission
+    apiKeyAgentSelection?: AgentSelection
+  }
+  interface FastifyContextConfig {
+    /** What this route admits beyond its method: `read` for a non-read route that gates writes itself (the MCP endpoint), or the agent-level permission it serves. */
+    permission?: RoutePermission
   }
 }
 
@@ -482,12 +503,28 @@ function withApiKeyAuth(
       return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: 'temporarily unavailable' })
     }
     if (!resolved) return unauthorized(reply, 'invalid api key')
+    // The key's permission is enforced here, where it is resolved, so it covers `/me/*` and MCP as well as the org subtree (daemon-api-key-auth.md §6).
+    const declared = req.routeOptions.config.permission
+    if (!keyAdmitted(resolved.permission, req.method, declared)) {
+      const message =
+        resolved.permission === 'read'
+          ? 'this key is limited to read-only access'
+          : `this key is limited to ${resolved.permission}`
+      return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message })
+    }
+    // A declaring route with an `:agentId` param also fences the key's selection; an agent outside it reads as absent.
+    const agentId = (req.params as { agentId?: string } | undefined)?.agentId
+    if (isAgentLevelPermission(resolved.permission) && agentId && !selectionCovers(resolved.selection, agentId)) {
+      return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+    }
     // Identity only (like the OIDC path); the org the key is bound to is stashed so
     // the org-scope guard can assert the URL org matches — a key acts ONLY in its org.
     req.principal = { userId: resolved.userId }
     req.apiKeyId = resolved.apiKeyId
     req.apiKeyOrgId = resolved.orgId
     req.apiKeyScopes = resolved.scopes
+    req.apiKeyPermission = resolved.permission
+    req.apiKeyAgentSelection = resolved.selection
     // Cold-visit §3: for API-key readers (agent-assistant MCP) the first authenticated
     // request can BE `/sessions`, so the warm fires here too; the trigger resolves the
     // sub itself. Contained — it must never fail an authenticated request.
@@ -532,6 +569,8 @@ export const humanAuthPlugin = fp(
     app.decorateRequest('apiKeyId', undefined)
     app.decorateRequest('apiKeyOrgId', undefined)
     app.decorateRequest('apiKeyScopes', undefined)
+    app.decorateRequest('apiKeyPermission', undefined)
+    app.decorateRequest('apiKeyAgentSelection', undefined)
     app.decorateRequest('delegatedInvocation', undefined)
     done()
   },

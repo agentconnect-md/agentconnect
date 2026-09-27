@@ -142,6 +142,25 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
     await expect(dial(base, '?token=t')).rejects.toThrow('status:401')
   })
 
+  // A token an `agent:chat` key minted is confined to `/ai-sdk/chat` (shared-bot-relay.md §10.4): the socket refuses it at the handshake and says why.
+  it('refuses a token whose verdict carries an agent-level permission (401), logging the reason', async () => {
+    const warnings: string[] = []
+    const { base, sendMsg } = await start({
+      verify: async () => ({
+        ok: true,
+        agentId: AGENT,
+        daemonId: DAEMON,
+        user: 'proxy',
+        conversationId: RESUME,
+        permission: 'agent:chat'
+      }),
+      log: { debug: () => {}, info: () => {}, warn: (m) => warnings.push(m), error: () => {} }
+    })
+    await expect(dial(base, '?token=confined')).rejects.toThrow('status:401')
+    expect(warnings.some((w) => w.includes('agent:chat') && w.includes('401'))).toBe(true)
+    expect(sendMsg).not.toHaveBeenCalled()
+  })
+
   // A refused dial is invisible on both sides otherwise: the browser is told only that its socket
   // failed, and every reason worth acting on ("agent unplaced", "daemon offline") lives in the CP's
   // verdict. Without this line an operator cannot tell a refusal from a dial that never arrived.

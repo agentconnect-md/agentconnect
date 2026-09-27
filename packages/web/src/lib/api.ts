@@ -1414,6 +1414,9 @@ export interface MintedKeyDto {
   command: string
 }
 
+// What a key may do (daemon-api-key-auth.md §6): `full` is the default, `read` admits reads only, `agent:chat` the agent chat API for its selected agents.
+export type ApiKeyPermission = 'full' | 'read' | 'agent:chat'
+
 // A personal (user) API key in the profile list — carries the org it acts in
 // (a user's keys span every org they belong to). Never the secret or hash.
 export interface UserApiKeyDto {
@@ -1423,6 +1426,10 @@ export interface UserApiKeyDto {
   orgId: string
   orgSlug: string
   orgName: string | null // null ⇒ fall back to the slug
+  permission: ApiKeyPermission
+  // The agent selection; meaningful for an agent-level permission only.
+  allAgents: boolean
+  agentIds: string[]
   createdAt: string
   lastUsedAt: string | null
   expiresAt: string | null
@@ -1434,6 +1441,9 @@ export interface MintedUserKeyDto {
   apiKeyId: string
   apiKey: string
   displayTail: string
+  permission: ApiKeyPermission
+  allAgents: boolean
+  agentIds: string[]
 }
 
 // ── fetch helpers ───────────────────────────────────────────────────────────
@@ -4730,6 +4740,9 @@ export async function createMyApiKey(input: {
   orgId: string
   name?: string
   expiresInDays?: number | null
+  permission?: ApiKeyPermission
+  // Required for an agent-level permission: every agent, or the chosen agent ids.
+  agents?: 'all' | string[]
 }): Promise<MintedUserKeyDto> {
   return apiPost<MintedUserKeyDto>('/me/keys', input)
 }

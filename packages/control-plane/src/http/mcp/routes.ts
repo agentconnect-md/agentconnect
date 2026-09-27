@@ -228,8 +228,9 @@ export function mcpRoutes(deps: HttpDeps) {
       return humanAuthenticate(req, reply)
     }
 
-    // Hidden from the OpenAPI spec: this is the MCP wire, not a REST operation.
-    app.post(MCP_PATH, { preHandler: authenticateMcp, schema: { hide: true } }, async (req, reply) => {
+    // Hidden from the OpenAPI spec: this is the MCP wire, not a REST operation. It declares `read` so a read-only key reaches this POST; write tools are hidden and refused below.
+    const mcpRoute = { preHandler: authenticateMcp, schema: { hide: true }, config: { permission: 'read' as const } }
+    app.post(MCP_PATH, mcpRoute, async (req, reply) => {
       const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
       const authorizationValues = rawHeaderValues(req, 'authorization')
       const authorization = authorizationValues[0]
@@ -339,7 +340,9 @@ export function mcpRoutes(deps: HttpDeps) {
       // the injected REST call enforces the same rule; this per-tool mirror keeps
       // the refusal friendly and prunes write tools from `tools/list`.
       const scopes = invocationContext ? ['mcp:read', 'mcp:write'] : req.apiKeyScopes
-      const scopeCanWrite = !scopes || scopes.length === 0 || scopes.includes('mcp:write')
+      // A `read` key is confined the same way as an `mcp:read` token (daemon-api-key-auth.md §6); humanAuth backstops its injected writes.
+      const readOnlyKey = !invocationContext && req.apiKeyPermission === 'read'
+      const scopeCanWrite = (!scopes || scopes.length === 0 || scopes.includes('mcp:write')) && !readOnlyKey
       const recordNestedDuration = (startedAt: number, outcome: 'succeeded' | 'failed') => {
         if (!invocationContext) return
         observeMetric(() => webchatMetrics.requestDuration('nested_rest', performance.now() - startedAt, outcome))
@@ -447,8 +450,9 @@ export function mcpRoutes(deps: HttpDeps) {
               body: JSON.stringify({
                 error: 'Forbidden',
                 statusCode: 403,
-                message:
-                  'this token is limited to read-only access (missing the mcp:write scope) — reconnect and grant write access to use write tools'
+                message: readOnlyKey
+                  ? 'this key is limited to read-only access'
+                  : 'this token is limited to read-only access (missing the mcp:write scope) — reconnect and grant write access to use write tools'
               })
             }
           } else if (invocationContext && tool.contentArgs) {
