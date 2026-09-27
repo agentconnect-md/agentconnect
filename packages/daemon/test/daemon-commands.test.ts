@@ -286,11 +286,8 @@ describe('Daemon in-conversation commands', () => {
       payload
     }
 
-    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({
-      msgId: 'relay-names',
-      accepted: true,
-      routeAdmission: 'admitted'
-    })
+    // The shared path acks on dispatch, before durability, so it carries no strict verdict.
+    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-names', accepted: true })
     expect(noteMessage).toHaveBeenCalledWith(conn, expect.objectContaining(payload))
     expect(dispatch).toHaveBeenCalledWith('bot-a', expect.objectContaining(payload), 'int-a')
   })
@@ -314,11 +311,7 @@ describe('Daemon in-conversation commands', () => {
       chatId: 'C1',
       payload: { ...bare, mentionedBots: ['U-OTHER', 'U-SELF'] } as any
     }
-    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({
-      msgId: 'relay-mention',
-      accepted: true,
-      routeAdmission: 'admitted'
-    })
+    expect(await (daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-mention', accepted: true })
     expect(dispatch).toHaveBeenCalledWith('bot-a', expect.objectContaining({ trigger: 'mention' }), 'int-a')
   })
 
@@ -396,18 +389,15 @@ describe('Daemon in-conversation commands', () => {
 
     expect(await (daemon as any).handleRelayMsg(botA, () => {})).toEqual({
       msgId: botA.msgId,
-      accepted: true,
-      routeAdmission: 'admitted'
+      accepted: true
     })
     expect(await (daemon as any).handleRelayMsg(botA, () => {})).toEqual({
       msgId: botA.msgId,
-      accepted: true,
-      routeAdmission: 'admitted'
+      accepted: true
     })
     expect(await (daemon as any).handleRelayMsg(botB, () => {})).toEqual({
       msgId: botB.msgId,
-      accepted: true,
-      routeAdmission: 'admitted'
+      accepted: true
     })
 
     expect(dispatch).toHaveBeenCalledTimes(2)
@@ -492,11 +482,10 @@ describe('Daemon in-conversation commands', () => {
     expect(blocked.prompts).toHaveLength(0)
     expect(await (daemon as any).store.isSessionMuted(muteKey)).toBe(true)
 
-    // An explicit @mention clears the mute and dispatches.
+    // An explicit @mention clears the mute and dispatches — on the shared path, so without a strict verdict.
     expect(await (daemon as any).handleRelayMsg(relayIm('m-mention', 'hey again', 'mention'), () => {})).toEqual({
       msgId: 'm-mention',
-      accepted: true,
-      routeAdmission: 'admitted'
+      accepted: true
     })
     await vi.waitFor(() => expect(blocked.prompts).toHaveLength(1), WAIT)
     expect(await (daemon as any).store.isSessionMuted(muteKey)).toBe(false)

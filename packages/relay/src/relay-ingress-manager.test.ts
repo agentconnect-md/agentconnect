@@ -2160,18 +2160,22 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(older).toHaveBeenCalledTimes(1)
     })
 
-    it('never reads an old-shape accepted ack as admission, and maps a recoverable rejection to retry', async () => {
+    it('reads an accepted ack with no verdict as unsupported, and maps a recoverable rejection to retry', async () => {
       let verdict: Partial<RdAck> = {}
       const sendMsg = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true, ...verdict }))
       const internals = internalsOf(new RelayIngressManager(deps({ getDaemon: () => daemonWith(sendMsg) })))
       internals.router.upsert(channelOwned())
       const strict = (msgId: string) => internals.ingressHost.forwardStrict(BOT_ID, mention(msgId))
 
-      expect(await strict('slack:C123:1')).toEqual({ disposition: 'rejected', reason: 'rejected' })
+      // The daemon's shared path: it acked on dispatch, so the platform has no strategy — a misconfiguration, named.
+      expect(await strict('slack:C123:1')).toEqual({ disposition: 'rejected', reason: 'unsupported' })
+      // A verdict-less refusal keeps the routed leg's reading: the duty rendezvous failed, try again.
+      verdict = { accepted: false, reason: RD_ACK_NOT_HOLDER }
+      expect(await strict('slack:C123:2')).toEqual({ disposition: 'retry', reason: 'not_ready' })
       verdict = { reason: 'draining', routeAdmission: 'rejected', recoverable: true }
-      expect(await strict('slack:C123:2')).toEqual({ disposition: 'retry', reason: 'draining' })
+      expect(await strict('slack:C123:3')).toEqual({ disposition: 'retry', reason: 'draining' })
       verdict = { reason: 'muted', routeAdmission: 'rejected', recoverable: false }
-      expect(await strict('slack:C123:3')).toEqual({ disposition: 'rejected', reason: 'muted' })
+      expect(await strict('slack:C123:4')).toEqual({ disposition: 'rejected', reason: 'muted' })
     })
 
     it('answers retry when the target daemon is not connected to this relay', async () => {

@@ -1342,24 +1342,46 @@ describe('the strict admission verdict beside the shared ack (google-chat-integr
     await daemon.stop()
   })
 
-  it('waits for the durable admission whenever the strategy asks for durability, even without an admission hook', async () => {
-    const { daemon, store, turnSettled } = await boot()
+  /** Replace Linear's strategy with its `prepare` plus only the named admission members, so the verdict is what those members earn. */
+  const strategyWith = (daemon: Daemon, members: (linear: any) => Record<string, unknown>) => {
     const linear = (daemon as any).platformModules.get('linear').relayIngress
     ;(daemon as any).platformModules = new PlatformModuleRegistry([
-      {
-        platformId: 'linear',
-        relayIngress: { prepare: linear.prepare, requireDurable: true, receiptId: linear.receiptId }
-      }
+      { platformId: 'linear', relayIngress: { prepare: linear.prepare, ...members(linear) } }
     ])
+  }
+  const durabilityRefusal = {
+    msgId: `linear:${SESSION}:created`,
+    accepted: false,
+    reason: 'durability',
+    routeAdmission: 'rejected',
+    recoverable: true
+  }
+
+  it('refuses a failed durable write for a strategy with only `receiptId`, instead of acking admitted', async () => {
+    const { daemon, store, turnSettled } = await boot()
+    strategyWith(daemon, (linear) => ({ receiptId: linear.receiptId }))
     vi.spyOn(store, 'appendInboxWithReceipt').mockRejectedValue(new Error('disk is gone'))
-    // Without the wait this would be an `admitted` ack for a row that was never written.
-    expect(await im(daemon, delivery())).toEqual({
-      msgId: `linear:${SESSION}:created`,
-      accepted: false,
-      reason: 'durability',
-      routeAdmission: 'rejected',
-      recoverable: true
-    })
+    // Without the required write this would be an `admitted` ack for a row that was never written.
+    expect(await im(daemon, delivery())).toEqual(durabilityRefusal)
+    await turnSettled()
+    await daemon.stop()
+  })
+
+  it('refuses a failed durable write for a strategy with only `onAdmitted`, which then never runs', async () => {
+    const { daemon, store, turnSettled } = await boot()
+    const onAdmitted = vi.fn(async () => {})
+    strategyWith(daemon, () => ({ onAdmitted }))
+    vi.spyOn(store, 'appendInbox').mockRejectedValue(new Error('disk is gone'))
+    expect(await im(daemon, delivery())).toEqual(durabilityRefusal)
+    expect(onAdmitted).not.toHaveBeenCalled()
+    await turnSettled()
+    await daemon.stop()
+  })
+
+  it('acks a delivery with no strategy on dispatch, before durability, without a strict verdict', async () => {
+    const { daemon, turnSettled } = await boot()
+    ;(daemon as any).platformModules = new PlatformModuleRegistry([])
+    expect(await im(daemon, delivery())).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
     await turnSettled()
     await daemon.stop()
   })

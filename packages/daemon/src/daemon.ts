@@ -9631,8 +9631,8 @@ export class Daemon {
       if (!admitted) {
         this.log.debug(`relay: consumed AgentConnect bot message ${msg.msgId} without waking ${msg.agentId}`)
       }
-      // A woken agent is a durable dispatch; a consumed copy is a deliberate gate.
-      return admitted ? imAdmitted(msg.msgId) : imRejected(msg.msgId, true, 'rejected', false)
+      // A woken agent is a fire-and-forget dispatch with no admission proof, so no verdict; a consumed copy is a deliberate gate.
+      return admitted ? { msgId: msg.msgId, accepted: true } : imRejected(msg.msgId, true, 'rejected', false)
     }
     // Relay arbitration normally forwards only enabled routes. A receive-only
     // Feishu relay may also hand the sole gated install an explicitly-addressed
@@ -9736,7 +9736,7 @@ export class Daemon {
     // Bound, so a class-based strategy keeps its `this` when the hook runs later inside dispatch.
     const onAdmitted = ingress?.onAdmitted?.bind(ingress)
     const busy = onAdmitted ? this.inflight.has(muteKey) : false
-    // Any admission member makes the ACK wait for admission; a strategy with none keeps the shared call as it was.
+    // Any admission member makes the ACK wait for the durable admission; a strategy with none keeps the shared call as it was.
     const awaited = onAdmitted !== undefined || ingress?.requireDurable === true || ingress?.receiptId !== undefined
     if (gate && !gate.beforeDispatch()) return { msgId: msg.msgId, accepted: true }
     if (!awaited) {
@@ -9752,8 +9752,8 @@ export class Daemon {
       void plain.catch((err) =>
         this.log.error(`relay im dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
       )
-      // The shared call acks on dispatch, before durability; a platform that must know waits through its strategy.
-      return imAdmitted(msg.msgId)
+      // The shared call acks on dispatch, before durability, so it carries no strict verdict; a platform that answers from admission supplies a strategy.
+      return { msgId: msg.msgId, accepted: true }
     }
     // §10.1: the hook runs on the FIRST admission only — a replay or a concurrent same-`msgId`
     // delivery reads back as `duplicate` — and it runs INSIDE dispatch's own durable fence, so
@@ -9763,7 +9763,8 @@ export class Daemon {
     let report!: (ack: RdAck) => void
     const admitted = new Promise<RdAck>((resolve) => (report = resolve))
     const dispatched = this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
-      ...(ingress?.requireDurable || gate ? { requireDurable: true } : {}),
+      // The platform answers from admission, so a failed write refuses instead of running best-effort.
+      requireDurable: true,
       // The gate's receipt wins: a By decision delivery must never be dispatched twice for its verdict.
       ...(gate
         ? { receiptId: gate.receiptId, ...(gate.deliveryId ? { deliveryId: gate.deliveryId } : {}) }
@@ -9789,7 +9790,8 @@ export class Daemon {
     // record the delivery — surfaces as the dispatch promise rejecting instead. A rejection
     // AFTER a settled admission (an ordinary turn failure) finds this already resolved.
     void dispatched
-      .then(() => report(imAdmitted(msg.msgId)))
+      // Resolved without an admission report: nothing proves a row, so no strict verdict rides the ack.
+      .then(() => report({ msgId: msg.msgId, accepted: true }))
       .catch((err) => {
         this.log.error(`relay im dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
         report(imRejected(msg.msgId, false, 'durability', true))

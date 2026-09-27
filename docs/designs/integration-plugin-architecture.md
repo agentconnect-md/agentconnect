@@ -614,8 +614,12 @@ interface RelayHostServices {
   forward(botId, WireNormalizedMessage)
   // The same ladder returning the daemon's strict `rd/ack` verdict as an
   // `rd/route/ack` disposition, for a platform whose HTTP answer depends on
-  // admission. Gated per target on `im-admission-v1` and fails closed:
-  // an older daemon is answered `rejected`/`unsupported`, never sent to.
+  // admission. Gated per target on `im-admission-v1` and fails closed: an
+  // older daemon is answered `rejected`/`unsupported`, never sent to, and so
+  // is an ack with no verdict — the daemon's shared path, taken by a platform
+  // with no relay-ingress strategy, acks on dispatch before durability. A
+  // platform that answers from admission therefore supplies a strategy with
+  // at least `receiptId`.
   forwardStrict(botId, WireNormalizedMessage): Promise<RelayAdmission>
   // The one call that carries a route — and it must not re-resolve one.
   forwardAction(msg, route): Promise<AckResponse>

@@ -319,13 +319,16 @@ relay.
 
 An `im` ack from a daemon advertising `im-admission-v1` also carries
 `routeAdmission` and `recoverable` beside the unchanged `accepted`/`reason`
-pair: `admitted` for a durable admission, or `rejected` with `recoverable`
-saying whether a resend can succeed. The relay's
-`RelayIngressHost.forwardStrict` maps them onto the `rd/route/ack` dispositions
-for a platform whose HTTP answer depends on admission
-([google-chat-integration.md](google-chat-integration.md) §4); `forward` keeps
-its two-value result, and a daemon without the feature is answered
-`rejected`/`unsupported` rather than read through the old shape.
+pair when the delivery went through a platform strategy with an admission
+member: `admitted` for a durable admission, or `rejected` with `recoverable`
+saying whether a resend can succeed. The shared best-effort path acks on
+dispatch, before durability, and carries no verdict. The relay's
+`RelayIngressHost.forwardStrict` maps the verdict onto the `rd/route/ack`
+dispositions for a platform whose HTTP answer depends on admission
+([google-chat-integration.md](google-chat-integration.md) §4), and reads a
+verdict-less ack, like a daemon without the feature, as
+`rejected`/`unsupported` rather than through the old shape; `forward` keeps
+its two-value result.
 
 In a By decision routed conversation the relay sends each human message once,
 as an `rd/msg` carrying a relay-minted `trustedRouting` (the constraint with

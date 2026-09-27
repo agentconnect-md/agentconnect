@@ -133,7 +133,7 @@ export type RdHookNotice = z.infer<typeof RdHookNotice>
  */
 export const RD_WEBCHAT_ATTACH_V1 = 'webchat-attach-v1'
 
-/** `im-admission-v1`: this daemon fills `routeAdmission`/`recoverable` on every pre-addressed `im` ack beside the unchanged `accepted`/`reason`; the relay's strict forward refuses a daemon without it instead of reading the old ack. */
+/** `im-admission-v1`: this daemon fills `routeAdmission`/`recoverable` beside the unchanged `accepted`/`reason` on every `im` ack answered through a platform strategy with an admission member; the shared best-effort path acks on dispatch and carries no verdict, which the relay's strict forward reads as `unsupported`, as it does a daemon without this feature. */
 export const RD_IM_ADMISSION_V1 = 'im-admission-v1'
 
 // D→R REQ → rd/hello/ok. The daemon presents the same credential it uses on the CP

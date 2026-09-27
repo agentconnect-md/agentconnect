@@ -85,7 +85,7 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   HOOK_DECISION_ROUTING_V1_FEATURE,
   // The relay sends GitLab and Gitea host copies and routed fires only here.
   HOOK_DECISION_ROUTING_V2_FEATURE,
-  // Every pre-addressed im ack carries the strict routeAdmission/recoverable verdict; the relay's strict forward refuses a daemon without it.
+  // An im ack answered through a platform strategy carries the strict routeAdmission/recoverable verdict; the shared path carries none, which the relay's strict forward reads as unsupported.
   RD_IM_ADMISSION_V1
 ]
 

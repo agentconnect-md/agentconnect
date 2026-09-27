@@ -139,7 +139,7 @@ export interface RelayIngressSidecar {
  *  message; it does not promise a daemon took it (delivery is bounded loss). */
 export type RelayForwardOutcome = 'accepted' | 'refused'
 
-/** Core's strict verdict on one forwarded message, in the `rd/route/ack` vocabulary: `admitted` (a daemon durably took it, or a receipt settles the duplicate), `retry` (a transient refusal a resend can outlive), or `rejected` (a deliberate gate, consumed with no work promised, or a daemon predating `im-admission-v1`: reason `unsupported`). */
+/** Core's strict verdict on one forwarded message, in the `rd/route/ack` vocabulary: `admitted` (a daemon durably took it, or a receipt settles the duplicate), `retry` (a transient refusal a resend can outlive), or `rejected` (a deliberate gate, consumed with no work promised; or `unsupported`: a daemon predating `im-admission-v1`, or an ack with no verdict because the platform has no relay-ingress strategy). */
 export type RelayAdmission = Pick<RdRouteAck, 'disposition' | 'reason'>
 
 /** A definitive credential loss: a platform lifecycle `event` (its time in ms when known) or a `probe` the platform answered with `code`. */
@@ -160,7 +160,7 @@ export interface RelayIngressHost {
    *  plugin supplies conversation content, never target identity. The promise
    *  is the delivery attempt's completion (drop counting rides it). */
   forward(botId: string, message: WireNormalizedMessage, sidecar?: RelayIngressSidecar): Promise<RelayForwardOutcome>
-  /** {@link forward} for a platform whose HTTP answer depends on admission: the same arbitration, then the daemon's strict `rd/ack` verdict mapped as the routed leg maps it; a target without `im-admission-v1` is never sent to (`rejected`/`unsupported`), a withdrawn grant is `rejected`, and over a fan-out one admission wins, else one retry, else the first rejection. */
+  /** {@link forward} for a platform whose HTTP answer depends on admission: the same arbitration, then the daemon's strict `rd/ack` verdict mapped as the routed leg maps it; a target without `im-admission-v1` is never sent to (`rejected`/`unsupported`), an `accepted` with no verdict (the shared path: the platform supplies no strategy) is `rejected`/`unsupported` too, a withdrawn grant is `rejected`, and over a fan-out one admission wins, else one retry, else the first rejection. */
   forwardStrict(botId: string, message: WireNormalizedMessage, sidecar?: RelayIngressSidecar): Promise<RelayAdmission>
   /** Forward one platform interaction as a §6.6 platform_action and return the
    *  daemon's ack — the sync-response race (see the module doc) awaits this.

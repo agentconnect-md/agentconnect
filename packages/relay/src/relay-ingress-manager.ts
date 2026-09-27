@@ -70,6 +70,11 @@ import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 const rejected = (reason: RdRouteReason): RelayAdmission => ({ disposition: 'rejected', reason })
 const retry = (reason: RdRouteReason): RelayAdmission => ({ disposition: 'retry', reason })
 
+/** The strict reading of one ack: `accepted` with no verdict took the shared best-effort path, which a platform answering from admission must not. */
+function strictAdmissionFrom(ack: RdAck): RelayAdmission {
+  return ack.accepted && ack.routeAdmission === undefined ? rejected('unsupported') : admissionFrom(ack)
+}
+
 /** One delivery's verdict over its fan-out: one admission settles it, else one retry does, else the first rejection. */
 export function aggregateAdmission(verdicts: readonly RelayAdmission[]): RelayAdmission {
   return (
@@ -451,7 +456,7 @@ export class RelayIngressManager {
     try {
       const ack = await this.sendWithRendezvous(host, rd, botId, `relay-ingress(${botId}) routed`)
       if (!ack.accepted) this.deps.log.warn(`relay-ingress(${botId}): host refused routed ${msg.msgId} (${ack.reason})`)
-      return admissionFrom(ack)
+      return (strict ? strictAdmissionFrom : admissionFrom)(ack)
     } catch (err) {
       return drop(`forward to host failed: ${(err as Error).message}`, retry('offline'))
     }
@@ -1297,6 +1302,7 @@ export class RelayIngressManager {
     // A By decision conversation: every delivery names its Decision, and only a daemon that can hold it receives one.
     const decisionId = this.router.decisionIdFor(botId, msg.channel)
     const verdicts: RelayAdmission[] = []
+    const verdictOf = strict ? strictAdmissionFrom : admissionFrom
     for (const { target: participant, via } of conversationTargets) {
       const daemon = this.deps.getDaemon(participant.daemonId)
       if (!daemon) {
@@ -1340,7 +1346,7 @@ export class RelayIngressManager {
         trustedRouteVia: via
       }
       try {
-        verdicts.push(admissionFrom(await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)))
+        verdicts.push(verdictOf(await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)))
       } catch (err) {
         const n = (this.dropped.get(botId) ?? 0) + 1
         this.dropped.set(botId, n)
@@ -1369,6 +1375,7 @@ export class RelayIngressManager {
     if (ownerTarget) targets.set(ownerTarget.agentId, ownerTarget)
     for (const t of this.router.conversationParticipants(botId, sessionKey, msg.channel)) targets.set(t.agentId, t)
     const verdicts: RelayAdmission[] = []
+    const verdictOf = strict ? strictAdmissionFrom : admissionFrom
     for (const target of targets.values()) {
       const daemon = this.deps.getDaemon(target.daemonId)
       if (
@@ -1394,7 +1401,7 @@ export class RelayIngressManager {
         trustedRouteVia: namesThisBot ? 'mention' : 'implicit'
       }
       try {
-        verdicts.push(admissionFrom(await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)))
+        verdicts.push(verdictOf(await this.sendWithRendezvous(daemon, rd, botId, `relay-ingress(${botId})`)))
       } catch (err) {
         this.deps.log.warn(`relay-ingress(${botId}): command forward failed: ${(err as Error).message}`)
         verdicts.push(retry('offline'))

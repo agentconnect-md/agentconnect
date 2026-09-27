@@ -294,16 +294,22 @@ message; it does not prove daemon admission, and the daemon's `rd/ack` keeps
 that shape: `accepted`/`reason` refuse only entry-path failures (no agent,
 unauthorized, a failed durable write) and report every deliberate gate as
 accepted. A daemon advertising `im-admission-v1` (`RD_IM_ADMISSION_V1`) also
-fills `routeAdmission` and `recoverable` on every pre-addressed `im` ack — the
-fields the routed path in [shared-bot relay](shared-bot-relay.md) §7.2 already
-carried — beside that unchanged pair: `admitted` for a durable admission, a
-duplicate its receipt settles included; `rejected` with `recoverable: true` for
-a transient refusal (`durability`, `draining`, `capacity`, `not_ready`,
-`not_host`, `stale`); `rejected` with `recoverable: false` for a deliberate gate
-(`off`, `muted`, `no_agent`, `unauthorized`, an agent-authored copy, a delivery
-the platform strategy settled itself). A gate named in the `rd/route/ack`
-vocabulary rides in `reason`; one without a name there (paused, loop
-protection) reads as `rejected`. The host exposes the verdict as
+fills `routeAdmission` and `recoverable` — the fields the routed path in
+[shared-bot relay](shared-bot-relay.md) §7.2 already carried — beside that
+unchanged pair on every `im` ack that goes through a platform strategy with an
+admission member (`requireDurable`, `receiptId`, or `onAdmitted`): `admitted`
+for a durable admission, a duplicate its receipt settles included; `rejected`
+with `recoverable: true` for a transient refusal (`durability`, `draining`,
+`capacity`, `not_ready`, `not_host`, `stale`); `rejected` with
+`recoverable: false` for a deliberate gate (`off`, `muted`, `no_agent`,
+`unauthorized`, an agent-authored copy, a delivery the platform strategy
+settled itself). A gate named in the `rd/route/ack` vocabulary rides in
+`reason`; one without a name there (paused, loop protection) reads as
+`rejected`. The shared best-effort path, which a platform without such a
+strategy takes, acks on dispatch before durability and carries no verdict; the
+host reads that as `rejected`/`unsupported`, so a platform that answers from
+admission supplies a relay-ingress strategy with at least `receiptId` (Google
+Chat will). The host exposes the verdict as
 `RelayIngressHost.forwardStrict(botId, message, sidecar?)`: the same
 arbitration as `forward`, returning a `RelayAdmission` — the `disposition` and
 `reason` of `rd/route/ack` — through the mapping the route forwarder uses
@@ -341,12 +347,14 @@ core. Preserve routing and
 authorization; the `im` ack above distinguishes transient draining/placement
 failures from intentional gates. Any admission member on the strategy
 (`requireDurable`, `receiptId`, `onAdmitted`) makes the ack wait for the durable
-admission, so `admitted` is never reported ahead of the row. `forwardStrict`
-gates each target on `daemon.supports(RD_IM_ADMISSION_V1)`, as the relay gates
-routed forwards on decision routing: a daemon that does not advertise it is
-answered `rejected`/`unsupported` and never sent to, so the old ack semantics
-are never read as admission. Changes to any shared wire fields must update and
-validate both consumers together.
+admission and makes that admission required, so a failed write is the
+`durability` refusal and `admitted` is never reported ahead of the row and its
+receipt. `forwardStrict` gates each target on
+`daemon.supports(RD_IM_ADMISSION_V1)`, as the relay gates routed forwards on
+decision routing: a daemon that does not advertise it is answered
+`rejected`/`unsupported` and never sent to, so the old ack semantics are never
+read as admission. Changes to any shared wire fields must update and validate
+both consumers together.
 
 Scope receipts to the installed app and stable Google message identity.
 Concurrent copies elect one admission in the store transaction; receipts outlive
