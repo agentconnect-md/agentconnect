@@ -516,7 +516,9 @@ block at the daemon, and is never persisted by the relay or Control Plane.
 
 ### 10.4 Agent chat API
 
-**Status:** Proposed.
+**Status:** Milestone 1 is implemented: the relay's `/chat`, the UI message
+stream encoder, turn admission, the per-token verdict cache, and `expiresAt` on
+the token routes. The rest is proposed.
 
 Chat frontends built on the AI SDK's `useChat`, such as a documentation site's
 Ask AI panel, speak the AI SDK UI message stream protocol: one HTTP POST per
@@ -550,7 +552,8 @@ The proxy mints a token per conversation, not per turn:
    `Authorization: Bearer <token>` and forwards the `useChat` request body.
    - The relay turns the last user message's text into a webchat turn. It
      ignores the earlier messages, because the daemon session already holds the
-     history.
+     history. The turn carries no delegated MCP entitlement, which stays with
+     the console's own socket.
    - The relay streams the turn's `rd/chat` output back as UI message parts.
 
 The token is the browser webchat token, with its five-minute TTL. The proxy
@@ -591,8 +594,13 @@ unaffected.
 | `session_info`                           | `message-metadata` with the title                       |
 | `notice`                                 | `data-notice`                                           |
 | `done`                                   | `finish`                                                |
-| rejected ack, `error`                    | `error`, with the ack reason                            |
+| `done` with `error`                      | `error`, with the reason                                |
 | elicitation, MCP App, `superseded` kinds | dropped                                                 |
+
+A rejected ack arrives before any output, so the relay answers it with an HTTP
+status instead of a stream: 409 for `busy`, 503 when the agent cannot take the
+turn now (`no_agent`, `paused`, `draining`), 502 otherwise, with the ack reason
+in the body. A daemon link that drops mid-turn ends the stream with `error`.
 
 Tool activity arrives as `data-tool` parts rather than AI SDK tool parts,
 because webchat carries a tool's title and status but not its name or
@@ -612,7 +620,9 @@ relay's output with the `ai` package's own client, not by string assertions.
 - The slot is held until the daemon's `done` for that turn, not until the HTTP
   response ends. Closing the HTTP stream does not cancel the turn; the AI
   SDK's `stop()` aborts only the fetch, and the turn finishes into the session
-  transcript.
+  transcript. The slot is also released when the daemon link that admitted
+  the turn drops, since its `done` can no longer arrive there, and after a
+  30-minute silence as a last resort.
 - The response carries only output whose `turnId` is the admitted turn's.
   Output from another participant on the same conversation, such as a browser
   socket, is not forwarded.

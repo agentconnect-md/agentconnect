@@ -20,66 +20,30 @@
 import { randomUUID } from 'node:crypto'
 import { selectTurnTargets } from '@agentconnect.md/activation-policy'
 import {
-  ErrorCode,
   RelayWebchatOp,
-  RD_ACK_NOT_HOLDER,
   RD_WEBCHAT_ATTACH_V1,
   type RdChat,
-  type RdMsgWebchat,
   type RdWebchatPost,
   type WebchatPost,
   type WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
-import { WireError, type ServerTransport } from '@agentconnect.md/connection'
+import type { ServerTransport } from '@agentconnect.md/connection'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { ChatSink } from './webchat-router.js'
 import type { Logger } from './log.js'
-
-const ACK_TIMEOUT_MESSAGE =
-  /^no ack after [1-9]\d* tries for [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const REMOTE_PROTOCOL_CODES: ReadonlySet<string> = new Set([
-  'UNKNOWN_FRAME',
-  'FRAME_TOO_LARGE',
-  'PROTOCOL_STATE',
-  'BAD_PAYLOAD'
-])
+import {
+  deliverWebchatMsg,
+  deliveryFailureDiagnostic,
+  resolveWebchatDaemon,
+  webchatRdMsg,
+  type WebchatConversationBinding,
+  type WebchatParticipant
+} from './webchat-daemon-bridge.js'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/**
- * Preserve actionable delivery telemetry without ever copying error messages or
- * details: both may contain the exact rd/msg, including browser content and the
- * non-secret remote-MCP entitlement.
- */
-function deliveryFailureDiagnostic(error: unknown): string {
-  if (!(error instanceof WireError)) return 'kind=unknown_error'
-
-  const parsedCode = ErrorCode.safeParse(error.code)
-  if (!parsedCode.success) return 'kind=unknown_wire_error'
-
-  const code = parsedCode.data
-  let kind = 'wire_error'
-  if (code === 'INTERNAL' && error.retryable && ACK_TIMEOUT_MESSAGE.test(error.message)) {
-    kind = 'ack_timeout'
-  } else if (code === 'INTERNAL' && error.retryable && error.message === 'connection closed') {
-    kind = 'connection_closed'
-  } else if (REMOTE_PROTOCOL_CODES.has(code)) {
-    kind = 'remote_protocol'
-  }
-  return `kind=${kind} code=${code} retryable=${error.retryable}`
-}
-
 /** One conversation participant, as verified by the CP at connect. */
-export interface BrowserConnParticipant {
-  agentId: string
-  /** Current placement; absent ⇒ unplaced / daemon not READY at verify (turns
-   *  targeting it are refused with `no_agent`). */
-  daemonId?: string
-  /** Where this participant's content is (#2218). Unlike `daemonId` it is never healed: a member
-   *  the turn reaches another way needs the RECORDER to decide whether it may take it. */
-  recordedDaemonId?: string
-  primary?: boolean
-}
+export type BrowserConnParticipant = WebchatParticipant
 
 export interface RelayBrowserConnDeps {
   /** The conversation id (== chatId == sessionKey); fresh or resumed. */
@@ -266,6 +230,7 @@ export { selectTurnTargets }
 export class RelayBrowserConnection implements ChatSink {
   private closed = false
   private readonly remoteMcp?: Readonly<WebchatRemoteMcpEntitlement>
+  private readonly binding: WebchatConversationBinding
   private readonly byAgentId = new Map<string, BrowserConnParticipant>()
   /** Canonical post timestamps for user turns — minted ONCE here (the origin) and
    *  strictly increasing per conversation so every participant copy of a turn
@@ -285,6 +250,11 @@ export class RelayBrowserConnection implements ChatSink {
           expiresAt: deps.remoteMcp.expiresAt
         })
       : undefined
+    this.binding = {
+      chatId: deps.chatId,
+      ...(deps.targetSessionId ? { targetSessionId: deps.targetSessionId } : {}),
+      ...(this.remoteMcp ? { remoteMcp: this.remoteMcp } : {})
+    }
     for (const p of deps.participants) this.byAgentId.set(p.agentId, p)
     // The primary is always addressable even on a pre-roster CP verdict.
     if (!this.byAgentId.has(deps.agentId)) {
@@ -421,19 +391,9 @@ export class RelayBrowserConnection implements ChatSink {
   /** Send one op to one participant's daemon, translating the verdict for the browser. */
   private async sendToParticipant(agentId: string, op: RelayWebchatOp, kind: RelayWebchatOp['op']): Promise<void> {
     const participant = this.byAgentId.get(agentId)
-    let daemonId = participant?.daemonId
-    let daemon = daemonId ? this.deps.daemonConnFor(daemonId) : undefined
-    if (!daemon) {
-      // A gone recorded member is not a gone agent: a rollout replaced the daemon under the
-      // conversation. Any live same-org member claims the duty on receipt or names the holder.
-      const fallback = this.deps.rendezvousDaemonConn?.()
-      if (fallback) {
-        this.deps.log.info(`webchat: recorded daemon for ${agentId} is gone — rendezvousing via ${fallback.daemonId}`)
-        daemonId = fallback.daemonId
-        daemon = fallback.conn
-      }
-    }
-    if (!daemon) {
+    // A gone recorded member is not a gone agent: a live pool member claims the duty or names the holder.
+    const target = resolveWebchatDaemon(this.deps, participant, agentId)
+    if (!target) {
       // The attach probe is background discovery — always a quiet per-agent
       // refusal, never the legacy error frame.
       if (kind === 'attach') {
@@ -462,40 +422,14 @@ export class RelayBrowserConnection implements ChatSink {
     }
     // Fail closed on an older daemon that cannot parse the probe op — refusing
     // here degrades to the pre-attach behavior (the reload recovers at turn end).
-    if (kind === 'attach' && !daemon.supports(RD_WEBCHAT_ATTACH_V1)) {
+    if (kind === 'attach' && !target.conn.supports(RD_WEBCHAT_ATTACH_V1)) {
       this.send({ type: 'attached', ack: { accepted: false, agentId, reason: 'unsupported' } })
       return
     }
-    const rdMsg: RdMsgWebchat = {
-      source: 'webchat',
-      agentId,
-      sessionKey: this.deps.chatId,
-      msgId: randomUUID(),
-      chatId: this.deps.chatId,
-      ...(this.deps.targetSessionId ? { targetSessionId: this.deps.targetSessionId } : {}),
-      ...(participant?.recordedDaemonId ? { recordedDaemonId: participant.recordedDaemonId } : {}),
-      ...(this.remoteMcp ? { remoteMcp: this.remoteMcp } : {}),
-      payload: op
-    }
+    const rdMsg = webchatRdMsg(this.binding, agentId, participant, op)
     try {
-      let ack = await daemon.sendMsg(rdMsg)
-      // Activation rendezvous (design §4.4): the participant's recorded daemon
-      // may no longer hold its duty. Re-send the SAME msgId to the named holder
-      // once — its own dedup covers a double delivery, and a second refusal
-      // falls through to the browser as an ordinary rejection.
-      if (!ack.accepted && ack.reason === RD_ACK_NOT_HOLDER && ack.holderDaemonId) {
-        const holder = this.deps.daemonConnFor(ack.holderDaemonId)
-        if (holder) {
-          this.deps.log.info(`webchat: re-routing ${agentId} to duty holder ${ack.holderDaemonId}`)
-          daemonId = ack.holderDaemonId
-          ack = await holder.sendMsg(rdMsg)
-        }
-      }
-      // The member that answered the verdict is serving the agent now — heal the roster entry
-      // so the next op goes direct instead of repeating the rendezvous or the holder hop.
-      if (participant && daemonId && ack.reason !== RD_ACK_NOT_HOLDER && participant.daemonId !== daemonId) {
-        participant.daemonId = daemonId
-      }
+      // A `not_holder` refusal is re-sent once to the named holder; a second refusal reaches the browser as-is.
+      const { ack, daemonId } = await deliverWebchatMsg(this.deps, target, rdMsg, participant)
       const browserAck = {
         accepted: ack.accepted,
         ...(ack.turnId ? { turnId: ack.turnId } : {}),

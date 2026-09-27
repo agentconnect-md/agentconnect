@@ -24,6 +24,8 @@ import { buildRelayServer } from './server.js'
 import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { WebchatRouter, bindWebchatPostAuthor } from './webchat-router.js'
+import { WebchatVerdictCache } from './webchat-verdict-cache.js'
+import { registerChatRoute } from './chat-route.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
 import { relayIngressPlugins } from './platforms/registry.js'
 import { CollaborationRouter } from './collaboration-router.js'
@@ -313,11 +315,21 @@ async function main(): Promise<void> {
     log
   })
 
+  // The webchat router (chatId → browser or /chat turn) — a daemon's rd/chat is delivered here.
+  const router = new WebchatRouter()
+  // One verdict per token until its `exp`, shared by the browser socket and `/chat` (§10.4).
+  const webchatVerdicts = new WebchatVerdictCache((token) => client.verify('webchat-token', token))
+
+  // Agent chat API (POST /chat, §10.4); registered before listen, the rd/* server is late-bound.
+  const chatRoute = registerChatRoute(server, {
+    verify: (token) => webchatVerdicts.verify(token),
+    daemons: () => held.rdServer,
+    router,
+    log
+  })
+
   client.start()
   await server.listen({ port: config.PORT, host: config.HOST })
-
-  // The webchat router (chatId → browser) — a daemon's rd/chat is delivered here.
-  const router = new WebchatRouter()
 
   // Accept daemon dial-ins on rd/* (after listen, so `server.server` exists). Each
   // rd/hello delegates the daemon's key to the CP via the CP client's `verify`; each
@@ -374,7 +386,7 @@ async function main(): Promise<void> {
   // Accept browser webchat dial-ins on /webchat (CP-minted token → rc/verify → bridge
   // onto the target daemon's rd/* socket).
   const browserServer = createRelayBrowserServer(server, {
-    verify: (kind, token) => client.verify(kind, token),
+    verify: (_kind, token) => webchatVerdicts.verify(token),
     daemons: rdServer,
     router,
     log
@@ -391,6 +403,7 @@ async function main(): Promise<void> {
     // stop the CP client, then close the http server.
     for (const ws of rdServer.wss.clients) ws.close(1012, 'relay restarting')
     for (const ws of browserServer.clients) ws.close(1012, 'relay restarting')
+    chatRoute.closeAll('the relay is restarting')
     await held.relayIngress?.stopAll()
     await client.stop()
     await server.close()
