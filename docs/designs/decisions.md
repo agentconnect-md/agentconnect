@@ -440,9 +440,10 @@ admission replay reuse a settled decision rather than creating another turn.
 Users configure organization-wide credentials under **Infra → Provider keys**.
 The shared configuration catalog includes **TypeSafe (Jev)**, **OpenRouter**, and
 **Cloudflare AI Gateway**, with one default connection per provider per organization.
-This infrastructure resource can serve consumers beyond Decisions. Owners can
-edit or remove connections; members can read non-secret metadata. Credentials
-are not per Decision or per daemon. A Decision keeps its
+The Console lists only TypeSafe (Jev) until something consumes the other two; the
+API still accepts them. This infrastructure resource can serve consumers beyond
+Decisions. Owners can edit or remove connections; members can read non-secret
+metadata. Credentials are not per Decision or per daemon. A Decision keeps its
 logical `providerId` (initially `typesafe`) and selected `model`; BYOK and AC credits
 are resolved credential sources, not separate choices in the Decision editor.
 

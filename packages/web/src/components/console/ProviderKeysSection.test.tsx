@@ -103,25 +103,21 @@ describe('Provider keys configuration', () => {
     })
   })
 
-  it('edits a gateway and patches headers while preserving omitted credentials', async () => {
-    const gateway = {
+  it('edits an endpoint and patches headers while preserving omitted credentials', async () => {
+    const custom = {
       ...configured,
-      provider: 'cloudflare',
-      name: 'Cloudflare AI Gateway',
-      endpointRequired: true,
       endpoint: 'https://gateway.example.test/v1',
-      defaultEndpoint: null,
-      headerNames: ['cf-aig-authorization']
+      headerNames: ['x-example-auth']
     }
-    mocks.fetchProviderKeys.mockResolvedValue([gateway])
-    mocks.setProviderKey.mockResolvedValue(gateway)
+    mocks.fetchProviderKeys.mockResolvedValue([custom])
+    mocks.setProviderKey.mockResolvedValue(custom)
     await render()
     await click('Edit')
-    expect(element.querySelector<HTMLInputElement>('input[type="url"]')!.value).toBe(gateway.endpoint)
+    expect(element.querySelector<HTMLInputElement>('input[type="url"]')!.value).toBe(custom.endpoint)
     expect(element.querySelector('input')!.value).toBe('')
     await click('Save')
-    expect(mocks.setProviderKey).toHaveBeenLastCalledWith('example-org', 'cloudflare', {
-      endpoint: gateway.endpoint,
+    expect(mocks.setProviderKey).toHaveBeenLastCalledWith('example-org', 'typesafe', {
+      endpoint: custom.endpoint,
       headers: {}
     })
     await click('Edit')
@@ -129,7 +125,7 @@ describe('Provider keys configuration', () => {
     await click('Add header')
     const names = element.querySelectorAll<HTMLInputElement>('input[aria-label="Header name"]')
     const values = element.querySelectorAll<HTMLInputElement>('input[aria-label="Header value"]')
-    await enterKey('CF-AIG-Authorization', names[1]!)
+    await enterKey('X-Example-Auth', names[1]!)
     await enterKey('example-new-value', values[1]!)
     expect(element.textContent).toContain('Header names must be unique')
     await enterKey('X-Extra', names[1]!)
@@ -137,10 +133,24 @@ describe('Provider keys configuration', () => {
       element.querySelector<HTMLButtonElement>('button[aria-label="Remove header"]')!.click()
     })
     await click('Save')
-    expect(mocks.setProviderKey).toHaveBeenLastCalledWith('example-org', 'cloudflare', {
-      endpoint: gateway.endpoint,
-      headers: { 'cf-aig-authorization': null, 'x-extra': 'example-new-value' }
+    expect(mocks.setProviderKey).toHaveBeenLastCalledWith('example-org', 'typesafe', {
+      endpoint: custom.endpoint,
+      headers: { 'x-example-auth': null, 'x-extra': 'example-new-value' }
     })
+  })
+
+  it('hides providers nothing consumes yet, even when a key is already saved', async () => {
+    const unused = (provider: string, name: string) => ({ ...configured, provider, name })
+    mocks.fetchProviderKeys.mockResolvedValue([
+      empty,
+      unused('openrouter', 'OpenRouter'),
+      unused('cloudflare', 'Cloudflare AI Gateway')
+    ])
+    await render()
+    expect(element.textContent).toContain('TypeSafe (Jev)')
+    expect(element.textContent).not.toContain('OpenRouter')
+    expect(element.textContent).not.toContain('Cloudflare')
+    expect(element.textContent).not.toContain('Configured')
   })
 
   it('saves and replaces through a password field and removes only after confirmation', async () => {

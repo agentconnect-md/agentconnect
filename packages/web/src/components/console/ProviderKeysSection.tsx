@@ -3,7 +3,7 @@
 import { useId, useState } from 'react'
 import { useFormatter, useTranslations } from 'next-intl'
 import useSWR from 'swr'
-import type { ProviderKeyStatus, SetProviderKeyInput } from '@agentconnect.md/protocol'
+import type { ProviderKeyProvider, ProviderKeyStatus, SetProviderKeyInput } from '@agentconnect.md/protocol'
 import { deleteProviderKey, fetchProviderKeys, setProviderKey } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -20,6 +20,9 @@ export default function ProviderKeysSection() {
   ) : null
 }
 
+// Only providers something consumes are offered; OpenRouter and Cloudflare AI Gateway have no consumer yet.
+const OFFERED_PROVIDERS: ReadonlySet<ProviderKeyProvider> = new Set(['typesafe'])
+
 type HeaderDraft = { name: string; value: string; saved: boolean; removed: boolean }
 
 function ProviderKeysForOrg({ orgId, isOwner }: { orgId: string; isOwner: boolean }) {
@@ -30,7 +33,9 @@ function ProviderKeysForOrg({ orgId, isOwner }: { orgId: string; isOwner: boolea
     data: entries,
     error: loadError,
     mutate
-  } = useSWR(consoleKeys.providerKeys(orgId), ([, id]) => fetchProviderKeys(id))
+  } = useSWR(consoleKeys.providerKeys(orgId), ([, id]) =>
+    fetchProviderKeys(id).then((rows) => rows.filter((row) => OFFERED_PROVIDERS.has(row.provider)))
+  )
   const [editing, setEditing] = useState<ProviderKeyStatus | null>(null)
   const [deleting, setDeleting] = useState<ProviderKeyStatus | null>(null)
   const [apiKey, setApiKey] = useState('')
