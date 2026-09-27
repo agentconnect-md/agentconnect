@@ -76,6 +76,8 @@ describe('model selection evaluation history', () => {
     await save(3, DECISION)
     const page = await reader.list('', { agentId: AGENT, decisionId: DECISION, limit: 1 })
     expect(page.items.map((item) => item.sessionId)).toEqual([sessionId(3)])
+    // The CP fills the session's title; the daemon never knows it.
+    expect(page.items[0]!.title).toBeNull()
     expect(page.nextCursor).toBe(page.items[0]!.seq)
     expect(
       (await reader.list('', { agentId: AGENT, decisionId: DECISION, cursor: page.nextCursor!, limit: 1 })).items.map(

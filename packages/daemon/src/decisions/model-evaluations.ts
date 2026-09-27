@@ -28,6 +28,7 @@ export class DecisionModelEvaluationReader {
   private summary(row: DecisionModelEvaluationRow): DecisionModelEvaluationRecord | null {
     try {
       const value = DecisionModelEvaluationRecord.safeParse({
+        title: null,
         ...JSON.parse(row.summaryJson),
         seq: Number(row.seq),
         detailsExpired: row.detailJson === null

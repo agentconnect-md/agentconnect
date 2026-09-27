@@ -225,7 +225,7 @@ describe('DecisionEvaluationReader', () => {
     await s.close()
   })
 
-  it('titles a row by its code-host subject as the session reads, else by the message first line', async () => {
+  it('titles a row by its code-host subject as the session reads, else by the message first line with mentions named', async () => {
     const s = await openTestStore()
     const titled = async (n: number, input: Record<string, unknown>) => {
       const { seq } = await reserve(s, n)
@@ -241,6 +241,9 @@ describe('DecisionEvaluationReader', () => {
     const push = await titled(3, { ...message('\n\n  first  line \nsecond line'), subject: { kind: 'push' } })
     const long = await titled(4, message('x'.repeat(200)))
     const blank = await titled(5, message('   '))
+    // Mentions read as the session title does: a known id by name, an unknown one left raw.
+    await s.setDisplayName('U0KNOWN1', 'Dana Reyes', AT)
+    const mention = await titled(6, message('<@U0KNOWN1> hi, cc <@U0UNKNWN>'))
     const items = (await readerFor(s).list(ORG, { ...lane, limit: 10 })).items
     const title = (seq: number) => items.find((item) => item.seq === seq)!.title
     expect(title(pull)).toBe('PR #42: Fix the parser')
@@ -248,6 +251,10 @@ describe('DecisionEvaluationReader', () => {
     expect(title(push)).toBe('first line')
     expect(title(long)).toBe(`${'x'.repeat(79)}…`)
     expect(title(blank)).toBeNull()
+    expect(title(mention)).toBe('@Dana Reyes hi, cc <@U0UNKNWN>')
+    expect((await readerFor(s).get(ORG, { ...lane, seq: mention })).evaluation?.title).toBe(
+      '@Dana Reyes hi, cc <@U0UNKNWN>'
+    )
     await s.close()
   })
 
