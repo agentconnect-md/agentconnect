@@ -198,6 +198,14 @@ export const sessionKeyOf: (msg: Pick<WireNormalizedMessage, 'channel' | 'thread
 
 const scopeMatches: (r: AttributedRoute, msg: WireNormalizedMessage) => boolean = sharedBotScopeMatches
 
+/** An explicit address: the message names the bot's identity, or its normalizer stamped it a mention (Google Chat states the cause before the identity is known). */
+export function explicitlyAddressesBot(
+  a: Pick<BotAssignment, 'botUserId'> | undefined,
+  msg: WireNormalizedMessage
+): boolean {
+  return (a?.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)) || msg.trigger === 'mention'
+}
+
 const target = (r: AttributedRoute): RouteTarget => ({
   agentId: r.agentId,
   daemonId: r.daemonId,
@@ -753,7 +761,7 @@ export class BotArbitrationRouter {
     const remembered = byConversation.get(key) ?? new Map<string, RouteTarget>()
 
     const explicitIds = new Set<string>()
-    const namesBot = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
+    const namesBot = explicitlyAddressesBot(a, msg)
     if (namesBot) {
       for (const route of a.routes) {
         if (route.match.kind !== 'mention' || !scopeMatches(route, msg)) continue

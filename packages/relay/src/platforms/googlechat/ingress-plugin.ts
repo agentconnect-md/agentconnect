@@ -87,7 +87,9 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
         })
       }
       if (result.kind === 'membership') return {}
-      const { message } = result
+      // Google delivers a Space message only to the apps it mentions or adds, and a DM is addressed by nature: the
+      // trusted cause rides the payload, so the relay treats the delivery as an address before the identity is known.
+      const message = { ...result.message, trigger: result.message.isDm ? ('dm' as const) : ('mention' as const) }
       if (appUserName === undefined && ingest.firstUnknownIdentity())
         host.log.warn(`relay-ingress(${botId}): the Chat app's identity is not known yet — forwarding text unstripped`)
       // A repeat of a settled attempt answers 200 without forwarding; an unsettled one is forwarded again.

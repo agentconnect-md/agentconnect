@@ -300,17 +300,18 @@ installed app and integration scope; payloads cannot choose an AgentConnect orga
 integration, agent, or session. Validate that nested message and thread resource
 names belong to the event's Space before routing or replying.
 
-| Normalized field     | Google input / rule                                                                                                            |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `platform`           | `googlechat`                                                                                                                   |
-| `msgId`              | Stable Google message resource name, scoped by the installed app for admission.                                                |
-| `channel`            | Full `space.name`; never its mutable display name.                                                                             |
-| `thread`             | Full message thread resource for named Spaces; use the existing conversation session semantics for 1:1 DMs.                    |
-| `sender.id`          | Google user resource name within the installation's stable transport scope.                                                    |
-| `text`               | Message text with the receiving app's mention removed using structured mention data. Preserve other mentions and user content. |
-| `mentionedBots`      | Verified receiving app identity when explicitly mentioned.                                                                     |
-| `isDm` / `isGroupDm` | Explicit Space type; unknown types fail closed. Group DMs are not admitted in this version.                                    |
-| Provider timestamp   | Message creation time, with event time as a validated fallback.                                                                |
+| Normalized field     | Google input / rule                                                                                                                                                                                                         |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform`           | `googlechat`                                                                                                                                                                                                                |
+| `msgId`              | Stable Google message resource name, scoped by the installed app for admission.                                                                                                                                             |
+| `channel`            | Full `space.name`; never its mutable display name.                                                                                                                                                                          |
+| `thread`             | Full message thread resource for named Spaces; use the existing conversation session semantics for 1:1 DMs.                                                                                                                 |
+| `sender.id`          | Google user resource name within the installation's stable transport scope.                                                                                                                                                 |
+| `text`               | Message text with the receiving app's mention removed using structured mention data. Preserve other mentions and user content.                                                                                              |
+| `mentionedBots`      | Verified receiving app identity when explicitly mentioned.                                                                                                                                                                  |
+| `trigger`            | `mention` for every Space delivery, since Google delivers one only to the apps it mentions or adds; `dm` for a DM. The relay reads the stamp as an explicit address (`trustedRouteVia`) before the app's identity is known. |
+| `isDm` / `isGroupDm` | Explicit Space type; unknown types fail closed. Group DMs are not admitted in this version.                                                                                                                                 |
+| Provider timestamp   | Message creation time, with event time as a validated fallback.                                                                                                                                                             |
 
 The [message resource](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages)
 provides message, thread, sender, and mention coordinates. `argumentText` strips

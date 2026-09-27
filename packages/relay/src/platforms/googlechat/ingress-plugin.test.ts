@@ -138,6 +138,24 @@ async function deliver(
 const forwarded = (h: RelayIngressHost): WireNormalizedMessage | undefined =>
   vi.mocked(h.forwardStrict).mock.calls[0]?.[1]
 
+// A Space message naming two apps: Google's data cannot say which one is this app.
+const twoAppMention = {
+  ...spaceMention,
+  message: {
+    ...spaceMention.message,
+    text: '@AgentConnect Probe @Other 第二条',
+    annotations: [
+      ...(spaceMention.message?.annotations ?? []),
+      {
+        type: 'USER_MENTION',
+        startIndex: 20,
+        length: 6,
+        userMention: { user: { name: OTHER_APP, displayName: 'Other', type: 'BOT' }, type: 'MENTION' }
+      }
+    ]
+  }
+}
+
 describe('googlechat ingress plugin — bearer-token verification (§2)', () => {
   it('accepts a token Google signed for this project number and forwards the message', async () => {
     const { plugin, h, ingest, certificates } = setup()
@@ -338,27 +356,26 @@ describe('googlechat ingress plugin — the app identity (§3)', () => {
 
   it('forwards unstripped, warning once, while the identity cannot be known', async () => {
     const { plugin, h, ingest } = setup()
-    const twoApps = {
-      ...spaceMention,
-      message: {
-        ...spaceMention.message,
-        text: '@AgentConnect Probe @Other 第二条',
-        annotations: [
-          ...(spaceMention.message?.annotations ?? []),
-          {
-            type: 'USER_MENTION',
-            startIndex: 20,
-            length: 6,
-            userMention: { user: { name: OTHER_APP, displayName: 'Other', type: 'BOT' }, type: 'MENTION' }
-          }
-        ]
-      }
-    }
-    await deliver(plugin, ingest, h, twoApps, `Bearer ${await token()}`)
+    await deliver(plugin, ingest, h, twoAppMention, `Bearer ${await token()}`)
     await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)
     expect(h.reportBotUserId).not.toHaveBeenCalled()
     expect(forwarded(h)).toMatchObject({ text: '@AgentConnect Probe @Other 第二条', mentionedBots: [] })
     expect(vi.mocked(h.forwardStrict).mock.calls[1]?.[1]).toMatchObject({ text: 'hi', isDm: true })
     expect(vi.mocked(h.log.warn).mock.calls.filter(([m]) => m.includes('identity'))).toHaveLength(1)
+  })
+})
+
+describe('googlechat ingress plugin — the trusted activation cause', () => {
+  it('stamps a DM as a DM and every Space delivery as a mention, before and after the identity is known', async () => {
+    const { plugin, h, ingest } = setup()
+    const bearer = `Bearer ${await token()}`
+    await deliver(plugin, ingest, h, dmMessage, bearer)
+    await deliver(plugin, ingest, h, twoAppMention, bearer)
+    await deliver(plugin, ingest, h, spaceAddedByMention, bearer)
+    await deliver(plugin, ingest, h, spaceMention, bearer)
+    const forwardedMessages = vi.mocked(h.forwardStrict).mock.calls.map(([, message]) => message)
+    expect(forwardedMessages.map((message) => message.trigger)).toEqual(['dm', 'mention', 'mention', 'mention'])
+    // The second Space delivery was stamped although nothing named this app yet.
+    expect(forwardedMessages[1]).toMatchObject({ isDm: false, mentionedBots: [] })
   })
 })

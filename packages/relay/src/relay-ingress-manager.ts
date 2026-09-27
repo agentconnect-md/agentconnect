@@ -47,6 +47,7 @@ import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 import {
   BotArbitrationRouter,
+  explicitlyAddressesBot,
   sessionKeyOf,
   type BotAssignment,
   type RouteTarget,
@@ -431,7 +432,7 @@ export class RelayIngressManager {
     const carrier = this.router.hostCarrier(botId, msg.channel, routed.evaluationDaemonId)
     if (!carrier) return drop(`no member of this bot on host ${routed.evaluationDaemonId}`, rejected('not_member'))
     const assignment = this.router.get(botId)
-    const namesBot = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
+    const namesBot = explicitlyAddressesBot(assignment, msg)
     const relayId = this.deps.selfRelayId()
     const rd: RdMsgIm = {
       source: 'im',
@@ -1172,7 +1173,7 @@ export class RelayIngressManager {
     // an unreported one could never be enabled. It is only ever *addressed* by mention,
     // so unlike a DM it is reported only when it names THIS bot: `mentionedBots` also
     // holds the humans and other apps named in the same message.
-    const namesThisBot = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
+    const namesThisBot = explicitlyAddressesBot(assignment, msg)
     const addressesBot = msg.isDm || (msg.isGroupDm === true && namesThisBot)
     if (addressesBot && !msg.sender.isBot) await this.reportObservedConversation(botId, msg)
     // A By decision routed conversation: every eligible human message goes once to its evaluation host.
