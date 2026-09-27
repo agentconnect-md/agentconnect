@@ -5,6 +5,7 @@ const logto = vi.hoisted(() => ({
   getAccessToken: vi.fn(),
   clearAccessToken: vi.fn(),
   clearAllTokens: vi.fn(),
+  setJwtVerifier: vi.fn(),
   replace: vi.fn(),
   clientConfig: undefined as unknown
 }))
@@ -18,6 +19,7 @@ vi.mock('@logto/browser', () => ({
     getAccessToken = logto.getAccessToken
     clearAccessToken = logto.clearAccessToken
     clearAllTokens = logto.clearAllTokens
+    setJwtVerifier = logto.setJwtVerifier
   },
   UserScope: {
     Email: 'email',
@@ -39,6 +41,7 @@ describe('getToken', () => {
     logto.getAccessToken.mockReset()
     logto.clearAccessToken.mockReset().mockResolvedValue(undefined)
     logto.clearAllTokens.mockReset().mockResolvedValue(undefined)
+    logto.setJwtVerifier.mockReset()
     logto.replace.mockReset()
     logto.clientConfig = undefined
     vi.stubGlobal('window', {
@@ -104,6 +107,7 @@ describe('getToken', () => {
 
     expect(logto.getAccessToken).toHaveBeenCalledWith()
     expect(logto.clientConfig).toMatchObject({ scopes: ['email', 'profile', 'identities', 'roles'] })
+    expect(logto.setJwtVerifier).toHaveBeenCalledOnce()
   })
 
   it('forces a fresh resource token after the Control Plane rejects the cached one', async () => {

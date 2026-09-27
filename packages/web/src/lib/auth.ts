@@ -24,6 +24,7 @@ import { MOCK_MODE } from '@/lib/data'
 import { identifyUser, resetAnalytics } from '@/lib/analytics'
 import { forgetOwnershipProof } from '@/lib/ownership-proof'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
+import { enableJwksCacheRecovery } from '@/lib/logto-jwks'
 
 declare global {
   interface Window {
@@ -80,6 +81,7 @@ function getClient(): LogtoClient | undefined {
       scopes: [UserScope.Email, UserScope.Profile, UserScope.Identities, UserScope.Roles],
       ...(apiResource ? { resources: [apiResource] } : {})
     })
+    enableJwksCacheRecovery(client)
   }
   return client
 }
