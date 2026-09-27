@@ -1,7 +1,10 @@
 # Google Chat Integration Design
 
-Status: **draft** — not implemented. Provider documentation checked on September 27,
-2026; no live Google Chat integration has been tested for this design.
+Status: **implemented** — the four platform modules, the Setup Server card, and the
+chart route are merged, and §9 was verified end to end against a live Chat app on
+September 27, 2026 (DM and Space mention, threaded replies, streamed edits, the
+Markdown subset, and the console views). Open follow-ups: several agents sharing one
+app, and a Marketplace listing for more than one Workspace customer.
 
 Related: [issue #2262](https://github.com/agentconnect-md/agentconnect/issues/2262),
 [platform modules](integration-plugin-architecture.md),
