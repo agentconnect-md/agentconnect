@@ -90,7 +90,9 @@ Credential replacement drains old output connections using existing egress lease
 Use one module-owned HTTPS route with Google's **Project Number** authentication
 audience, mounted at `GOOGLE_CHAT_EVENTS_PATH` (`/googlechat/events`), a
 constant the protocol package owns so the Setup Server's published callback URL
-and the relay's route cannot drift. Google posts each event with
+and the relay's route cannot drift. The chart's relay `HTTPRoute` lists every
+public relay path explicitly, so it carries this one too; without it the gateway
+answers 404 before a callback reaches the relay. Google posts each event with
 `Authorization: Bearer <JWT>`. The live probe fixed the token's shape: RS256
 with a `kid` header, issuer `chat@system.gserviceaccount.com`, audience the Cloud
 project number as a decimal string, and a one-hour lifetime. A decoded token
