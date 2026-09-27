@@ -311,6 +311,7 @@ import { configureFeishuHttpApp } from './http/feishu-app-config.js'
 import { SlackSessionAccessService } from './http/slack-session-access.js'
 import { GithubSessionAccessService } from './http/github-session-access.js'
 import { FeishuSessionAccessService } from './http/feishu-session-access.js'
+import { GoogleChatSessionAccessService } from './http/googlechat-session-access.js'
 import { SessionAccessWarmer } from './http/session-access-warmer.js'
 import type { ExternalScopeRecord } from './persistence/ports.js'
 
@@ -1689,6 +1690,11 @@ export function buildContainer(
     // Lazy over `http.log` (assigned below; only ever called at resolve time).
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
+  const googleChatSessionAccess = new GoogleChatSessionAccessService({
+    bots: repos.bot,
+    users: repos.user,
+    ...(logtoIdentity ? { identity: logtoIdentity } : {})
+  })
 
   // Built once and shared between the route deps (the live paths) and the
   // platform providers below — one closure per platform, not two.
@@ -1877,7 +1883,7 @@ export function buildContainer(
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
     ...(githubRepoIdentity ? { githubRepoIdentity } : {}),
-    sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess],
+    sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess, googleChatSessionAccess],
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })

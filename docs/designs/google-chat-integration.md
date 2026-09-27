@@ -636,9 +636,10 @@ authorization. Keep Console continuation disabled until Google identity and
 authorization support is designed.
 
 Follow [session visibility](session-visibility.md): DMs are private to the verified
-originator, with no organization-owner bypass. Without a Google account link, the
-private owner tuple has no matching human Console identity, so these transcripts
-remain inaccessible there (§10.6 designs that link). Space sessions follow AgentConnect's normal
+originator, with no organization-owner bypass. A viewer who signed in to the
+console with Google, or linked it on their profile, opens their own DM transcripts
+(§10.6); without that link the private owner tuple matches no human Console
+identity, so the transcripts stay inaccessible there. Space sessions follow AgentConnect's normal
 organization visibility; Google Space membership does not become a Console ACL.
 Explain both consequences during setup, especially for restricted Google Spaces.
 
@@ -980,14 +981,19 @@ linked after sign-in still claims. A stale holder of the same id releases it,
 and an unlinked identity clears it. No response carries it. The same equality
 is what the claim route checks.
 
-The private owner tuple of [session visibility](session-visibility.md) can then
-match a human console identity: a DM's originator could open their own
-transcript, which lifts the §6 restriction for linked people without any
-matching by email or display name. That link is a follow-up, not implemented:
-it needs a Google Chat session-access plugin that adds the viewer's `users/{id}`
-to the identity set, not a change to the policy predicates. Space sessions keep
-their organization visibility; Google membership still does not become a
-console ACL.
+The private owner tuple of [session visibility](session-visibility.md) then
+matches a human console identity, so a DM's originator opens their own
+transcript without any matching by email or display name. A DM records its
+owner as `googlechat:<project number>:users/{id}`, the app's project being the
+durable tenant scope the daemon reports. The Google Chat session-access plugin
+(`http/googlechat-session-access.ts`) adds that tuple to the identity set of a
+viewer with a verified sign-in, once for each Google Chat app the organization
+holds, revoked or not. It reads the Google account id through the sync the
+sign-in and claim paths use, served under the identity lease the Slack and
+Feishu identities share rather than fresh, so the recorded id also follows an
+unlink; an identity provider failure adds nothing. The policy predicates are unchanged, no Google API is
+called, and no scope is resolved. Space sessions keep their organization
+visibility; Google membership still does not become a console ACL.
 
 ### 10.7 Cards and the welcome message
 
