@@ -17,6 +17,7 @@ describe('turn chrome facet', () => {
     // A notice is plain text, and a surface that reads markup in it turns an agent's link into a
     // tap — Slack's `<url|label>`, Discord's `[label](url)`. Telegram and Feishu read neither.
     expect(turnChromeFor('discord').noticeMarkup).toBe('markdown')
+    expect(turnChromeFor('googlechat').noticeMarkup).toBe('markdown')
     expect(turnChromeFor('telegram').noticeMarkup).toBeUndefined()
     expect(turnChromeFor('feishu').noticeMarkup).toBeUndefined()
   })
@@ -24,7 +25,7 @@ describe('turn chrome facet', () => {
   it('declares the on-demand status platforms EXPLICITLY', () => {
     // 'on-demand' (record the dedup key, post nothing) is a declaration, not an
     // absence — the absent case takes each site's legacy default arm instead.
-    for (const p of ['telegram', 'discord', 'feishu']) {
+    for (const p of ['telegram', 'discord', 'feishu', 'googlechat']) {
       expect(turnChromeFor(p).statusSurface).toBe('on-demand')
       expect(turnChromeFor(p).attributionFooter).toBeUndefined()
       expect(turnChromeFor(p).chatInputCards).toBeUndefined()
