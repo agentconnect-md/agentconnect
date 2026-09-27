@@ -32,6 +32,19 @@ describe('DeploymentConfigValuesV1Schema', () => {
     })
     expect(zero.features.maxOrgsPerNonAdminUser).toBe(0)
   })
+
+  it('accepts a Google Chat project and refuses a non-numeric project number', () => {
+    const googleChat = { projectId: 'example-project', projectNumber: '123456789012' }
+    expect(DeploymentConfigValuesV1Schema.parse({ ...base, googleChat }).googleChat).toEqual(googleChat)
+    expect(
+      DeploymentConfigValuesV1Schema.safeParse({ ...base, googleChat: { ...googleChat, projectNumber: '12ab' } })
+        .success
+    ).toBe(false)
+    expect(
+      DeploymentConfigValuesV1Schema.safeParse({ ...base, googleChat: { ...googleChat, projectId: 'Not A Project' } })
+        .success
+    ).toBe(false)
+  })
 })
 
 describe('deploymentSecretsRequiringRefresh', () => {
@@ -97,5 +110,22 @@ describe('deploymentSecretsRequiringRefresh', () => {
       'lark.loginAppSecret',
       'logto.managementAppSecret'
     ])
+  })
+
+  it('asks for a new Google Chat key only when the project changes', () => {
+    const withChat = { ...base, googleChat: { projectId: 'example-project', projectNumber: '123456789012' } }
+    expect(deploymentSecretsRequiringRefresh(base, withChat)).toEqual(['googleChat.serviceAccountKey'])
+    expect(
+      deploymentSecretsRequiringRefresh(withChat, {
+        ...withChat,
+        googleChat: { projectId: 'example-project', projectNumber: '210987654321' }
+      })
+    ).toEqual([])
+    expect(
+      deploymentSecretsRequiringRefresh(withChat, {
+        ...withChat,
+        googleChat: { projectId: 'other-example-project', projectNumber: '123456789012' }
+      })
+    ).toEqual(['googleChat.serviceAccountKey'])
   })
 })

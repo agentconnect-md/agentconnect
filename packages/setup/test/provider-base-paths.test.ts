@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { loadDeploymentEnvironment } from '../src/deployment-environment.js'
 import { buildGithubAppManifest, githubConfiguredUrls } from '../src/github-app.js'
 import { gitlabConfiguredUrls } from '../src/gitlab-app.js'
+import { googleChatConfiguredUrls } from '../src/google-chat-app.js'
 import { linearConfiguredUrls } from '../src/linear-app.js'
 import { buildSlackDeploymentManifest, slackConfiguredUrls } from '../src/slack-app.js'
 
@@ -111,6 +112,20 @@ describe('provider service base paths', () => {
     expect(() => linearConfiguredUrls({ services: { controlPlane: 'https://gateway.example.test/cp' } })).toThrow(
       /ingress/
     )
+  })
+
+  it('publishes the Google Chat HTTP endpoint beneath the ingress prefix, and only over HTTPS', () => {
+    const config = { services: loadDeploymentEnvironment(PREFIXED_ENVIRONMENT).services }
+
+    expect(googleChatConfiguredUrls(config)).toMatchObject({
+      callbackUrl: 'https://gateway.example.test/relay/googlechat/events',
+      audienceSetting: 'Project Number'
+    })
+    expect(() =>
+      googleChatConfiguredUrls({
+        services: { controlPlane: 'https://gateway.example.test/cp', relay: 'http://localhost:8090' }
+      })
+    ).toThrow(/HTTPS ingress/)
   })
 
   it('targets the application links at a self-managed instance, prefix and port intact (§24.1)', () => {

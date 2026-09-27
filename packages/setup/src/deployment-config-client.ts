@@ -273,6 +273,31 @@ export function linearDeploymentPut(
   })
 }
 
+export interface GoogleChatDeploymentApp {
+  projectId: string
+  projectNumber: string
+  /** Validated key JSON; omitted keeps the sealed key, which only the same project may reuse. */
+  serviceAccountKey?: string
+}
+
+/** Null clears the app. Google Chat apps are configured by hand in Google Cloud Console (google-chat-integration.md §3). */
+export function googleChatDeploymentPut(
+  current: CurrentDeploymentConfig,
+  app: GoogleChatDeploymentApp | null
+): DeploymentConfigPut {
+  if (app && !app.serviceAccountKey && current.values.googleChat?.projectId !== app.projectId) {
+    throw new Error('a new Google Cloud project requires its service-account key')
+  }
+  const secret = app ? app.serviceAccountKey : null
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      googleChat: app ? { projectId: app.projectId, projectNumber: app.projectNumber } : null
+    },
+    ...(secret === undefined ? {} : { secrets: { 'googleChat.serviceAccountKey': secret } })
+  })
+}
+
 export interface LogtoGoogleConnectorCredentials {
   clientId: string
   clientSecret?: string

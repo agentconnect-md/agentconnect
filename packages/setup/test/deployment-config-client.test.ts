@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1 } from '@agentconnect.md/control-plane/deployment-config-store'
-import { gitlabDeploymentPut, linearDeploymentPut, localAuthLogtoPut } from '../src/deployment-config-client.js'
+import {
+  gitlabDeploymentPut,
+  googleChatDeploymentPut,
+  linearDeploymentPut,
+  localAuthLogtoPut
+} from '../src/deployment-config-client.js'
 
 describe('localAuthLogtoPut', () => {
   it('stores an explicit Logto Management API resource', () => {
@@ -122,5 +127,34 @@ describe('linearDeploymentPut', () => {
 
   it('rejects an empty client id through the document schema', () => {
     expect(() => linearDeploymentPut(current, { clientId: '', clientSecret: 'a', signingSecret: 'b' })).toThrow()
+  })
+})
+
+describe('googleChatDeploymentPut', () => {
+  const current = { values: DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1 }
+  const app = { projectId: 'example-project', projectNumber: '123456789012' }
+  const saved = { values: { ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1, googleChat: app } }
+
+  it('stores the project as configuration and the key as a write-only entry', () => {
+    const result = googleChatDeploymentPut(current, { ...app, serviceAccountKey: '{"type":"service_account"}' })
+
+    expect(result.values.googleChat).toEqual(app)
+    expect(result.secrets).toEqual({ 'googleChat.serviceAccountKey': '{"type":"service_account"}' })
+    expect(JSON.stringify(result.values)).not.toContain('service_account')
+  })
+
+  it('keeps the sealed key only for the same project', () => {
+    expect(() => googleChatDeploymentPut(current, app)).toThrow(/service-account key/)
+    expect(() => googleChatDeploymentPut(saved, { ...app, projectId: 'other-example-project' })).toThrow(
+      /service-account key/
+    )
+    expect(googleChatDeploymentPut(saved, { ...app, projectNumber: '210987654321' }).secrets).toBeUndefined()
+  })
+
+  it('clears the app and its key together', () => {
+    const result = googleChatDeploymentPut(saved, null)
+
+    expect(result.values.googleChat).toBeNull()
+    expect(result.secrets).toEqual({ 'googleChat.serviceAccountKey': null })
   })
 })
