@@ -25,7 +25,7 @@ adapters remain a separate discussion.
 
 | Capability       | First version                                                                                              |
 | ---------------- | ---------------------------------------------------------------------------------------------------------- |
-| Installation     | Operator configures a Chat app's HTTPS endpoint and service account; Console assigns it to one agent.      |
+| Installation     | Deployment-owned app in Setup Server for the preset agent, or a per-agent app from its integrations page.  |
 | Conversations    | Ordinary text in a 1:1 DM; explicit app mentions in a named Space, with replies in the originating thread. |
 | Output           | Text, supported Markdown, coalesced message edits, and final replies.                                      |
 | Session behavior | Existing conversation gates, session modes, steering, queuing, and text control commands.                  |
@@ -113,6 +113,23 @@ An operator can preconfigure a dedicated app for an agent; this changes who
 performs setup, not the Google identity or the need to create that app first.
 See Google's [per-app project requirement](https://developers.google.com/workspace/chat/configure-chat-api).
 
+Two credential holders exist, mirroring Slack. The deployment-owned app is
+configured once in the Setup Server, which keeps its project ID and project number
+in the typed deployment document and its key as a write-only deployment secret,
+and is bound to the preset `agentconnect` agent. Per-agent apps are configured
+from an agent's integrations page in the Console. Both produce the same bot row,
+uniqueness key, and relay assignment; only the surface that collects the
+credential differs. The Setup Server runs the validation below before it stores
+anything and shows the HTTPS callback and **Project Number** audience to copy. A
+`chat.bot` credential does not reveal its project number, so the Setup Server
+checks only its shape; a wrong number fails callback verification, which the
+end-to-end test exposes.
+
+In this version the deployment-owned app serves one agent. Google requires one
+Cloud project per Chat app and this design keeps one app per agent, so a hosted
+deployment serving every organization's preset agent through one app is the
+shared-bot follow-up, not this version.
+
 The initial experience is guided setup, not one-click app creation. Slack offers
 both manifest-prefilled creation links and `apps.manifest.create`, which our
 [Slack install flow](slack-install-smoothing.md) uses. The Google configuration
@@ -148,15 +165,15 @@ distribution requirements. See [testing visibility](https://developers.google.co
 
 ### Configuration and validation
 
-The Console wizard collects credentials and shows the derived installation
-metadata through the existing integration and secret APIs:
+The Console wizard, or the Setup Server for the deployment-owned app, collects
+credentials and shows the derived installation metadata:
 
 | Value                           | Storage and meaning                                                                                           |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | Google Cloud project ID         | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                         |
 | Verified project number         | Canonical numeric app identity and expected token audience; resolve and verify against the declared project.  |
 | HTTPS callback URL              | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings. |
-| Service-account key JSON        | Write-only credential in the existing encrypted bot secret store.                                             |
+| Service-account key JSON        | Write-only credential in the encrypted bot secret store, or a deployment secret for the deployment app.       |
 | Verified Chat app user identity | Provider identity metadata for mention matching and bot attribution; obtain from Google, not a display name.  |
 
 Keep the app and service account in one project for the first version. Configure
@@ -194,11 +211,11 @@ user.
 
 Validation checks credential structure, project identity, and a bounded Chat API
 read with app authentication. It must not send a test message from the Control
-Plane. A saved configuration is not proof of working ingress. Combine relay
-assignment and daemon readiness, distinguish authentication and connectivity
-failures, and provide an explicit DM/mention test to verify the complete round
-trip. A Google credential passing validation does not prove the operator copied
-the endpoint and audience settings correctly.
+Plane or the Setup Server. A saved configuration is not proof of working ingress.
+Combine relay assignment and daemon readiness, distinguish authentication and
+connectivity failures, and provide an explicit DM/mention test to verify the
+complete round trip. A Google credential passing validation does not prove the
+operator copied the endpoint and audience settings correctly.
 
 ### Operating cost
 

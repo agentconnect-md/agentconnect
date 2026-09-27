@@ -142,6 +142,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <a href="#gitlab-section">GitLab</a>
       <a href="#gitea-section">Gitea</a>
       <a href="#slack-section">Slack</a>
+      <a href="#googlechat-section">Google Chat</a>
       <a href="#linear-section">Linear</a>
       <a href="#google-section">Google</a>
       <a href="#feishu-section">Feishu</a>
@@ -323,6 +324,37 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <button id="clear-slack" class="danger" hidden>Clear configuration</button>
           <a id="slack-settings" class="button" target="_blank" rel="noopener" hidden>Open Slack settings</a>
         </div>
+      </section>
+
+      <section id="googlechat-section" class="panel setup-section" aria-labelledby="googlechat-heading">
+        <div class="provider-head">
+          <div><h3 id="googlechat-heading">Google Chat</h3><p class="muted">One Chat app for the preset AgentConnect agent.</p></div>
+          <span id="googlechat-match" class="badge">Not configured</span>
+        </div>
+        <dl class="credentials">
+          <dt>Project ID</dt><dd class="value-line"><code id="googlechat-project-id">Not configured</code><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
+          <dt>Project number</dt><dd class="value-line"><code id="googlechat-project-number">Not configured</code><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
+          <dt>Service-account key</dt><dd class="value-line"><span id="googlechat-key-display" class="muted">Not configured</span><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
+        </dl>
+        <p id="googlechat-status" class="muted"></p>
+        <div id="googlechat-drift" class="notice" hidden></div>
+        <p>HTTP endpoint URL:</p><ul id="googlechat-callbacks" class="uris"></ul>
+        <p>Authentication audience:</p><ul id="googlechat-audience" class="uris"></ul>
+        <ol class="muted">
+          <li>Use a Google Workspace account that may create a Cloud project and service-account keys. An organization policy can block key creation.</li>
+          <li>Create a Google Cloud project for this app and enable the Google Chat API in it.</li>
+          <li>On the Chat API Configuration page, set the HTTP endpoint URL and the Project Number audience above, allow 1:1 messages and joining spaces, and choose who can use the app.</li>
+          <li>In the same project, create a service account and a JSON key for it, then save the project ID, project number, and key here.</li>
+          <li>Add the app in Google Chat, then send it a direct message or mention it in a space to test.</li>
+        </ol>
+        <div class="row"><a id="googlechat-configuration" class="button" href="https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat" target="_blank" rel="noopener">Open Chat API configuration</a></div>
+        <div id="googlechat-config-controls" class="subsection">
+          <h3 id="googlechat-edit-heading" hidden>Edit Google Chat App identity</h3>
+          <label class="field">Project ID<input id="googlechat-project-id-input" autocomplete="off"></label>
+          <label class="field">Project number<input id="googlechat-project-number-input" inputmode="numeric" autocomplete="off"></label>
+          <label class="field">Service-account key JSON<input id="googlechat-key" type="password" autocomplete="off" placeholder="Required when the project ID changes"></label>
+        </div>
+        <div class="row"><button id="save-googlechat">Save Google Chat app</button><button id="cancel-googlechat-configuration" hidden>Cancel</button><button id="clear-googlechat" class="danger" hidden>Clear configuration</button></div>
       </section>
 
       <section id="linear-section" class="panel setup-section" aria-labelledby="linear-heading">
@@ -631,7 +663,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       currentStatus = status;
       const byKey = new Map((status.secrets || []).map((item) => [item.key, item]));
       const values = status.values;
-      const expected = status.providerExpectations || { github: null, gitlab: null, slack: null, linear: null, google: { origins: [], redirects: [] } };
+      const expected = status.providerExpectations || { github: null, gitlab: null, slack: null, linear: null, googleChat: null, google: { origins: [], redirects: [] } };
       renderStartupEnvironment();
 
       const logto = values.logto;
@@ -761,6 +793,37 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('slack-settings').href = 'https://api.slack.com/apps/' + encodeURIComponent(slack.appId);
         showDiff('slack-drift', slackDrift);
       } else el('slack-drift').hidden = true;
+
+      const googleChat = values.googleChat;
+      const googleChatKey = configured(byKey, 'googleChat.serviceAccountKey');
+      const expectedGoogleChat = expected.googleChat;
+      renderUriList('googlechat-callbacks', expectedGoogleChat ? [expectedGoogleChat.callbackUrl] : []);
+      renderUriList('googlechat-audience', expectedGoogleChat
+        ? [expectedGoogleChat.audienceSetting + (googleChat ? ' ' + googleChat.projectNumber : '')]
+        : []);
+      text('googlechat-project-id', googleChat && googleChat.projectId);
+      text('googlechat-project-number', googleChat && googleChat.projectNumber);
+      el('googlechat-key-display').textContent = googleChatKey ? '***' : 'Not configured';
+      el('googlechat-key-display').className = googleChatKey ? 'redacted' : 'muted';
+      showIdentityEditors('googlechat', Boolean(googleChat));
+      el('googlechat-project-id-input').value = googleChat ? googleChat.projectId : '';
+      el('googlechat-project-number-input').value = googleChat ? googleChat.projectNumber : '';
+      el('googlechat-key').value = '';
+      if (expectedGoogleChat) el('googlechat-configuration').href = expectedGoogleChat.configurationUrl;
+      el('googlechat-status').textContent = googleChat
+        ? googleChat.projectId + ' is configured.'
+        : expectedGoogleChat
+          ? 'Configure the Chat app in Google Cloud Console, then save its project and service-account key here.'
+          : 'Publishing the HTTP endpoint URL needs an HTTPS ingress public URL.';
+      showDiff('googlechat-drift', googleChat && !expectedGoogleChat
+        ? [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'An HTTPS ingress URL' }]
+        : []);
+      match('googlechat-match', googleChat && googleChatKey ? 'pass' : googleChat ? 'warn' : '', !googleChat ? 'Not configured' : !googleChatKey ? 'Missing key' : 'Checked on save');
+      el('googlechat-edit-heading').hidden = true;
+      el('googlechat-config-controls').hidden = Boolean(googleChat);
+      el('save-googlechat').hidden = Boolean(googleChat);
+      el('cancel-googlechat-configuration').hidden = true;
+      el('clear-googlechat').hidden = !googleChat;
 
       const linear = values.linear;
       const linearSecrets = configured(byKey, 'linear.clientSecret') && configured(byKey, 'linear.signingSecret');
@@ -918,6 +981,17 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('cancel-gitlab-configuration').hidden = false;
         el('clear-gitlab').hidden = true;
         el('gitlab-id').focus();
+      } else if (provider === 'googlechat') {
+        if (!values.googleChat) return;
+        el('googlechat-project-id-input').value = values.googleChat.projectId;
+        el('googlechat-project-number-input').value = values.googleChat.projectNumber;
+        el('googlechat-key').value = '';
+        el('googlechat-edit-heading').hidden = false;
+        el('googlechat-config-controls').hidden = false;
+        el('save-googlechat').hidden = false;
+        el('cancel-googlechat-configuration').hidden = false;
+        el('clear-googlechat').hidden = true;
+        el('googlechat-project-id-input').focus();
       } else if (provider === 'linear') {
         if (!values.linear) return;
         el('linear-id').value = values.linear.clientId;
@@ -1076,7 +1150,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
     async function clearProvider(provider) {
       if (!currentStatus) throw new Error('Deployment configuration is not loaded');
-      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'gitea' ? 'Gitea' : provider === 'slack' ? 'Slack' : provider === 'linear' ? 'Linear' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
+      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'gitea' ? 'Gitea' : provider === 'slack' ? 'Slack' : provider === 'googlechat' ? 'Google Chat' : provider === 'linear' ? 'Linear' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
       if (!window.confirm('Clear the saved ' + label + ' configuration and secrets?')) return;
       const values = currentStatus.values;
       let next = values;
@@ -1114,6 +1188,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
           : values.logto;
         next = { ...values, slack: null, ...(logto ? { logto } : {}) };
         secrets = { 'slack.clientSecret': null, 'slack.signingSecret': null };
+      } else if (provider === 'googlechat') {
+        next = { ...values, googleChat: null };
+        secrets = { 'googleChat.serviceAccountKey': null };
       } else if (provider === 'linear') {
         next = { ...values, linear: null };
         secrets = { 'linear.clientSecret': null, 'linear.signingSecret': null };
@@ -1419,6 +1496,26 @@ export const SETUP_HTML = String.raw`<!doctype html>
       message('Gitea instance saved. Restart AgentConnect to apply it.');
     }
 
+    async function saveGoogleChat() {
+      const application = {
+        projectId: requiredInput('googlechat-project-id-input', 'the Google Cloud project ID'),
+        projectNumber: requiredInput('googlechat-project-number-input', 'the Google Cloud project number')
+      };
+      const serviceAccountKey = el('googlechat-key').value.trim();
+      let saved;
+      try {
+        saved = await json(await fetch(api + '/configure/google-chat', {
+          method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+          body: JSON.stringify({ application: { ...application, ...(serviceAccountKey ? { serviceAccountKey } : {}) } })
+        }));
+      } finally {
+        // The key never stays in the page once it has been submitted, whatever the outcome.
+        el('googlechat-key').value = '';
+      }
+      await load();
+      message('Google Chat app saved. ' + saved.probe.message + '. Restart AgentConnect to apply it.');
+    }
+
     async function saveLinear() {
       const clientSecret = el('linear-client-secret').value;
       const signingSecret = el('linear-signing-secret').value;
@@ -1712,6 +1809,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('save-gitlab').onclick = () => saveGitlab().catch((error) => message(error.message, true));
     el('cancel-gitlab-configuration').onclick = cancelConfigurationEdit;
     el('clear-gitlab').onclick = () => clearProvider('gitlab').catch((error) => message(error.message, true));
+    el('save-googlechat').onclick = () => saveGoogleChat().catch((error) => message(error.message, true));
+    el('cancel-googlechat-configuration').onclick = cancelConfigurationEdit;
+    el('clear-googlechat').onclick = () => clearProvider('googlechat').catch((error) => message(error.message, true));
     el('save-linear').onclick = () => saveLinear().catch((error) => message(error.message, true));
     el('cancel-linear-configuration').onclick = cancelConfigurationEdit;
     el('clear-linear').onclick = () => clearProvider('linear').catch((error) => message(error.message, true));

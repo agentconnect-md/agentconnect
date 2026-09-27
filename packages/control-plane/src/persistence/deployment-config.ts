@@ -185,6 +185,22 @@ const LinearAppSchema = z.preprocess(
   })
 )
 
+const GoogleChatAppSchema = z.preprocess(
+  withoutProviderUrlSnapshot,
+  z.strictObject({
+    // The deployment-owned Chat app's Cloud project (google-chat-integration.md §3); an optional legacy domain prefix is allowed.
+    projectId: z
+      .string()
+      .trim()
+      .regex(/^(?:[a-z0-9.-]+:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$/, 'must be a Google Cloud project ID'),
+    // The numeric project number, kept as a string; it is the Chat token audience.
+    projectNumber: z
+      .string()
+      .trim()
+      .regex(/^[1-9]\d{0,19}$/, 'must be a numeric Google Cloud project number')
+  })
+)
+
 /** Version 1 of the JSONB document persisted in `deployment_config.values`. */
 export const DeploymentConfigValuesV1Schema = z
   .strictObject({
@@ -194,6 +210,8 @@ export const DeploymentConfigValuesV1Schema = z
     gitea: GiteaInstanceSchema.nullable().optional(),
     slack: SlackAppSchema.nullable(),
     linear: LinearAppSchema.nullable().optional(),
+    /** The deployment-owned Google Chat app; its key is the write-only 'googleChat.serviceAccountKey' secret. */
+    googleChat: GoogleChatAppSchema.nullable().optional(),
     /** Regional Login Apps used as the tenant anchor for Bot App admission. */
     feishu: RegionalLoginAppSchema.nullable().optional(),
     lark: RegionalLoginAppSchema.nullable().optional(),
@@ -269,6 +287,7 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'slack.signingSecret',
   'linear.clientSecret',
   'linear.signingSecret',
+  'googleChat.serviceAccountKey',
   'feishu.loginAppSecret',
   'lark.loginAppSecret',
   'logto.managementAppSecret',
@@ -481,6 +500,8 @@ export function deploymentSecretsRequiringRefresh(
     next.slack && (previous?.slack?.appId !== next.slack.appId || previous?.slack?.clientId !== next.slack.clientId)
   // A different Linear OAuth app is a different client secret AND a different webhook signing secret.
   const linearIdentityChanged = next.linear && previous?.linear?.clientId !== next.linear.clientId
+  // A key belongs to one project, so only a project ID change needs a new one; the number is that project's alias.
+  const googleChatProjectChanged = next.googleChat && previous?.googleChat?.projectId !== next.googleChat.projectId
   const feishuIdentityChanged = next.feishu && previous?.feishu?.loginAppId !== next.feishu.loginAppId
   const larkIdentityChanged = next.lark && previous?.lark?.loginAppId !== next.lark.loginAppId
   const logtoIdentityChanged = next.logto && previous?.logto?.managementAppId !== next.logto.managementAppId
@@ -497,6 +518,7 @@ export function deploymentSecretsRequiringRefresh(
     ...(gitlabClientChanged ? (['gitlab.clientSecret'] as const) : []),
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(linearIdentityChanged ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
+    ...(googleChatProjectChanged ? (['googleChat.serviceAccountKey'] as const) : []),
     ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
     ...(larkIdentityChanged ? (['lark.loginAppSecret'] as const) : []),
     ...(logtoIdentityChanged ? (['logto.managementAppSecret'] as const) : []),
@@ -512,6 +534,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
     ...(values.gitlab ? (['gitlab.clientSecret'] as const) : []),
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(values.linear ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
+    ...(values.googleChat ? (['googleChat.serviceAccountKey'] as const) : []),
     ...(values.feishu ? (['feishu.loginAppSecret'] as const) : []),
     ...(values.lark ? (['lark.loginAppSecret'] as const) : []),
     ...(values.logto ? (['logto.managementAppSecret'] as const) : []),

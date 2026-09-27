@@ -36,6 +36,7 @@ import {
   githubDeploymentPut,
   giteaDeploymentPut,
   gitlabDeploymentPut,
+  googleChatDeploymentPut,
   linearDeploymentPut,
   localAuthLogtoPut,
   logtoGoogleConnectorPut,
@@ -53,6 +54,8 @@ import { gitlabConfiguredUrls } from '../gitlab-app.js'
 import { probeBlocksSave, probeGitlabInstance } from '../gitlab-probe.js'
 import { probeBlocksSave as giteaProbeBlocksSave, probeGiteaInstance } from '../gitea-probe.js'
 import { linearConfiguredUrls } from '../linear-app.js'
+import { googleChatConfiguredUrls } from '../google-chat-app.js'
+import { checkServiceAccountKey, probeFailureIsConnectivity, probeGoogleChatCredential } from '../google-chat-probe.js'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -148,6 +151,17 @@ const ConfigureLinearBody = z.strictObject({
       clientId: z.string().trim().min(1).max(500),
       clientSecret: z.string().min(1).max(10_000).optional(),
       signingSecret: z.string().min(1).max(10_000).optional()
+    })
+    .nullable()
+})
+
+const ConfigureGoogleChatBody = z.strictObject({
+  application: z
+    .strictObject({
+      projectId: z.string().trim().min(1).max(100),
+      projectNumber: z.string().trim().min(1).max(40),
+      /** The downloaded key file's JSON; omitted re-validates the stored key of the same project. */
+      serviceAccountKey: z.string().trim().min(1).max(20_000).optional()
     })
     .nullable()
 })
@@ -557,11 +571,18 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     } catch {
       // Linear needs HTTPS Control Plane and ingress URLs before either endpoint is publishable.
     }
+    let googleChat: ReturnType<typeof googleChatConfiguredUrls> | null = null
+    try {
+      googleChat = googleChatConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+    } catch {
+      // Google Chat needs an HTTPS ingress URL before its HTTP endpoint is publishable.
+    }
     return {
       github,
       gitlab,
       slack,
       linear,
+      googleChat,
       google: values.logto?.browser
         ? {
             origins: [logtoEndpoint],
@@ -963,6 +984,82 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       }
       const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
       return { revision: saved.revision, restartRequired: true as const }
+    })
+  })
+
+  app.post('/api/v1/configure/google-chat', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = ConfigureGoogleChatBody.safeParse(request.body)
+    if (!parsed.success) {
+      return problem(reply, 400, 'a Google Cloud project ID, project number, and service-account key are required')
+    }
+    const application = parsed.data.application
+    if (!application) {
+      return serializeMutation(async () => {
+        const current = await deps.store.getAdmin()
+        if (!current) return problem(reply, 409, 'save deployment settings before configuring Google Chat')
+        const saved = await deps.store.replace({
+          expectedRevision: current.revision,
+          ...googleChatDeploymentPut(current, null)
+        })
+        return { revision: saved.revision, restartRequired: true as const }
+      })
+    }
+    const { projectId, projectNumber } = application
+    if (!/^[1-9]\d{0,19}$/.test(projectNumber)) {
+      return problem(
+        reply,
+        400,
+        'the project number must be the numeric Project number from the Google Cloud dashboard'
+      )
+    }
+    let urls: ReturnType<typeof googleChatConfiguredUrls>
+    try {
+      urls = googleChatConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+    } catch (error) {
+      return problem(
+        reply,
+        409,
+        error instanceof Error ? error.message : 'the Google Chat HTTP endpoint is unavailable'
+      )
+    }
+    let rawKey = application.serviceAccountKey
+    if (!rawKey) {
+      // Only the same project may keep its sealed key, and that key is validated again like a new one.
+      const runtime = await deps.store.getRuntime(['googleChat.serviceAccountKey'])
+      const stored = runtime?.secrets['googleChat.serviceAccountKey']
+      if (!stored || runtime?.values.googleChat?.projectId !== projectId) {
+        return problem(reply, 400, 'paste the service-account key JSON for this project')
+      }
+      rawKey = stored
+    }
+    const checked = checkServiceAccountKey(rawKey, projectId)
+    if (checked.status !== 'ok') return problem(reply, 400, checked.message, checked.status)
+    const probe = await probeGoogleChatCredential(checked.key, fetchImpl, deps.now)
+    if (probe.status !== 'ok') {
+      return problem(reply, probeFailureIsConnectivity(probe.status) ? 502 : 400, probe.message, probe.status)
+    }
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings before configuring Google Chat')
+      let put: ReturnType<typeof googleChatDeploymentPut>
+      try {
+        put = googleChatDeploymentPut(current, {
+          projectId,
+          projectNumber,
+          ...(application.serviceAccountKey ? { serviceAccountKey: checked.key.json } : {})
+        })
+      } catch (error) {
+        const message = error instanceof z.ZodError ? 'the project ID is not a Google Cloud project ID' : undefined
+        return problem(reply, 400, message ?? (error instanceof Error ? error.message : 'invalid Google Chat app'))
+      }
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+      return {
+        revision: saved.revision,
+        restartRequired: true as const,
+        callbackUrl: urls.callbackUrl,
+        audience: { setting: urls.audienceSetting, value: projectNumber },
+        probe: { status: probe.status, message: probe.message }
+      }
     })
   })
 
