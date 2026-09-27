@@ -4665,7 +4665,7 @@
         "doNotTrigger": "不触发",
         "useOtherwise": "使用兜底",
         "hiddenAgent": "你无法查看的 Agent",
-        "otherwiseHint": "没有规则匹配，或评估不可用",
+        "otherwiseHint": "没有规则匹配",
         "openBot": "打开 Bot 配置",
         "enabled": "路由已启用",
         "pausedLabel": "路由已暂停",
