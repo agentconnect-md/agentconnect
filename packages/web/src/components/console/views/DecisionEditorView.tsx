@@ -321,7 +321,8 @@ function DecisionEditor() {
         ? agents.find((row) => row.id === usage.id)
         : undefined
     // A runtime mark renders nothing until the registry loads, so the card's own glyph stands in until then.
-    return agent && (agent.icon || acpRuntime(registry, agent.runtime)?.icon) ? (
+    const drawn = agent?.icon?.kind === 'glyph' || (agent?.icon?.kind === 'image' && Boolean(agent.icon.url))
+    return agent && (drawn || acpRuntime(registry, agent.runtime)?.icon) ? (
       <AgentIconView icon={agent.icon} runtime={agent.runtime} size={14} />
     ) : null
   }
