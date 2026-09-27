@@ -2511,6 +2511,9 @@ const ApiKeyPermissionFields = {
   agentIds: z.array(z.string())
 }
 
+/** A selected agent as the key list names it; a deleted agent's row is already gone. */
+export const ApiKeyAgentRefDto = z.object({ id: z.string(), name: z.string(), displayName: z.string().nullable() })
+
 /** Console view of a personal key — never the secret/hash; carries the org it
  *  acts in (a user's keys span every org they belong to). */
 export const UserApiKeyDto = z.object({
@@ -2521,6 +2524,7 @@ export const UserApiKeyDto = z.object({
   orgSlug: z.string(),
   orgName: z.string().nullable(), // null ⇒ the console falls back to the slug
   ...ApiKeyPermissionFields,
+  agents: z.array(ApiKeyAgentRefDto),
   createdAt: z.string(), // ISO-8601
   lastUsedAt: z.string().nullable(),
   expiresAt: z.string().nullable(),
@@ -2561,6 +2565,16 @@ export const CreateUserKeyBody = z
       ctx.addIssue({ code: 'custom', path: ['agents'], message: `agents applies only to an agent-level permission` })
     }
   })
+
+/** `PATCH /me/keys/:id` body — settings only, never the secret; `name: null` clears; the route judges `agents` against the permission after the edit. */
+export const UpdateUserKeyBody = z
+  .object({
+    name: z.string().trim().min(1).max(120).nullable().optional(),
+    expiresInDays: z.number().int().min(1).max(365).nullable().optional(),
+    permission: ApiKeyPermissionDto.optional(),
+    agents: z.union([z.literal('all'), z.array(z.string().uuid()).min(1).max(200)]).optional()
+  })
+  .refine((body) => Object.values(body).some((v) => v !== undefined), { message: 'nothing to change' })
 
 // ── members + orgs (Settings page, org picker) ───────────────────────────
 /** Membership role (Prisma `OrgRole`): owner | collaborator | viewer (§3.2). */

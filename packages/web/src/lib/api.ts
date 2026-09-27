@@ -1417,6 +1417,12 @@ export interface MintedKeyDto {
 // What a key may do (daemon-api-key-auth.md §6): `full` is the default, `read` admits reads only, `agent:chat` the agent chat API for its selected agents.
 export type ApiKeyPermission = 'full' | 'read' | 'agent:chat'
 
+export interface ApiKeyAgentRef {
+  id: string
+  name: string
+  displayName: string | null
+}
+
 // A personal (user) API key in the profile list — carries the org it acts in
 // (a user's keys span every org they belong to). Never the secret or hash.
 export interface UserApiKeyDto {
@@ -1430,6 +1436,8 @@ export interface UserApiKeyDto {
   // The agent selection; meaningful for an agent-level permission only.
   allAgents: boolean
   agentIds: string[]
+  // The selected agents with their names; a deleted agent's row is already gone.
+  agents: ApiKeyAgentRef[]
   createdAt: string
   lastUsedAt: string | null
   expiresAt: string | null
@@ -4745,6 +4753,26 @@ export async function createMyApiKey(input: {
   agents?: 'all' | string[]
 }): Promise<MintedUserKeyDto> {
   return apiPost<MintedUserKeyDto>('/me/keys', input)
+}
+
+// Edit one of the caller's own keys in place; the secret is unchanged. `name: null` clears the label,
+// `expiresInDays` is a new lifetime from now (or `null` for non-expiring), `agents` replaces the selection.
+export async function updateMyApiKey(
+  id: string,
+  patch: {
+    name?: string | null
+    expiresInDays?: number | null
+    permission?: ApiKeyPermission
+    agents?: 'all' | string[]
+  }
+): Promise<UserApiKeyDto> {
+  return apiPatch<UserApiKeyDto>(`/me/keys/${encodeURIComponent(id)}`, patch)
+}
+
+// Replace a key's secret under the same row and settings; the old value stops working at once and the new
+// plaintext comes back exactly once.
+export async function regenerateMyApiKey(id: string): Promise<MintedUserKeyDto> {
+  return apiPost<MintedUserKeyDto>(`/me/keys/${encodeURIComponent(id)}/regenerate`, {})
 }
 
 // Revoke one of the caller's own keys (kill switch).

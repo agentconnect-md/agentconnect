@@ -25,6 +25,7 @@ function relayRecord(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
     permission: 'full',
     allAgents: false,
     agentIds: [],
+    agents: [],
     createdAt: new Date(NOW),
     lastUsedAt: null,
     expiresAt: null,

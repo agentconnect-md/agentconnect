@@ -22,7 +22,14 @@ import type {
 } from '@agentconnect.md/protocol'
 import type { AgentId, DaemonId, LeaseId, OrgId } from './domain/ids.js'
 import type { AgentSelection, ApiKeyPermission } from './domain/api-key-permission.js'
-import type { DaemonStatus, HealthState, AcpSupport, ResourceVisibility, ViewCtx } from './persistence/ports.js'
+import type {
+  DaemonStatus,
+  HealthState,
+  AcpSupport,
+  ResourceVisibility,
+  ViewCtx,
+  ApiKeyAgentRef
+} from './persistence/ports.js'
 
 /** Per-connection client context handed to auth (protocol §3, audit). */
 export interface ClientCtx {
@@ -102,6 +109,8 @@ export interface ApiKeyView {
   permission: ApiKeyPermission
   allAgents: boolean
   agentIds: string[]
+  /** The selected agents with their names, for the key list; a deleted agent's row is already gone. */
+  agents: ApiKeyAgentRef[]
   createdAt: Date
   lastUsedAt: Date | null
   expiresAt: Date | null
@@ -155,6 +164,18 @@ export interface ApiKeyAdmin {
   listForDaemon(orgId: OrgId, daemonId: DaemonId): Promise<ApiKeyView[]>
   /** Revoke a key by id (kill switch). */
   revoke(apiKeyId: string, reason: string): Promise<ApiKeyView>
+  /** Edit settings in place with the secret unchanged (§6); a non-agent-level `permission` clears the selection. Callers own and validate first. */
+  update(
+    apiKeyId: string,
+    patch: {
+      name?: string | null
+      expiresInDays?: number | null
+      permission?: ApiKeyPermission
+      agents?: 'all' | readonly string[]
+    }
+  ): Promise<ApiKeyView>
+  /** New secret on the same row and settings; the old value dies at once, the plaintext returns once. Callers own first. */
+  regenerate(apiKeyId: string): Promise<MintedKeyView>
   /** Mint a personal key for `userId`, scoped to `orgId` (default 90-day expiry;
    *  `expiresInDays: null` mints a non-expiring key).
    *  Plaintext is returned exactly once. Callers verify the user's membership in `orgId` first. */

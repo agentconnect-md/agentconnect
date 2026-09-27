@@ -27,6 +27,7 @@ function record(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
     permission: 'full',
     allAgents: false,
     agentIds: [],
+    agents: [],
     oauthGrantId: null,
     createdAt: new Date(NOW),
     lastUsedAt: null,
