@@ -449,6 +449,68 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
     })
   })
 
+  it('writes nothing while the domain row’s agent is being moved, and consolidates on the retry', async () => {
+    const { app, relaySends } = await claimHarness()
+    const preset = await prisma.agent.findUniqueOrThrow({
+      where: { orgId_name: { orgId: DEFAULT_ORG_ID, name: 'agentconnect' } }
+    })
+
+    // A Space from domain B writes the customer row, then a DM from domain A writes a domain row after it.
+    callerDomain = '0000000001'
+    expect((await claim(app, 'space')).statusCode).toBe(201)
+    callerDomain = '0000000000'
+    expect((await claim(app, 'dm')).statusCode).toBe(201)
+    const [customerRow, domainRow] = await customerRows()
+    expect(customerRow!.externalTenantId).toBe('customers/C0000000000')
+    expect(domainRow!.externalTenantId).toBe('domains/0000000000')
+    const assignBefore = assignOf(relaySends, customerRow!.id)
+
+    // A's Space claim meets a busy lease: nothing is written, the survivor and its assignment are unchanged.
+    const releaseMove = app.deps.agentMutations.tryBeginMove(preset.id)!
+    const busy = await claim(app, 'space')
+    expect(busy.statusCode).toBe(409)
+    expect(busy.json().code).toBe('GOOGLE_CHAT_CLAIM_UNAVAILABLE')
+    expect(await customerRows()).toMatchObject([
+      { id: customerRow!.id, platformConfig: { domainIds: '0000000001' } },
+      { id: domainRow!.id, externalTenantId: 'domains/0000000000' }
+    ])
+    expect(assignOf(relaySends, customerRow!.id)).toEqual(assignBefore)
+    releaseMove()
+
+    // The retry takes the lease and finishes the fold.
+    expect((await claim(app, 'space')).statusCode).toBe(200)
+    const rows = await customerRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      id: customerRow!.id,
+      platformConfig: { customerId: 'C0000000000', domainIds: '0000000001,0000000000' }
+    })
+    expect(assignOf(relaySends, customerRow!.id)).toEqual({
+      apiAppId: PROJECT_NUMBER,
+      tenantIds: ['customers/C0000000000', 'domains/0000000001', 'domains/0000000000']
+    })
+  })
+
+  it('retires a leftover domain row beside a customer row that already lists its domain', async () => {
+    const { app } = await claimHarness()
+
+    callerDomain = '0000000001'
+    expect((await claim(app, 'space')).statusCode).toBe(201)
+    callerDomain = '0000000000'
+    expect((await claim(app, 'dm')).statusCode).toBe(201)
+    const [customerRow, domainRow] = await customerRows()
+    // The state a fold leaves when it stops between merging the domain and retiring its row.
+    await prisma.bot.update({
+      where: { id: customerRow!.id },
+      data: { platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000001,0000000000' } }
+    })
+
+    expect((await claim(app, 'dm')).statusCode).toBe(200)
+    const rows = await customerRows()
+    expect(rows.map((row) => row.id)).toEqual([customerRow!.id])
+    expect(await prisma.integration.count({ where: { botId: domainRow!.id } })).toBe(0)
+  })
+
   it('refuses a Space proof whose domain is bound to another customer', async () => {
     const { app } = await claimHarness()
 

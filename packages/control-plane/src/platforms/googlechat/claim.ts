@@ -7,7 +7,7 @@ import type { ZodTypeProvider } from '../../http/plugins/zod.js'
 import { Tag } from '../../http/plugins/openapi.js'
 import type { HttpDeps } from '../../http/deps.js'
 import type { GoogleChatRouteSeams } from '../../http/platform-route-seams.js'
-import { IntegrationId, type OrgId } from '../../domain/ids.js'
+import { IntegrationId, type BotId, type OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, orgOf } from '../../http/rbac.js'
 import { relayIngress } from '../../http/relay-ingress.js'
 import { installNewBot } from '../../http/install-bot.js'
@@ -159,7 +159,7 @@ function claimed(state: GoogleChatClaimState): { redirect?: string } {
   return state.redirect ? { redirect: state.redirect } : {}
 }
 
-/** How a proof lands on the app's customer rows (§10.3, §10.5 step 5); `retire` is a domain row a Space proof folds in. */
+/** How a proof lands on the app's customer rows (§10.3, §10.5 step 5); `retire` is a domain row folded into `row`. */
 export type GoogleChatClaimPlan<Row> =
   | { kind: 'taken' }
   | { kind: 'conflict'; row: Row }
@@ -178,18 +178,23 @@ export function planGoogleChatClaim<Row extends Pick<BotRecord, 'orgId' | 'exter
   const knows = (row: Row, key: string) => googleChatRowTenantKeys(row).includes(key)
   const domainId = proven.domainIds?.[0]
   const customerId = proven.customerId
-  const byDomain = domainId ? rows.find((row) => knows(row, `domains/${domainId}`)) : undefined
+  const listing = domainId ? rows.filter((row) => knows(row, `domains/${domainId}`)) : []
   const byCustomer = customerId ? rows.find((row) => knows(row, `customers/${customerId}`)) : undefined
-  if ((byDomain && byDomain.orgId !== orgId) || (byCustomer && byCustomer.orgId !== orgId)) return { kind: 'taken' }
+  if (listing.some((row) => row.orgId !== orgId) || (byCustomer && byCustomer.orgId !== orgId)) return { kind: 'taken' }
+  // A customer row listing the domain is the domain's row; a `domains/…` row beside it is left over from an unfinished fold.
+  const byDomain = listing.find((row) => row.externalTenantId?.startsWith('customers/')) ?? listing[0]
+  const leftover = listing.find((row) => row !== byDomain && row.externalTenantId === `domains/${domainId}`)
+  const settle = (row: Row): GoogleChatClaimPlan<Row> =>
+    leftover && domainId ? { kind: 'consolidate', row, retire: leftover, domainId } : { kind: 'held', row }
   // A domain alone never names a customer, so it only matches the row that lists it.
-  if (!customerId) return byDomain ? { kind: 'held', row: byDomain } : { kind: 'create' }
+  if (!customerId) return byDomain ? settle(byDomain) : { kind: 'create' }
   if (!domainId) return byCustomer ? { kind: 'held', row: byCustomer } : { kind: 'create' }
   // A domain already bound to another Workspace customer contradicts the proof; it is never overwritten.
   const bound = googleChatTenantOf(byDomain?.platformConfig).customerId
   if (byDomain && bound && bound !== customerId) return { kind: 'conflict', row: byDomain }
   if (byDomain && byCustomer) {
     return byDomain === byCustomer
-      ? { kind: 'held', row: byCustomer }
+      ? settle(byCustomer)
       : { kind: 'consolidate', row: byCustomer, retire: byDomain, domainId }
   }
   if (byCustomer) return { kind: 'append', row: byCustomer, domainId }
@@ -204,25 +209,39 @@ class GoogleChatClaimConflict extends Error {}
 const GOOGLE_CHAT_CLAIM_CONFLICT_MESSAGE =
   'This Google Workspace domain is already connected under a different Google Workspace organization. Ask an administrator to check the connection.'
 
-/** Retire a folded-in domain row through the same teardown the console's integration removal and bot deletion use. */
-async function retireGoogleChatRow(
+/** Fold a domain row into the customer row: lease first, merge and re-sync the survivor, then remove and delete the domain row. */
+async function foldGoogleChatRow(
   deps: HttpDeps,
   log: FastifyBaseLogger,
   orgId: OrgId,
-  bot: BotRecord
-): Promise<boolean> {
-  const installs = await deps.repos.integration.listForBot(bot.id)
+  survivor: BotRecord,
+  retireId: BotId,
+  domainId: string,
+  customerId: string | undefined
+): Promise<'folded' | 'busy' | 'conflict'> {
+  // Idempotent: a row an earlier claim already retired leaves only the domain to record.
+  const retiring = await deps.repos.bot.get(orgId, retireId)
+  const installs = retiring ? await deps.repos.integration.listForBot(retiring.id) : []
   const release = deps.agentMutations.tryBeginMutation([...new Set(installs.map((install) => install.agentId))])
-  if (!release) return false
+  if (!release) return 'busy'
   try {
-    await deps.httpBot.prepareIntegrationRemoval(bot.id)
+    const bound = googleChatTenantOf(retiring?.platformConfig).customerId
+    if (bound && customerId && bound !== customerId) return 'conflict'
+    if (retiring) await deps.httpBot.prepareIntegrationRemoval(retiring.id)
+    const domains = [...(googleChatTenantOf(retiring?.platformConfig).domainIds ?? []), domainId]
+    await deps.repos.bot.mergeBotIdentity(orgId, survivor.id, (current) => ({
+      platformConfig: googleChatDomainAdditions(current.platformConfig, domains)
+    }))
+    await deps.httpBot.syncBot(survivor.id)
+    if (!retiring) return 'folded'
+    // The same teardown the console's integration removal and bot deletion use.
     for (const install of installs) {
       const agent = await deps.repos.agent.get(orgId, install.agentId)
       await removeIntegrationRow(deps, log, { orgId, integration: install, agent: agent ?? null })
     }
-    await deps.httpBot.syncBot(bot.id)
-    await deleteBotIdentity(deps, log, orgId, bot)
-    return true
+    await deps.httpBot.syncBot(retiring.id)
+    if (await deps.repos.bot.get(orgId, retiring.id)) await deleteBotIdentity(deps, log, orgId, retiring)
+    return 'folded'
   } finally {
     release()
   }
@@ -374,15 +393,18 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
               })
             } else if (plan.kind === 'consolidate') {
               // The domain row's domains move onto the customer row, which then keys the customer alone.
-              const retiring = await deps.repos.bot.get(orgId, plan.retire.id)
-              const bound = googleChatTenantOf(retiring?.platformConfig).customerId
-              if (retiring && bound && bound !== proof.tenant.customerId) return conflict(retiring)
-              const domains = [...(googleChatTenantOf(retiring?.platformConfig).domainIds ?? []), plan.domainId]
-              await deps.repos.bot.mergeBotIdentity(orgId, held.id, (current) => ({
-                platformConfig: googleChatDomainAdditions(current.platformConfig, domains)
-              }))
-              await deps.httpBot.syncBot(held.id)
-              if (retiring && !(await retireGoogleChatRow(deps, req.log, orgId, retiring))) {
+              const customer = proof.tenant.customerId ?? googleChatTenantOf(held.platformConfig).customerId
+              const folded = await foldGoogleChatRow(
+                deps,
+                req.log,
+                orgId,
+                held,
+                plan.retire.id,
+                plan.domainId,
+                customer
+              )
+              if (folded === 'conflict') return conflict(plan.retire)
+              if (folded === 'busy') {
                 return refuse(
                   reply,
                   409,

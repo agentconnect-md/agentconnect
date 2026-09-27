@@ -937,7 +937,12 @@ collaborator):
    Space claim's pair touches the row listing its domain and the row keyed by
    its customer: it appends the domain to the customer's row, upgrades a
    domain-only row to the customer and re-keys it, or consolidates the two rows
-   into the customer's, retiring the domain row. A row another organization
+   into the customer's, retiring the domain row. A consolidation first takes
+   the agent-move lease of the domain row's installs, and only then merges,
+   re-syncs, removes, and deletes; if the lease is busy it answers 409
+   (`GOOGLE_CHAT_CLAIM_UNAVAILABLE`) having written nothing, and a later claim
+   that finds a `domains/…` row beside a customer row already listing its
+   domain retires that leftover the same way. A row another organization
    holds answers 409 (`GOOGLE_CHAT_CLAIM_TAKEN`) naming no organization, and a
    domain bound to a different customer answers 409
    (`GOOGLE_CHAT_CLAIM_CONFLICT`). A row this organization holds answers 200,

@@ -123,6 +123,8 @@ async function harness(
     relay?: boolean
     preset?: boolean
     createThrows?: Error
+    leaseBusy?: boolean
+    gone?: BotId[]
   } = {}
 ) {
   const googleCalls: string[] = []
@@ -147,12 +149,17 @@ async function harness(
   })
   const put = vi.fn(async () => {})
   const integrationCreate = vi.fn(async (input: Record<string, unknown>) => ({ ...input, status: 'active' }))
-  const syncBot = vi.fn(async (_botId: BotId) => {})
+  // Every step of a fold in the order it ran: lease, prepare, merge, sync, remove, delete, release.
+  const steps: string[] = []
+  const syncBot = vi.fn(async (botId: BotId) => {
+    steps.push(`sync:${botId}`)
+  })
   const rowOf = (id: BotId) => (opts.rows ?? []).find((row) => row.id === id)
   const merged: { id: BotId; change: BotIdentityChange }[] = []
   // Applies the route's merge to the row, as the repository does under the row lock.
   const mergeBotIdentity = vi.fn(
     async (_orgId: OrgId, id: BotId, merge: (current: BotIdentitySnapshot) => BotIdentityChange) => {
+      steps.push(`merge:${id}`)
       const row = rowOf(id)
       const change = merge({
         platformConfig: row?.platformConfig ?? {},
@@ -174,8 +181,20 @@ async function harness(
   const deps = {
     config: { PUBLIC_RELAY_URL: 'https://relay.example.test' },
     clock: { now: () => Date.parse('2026-09-28T00:00:00Z') },
-    httpBot: { hasConnectedRelay: () => opts.relay !== false, syncBot, prepareIntegrationRemoval: async () => {} },
-    agentMutations: { tryBeginMutation: () => () => {} },
+    httpBot: {
+      hasConnectedRelay: () => opts.relay !== false,
+      syncBot,
+      prepareIntegrationRemoval: async (botId: BotId) => {
+        steps.push(`prepare:${botId}`)
+      }
+    },
+    agentMutations: {
+      tryBeginMutation: () => {
+        if (opts.leaseBusy) return null
+        steps.push('lease')
+        return () => steps.push('release')
+      }
+    },
     agentDelivery: { integrationRemove: async () => {} },
     platforms: { get: () => undefined },
     placementResolver: { servingDaemon: async () => null },
@@ -191,11 +210,13 @@ async function harness(
       },
       bot: {
         listForPlatform: async () => opts.rows ?? [],
-        get: async (_org: OrgId, id: BotId) => rowOf(id) ?? null,
+        get: async (_org: OrgId, id: BotId) =>
+          opts.gone?.includes(id) || deletedBots.includes(id) ? null : (rowOf(id) ?? null),
         mergeBotIdentity,
         create,
         markFreed: async () => {},
         delete: async (_org: OrgId, id: BotId) => {
+          steps.push(`delete:${id}`)
           deletedBots.push(id)
         }
       },
@@ -207,6 +228,7 @@ async function harness(
         listForBot: async (botId: BotId) =>
           installsOf(botId).filter((install) => !removedInstalls.includes(install.id)),
         delete: async (_org: OrgId, id: string) => {
+          steps.push(`remove:${id}`)
           removedInstalls.push(id)
         }
       }
@@ -239,6 +261,7 @@ async function harness(
     integrationCreate,
     syncBot,
     merged,
+    steps,
     removedInstalls,
     deletedBots,
     credentialInstall,
@@ -455,9 +478,92 @@ describe('POST /integrations/googlechat/claim: a customer that already has a row
     expect(h.merged).toEqual([{ id: BOT, change: { platformConfig: { domainIds: '0000000001,0000000000' } } }])
     expect(h.removedInstalls).toEqual([`install-${OTHER_BOT}`])
     expect(h.deletedBots).toEqual([OTHER_BOT])
-    // The surviving row is re-sent first, then the retired row is released.
-    expect(h.syncBot.mock.calls.map(([id]) => id)).toEqual([BOT, OTHER_BOT])
+    // Lease first, then the survivor's merge and re-sync, then the retired row's removal and deletion.
+    expect(h.steps).toEqual([
+      'lease',
+      `prepare:${OTHER_BOT}`,
+      `merge:${BOT}`,
+      `sync:${BOT}`,
+      `remove:install-${OTHER_BOT}`,
+      `sync:${OTHER_BOT}`,
+      `delete:${OTHER_BOT}`,
+      'release'
+    ])
     expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('writes nothing and answers 409 when the retiring row’s agent is being moved', async () => {
+    const domainRow = customerRow({
+      id: OTHER_BOT,
+      externalTenantId: 'domains/0000000000',
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
+    })
+    const customer = customerRow({
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000001' }
+    })
+    const h = await harness({ rows: [domainRow, customer], google: spaceAnswers('0000000000'), leaseBusy: true })
+
+    const res = await h.claim()
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('GOOGLE_CHAT_CLAIM_UNAVAILABLE')
+    expect(h.steps).toEqual([])
+    expect(h.merged).toEqual([])
+  })
+
+  it.each([
+    ['a Space claim', () => state(), spaceAnswers('0000000000')],
+    ['a DM claim', () => dmState(), dmAnswers('0000000000')]
+  ])('retires a leftover domain row beside the customer row that already lists it, on %s', async (_, raw, google) => {
+    // Left over from a fold that stopped between its two writes: the customer row already lists the domain.
+    const customer = customerRow({
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000001,0000000000' }
+    })
+    const leftover = customerRow({
+      id: OTHER_BOT,
+      externalTenantId: 'domains/0000000000',
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
+    })
+    const h = await harness({ rows: [customer, leftover], google })
+
+    const res = await h.claim(raw())
+    expect(res.statusCode).toBe(200)
+    expect(h.merged).toEqual([])
+    expect(h.deletedBots).toEqual([OTHER_BOT])
+    expect(h.steps).toEqual([
+      'lease',
+      `prepare:${OTHER_BOT}`,
+      `merge:${BOT}`,
+      `sync:${BOT}`,
+      `remove:install-${OTHER_BOT}`,
+      `sync:${OTHER_BOT}`,
+      `delete:${OTHER_BOT}`,
+      'release'
+    ])
+    expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('finishes a fold whose retiring row is already gone by recording the domain alone', async () => {
+    const domainRow = customerRow({
+      id: OTHER_BOT,
+      externalTenantId: 'domains/0000000000',
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
+    })
+    const customer = customerRow({
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000001' }
+    })
+    const h = await harness({
+      rows: [domainRow, customer],
+      google: spaceAnswers('0000000000'),
+      gone: [OTHER_BOT]
+    })
+
+    expect((await h.claim()).statusCode).toBe(200)
+    expect(h.merged).toEqual([{ id: BOT, change: { platformConfig: { domainIds: '0000000001,0000000000' } } }])
+    expect(h.deletedBots).toEqual([])
+    expect(h.steps).toEqual(['lease', `merge:${BOT}`, `sync:${BOT}`, 'release'])
   })
 
   it('refuses with a conflict a Space proof whose domain is bound to a different customer, writing nothing', async () => {
