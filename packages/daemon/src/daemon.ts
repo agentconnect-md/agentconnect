@@ -9700,7 +9700,8 @@ export class Daemon {
     if (prepared === 'refused') return { msgId: msg.msgId, accepted: false, reason: 'durability' }
     // Read BEFORE the dispatch that would claim it: whether the session is already working is
     // what an admission hook reports, and the entry this delivery creates is not that work.
-    const onAdmitted = ingress?.onAdmitted
+    // Bound, so a class-based strategy keeps its `this` when the hook runs later inside dispatch.
+    const onAdmitted = ingress?.onAdmitted?.bind(ingress)
     const busy = onAdmitted ? this.inflight.has(muteKey) : false
     if (gate && !gate.beforeDispatch()) return { msgId: msg.msgId, accepted: true }
     // A platform contributing no admission hook keeps the shared call exactly as it was.
