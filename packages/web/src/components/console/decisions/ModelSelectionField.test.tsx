@@ -432,7 +432,7 @@ it('adds a rule below the table on narrow screens, where the header is hidden', 
   })
 })
 
-it('returns a Boolean answer to the fallback but keeps the last rule', async () => {
+it('returns a Boolean answer to the fallback and offers no way to drop the last rule', async () => {
   const onChange = vi.fn()
   const render = (rules: AgentModelSelection['rules']) =>
     root!.render(
@@ -458,7 +458,6 @@ it('returns a Boolean answer to the fallback but keeps the last rule', async () 
   expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ rules: [yes] }))
   await act(async () => render([yes]))
   expect(container.querySelector('[aria-label="Use the fallback when the answer is No"]')).toBeNull()
-  expect(
-    container.querySelector<HTMLButtonElement>('[aria-label="Use the fallback when the answer is Yes"]')!.disabled
-  ).toBe(true)
+  // The last rule cannot return to the fallback, so its action is not offered at all.
+  expect(container.querySelector('[aria-label="Use the fallback when the answer is Yes"]')).toBeNull()
 })
