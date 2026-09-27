@@ -1,19 +1,21 @@
-import { generateKeyPairSync, type KeyObject } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { SignJWT } from 'jose'
 import type { WireNormalizedMessage } from '@agentconnect.md/protocol'
 import { createGoogleChatIngressPlugin, type GoogleChatIngressPlugin } from './ingress-plugin.js'
-import type { GoogleChatHttpIngest } from './http-ingest.js'
-import { GOOGLE_CHAT_CERTIFICATE_REFETCH_MS, GOOGLE_CHAT_CERTIFICATE_URL, GOOGLE_CHAT_TOKEN_ISSUER } from './token.js'
+import { GOOGLE_CHAT_WELCOME_CARD, type GoogleChatHttpIngest } from './http-ingest.js'
+import { GOOGLE_CHAT_CERTIFICATE_REFETCH_MS, GOOGLE_CHAT_CERTIFICATE_URL } from './token.js'
 import type { RelayAdmission, RelayIngressHost } from '../contract.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
-import { selfSignedCertificatePem } from '../../../test/fixtures/google-chat-certificate.js'
+import { CERTIFICATE, KID, NOW, OTHER_KEYS, fakeCertificates, token } from '../../../test/fixtures/google-chat-token.js'
 import {
   APP,
   AUDIENCE,
+  CUSTOMER,
   DM,
+  DOMAIN,
   OTHER_APP,
+  PERSON,
   SPACE,
+  cardClicked,
   dmAdded,
   dmMessage,
   spaceAddedByMention,
@@ -21,53 +23,7 @@ import {
   spaceRemoved
 } from '../../../test/fixtures/google-chat-events.js'
 
-const NOW = Date.UTC(2026, 8, 27, 4, 30, 0)
 const BOT_ID = '11111111-1111-4111-8111-111111111111'
-const KID = 'kid-2026-09'
-const KEYS = generateKeyPairSync('rsa', { modulusLength: 2048 })
-const OTHER_KEYS = generateKeyPairSync('rsa', { modulusLength: 2048 })
-const CERTIFICATE = selfSignedCertificatePem(KEYS.privateKey)
-
-/** Google's certificate endpoint: one JSON map, recorded per fetch, rotatable between fetches. */
-function fakeCertificates(map: Record<string, string> = { [KID]: CERTIFICATE }, headers: Record<string, string> = {}) {
-  const calls: string[] = []
-  let current = map
-  const fetchImpl = (async (input: string | URL | Request) => {
-    const url = String(input)
-    calls.push(url)
-    if (url !== GOOGLE_CHAT_CERTIFICATE_URL) throw new Error(`unexpected request to ${url}`)
-    return Response.json(current, { headers })
-  }) as typeof fetch
-  return {
-    fetchImpl,
-    calls,
-    rotate(next: Record<string, string>) {
-      current = next
-    }
-  }
-}
-
-interface TokenOver {
-  aud?: string
-  iss?: string
-  iat?: number
-  exp?: number
-  kid?: string
-  alg?: 'RS256' | 'RS512'
-  key?: KeyObject
-}
-
-// A token shaped like Google's: RS256, `kid`, the Chat issuer, the project number, one hour of life.
-async function token(over: TokenOver = {}): Promise<string> {
-  const iat = over.iat ?? Math.floor(NOW / 1000) - 5
-  return new SignJWT({})
-    .setProtectedHeader({ alg: over.alg ?? 'RS256', typ: 'JWT', kid: over.kid ?? KID })
-    .setIssuer(over.iss ?? GOOGLE_CHAT_TOKEN_ISSUER)
-    .setAudience(over.aud ?? AUDIENCE)
-    .setIssuedAt(iat)
-    .setExpirationTime(over.exp ?? iat + 3600)
-    .sign(over.key ?? KEYS.privateKey)
-}
 
 const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   forward: vi.fn(async () => 'accepted' as const),
@@ -231,7 +187,7 @@ describe('googlechat ingress plugin — bearer-token verification (§2)', () => 
     expect(fixed.certificates.calls).toHaveLength(1)
   })
 
-  it('demuxes on the unverified audience alone', async () => {
+  it('demuxes on the unverified audience; a body naming no tenant adds no second hint', async () => {
     const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
     const raw = Buffer.from('{}')
     expect(plugin.extractDemuxHints(raw, {}, { authorization: `Bearer ${await token()}` })).toEqual({ appId: AUDIENCE })
@@ -412,5 +368,160 @@ describe('googlechat ingress plugin — the trusted activation cause', () => {
     expect(forwardedMessages.map((message) => message.trigger)).toEqual(['dm', 'mention', 'mention', 'mention'])
     // The second Space delivery was stamped although nothing named this app yet.
     expect(forwardedMessages[1]).toMatchObject({ isDm: false, mentionedBots: [] })
+  })
+})
+
+describe('googlechat ingress plugin — a multi-tenant app’s anchor and customer rows (§10.4)', () => {
+  const CLAIM_URL = 'https://console.example.test/googlechat/claim'
+  const REDIRECT = 'https://chat.example.test/config-complete?token=REDACTED'
+  const prompt = (syncResponse: unknown) => {
+    const body = syncResponse as { actionResponse?: { type?: string; url?: string } } | undefined
+    expect(body?.actionResponse?.type).toBe('REQUEST_CONFIG')
+    const url = new URL(body!.actionResponse!.url!)
+    return {
+      base: `${url.origin}${url.pathname}`,
+      state: JSON.parse(Buffer.from(url.searchParams.get('state')!, 'base64url').toString('utf8')) as unknown
+    }
+  }
+  const anchor = () => setup({ claimUrl: CLAIM_URL })
+
+  it('answers an unclaimed tenant in the body and forwards, reports, peeks, and marks nothing', async () => {
+    const { plugin, h, ingest } = anchor()
+    const bearer = `Bearer ${await token()}`
+    // An add, with or without its triggering message, gets the welcome card.
+    expect((await deliver(plugin, ingest, h, dmAdded, bearer)).handled).toEqual({
+      syncResponse: GOOGLE_CHAT_WELCOME_CARD
+    })
+    expect((await deliver(plugin, ingest, h, spaceAddedByMention, bearer)).handled).toEqual({
+      syncResponse: GOOGLE_CHAT_WELCOME_CARD
+    })
+    // A message gets the claim prompt, whose state carries the contract's fields and nothing else.
+    const dm = await deliver(plugin, ingest, h, dmMessage, bearer)
+    expect(dm.handled?.admission).toBeUndefined()
+    const decoded = prompt(dm.handled?.syncResponse)
+    expect(decoded.base).toBe(CLAIM_URL)
+    expect(decoded.state).toEqual({
+      v: 1,
+      app: AUDIENCE,
+      space: DM,
+      user: PERSON,
+      kind: 'dm',
+      tenant: DOMAIN,
+      redirect: REDIRECT,
+      iat: Math.floor(NOW / 1000)
+    })
+    const space = prompt((await deliver(plugin, ingest, h, spaceMention, bearer)).handled?.syncResponse)
+    expect(space.state).toMatchObject({ space: SPACE, user: PERSON, kind: 'space', tenant: CUSTOMER })
+    // The welcome card's own button gets the prompt too; any other card function gets nothing.
+    const click = prompt((await deliver(plugin, ingest, h, cardClicked, bearer)).handled?.syncResponse)
+    expect(click.state).toMatchObject({ space: SPACE, user: PERSON, kind: 'space', tenant: CUSTOMER })
+    const otherClick = { ...cardClicked, action: { actionMethodName: 'other.function' }, common: undefined }
+    expect((await deliver(plugin, ingest, h, otherClick, bearer)).handled).toEqual({})
+    // A removal is nothing to answer; an event without a return URL omits `redirect`.
+    expect((await deliver(plugin, ingest, h, spaceRemoved, bearer)).handled).toEqual({})
+    const noRedirect = { ...dmMessage, configCompleteRedirectUrl: undefined }
+    expect(
+      prompt((await deliver(plugin, ingest, h, noRedirect, bearer)).handled?.syncResponse).state
+    ).not.toHaveProperty('redirect')
+    // Nothing left the relay and nothing was settled: no forward, no membership report, no dedup read or mark.
+    expect(h.forwardStrict).not.toHaveBeenCalled()
+    expect(h.forward).not.toHaveBeenCalled()
+    expect(h.reportChannels).not.toHaveBeenCalled()
+    expect(h.dedupPeek).not.toHaveBeenCalled()
+    expect(h.dedupMark).not.toHaveBeenCalled()
+  })
+
+  it('answers nothing for an unclaimed event without a Workspace tenant, and still drops what it cannot classify', async () => {
+    const { plugin, h, ingest } = anchor()
+    const bearer = `Bearer ${await token()}`
+    const personal = { ...dmMessage, user: { ...dmMessage.user, domainId: undefined } }
+    expect((await deliver(plugin, ingest, h, personal, bearer)).handled).toEqual({})
+    const noCustomer = { ...spaceMention, space: { ...spaceMention.space, customer: undefined } }
+    expect((await deliver(plugin, ingest, h, noCustomer, bearer)).handled).toEqual({})
+    const appAuthored = { ...dmMessage, message: { ...dmMessage.message, sender: { name: APP, type: 'BOT' } } }
+    expect((await deliver(plugin, ingest, h, appAuthored, bearer)).handled).toEqual({})
+    const crossSpace = { ...dmMessage, message: { ...dmMessage.message, name: `${SPACE}/messages/ELSEWHERE` } }
+    expect((await deliver(plugin, ingest, h, crossSpace, bearer)).handled).toEqual({})
+    expect(h.log.warn).toHaveBeenCalledWith(expect.stringContaining('cross_space'))
+    expect(h.forwardStrict).not.toHaveBeenCalled()
+    expect(h.dedupMark).not.toHaveBeenCalled()
+    expect(h.log.info).not.toHaveBeenCalled()
+  })
+
+  it('notes an unclaimed tenant once a minute however chatty it is, and always answers the prompt', async () => {
+    let now = NOW
+    const certificates = fakeCertificates()
+    const plugin = createGoogleChatIngressPlugin({ fetch: certificates.fetchImpl })
+    const h = host({ clock: { now: () => now } })
+    const ingest = plugin.buildIngest(assignment({ claimUrl: CLAIM_URL }), h)!
+    const bearer = `Bearer ${await token()}`
+    const noted = () => vi.mocked(h.log.info).mock.calls.filter(([m]) => m.includes('unclaimed')).length
+    for (let i = 0; i < 3; i++) {
+      expect((await deliver(plugin, ingest, h, dmMessage, bearer)).handled?.syncResponse).toBeDefined()
+    }
+    expect(noted()).toBe(1)
+    // Another tenant is its own line; the first one is noted again once the window has passed.
+    await deliver(plugin, ingest, h, spaceMention, bearer)
+    expect(noted()).toBe(2)
+    now = NOW + 59_000
+    await deliver(plugin, ingest, h, dmMessage, bearer, now)
+    expect(noted()).toBe(2)
+    now = NOW + 60_000
+    const later = await deliver(plugin, ingest, h, dmMessage, bearer, now)
+    expect(noted()).toBe(3)
+    expect(prompt(later.handled?.syncResponse).state).toMatchObject({ iat: Math.floor(now / 1000) })
+  })
+
+  it('routes a customer row exactly as a single-tenant row, where the welcome card’s click has nothing left to do', async () => {
+    const { plugin, h, ingest } = setup({ tenantIds: [DOMAIN, CUSTOMER] })
+    const bearer = `Bearer ${await token()}`
+    expect((await deliver(plugin, ingest, h, dmMessage, bearer)).handled).toEqual({
+      admission: { disposition: 'admitted' }
+    })
+    expect(forwarded(h)).toMatchObject({ channel: DM, text: 'hi', trigger: 'dm' })
+    expect(h.dedupMark).toHaveBeenCalledWith(
+      `${BOT_ID}\0googlechat:${DM}:${DM}/messages/EXAMPLE_THREAD_1.EXAMPLE_MSG_ROOT`
+    )
+    expect((await deliver(plugin, ingest, h, cardClicked, bearer)).handled).toEqual({})
+    expect(h.forwardStrict).toHaveBeenCalledTimes(1)
+    expect(h.dedupMark).toHaveBeenCalledTimes(1)
+    // The row keeps what it was assigned, for core's composite index and fence.
+    expect(ingest.tenantIds).toEqual([DOMAIN, CUSTOMER])
+    expect(ingest.claimUrl).toBeUndefined()
+  })
+
+  it('a single-tenant anchor, with no claim page, still routes every event, including one naming no tenant', async () => {
+    const { plugin, h, ingest } = setup()
+    const bearer = `Bearer ${await token()}`
+    const personal = { ...dmMessage, user: { ...dmMessage.user, domainId: undefined } }
+    expect((await deliver(plugin, ingest, h, personal, bearer)).handled).toEqual({
+      admission: { disposition: 'admitted' }
+    })
+    expect((await deliver(plugin, ingest, h, spaceMention, bearer)).handled).toEqual({
+      admission: { disposition: 'admitted' }
+    })
+    expect(h.forwardStrict).toHaveBeenCalledTimes(2)
+    expect((await deliver(plugin, ingest, h, cardClicked, bearer)).handled).toEqual({})
+  })
+
+  it("supplies the event's tenant key as the demux hint: the Space's customer, the DM sender's domain, never a Space sender's domain", async () => {
+    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    const headers = { authorization: `Bearer ${await token()}` }
+    const raw = Buffer.from('{}')
+    expect(plugin.extractDemuxHints(raw, dmMessage, headers)).toEqual({ appId: AUDIENCE, tenantId: DOMAIN })
+    expect(plugin.extractDemuxHints(raw, spaceMention, headers)).toEqual({ appId: AUDIENCE, tenantId: CUSTOMER })
+    expect(plugin.extractDemuxHints(raw, cardClicked, headers)).toEqual({ appId: AUDIENCE, tenantId: CUSTOMER })
+    const noCustomer = { ...spaceMention, space: { ...spaceMention.space, customer: undefined } }
+    expect(plugin.extractDemuxHints(raw, noCustomer, headers)).toEqual({ appId: AUDIENCE })
+    expect(plugin.extractDemuxHints(raw, dmMessage, {})).toEqual({ tenantId: DOMAIN })
+  })
+
+  it('refuses a row that is both a customer and the anchor', () => {
+    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    const h = host()
+    expect(plugin.buildIngest(assignment({ tenantIds: [CUSTOMER], claimUrl: CLAIM_URL }), h)).toBeUndefined()
+    expect(h.log.warn).toHaveBeenCalledTimes(1)
+    expect(plugin.buildIngest(assignment({ claimUrl: CLAIM_URL }), h)?.claimUrl).toBe(CLAIM_URL)
+    expect(plugin.buildIngest(assignment({ tenantIds: [CUSTOMER] }), h)?.tenantIds).toEqual([CUSTOMER])
   })
 })

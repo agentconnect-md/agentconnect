@@ -94,20 +94,20 @@ const MAX_LEARNED_ENTRIES = 10_000
 export class DemuxIndex {
   private readonly byApp = new Map<string, string>()
   private readonly byAppTenant = new Map<string, string>()
-  private readonly compositeKeyByBot = new Map<string, string>()
+  private readonly compositeKeysByBot = new Map<string, string[]>()
 
   private key(appId: string, tenantId: string): string {
     return `${appId}\0${tenantId}`
   }
 
-  /** Index one assignment's declared identity (idempotent; call after
-   *  {@link forget} on re-assign). */
-  indexAssign(botId: string, identity: { appId?: string; tenantId?: string }): void {
-    const { appId, tenantId } = identity
-    if (appId && tenantId) {
-      const key = this.key(appId, tenantId)
-      this.byAppTenant.set(key, botId)
-      this.compositeKeyByBot.set(botId, key)
+  /** Index one assignment's declared identity (idempotent; call after {@link forget} on re-assign). A bot known by several tenant keys (`tenantIds`) takes one composite entry per key. */
+  indexAssign(botId: string, identity: { appId?: string; tenantId?: string; tenantIds?: readonly string[] }): void {
+    const { appId } = identity
+    const tenants = identity.tenantIds ?? (identity.tenantId ? [identity.tenantId] : [])
+    if (appId && tenants.length) {
+      const keys = tenants.map((tenantId) => this.key(appId, tenantId))
+      for (const key of keys) this.byAppTenant.set(key, botId)
+      this.compositeKeysByBot.set(botId, keys)
       // A re-assign that GAINED a tenant id must also evict any stale app-only
       // entry still pointing at this bot, or the fast path would keep serving
       // cross-tenant.
@@ -120,7 +120,7 @@ export class DemuxIndex {
   /** Learn an app-only mapping from a verified delivery. Bounded; refused for
    *  tenant-scoped bots (see the class doc). */
   learn(appId: string, botId: string): void {
-    if (this.compositeKeyByBot.has(botId)) return
+    if (this.compositeKeysByBot.has(botId)) return
     if (this.byApp.size >= MAX_LEARNED_ENTRIES) this.byApp.clear()
     this.byApp.set(appId, botId)
   }
@@ -139,11 +139,10 @@ export class DemuxIndex {
    *  composite entry is assign-derived and eagerly cleaned; learned app-only
    *  entries for OTHER bots lazily miss, exactly as before. */
   forget(botId: string): void {
-    const key = this.compositeKeyByBot.get(botId)
-    if (key) {
-      this.byAppTenant.delete(key)
-      this.compositeKeyByBot.delete(botId)
+    for (const key of this.compositeKeysByBot.get(botId) ?? []) {
+      if (this.byAppTenant.get(key) === botId) this.byAppTenant.delete(key)
     }
+    this.compositeKeysByBot.delete(botId)
     for (const [appId, owner] of this.byApp) if (owner === botId) this.byApp.delete(appId)
   }
 

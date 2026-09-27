@@ -386,6 +386,15 @@ authoritative membership enumeration, and Google Chat declares observed
 enumeration, so it does not persist this snapshot yet; accepting observed
 snapshots, or enumerating membership through `spaces.list`, is a follow-up.
 
+`CARD_CLICKED` is the one interaction event the relay handles. The normalizer
+classifies it as an `interaction` — the invoked function
+(`action.actionMethodName`, else `common.invokedFunction`), its parameters, the
+clicking user, the Space, and the thread — under the same Space and sender checks
+a message gets, and it starts no turn: the only card is the welcome card of
+§10.7, so on a routed conversation a click has nothing left to do and is
+answered with an empty body. Every message, membership, and interaction result
+also carries the event's tenant key (§10.4) and its `configCompleteRedirectUrl`.
+
 Run the existing discovery, conversation gate, trigger, command, session routing,
 and Decision checks. Off stays silent, including for commands. Restricted agents
 remain disabled in new conversations until an editor enables them. Reuse the
@@ -441,12 +450,14 @@ and never converts the old `accepted` result into an HTTP success.
 | Retryable or unknown  | `retry` (`durability`, `draining`, `capacity`, `not_ready`, `offline`) or an admission timeout               | 503 so Google may redeliver.                                                                                                       |
 | Invalid request       | never forwarded                                                                                              | 401 when no assigned bot owns the token or it fails verification; 400 when the body is not a JSON object with a string `type`.     |
 | Malformed event       | never forwarded                                                                                              | 200 with a log line after verification: the normalizer's `invalid` is permanent, and a 4xx would make Google redeliver it forever. |
+| Unclaimed tenant      | never forwarded: a multi-tenant app's anchor answers it (§10.4)                                              | 200 with the welcome card or the `REQUEST_CONFIG` body; nothing is admitted, marked, or reported.                                  |
 
 The relay's inbound seam returns `HandledDelivery`; its optional `admission`
 member carries the `RelayAdmission` unchanged from the plugin's `handle` to the
 platform's own route in `installRoutes`, which answers 503 for `retry` and 200
-otherwise. The Slack route reads only `syncResponse` and keeps answering 200 for
-every handled delivery and 401 when no assigned bot owns it.
+otherwise, sending `syncResponse` as the 200 body when the plugin set one and
+`{}` when it did not. The Slack route reads only `syncResponse` and keeps
+answering 200 for every handled delivery and 401 when no assigned bot owns it.
 
 Use a bounded admission deadline inside the provider and relay request budgets:
 the route settles the whole handling within 20 seconds, comfortably inside
@@ -718,7 +729,13 @@ patches remain provider-validation gates, not claims of completed support.
 
 ## 10. Marketplace distribution and multi-tenant installs
 
-Status: **draft** — a design delta, not implemented. Every provider fact below was
+Status: **partially implemented**. Step A1 is merged: the message package's
+tenant keys and `interaction` event, the relay's per-customer demux and fence,
+the welcome card, and the `REQUEST_CONFIG` answer (§10.4, §10.7, and the relay's
+half of §10.5: the state the prompt carries). The rest is still a draft: the
+per-customer rows and the claim route on the Control Plane, the claim page, the
+Google account id on the user row, and the daemon items (§10.3, §10.5 from step
+2 on, §10.6, §10.8), plus the rollout (§10.9). Every provider fact below was
 verified on September 27, 2026, either in Google's reference documentation or
 against a live Chat app; the items in §10.9 still need a live check.
 
@@ -780,32 +797,53 @@ listing.
 
 ### 10.4 Relay: demux by app, fence by customer, claim the unknown
 
-The relay keeps demuxing on the verified audience (§2), which now selects the
-platform app rather than a single bot. After verification it derives the tenant
-from the event itself: a Space event's `space.customer`, a DM event's
-`user.domainId`, never a Space sender's domain, since that sender may be an
-external member. A row for that tenant routes as today under
-[ingress tenant fencing](ingress-tenant-fence.md). No row means the event is
-answered privately with `REQUEST_CONFIG` pointing at the claim page of §10.5 and
-is never forwarded, stored, or acknowledged as admitted; the relay answers in
-the HTTP response body itself, within Google's window and without a daemon,
-which requires `HandledDelivery` to carry an optional response body. A bounded
-per-tenant memo keeps the prompt from being minted for every message of an
-unclaimed domain; the prompt is private to its sender in any case, so an
-administrator installing the app for a whole domain produces no session and no
-stored data, only one private prompt per person who writes to the app before the
-claim.
+The relay keeps demuxing on the verified audience (§2), which selects the
+platform app rather than a single bot. The plugin supplies the event's tenant
+key as the second demux hint — a Space event's `space.customer`, a DM event's
+`user.domainId` as `domains/…`, never a Space sender's domain, since that sender
+may be an external member (`googleChatTenantKey` in the message package, the
+same derivation the normalizer stamps on every result) — and the assignment
+supplies the keys a row is known by: a customer row's `ingress` bag carries
+`tenantIds`, the anchor's carries `claimUrl`, and a single-tenant row carries
+neither. Core does the rest exactly as [ingress tenant fencing](ingress-tenant-fence.md)
+does for a distributed Slack app, generalized to a row known by several keys: a
+row with `tenantIds` enters only the composite `(app, tenant)` index, one entry
+per key, is never learned app-only, and passes the fence only for a delivery
+naming one of its keys; the anchor sits in the app-only index beside it. A
+claimed tenant therefore resolves to its row and routes as today; any other
+tenant of the audience resolves to the anchor. A malformed `tenantIds` or a
+`claimUrl` that is not an https URL refuses the assignment rather than reading
+as absent, because absent would make the row serve every tenant of its
+audience.
 
-`CARD_CLICKED` on the welcome card's button is answered the same way. It is the
-first interaction event the relay handles; no other card is introduced.
+An anchor that carries `claimUrl` serves no tenant: whatever core routed to it is
+unclaimed, and the plugin answers it in the HTTP body — `HandledDelivery.syncResponse`,
+which the Google route sends on its 200 — within Google's window and without a
+daemon: the welcome card of §10.7 on `ADDED_TO_SPACE`, the `REQUEST_CONFIG`
+answer pointing at the claim page of §10.5 on a `MESSAGE` and on the welcome
+card's `CARD_CLICKED`, and an empty body for anything else, including an event
+that names no Workspace tenant (§10.8). Nothing is forwarded, reported as
+membership, read from the dedup table, or marked in it. A bounded per-tenant
+memo (a few hundred entries, least recently seen first out) keeps the relay's
+own log line to one per tenant per minute, since a domain-wide administrator
+install can turn a chatty domain into one prompt per message; the answer is
+always the prompt. The prompt is private to its sender, so such an install
+produces no session and no stored data, only one private prompt per person who
+writes to the app before the claim. A single-tenant deployment's row, with
+neither `tenantIds` nor `claimUrl`, routes everything as before; its first-event
+fence is part of step B (§10.3).
 
 ### 10.5 Claiming a customer
 
 The claim page is the console's, reached only through `REQUEST_CONFIG`:
 
-1. The relay signs a state with a Control Plane secret: the app, the tenant ids
-   it saw, the space, the initiating `users/{id}`, the event's
-   `configCompleteRedirectUrl`, and an expiry.
+1. The relay puts a `state` on the prompt's URL: base64url JSON of
+   `{ v: 1, app, space, user, kind, tenant, redirect, iat }` — the app's project
+   number, the Space, the initiating `users/{id}`, `dm` or `space`, the tenant
+   key it saw, the event's `configCompleteRedirectUrl` (omitted when the event
+   carried none), and the unix time. It is unsigned: the page re-derives every
+   fact it acts on from Google and from the signed-in identity, so a forged
+   state can only claim what the signed-in person is entitled to claim anyway.
 2. The page signs the person in through the console, which is Logto with its
    Google connector, and reads the signed-in user's Google identity: the
    provider's user id on that identity (§10.6), not the console token's `sub`,
@@ -853,12 +891,15 @@ console ACL.
 
 ### 10.7 Cards and the welcome message
 
-The published app posts one card: a welcome message on `ADDED_TO_SPACE` with a
-single sign-in button, mirroring what published Chat apps do. The button's
+The relay posts one card: the welcome message an unclaimed tenant sees on
+`ADDED_TO_SPACE`, one paragraph and a single `Connect` button whose action is
+the function `agentconnect.claim` (`GOOGLE_CHAT_WELCOME_CARD` in the relay's
+Google Chat module), mirroring what published Chat apps do. The button's
 `CARD_CLICKED` and any message from an unclaimed tenant get the `REQUEST_CONFIG`
-answer of §10.4. Rendering, replies, and everything in §5 stay text; cards for
-elicitation are a separate change that would build on the same `CARD_CLICKED`
-path.
+answer of §10.4; a click in a claimed conversation, or on any other function, is
+answered with an empty body. Rendering, replies, and everything in §5 stay
+text; cards for elicitation are a separate change that would build on the same
+`interaction` path.
 
 ### 10.8 Daemon, quotas, privacy
 
@@ -887,8 +928,8 @@ without them.
 
 Order of work:
 
-- **A**: the welcome card, `CARD_CLICKED` and `REQUEST_CONFIG` on the relay, the
-  claim page, and the Google account id on the user row.
+- **A**: the welcome card, `CARD_CLICKED` and `REQUEST_CONFIG` on the relay
+  (done), the claim page, and the Google account id on the user row.
 - **B**: per-customer rows on the platform app, the customer fence for both
   install paths, filtered discovery, and the per-app write budget.
 - **C**: the listing, the unlisted publication, and the cross-customer round

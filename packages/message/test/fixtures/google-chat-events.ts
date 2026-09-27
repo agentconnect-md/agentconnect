@@ -98,3 +98,61 @@ export const removedFromSpace = {
   space: { name: SPACE, spaceType: 'SPACE' },
   user: person
 } satisfies GoogleChatEvent
+
+// Tenant-bearing variants (design §10): the ids are reserved examples, never a real customer or domain.
+export const CUSTOMER = 'customers/C0000000000'
+export const DOMAIN_ID = '0000000000'
+export const EXTERNAL_PERSON = 'users/100000000000000000003'
+export const CONFIG_COMPLETE_URL = 'https://chat.example.test/config-complete?token=EXAMPLE'
+
+const workspacePerson = { ...person, domainId: DOMAIN_ID }
+// A member of another Workspace organization writing in this customer's Space.
+const externalPerson = { name: EXTERNAL_PERSON, displayName: 'External Person', type: 'HUMAN', domainId: '0000000001' }
+const customerSpace = { name: SPACE, displayName: 'Example Space', spaceType: 'SPACE', customer: CUSTOMER }
+
+/** A DM from a Workspace account, with the configuration return URL Chat puts on interaction events. */
+export const dmMessageFromWorkspace = {
+  ...dmMessage,
+  message: { ...dmMessage.message, sender: workspacePerson },
+  user: workspacePerson,
+  configCompleteRedirectUrl: CONFIG_COMPLETE_URL
+} satisfies GoogleChatEvent
+
+/** A mention in a customer's Space by an external member: the tenant is the Space's customer, never the sender's domain. */
+export const spaceMentionByExternalMember = {
+  ...spaceMention,
+  space: customerSpace,
+  message: { ...spaceMention.message, sender: externalPerson },
+  user: externalPerson,
+  configCompleteRedirectUrl: CONFIG_COMPLETE_URL
+} satisfies GoogleChatEvent
+
+/** Adding the app to a Workspace account's DM. */
+export const addedToWorkspaceDm = {
+  ...addedToDm,
+  user: workspacePerson,
+  configCompleteRedirectUrl: CONFIG_COMPLETE_URL
+} satisfies GoogleChatEvent
+
+/** Clicking the welcome card's button in the customer's Space (design §10.7). */
+export const cardClicked = {
+  type: 'CARD_CLICKED',
+  eventTime: '2026-01-02T03:07:00.000000Z',
+  space: customerSpace,
+  message: {
+    name: `${SPACE}/messages/EXAMPLE_CARD_MESSAGE`,
+    sender: { name: APP, displayName: 'ExampleApp', type: 'BOT' },
+    createTime: '2026-01-02T03:06:30.000000Z',
+    thread: { name: `${SPACE}/threads/EXAMPLE_ADD_THREAD` }
+  },
+  user: workspacePerson,
+  action: { actionMethodName: 'agentconnect.claim', parameters: [{ key: 'source', value: 'welcome' }] },
+  common: {
+    invokedFunction: 'agentconnect.claim',
+    parameters: { source: 'welcome' },
+    userLocale: 'en',
+    hostApp: 'CHAT'
+  },
+  configCompleteRedirectUrl: CONFIG_COMPLETE_URL,
+  isDialogEvent: false
+} satisfies GoogleChatEvent

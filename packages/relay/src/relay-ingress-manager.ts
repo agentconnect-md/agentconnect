@@ -705,7 +705,8 @@ export class RelayIngressManager {
     entry.pool.set(a.botId, ingest)
     entry.demux.indexAssign(a.botId, {
       ...(a.apiAppId ? { appId: a.apiAppId } : {}),
-      ...(a.teamId ? { tenantId: a.teamId } : {})
+      ...(a.teamId ? { tenantId: a.teamId } : {}),
+      ...(a.tenantIds ? { tenantIds: a.tenantIds } : {})
     })
     // The first periodic probe lands at a random point in the first interval, so a pod never probes every bot at once.
     if (ingest.probeCredential) {
@@ -799,7 +800,9 @@ export class RelayIngressManager {
           // a future call site forgets this assignment check. What a learned
           // entry can serve is bounded by the fence above, which is re-applied
           // on every resolve through `tryCandidate`.
-          if (hints.appId && this.router.get(botId)?.teamId === undefined) demux.learn(hints.appId, botId)
+          const owner = this.router.get(botId)
+          if (hints.appId && owner?.teamId === undefined && owner?.tenantIds === undefined)
+            demux.learn(hints.appId, botId)
           hit = { ingest, verified }
           break
         }
@@ -832,6 +835,9 @@ export class RelayIngressManager {
     // delivery that names no tenant has no safe owner among them. This arm
     // preserves the pre-fence scan guard's fail-closed semantics exactly.
     if (assignment?.teamId !== undefined) return assignment.teamId === deliveryTenant
+    // A customer row of a multi-tenant app (google-chat-integration.md §10.4): the same strict arm over every key it is known by.
+    if (assignment?.tenantIds !== undefined)
+      return deliveryTenant !== undefined && assignment.tenantIds.includes(deliveryTenant)
     // Every other install kind (`workspaceId` when captured): refuse only a
     // PROVABLE mismatch — both sides must know a tenant (§3.3 fail-open arms:
     // an uncaptured identity keeps today's behaviour until the reconciler

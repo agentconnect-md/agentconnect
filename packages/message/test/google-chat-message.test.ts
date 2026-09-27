@@ -1,18 +1,30 @@
 import { describe, expect, it } from 'vitest'
 import { NormalizedPlatformMessageSchema, type NormalizedPlatformMessage } from '@agentconnect.md/protocol'
-import { normalizeGoogleChatEvent, type GoogleChatEventResult } from '../src/google-chat-message.js'
+import {
+  googleChatTenantKey,
+  normalizeGoogleChatEvent,
+  type GoogleChatEventResult
+} from '../src/google-chat-message.js'
 import { nativeMessageCoordinates } from '../src/wire-coordinates.js'
 import {
   APP,
+  CONFIG_COMPLETE_URL,
+  CUSTOMER,
   DM,
+  DOMAIN_ID,
+  EXTERNAL_PERSON,
   OTHER_APP,
   PERSON,
   SPACE,
   addedToDm,
+  addedToWorkspaceDm,
   addedWithMessage,
+  cardClicked,
   dmMessage,
+  dmMessageFromWorkspace,
   removedFromSpace,
-  spaceMention
+  spaceMention,
+  spaceMentionByExternalMember
 } from './fixtures/google-chat-events.js'
 
 const normalize = (event: unknown, appUserName = APP): GoogleChatEventResult =>
@@ -181,7 +193,7 @@ describe('Google Chat event normalization', () => {
   })
 
   it('starts nothing for other event types, dialogs, commands, or thread-less Space messages', () => {
-    for (const type of ['CARD_CLICKED', 'WIDGET_UPDATED', 'APP_COMMAND', 'APP_HOME', 'SUBMIT_FORM', 'UNSPECIFIED']) {
+    for (const type of ['WIDGET_UPDATED', 'APP_COMMAND', 'APP_HOME', 'SUBMIT_FORM', 'UNSPECIFIED']) {
       expect(normalize({ ...copy(spaceMention), type }), type).toEqual({ kind: 'unsupported', reason: 'event_type' })
     }
     for (const event of [
@@ -219,5 +231,158 @@ describe('Google Chat event normalization', () => {
     for (const appUserName of ['', 'ExampleApp', 'spaces/EXAMPLE_SPACE', 'users/']) {
       expect(() => normalize(dmMessage, appUserName), appUserName).toThrow(TypeError)
     }
+  })
+})
+
+describe('Google Chat tenant keys and card clicks (design §10)', () => {
+  const DOMAIN = `domains/${DOMAIN_ID}`
+
+  it("keys a Space event by its customer and a DM by its sender's domain, never by a Space sender's domain", () => {
+    expect(googleChatTenantKey(spaceMentionByExternalMember)).toBe(CUSTOMER)
+    expect(normalize(spaceMentionByExternalMember)).toMatchObject({
+      kind: 'message',
+      tenant: CUSTOMER,
+      configCompleteRedirectUrl: CONFIG_COMPLETE_URL
+    })
+    // Without a customer the external sender's own domain does not stand in: a Space may admit external members.
+    const noCustomer = copy(spaceMentionByExternalMember)
+    delete noCustomer.space.customer
+    expect(googleChatTenantKey(noCustomer)).toBeUndefined()
+    expect(normalize(noCustomer)).not.toHaveProperty('tenant')
+    expect(googleChatTenantKey(dmMessageFromWorkspace)).toBe(DOMAIN)
+    expect(normalize(dmMessageFromWorkspace)).toMatchObject({ kind: 'message', tenant: DOMAIN })
+    // A DM keys by its sender even if the payload put a customer on the Space.
+    const dmWithCustomer = copy(dmMessageFromWorkspace)
+    dmWithCustomer.space.customer = CUSTOMER
+    expect(googleChatTenantKey(dmWithCustomer)).toBe(DOMAIN)
+    // A personal account has no domain, and a malformed id keys nothing.
+    expect(googleChatTenantKey(dmMessage)).toBeUndefined()
+    expect(normalize(dmMessage)).not.toHaveProperty('tenant')
+    for (const customer of ['C0000000000', 'customers/', 'customers/a:b', 'domains/0000000000', 7]) {
+      const event = copy(spaceMentionByExternalMember)
+      event.space.customer = customer
+      expect(googleChatTenantKey(event), String(customer)).toBeUndefined()
+    }
+    const oddDomain = copy(dmMessageFromWorkspace)
+    oddDomain.user.domainId = 'a:b'
+    expect(googleChatTenantKey(oddDomain)).toBeUndefined()
+    expect(googleChatTenantKey(null)).toBeUndefined()
+  })
+
+  it('carries the tenant and the return URL on membership results too', () => {
+    expect(normalize(addedToWorkspaceDm)).toEqual({
+      kind: 'membership',
+      membership: { change: 'added', channel: DM, isDm: true, actor: PERSON, eventTimeMs: Date.UTC(2026, 0, 2, 3) },
+      tenant: DOMAIN,
+      configCompleteRedirectUrl: CONFIG_COMPLETE_URL
+    })
+    const removed = { ...copy(removedFromSpace), space: { name: SPACE, spaceType: 'SPACE', customer: CUSTOMER } }
+    expect(normalize(removed)).toMatchObject({ kind: 'membership', tenant: CUSTOMER })
+    expect(normalize(removed)).not.toHaveProperty('configCompleteRedirectUrl')
+    // An add that carries the triggering message keeps the context beside the message.
+    const addedInCustomer = { ...copy(addedWithMessage), space: spaceMentionByExternalMember.space }
+    expect(normalize(addedInCustomer)).toMatchObject({
+      kind: 'message',
+      membership: { change: 'added' },
+      tenant: CUSTOMER
+    })
+    // A non-string return URL is dropped, never surfaced.
+    const oddRedirect = copy(dmMessageFromWorkspace)
+    oddRedirect.configCompleteRedirectUrl = 42
+    expect(normalize(oddRedirect)).not.toHaveProperty('configCompleteRedirectUrl')
+  })
+
+  it('normalizes a card click into an interaction with the same Space and sender checks as a message', () => {
+    expect(normalize(cardClicked)).toEqual({
+      kind: 'interaction',
+      interaction: {
+        function: 'agentconnect.claim',
+        parameters: { source: 'welcome' },
+        user: PERSON,
+        space: SPACE,
+        thread: `${SPACE}/threads/EXAMPLE_ADD_THREAD`,
+        isDm: false
+      },
+      tenant: CUSTOMER,
+      configCompleteRedirectUrl: CONFIG_COMPLETE_URL
+    })
+    // Either shape of the invoked function suffices, and the Chat-app list wins over the add-on map.
+    const commonOnly = copy(cardClicked)
+    delete commonOnly.action
+    expect(normalize(commonOnly)).toMatchObject({ interaction: { function: 'agentconnect.claim' } })
+    const actionOnly = copy(cardClicked)
+    delete actionOnly.common
+    expect(normalize(actionOnly)).toMatchObject({ interaction: { parameters: { source: 'welcome' } } })
+    const disagreeing = copy(cardClicked)
+    disagreeing.common = { invokedFunction: 'other.function', parameters: { source: 'stale', extra: 'kept' } }
+    disagreeing.action.parameters.push({ key: 'bad', value: 7 }, { value: 'no key' }, 'not an object')
+    expect(normalize(disagreeing)).toMatchObject({
+      interaction: { function: 'agentconnect.claim', parameters: { source: 'welcome', extra: 'kept' } }
+    })
+    // A click in a DM, with no card message at all, still classifies.
+    const inDm = { ...copy(cardClicked), space: dmMessageFromWorkspace.space, message: undefined, thread: undefined }
+    expect(normalize(inDm)).toMatchObject({
+      kind: 'interaction',
+      interaction: { space: DM, isDm: true },
+      tenant: DOMAIN
+    })
+    expect(normalize(inDm)).not.toHaveProperty(['interaction', 'thread'])
+  })
+
+  it('refuses a card click the way it refuses a message: Space checks, sender checks, dialogs, group DMs', () => {
+    const refused: [string, (e: any) => void, GoogleChatEventResult][] = [
+      [
+        'card in another Space',
+        (e) => (e.message.name = 'spaces/OTHER/messages/M'),
+        { kind: 'invalid', reason: 'cross_space' }
+      ],
+      [
+        'card thread elsewhere',
+        (e) => (e.message.thread.name = 'spaces/OTHER/threads/T'),
+        { kind: 'invalid', reason: 'cross_space' }
+      ],
+      [
+        'card claiming another Space',
+        (e) => (e.message.space = { name: 'spaces/OTHER' }),
+        { kind: 'invalid', reason: 'cross_space' }
+      ],
+      [
+        'event thread disagrees',
+        (e) => (e.thread = { name: `${SPACE}/threads/OTHER_THREAD` }),
+        { kind: 'invalid', reason: 'thread_mismatch' }
+      ],
+      ['no clicker', (e) => delete e.user, { kind: 'invalid', reason: 'malformed' }],
+      ['clicker with an odd name', (e) => (e.user.name = 'people/1'), { kind: 'invalid', reason: 'malformed' }],
+      [
+        'no function named',
+        (e) => {
+          delete e.action
+          delete e.common
+        },
+        { kind: 'invalid', reason: 'malformed' }
+      ],
+      ['a bot clicking', (e) => (e.user.type = 'BOT'), { kind: 'ignored', reason: 'app_authored' }],
+      [
+        'the app itself clicking',
+        (e) => (e.user = { name: APP, type: 'HUMAN' }),
+        { kind: 'ignored', reason: 'app_authored' }
+      ],
+      ['an untyped clicker', (e) => delete e.user.type, { kind: 'unsupported', reason: 'sender_type' }],
+      ['a dialog submission', (e) => (e.isDialogEvent = true), { kind: 'unsupported', reason: 'dialog' }],
+      [
+        'a group DM',
+        (e) => (e.space = { name: DM, spaceType: 'GROUP_CHAT' }),
+        { kind: 'unsupported', reason: 'group_dm' }
+      ]
+    ]
+    for (const [label, mutate, expected] of refused) {
+      const event = copy(cardClicked)
+      mutate(event)
+      expect(normalize(event), label).toEqual(expected)
+    }
+    // The external member's click keys the Space's customer, like their message would.
+    const byExternal = copy(cardClicked)
+    byExternal.user = { ...spaceMentionByExternalMember.user }
+    expect(normalize(byExternal)).toMatchObject({ interaction: { user: EXTERNAL_PERSON }, tenant: CUSTOMER })
   })
 })

@@ -17,6 +17,79 @@ export interface VerifiedGoogleChatDelivery {
   traceId: string
 }
 
+/** The function the welcome card's button invokes; its `CARD_CLICKED` is answered with the claim prompt (design §10.7). */
+export const GOOGLE_CHAT_CLAIM_FUNCTION = 'agentconnect.claim'
+
+/** The one card the relay posts: the welcome message an unclaimed tenant sees on `ADDED_TO_SPACE` (design §10.7). */
+export const GOOGLE_CHAT_WELCOME_CARD = {
+  cardsV2: [
+    {
+      cardId: 'agentconnect-claim',
+      card: {
+        sections: [
+          {
+            widgets: [
+              { textParagraph: { text: 'Connect this Google Chat app to your AgentConnect organization to start.' } },
+              {
+                buttonList: {
+                  buttons: [{ text: 'Connect', onClick: { action: { function: GOOGLE_CHAT_CLAIM_FUNCTION } } }]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+} as const
+
+/** What the claim page decodes from `state` (design §10.5): unsigned, since the page re-derives every fact it acts on. */
+export interface GoogleChatClaimState {
+  v: 1
+  /** The project number, the token audience. */
+  app: string
+  space: string
+  /** The initiating person's `users/…` name; the page accepts the claim only from that Google account. */
+  user: string
+  kind: 'dm' | 'space'
+  /** The tenant key seen on the event. */
+  tenant: string
+  /** The event's `configCompleteRedirectUrl`, when it carried one. */
+  redirect?: string
+  /** Unix seconds. */
+  iat: number
+}
+
+/** The private `REQUEST_CONFIG` answer that sends the initiating person to the claim page with `state` (design §10.4). */
+export function googleChatClaimPrompt(
+  claimUrl: string,
+  state: GoogleChatClaimState
+): { actionResponse: { type: 'REQUEST_CONFIG'; url: string } } {
+  const url = new URL(claimUrl)
+  url.searchParams.set('state', Buffer.from(JSON.stringify(state)).toString('base64url'))
+  return { actionResponse: { type: 'REQUEST_CONFIG', url: url.toString() } }
+}
+
+/** A bounded per-tenant once-a-window latch (LRU): a chatty unclaimed domain costs one log line a minute, never a different answer. */
+export class UnclaimedTenantMemo {
+  private readonly lastAt = new Map<string, number>()
+
+  constructor(
+    private readonly maxEntries = 512,
+    private readonly windowMs = 60_000
+  ) {}
+
+  /** True when `key` was not seen within the window; the entry is refreshed as most recent either way. */
+  first(key: string, now: number): boolean {
+    const last = this.lastAt.get(key)
+    const due = last === undefined || now - last >= this.windowMs
+    this.lastAt.delete(key)
+    this.lastAt.set(key, due ? now : (last as number))
+    if (this.lastAt.size > this.maxEntries) this.lastAt.delete(this.lastAt.keys().next().value as string)
+    return due
+  }
+}
+
 /** The dedup identity the normalizer mints for a message-bearing event; undefined when the event carries no message. */
 export function googleChatDedupId(event: GoogleChatEvent): string | undefined {
   const space = event.space?.name
@@ -68,7 +141,11 @@ export class GoogleChatHttpIngest {
     /** Shared across the platform's ingests; the certificates are Google's, not the bot's. */
     readonly certificates: GoogleChatCertificateStore,
     /** The generation THIS ingest was built from. */
-    readonly credentialRevision?: number
+    readonly credentialRevision?: number,
+    /** The tenant keys this row is known by: a customer row of a multi-tenant app (design §10.3), else absent. */
+    readonly tenantIds?: readonly string[],
+    /** The console's claim page, present only on a multi-tenant app's anchor, which routes nothing itself (§10.4). */
+    readonly claimUrl?: string
   ) {}
 
   /** §8 RelayBotIngress: a pure decoder has nothing to release. */
