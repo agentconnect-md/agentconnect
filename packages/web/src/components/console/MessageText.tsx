@@ -1,24 +1,6 @@
 'use client'
 
-/**
- * Transcript message renderer — the host side of §10's `textRenderer` seam.
- *
- * ONE RENDERER PER ROW, RESOLVED FROM THE ROW'S PLATFORM. `platform` is the
- * key the owning platform module is looked up under; a module that publishes a
- * `textRenderer` renders its own platform's rows, and everything else — every
- * module that publishes none, and every id no module claims — gets
- * {@link SlackMrkdwnText}, the core default below. The lookup happens HERE,
- * inside the per-row component, and not once per transcript: a merged
- * conversation interleaves rows from several sources by event time
- * (`MergedRow.sourcePlatform`), so a renderer hoisted out of the row loop
- * would render one platform's rows with another's semantics.
- *
- * NO MODULE OVERRIDES IT TODAY, deliberately: §10 ships the registry with the
- * Slack renderer as the default for all chat platforms and lands per-platform
- * overrides separately, each with its own visual review. So this resolves to
- * the same renderer for every row that reaches it — the seam is what changed,
- * not a pixel.
- */
+// Transcript message renderer: one renderer per row, resolved from the row's own platform (a module's override, else the default below).
 
 import { memo, type ComponentType } from 'react'
 import ReactMarkdown from 'react-markdown'

@@ -47,6 +47,9 @@ export const CP_SUBPROTOCOL = 'agentconnect.v1'
 /** The CP mount path the daemon↔CP WebSocket connects to. */
 export const CP_WS_PATH = '/daemon/ws'
 
+/** The relay route Google Chat posts interaction events to (google-chat-integration.md §2); the Setup Server publishes the same path as the app's HTTPS endpoint. */
+export const GOOGLE_CHAT_EVENTS_PATH = '/googlechat/events'
+
 /** CP accepts metadata-only transcript activity invalidations from current daemons. */
 export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
 

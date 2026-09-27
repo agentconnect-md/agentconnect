@@ -53,8 +53,17 @@ export function toBotDto(b: BotRecord): BotDtoT {
     revokedCode: b.revokedCode,
     credentialRejectedAt: b.credentialRejectedAt?.toISOString() ?? null,
     credentialRejectedCode: b.credentialRejectedCode,
+    externalAppId: b.externalAppId,
+    platformConfig: publicPlatformConfig(b.platformConfig),
     createdAt: b.createdAt.toISOString()
   }
+}
+
+/** The bag's string values; every one is public by contract (`BotIdentityColumns`), and a flag like Slack's stays on its own field. */
+function publicPlatformConfig(bag: Record<string, unknown> | null): Record<string, string> | null {
+  if (!bag) return null
+  const entries = Object.entries(bag).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+  return entries.length > 0 ? Object.fromEntries(entries) : null
 }
 
 export function botRoutes(deps: HttpDeps) {

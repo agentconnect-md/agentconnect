@@ -46,6 +46,8 @@ export const consoleKeys = {
    *  Slack-NAMED but answered per organization AND per caller, so it is
    *  org-scoped like every other row here. */
   deploymentConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'deployment-config'),
+  /** Whether the deployment-owned Google Chat app can be installed (`GET /integrations/googlechat/platform-install`). */
+  googleChatPlatformInstall: (orgId: string | null | undefined) => consoleKey(orgId, 'googlechat-platform-install'),
   /** The deployment GitHub App enabled-probe (`GET /github/installations`, 404 ⇒ off). */
   githubApp: (orgId: string | null | undefined) => consoleKey(orgId, 'github-app'),
   connectorsConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'connectors-config'),

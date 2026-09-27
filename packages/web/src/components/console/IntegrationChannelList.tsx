@@ -30,13 +30,14 @@ import type { WebChannelListMessage } from '@/components/console/platforms/contr
 
 type ChannelListTranslator = (key: string, values?: Record<string, string | number>) => string
 
-type NounKey = 'channel' | 'conversation' | 'group' | 'groupChat' | 'team'
+type NounKey = 'channel' | 'conversation' | 'group' | 'groupChat' | 'team' | 'space'
 
 function nounKey(noun: string): NounKey {
   if (noun === 'conversation') return 'conversation'
   if (noun === 'group chat') return 'groupChat'
   if (noun === 'group') return 'group'
   if (noun === 'team') return 'team'
+  if (noun === 'space') return 'space'
   return 'channel'
 }
 

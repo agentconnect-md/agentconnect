@@ -1298,7 +1298,9 @@
         "groupChat": "group chat",
         "groupChatPlural": "group chats",
         "team": "team",
-        "teamPlural": "teams"
+        "teamPlural": "teams",
+        "space": "space",
+        "spacePlural": "spaces"
       },
       "thisRoom": "this {noun}",
       "trigger": {
@@ -1829,6 +1831,10 @@
         "qq": {
           "create": "Create a bot in the QQ portal",
           "existing": "An unused QQ bot"
+        },
+        "googlechat": {
+          "create": "Configure a Chat app in Google Cloud",
+          "existing": "An unused Google Chat app"
         }
       }
     }
@@ -5365,6 +5371,91 @@
       "step1": "Create a bot in the QQ developer portal, turn on private and group messages, then copy its AppID and AppSecret.",
       "step1Warning": "Before publishing the bot, add your daemon's public IP to its IP allowlist — QQ rejects calls from other addresses.",
       "step2": "Paste the AppID & AppSecret — required to connect"
+    },
+    "googlechat": {
+      "checking": "Checking this deployment…",
+      "relayRequired": "Google Chat sends its events over HTTPS, and this deployment has no public relay to receive them.",
+      "deployment": {
+        "use": "Use the deployment app",
+        "installing": "Installing…",
+        "useOwn": "Use your own Chat app"
+      },
+      "prerequisites": {
+        "title": "Before you start",
+        "account": "A Google Workspace account that can configure Chat apps",
+        "project": "A Google Cloud project with the Google Chat API enabled",
+        "crm": "The Cloud Resource Manager API enabled in that project",
+        "serviceAccount": "A service account in that project with the Browser role, and a JSON key for it",
+        "open": "Open Google Cloud Console"
+      },
+      "configure": {
+        "title": "Configure the Chat app",
+        "endpoint": "HTTP endpoint URL",
+        "audience": "Authentication audience",
+        "functionality": "Functionality",
+        "receiveDms": "Receive 1:1 messages",
+        "joinSpaces": "Join spaces and group conversations",
+        "visibility": "Visibility",
+        "visibilityValue": "The people and groups who can use the app",
+        "copy": "Copy",
+        "copied": "Copied"
+      },
+      "credentials": {
+        "title": "Paste the app’s credentials",
+        "projectId": "Project ID",
+        "projectIdPlaceholder": "example-project",
+        "projectNumber": "Project number",
+        "optional": "optional",
+        "key": "Service account key (JSON)",
+        "keyPlaceholder": "Paste the downloaded key file"
+      },
+      "footer": {
+        "connect": "Connect",
+        "connecting": "Connecting…"
+      },
+      "test": {
+        "title": "Test it in Google Chat",
+        "saved": "Saved",
+        "savedDone": "Google accepted the key.",
+        "connected": "Connected",
+        "connectedDone": "The relay and the agent’s daemon are ready.",
+        "waitingDaemon": "Waiting for the agent’s daemon.",
+        "tested": "Tested",
+        "testedDone": "A conversation reached the agent.",
+        "testedPending": "Add the app in Google Chat, then send it a direct message or mention it in a space.",
+        "dmPrivate": "Direct messages stay private to the person who sent them; no one can open them in this console.",
+        "spacesOrg": "Conversations in a space are visible to this organization, whoever is in the space.",
+        "done": "Done"
+      },
+      "settings": {
+        "key": "Key",
+        "keyActive": "Accepted by Google",
+        "keyRejected": "Rejected by Google",
+        "keyRevoked": "Revoked",
+        "deploymentKey": "Managed in the Setup Server",
+        "newKey": "New service account key (JSON)",
+        "save": "Save",
+        "checking": "Checking…",
+        "updated": "Key updated.",
+        "scope": {
+          "dms": "Answers direct messages.",
+          "spaces": "Answers in a space only when mentioned, in the same thread.",
+          "unsupported": "Attachments, cards, and group direct messages are not supported."
+        }
+      },
+      "errors": {
+        "projectNumberInvalid": "Enter the project number as digits, as the Google Cloud dashboard shows it, or leave it empty.",
+        "keyInvalid": "Paste the whole JSON key of a service account created in the Chat app’s own project.",
+        "projectMismatch": "This key belongs to a different project. Create the service account and its key in the Chat app’s own project.",
+        "projectNumberMismatch": "This project number belongs to a different project. Copy it from the project’s dashboard, or leave it empty.",
+        "crmDisabled": "Enable the Cloud Resource Manager API in the Chat app’s project, then connect again.",
+        "crmForbidden": "Grant the service account the Browser role on the Chat app’s project, then connect again.",
+        "projectUnresolved": "Google could not read this project. Check the project ID, then connect again.",
+        "keyRejected": "Google rejected this key. Create a new JSON key for the service account and paste it.",
+        "appUnavailable": "The Chat app is not configured in this project. Enable the Google Chat API, configure the app, then connect again.",
+        "unreachable": "Google could not be reached. Try again.",
+        "projectChanged": "The deployment app now names a different Google Cloud project. Remove its current installation, then install it again."
+      }
     }
   }
 }

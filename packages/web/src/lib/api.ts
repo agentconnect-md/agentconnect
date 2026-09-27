@@ -810,6 +810,12 @@ export type CreateIntegrationInput =
   // exists after the OAuth callback minted it, so the only create shape here is
   // "add this agent as a member of a connected workspace" (linear-integration.md §7.1).
   | (CreateIntegrationBase & { platform: 'linear'; transport?: 'http'; botId: string })
+  // Google Chat delivers events only to the relay, so its one transport is http; the number is an optional cross-check.
+  | (CreateIntegrationBase & {
+      platform: 'googlechat'
+      transport: 'http'
+      googlechat?: { projectId: string; projectNumber?: string; serviceAccountKey: string }
+    })
 
 export interface TelegramBotCheckDto {
   status: 'ready' | 'privacy_enabled' | 'invalid' | 'unreachable'
@@ -1001,6 +1007,8 @@ export interface BotDto {
   revokedCode?: string | null // the platform's own code recorded with that revocation, when one was
   credentialRejectedAt?: string | null // an ambiguous check rejected the current credential (first seen); the bot stays live
   credentialRejectedCode?: string | null // the platform's own code behind that rejection
+  externalAppId?: string | null // the platform's public app identity, such as a Google Chat project number
+  platformConfig?: Record<string, string> | null // public row metadata, such as a Google Chat project ID
   createdAt: string // ISO-8601
 }
 
@@ -4482,6 +4490,23 @@ export async function refreshSlackBot(id: string): Promise<SlackBotRefreshDto> {
 /** Replace a custom Slack app's bot token in place (POST /bots/:id/slack/token); returns the updated bot. */
 export async function replaceSlackBotToken(id: string, botToken: string): Promise<BotDto> {
   return apiPost<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}/slack/token`, { botToken })
+}
+
+// ── Google Chat (google-chat-integration.md §3) ──
+/** `GET /integrations/googlechat/platform-install` — whether the deployment-owned Chat app can be installed here. */
+export interface GoogleChatPlatformInstallDto {
+  available: boolean
+}
+export async function fetchGoogleChatPlatformInstall(orgId?: string): Promise<GoogleChatPlatformInstallDto> {
+  return apiGet<GoogleChatPlatformInstallDto>(`${orgBase(orgId)}/integrations/googlechat/platform-install`)
+}
+/** Install the deployment-owned Chat app on an agent (201), or re-stamp it with the current deployment key (200). */
+export async function installGoogleChatPlatformApp(input: { agentId?: string } = {}): Promise<IntegrationDto> {
+  return apiPost<IntegrationDto>(`${orgBase()}/integrations/googlechat/platform-install`, input)
+}
+/** Replace a per-agent Chat app's service-account key under the create path's validation; the key is write-only. */
+export async function replaceGoogleChatKey(botId: string, serviceAccountKey: string): Promise<BotDto> {
+  return apiPut<BotDto>(`${orgBase()}/bots/${encodeURIComponent(botId)}/googlechat/key`, { serviceAccountKey })
 }
 
 // ── members ───────────────────────────────────────────────────────────────────

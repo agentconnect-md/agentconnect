@@ -183,6 +183,32 @@ The wizard should present these concrete steps:
 Google documents organization-level [key-creation constraints](https://docs.cloud.google.com/iam/docs/best-practices-for-managing-service-account-keys#use_organization_policy_constraints_to_limit_which_projects_can_create_service_account_keys).
 Account and credential readiness therefore belong at the start of setup.
 
+The console module (`packages/web/src/components/console/platforms/googlechat/`)
+builds these steps as one pane. `GET /integrations/googlechat/platform-install`
+answers `{ available }`: the deployment app is configured and a relay is
+connected, the two deployment gates of the install itself. When it is available
+and no other agent in the organization holds that app, the pane leads with **Use
+the deployment app**, which runs the install for this agent, and **Use your own
+Chat app** opens the steps. Without a public relay the pane says so and offers
+nothing, because Google Chat has no other transport. The own-app pane lists the
+prerequisites (steps 1 and 2 and the service account of step 4), links to the
+Chat API configuration page, and shows the values to copy with copy buttons: the
+HTTPS endpoint (the relay origin plus `GOOGLE_CHAT_EVENTS_PATH`), the **Project
+Number** audience, 1:1 messages and joining spaces, and visibility. The form
+takes the project ID (filled from a pasted key), an optional project number, and
+the key in a masked field that is cleared after every submission. Each
+`GOOGLE_CHAT_*` refusal maps to one sentence that names its fix; the two
+project-read refusals name the Browser role and the Cloud Resource Manager API.
+An installation then reaches a test step that keeps three states apart: saved
+(Google accepted the key), connected (the relay, the agent's daemon, and the
+credential are ready), and tested (a conversation row reached the agent), which
+stays an instruction to send a DM or a Space mention until one exists. The step
+states both §6 consequences. Settings → Bots shows the app's project ID and
+number (the bot DTO's public `platformConfig` and `externalAppId`), the endpoint
+and audience to check, the key's state, and the scope limits, and replaces a
+per-agent app's key through `PUT /bots/:id/googlechat/key` under the create
+path's validation; the deployment app's key stays with the Setup Server.
+
 Adding an already available app through Chat or Marketplace is a short user flow,
 but it installs that existing identity; it does not create a separate bot for the
 user. Organization-only testing does not require public Marketplace publication.
@@ -307,8 +333,8 @@ activate an agent.
 Run the existing discovery, conversation gate, trigger, command, session routing,
 and Decision checks. Off stays silent, including for commands. Restricted agents
 remain disabled in new conversations until an editor enables them. Reuse the
-normal DM On/Off policy. In Spaces, the UI must explain that an every-message
-setting cannot subscribe to traffic Google does not deliver; retain the common
+normal DM On/Off policy. In Spaces, the console does not offer the every-message
+trigger, because Google does not deliver unmentioned traffic; retain the common
 trigger policy without promising ambient capture. Admitted follow-ups use normal
 steering or queuing; `!queue` and `!cancel` keep their shared meanings.
 
@@ -512,7 +538,7 @@ for private DM turns as part of the acceptance checks.
 | Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals. |
 | Daemon output           | Persist stable create intent/results and serialize Google sends through the platform output surface.                                                                                              |
 | Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment-owned app's install, secret rotation, daemon spec, and relay assignment projection.         |
-| Console platform module | Chat picker, setup wizard, connection diagnostics, conversation semantics, and explicit scope limitations.                                                                                        |
+| Console platform module | Mark, wizard (deployment app first when offered; guided own-app steps; mapped refusals; saved, connected, tested), Settings identity and key replacement, mention-only Space triggers, renderer.  |
 
 Start with observed membership discovery and no bot-sender routing or multi-agent
 sharing. Add manifest fields only when an actual pre-dispatch consumer requires

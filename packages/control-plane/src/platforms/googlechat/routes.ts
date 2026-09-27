@@ -6,7 +6,7 @@ import type { ZodTypeProvider } from '../../http/plugins/zod.js'
 import { Tag } from '../../http/plugins/openapi.js'
 import type { HttpDeps } from '../../http/deps.js'
 import type { GoogleChatRouteSeams } from '../../http/platform-route-seams.js'
-import { AgentId } from '../../domain/ids.js'
+import { AgentId, BotId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../../http/rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { relayIngress } from '../../http/relay-ingress.js'
@@ -14,8 +14,9 @@ import { integrationPlatformAvailability } from '../../http/daemon-platform-capa
 import { installNewBot } from '../../http/install-bot.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { TENANTLESS_SENTINEL } from '../../persistence/ports.js'
-import { ErrorDto, IntegrationDto } from '../../http/dto/index.js'
+import { BotDto, ErrorDto, IdParam, IntegrationDto } from '../../http/dto/index.js'
 import { toDto as toIntegrationDto } from '../../http/routes/integrations.js'
+import { toBotDto } from '../../http/routes/bots.js'
 import { GOOGLE_CHAT_APP_TAKEN_MESSAGE, buildGoogleChatInstall, resolveGoogleChatApp } from './provider.js'
 
 /** The 409 copy when the deployment's project ID no longer matches the installed bot of the same project number. */
@@ -27,12 +28,43 @@ const GoogleChatPlatformInstallBody = z.object({
   agentId: z.string().uuid().optional()
 })
 
+/** Whether the console may offer the deployment-owned app: it is configured and a relay can receive its events. */
+const GoogleChatPlatformInstallAvailabilityDto = z.object({ available: z.boolean() })
+
+/** A per-agent Chat app's replacement key (write-only). */
+const ReplaceGoogleChatKeyBody = z.object({ serviceAccountKey: z.string().trim().min(1).max(20_000) })
+
+/** The 409 copy when a pasted key would replace the deployment-owned app's, which the Setup Server holds. */
+export const GOOGLE_CHAT_DEPLOYMENT_KEY_MESSAGE =
+  'The deployment’s Google Chat app takes its key from the Setup Server; update it there, then install the app again.'
+
 export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: GoogleChatRouteSeams) {
   return async function googleChatPlatformInstallRoutesPlugin(app: FastifyInstance): Promise<void> {
-    // No deployment-owned app ⇒ the route 404s and only per-agent apps remain.
     const platform = googleChat.app
-    if (!platform) return
     const r = app.withTypeProvider<ZodTypeProvider>()
+
+    r.get(
+      '/integrations/googlechat/platform-install',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Deployment Google Chat app availability',
+          description:
+            'Whether the Google Chat app configured in the Setup Server can be installed here: the app is configured and a relay can receive its HTTPS events. The console offers the deployment app only when this is true. Never returns the app’s key or project.',
+          operationId: 'getGoogleChatPlatformInstall',
+          response: { 200: GoogleChatPlatformInstallAvailabilityDto, 401: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (!req.principal) {
+          return reply.code(401).send({ error: 'Unauthorized', statusCode: 401, message: 'authentication required' })
+        }
+        return { available: !!platform && relayIngress(deps).ok }
+      }
+    )
+
+    // No deployment-owned app ⇒ the install route 404s and only per-agent apps remain.
+    if (!platform) return
 
     r.post(
       '/integrations/googlechat/platform-install',
@@ -167,6 +199,59 @@ export function googleChatPlatformInstallRoutes(deps: HttpDeps, googleChat: Goog
           }
           throw err
         }
+      }
+    )
+  }
+}
+
+/** `PUT /bots/:id/googlechat/key`: rotate a per-agent Chat app's service-account key under the create path's validation. */
+export function googleChatKeyRoutes(deps: HttpDeps, googleChat: GoogleChatRouteSeams) {
+  return async function googleChatKeyRoutesPlugin(app: FastifyInstance): Promise<void> {
+    const r = app.withTypeProvider<ZodTypeProvider>()
+
+    r.put(
+      '/bots/:id/googlechat/key',
+      {
+        schema: {
+          tags: [Tag.Bots],
+          summary: 'Replace a Google Chat app key',
+          description:
+            'Validate a new service-account key for this bot’s Google Chat app exactly as a new install does (the key’s own project, its number from Cloud Resource Manager, one Chat API read), require the same project and number, then store it in place of the current key and push it to every serving daemon. The key is write-only. The deployment-owned app takes its key from the Setup Server instead (409).',
+          operationId: 'replaceGoogleChatKey',
+          params: IdParam,
+          body: ReplaceGoogleChatKeyBody,
+          response: { 200: BotDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const bot = await deps.repos.bot.get(orgOf(req), BotId(req.params.id))
+        const projectId = bot?.platformConfig?.projectId
+        if (!bot || bot.platform !== GOOGLE_CHAT_PLATFORM || !bot.externalAppId || typeof projectId !== 'string') {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'Google Chat bot not found' })
+        }
+        if (bot.prebuilt) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: GOOGLE_CHAT_DEPLOYMENT_KEY_MESSAGE })
+        }
+        // The stored identity is the entered one, so a key from another project or number is refused by validation itself.
+        const resolved = await resolveGoogleChatApp(
+          { projectId, projectNumber: bot.externalAppId, serviceAccountKey: req.body.serviceAccountKey },
+          googleChat.fetch
+        )
+        if (!resolved.ok) {
+          return reply.code(resolved.status).send({
+            error: resolved.status === 400 ? 'Bad Request' : 'Service Unavailable',
+            statusCode: resolved.status,
+            ...(resolved.code ? { code: resolved.code } : {}),
+            message: resolved.message
+          })
+        }
+        const { secrets } = buildGoogleChatInstall(resolved)
+        await deps.repos.botCredential.install(bot.orgId, bot.id, secrets, new Date(deps.clock.now()))
+        await deps.httpBot.syncBot(bot.id)
+        return toBotDto((await deps.repos.bot.get(bot.orgId, bot.id)) ?? bot)
       }
     )
   }

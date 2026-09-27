@@ -732,32 +732,7 @@ export interface WebPlatformModule<TApi = unknown> {
   channelList?: WebChannelListSemantics
   /** A module's additions to its integration cards on the agent page. Absent ⇒ the host's card alone. */
   agentCard?: WebAgentIntegrationCardFacet
-  /**
-   * Per-platform transcript text renderer — the §14 defect-3 seam, ADOPTED:
-   * `MessageText` resolves it from the ROW's platform key
-   * (`MergedRow.sourcePlatform`, falling back to the session's platform) on
-   * every row it renders, through `platformTextRenderer` in the registry.
-   *
-   * NO MODULE DECLARES ONE TODAY, and that is the shipped state §10 asks for:
-   * "a renderer registry keyed by platformId ships with the Slack renderer as
-   * the default for all chat platforms, then per-platform overrides land
-   * separately (§14)". The default is core (`SlackMrkdwnText`,
-   * components/console/MessageText.tsx over `slackToMarkdown`,
-   * slack-mrkdwn.ts) rather than the Slack module's member, because three
-   * other platforms render through it: making it Slack's would leave Telegram,
-   * Discord and Feishu reading another module's internals. It moves into
-   * `platforms/slack/` on the day Slack's semantics stop being everyone's —
-   * i.e. with the first override, which is also the first change here with
-   * visible pixels.
-   *
-   * A component rather than §10's sketched `(text, ctx) => ReactNode` so the
-   * memoization that keeps the transcript affordable survives the seam: the
-   * transcript re-renders on every unrelated state change in
-   * SessionDetailView, and `MessageText` is `memo`ized over its plain-string
-   * props precisely so each row's remark pipeline does NOT re-run. A bare
-   * function returning a `ReactNode` cannot be memoized by the host, and no
-   * call site has a `ctx` to pass.
-   */
+  /** This platform's transcript renderer, resolved per row by `MessageText`; absent ⇒ the core default. A component so the host's memo holds; load a parser lazily (Google Chat). */
   textRenderer?: ComponentType<{ text: string }>
   /**
    * The formatter for the facts behind one of this platform's user turns

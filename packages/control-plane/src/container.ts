@@ -289,7 +289,7 @@ import { LinearTokenService } from './platforms/linear/token-service.js'
 import { LinearOrphanTokenSweeper } from './platforms/linear/orphan-token-sweeper.js'
 import { linearConnectRoutes, linearOauthCallbackRoutes } from './platforms/linear/routes.js'
 import { createGoogleChatCpProvider } from './platforms/googlechat/provider.js'
-import { googleChatPlatformInstallRoutes } from './platforms/googlechat/routes.js'
+import { googleChatKeyRoutes, googleChatPlatformInstallRoutes } from './platforms/googlechat/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
@@ -2264,7 +2264,13 @@ export function buildContainer(
     // Registered unconditionally for per-agent apps; the deployment-owned app only adds its install route.
     createGoogleChatCpProvider({
       fetch: googleChatSeams.fetch,
-      installRoutes: { org: [googleChatPlatformInstallRoutes(httpDeps, googleChatSeams)], publicCallback: [] }
+      installRoutes: {
+        org: [
+          googleChatPlatformInstallRoutes(httpDeps, googleChatSeams),
+          googleChatKeyRoutes(httpDeps, googleChatSeams)
+        ],
+        publicCallback: []
+      }
     })
   ])
 
