@@ -448,8 +448,12 @@ describe('POST /me/keys — permission and agent selection', () => {
 })
 
 describe('PATCH /me/keys/:id — edit in place', () => {
-  const patch = (app: ReturnType<typeof buildHttpApp>['app'], id: string, body: unknown, headers = {}) =>
-    app.inject({ method: 'PATCH', url: `/api/v1/me/keys/${id}`, payload: body, headers })
+  const patch = (
+    app: ReturnType<typeof buildHttpApp>['app'],
+    id: string,
+    body: Record<string, unknown>,
+    headers: Record<string, string> = {}
+  ) => app.inject({ method: 'PATCH', url: `/api/v1/me/keys/${id}`, payload: body, headers })
   const listed = async (app: ReturnType<typeof buildHttpApp>['app'], id: string) =>
     ((await app.inject({ method: 'GET', url: '/api/v1/me/keys' })).json() as KeyRow[]).find((k) => k.id === id)!
 
