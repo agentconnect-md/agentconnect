@@ -47,15 +47,12 @@ export function googleChatTenantEntries(tenant: GoogleChatTenant): Record<string
   }
 }
 
-/** The entries that attach `proven` to a row's current bag: a missing customer id, and every domain it does not list yet. */
-export function googleChatTenantAdditions(
+/** The `domainIds` entry that appends every domain a row's current bag does not list yet; empty when it lists them all. */
+export function googleChatDomainAdditions(
   current: Record<string, unknown> | null | undefined,
-  proven: GoogleChatTenant
+  domainIds: readonly string[]
 ): Record<string, string> {
-  const known = googleChatTenantOf(current)
-  const newDomains = (proven.domainIds ?? []).filter((id) => !(known.domainIds ?? []).includes(id))
-  return {
-    ...(proven.customerId && current?.customerId === undefined ? { customerId: proven.customerId } : {}),
-    ...(newDomains.length > 0 ? { domainIds: [...(known.domainIds ?? []), ...newDomains].join(',') } : {})
-  }
+  const known = googleChatTenantOf(current).domainIds ?? []
+  const added = [...new Set(domainIds)].filter((id) => !known.includes(id))
+  return added.length > 0 ? { domainIds: [...known, ...added].join(',') } : {}
 }

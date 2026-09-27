@@ -1,16 +1,17 @@
 // Claims a Google Workspace customer of the multi-tenant deployment Chat app for one organization (google-chat-integration.md §10.5).
 import { randomUUID } from 'node:crypto'
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyBaseLogger, FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../../http/plugins/zod.js'
 import { Tag } from '../../http/plugins/openapi.js'
 import type { HttpDeps } from '../../http/deps.js'
 import type { GoogleChatRouteSeams } from '../../http/platform-route-seams.js'
-import { IntegrationId } from '../../domain/ids.js'
+import { IntegrationId, type OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, orgOf } from '../../http/rbac.js'
 import { relayIngress } from '../../http/relay-ingress.js'
 import { installNewBot } from '../../http/install-bot.js'
+import { deleteBotIdentity, removeIntegrationRow } from '../../http/uninstall.js'
 import { syncGoogleAccountId } from '../../http/google-account-id.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { ErrorDto } from '../../http/dto/index.js'
@@ -18,7 +19,12 @@ import type { BotRecord } from '../../persistence/ports.js'
 import { checkServiceAccountKey, googleChatAppReader, type GoogleChatAppRead } from './credential.js'
 import { buildGoogleChatInstall, googleChatRowTenantKeys } from './provider.js'
 import { googleChatErrorLabel, googleChatInstallTarget } from './routes.js'
-import { GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE, googleChatTenantAdditions, type GoogleChatTenant } from './tenant.js'
+import {
+  GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE,
+  googleChatDomainAdditions,
+  googleChatTenantOf,
+  type GoogleChatTenant
+} from './tenant.js'
 
 /** Base64url JSON is short; anything longer is not a state the relay minted. */
 const MAX_STATE_LENGTH = 4_096
@@ -153,23 +159,73 @@ function claimed(state: GoogleChatClaimState): { redirect?: string } {
   return state.redirect ? { redirect: state.redirect } : {}
 }
 
-/** The customer rows of `app` a claim resolves against, and the row the proof lands on (§10.3, §10.5 step 5). */
-function googleChatClaimTarget<Row extends Pick<BotRecord, 'orgId' | 'externalTenantId' | 'platformConfig'>>(
+/** How a proof lands on the app's customer rows (§10.3, §10.5 step 5); `retire` is a domain row a Space proof folds in. */
+export type GoogleChatClaimPlan<Row> =
+  | { kind: 'taken' }
+  | { kind: 'conflict'; row: Row }
+  | { kind: 'create' }
+  | { kind: 'held'; row: Row }
+  | { kind: 'append'; row: Row; domainId: string }
+  | { kind: 'upgrade'; row: Row; customerId: string }
+  | { kind: 'consolidate'; row: Row; retire: Row; domainId: string }
+
+/** Resolve a proof against the customer rows of one app; a proof carries at most one domain and one customer. */
+export function planGoogleChatClaim<Row extends Pick<BotRecord, 'orgId' | 'externalTenantId' | 'platformConfig'>>(
   rows: readonly Row[],
   orgId: string,
   proven: GoogleChatTenant
-): { taken: true } | { taken: false; row?: Row } {
+): GoogleChatClaimPlan<Row> {
   const knows = (row: Row, key: string) => googleChatRowTenantKeys(row).includes(key)
-  const domainKeys = (proven.domainIds ?? []).map((id) => `domains/${id}`)
-  const byDomain = rows.find((row) => domainKeys.some((key) => knows(row, key)))
-  const byCustomer = proven.customerId ? rows.find((row) => knows(row, `customers/${proven.customerId}`)) : undefined
-  if ((byDomain && byDomain.orgId !== orgId) || (byCustomer && byCustomer.orgId !== orgId)) return { taken: true }
-  // A row that already lists the domain wins, whatever its primary key; a Space claim then lands on its customer's row.
-  if (byDomain) return { taken: false, row: byDomain }
-  if (proven.customerId) return { taken: false, ...(byCustomer ? { row: byCustomer } : {}) }
-  // A DM proves a domain alone: it joins the organization's only customer row; several leave the customer ambiguous, so it gets its own.
-  const own = rows.filter((row) => row.orgId === orgId)
-  return { taken: false, ...(own.length === 1 ? { row: own[0]! } : {}) }
+  const domainId = proven.domainIds?.[0]
+  const customerId = proven.customerId
+  const byDomain = domainId ? rows.find((row) => knows(row, `domains/${domainId}`)) : undefined
+  const byCustomer = customerId ? rows.find((row) => knows(row, `customers/${customerId}`)) : undefined
+  if ((byDomain && byDomain.orgId !== orgId) || (byCustomer && byCustomer.orgId !== orgId)) return { kind: 'taken' }
+  // A domain alone never names a customer, so it only matches the row that lists it.
+  if (!customerId) return byDomain ? { kind: 'held', row: byDomain } : { kind: 'create' }
+  if (!domainId) return byCustomer ? { kind: 'held', row: byCustomer } : { kind: 'create' }
+  // A domain already bound to another Workspace customer contradicts the proof; it is never overwritten.
+  const bound = googleChatTenantOf(byDomain?.platformConfig).customerId
+  if (byDomain && bound && bound !== customerId) return { kind: 'conflict', row: byDomain }
+  if (byDomain && byCustomer) {
+    return byDomain === byCustomer
+      ? { kind: 'held', row: byCustomer }
+      : { kind: 'consolidate', row: byCustomer, retire: byDomain, domainId }
+  }
+  if (byCustomer) return { kind: 'append', row: byCustomer, domainId }
+  if (byDomain) return { kind: 'upgrade', row: byDomain, customerId }
+  return { kind: 'create' }
+}
+
+/** Thrown under the row lock when the row turned out bound to another Workspace customer. */
+class GoogleChatClaimConflict extends Error {}
+
+/** The 409 copy when a proven domain is bound to a different Workspace customer. */
+const GOOGLE_CHAT_CLAIM_CONFLICT_MESSAGE =
+  'This Google Workspace domain is already connected under a different Google Workspace organization. Ask an administrator to check the connection.'
+
+/** Retire a folded-in domain row through the same teardown the console's integration removal and bot deletion use. */
+async function retireGoogleChatRow(
+  deps: HttpDeps,
+  log: FastifyBaseLogger,
+  orgId: OrgId,
+  bot: BotRecord
+): Promise<boolean> {
+  const installs = await deps.repos.integration.listForBot(bot.id)
+  const release = deps.agentMutations.tryBeginMutation([...new Set(installs.map((install) => install.agentId))])
+  if (!release) return false
+  try {
+    await deps.httpBot.prepareIntegrationRemoval(bot.id)
+    for (const install of installs) {
+      const agent = await deps.repos.agent.get(orgId, install.agentId)
+      await removeIntegrationRow(deps, log, { orgId, integration: install, agent: agent ?? null })
+    }
+    await deps.httpBot.syncBot(bot.id)
+    await deleteBotIdentity(deps, log, orgId, bot)
+    return true
+  } finally {
+    release()
+  }
 }
 
 function refuse(reply: FastifyReply, status: number, code: string, message: string): FastifyReply {
@@ -187,7 +243,7 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
           tags: [Tag.Integrations],
           summary: 'Claim a Google Workspace customer for Google Chat',
           description:
-            'Connect the caller’s Google Workspace customer to this organization on the deployment’s multi-tenant Google Chat app. `state` is the unsigned base64url JSON the Chat prompt carried; every fact is re-derived: the caller’s linked Google account must be the Chat user who asked, a Space claim requires the caller’s membership in that Space to be INTERNAL, and a DM claim requires the caller to be its only human member, whose domain is the one bound. A proven domain already listed on a row decides that row; otherwise a Space claim lands on its customer’s row and a DM claim joins the organization’s only customer row. A new customer is installed on the organization’s preset agent (201). A customer this organization already holds answers 200 and records any id or domain the claim newly proved; one held by another organization answers 409 without naming it. Answers the Chat prompt’s completion URL when the state carried one.',
+            'Connect the caller’s Google Workspace customer to this organization on the deployment’s multi-tenant Google Chat app. `state` is the unsigned base64url JSON the Chat prompt carried; every fact is re-derived: the caller’s linked Google account must be the Chat user who asked, a Space claim requires the caller’s membership in that Space to be INTERNAL, and a DM claim requires the caller to be its only human member, whose domain is the one bound. A DM claim matches only the row that already lists its domain; a Space claim’s domain and customer append the domain to the customer’s row, upgrade and re-key a domain-only row, or consolidate the two rows into the customer’s. A new customer is installed on the organization’s preset agent (201). A customer this organization already holds answers 200; one held by another organization answers 409 without naming it, and a domain bound to a different customer answers 409 GOOGLE_CHAT_CLAIM_CONFLICT. Answers the Chat prompt’s completion URL when the state carried one.',
           operationId: 'claimGoogleChatCustomer',
           body: GoogleChatClaimBody,
           response: {
@@ -278,33 +334,70 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
         )
         if (!proof.ok) return refuse(reply, proof.status, proof.code, proof.message)
 
-        // One customer maps to one organization: any customer row of this app that knows a proven key decides.
+        // One customer maps to one organization: the customer rows of this app that know a proven key decide.
         const rows = (await deps.repos.bot.listForPlatform(GOOGLE_CHAT_PLATFORM)).filter(
           (bot) => bot.externalAppId === platform.projectNumber && googleChatRowTenantKeys(bot).length > 0
         )
-        const resolved = googleChatClaimTarget(rows, orgId, proof.tenant)
-        if (resolved.taken) return refuse(reply, 409, 'GOOGLE_CHAT_CLAIM_TAKEN', GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE)
+        const plan = planGoogleChatClaim(rows, orgId, proof.tenant)
+        if (plan.kind === 'taken') return refuse(reply, 409, 'GOOGLE_CHAT_CLAIM_TAKEN', GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE)
+        const conflict = (row: BotRecord) => {
+          req.log.warn(
+            { botId: row.id, customerId: proof.tenant.customerId },
+            'google chat claim: the proven domain is bound to another Workspace customer'
+          )
+          return refuse(reply, 409, 'GOOGLE_CHAT_CLAIM_CONFLICT', GOOGLE_CHAT_CLAIM_CONFLICT_MESSAGE)
+        }
+        if (plan.kind === 'conflict') return conflict(plan.row)
         const install = buildGoogleChatInstall(
           { projectId: platform.projectId, projectNumber: platform.projectNumber, serviceAccountKey: key.key.json },
           proof.tenant
         )
 
-        const held = resolved.row
-        if (held) {
-          // A customer id another row of this organization already holds stays there, so no key names two rows.
-          const customerElsewhere =
-            !!proof.tenant.customerId &&
-            rows.some(
-              (row) =>
-                row.id !== held.id && googleChatRowTenantKeys(row).includes(`customers/${proof.tenant.customerId}`)
-            )
-          const attach: GoogleChatTenant = {
-            ...(proof.tenant.customerId && !customerElsewhere ? { customerId: proof.tenant.customerId } : {}),
-            ...(proof.tenant.domainIds ? { domainIds: proof.tenant.domainIds } : {})
+        if (plan.kind !== 'create') {
+          const held = plan.row
+          // Whether the surviving row's assignment still has to be re-sent.
+          let resync = false
+          try {
+            if (plan.kind === 'append') {
+              resync = await deps.repos.bot.mergeBotIdentity(orgId, held.id, (current) => ({
+                platformConfig: googleChatDomainAdditions(current.platformConfig, [plan.domainId])
+              }))
+            } else if (plan.kind === 'upgrade') {
+              // The domain row learns its customer and is re-keyed by it; no customer row exists, so the key is free.
+              resync = await deps.repos.bot.mergeBotIdentity(orgId, held.id, (current) => {
+                const bound = googleChatTenantOf(current.platformConfig).customerId
+                if (bound && bound !== plan.customerId) throw new GoogleChatClaimConflict()
+                return {
+                  platformConfig: { customerId: plan.customerId },
+                  externalTenantId: `customers/${plan.customerId}`
+                }
+              })
+            } else if (plan.kind === 'consolidate') {
+              // The domain row's domains move onto the customer row, which then keys the customer alone.
+              const retiring = await deps.repos.bot.get(orgId, plan.retire.id)
+              const bound = googleChatTenantOf(retiring?.platformConfig).customerId
+              if (retiring && bound && bound !== proof.tenant.customerId) return conflict(retiring)
+              const domains = [...(googleChatTenantOf(retiring?.platformConfig).domainIds ?? []), plan.domainId]
+              await deps.repos.bot.mergeBotIdentity(orgId, held.id, (current) => ({
+                platformConfig: googleChatDomainAdditions(current.platformConfig, domains)
+              }))
+              await deps.httpBot.syncBot(held.id)
+              if (retiring && !(await retireGoogleChatRow(deps, req.log, orgId, retiring))) {
+                return refuse(
+                  reply,
+                  409,
+                  'GOOGLE_CHAT_CLAIM_UNAVAILABLE',
+                  'An agent is being moved right now. Try connecting again in a moment.'
+                )
+              }
+            }
+          } catch (err) {
+            if (err instanceof GoogleChatClaimConflict) return conflict(held)
+            if (err instanceof BotExternalIdentityTaken) {
+              return refuse(reply, 409, 'GOOGLE_CHAT_CLAIM_TAKEN', GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE)
+            }
+            throw err
           }
-          const added = await deps.repos.bot.mergePlatformConfig(orgId, held.id, (current) =>
-            googleChatTenantAdditions(current, attach)
-          )
           // A freed customer row goes back on the preset agent with the current deployment key, or Chat would prompt forever.
           if (held.agentIds.length === 0) {
             const target = await googleChatInstallTarget(deps, req)
@@ -329,7 +422,7 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
               )
             }
           }
-          if (added || held.agentIds.length === 0) await deps.httpBot.syncBot(held.id)
+          if (resync || held.agentIds.length === 0) await deps.httpBot.syncBot(held.id)
           return reply.code(200).send(claimed(state))
         }
 

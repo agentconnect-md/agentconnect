@@ -275,10 +275,12 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
   const DM = 'spaces/DDDDexample'
   const REDIRECT = 'https://chat.google.com/api/config_complete_redirect?token=synthetic'
   const CHAT = 'https://chat.googleapis.com/v1'
-  // The caller's Workspace domain as Google reports it; a test switches it to prove a second domain.
+  // What Google reports for the caller's domain and the Space's customer; each test sets the order it proves.
   let callerDomain = '0000000000'
+  let spaceCustomer = 'C0000000000'
   beforeEach(() => {
     callerDomain = '0000000000'
+    spaceCustomer = 'C0000000000'
   })
 
   /** The Chat reads a claim makes with the deployment key: the caller's Space membership, the Space, and a DM's members. */
@@ -288,13 +290,23 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
       if (url === GOOGLE_TOKEN_ENDPOINT) return Response.json({ access_token: 'synthetic-access-token' })
       const member = { name: `users/${GOOGLE_USER}`, type: 'HUMAN', domainId: callerDomain }
       if (url === `${CHAT}/${SPACE}/members/${GOOGLE_USER}`) return Response.json({ affiliation: 'INTERNAL', member })
-      if (url === `${CHAT}/${SPACE}`) return Response.json({ name: SPACE, customer: 'customers/C0000000000' })
+      if (url === `${CHAT}/${SPACE}`) return Response.json({ name: SPACE, customer: `customers/${spaceCustomer}` })
       if (url === `${CHAT}/${DM}/members?pageSize=100`) return Response.json({ memberships: [{ member }] })
       throw new Error(`unexpected request to ${url}`)
     }) as typeof fetch
   }
 
-  function claimHarness() {
+  async function claimHarness() {
+    await provisionPresetAgents(prisma, { orgId: DEFAULT_ORG_ID })
+    // A placed preset, so the relay assignment is broadcast rather than deferred to placement.
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { platforms: ['googlechat'], runtimes: ['claude'], acp: true, features: [] }
+    })
+    await prisma.agent.update({
+      where: { orgId_name: { orgId: DEFAULT_ORG_ID, name: 'agentconnect' } },
+      data: { daemonId: DAEMON }
+    })
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { googleAccountId: GOOGLE_USER } })
     const relaySends: { type: string; payload: unknown }[] = []
     const app = buildHttpApp(
       prisma,
@@ -320,7 +332,7 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
         space: kind === 'dm' ? DM : SPACE,
         user: `users/${GOOGLE_USER}`,
         kind,
-        tenant: kind === 'dm' ? `domains/${callerDomain}` : 'customers/C0000000000',
+        tenant: kind === 'dm' ? `domains/${callerDomain}` : `customers/${spaceCustomer}`,
         ...(redirect ? { redirect } : {}),
         iat: 1_790_000_000
       })
@@ -338,69 +350,122 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
       payload: { state: state(kind, redirect) }
     })
 
-  const lastAssign = (sends: { type: string; payload: unknown }[]) =>
-    sends.filter((send) => send.type === 'rc/bot-assign').at(-1)?.payload as { ingress: Record<string, unknown> }
+  /** The latest relay assignment of one bot. */
+  const assignOf = (sends: { type: string; payload: unknown }[], botId: string) =>
+    (
+      sends
+        .map((send) => send.payload as { botId?: string; ingress?: Record<string, unknown> })
+        .filter((payload, i) => sends[i]!.type === 'rc/bot-assign' && payload.botId === botId)
+        .at(-1) ?? {}
+    ).ingress
 
-  it('writes a customer row on the preset agent, then learns the customer id from a Space claim', async () => {
-    await provisionPresetAgents(prisma, { orgId: DEFAULT_ORG_ID })
-    // A placed preset, so the relay assignment is broadcast rather than deferred to placement.
-    await seedDaemon(prisma, DAEMON, {
-      capabilities: { platforms: ['googlechat'], runtimes: ['claude'], acp: true, features: [] }
-    })
-    await prisma.agent.update({
-      where: { orgId_name: { orgId: DEFAULT_ORG_ID, name: 'agentconnect' } },
-      data: { daemonId: DAEMON }
-    })
-    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { googleAccountId: GOOGLE_USER } })
-    const { app, relaySends } = claimHarness()
+  const customerRows = () =>
+    prisma.bot.findMany({ where: { platform: 'googlechat' }, orderBy: { createdAt: 'asc' }, include: { secret: true } })
 
-    const created = await claim(app, 'dm')
+  it('upgrades a DM’s domain row to its customer when a Space proves the pair', async () => {
+    const { app, relaySends } = await claimHarness()
+
+    const created = await claim(app, 'dm', DEFAULT_ORG_ID, null)
     expect(created.statusCode).toBe(201)
-    expect(created.json()).toEqual({ redirect: REDIRECT })
-    const bot = await prisma.bot.findFirstOrThrow({ where: { platform: 'googlechat' }, include: { secret: true } })
-    expect(bot).toMatchObject({
+    expect(created.json()).toEqual({})
+    const [row] = await customerRows()
+    expect(row).toMatchObject({
       orgId: DEFAULT_ORG_ID,
       prebuilt: true,
       externalAppId: PROJECT_NUMBER,
       externalTenantId: 'domains/0000000000',
       platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
     })
-    expect(bot.secret?.botToken).toBe(KEY)
-    expect(lastAssign(relaySends).ingress).toEqual({ apiAppId: PROJECT_NUMBER, tenantIds: ['domains/0000000000'] })
+    expect(row!.secret?.botToken).toBe(KEY)
+    expect(assignOf(relaySends, row!.id)).toEqual({ apiAppId: PROJECT_NUMBER, tenantIds: ['domains/0000000000'] })
 
-    const learned = await claim(app, 'space')
-    expect(learned.statusCode).toBe(200)
-    expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(1)
-    expect(await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).toMatchObject({
-      externalTenantId: 'domains/0000000000',
+    const upgraded = await claim(app, 'space')
+    expect(upgraded.statusCode).toBe(200)
+    expect(upgraded.json()).toEqual({ redirect: REDIRECT })
+    const rows = await customerRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      id: row!.id,
+      externalTenantId: 'customers/C0000000000',
       platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000', customerId: 'C0000000000' }
     })
-    expect(lastAssign(relaySends).ingress).toEqual({
+    expect(assignOf(relaySends, row!.id)).toEqual({
       apiAppId: PROJECT_NUMBER,
       tenantIds: ['customers/C0000000000', 'domains/0000000000']
     })
+  })
 
-    // A second domain of the same customer, proven in a DM without a completion URL, joins the one row.
-    callerDomain = '0000000001'
-    const joined = await claim(app, 'dm', DEFAULT_ORG_ID, null)
-    expect(joined.statusCode).toBe(200)
-    expect(joined.json()).toEqual({})
-    expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(1)
-    expect(await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).toMatchObject({
-      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000,0000000001', customerId: 'C0000000000' }
-    })
-    expect(lastAssign(relaySends).ingress).toEqual({
+  it('keeps an unrelated customer’s DM on a row of its own, which its Space proof then upgrades', async () => {
+    const { app, relaySends } = await claimHarness()
+
+    // Customer A, proven in a Space.
+    expect((await claim(app, 'space')).statusCode).toBe(201)
+    // A DM from customer B's domain never lands on A's row.
+    callerDomain = '0000000005'
+    expect((await claim(app, 'dm')).statusCode).toBe(201)
+    let rows = await customerRows()
+    expect(rows.map((row) => row.externalTenantId)).toEqual(['customers/C0000000000', 'domains/0000000005'])
+    // B's own Space proves the pair and upgrades B's row, which then carries B's customer on its assignment.
+    spaceCustomer = 'C0000000005'
+    expect((await claim(app, 'space')).statusCode).toBe(200)
+    rows = await customerRows()
+    expect(rows.map((row) => row.externalTenantId)).toEqual(['customers/C0000000000', 'customers/C0000000005'])
+    expect(assignOf(relaySends, rows[1]!.id)).toEqual({
       apiAppId: PROJECT_NUMBER,
-      tenantIds: ['customers/C0000000000', 'domains/0000000000', 'domains/0000000001']
+      tenantIds: ['customers/C0000000005', 'domains/0000000005']
+    })
+    expect(assignOf(relaySends, rows[0]!.id)).toEqual({
+      apiAppId: PROJECT_NUMBER,
+      tenantIds: ['customers/C0000000000', 'domains/0000000000']
     })
   })
 
+  it('consolidates a domain row into its customer’s row once a Space proves they are one customer', async () => {
+    const { app, relaySends } = await claimHarness()
+
+    // A DM from domain A, then a Space from domain B of the same customer.
+    expect((await claim(app, 'dm')).statusCode).toBe(201)
+    callerDomain = '0000000001'
+    expect((await claim(app, 'space')).statusCode).toBe(201)
+    const [domainRow, customerRow] = await customerRows()
+    expect(domainRow!.externalTenantId).toBe('domains/0000000000')
+    expect(customerRow!.externalTenantId).toBe('customers/C0000000000')
+    const retiredInstall = await prisma.integration.findFirstOrThrow({ where: { botId: domainRow!.id } })
+
+    // A Space from domain A folds the domain row into the customer row.
+    callerDomain = '0000000000'
+    expect((await claim(app, 'space')).statusCode).toBe(200)
+    const rows = await customerRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      id: customerRow!.id,
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000001,0000000000' }
+    })
+    expect(await prisma.integration.findUnique({ where: { id: retiredInstall.id } })).toBeNull()
+    expect(assignOf(relaySends, customerRow!.id)).toEqual({
+      apiAppId: PROJECT_NUMBER,
+      tenantIds: ['customers/C0000000000', 'domains/0000000001', 'domains/0000000000']
+    })
+  })
+
+  it('refuses a Space proof whose domain is bound to another customer', async () => {
+    const { app } = await claimHarness()
+
+    expect((await claim(app, 'space')).statusCode).toBe(201)
+    spaceCustomer = 'C0000000007'
+    const refused = await claim(app, 'space')
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json().code).toBe('GOOGLE_CHAT_CLAIM_CONFLICT')
+    const rows = await customerRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.platformConfig).toMatchObject({ customerId: 'C0000000000', domainIds: '0000000000' })
+  })
+
   it('refuses the same customer to a second organization', async () => {
-    await provisionPresetAgents(prisma, { orgId: DEFAULT_ORG_ID })
-    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { googleAccountId: GOOGLE_USER } })
+    const { app } = await claimHarness()
     const other = await prisma.org.create({ data: { slug: 'second-example-org' } })
     await prisma.membership.create({ data: { orgId: other.id, userId: DEFAULT_OWNER_ID, role: 'owner' } })
-    const { app } = claimHarness()
 
     expect((await claim(app, 'space')).statusCode).toBe(201)
     const taken = await claim(app, 'dm', other.id)

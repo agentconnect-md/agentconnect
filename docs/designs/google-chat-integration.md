@@ -807,18 +807,44 @@ sender's `user.domainId` and a Space event names the Space's `space.customer`.
 A customer may own several domains and `domainId` is per domain, so the row
 keeps one customer id and a set of domains: `domainIds` is the comma-joined
 list of bare ids, since the bag holds strings, and the assignment's `tenantIds`
-carries one `domains/…` key per domain. A claim writes whatever it proved
-(§10.5): a DM claim proves the claimant's domain, and a Space claim proves the
-Space's customer and, because the claimant's own membership is `INTERNAL`, the
-claimant's domain too. A later claim by the same organization adds a customer
-id the row lacks and appends a domain it does not list yet; a known customer id
-is never replaced. Attaching an id from a Space event, with the same proof (the
-sender's membership in that Space carrying `affiliation: INTERNAL`), is step B.
-A sender's domain never binds a Space's customer on its own: a Space may admit
-external members, so the pair would tie a foreign organization's Space to the
-sender's row. One customer maps to one organization, exactly as one Slack team
-does; a second organization cannot claim a customer or a domain another one
-holds, and the refusal names no organization.
+carries one `domains/…` key per domain.
+
+A claim proves one of two things (§10.5). A DM claim proves a domain alone: the
+claimant's. It never names a customer, so it only ever matches the row that
+already lists that domain, or writes a `domains/…` row of its own; it never
+joins another row, however many rows the organization holds, because a DM from
+an unrelated Workspace customer would otherwise land on this organization's
+customer row. A Space claim proves a pair, the Space's customer and, because the
+claimant's own membership is `INTERNAL`, the claimant's domain, and the pair
+reconciles the rows it touches: the row listing the domain and the row keyed by
+the customer.
+
+- Either row held by another organization refuses the claim, naming no
+  organization.
+- Both are the same row: nothing to attach.
+- Only the customer's row: the domain is appended to it.
+- Only the domain's row, with no customer yet: it is upgraded, gaining the
+  customer id and re-keyed from `domains/…` to `customers/…`; no customer row
+  exists, so the new key is free.
+- Both, as two rows of this organization: they are consolidated. The domain
+  row's domains are appended to the customer row, which is re-synced, and the
+  domain row is removed through the same teardown the console uses to remove an
+  integration and then its bot, so exactly one row keys the customer. A direct
+  message whose earlier turns ran on the retired row starts a fresh session on
+  the surviving one.
+- The domain's row already bound to a different customer is a contradiction —
+  a domain moved between Workspace customers — and is refused as
+  `GOOGLE_CHAT_CLAIM_CONFLICT` and logged, never overwritten.
+
+Every re-key and merge runs under the row's lock. A known customer id is
+therefore never replaced, as a consequence of these rules rather than a check
+that would hide a mismatch. Attaching an id from a Space event, with the same
+proof (the sender's membership in that Space carrying `affiliation: INTERNAL`),
+is step B. A sender's domain never binds a Space's customer on its own: a Space
+may admit external members, so the pair would tie a foreign organization's
+Space to the sender's row. One customer maps to one organization, exactly as
+one Slack team does; a second organization cannot claim a customer or a domain
+another one holds.
 
 Customer rows copy the deployment key when a claim writes them, so a rotated
 deployment key does not reach them yet; re-stamping every customer row on
@@ -906,21 +932,22 @@ collaborator):
 4. The page shows the Google Chat account, the app, and the conversation from
    the state, then the organizations the person can edit. With none, it links
    to creating one the ordinary way and refreshes the list afterwards.
-5. The route finds the row the proof lands on among the app's customer rows. A
-   proven domain that a row already lists decides it, whatever that row's
-   primary key. Otherwise a Space claim lands on the row keyed by its proven
-   `customers/…`, and a DM claim, which proves a domain alone, joins the
-   organization's customer row when the organization holds exactly one; with
-   none, or with several, where the customer would be ambiguous, it writes a
-   `domains/…` row of its own. A row another organization holds, whether it
-   lists the domain or carries the customer, answers 409
-   (`GOOGLE_CHAT_CLAIM_TAKEN`) naming no organization. A row this organization
-   holds answers 200, gains whatever the claim newly proved (§10.3), and goes
-   back on the preset agent if its integration was removed. With no row, the
-   route writes the customer row, installs the app on the organization's preset
-   agent through the same install path the deployment app uses (§3), and
-   answers 201. Either way it syncs the relay assignment and answers the
-   completion URL when the state carried one, which the page follows.
+5. The route resolves the proof against the app's customer rows by the rules
+   of §10.3. A DM claim matches only the row that already lists its domain. A
+   Space claim's pair touches the row listing its domain and the row keyed by
+   its customer: it appends the domain to the customer's row, upgrades a
+   domain-only row to the customer and re-keys it, or consolidates the two rows
+   into the customer's, retiring the domain row. A row another organization
+   holds answers 409 (`GOOGLE_CHAT_CLAIM_TAKEN`) naming no organization, and a
+   domain bound to a different customer answers 409
+   (`GOOGLE_CHAT_CLAIM_CONFLICT`). A row this organization holds answers 200,
+   re-syncs the relay assignment when it changed, and goes back on the preset
+   agent if its integration was removed. With no row, the route writes the
+   customer row (`customers/…` for a Space claim, `domains/…` for a DM claim),
+   installs the app on the organization's preset agent through the same install
+   path the deployment app uses (§3), syncs the assignment, and answers 201.
+   Either way it answers the completion URL when the state carried one, which
+   the page follows.
 6. Chat removes the prompt and sends the original event again; it now routes
    like any other delivery. Without a completion URL the page ends on a link
    back to the conversation (`https://chat.google.com/room/{id}` for a Space,

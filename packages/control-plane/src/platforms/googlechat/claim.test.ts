@@ -4,7 +4,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { HttpDeps } from '../../http/deps.js'
 import { installZod } from '../../http/plugins/zod.js'
-import type { BotRecord } from '../../persistence/ports.js'
+import type { BotIdentityChange, BotIdentitySnapshot, BotRecord } from '../../persistence/ports.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 import type { GoogleChatPlatformAppConfig } from '../../config/google-chat-platform.js'
@@ -147,23 +147,37 @@ async function harness(
   })
   const put = vi.fn(async () => {})
   const integrationCreate = vi.fn(async (input: Record<string, unknown>) => ({ ...input, status: 'active' }))
-  const syncBot = vi.fn(async () => {})
-  const merged: { orgId: OrgId; id: BotId; entries: Record<string, string> }[] = []
-  // Applies the route's merge to the row's bag, as the repository does under the row lock.
-  const mergePlatformConfig = vi.fn(
-    async (orgId: OrgId, id: BotId, merge: (current: Record<string, unknown>) => Record<string, string>) => {
-      const entries = merge((opts.rows ?? []).find((row) => row.id === id)?.platformConfig ?? {})
-      if (Object.keys(entries).length === 0) return false
-      merged.push({ orgId, id, entries })
+  const syncBot = vi.fn(async (_botId: BotId) => {})
+  const rowOf = (id: BotId) => (opts.rows ?? []).find((row) => row.id === id)
+  const merged: { id: BotId; change: BotIdentityChange }[] = []
+  // Applies the route's merge to the row, as the repository does under the row lock.
+  const mergeBotIdentity = vi.fn(
+    async (_orgId: OrgId, id: BotId, merge: (current: BotIdentitySnapshot) => BotIdentityChange) => {
+      const row = rowOf(id)
+      const change = merge({
+        platformConfig: row?.platformConfig ?? {},
+        externalTenantId: row?.externalTenantId ?? null
+      })
+      const rekey = change.externalTenantId !== undefined && change.externalTenantId !== row?.externalTenantId
+      if (Object.keys(change.platformConfig ?? {}).length === 0 && !rekey) return false
+      merged.push({ id, change })
       return true
     }
   )
+  // The teardown a consolidation spends on the retired row: one install per row, on the preset agent.
+  const installsOf = (botId: BotId) =>
+    rowOf(botId)?.agentIds.length ? [{ id: `install-${botId}`, orgId: ORG, agentId: PRESET, botId }] : []
+  const removedInstalls: string[] = []
+  const deletedBots: BotId[] = []
   const credentialInstall = vi.fn(async () => 2)
   const addBotMembership = vi.fn(async (input: Record<string, unknown>) => ({ outcome: 'added', integration: input }))
   const deps = {
     config: { PUBLIC_RELAY_URL: 'https://relay.example.test' },
     clock: { now: () => Date.parse('2026-09-28T00:00:00Z') },
-    httpBot: { hasConnectedRelay: () => opts.relay !== false, syncBot },
+    httpBot: { hasConnectedRelay: () => opts.relay !== false, syncBot, prepareIntegrationRemoval: async () => {} },
+    agentMutations: { tryBeginMutation: () => () => {} },
+    agentDelivery: { integrationRemove: async () => {} },
+    platforms: { get: () => undefined },
     placementResolver: { servingDaemon: async () => null },
     repos: {
       presetAgent: { get: async () => (opts.preset === false ? null : { agentId: PRESET }) },
@@ -177,12 +191,25 @@ async function harness(
       },
       bot: {
         listForPlatform: async () => opts.rows ?? [],
-        mergePlatformConfig,
-        create
+        get: async (_org: OrgId, id: BotId) => rowOf(id) ?? null,
+        mergeBotIdentity,
+        create,
+        markFreed: async () => {},
+        delete: async (_org: OrgId, id: BotId) => {
+          deletedBots.push(id)
+        }
       },
       botSecret: { put },
       botCredential: { install: credentialInstall },
-      integration: { create: integrationCreate, addBotMembership }
+      integration: {
+        create: integrationCreate,
+        addBotMembership,
+        listForBot: async (botId: BotId) =>
+          installsOf(botId).filter((install) => !removedInstalls.includes(install.id)),
+        delete: async (_org: OrgId, id: string) => {
+          removedInstalls.push(id)
+        }
+      }
     }
   } as unknown as HttpDeps
   const app = Fastify()
@@ -212,6 +239,8 @@ async function harness(
     integrationCreate,
     syncBot,
     merged,
+    removedInstalls,
+    deletedBots,
     credentialInstall,
     addBotMembership
   }
@@ -312,24 +341,17 @@ describe('POST /integrations/googlechat/claim: a new customer', () => {
     )
   })
 
-  it('gives a DM domain its own row when the organization holds several customer rows', async () => {
-    const rows = [
-      customerRow({
-        externalTenantId: 'customers/C0000000001',
-        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000001' }
-      }),
-      customerRow({
-        id: OTHER_BOT,
-        externalTenantId: 'customers/C0000000002',
-        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000002' }
-      })
-    ]
-    const h = await harness({ rows, google: dmAnswers('0000000003') })
+  it('keeps a DM from an unrelated customer’s domain on a row of its own, never on this organization’s customer row', async () => {
+    const customerA = customerRow({
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+    })
+    const h = await harness({ rows: [customerA], google: dmAnswers('0000000005') })
 
-    expect((await h.claim(dmState())).statusCode).toBe(201)
+    expect((await h.claim(dmState({ tenant: 'domains/0000000005' }))).statusCode).toBe(201)
     expect(h.merged).toEqual([])
     expect(h.create).toHaveBeenCalledWith(
-      expect.objectContaining({ platformConfig: { projectId: PROJECT_ID, domainIds: '0000000003' } })
+      expect.objectContaining({ platformConfig: { projectId: PROJECT_ID, domainIds: '0000000005' } })
     )
   })
 
@@ -353,14 +375,44 @@ describe('POST /integrations/googlechat/claim: a customer that already has a row
     expect(h.create).not.toHaveBeenCalled()
   })
 
-  it('answers 200 for this organization’s own customer and attaches the newly proven customer id', async () => {
+  it('upgrades this organization’s domain row to the customer a Space proves, re-keying it', async () => {
     const h = await harness({ rows: [customerRow()] })
 
     const res = await h.claim()
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ redirect: REDIRECT })
-    expect(h.merged).toEqual([{ orgId: ORG, id: BOT, entries: { customerId: 'C0000000000' } }])
+    expect(h.merged).toEqual([
+      {
+        id: BOT,
+        change: { platformConfig: { customerId: 'C0000000000' }, externalTenantId: 'customers/C0000000000' }
+      }
+    ])
     expect(h.syncBot).toHaveBeenCalledWith(BOT)
+    expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('upgrades an unrelated customer’s DM row when that customer’s own Space proves the pair', async () => {
+    const customerA = customerRow({
+      id: OTHER_BOT,
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+    })
+    const domainRowB = customerRow({
+      externalTenantId: 'domains/0000000005',
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000005' }
+    })
+    const h = await harness({
+      rows: [customerA, domainRowB],
+      google: spaceAnswers('0000000005', 'customers/C0000000005')
+    })
+
+    expect((await h.claim()).statusCode).toBe(200)
+    expect(h.merged).toEqual([
+      {
+        id: BOT,
+        change: { platformConfig: { customerId: 'C0000000005' }, externalTenantId: 'customers/C0000000005' }
+      }
+    ])
     expect(h.create).not.toHaveBeenCalled()
   })
 
@@ -381,22 +433,58 @@ describe('POST /integrations/googlechat/claim: a customer that already has a row
 
     const res = await h.claim()
     expect(res.statusCode).toBe(200)
-    expect(h.merged).toEqual([{ orgId: ORG, id: BOT, entries: { domainIds: '0000000000,0000000001' } }])
+    expect(h.merged).toEqual([{ id: BOT, change: { platformConfig: { domainIds: '0000000000,0000000001' } } }])
     expect(h.syncBot).toHaveBeenCalledWith(BOT)
     expect(h.create).not.toHaveBeenCalled()
   })
 
-  it('joins a second domain from a DM claim to the organization’s only customer row', async () => {
+  it('consolidates this organization’s domain row into the customer row a Space proves, retiring it', async () => {
+    const domainRow = customerRow({
+      id: OTHER_BOT,
+      externalTenantId: 'domains/0000000000',
+      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
+    })
+    const customer = customerRow({
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000001' }
+    })
+    const h = await harness({ rows: [domainRow, customer], google: spaceAnswers('0000000000') })
+
+    const res = await h.claim()
+    expect(res.statusCode).toBe(200)
+    expect(h.merged).toEqual([{ id: BOT, change: { platformConfig: { domainIds: '0000000001,0000000000' } } }])
+    expect(h.removedInstalls).toEqual([`install-${OTHER_BOT}`])
+    expect(h.deletedBots).toEqual([OTHER_BOT])
+    // The surviving row is re-sent first, then the retired row is released.
+    expect(h.syncBot.mock.calls.map(([id]) => id)).toEqual([BOT, OTHER_BOT])
+    expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('refuses with a conflict a Space proof whose domain is bound to a different customer, writing nothing', async () => {
+    const row = customerRow({
+      externalTenantId: 'customers/C0000000007',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000007', domainIds: '0000000000' }
+    })
+    const h = await harness({ rows: [row], google: spaceAnswers('0000000000', 'customers/C0000000000') })
+
+    const res = await h.claim()
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('GOOGLE_CHAT_CLAIM_CONFLICT')
+    expect(h.merged).toEqual([])
+    expect(h.deletedBots).toEqual([])
+    expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('answers 200 with nothing to attach when one row already holds both the domain and the customer', async () => {
     const row = customerRow({
       externalTenantId: 'customers/C0000000000',
-      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000,0000000001' }
     })
     const h = await harness({ rows: [row], google: dmAnswers('0000000001') })
 
-    const res = await h.claim(dmState({ tenant: 'domains/0000000001' }))
-    expect(res.statusCode).toBe(200)
-    expect(h.merged).toEqual([{ orgId: ORG, id: BOT, entries: { domainIds: '0000000000,0000000001' } }])
-    expect(h.create).not.toHaveBeenCalled()
+    expect((await h.claim(dmState({ tenant: 'domains/0000000001' }))).statusCode).toBe(200)
+    expect(h.merged).toEqual([])
+    expect(h.syncBot).not.toHaveBeenCalled()
   })
 
   it('refuses a DM domain another organization’s customer row already lists, whatever that row’s key', async () => {

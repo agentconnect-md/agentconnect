@@ -1,8 +1,8 @@
 /** A customer row's tenant ids: one customer and a set of domains (google-chat-integration.md §10.3). */
 import { describe, expect, it } from 'vitest'
 import {
+  googleChatDomainAdditions,
   googleChatPrimaryTenant,
-  googleChatTenantAdditions,
   googleChatTenantEntries,
   googleChatTenantKeys,
   googleChatTenantOf
@@ -30,14 +30,14 @@ describe('the tenant ids of a customer row', () => {
     expect(googleChatTenantEntries({})).toEqual({})
   })
 
-  it('appends a newly proven domain, keeps a known customer id, and adds nothing already known', () => {
+  it('appends only the domains a row does not list yet', () => {
     const current = { projectId: 'example-project', customerId: 'C0000000000', domainIds: '0000000000' }
-    expect(googleChatTenantAdditions(current, { domainIds: ['0000000001'] })).toEqual({
+    expect(googleChatDomainAdditions(current, ['0000000001', '0000000000', '0000000001'])).toEqual({
       domainIds: '0000000000,0000000001'
     })
-    expect(googleChatTenantAdditions(current, { customerId: 'C0000000001', domainIds: ['0000000000'] })).toEqual({})
-    expect(googleChatTenantAdditions({ domainIds: '0000000000' }, { customerId: 'C0000000000' })).toEqual({
-      customerId: 'C0000000000'
+    expect(googleChatDomainAdditions(current, ['0000000000'])).toEqual({})
+    expect(googleChatDomainAdditions({ customerId: 'C0000000000' }, ['0000000002'])).toEqual({
+      domainIds: '0000000002'
     })
   })
 })
