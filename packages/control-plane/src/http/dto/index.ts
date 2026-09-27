@@ -1965,6 +1965,10 @@ export const BotDto = z.object({
   credentialRejectedAt: z.string().nullable(),
   /** The platform's own code behind that rejection. */
   credentialRejectedCode: z.string().nullable(),
+  /** The platform's public app identity (D6), such as a Google Chat app's project number; null on legacy rows. */
+  externalAppId: z.string().nullable(),
+  /** The platform's public row metadata (string values only), such as a Google Chat app's project ID. */
+  platformConfig: z.record(z.string(), z.string()).nullable(),
   createdAt: z.string() // ISO-8601
 })
 export const BotListDto = z.array(BotDto)

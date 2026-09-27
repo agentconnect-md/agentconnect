@@ -42,7 +42,7 @@ import { LinearApiClient } from '../platforms/linear/api.js'
 import { LinearTokenService } from '../platforms/linear/token-service.js'
 import { linearConnectRoutes, linearOauthCallbackRoutes } from '../platforms/linear/routes.js'
 import { createGoogleChatCpProvider } from '../platforms/googlechat/provider.js'
-import { googleChatPlatformInstallRoutes } from '../platforms/googlechat/routes.js'
+import { googleChatKeyRoutes, googleChatPlatformInstallRoutes } from '../platforms/googlechat/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
@@ -89,7 +89,11 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
       'POST /bots/:id/linear/reconnect',
       'POST /bots/:id/linear/disconnect'
     ],
-    googleChatPlatformInstallRoutesPlugin: ['POST /integrations/googlechat/platform-install']
+    googleChatPlatformInstallRoutesPlugin: [
+      'GET /integrations/googlechat/platform-install',
+      'POST /integrations/googlechat/platform-install'
+    ],
+    googleChatKeyRoutesPlugin: ['PUT /bots/:id/googlechat/key']
   },
   'public-callback': {
     slackOauthCallbackRoutesPlugin: ['GET /integrations/slack/oauth/callback'],
@@ -183,7 +187,10 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
       }
     }),
     createGoogleChatCpProvider({
-      installRoutes: { org: [googleChatPlatformInstallRoutes(deps, GOOGLE_CHAT_SEAMS)], publicCallback: [] }
+      installRoutes: {
+        org: [googleChatPlatformInstallRoutes(deps, GOOGLE_CHAT_SEAMS), googleChatKeyRoutes(deps, GOOGLE_CHAT_SEAMS)],
+        publicCallback: []
+      }
     })
   ])
 }

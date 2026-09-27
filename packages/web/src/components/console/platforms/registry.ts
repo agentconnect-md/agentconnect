@@ -12,6 +12,7 @@ import type {
 } from './contract'
 import { discordModule } from './discord'
 import { feishuModule } from './feishu'
+import { googleChatModule } from './googlechat'
 import { linearModule } from './linear'
 import { slackModule } from './slack'
 import { QQModule } from './qq'
@@ -35,7 +36,8 @@ const MODULES: readonly WebPlatformModule[] = [
   discordModule,
   feishuModule,
   linearModule,
-  QQModule
+  QQModule,
+  googleChatModule
 ]
 
 const BY_ID = new Map(MODULES.map((m) => [m.platformId, m]))
@@ -181,20 +183,7 @@ export function botSharingEditable(bot: Pick<BotDto, 'platform' | 'transport' | 
   return platformSupportsSharing(bot.platform) && (bot.transport ?? 'socket') === 'http'
 }
 
-/**
- * This platform's transcript text renderer OVERRIDE, or `undefined` for the
- * core default — which is every platform today (§10: the registry "ships with
- * the Slack renderer as the default for all chat platforms, then per-platform
- * overrides land separately").
- *
- * The default itself deliberately stays in `MessageText`, so this lookup does
- * NOT return it: resolving it here would pull the markdown pipeline
- * (react-markdown + remark-gfm + remark-breaks + node-emoji) into this module,
- * and `ModalProvider` — mounted by the console shell on EVERY route — imports
- * this registry through `AddIntegrationModal`. Only the session transcript
- * renders message text; only it should carry the parser. Same reasoning that
- * keeps `platforms/marks.ts` and `lib/platform-labels.ts` out of here.
- */
+/** This platform's own transcript renderer, or undefined for `MessageText`'s default; an override loads its parser lazily, since every route imports this registry. */
 export function platformTextRenderer(platformId?: string): ComponentType<{ text: string }> | undefined {
   return platformId ? platformRegistry.get(platformId)?.textRenderer : undefined
 }

@@ -1298,7 +1298,9 @@
         "groupChat": "群聊",
         "groupChatPlural": "群聊",
         "team": "团队",
-        "teamPlural": "团队"
+        "teamPlural": "团队",
+        "space": "空间",
+        "spacePlural": "空间"
       },
       "thisRoom": "此{noun}",
       "trigger": {
@@ -1342,6 +1344,7 @@
       "gatedNote": "私有Agent仅会在下方启用的对话中响应。",
       "linearGatedNote": "私有Agent仅会在其作为默认Agent的团队中响应。",
       "discordCannotLeaveRowHint": "Discord Bot属于服务器，而不是单个频道——请使用上方服务器标题中的“离开”操作将其移出。如果它仍在服务器中，该行会重新出现。",
+      "googlechatMentionHint": "被@提及时回复。Google Chat 只投递提及了该应用的空间消息，话题里的回复也一样。",
       "space": {
         "thisServer": "此服务器",
         "leaveTitle": "离开{space}——Bot会离开整个服务器及其中的所有{noun}",
@@ -1829,6 +1832,10 @@
         "qq": {
           "create": "在 QQ 开发者平台创建机器人",
           "existing": "未使用的 QQ 机器人"
+        },
+        "googlechat": {
+          "create": "在 Google Cloud 中配置一个 Chat 应用",
+          "existing": "一个未使用的 Google Chat 应用"
         }
       }
     }
@@ -5365,6 +5372,92 @@
       "step1": "在 QQ 开发者平台创建机器人，开启私聊和群聊消息，然后复制其 AppID 和 AppSecret。",
       "step1Warning": "发布机器人前，请将 Daemon 的公网 IP 加入 IP 白名单——QQ 会拒绝来自其他地址的调用。",
       "step2": "粘贴 AppID 和 AppSecret——连接所必需"
+    },
+    "googlechat": {
+      "checking": "正在检查这个部署…",
+      "relayRequired": "Google Chat 只通过 HTTPS 回调投递，因此需要一个公开的回调地址。请管理员配置后再在这里连接应用。",
+      "deployment": {
+        "use": "使用部署自带的应用",
+        "installing": "安装中…",
+        "useOwn": "使用自己的 Chat 应用"
+      },
+      "prerequisites": {
+        "title": "开始之前",
+        "account": "一个能配置 Chat 应用的 Google Workspace 账号",
+        "project": "一个已启用 Google Chat API 的 Google Cloud 项目",
+        "crm": "该项目已启用 Cloud Resource Manager API",
+        "serviceAccount": "该项目中一个具有 Browser 角色的服务账号，以及它的 JSON 密钥",
+        "open": "打开 Google Cloud Console"
+      },
+      "configure": {
+        "title": "配置 Chat 应用",
+        "endpoint": "HTTP 端点 URL",
+        "audience": "身份验证受众",
+        "functionality": "功能",
+        "receiveDms": "接收 1:1 消息",
+        "joinSpaces": "加入空间和群组对话",
+        "visibility": "可见性",
+        "visibilityValue": "可以使用该应用的人员和群组",
+        "copy": "复制",
+        "copied": "已复制"
+      },
+      "credentials": {
+        "title": "粘贴应用的凭据",
+        "projectId": "项目 ID",
+        "projectIdPlaceholder": "example-project",
+        "projectNumber": "项目编号",
+        "optional": "可选",
+        "key": "服务账号密钥（JSON）",
+        "keyPlaceholder": "粘贴下载的密钥文件"
+      },
+      "footer": {
+        "connect": "连接",
+        "connecting": "连接中…"
+      },
+      "test": {
+        "title": "在 Google Chat 里测试",
+        "saved": "已保存",
+        "savedDone": "Google 已接受该密钥。",
+        "connected": "已连接",
+        "connectedDone": "回调地址已生效，Agent 已在线。",
+        "waitingDaemon": "正在等待 Agent 上线。",
+        "added": "已添加",
+        "addedDone": "该应用已在某个空间或私聊中。",
+        "addedPending": "在 Google Chat 中把该应用添加到一个空间，或与它开始私聊。",
+        "sendMessage": "给它发一条私信，或在空间里@它；它会在那里回复。",
+        "dmPrivate": "私信只对发送者本人可见；没有人能在这个控制台里打开它们。",
+        "spacesOrg": "空间中的对话对整个组织可见，无论谁在空间里。",
+        "done": "完成"
+      },
+      "settings": {
+        "key": "密钥",
+        "keyActive": "Google 已接受",
+        "keyRejected": "被 Google 拒绝",
+        "keyRevoked": "已撤销",
+        "deploymentKey": "在 Setup Server 中管理",
+        "newKey": "新的服务账号密钥（JSON）",
+        "save": "保存",
+        "checking": "检查中…",
+        "updated": "密钥已更新。",
+        "scope": {
+          "dms": "回复私信。",
+          "spaces": "在空间里只在被@提及时回复，并回复在同一话题中。",
+          "unsupported": "不支持附件、卡片和群组私信。"
+        }
+      },
+      "errors": {
+        "projectNumberInvalid": "请按 Google Cloud 控制台显示的样子输入纯数字的项目编号，或留空。",
+        "keyInvalid": "请粘贴在 Chat 应用所在项目中创建的服务账号的完整 JSON 密钥。",
+        "projectMismatch": "这个密钥属于另一个项目。请在 Chat 应用所在的项目中创建服务账号和密钥。",
+        "projectNumberMismatch": "这个项目编号属于另一个项目。请从项目的信息中心复制，或留空。",
+        "crmDisabled": "请在 Chat 应用所在的项目中启用 Cloud Resource Manager API，然后重新连接。",
+        "crmForbidden": "请为服务账号授予 Chat 应用所在项目的 Browser 角色，然后重新连接。",
+        "projectUnresolved": "Google 无法读取这个项目。请检查项目 ID，然后重新连接。",
+        "keyRejected": "Google 拒绝了这个密钥。请为该服务账号创建一个新的 JSON 密钥并粘贴。",
+        "appUnavailable": "这个项目中没有配置 Chat 应用。请启用 Google Chat API 并配置应用，然后重新连接。",
+        "unreachable": "无法连接到 Google。请重试。",
+        "projectChanged": "部署自带的应用现在指向另一个 Google Cloud 项目。请先移除当前安装，再重新安装。"
+      }
     }
   }
 }

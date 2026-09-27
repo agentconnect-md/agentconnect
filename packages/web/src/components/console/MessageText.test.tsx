@@ -126,13 +126,14 @@ const CORPUS: ReadonlyArray<readonly [name: string, input: string, html: string]
   ['whitespace only', '   ', '<div class="mdtxt"></div>']
 ]
 
-/** Every key a transcript row can arrive with: the registered platforms, the
- *  core-owned session kinds that are not modules, ids no module claims, and the
- *  absent key a single-session page passes when the session has no platform. */
+/** Every key a row can arrive with that reaches the default: platforms without their own renderer, core kinds, unclaimed ids, and none. */
 const PLATFORM_KEYS = [
   undefined,
   '',
-  ...platformRegistry.ids(),
+  ...platformRegistry
+    .all()
+    .filter((module) => !module.textRenderer)
+    .map((module) => module.platformId),
   'webchat',
   'playground',
   'hook',
@@ -149,11 +150,8 @@ describe('MessageText', () => {
     expect(renderToStaticMarkup(<MessageText text={input} />)).toBe(html)
   })
 
-  it('resolves the same default renderer for every platform key, registered or not', () => {
-    // No module publishes a `textRenderer` yet — §10 ships the registry with
-    // the Slack renderer as the default for all chat platforms and lands
-    // overrides separately. An unknown key must reach that default too, never
-    // throw and never fall through to nothing.
+  it('resolves the same default renderer for every platform key without its own, registered or not', () => {
+    // An unknown key must reach the default too, never throw and never fall through to nothing.
     for (const [name, input, html] of CORPUS) {
       for (const platform of PLATFORM_KEYS) {
         expect(renderToStaticMarkup(<MessageText text={input} platform={platform} />), `${name} @ ${platform}`).toBe(

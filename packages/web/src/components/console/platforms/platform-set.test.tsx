@@ -170,7 +170,8 @@ describe('platform set', () => {
       'Lark',
       'Feishu',
       'Linear',
-      'QQ'
+      'QQ',
+      'Google Chat'
     ])
   })
 
@@ -205,7 +206,7 @@ describe('platform set', () => {
     // rest). It is module copy now, so the card's heading, delete tooltip and
     // empty state read one declaration — and a row that is not a bot at all can
     // say so ('workspace' on Linear, where the row IS one connected workspace).
-    const NOUNS: Record<string, string> = { slack: 'app', linear: 'workspace' }
+    const NOUNS: Record<string, string> = { slack: 'app', linear: 'workspace', googlechat: 'app' }
     for (const id of platformRegistry.ids()) {
       expect(botCardCopy(id).identityNoun, id).toBe(NOUNS[id] ?? 'bot')
     }

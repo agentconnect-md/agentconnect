@@ -18,15 +18,15 @@ function row(over: Partial<SessionMessageDto>): SessionMessageDto {
 }
 
 describe('transcript module members', () => {
-  it('gives no platform a text renderer of its own yet', () => {
-    // §10 ships the registry with the CORE Slack renderer as the default for
-    // all chat platforms and lands per-platform overrides separately, each
-    // with its own visual review. When one arrives this expectation changes
-    // WITH it — which is the point of asserting the empty state.
-    for (const module of platformRegistry.all()) {
-      expect(module.textRenderer, module.platformId).toBeUndefined()
-    }
-    for (const id of [...platformRegistry.ids(), ...UNCLAIMED]) {
+  it('gives only Google Chat a text renderer of its own', () => {
+    // Each override lands with its own visual review, so the set is named here and a new one is a visible diff.
+    expect(
+      platformRegistry
+        .all()
+        .filter((module) => module.textRenderer)
+        .map((module) => module.platformId)
+    ).toEqual(['googlechat'])
+    for (const id of [...platformRegistry.ids().filter((id) => id !== 'googlechat'), ...UNCLAIMED]) {
       expect(platformTextRenderer(id), id).toBeUndefined()
     }
     expect(platformTextRenderer(undefined)).toBeUndefined()

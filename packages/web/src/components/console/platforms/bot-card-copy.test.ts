@@ -11,7 +11,7 @@ const UNCLAIMED = ['zulip', 'hook', 'github', 'playground', 'webchat', 'lark', '
 
 /** The modules that declare copy of their own — every other registered platform
  *  falls all the way through to the provider-free defaults. */
-const DECLARES_COPY = ['slack', 'linear']
+const DECLARES_COPY = ['slack', 'linear', 'googlechat']
 
 /** Captured from `SettingsView.tsx` before the member existed. */
 const SLACK_REVOKED = 'The Slack workspace uninstalled this app or revoked its tokens — re-install to reconnect'

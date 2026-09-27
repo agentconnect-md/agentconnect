@@ -32,9 +32,13 @@ export type IdentityCardKey =
   | 'Integrations.dialog.identityCards.feishuLark.existing'
   | 'Integrations.dialog.identityCards.feishuFeishu.create'
   | 'Integrations.dialog.identityCards.feishuFeishu.existing'
+  | 'Integrations.dialog.identityCards.googlechat.create'
+  | 'Integrations.dialog.identityCards.googlechat.existing'
 
 /** The mode-card pair for a module with one brand. */
-export function identityCards(platform: 'slack' | 'telegram' | 'discord' | 'linear' | 'lark' | 'feishu' | 'qq'): {
+export function identityCards(
+  platform: 'slack' | 'telegram' | 'discord' | 'linear' | 'lark' | 'feishu' | 'qq' | 'googlechat'
+): {
   create: IdentityCardKey
   existing: IdentityCardKey
 } {
@@ -54,7 +58,7 @@ export function identityCards(platform: 'slack' | 'telegram' | 'discord' | 'line
  *  values, never a sentence — the host resolves it for the active locale. */
 /** A room noun for the hint. Linear's arm names an ISSUE it delegates to the app,
  *  which is why this is not just the two chat rooms. */
-export type InviteHintTarget = 'channel' | 'group' | 'issue'
+export type InviteHintTarget = 'channel' | 'group' | 'issue' | 'space'
 
 /** The host messages an invite hint can name — the two arms of its hint row. */
 export type InviteHint = {
