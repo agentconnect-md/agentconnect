@@ -2392,7 +2392,6 @@
         "evaluations": {
           "title": "最近评估",
           "close": "关闭最近评估",
-          "noneYet": "暂无",
           "empty": "暂无评估。保存按 Decision 选择的模型后，新会话会显示在这里。",
           "error": "无法加载模型评估。",
           "offline": "该 Agent 的评估主机未连接。",
@@ -4366,10 +4365,16 @@
       "chainHistory": "此来源从决策链的首个步骤开始记录评估。",
       "noSources": "此 Decision 当前没有记录评估的使用入口。",
       "empty": "此来源近期没有评估记录。",
-      "viewAll": "查看此来源的全部记录",
       "upgrade": "升级此来源的评估节点后，才能按 Decision 筛选。",
       "error": "无法加载此来源的评估记录。",
-      "retry": "重试"
+      "retry": "重试",
+      "usedIn": "用于 {count, plural, other {# 处}}",
+      "all": "全部",
+      "settings": "设置",
+      "openPanel": "打开面板",
+      "notRecorded": "此处不记录评估。",
+      "emptyAll": "近期还没有评估记录。",
+      "partialError": "{count, plural, other {有 # 处无法加载。}}"
     },
     "errors": {
       "name": "保存前请先为决策命名。",

@@ -868,55 +868,17 @@ function DecisionEditor() {
             <VisibilityField value={draft} onChange={(sharing) => patch(sharing)} disabled={!editable || saving} />
           </fieldset>
 
-          <div className="card">
-            <div className="cardhead justify-between">
-              <span className="cardtitle">{t('usedBy.title')}</span>
-              <span className="font-mono text-[11px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                {usageState.status === 'ready'
-                  ? t('places', { count: usages.length + gated.length + hiddenUsageCount })
-                  : usageState.status === 'loading'
-                    ? t('usedBy.loading')
-                    : t('usedBy.error')}
-              </span>
-            </div>
-            <div className="py-[6px]">
-              {gated.map((usage) => {
-                const review = usage.needsReview
-                return (
-                  <div key={`gate:${usage.channelId}`} className="flex flex-wrap items-center gap-[10px] px-4 py-[9px]">
-                    <Icon name="hash" size={13} color="var(--text-tertiary)" />
-                    <span className="mono min-w-[120px] flex-1 text-[12.5px]">{usage.channelName}</span>
-                    <span className="badge bg-(--surface-active) text-(--text-secondary)">{t('usedBy.kind.gate')}</span>
-                    <span
-                      className={`badge ${
-                        review
-                          ? 'bg-(--status-paused-soft) text-(--amber-500)'
-                          : 'bg-(--status-online-soft) text-(--status-online)'
-                      }`}
-                    >
-                      {review ? t('usedBy.needsReview') : t('usedBy.ok')}
-                    </span>
-                  </div>
-                )
-              })}
-              {usageState.status === 'ready' &&
-              !refusedInUse &&
-              usages.length + gated.length + hiddenUsageCount === 0 ? (
-                <div className="px-4 py-[10px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                  {t('notUsed')}
-                </div>
-              ) : (
-                <DecisionUsageList
-                  usages={usages}
-                  hiddenCount={hiddenUsageCount}
-                  inUse={refusedInUse && gated.length === 0}
-                  hrefFor={hrefFor}
-                />
-              )}
-            </div>
-          </div>
-          {id && definition && usageState.status === 'ready' && (
-            <DecisionRecentEvaluations decisionId={id} question={definition.question} usages={usages} />
+          {id && definition && (
+            <DecisionRecentEvaluations
+              decisionId={id}
+              question={definition.question}
+              usages={usages}
+              usageStatus={usageState.status}
+              gated={gated}
+              hiddenCount={hiddenUsageCount}
+              inUse={refusedInUse}
+              hrefFor={hrefFor}
+            />
           )}
         </div>
 

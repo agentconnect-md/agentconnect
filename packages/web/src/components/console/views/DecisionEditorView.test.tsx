@@ -399,7 +399,7 @@ describe('DecisionEditorView', () => {
     expect(update).not.toHaveBeenCalled()
   })
 
-  it('links each visible usage to where the console edits it', async () => {
+  it('links each visible place to where the console edits it', async () => {
     params = { id: 'support-category' }
     const api = decisionMock.createDecisionMockApi()
     const getDecision = api.getDecision.bind(api)
@@ -414,11 +414,19 @@ describe('DecisionEditorView', () => {
     vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(api)
     await render()
     await act(async () => {})
-    const link = (label: string) =>
-      [...document.body.querySelectorAll('a')].find((node) => node.textContent?.trim() === label)
-    expect(link('#general · Support')?.getAttribute('href')).toBe('/agents/agent-1')
-    expect(link('Reviewer')?.getAttribute('href')).toBe('/agents/agent-2?tab=tools')
-    expect(link('Support bot')?.getAttribute('href')).toBe('/integrations?bot=support-bot')
+    // Selecting a place's tab puts its Settings link in the card header.
+    const settingsOf = async (label: string) => {
+      const tab = [...document.body.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((node) =>
+        node.textContent?.includes(label)
+      )!
+      await click(tab)
+      return [...document.body.querySelectorAll('a')]
+        .find((node) => node.textContent?.trim() === 'Settings')
+        ?.getAttribute('href')
+    }
+    expect(await settingsOf('#general · Support')).toBe('/agents/agent-1')
+    expect(await settingsOf('Reviewer')).toBe('/agents/agent-2?tab=tools')
+    expect(await settingsOf('Support bot')).toBe('/integrations?bot=support-bot')
   })
 
   it('replaces the criteria wholesale when the question type changes', async () => {

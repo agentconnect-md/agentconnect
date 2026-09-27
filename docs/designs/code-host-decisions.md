@@ -75,7 +75,7 @@ repository and family, which are the only valid rule targets. Validation mirrors
 supported Decision at every step; `decisionRoutingIssues` for the rules; all terminal targets must be members. A Decision edit
 that makes the rules incompatible marks the routing `needs_review`, as it flags a shared bot's
 routing; while it needs review, the routing holds its scope's events rather than firing them
-unrouted. A Decision used by a routing appears in **Used by**, named by the repository path and its
+unrouted. A Decision used by a routing lists it as one of its places, named by the repository path and its
 provider's family label (`example-group/example-project · merge requests`), and cannot be deleted.
 A pair a provider does not route (`github` with `merge_request`) is a 400.
 
