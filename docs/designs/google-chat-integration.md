@@ -582,7 +582,11 @@ app's own membership read under app authentication (§3); the `sender.name` of t
 app's first create response supplies its `users/…` identity. At connect,
 `spaces.list` reports the named Spaces the app is in as observed conversations,
 and a Space's first delivery reports it too, so membership never depends on the
-list alone. Output mode adds no chrome: every mode but `none` streams the same
+list alone. A DM surfaces from its first delivery and is named after the one
+person in it: the DM space carries no display name, and app authentication may
+list a space's human memberships (`spaces.members.list`, which excludes only
+Chat apps), so the read port answers the DM's name from that single membership
+and leaves the row on its id when the read fails or finds more than one person. Output mode adds no chrome: every mode but `none` streams the same
 way, because Google Chat has no status bar, typing indicator, or reaction to
 spend a richer mode on.
 
