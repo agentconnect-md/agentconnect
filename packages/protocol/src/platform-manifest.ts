@@ -227,7 +227,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       multiAgentShareable: false,
       publicChannelJoin: false,
       ownerAsDefault: false,
-      addressedByConstruction: false
+      // Google delivers only mentions and adds in a Space, so a mention in a thread the agent holds continues it (google-chat-integration.md §4).
+      addressedByConstruction: true
     }
   ]
 ])

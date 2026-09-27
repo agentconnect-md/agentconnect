@@ -250,7 +250,11 @@ fields: `membershipEnumeration`, `botSenderRouting`, and `dmChannelPattern`.
 The last is **not** in the published list above; it was earned by a
 pre-dispatch read (gated-conversation discovery must recognize a DM before any
 target resolves, and a Slack `app_mention` can omit `channel_type`). A field
-lands in the same change as the branches it retires.
+lands in the same change as the branches it retires. `addressedByConstruction`
+is set on Linear and Google Chat: every Space delivery there already addresses
+the app — Google delivers only mentions and adds — so the decision gate treats a
+mention inside a thread the agent holds as the continuation it is, not as a
+fresh address to judge again.
 
 Status-bar shape is the counter-example: it reads like a capability, but every
 read of it happens from a turn that already exists, so it is post-dispatch and
@@ -529,9 +533,13 @@ once inside dispatch's durable admission fence; `requireDurable?` and
 row. On the relay path a control command is minted a receipt under `receiptId?`
 before it runs, and `!queue` dispatches under it, so a redelivered command
 re-runs nothing and cancels no later work. A platform without the member takes
-the shared path unchanged. Linear is the first implementer
-(`platforms/linear/relay-ingress.ts`, reaching the daemon through a narrow host
-port); Google Chat is the second.
+the shared path unchanged. Both implementers reach the daemon through one shared
+host port, `RelayIngressHost<TConnection>` (`platforms/relay-ingress-host.ts`):
+the log, store, clock, agent lookup, name resolution, and observed-conversation
+report every relay-ingress platform reads, plus one per-platform connection
+accessor. Linear (`platforms/linear/relay-ingress.ts`) was the first
+implementer; Google Chat (`platforms/googlechat/relay-ingress.ts`) is the
+second, and the port was generalized in the change that added it.
 
 ### 7.5 The connection registry
 
@@ -562,6 +570,7 @@ registry.
 | Slack/Telegram/Discord/Feishu | yes                                       | no (shared path)              | yes                           |
 | GitHub poster                 | no                                        | no                            | yes                           |
 | Linear (per its design)       | minimal (relay-plugin ingress; no socket) | yes (`relayIngress`)          | yes                           |
+| Google Chat                   | minimal (relay-plugin ingress; no socket) | yes (`relayIngress`)          | yes                           |
 | webchat                       | core-owned                                | core-owned                    | core-owned                    |
 
 ## 8. Relay Slot

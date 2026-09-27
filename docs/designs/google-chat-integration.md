@@ -433,40 +433,64 @@ Use `spaces.messages.create` and app-owned `spaces.messages.patch`. The
 [create API](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages/create)
 supports a custom `client-` message ID and a retry `requestId`. A custom ID must
 start with `client-`, use only lowercase letters, digits, and hyphens, stay within
-63 characters, and be unique in its Space, so derive it by hashing the durable
-delivery and segment identity into that alphabet rather than concatenating raw
-IDs. Persist each create intent,
-including its exact body and ID, before sending; record the returned resource name.
-After an ambiguous response, retry that operation or reconcile the existing ID,
-never allocate a fresh message ID. Do not reuse an identical-request ID with a
-different body.
+63 characters, and be unique in its Space. The daemon derives it as `client-`
+plus 48 hex characters of a SHA-256 over the durable delivery id, the text block,
+and the segment index, and sends the same value as `requestId`; the live probe
+confirmed that a repeated `requestId` returns the original message even with a
+different body. The intent is therefore reconstructible from the durable inbox
+row every turn already owns, and the returned resource name is recorded as the
+transcript row's `ts` — the daemon's existing record of the messages it posted —
+so no parallel outbox exists. After a timeout or an ambiguous answer the daemon
+reads `GET {space}/messages/client-<id>` back: an existing message is adopted (a
+`409 ALREADY_EXISTS` answer adopts the same way), and only a `404` allows one
+resend of the identical request. It never allocates a fresh message ID and never
+sends an identical-request ID with a different body.
 
-Integrate this small output record with daemon-owned delivery persistence; an
-in-memory stream converger alone cannot recover a timed-out create after restart.
-Keep stream revisions ordered so a late patch cannot overwrite final content.
-Patch only owned messages with `updateMask=text`; keep `allowMissing` false so a
-deleted message is not accidentally recreated. See the
+One `GoogleChatStream` per text block keeps revisions ordered: it holds the newest
+snapshot, writes at most one edit every two seconds, and lets the block's final
+text replace whatever edit was still pending before it is written. Patch only
+owned messages with `updateMask=text`; the body must carry `markupSyntax` beside
+`text`, because a patch without it reverts the message to Chat syntax and shows
+literal `**bold**`, while naming `markupSyntax` in the mask is refused as an
+unsupported path. Keep `allowMissing` off so a deleted message answers `404` and
+is never recreated; that answer, a missing thread on create, and a rejected
+credential each end the block with its category in the daemon log while the
+reply stays in the transcript. See the
 [patch API](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages/patch).
 
-Set `markupSyntax: "MARKUP_SYNTAX_MARKDOWN"` on creates and render only supported
-formatting, with readable fallbacks. This mode is documented in Google's
+Set `markupSyntax: "MARKUP_SYNTAX_MARKDOWN"` on creates and patches and render
+only supported formatting — bold, italic, strikethrough, inline code, fenced
+blocks, links, bulleted and numbered lists — with readable fallbacks: a heading
+becomes a bold line, an image its link, a pipe table a monospace block, a rule a
+blank line, a task box a glyph, and a blockquote keeps its `>` prefix. This mode
+is documented in Google's
 [formatting guide](https://developers.google.com/workspace/chat/format-messages)
 and [release notes](https://developers.google.com/workspace/chat/release-notes).
-Apply shared workspace-link rewriting and split at readable paragraph/code-block
-boundaries. Budget the complete encoded message below Google's 32,000-byte limit,
-including metadata and UTF-8 expansion.
+Apply shared workspace-link rewriting and split at paragraph breaks outside a
+fence, else at line breaks with the fence closed and reopened across the cut,
+else inside an overlong line at a code-point boundary. The text budget is
+30,000 UTF-8 bytes per message, below Google's 32,000-byte limit with headroom
+for the envelope; the segments beyond the first take the next segment index.
 
-One per-Space send queue covers local creates, edits, progress, and final replies
-across threads and connections. The daemon's `PlatformSendQueue` is one queue per
-connection with a 350 ms default spacing; instantiate it per Space with at least
-one second between writes. Space message writes share a one-per-second quota
-with every app acting in that Space; project message writes are limited to 3,000
-per minute. See Google's
-[quota documentation](https://developers.google.com/workspace/chat/limits).
-Coalesce streaming text with a two-second minimum edit interval, preserve fairness
-between threads, and let final output replace pending intermediate edits while
-respecting the same queue. Handle 429s and transient failures with bounded backoff,
-jitter, and retry hints. Other apps or daemons can still consume the shared quota.
+One per-Space send queue covers creates, edits, chrome, and final replies across
+threads: the daemon instantiates the shared `PlatformSendQueue` once per Space,
+keyed by Space name, with a one-second minimum spacing instead of its 350 ms
+default. Space message writes share a one-per-second quota with every app acting
+in that Space; project message writes are limited to 3,000 per minute. See
+Google's [quota documentation](https://developers.google.com/workspace/chat/limits).
+A `429` is retried after its `Retry-After`; a `5xx` or a lost answer on an
+idempotent request retries with bounded, jittered backoff, three attempts in
+all; a create takes the read-back path above instead. Other apps or daemons can
+still consume the shared quota.
+
+The app's own `users/…` identity is read at connect: `spaces.list` names the
+Spaces the app is in, and `GET {space}/members/app` in the first of them answers
+the membership whose `member.name` is that identity; while the app is in no Space
+yet, the `sender.name` of its first create response supplies it. The same list
+reports the named Spaces as observed conversations, and a Space's first delivery
+reports it too, so membership never depends on the list alone. Output mode adds
+no chrome: every mode but `none` streams the same way, because Google Chat has no
+status bar, typing indicator, or reaction to spend a richer mode on.
 
 Feedback is best effort after admission. Post no startup message, as on other
 chat platforms; do not promise native typing indicators or reactions. Membership loss,
@@ -504,15 +528,15 @@ for private DM turns as part of the acceptance checks.
 
 ## 7. Implementation boundaries
 
-| Area                    | Required contribution                                                                                                                                                                             |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protocol and message    | The platform id and its `KNOWN_PLATFORMS` entry, conservative manifest values, the daemon config payload schema, and pure Google event normalization.                                             |
-| Relay platform module   | HTTPS route, project-audience verification, demux, normalization, membership reports, and strict admission responses.                                                                             |
-| Daemon platform module  | Config schema, Chat REST connection/read port, its `relayIngress` contract member, renderer, turn output, and lifecycle registration.                                                             |
-| Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals. |
-| Daemon output           | Persist stable create intent/results and serialize Google sends through the platform output surface.                                                                                              |
-| Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment-owned app's install, secret rotation, daemon spec, and relay assignment projection.         |
-| Console platform module | Chat picker, setup wizard, connection diagnostics, conversation semantics, and explicit scope limitations.                                                                                        |
+| Area                    | Required contribution                                                                                                                                                                                                                                                                                                                             |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protocol and message    | The platform id and its `KNOWN_PLATFORMS` entry, conservative manifest values, the daemon config payload schema, and pure Google event normalization.                                                                                                                                                                                             |
+| Relay platform module   | HTTPS route, project-audience verification, demux, normalization, membership reports, and strict admission responses.                                                                                                                                                                                                                             |
+| Daemon platform module  | Done in `packages/daemon/src/platforms/googlechat/`: the config schema registration, the app-authenticated Chat REST connection and read port, the `relayIngress` member on the shared relay-ingress host port, the Markdown renderer and byte-budget splitter, the streaming turn output, command chrome, and the connection-registry lifecycle. |
+| Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals.                                                                                                                                                 |
+| Daemon output           | Done: client ids derive from the durable delivery identity, results land on transcript rows keyed by the message resource name, an ambiguous create reconciles by `GET` on its client id, and every write goes through one per-Space `PlatformSendQueue`.                                                                                         |
+| Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment-owned app's install, secret rotation, daemon spec, and relay assignment projection.                                                                                                                                                         |
+| Console platform module | Chat picker, setup wizard, connection diagnostics, conversation semantics, and explicit scope limitations.                                                                                                                                                                                                                                        |
 
 Start with observed membership discovery and no bot-sender routing or multi-agent
 sharing. Add manifest fields only when an actual pre-dispatch consumer requires

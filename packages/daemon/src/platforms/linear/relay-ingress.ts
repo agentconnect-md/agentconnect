@@ -1,13 +1,11 @@
 // Linear's §7.4 relay-ingress strategy (linear-integration.md §4.5, §8, §10.1): prompt, receipt, and ≤10 s ack.
 import type { RdMsgIm } from '@agentconnect.md/protocol'
-import type { LoadedAgent } from '../../agents/load-agents.js'
 import { formatErr } from '../../daemon/text.js'
-import type { Logger } from '../../log.js'
 import { stableMessageId, type NormalizedMessage } from '../../messages/normalized.js'
-import { sessionKey, type LocalStore } from '../../store/local-store.js'
+import { sessionKey } from '../../store/local-store.js'
 import { monotonicTs } from '../../store/monotonic-ts.js'
 import type { DaemonPlatformModule, RelayIngressStrategy } from '../contract.js'
-import type { ObservedChat } from '../observed-channels.js'
+import type { RelayIngressHost } from '../relay-ingress-host.js'
 import type { LinearConnection } from './connection.js'
 import {
   applyLinearMessageStrategy,
@@ -25,16 +23,8 @@ import {
 /** How long a Linear delivery waits for the delegator's name before dispatching with the id. */
 const LINEAR_ACTOR_LOOKUP_MS = 1500
 
-/** The daemon internals Linear's relay ingress reaches, and nothing more. */
-export interface LinearRelayIngressHost {
-  log(): Logger
-  store(): Pick<LocalStore, 'hasInbox' | 'appendInbox' | 'getDisplayNames' | 'getOutputModeOverride'>
-  now(): number
-  connection(integrationId: string): LinearConnection | undefined
-  agent(agentId: string): Pick<LoadedAgent, 'name' | 'displayName' | 'output'> | undefined
-  noteMessage(conn: LinearConnection, msg: NormalizedMessage): void
-  observePlatformChat(platform: string, chat: ObservedChat, integrationIds: readonly string[]): Promise<void>
-}
+/** The shared relay-ingress host port, read through Linear's own connection. */
+export type LinearRelayIngressHost = RelayIngressHost<LinearConnection>
 
 /** Linear's daemon platform module, bound to one daemon's host. */
 export function linearPlatformModule(host: LinearRelayIngressHost): DaemonPlatformModule {

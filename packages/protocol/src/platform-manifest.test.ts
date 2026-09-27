@@ -72,9 +72,11 @@ describe('platform manifest', () => {
     expect(DEFAULT_MANIFEST.ownerAsDefault).toBe(false)
   })
 
-  it('declares addressing by construction on Linear, and nowhere else', () => {
-    // The decision gate reads it: a Linear follow-up in a session the agent holds is a continuation.
+  it('declares addressing by construction on Linear and Google Chat, and nowhere else', () => {
+    // The decision gate reads it: a follow-up in a session the agent holds is a continuation on a
+    // platform whose every delivery already addresses the app — Linear's events, Google's mentions.
     expect(manifestFor('linear').addressedByConstruction).toBe(true)
+    expect(manifestFor(GOOGLE_CHAT_PLATFORM).addressedByConstruction).toBe(true)
     for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq'])
       expect(manifestFor(p).addressedByConstruction, p).toBe(false)
     expect(manifestFor('some-future-platform').addressedByConstruction).toBe(false)
@@ -91,11 +93,12 @@ describe('platform manifest', () => {
     expect(m.dmChannelPattern).toBeUndefined()
   })
 
-  it('keeps Google Chat on the conservative arm of every axis, with DM-ness left to the normalized message', () => {
+  it('keeps Google Chat on the conservative arm of every axis it did not earn, with DM-ness left to the normalized message', () => {
     // An explicit row, so a later change to the defaults cannot move Google Chat onto a path it has not earned.
     const { platform, ...axes } = manifestFor(GOOGLE_CHAT_PLATFORM)
     expect(platform).toBe('googlechat')
-    expect(axes).toEqual(DEFAULT_MANIFEST)
+    // The one earned axis: Google delivers only addressed Space traffic, so a mention is no fresh address.
+    expect(axes).toEqual({ ...DEFAULT_MANIFEST, addressedByConstruction: true })
     expect(axes.consoleContinuation).toBe(false)
     expect(axes.dmChannelPattern).toBeUndefined()
     // A chat origin the console composer may not continue.

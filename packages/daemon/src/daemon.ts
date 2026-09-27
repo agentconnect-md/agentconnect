@@ -742,7 +742,13 @@ import {
   type LinearStopAction,
   LINEAR_STOP_RESPONSE_BODY
 } from './platforms/linear/message-strategy.js'
-import { linearPlatformModule, type LinearRelayIngressHost } from './platforms/linear/relay-ingress.js'
+import { linearPlatformModule } from './platforms/linear/relay-ingress.js'
+import { GoogleChatConnection } from './platforms/googlechat/connection.js'
+import { googleChatCommandChrome } from './platforms/googlechat/command-chrome.js'
+import { googleChatPlatformModule } from './platforms/googlechat/relay-ingress.js'
+import { createGoogleChatTurnOutput } from './platforms/googlechat/surface.js'
+import type { RelayIngressHost } from './platforms/relay-ingress-host.js'
+import type { ChannelInfoSource } from './messages/channel-name-resolver.js'
 import { PlatformModuleRegistry } from './platforms/registry.js'
 import {
   canonicalizeTelegramThread as canonicalizeTelegramThreadExternal,
@@ -1295,6 +1301,7 @@ export class Daemon {
     registry.register(feishuCommandChrome)
     registry.register(linearCommandChrome)
     registry.register(QQCommandChrome)
+    registry.register(googleChatCommandChrome)
     return registry
   })()
 
@@ -1409,6 +1416,15 @@ export class Daemon {
             monotonicTs: () => monotonicTs()
           })
       })
+      // The connection is the egress port, captured at turn start and held by the turn's lease (§5).
+      registry.register(
+        createGoogleChatTurnOutput({
+          recordReplySegment: (p, text) => this.recordReplySegment(p, text),
+          appendTranscript: async (row) => await this.store.appendTranscript(row),
+          nowUs: () => this.clock.now() * 1000,
+          warn: (message) => this.log.warn(message)
+        })
+      )
       return registry
     })()
   // Slack id → display-name resolver (created with the store in start()).
@@ -1493,6 +1509,8 @@ export class Daemon {
   // integrationId -> the LinearConnection that owns it. Linear's only reply surface is the
   // agent activity feed (§4.6), so this is the egress port every Linear write resolves through.
   private lnConnByIntegration = new Map<string, LinearConnection>()
+  // integrationId -> the GoogleChatConnection that owns it: relay-terminated ingress, daemon-direct Chat API egress.
+  private gcConnByIntegration = new Map<string, GoogleChatConnection>()
   // Sessions whose console link already sits in the issue's Resources (Linear keys the entry
   // on the URL, so a restart re-sending it refreshes rather than duplicates).
   private readonly linearResourcesAttached = new Set<string>()
@@ -2132,7 +2150,8 @@ export class Daemon {
         discord: this.dcConnByIntegration,
         feishu: this.fsConnByIntegration,
         qq: this.QQConnByIntegration,
-        linear: this.lnConnByIntegration
+        linear: this.lnConnByIntegration,
+        googlechat: this.gcConnByIntegration
       }),
       bindSlack: (integrationId, conn, botUserId) => {
         this.bind(this.connByIntegration, integrationId, conn, botUserId)
@@ -2147,6 +2166,8 @@ export class Daemon {
       bindQQ: (id, conn, botId) => this.bind(this.QQConnByIntegration, id, conn, botId),
       bindLinear: (integrationId, conn, appUserId) =>
         this.bind(this.lnConnByIntegration, integrationId, conn, appUserId),
+      bindGoogleChat: (integrationId, conn, appUserName) =>
+        this.bind(this.gcConnByIntegration, integrationId, conn, appUserName),
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
       channelNameResolver: () => this.channelNameResolver,
@@ -2231,6 +2252,7 @@ export class Daemon {
     this.fsConnByIntegration.delete(integrationId)
     this.lnConnByIntegration.delete(integrationId)
     this.QQConnByIntegration.delete(integrationId)
+    this.gcConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
   }
@@ -4596,6 +4618,9 @@ export class Daemon {
     void this.connections
       .reconcileLinearConnections()
       .catch((err) => this.log.error(`linear: initial connect failed: ${formatErr(err)}`))
+    void this.connections
+      .reconcileGoogleChatConnections()
+      .catch((err) => this.log.error(`googlechat: initial connect failed: ${formatErr(err)}`))
   }
 
   /** Phase 28 — register crons per agent; the same converge reconcile re-runs on change. */
@@ -5035,6 +5060,7 @@ export class Daemon {
       await this.connections.reconcileDiscordConnections()
       await this.connections.reconcileFeishuConnections()
       await this.connections.reconcileLinearConnections()
+      await this.connections.reconcileGoogleChatConnections()
       await this.connections.reconcileQQConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
@@ -9874,15 +9900,20 @@ export class Daemon {
   }
 
   /** The per-platform daemon modules core looks up by platform id (§7.4), one line per platform. */
-  private readonly platformModules = new PlatformModuleRegistry([linearPlatformModule(this.linearRelayIngressHost())])
+  private readonly platformModules = new PlatformModuleRegistry([
+    linearPlatformModule(this.relayIngressHost((integrationId) => this.lnConnByIntegration.get(integrationId))),
+    googleChatPlatformModule(this.relayIngressHost((integrationId) => this.gcConnByIntegration.get(integrationId)))
+  ])
 
-  /** The narrow port Linear's relay-ingress strategy reaches the daemon through. */
-  private linearRelayIngressHost(): LinearRelayIngressHost {
+  /** The one narrow port every relay-ingress strategy reaches the daemon through; only the connection accessor is per platform. */
+  private relayIngressHost<C extends ChannelInfoSource>(
+    connection: (integrationId: string) => C | undefined
+  ): RelayIngressHost<C> {
     return {
       log: () => this.log,
       store: () => this.store,
       now: () => this.clock.now(),
-      connection: (integrationId) => this.lnConnByIntegration.get(integrationId),
+      connection,
       agent: (agentId) => this.agents.get(agentId),
       noteMessage: (conn, msg) => this.channelNameResolver?.noteMessage(conn, msg),
       observePlatformChat: (platform, chat, integrationIds) =>
@@ -12108,7 +12139,8 @@ export class Daemon {
    */
   private readonly platformTurnEgress = new Map<string, (integrationId?: string) => PlatformConnection | undefined>([
     ['qq', (id) => (id ? this.QQConnByIntegration.get(id) : undefined)],
-    ['linear', (integrationId) => (integrationId ? this.lnConnByIntegration.get(integrationId) : undefined)]
+    ['linear', (integrationId) => (integrationId ? this.lnConnByIntegration.get(integrationId) : undefined)],
+    ['googlechat', (integrationId) => (integrationId ? this.gcConnByIntegration.get(integrationId) : undefined)]
   ])
 
   private readonly platformFailureSinks = new Map<
@@ -12126,6 +12158,16 @@ export class Daemon {
         // `error`, not `response`: it is what drives the Linear session to `error` rather than
         // leaving it active, and it is the same row the warm converger would have emitted.
         await conn.postActivity(session, { type: 'error', body: linearFailureBody(ctx.reason) })
+      }
+    ],
+    [
+      'googlechat',
+      async (ctx) => {
+        const conn = ctx.integrationId ? this.gcConnByIntegration.get(ctx.integrationId) : undefined
+        if (!conn) return
+        // A DM's thread coordinate is the Space itself, and a DM create carries no thread option (§5).
+        const thread = ctx.thread && ctx.thread !== ctx.channel ? ctx.thread : undefined
+        await conn.postChrome(ctx.channel, thread, `⚠️ Agent failed to respond: ${ctx.reason}`)
       }
     ]
   ])
@@ -19095,6 +19137,7 @@ export class Daemon {
     for (const [id, c] of this.fsConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.QQConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.lnConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.gcConnByIntegration) if (c === conn) out.push(id)
     return out
   }
 
@@ -19771,7 +19814,8 @@ export class Daemon {
     return (
       this.connForIntegration(integrationId) ??
       this.lnConnByIntegration.get(integrationId) ??
-      this.QQConnByIntegration.get(integrationId)
+      this.QQConnByIntegration.get(integrationId) ??
+      this.gcConnByIntegration.get(integrationId)
     )
   }
 

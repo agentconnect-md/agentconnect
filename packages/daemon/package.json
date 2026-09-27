@@ -67,6 +67,7 @@
     "discord.js": "^14.27.0",
     "fflate": "^0.8.3",
     "grammy": "^1.45.1",
+    "jose": "^6.2.12",
     "mdast-util-from-markdown": "^2.0.3",
     "pg": "^8.22.0",
     "simple-git": "^3.36.0",
