@@ -20,30 +20,30 @@ interface SettledOperation {
   outcome: WebchatMcpOperationDto | null
 }
 
-const OUTCOME_LABEL: Record<WebchatMcpOperationDto['status'], string> = {
-  awaiting_confirmation: 'Awaiting confirmation',
-  executing: 'Executing…',
-  completed: 'Completed',
-  failed: 'Failed',
-  ambiguous: 'Outcome uncertain',
-  stale: 'Expired'
-}
+const OUTCOME_LABEL = {
+  awaiting_confirmation: 'awaitingConfirmation',
+  executing: 'executing',
+  completed: 'completed',
+  failed: 'failed',
+  ambiguous: 'ambiguous',
+  stale: 'stale'
+} as const satisfies Record<WebchatMcpOperationDto['status'], string>
 
-function outcomeLabel(entry: SettledOperation): string {
-  if (!entry.outcome) return 'Outcome unknown'
-  if (entry.decision === 'deny' && entry.outcome.status === 'failed') return 'Denied'
+type OutcomeLabelKey = (typeof OUTCOME_LABEL)[keyof typeof OUTCOME_LABEL] | 'denied' | 'unknown'
+
+function outcomeLabel(entry: SettledOperation): OutcomeLabelKey {
+  if (!entry.outcome) return 'unknown'
+  if (entry.decision === 'deny' && entry.outcome.status === 'failed') return 'denied'
   return OUTCOME_LABEL[entry.outcome.status]
 }
 
-function outcomeNote(entry: SettledOperation): string | null {
-  if (!entry.outcome) return 'The decision response was lost. Check the status to verify whether the operation ran.'
+function outcomeNote(entry: SettledOperation): 'lost' | 'ambiguous' | 'executing' | 'stale' | null {
+  if (!entry.outcome) return 'lost'
   switch (entry.outcome.status) {
     case 'ambiguous':
-      return 'The operation may or may not have run. Verify the result manually before retrying it.'
     case 'executing':
-      return 'The operation is still running. Check the status again for its final result.'
     case 'stale':
-      return 'The confirmation expired or was superseded before it could run.'
+      return entry.outcome.status
     default:
       return null
   }
@@ -110,20 +110,18 @@ export function WebchatMcpApprovalCard({
       if (outcome.status !== 'awaiting_confirmation' && outcome.status !== 'executing')
         onDecided?.(operation, decision, outcome)
     } catch {
-      // The CP may have executed the decision even though the response was lost
-      // (network drop) or rejected it (409 race). Refetch the exact operation so
-      // the owner sees its true terminal state instead of it silently vanishing.
+      // A lost response (network drop, 409 race) may still have executed: refetch so the true state shows.
       try {
         const outcome = await getWebchatMcpOperation(orgId, agentId, conversationId, operation.operationId)
         if (outcome.status === 'awaiting_confirmation') {
-          setError('The decision was not applied. Try again.')
+          setError(t('errors.notApplied'))
         } else {
           upsertSettled({ operation, decision, outcome })
           if (outcome.status !== 'executing') onDecided?.(operation, decision, outcome)
         }
       } catch {
         upsertSettled({ operation, decision, outcome: null })
-        setError('The decision response was lost. Check the operation status to verify the outcome.')
+        setError(t('errors.responseLost'))
       }
     } finally {
       setBusy(null)
@@ -145,7 +143,7 @@ export function WebchatMcpApprovalCard({
         if (!entry.outcome && outcome.status !== 'executing') onDecided?.(entry.operation, entry.decision, outcome)
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not check the operation status.')
+      setError(caught instanceof Error ? caught.message : t('errors.checkFailed'))
     } finally {
       setBusy(null)
     }
@@ -166,9 +164,7 @@ export function WebchatMcpApprovalCard({
           key={operation.operationId}
           className="min-w-0 rounded-lg border border-(--border-default) bg-(--surface-card) px-3 py-2 shadow-(--shadow-xs)"
         >
-          {/* Buttons drop below the text on mobile (same as ApprovalRequestsCard): kept
-            on one row, their fixed width would be a min-content floor the strip has to
-            clip. */}
+          {/* Buttons drop below the text on mobile, or their width becomes a min-content floor the strip clips. */}
           <div className="flex flex-col gap-2 desktop:flex-row desktop:items-center">
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-x-2">
@@ -190,10 +186,10 @@ export function WebchatMcpApprovalCard({
                 disabled={busy !== null}
                 onClick={() => void decide(operation, 'deny')}
               >
-                {busy === `${operation.operationId}:deny` ? 'Denying…' : 'Deny'}
+                {busy === `${operation.operationId}:deny` ? t('denying') : t('deny')}
               </Button>
               <Button size="xs" disabled={busy !== null} onClick={() => void decide(operation, 'approve')}>
-                {busy === `${operation.operationId}:approve` ? 'Approving…' : 'Approve and run'}
+                {busy === `${operation.operationId}:approve` ? t('approving') : t('approve')}
               </Button>
             </div>
           </div>
@@ -214,7 +210,7 @@ export function WebchatMcpApprovalCard({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-2">
                   <span className="font-mono text-[10px] font-semibold uppercase leading-normal tracking-[.08em] text-(--text-tertiary)">
-                    {outcomeLabel(entry)}
+                    {t(`outcomes.${outcomeLabel(entry)}`)}
                   </span>
                   <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
                     {entry.operation.toolName}
@@ -222,7 +218,7 @@ export function WebchatMcpApprovalCard({
                 </div>
                 {note && (
                   <div className="mt-[2px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                    {note}
+                    {t(`notes.${note}`)}
                   </div>
                 )}
               </div>
