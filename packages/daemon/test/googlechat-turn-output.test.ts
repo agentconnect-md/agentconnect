@@ -31,9 +31,18 @@ interface Write {
 }
 
 /** A fake egress port plus a hand-driven clock and timer. */
-function rig(opts: { failCreate?: GoogleChatApiError; failPatch?: GoogleChatApiError } = {}) {
+/** A fake egress port plus a hand-driven clock and timer; `createResponse` overrides the text Google echoes on a create. */
+function rig(
+  opts: {
+    failCreate?: GoogleChatApiError
+    failPatch?: GoogleChatApiError
+    createResponse?: (input: { clientId: string; text: string }) => { text?: string }
+  } = {}
+) {
   let t = 1_000_000
   const writes: Write[] = []
+  // What each message shows on the wire: the create's echoed text, then whatever a patch set.
+  const wire = new Map<string, string | undefined>()
   let timer: { fn: () => void; due: number } | undefined
   const port: GoogleChatEgressPort = {
     async createMessage(input) {
@@ -45,11 +54,16 @@ function rig(opts: { failCreate?: GoogleChatApiError; failPatch?: GoogleChatApiE
         ...(input.thread ? { thread: input.thread } : {}),
         at: t
       })
-      return { name: `${input.space}/messages/T.${input.clientId}`, clientId: input.clientId }
+      // A real create echoes the stored text; a replayed id echoes the ORIGINAL message instead.
+      const response = opts.createResponse ? opts.createResponse(input) : { text: input.text }
+      wire.set(input.clientId, response.text)
+      return { name: `${input.space}/messages/T.${input.clientId}`, clientId: input.clientId, ...response }
     },
     async patchMessage(name, text) {
       if (opts.failPatch) throw opts.failPatch
-      writes.push({ kind: 'patch', id: name.slice(name.lastIndexOf('.') + 1), text, at: t })
+      const id = name.slice(name.lastIndexOf('.') + 1)
+      writes.push({ kind: 'patch', id, text, at: t })
+      wire.set(id, text)
     }
   }
   const stream = new GoogleChatStream(
@@ -76,6 +90,7 @@ function rig(opts: { failCreate?: GoogleChatApiError; failPatch?: GoogleChatApiE
     port,
     stream,
     writes,
+    wire,
     advance: async (ms: number) => {
       t += ms
       if (timer && timer.due <= t) {
@@ -156,6 +171,36 @@ describe('GoogleChatStream', () => {
     const err = await stream.finish('hello again').catch((e: unknown) => e)
     expect((err as GoogleChatApiError).kind).toBe('not_found')
     expect(writes).toHaveLength(0)
+  })
+
+  it('converges a replayed segment whose create echoed different text, in the same pass', async () => {
+    // A replay reuses the client id; Google answers the ORIGINAL message, whose text the agent has since changed.
+    const { stream, writes, wire } = rig({ createResponse: () => ({ text: 'the earlier draft' }) })
+    const sent = await stream.finish('the answer after the restart')
+    expect(writes.map((w) => [w.kind, w.text])).toEqual([
+      ['create', 'the answer after the restart'],
+      ['patch', 'the answer after the restart']
+    ])
+    // The recorded text is what the wire shows, not what the daemon wished it showed.
+    expect(sent.map((s) => s.text)).toEqual(sent.map((s) => wire.get(s.clientId)))
+    expect(sent[0]!.text).toBe('the answer after the restart')
+  })
+
+  it('does not patch after a create whose response already carries the text', async () => {
+    const { stream, writes } = rig()
+    const sent = await stream.finish('same text')
+    expect(writes.map((w) => [w.kind, w.text])).toEqual([['create', 'same text']])
+    expect(sent[0]!.text).toBe('same text')
+  })
+
+  it('patches after a create whose response carries no text at all, rather than assuming a match', async () => {
+    const { stream, writes, wire } = rig({ createResponse: () => ({}) })
+    const sent = await stream.finish('unechoed')
+    expect(writes.map((w) => [w.kind, w.text])).toEqual([
+      ['create', 'unechoed'],
+      ['patch', 'unechoed']
+    ])
+    expect(wire.get(sent[0]!.clientId)).toBe('unechoed')
   })
 })
 
@@ -258,6 +303,19 @@ describe('applyGoogleChatAction', () => {
     expect(h.rows).toEqual([])
     expect(h.warnings).toHaveLength(1)
     expect(h.warnings[0]).toContain('not_found')
+  })
+
+  it('records exactly the text on the wire when a replayed create echoed an older draft', async () => {
+    const { port, writes, wire } = rig({ createResponse: () => ({ text: 'older draft' }) })
+    const h = host()
+    await applyGoogleChatAction(h.host, turn, state(port), { kind: 'post', text: 'final' })
+    // Converged in one pass: the stale echo is patched before the row is written.
+    expect(writes.map((w) => [w.kind, w.text])).toEqual([
+      ['create', 'final'],
+      ['patch', 'final']
+    ])
+    expect(h.rows.map((row) => row.text)).toEqual(['final'])
+    expect(wire.get(googleChatClientId(DELIVERY, 0, 0))).toBe('final')
   })
 
   it('records only, without touching the port, for a recordOnly post or a turn with no egress', async () => {

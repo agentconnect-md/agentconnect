@@ -448,7 +448,11 @@ sends an identical-request ID with a different body.
 
 One `GoogleChatStream` per text block keeps revisions ordered: it holds the newest
 snapshot, writes at most one edit every two seconds, and lets the block's final
-text replace whatever edit was still pending before it is written. Patch only
+text replace whatever edit was still pending before it is written. What a segment
+shows is only what Google echoed back: a replayed client id echoes the original
+message, so an echo that differs from the current text, or a response with no
+text at all, is patched in the same pass before the transcript row is written.
+Patch only
 owned messages with `updateMask=text`; the body must carry `markupSyntax` beside
 `text`, because a patch without it reverts the message to Chat syntax and shows
 literal `**bold**`, while naming `markupSyntax` in the mask is refused as an

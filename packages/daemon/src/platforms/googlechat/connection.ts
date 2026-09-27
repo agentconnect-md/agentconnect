@@ -311,7 +311,12 @@ export class GoogleChatConnection implements PlatformConnection {
         retry: 'rate_limit_only'
       })
       this.noteAppIdentity(created.sender?.name)
-      return { name: created.name ?? byClientId, clientId: input.clientId, text: created.text ?? input.text }
+      // Only Google's own echo says what the wire shows; a missing one is reported as missing, never as the input.
+      return {
+        name: created.name ?? byClientId,
+        clientId: input.clientId,
+        ...(created.text !== undefined ? { text: created.text } : {})
+      }
     }
     return this.queueFor(input.space).enqueue(async () => {
       try {

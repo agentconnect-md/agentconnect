@@ -119,3 +119,49 @@ describe('googleChatClientId', () => {
     expect(ids.size).toBe(4)
   })
 })
+
+describe('splitGoogleChatText never exceeds the budget', () => {
+  /** Every emitted segment fits, and no non-whitespace character is lost or invented. */
+  function assertWithinBudget(text: string, budget: number): string[] {
+    const parts = splitGoogleChatText(text, budget)
+    for (const part of parts) expect(bytes(part), `segment of ${bytes(part)} bytes`).toBeLessThanOrEqual(budget)
+    const strip = (s: string): string => s.replace(/\s+/g, '').replace(/```[a-z]*/g, '')
+    expect(strip(parts.join('\n'))).toBe(strip(text))
+    return parts
+  }
+
+  it('cuts again when the paragraph remainder plus the next line still overflows', () => {
+    // A short paragraph, then a long one whose last line only fits on its own: one cut is not enough.
+    const text = `${'a'.repeat(2000)}\n\n${'b'.repeat(27000)}\n${'c'.repeat(5000)}`
+    const parts = assertWithinBudget(text, GOOGLE_CHAT_TEXT_BUDGET_BYTES)
+    expect(parts).toEqual(['a'.repeat(2000), 'b'.repeat(27000), 'c'.repeat(5000)])
+  })
+
+  it('holds for adversarial shapes: long after short, inside a fence, multi-byte, and seeded mixes', () => {
+    assertWithinBudget(`${'a'.repeat(100)}\n\n${'b'.repeat(900)}\n${'c'.repeat(900)}\n${'d'.repeat(900)}`, 1_000)
+    const fenced = ['```', 'x'.repeat(50), '', 'y'.repeat(700), 'z'.repeat(700), '', 'w'.repeat(700), '```'].join('\n')
+    for (const part of assertWithinBudget(fenced, 800)) {
+      expect(part.startsWith('```\n')).toBe(true)
+      expect(part.endsWith('\n```')).toBe(true)
+    }
+    assertWithinBudget(`${'字'.repeat(10)}\n\n${'字'.repeat(300)}\n${'😀'.repeat(200)}\n${'字'.repeat(300)}`, 1_000)
+    // A seeded generator, so a failing shape reproduces exactly.
+    let seed = 20260927
+    const next = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return seed % n
+    }
+    const alphabets = ['a', '字', '😀', 'b ']
+    for (let round = 0; round < 40; round += 1) {
+      const lines: string[] = []
+      const lineCount = 3 + next(12)
+      for (let i = 0; i < lineCount; i += 1) {
+        const roll = next(10)
+        if (roll === 0) lines.push('')
+        else if (roll === 1) lines.push('```')
+        else lines.push(alphabets[next(alphabets.length)]!.repeat(next(700)))
+      }
+      assertWithinBudget(lines.join('\n'), 500 + next(1_500))
+    }
+  })
+})

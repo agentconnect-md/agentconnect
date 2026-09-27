@@ -294,6 +294,13 @@ describe('creates and patches', () => {
     expect(chatCalls()[0]!.url.searchParams.has('allowMissing')).toBe(false)
   })
 
+  it('reports no text when the create response carries none, so the stream patches instead of assuming a match', async () => {
+    const { conn } = harness(() => reply(200, { name: `${SPACE}/messages/T.M`, sender: { name: APP_USER } }))
+    const ref = await conn.createMessage({ space: SPACE, thread: THREAD, clientId: 'client-abc', text: '**hi**' })
+    expect(ref).toEqual({ name: `${SPACE}/messages/T.M`, clientId: 'client-abc' })
+    expect('text' in ref).toBe(false)
+  })
+
   it('posts chrome with a per-call request id and no client id', async () => {
     const { conn, chatCalls } = harness(() => created(`${SPACE}/messages/T.chrome`))
     await conn.postChrome(SPACE, THREAD, 'status')

@@ -118,14 +118,16 @@ export function splitGoogleChatText(text: string, budgetBytes = GOOGLE_CHAT_TEXT
     const reopenBytes = fence ? utf8Bytes(fenceLine) + utf8Bytes(closeOf(fence)) + 2 : 0
     for (const line of hardCut(rawLine, Math.max(1, budgetBytes - reopenBytes))) {
       const reserve = fence ? utf8Bytes(closeOf(fence)) + 1 : 0
-      if (current.length && currentBytes + utf8Bytes(line) + 1 + reserve > budgetBytes) {
+      // Cut until the line fits: a paragraph cut can leave a remainder that still overflows with it.
+      while (current.length && currentBytes + utf8Bytes(line) + 1 + reserve > budgetBytes) {
         if (paragraphCut > 0 && paragraphCut < current.length) {
           emit(current.slice(0, paragraphCut))
           current = current.slice(paragraphCut)
-        } else if (fence) {
+        } else if (fence && !(current.length === 1 && current[0] === fenceLine)) {
           emit([...current, closeOf(fence)])
           current = [fenceLine]
         } else {
+          // Plain text, or a fence marker too long to ever share a message with a line: start empty.
           emit(current)
           current = []
         }

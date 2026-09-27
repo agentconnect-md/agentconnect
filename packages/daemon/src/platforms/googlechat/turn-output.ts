@@ -124,6 +124,13 @@ export interface GoogleChatSentSegment {
   text: string
 }
 
+/** A segment as the stream tracks it: `text` is what Google confirmed on the wire, unknown until an echo or a patch. */
+interface WireSegment {
+  clientId: string
+  name: string
+  text?: string
+}
+
 export interface GoogleChatStreamOptions {
   minEditIntervalMs?: number
   now?: () => number
@@ -139,7 +146,7 @@ const defaultSetTimer = (fn: () => void, ms: number): unknown => {
 
 /** One text block's live message(s): a pending snapshot, one timer, and the segments already on the wire. */
 export class GoogleChatStream {
-  private readonly sent: GoogleChatSentSegment[] = []
+  private readonly sent: WireSegment[] = []
   private pending: string | undefined
   private timer: unknown
   private flight: Promise<void> = Promise.resolve()
@@ -186,7 +193,8 @@ export class GoogleChatStream {
     await this.flight
     if (!this.failure) await this.reconcile(text)
     if (this.failure) throw this.failure
-    return [...this.sent]
+    // Every segment converged above (a failure threw), so each one's wire text is known.
+    return this.sent.map((s) => ({ clientId: s.clientId, name: s.name, text: s.text! }))
   }
 
   /** Suppression: nothing pending reaches the wire. */
@@ -222,13 +230,13 @@ export class GoogleChatStream {
     })
   }
 
-  /** Bring the wire to `text`: a missing segment is created, a changed one patched, in order; the first refusal ends the block. */
+  /** Bring the wire to `text`: a missing segment is created, one showing other text patched, in order; the first refusal ends the block. */
   private async reconcile(text: string): Promise<void> {
     const parts = splitGoogleChatText(text)
     for (let i = 0; i < parts.length; i += 1) {
       const part = parts[i]!
-      const sent = this.sent[i]
-      if (sent && sent.text === part) continue
+      let sent = this.sent[i]
+      if (sent?.text === part) continue
       try {
         if (!sent) {
           const clientId = this.clientId(i)
@@ -238,12 +246,17 @@ export class GoogleChatStream {
             clientId,
             text: part
           })
-          this.sent[i] = { clientId, name: created.name, text: part }
-        } else {
+          // A replayed id echoes the ORIGINAL message, so only Google's echo says what the wire shows.
+          sent = { clientId, name: created.name, ...(created.text !== undefined ? { text: created.text } : {}) }
+          this.sent[i] = sent
+          this.lastWriteAt = this.now()
+        }
+        // An echo that differs, or none at all, is patched in this same pass so the wire converges at once.
+        if (sent.text !== part) {
           await this.port.patchMessage(sent.name, part)
           sent.text = part
+          this.lastWriteAt = this.now()
         }
-        this.lastWriteAt = this.now()
       } catch (err) {
         this.failure =
           err instanceof GoogleChatApiError ? err : new GoogleChatApiError((err as Error).message, 'ambiguous')
