@@ -138,12 +138,18 @@ export function googleChatIntegrationConfig(
   return { projectId, projectNumber: bot.externalAppId, serviceAccountKey: secrets.botToken }
 }
 
-/** The relay assignment: no secret, and the project number as both the demux key and the expected token audience (§2). */
-export function googleChatBotAssignBags(bot: Pick<BotRecord, 'externalAppId'>): {
+/** The relay assignment: no secret, the project number as demux key and token audience (§2), and the app's identity once learned. */
+export function googleChatBotAssignBags(bot: Pick<BotRecord, 'externalAppId' | 'botUserId'>): {
   secrets: Record<string, unknown>
   ingress: Record<string, unknown>
 } {
-  return { secrets: {}, ingress: bot.externalAppId ? { apiAppId: bot.externalAppId } : {} }
+  return {
+    secrets: {},
+    ingress: {
+      ...(bot.externalAppId ? { apiAppId: bot.externalAppId } : {}),
+      ...(bot.botUserId ? { appUserName: bot.botUserId } : {})
+    }
+  }
 }
 
 export interface GoogleChatCpProviderDeps {
@@ -151,12 +157,15 @@ export interface GoogleChatCpProviderDeps {
   fetch?: typeof fetch
   /** The deployment-app install route, pre-bound by the composition root. */
   installRoutes?: { org: FastifyPluginAsync[]; publicCallback: FastifyPluginAsync[] }
+  /** The app-identity loop (`app-identity.ts`); absent ⇒ no background loop declared. */
+  identityReconciler?: { start(): void; stop(): void }
 }
 
 export function createGoogleChatCpProvider(
   deps: GoogleChatCpProviderDeps = {}
 ): CpPlatformProvider<GoogleChatCreateCredentials> {
   const fetchImpl: typeof fetch = (input, init) => (deps.fetch ?? fetch)(input, init)
+  const { identityReconciler } = deps
   return {
     platformId: GOOGLE_CHAT_PLATFORM,
 
@@ -198,6 +207,19 @@ export function createGoogleChatCpProvider(
     },
 
     envSchema: GoogleChatCpEnvSchema,
+
+    // A Chat app's key never names the app; the loop reads its `users/…` name from Google and the assignment carries it (§3).
+    ...(identityReconciler
+      ? {
+          backgroundLoops: [
+            {
+              label: 'googlechat-app-identity',
+              start: () => identityReconciler.start(),
+              stop: () => identityReconciler.stop()
+            }
+          ] as const
+        }
+      : {}),
 
     async projectIntegrationConfig(_integration, bot, _core, secrets) {
       return googleChatIntegrationConfig(bot, secrets)

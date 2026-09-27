@@ -685,6 +685,26 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(second.mock.calls[0]![0]).toMatchObject({ agentId: OTHER_AGENT_ID, trustedRouteVia: 'implicit' })
   })
 
+  it("reads a normalizer's mention stamp as an explicit address before the bot's identity is known", async () => {
+    // Google Chat delivers a Space message only to the apps it mentions or adds and says so with `trigger`;
+    // until the app's own `users/…` name is known, the mention list cannot prove the address.
+    const { daemon, sendMsg } = online()
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon }))
+    const internals = internalsOf(manager)
+    const unnamed = channelAutoOwned()
+    delete unnamed.botUserId
+    internals.router.upsert(unnamed)
+
+    await internals.forward(BOT_ID, followUp({ msgId: 'googlechat:C123:m1', trigger: 'mention' }))
+    expect(sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'mention', payload: { trigger: 'mention' } })
+    // A DM keeps its own cause on the payload and the implicit route it always had.
+    await internals.forward(BOT_ID, followUp({ msgId: 'googlechat:C123:m2', isDm: true, trigger: 'dm' }))
+    expect(sendMsg.mock.calls[1]![0]).toMatchObject({ trustedRouteVia: 'implicit', payload: { trigger: 'dm' } })
+    // Without the stamp, an unproven mention list is still implicit.
+    await internals.forward(BOT_ID, followUp({ msgId: 'googlechat:C123:m3' }))
+    expect(sendMsg.mock.calls[2]![0]).toMatchObject({ trustedRouteVia: 'implicit' })
+  })
+
   it('keeps an UNVERIFIED agent bot off routing but forwards an explicitly mentioning third-party bot', async () => {
     // send-message-routing-rework.md §4 fails closed: an AgentConnect app whose message
     // carries no provable authorship claim (here: no `agentAuthorship` metadata at all)

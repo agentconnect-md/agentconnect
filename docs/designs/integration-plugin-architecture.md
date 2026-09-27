@@ -583,8 +583,11 @@ interface RelayPlatformIngressPlugin<TIngest, TVerified> {
   // Returns the plugin's TYPED product, not a boolean verdict: Feishu's
   // verify decrypts, and the decrypted payload has to reach handle() —
   // deriving it a second time there is both wasteful and a place for the two
-  // derivations to disagree. `undefined` means reject.
-  verify(ingest, rawBody, body, headers, now): TVerified | undefined
+  // derivations to disagree. `undefined` means reject. Google Chat's proof is
+  // a token checked against fetched certificates, so verify may also return a
+  // promise; core awaits either form.
+  verify(ingest, rawBody, body, headers, now):
+    TVerified | undefined | Promise<TVerified | undefined>
   // Two platforms require SYNCHRONOUS bodies on the HTTP 200 (Slack
   // block_suggestion options; Feishu card-action toast), so handle() is async:
   // the Feishu plugin awaits host.forwardAction(...) and surfaces the
@@ -668,12 +671,16 @@ Dedup identity is per-assignment composite, per §5.1 — the plugin mints
 and core owns the TTL table, offered two ways: `dedupSeen` marks on first sight
 (Slack's bounded-loss path), while `dedupPeek`/`dedupMark` let a platform that
 answers from an admission disposition check first and mark only once the
-disposition is settled. Four platform reads that would otherwise sit in
-core are capability reads per D2: Slack-only bot-mention admission
-(`botSenderRouting`), thread-root detection (adapter `isThreadRoot` or the
-threading capability), the Feishu egress-ownership fork (`relayOwnsEgress`
-derived from the `egress` facet), and the echo-suppression guard. The
-existing `hooks/signature.ts` primitives are shared relay-core
+disposition is settled. The registry (`platforms/registry.ts`) lists Slack,
+Feishu, Linear, and Google Chat; Google Chat is the first plugin that answers
+from the admission disposition, holds no secret (Google signs each callback for
+the bot's project number, which the assignment carries as the expected
+audience), and verifies asynchronously. Four platform reads that would
+otherwise sit in core are capability reads per D2: Slack-only bot-mention
+admission (`botSenderRouting`), thread-root detection (adapter `isThreadRoot`
+or the threading capability), the Feishu egress-ownership fork
+(`relayOwnsEgress` derived from the `egress` facet), and the echo-suppression
+guard. The existing `hooks/signature.ts` primitives are shared relay-core
 infrastructure serving both this seam and the webhook seam.
 
 ## 9. Control-Plane Slot

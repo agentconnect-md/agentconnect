@@ -567,6 +567,9 @@ importers:
       fastify:
         specifier: ^5.12.5
         version: 5.12.5
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
       undici:
         specifier: ^8.11.2
         version: 8.11.2
@@ -601,6 +604,9 @@ importers:
       '@agentconnect.md/control-plane':
         specifier: workspace:*
         version: link:../control-plane
+      '@agentconnect.md/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       fastify:
         specifier: ^5.12.5
         version: 5.12.5

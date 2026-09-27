@@ -40,10 +40,13 @@ export interface BotAssignment {
   platform: string
   // The third shape is the signing-secret-ONLY bag: a relay-verified platform whose every write
   // lives on the daemon has no provider token to hand the relay, only the webhook signing secret.
+  // The fourth is EMPTY: the provider signs each callback itself and `apiAppId` is the expected
+  // token audience, so the relay holds no secret at all (Google Chat).
   secrets:
     | { botToken: string; signingSecret: string }
     | { verificationToken: string; encryptKey?: string }
     | { signingSecret: string }
+    | Record<never, never>
   /** Provider app id — the O(1) HTTP demux key when present. */
   apiAppId?: string
   /** Slack workspace id (== Events API `team_id`). Present ⇒ this bot is one
@@ -194,6 +197,14 @@ export interface ConversationTarget {
 export const sessionKeyOf: (msg: Pick<WireNormalizedMessage, 'channel' | 'thread'>) => string = sharedBotSessionKey
 
 const scopeMatches: (r: AttributedRoute, msg: WireNormalizedMessage) => boolean = sharedBotScopeMatches
+
+/** An explicit address: the message names the bot's identity, or its normalizer stamped it a mention (Google Chat states the cause before the identity is known). */
+export function explicitlyAddressesBot(
+  a: Pick<BotAssignment, 'botUserId'> | undefined,
+  msg: WireNormalizedMessage
+): boolean {
+  return (a?.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)) || msg.trigger === 'mention'
+}
 
 const target = (r: AttributedRoute): RouteTarget => ({
   agentId: r.agentId,
@@ -750,7 +761,7 @@ export class BotArbitrationRouter {
     const remembered = byConversation.get(key) ?? new Map<string, RouteTarget>()
 
     const explicitIds = new Set<string>()
-    const namesBot = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
+    const namesBot = explicitlyAddressesBot(a, msg)
     if (namesBot) {
       for (const route of a.routes) {
         if (route.match.kind !== 'mention' || !scopeMatches(route, msg)) continue
@@ -826,7 +837,20 @@ export class BotArbitrationRouter {
  *  predates) — the caller logs and skips; the assign handler would refuse the
  *  platform anyway, this just refuses it before touching credentials. */
 export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
-  const secrets =
+  // §6.7: the opaque ingress bag is the ONE carrier of the demux identity. The
+  // named top-level twins left the wire schema with the S3 protocol cleanup
+  // (emission had already stopped, #556), so there is nothing to fall back to —
+  // a non-string slot in the bag reads as absent, and an absent identity means
+  // the verify-scan path, exactly as a manual-paste install always demuxed.
+  const ingress = (a.ingress ?? {}) as {
+    apiAppId?: unknown
+    teamId?: unknown
+    workspaceId?: unknown
+    botUserId?: unknown
+    appUserName?: unknown
+  }
+  const apiAppId = typeof ingress.apiAppId === 'string' ? ingress.apiAppId : undefined
+  const secrets: BotAssignment['secrets'] | null =
     'botToken' in a.secrets && typeof a.secrets.botToken === 'string' && typeof a.secrets.signingSecret === 'string'
       ? { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret }
       : 'verificationToken' in a.secrets && typeof a.secrets.verificationToken === 'string'
@@ -839,25 +863,25 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
           // present-but-unusable token must still fail closed rather than fall through to here.
           !('botToken' in a.secrets) && 'signingSecret' in a.secrets && typeof a.secrets.signingSecret === 'string'
           ? { signingSecret: a.secrets.signingSecret }
-          : null
+          : // The fourth shape holds NOTHING: the provider signs every callback and `apiAppId` is the
+            // audience the relay checks it against, so the identity is what makes the bag usable — an
+            // empty bag without it, or any bag with keys no shape reads, still fails closed.
+            Object.keys(a.secrets).length === 0 && apiAppId
+            ? {}
+            : null
   if (!secrets) return null
-  // §6.7: the opaque ingress bag is the ONE carrier of the demux identity. The
-  // named top-level twins left the wire schema with the S3 protocol cleanup
-  // (emission had already stopped, #556), so there is nothing to fall back to —
-  // a non-string slot in the bag reads as absent, and an absent identity means
-  // the verify-scan path, exactly as a manual-paste install always demuxed.
-  const ingress = (a.ingress ?? {}) as {
-    apiAppId?: unknown
-    teamId?: unknown
-    workspaceId?: unknown
-    botUserId?: unknown
-  }
-  const apiAppId = typeof ingress.apiAppId === 'string' ? ingress.apiAppId : undefined
   const teamId = typeof ingress.teamId === 'string' ? ingress.teamId : undefined
   // An older CP omits it; the fence then reads whatever `teamId` carries, which
   // is exactly today's behaviour (ingress-tenant-fence.md §3.3 fail-open).
   const workspaceId = typeof ingress.workspaceId === 'string' ? ingress.workspaceId : undefined
-  const botUserId = typeof ingress.botUserId === 'string' ? ingress.botUserId : undefined
+  // A token-verified platform names its app's own user identity `appUserName`; it is the same
+  // mention/echo identity `botUserId` carries for the others.
+  const botUserId =
+    typeof ingress.botUserId === 'string'
+      ? ingress.botUserId
+      : typeof ingress.appUserName === 'string'
+        ? ingress.appUserName
+        : undefined
   const routes = usableRoutes(a.routes)
   return {
     botId: a.botId,

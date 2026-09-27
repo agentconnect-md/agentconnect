@@ -289,6 +289,7 @@ import { LinearTokenService } from './platforms/linear/token-service.js'
 import { LinearOrphanTokenSweeper } from './platforms/linear/orphan-token-sweeper.js'
 import { linearConnectRoutes, linearOauthCallbackRoutes } from './platforms/linear/routes.js'
 import { createGoogleChatCpProvider } from './platforms/googlechat/provider.js'
+import { GoogleChatAppIdentityReconciler } from './platforms/googlechat/app-identity.js'
 import { googleChatKeyRoutes, googleChatPlatformInstallRoutes } from './platforms/googlechat/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
@@ -2173,6 +2174,20 @@ export function buildContainer(
     ...(googleChatPlatformApp ? { app: googleChatPlatformApp } : {}),
     fetch: (input, init) => fetch(input, init)
   }
+  // A Chat app's key never names the app; this pass reads its `users/…` identity from one Space membership (§3).
+  const googleChatAppIdentityReconciler = new GoogleChatAppIdentityReconciler({
+    bots: repos.bot,
+    secrets: repos.botSecret,
+    fetch: googleChatSeams.fetch,
+    resync: (botId) => httpBot.syncBot(botId),
+    clock,
+    intervalMs: 15 * 60 * 1000,
+    log: {
+      info: (obj, msg) => http.log.info(obj, msg),
+      warn: (obj, msg) => http.log.warn(obj, msg),
+      error: (obj, msg) => http.log.error(obj, msg)
+    }
+  })
 
   // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
   // instances — all four platforms — constructed with the SAME verify/sync
@@ -2270,7 +2285,8 @@ export function buildContainer(
           googleChatKeyRoutes(httpDeps, googleChatSeams)
         ],
         publicCallback: []
-      }
+      },
+      identityReconciler: googleChatAppIdentityReconciler
     })
   ])
 

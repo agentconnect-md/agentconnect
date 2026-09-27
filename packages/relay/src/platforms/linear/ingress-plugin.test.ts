@@ -152,7 +152,7 @@ function delivery(
 async function run(h: RelayIngressHost, body: unknown, opts: Parameters<typeof delivery>[1] = {}, now = NOW) {
   const ingest = linearIngressPlugin.buildIngest(assignment(), h)!
   const d = delivery(body, opts)
-  const verified = linearIngressPlugin.verify(ingest, d.raw, d.body, d.headers, now)
+  const verified = await linearIngressPlugin.verify(ingest, d.raw, d.body, d.headers, now)
   if (verified === undefined) return { verified, forwarded: undefined }
   await linearIngressPlugin.handle(ingest, verified, h)
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -287,7 +287,7 @@ describe('linear ingress plugin — demux and tenant isolation', () => {
     const ingest = linearIngressPlugin.buildIngest(mapped!, h)!
     expect(ingest.identity).toEqual({ clientId: CLIENT_ID, organizationId: ORG_ID, appUserId: APP_USER_ID })
     const d = delivery(createdEvent())
-    const verified = linearIngressPlugin.verify(ingest, d.raw, d.body, d.headers, NOW)!
+    const verified = (await linearIngressPlugin.verify(ingest, d.raw, d.body, d.headers, NOW))!
     await linearIngressPlugin.handle(ingest, verified, h)
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(vi.mocked(h.forward).mock.calls[0]?.[1].mentionedBots).toEqual([APP_USER_ID])
@@ -565,7 +565,7 @@ describe('linear ingress plugin — per-bot ingress bucket', () => {
       const body = createdEvent()
       ;(body.agentSession as Record<string, unknown>).id = `${SESSION_ID}-${i}`
       const d = delivery(body)
-      const verified = linearIngressPlugin.verify(ingest, d.raw, d.body, d.headers, NOW)!
+      const verified = (await linearIngressPlugin.verify(ingest, d.raw, d.body, d.headers, NOW))!
       await linearIngressPlugin.handle(ingest, verified, h)
     }
     await new Promise((resolve) => setTimeout(resolve, 0))

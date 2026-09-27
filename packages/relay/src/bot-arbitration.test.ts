@@ -363,6 +363,26 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     expect(toBotAssignment({ ...base, secrets: {} } as never)).toBeNull()
   })
 
+  it('maps the EMPTY bag only when the ingress names the token audience, reading appUserName as the bot identity', () => {
+    // Google signs every callback itself, so the relay holds nothing; the project number it must check
+    // the token against is what makes the bag usable at all.
+    const a = toBotAssignment({
+      ...base,
+      platform: 'googlechat',
+      secrets: {},
+      ingress: { apiAppId: '100000000000', appUserName: 'users/100000000000000000009' }
+    } as never)
+    expect(a?.secrets).toEqual({})
+    expect(a?.apiAppId).toBe('100000000000')
+    expect(a?.botUserId).toBe('users/100000000000000000009')
+    // Without the identity nothing could verify a callback, so the same empty bag is refused.
+    expect(
+      toBotAssignment({ ...base, platform: 'googlechat', secrets: {}, ingress: { appUserName: 'users/1' } } as never)
+    ).toBeNull()
+    // Unknown keys are not "empty", even beside an audience.
+    expect(toBotAssignment({ ...base, secrets: { apiKey: 'k-1' }, ingress: { apiAppId: 'A1' } } as never)).toBeNull()
+  })
+
   it('refuses a HALF-FILLED Slack bag rather than promoting it to the signing-secret shape', () => {
     // A present-but-unusable botToken means the projector meant the Slack pair and lost half of
     // it. Falling through to the third shape would install an ingest that can never post.

@@ -57,7 +57,7 @@ function makeApp(forward: (msg: WireNormalizedMessage) => Promise<void> = async 
   const resolver: RelayInboundSeam = {
     handleInbound: async (_platformId, rawBody, body, headers) => {
       for (const ingest of pool) {
-        const verified = linearIngressPlugin.verify(
+        const verified = await linearIngressPlugin.verify(
           ingest,
           rawBody,
           body,
