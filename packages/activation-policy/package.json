@@ -1,6 +1,6 @@
 {
   "name": "@agentconnect.md/activation-policy",
-  "version": "1.0.0-dev",
+  "version": "2.0.0-dev",
   "description": "AgentConnect pure activation policy — who does this message activate — shared by every routing surface",
   "license": "Apache-2.0",
   "type": "module",

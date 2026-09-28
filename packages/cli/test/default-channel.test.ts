@@ -1,8 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
-// defaultChannel() keys off the CLI's own version, which is read from package.json
-// at import time. The repo build is `1.0.0-dev` (→ stable), so exercise the rc
-// branch by mocking the version module and importing the store fresh.
+// Mock the CLI version before importing the store to exercise both stable and rc defaults.
 async function channelForVersion(version: string): Promise<'stable' | 'rc'> {
   vi.resetModules()
   vi.doMock('../src/version.js', () => ({ CLI_VERSION: version }))
@@ -23,6 +21,6 @@ describe('defaultChannel', () => {
     expect(await channelForVersion('1.5.0')).toBe('stable')
   })
   it('tracks stable for a non-rc prerelease (e.g. the -dev repo build)', async () => {
-    expect(await channelForVersion('1.0.0-dev')).toBe('stable')
+    expect(await channelForVersion('2.0.0-dev')).toBe('stable')
   })
 })

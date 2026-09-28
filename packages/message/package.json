@@ -1,6 +1,6 @@
 {
   "name": "@agentconnect.md/message",
-  "version": "1.0.0-dev",
+  "version": "2.0.0-dev",
   "description": "AgentConnect pure platform message normalization for daemon and relay ingress",
   "license": "Apache-2.0",
   "type": "module",

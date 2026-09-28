@@ -1,6 +1,6 @@
 {
   "name": "@agentconnect.md/cli",
-  "version": "1.0.0-dev",
+  "version": "2.0.0-dev",
   "description": "AgentConnect CLI — daemon version management, service install, restart/upgrade",
   "license": "Apache-2.0",
   "repository": {

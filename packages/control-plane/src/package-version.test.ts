@@ -8,7 +8,7 @@ describe('releaseTag', () => {
   })
 
   it('names no release for a checkout, whose manifest carries the dev version', () => {
-    expect(releaseTag('1.0.0-dev')).toBeUndefined()
+    expect(releaseTag('2.0.0-dev')).toBeUndefined()
     expect(releaseTag(undefined)).toBeUndefined()
     expect(releaseTag(readPackageVersion())).toBeUndefined()
   })

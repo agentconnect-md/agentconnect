@@ -50,7 +50,7 @@ test(
     for (const script of ['component-versions.sh', 'publish-daemon-if-changed.sh', 'runtime-sandbox-inputs.sh']) {
       copyFileSync(new URL(script, import.meta.url), join(repo, 'scripts', script))
     }
-    write('packages/daemon/package.json', '{"name":"release-test","version":"1.0.0-dev"}\n')
+    write('packages/daemon/package.json', '{"name":"release-test","version":"2.0.0-dev"}\n')
     write('docker/runtime-sandbox.Dockerfile', 'FROM scratch\n')
     write('pnpm-lock.yaml', 'lockfileVersion: 9.0\n')
     git('-c', 'init.templateDir=', 'init', '--quiet')

@@ -1,6 +1,6 @@
 {
   "name": "@agentconnect.md/memory-plugin-mem0",
-  "version": "1.0.0-dev",
+  "version": "2.0.0-dev",
   "description": "AgentConnect memory-plugin profile wrappers for Mem0 Cloud and OSS",
   "license": "Apache-2.0",
   "type": "module",

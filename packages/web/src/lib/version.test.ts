@@ -41,7 +41,7 @@ describe('isUpgradeAvailable', () => {
   })
 
   it('recognizes a dev prerelease as behind a published stable', () => {
-    // The in-repo daemon reports `1.0.0-dev`; a published `latest` is genuinely ahead.
-    expect(isUpgradeAvailable('1.0.0-dev', '1.2.3')).toBe(true)
+    // The stable release is newer than its corresponding dev build.
+    expect(isUpgradeAvailable('2.0.0-dev', '2.0.0')).toBe(true)
   })
 })
