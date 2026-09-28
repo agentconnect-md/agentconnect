@@ -191,6 +191,67 @@ describe('humanAuthPlugin identity warm trigger (api-key path)', () => {
   })
 })
 
+describe('humanAuthPlugin interactiveOnly routes', () => {
+  const fullKey: VerifyApiKey = async () => ({
+    userId: 'user-1',
+    orgId: 'org-1',
+    apiKeyId: 'key-1',
+    scopes: [],
+    permission: 'full',
+    selection: { allAgents: false, agentIds: [] }
+  })
+
+  async function appWithInteractiveRoute(internal: InternalInvocationAuth) {
+    const app = Fastify({ logger: false })
+    apps.push(app)
+    await app.register(humanAuthPlugin, {
+      DEFAULT_OWNER_ID: 'dev-owner',
+      verifyApiKey: fullKey,
+      internalInvocationAuth: internal
+    })
+    const reply = async (req: { principal?: unknown }) => ({ principal: req.principal })
+    app.post('/api/v1/interactive', { preHandler: app.humanAuth, config: { interactiveOnly: true } }, reply)
+    app.post('/api/v1/probe', { preHandler: app.humanAuth }, reply)
+    await app.ready()
+    return app
+  }
+
+  it('refuses a full API key with 403 but admits it on an unmarked route', async () => {
+    const app = await appWithInteractiveRoute(new InternalInvocationAuth())
+    const headers = { authorization: 'Bearer k3y' }
+
+    const refused = await app.inject({ method: 'POST', url: '/api/v1/interactive', headers })
+    expect(refused.statusCode).toBe(403)
+    expect(refused.json()).toMatchObject({ message: 'interactive sign-in required' })
+    expect((await app.inject({ method: 'POST', url: '/api/v1/probe', headers })).statusCode).toBe(200)
+  })
+
+  it('refuses a delegated invocation', async () => {
+    const internal = new InternalInvocationAuth()
+    const app = await appWithInteractiveRoute(internal)
+
+    const response = await internal.run(CONTEXT, async () => {
+      const nonce = internal.issue('POST', '/api/v1/interactive')!
+      return app.inject({
+        method: 'POST',
+        url: '/api/v1/interactive',
+        headers: { [INTERNAL_INVOCATION_AUTH_HEADER]: nonce }
+      })
+    })
+
+    expect(response.statusCode).toBe(403)
+  })
+
+  it('admits a signed-in principal', async () => {
+    const app = await appWithInteractiveRoute(new InternalInvocationAuth())
+
+    const response = await app.inject({ method: 'POST', url: '/api/v1/interactive' })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ principal: { userId: 'dev-owner' } })
+  })
+})
+
 describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
   // A loopback OIDC issuer: discovery + JWKS, and a signer for bearers — the same
   // shape the OIDC integration tests use, without any database behind it.

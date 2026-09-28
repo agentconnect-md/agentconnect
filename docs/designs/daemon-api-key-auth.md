@@ -208,6 +208,13 @@ organization-bound keys; `PATCH /me/keys/:id` edits one in place and
 - A key acts as its bound user in its bound organization.
 - The default expiry is 90 days; callers may request a non-expiring key.
 - A request authenticated by a personal key cannot mint another personal key.
+- A request authenticated by a personal key cannot create or delete an
+  organization, and cannot list, edit, regenerate, or revoke personal keys
+  either. These routes, and OAuth consent and grant management, set
+  `interactiveOnly` in their Fastify route config. `humanAuth` refuses any API
+  key, OAuth access token, or delegated invocation on them with 403
+  `interactive sign-in required`, and the OpenAPI document leaves them out. A
+  browser sign-in, or the no-auth local mode, is unaffected.
 - Human authentication resolves the key to `userId`, `orgId`, and scopes, then
   normal authorization applies.
 - A personal key cannot authenticate the daemon WebSocket.

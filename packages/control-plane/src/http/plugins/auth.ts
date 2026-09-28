@@ -176,7 +176,13 @@ declare module 'fastify' {
   interface FastifyContextConfig {
     /** What this route admits beyond its method: `read` for a non-read route that gates writes itself (the MCP endpoint), or the agent-level permission it serves. */
     permission?: RoutePermission
+    /** Only an interactive sign-in may call this route: API keys, OAuth tokens and delegated invocations get 403, and the route is left out of the OpenAPI document. */
+    interactiveOnly?: boolean
   }
+}
+
+function interactiveSignInRequired(reply: FastifyReply): FastifyReply {
+  return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'interactive sign-in required' })
 }
 
 function unauthorized(reply: FastifyReply, message: string): FastifyReply {
@@ -512,6 +518,8 @@ function withApiKeyAuth(
           : `this key is limited to ${resolved.permission}`
       return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message })
     }
+    // A derived credential must not manage credentials, grants or tenants; only a signed-in person may.
+    if (req.routeOptions.config.interactiveOnly) return interactiveSignInRequired(reply)
     // A declaring route with an `:agentId` param also fences the key's selection; an agent outside it reads as absent.
     const agentId = (req.params as { agentId?: string } | undefined)?.agentId
     if (isAgentLevelPermission(resolved.permission) && agentId && !selectionCovers(resolved.selection, agentId)) {
@@ -542,7 +550,10 @@ function withInternalInvocationAuth(
 ): preHandlerHookHandler {
   const delegate = base as (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>
   return async (req: FastifyRequest, reply: FastifyReply) => {
-    if (internal.authorizeInjectedRequest(req)) return
+    if (internal.authorizeInjectedRequest(req)) {
+      if (req.routeOptions.config.interactiveOnly) return interactiveSignInRequired(reply)
+      return
+    }
     return delegate(req, reply)
   }
 }

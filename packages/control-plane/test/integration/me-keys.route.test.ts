@@ -211,6 +211,27 @@ describe('a minted key is a live REST credential', () => {
     }
   })
 
+  it('cannot list or revoke keys', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const minted = (await mint(app, {})).json() as Minted
+      const other = (await mint(app, {})).json() as Minted
+      const list = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(minted.apiKey) })
+      expect(list.statusCode).toBe(403)
+      expect((list.json() as { message: string }).message).toBe('interactive sign-in required')
+
+      const revoke = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/me/keys/${other.apiKeyId}`,
+        headers: bearer(minted.apiKey)
+      })
+      expect(revoke.statusCode).toBe(403)
+      expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: other.apiKeyId } })).revokedAt).toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
   it('rejects a malformed bearer key (401)', async () => {
     const { app, close } = buildHttpApp(prisma)
     try {
@@ -369,7 +390,7 @@ describe('POST /me/keys — permission and agent selection', () => {
       })
       expect(agents.statusCode).toBe(200)
       const own = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(read.apiKey) })
-      expect(own.statusCode).toBe(200)
+      expect(own.statusCode).toBe(403)
 
       const mintWithKey = await app.inject({
         method: 'POST',
@@ -503,7 +524,7 @@ describe('PATCH /me/keys/:id — edit in place', () => {
       const after = await prisma.apiKey.findUniqueOrThrow({ where: { id: minted.apiKeyId } })
       expect(after.hash).toBe(before.hash)
       expect(after.displayTail).toBe(before.displayTail)
-      const me = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(minted.apiKey) })
+      const me = await app.inject({ method: 'GET', url: '/api/v1/me', headers: bearer(minted.apiKey) })
       expect(me.statusCode).toBe(200)
 
       expect((await patch(app, minted.apiKeyId, {})).statusCode).toBe(400)
@@ -547,14 +568,14 @@ describe('PATCH /me/keys/:id — edit in place', () => {
       const all = (await patch(app, minted.apiKeyId, { agents: 'all' })).json() as KeyRow
       expect(all).toMatchObject({ allAgents: true, agentIds: [] })
       // The key now reaches the chat surface and nothing else, with the same plaintext.
-      const me = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(minted.apiKey) })
+      const me = await app.inject({ method: 'GET', url: '/api/v1/me', headers: bearer(minted.apiKey) })
       expect(me.statusCode).toBe(403)
       // Leaving agent:chat clears the selection; a selection on `read` is refused outright.
       expect((await patch(app, minted.apiKeyId, { permission: 'read', agents: 'all' })).statusCode).toBe(400)
       const toRead = (await patch(app, minted.apiKeyId, { permission: 'read' })).json() as KeyRow
       expect(toRead).toMatchObject({ permission: 'read', allAgents: false, agentIds: [] })
       expect((await patch(app, minted.apiKeyId, { agents: [AGENT] })).statusCode).toBe(400)
-      const asRead = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(minted.apiKey) })
+      const asRead = await app.inject({ method: 'GET', url: '/api/v1/me', headers: bearer(minted.apiKey) })
       expect(asRead.statusCode).toBe(200)
     } finally {
       await close()
@@ -643,9 +664,9 @@ describe('POST /me/keys/:id/regenerate — new secret, same key', () => {
       expect(await prisma.apiKey.count({ where: { userId: DEFAULT_OWNER_ID } })).toBe(1) // same row, no new one
 
       // The old plaintext is dead; the new one is the same credential (agent:chat, so refused on /me/keys — but authenticated).
-      const old = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(minted.apiKey) })
+      const old = await app.inject({ method: 'GET', url: '/api/v1/me', headers: bearer(minted.apiKey) })
       expect(old.statusCode).toBe(401)
-      const fresh = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(regenerated.apiKey) })
+      const fresh = await app.inject({ method: 'GET', url: '/api/v1/me', headers: bearer(regenerated.apiKey) })
       expect(fresh.statusCode).toBe(403)
       await vi.waitFor(async () => {
         const rows = await prisma.auditEvent.findMany({
@@ -669,7 +690,7 @@ describe('POST /me/keys/:id/regenerate — new secret, same key', () => {
         headers: bearer(minted.apiKey)
       })
       expect(byKey.statusCode).toBe(403)
-      const still = await app.inject({ method: 'GET', url: '/api/v1/me/keys', headers: bearer(other.apiKey) })
+      const still = await app.inject({ method: 'GET', url: '/api/v1/me', headers: bearer(other.apiKey) })
       expect(still.statusCode).toBe(200)
 
       expect((await app.inject({ method: 'POST', url: `/api/v1/me/keys/${randomUUID()}/regenerate` })).statusCode).toBe(
