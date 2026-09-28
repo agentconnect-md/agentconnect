@@ -10,6 +10,7 @@ import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { ApiKeyFormModal, MY_KEYS, type ApiKeyOwner } from '@/components/console/ApiKeysCard'
 import { MOCK_MODE, agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
+import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
 import { agentApiRelayUrl, agentChatUrls, aiSdkProxySnippet, API_PROTOCOLS, apiProtocolLabel } from '@/lib/agent-api'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
@@ -160,6 +161,8 @@ function ApiRow({
     onChanged()
   }
   const padX = mobile ? 16 : 14
+  // Agent detail mounts a mobile and a desktop card; only the visible one owns the strip, so its dialog portals once.
+  const ownsStrip = useIsMobile() === mobile
   return (
     <>
       <div
@@ -181,7 +184,7 @@ function ApiRow({
           {t('quickstart')}
         </Button>
       </div>
-      {decisions && (saved || decisions.bindingDrafts[bindingKey]) && (
+      {decisions && ownsStrip && (saved || decisions.bindingDrafts[bindingKey]) && (
         <DecisionBindingStrip
           bindingKey={bindingKey}
           conversation={null}

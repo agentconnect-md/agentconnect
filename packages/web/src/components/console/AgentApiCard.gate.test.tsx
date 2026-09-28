@@ -41,18 +41,23 @@ afterEach(async () => {
   onChanged.mockClear()
 })
 
-async function render(gate: unknown, agent: { id: string; name: string; canEdit: boolean } = AGENT): Promise<void> {
+async function render(
+  gate: unknown,
+  agent: { id: string; name: string; canEdit: boolean } = AGENT,
+  layouts: boolean[] = [false]
+): Promise<void> {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
-  const node: ReactNode = (
+  const node: ReactNode = layouts.map((mobile) => (
     <AgentApiCard
+      key={String(mobile)}
       agent={agent as never}
       entries={[{ protocol: 'ai-sdk-ui', createdBy: null, createdAt: '2026-09-01T00:00:00.000Z', gate } as never]}
-      mobile={false}
+      mobile={mobile}
       onChanged={onChanged}
     />
-  )
+  ))
   await act(async () => {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
@@ -102,6 +107,12 @@ describe('API row Decision gate', () => {
     expect(document.body.textContent).toContain('Support category')
     await click(button((b) => b.getAttribute('aria-label') === 'Stop using By decision'))
     expect(mocks.setAgentApiGate).toHaveBeenCalledWith('agent-1', 'ai-sdk-ui', null)
+  })
+
+  it('opens one rules dialog when both layouts are mounted, as agent detail does', async () => {
+    await render(null, AGENT, [true, false])
+    await click(button((b) => b.getAttribute('aria-label') === 'Add decision'))
+    expect(document.body.textContent?.split('answers a call over this API').length).toBe(2)
   })
 
   it("opens the saved gate's Recent evaluations for an editor only", async () => {
