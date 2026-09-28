@@ -7,9 +7,29 @@ export const API_PROTOCOLS: readonly {
   label: string
   docsUrl: string
   available: boolean
+  descriptionKey: 'aiSdkUiDescription' | 'agUiDescription' | 'acp2Description'
 }[] = [
-  { id: 'ai-sdk-ui', label: 'AI SDK UI', docsUrl: 'https://ai-sdk.dev/docs/ai-sdk-ui', available: true },
-  { id: 'acp-2', label: 'ACP 2', docsUrl: 'https://agentclientprotocol.com', available: false }
+  {
+    id: 'ai-sdk-ui',
+    label: 'AI SDK UI',
+    docsUrl: 'https://ai-sdk.dev/docs/ai-sdk-ui',
+    available: true,
+    descriptionKey: 'aiSdkUiDescription'
+  },
+  {
+    id: 'ag-ui',
+    label: 'AG-UI',
+    docsUrl: 'https://docs.ag-ui.com',
+    available: true,
+    descriptionKey: 'agUiDescription'
+  },
+  {
+    id: 'acp-2',
+    label: 'ACP 2',
+    docsUrl: 'https://agentclientprotocol.com',
+    available: false,
+    descriptionKey: 'acp2Description'
+  }
 ]
 
 export const apiProtocolLabel = (id: string): string => API_PROTOCOLS.find((p) => p.id === id)?.label ?? id
@@ -22,10 +42,12 @@ export function agentApiRelayUrl(): string | undefined {
   )
 }
 
+const CHAT_PATH_PREFIX: Record<AgentApiProtocol, string> = { 'ai-sdk-ui': 'ai-sdk', 'ag-ui': 'ag-ui' }
+
 /** The relay route a turn is posted to with an API key, or null when the deployment names no relay. */
-export function agentChatUrl(agentId: string, relayUrl?: string): string | null {
+export function agentChatUrl(protocol: AgentApiProtocol, agentId: string, relayUrl?: string): string | null {
   const relay = relayUrl?.replace(/\/+$/, '')
-  return relay ? `${relay}/ai-sdk/agents/${encodeURIComponent(agentId)}/chat` : null
+  return relay ? `${relay}/${CHAT_PATH_PREFIX[protocol]}/agents/${encodeURIComponent(agentId)}/chat` : null
 }
 
 export type QuickstartTab = 'curl' | 'node' | 'browser'
@@ -37,8 +59,16 @@ export interface QuickstartFile {
   code: string
 }
 
-/** The Quickstart's examples: a raw request, Node over the AI SDK's transport, and a browser `useChat` behind a same-origin route that adds the key. */
-export function quickstartExamples(chatUrl: string): Record<QuickstartTab, QuickstartFile[]> {
+/** The Quickstart's examples for a protocol: a raw request, a Node client, and a browser page behind a same-origin route that adds the key. */
+export function quickstartExamples(
+  protocol: AgentApiProtocol,
+  chatUrl: string
+): Record<QuickstartTab, QuickstartFile[]> {
+  return protocol === 'ag-ui' ? agUiExamples(chatUrl) : aiSdkExamples(chatUrl)
+}
+
+/** AI SDK UI: Node over the AI SDK's transport, and a browser `useChat`. */
+function aiSdkExamples(chatUrl: string): Record<QuickstartTab, QuickstartFile[]> {
   const url = JSON.stringify(chatUrl)
   return {
     curl: [
@@ -107,6 +137,92 @@ export default function Chat() {
     >
       {messages.map((m) => (
         <p key={m.id}>{m.parts.map((p) => (p.type === "text" ? p.text : "")).join("")}</p>
+      ))}
+      <input name="text" />
+    </form>
+  );
+}`
+      }
+    ]
+  }
+}
+
+/** AG-UI: `RunAgentInput` over curl, and `HttpAgent` from Node and a browser page. */
+function agUiExamples(chatUrl: string): Record<QuickstartTab, QuickstartFile[]> {
+  const url = JSON.stringify(chatUrl)
+  return {
+    curl: [
+      {
+        file: 'chat.sh',
+        code: `curl -N ${chatUrl} \\
+  -H "Authorization: Bearer $AGENTCONNECT_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -H "Accept: text/event-stream" \\
+  -d '{"threadId":"chat-1","runId":"run-1","messages":[{"id":"1","role":"user","content":"Hello"}]}'`
+      }
+    ],
+    node: [
+      {
+        file: 'chat.ts',
+        code: `// npm i @ag-ui/client
+import { HttpAgent } from "@ag-ui/client";
+
+const agent = new HttpAgent({
+  url: ${url},
+  headers: { Authorization: \`Bearer \${process.env.AGENTCONNECT_API_KEY}\` },
+  threadId: "chat-1", // the conversation; send the same id again to continue it
+});
+agent.addMessage({ id: "1", role: "user", content: "Hello" });
+await agent.runAgent({}, {
+  onTextMessageContentEvent: ({ event }) => {
+    process.stdout.write(event.delta);
+  },
+});`
+      }
+    ],
+    browser: [
+      {
+        file: 'app/api/agent/route.ts',
+        code: `// The key stays on the server: this route adds it and forwards HttpAgent's request unchanged.
+export async function POST(req: Request) {
+  const upstream = await fetch(${url}, {
+    method: "POST",
+    headers: {
+      Authorization: \`Bearer \${process.env.AGENTCONNECT_API_KEY}\`,
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: await req.text(),
+    signal: req.signal,
+  });
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: { "Content-Type": upstream.headers.get("content-type") ?? "text/event-stream" },
+  });
+}`
+      },
+      {
+        file: 'app/page.tsx',
+        code: `// npm i @ag-ui/client
+"use client";
+import { useMemo, useState } from "react";
+import { HttpAgent, type Message } from "@ag-ui/client";
+
+export default function Chat() {
+  const agent = useMemo(() => new HttpAgent({ url: "/api/agent" }), []);
+  const [messages, setMessages] = useState<Message[]>([]);
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const input = e.currentTarget.elements.namedItem("text") as HTMLInputElement;
+        agent.addMessage({ id: crypto.randomUUID(), role: "user", content: input.value });
+        input.value = "";
+        void agent.runAgent({}, { onMessagesChanged: ({ messages }) => setMessages([...messages]) });
+      }}
+    >
+      {messages.map((m) => (
+        <p key={m.id}>{typeof m.content === "string" ? m.content : ""}</p>
       ))}
       <input name="text" />
     </form>

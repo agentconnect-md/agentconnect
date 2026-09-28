@@ -563,12 +563,16 @@ export default function AddIntegrationModal({
     fetchAgentHooks(agentId, orgId)
   )
   // API path: the protocol picked, and the ones this agent already has.
-  const [apiProtocol, setApiProtocol] = useState<AgentApiProtocol>('ai-sdk-ui')
+  const [apiPick, setApiPick] = useState<AgentApiProtocol | null>(null)
   const { data: apiEntries, mutate: mutateApiEntries } = useSWR(
     platform === 'api' ? consoleKeys.agentApi(activeOrg?.id, agent.id) : null,
     ([, orgId, , agentId]) => fetchAgentApiEntries(agentId, orgId)
   )
-  const apiAdded = new Set((apiEntries ?? []).map((e) => e.protocol))
+  const apiAdded = new Set<string>((apiEntries ?? []).map((e) => e.protocol))
+  // Until one is picked, the first available protocol the agent has not added yet is selected.
+  const apiOffered = API_PROTOCOLS.filter((p) => p.available).map((p) => p.id as AgentApiProtocol)
+  const apiProtocol =
+    apiPick && !apiAdded.has(apiPick) ? apiPick : (apiOffered.find((id) => !apiAdded.has(id)) ?? apiOffered[0]!)
   const watchedGhFamilies = useMemo(() => {
     const byRepo = new Map<string, Set<GhFamily>>()
     for (const h of agentHooksData ?? []) {
@@ -1731,7 +1735,7 @@ export default function AddIntegrationModal({
             <div className="fldlbl mb-2">{t('api.protocol')}</div>
             <div className="flex flex-col gap-2" role="radiogroup" aria-label={t('api.protocol')}>
               {API_PROTOCOLS.map((p) => {
-                const added = p.available && apiAdded.has(p.id as AgentApiProtocol)
+                const added = p.available && apiAdded.has(p.id)
                 const selectable = p.available && !added
                 const on = selectable && apiProtocol === p.id
                 return (
@@ -1741,7 +1745,7 @@ export default function AddIntegrationModal({
                     aria-checked={on}
                     aria-disabled={!selectable}
                     tabIndex={selectable ? 0 : -1}
-                    onClick={selectable ? () => setApiProtocol(p.id as AgentApiProtocol) : undefined}
+                    onClick={selectable ? () => setApiPick(p.id as AgentApiProtocol) : undefined}
                     className={`flex items-start gap-[11px] rounded-md border px-[13px] py-[11px] ${
                       on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
                     } ${selectable ? 'cursor-pointer' : 'cursor-default opacity-55'}`}
@@ -1762,7 +1766,7 @@ export default function AddIntegrationModal({
                         )}
                       </div>
                       <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-                        {p.id === 'ai-sdk-ui' ? t('api.aiSdkUiDescription') : t('api.acp2Description')}
+                        {t(`api.${p.descriptionKey}`)}
                       </div>
                     </div>
                     <a

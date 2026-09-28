@@ -301,8 +301,8 @@ function QuickstartDialog({
     }))
   ]
 
-  const chatUrl = agentChatUrl(agent.id, agentApiRelayUrl() ?? (MOCK_MODE ? MOCK_RELAY_URL : undefined))
-  const examples = chatUrl ? quickstartExamples(chatUrl) : null
+  const chatUrl = agentChatUrl(protocol, agent.id, agentApiRelayUrl() ?? (MOCK_MODE ? MOCK_RELAY_URL : undefined))
+  const examples = chatUrl ? quickstartExamples(protocol, chatUrl) : null
   const docsUrl = API_PROTOCOLS.find((p) => p.id === protocol)?.docsUrl
   const copy = async (what: string, text: string) => {
     try {

@@ -1925,6 +1925,7 @@
       "api": {
         "protocol": "协议",
         "aiSdkUiDescription": "通过 AI SDK UI 消息流对话，配合 useChat hook 使用。",
+        "agUiDescription": "通过 AG-UI 事件流对话，配合 HttpAgent 或 CopilotKit 使用。",
         "acp2Description": "Agent Client Protocol v2，面向编辑器和 Agent 客户端。",
         "soon": "即将推出",
         "added": "已添加",

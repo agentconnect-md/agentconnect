@@ -1925,6 +1925,7 @@
       "api": {
         "protocol": "Protocol",
         "aiSdkUiDescription": "Chat over the AI SDK UI message stream, for the useChat hook.",
+        "agUiDescription": "Chat over the AG-UI event stream, for HttpAgent and CopilotKit.",
         "acp2Description": "Agent Client Protocol v2, for editors and agent clients.",
         "soon": "Soon",
         "added": "Added",

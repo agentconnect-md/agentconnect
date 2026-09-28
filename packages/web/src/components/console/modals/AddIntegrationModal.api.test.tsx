@@ -92,6 +92,8 @@ describe('AddIntegrationModal, API', () => {
     const workflow = document.querySelector('section[aria-label="Workflow"]')
     expect(workflow?.textContent).toContain('API')
     expect(protocol('AI SDK UI').getAttribute('aria-checked')).toBe('true')
+    expect(protocol('AG-UI').getAttribute('aria-checked')).toBe('false')
+    expect(protocol('AG-UI').getAttribute('aria-disabled')).toBe('false')
     expect(protocol('ACP 2').getAttribute('aria-disabled')).toBe('true')
     await act(async () => {
       addButton().click()
@@ -100,11 +102,40 @@ describe('AddIntegrationModal, API', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('marks a protocol the agent already has and adds nothing', async () => {
+  it('adds AG-UI when picked', async () => {
+    await render()
+    await act(async () => {
+      ;(protocol('AG-UI') as HTMLElement).click()
+    })
+    expect(protocol('AG-UI').getAttribute('aria-checked')).toBe('true')
+    await act(async () => {
+      addButton().click()
+    })
+    expect(mocks.addAgentApi).toHaveBeenCalledWith('agent-a', 'ag-ui')
+  })
+
+  it('marks a protocol the agent already has and selects the next one', async () => {
     mocks.entries = [{ protocol: 'ai-sdk-ui', createdBy: null, createdAt: '2026-09-01T00:00:00.000Z' }]
     await render()
     expect(protocol('AI SDK UI').textContent).toContain('Added')
     expect(protocol('AI SDK UI').getAttribute('aria-disabled')).toBe('true')
+    expect(protocol('AG-UI').getAttribute('aria-checked')).toBe('true')
+    await act(async () => {
+      addButton().click()
+    })
+    expect(mocks.addAgentApi).toHaveBeenCalledWith('agent-a', 'ag-ui')
+  })
+
+  it('adds nothing once the agent has every available protocol', async () => {
+    mocks.entries = ['ai-sdk-ui', 'ag-ui'].map((p) => ({
+      protocol: p,
+      createdBy: null,
+      createdAt: '2026-09-01T00:00:00.000Z'
+    }))
+    await render()
+    expect(protocol('AI SDK UI').textContent).toContain('Added')
+    expect(protocol('AG-UI').textContent).toContain('Added')
+    expect(protocol('AG-UI').getAttribute('aria-disabled')).toBe('true')
     await act(async () => {
       addButton().click()
     })

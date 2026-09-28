@@ -89,7 +89,7 @@ const settle = () =>
     await new Promise((r) => setTimeout(r, 0))
   })
 
-async function render(): Promise<void> {
+async function render(protocol: 'ai-sdk-ui' | 'ag-ui' = 'ai-sdk-ui'): Promise<void> {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -98,7 +98,7 @@ async function render(): Promise<void> {
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
         <AgentApiCard
           agent={AGENT}
-          entries={[{ protocol: 'ai-sdk-ui', createdBy: null, createdAt: '2026-09-01T00:00:00.000Z' }]}
+          entries={[{ protocol, createdBy: null, createdAt: '2026-09-01T00:00:00.000Z' }]}
           mobile={false}
           onChanged={onChanged}
         />
@@ -146,6 +146,22 @@ describe('AgentApiCard', () => {
     expect(web).toContain('app/api/chat/route.ts')
     expect(web).toContain('app/page.tsx')
     expect(web).toContain('process.env.AGENTCONNECT_API_KEY')
+  })
+
+  it('shows an AG-UI row’s own endpoint and HttpAgent examples, with nothing from the AI SDK', async () => {
+    await render('ag-ui')
+    expect(host!.textContent).toContain('AG-UI')
+    await click('Quickstart')
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('https://relay.example.test/ag-ui/agents/agent-1/chat')
+    expect(text).not.toContain('/ai-sdk/')
+    await click('Node')
+    expect(document.body.textContent).toContain('HttpAgent')
+    await click('Browser')
+    const web = document.body.textContent ?? ''
+    expect(web).toContain('app/api/agent/route.ts')
+    expect(web).not.toContain('useChat')
+    expect(web).not.toContain('AI SDK')
   })
 
   it('lists only live Agent chat keys that reach this agent, the caller’s and each service account’s', async () => {
