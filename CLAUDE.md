@@ -155,7 +155,8 @@ For work split across PRs, each PR states which acceptance items it covers and
 what remains. Keep the issue's acceptance checklist and required PR references
 current; a partial implementation must not be presented as the complete fix.
 
-When watching releases, the agent owns the release follow-up:
+When watching releases, use the
+[`agentconnect-release`](.claude/skills/agentconnect-release/SKILL.md) skill:
 
 1. Handle published, non-draft, non-prerelease releases. Verify the release's exact
    tag/commit and wait for all required artifact and image publication jobs to

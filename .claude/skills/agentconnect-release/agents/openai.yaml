@@ -1,0 +1,3 @@
+interface:
+  display_name: 'AgentConnect Release'
+  short_description: 'Release summaries, publication checks, and issue follow-up'
