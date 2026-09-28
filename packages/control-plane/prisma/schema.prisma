@@ -661,6 +661,23 @@ model ApiKeyAgent {
   @@map("api_key_agent")
 }
 
+/// A chat API the agent accepts calls on (shared-bot-relay.md §10.4); without a row the relay refuses that API for the agent.
+enum AgentApiProtocol {
+  ai_sdk_ui @map("ai-sdk-ui")
+}
+
+model AgentApiEntry {
+  agentId         String           @db.Uuid
+  protocol        AgentApiProtocol
+  createdByUserId String?
+  createdAt       DateTime         @default(now()) @db.Timestamptz(6)
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, protocol])
+  @@map("agent_api_entry")
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Embedded OAuth 2.1 Authorization Server (docs/designs/agent-assistant.md §7)
 //   Lets MCP clients (claude.ai / Claude Code) do the browser login flow against
@@ -951,6 +968,7 @@ model Agent {
   webchatMcpDelegations WebchatMcpDelegation[]
   presetRecords         PresetAgent[]
   apiKeySelections      ApiKeyAgent[]
+  apiEntries            AgentApiEntry[]
 
   organizationEnvironmentAssignments OrganizationEnvironmentAssignment[]
   memoryFiles           AgentMemoryFile[]
@@ -3016,6 +3034,7 @@ enum AuditKind {
   api_key_update
   api_key_revoke
   mcp_tool_call
+  agent_api_change
 }
 
 model AuditEvent {

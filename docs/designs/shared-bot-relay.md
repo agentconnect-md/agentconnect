@@ -537,7 +537,8 @@ route, the UI message stream encoder, turn admission, the per-token verdict
 cache, and `expiresAt` on the token routes; then key permissions and agent
 selection, the token route's `agent:chat` declaration and claim stamping, the
 browser socket's claim check, and the personal key dialog's two new choices.
-The rest is proposed.
+The per-agent API entry and its enforcement are implemented in the Control
+Plane and relay; its Console card is proposed. The rest is proposed.
 
 Chat frontends built on the AI SDK's `useChat`, such as a documentation site's
 Ask AI panel, speak the AI SDK UI message stream protocol: one HTTP POST per
@@ -555,6 +556,19 @@ conversations it opens are its user's. A
 non-signing-in member that an owner creates and whose keys an owner mints, uses
 the same permission and selection, and its sessions are org-visible by
 identity. Nothing on this path forks on which of the two holds the key.
+
+The agent must also accept the API. An agent's owner adds it under the agent's
+Integrations, one entry per protocol (`ai-sdk-ui` today), stored as an
+`agent_api_entry` row and managed through `GET /agents/:agentId/api` and
+`PUT`/`DELETE /agents/:agentId/api/:protocol`. A key's selection says which
+agents its holder may reach; the entry says the agent is reachable over this
+API at all, so a key selecting every agent still reaches only the agents that
+added it. The token route refuses an `agent:chat` mint for an agent without the
+entry with 403, and `rc/verify` returns the agent's entries as `apiProtocols`,
+which `/ai-sdk/chat` requires to name `ai-sdk-ui` for every token, a console
+mint included, answering 403 `api_disabled` otherwise. Removing the entry
+therefore stops a live token within its five-minute lifetime, like revoking
+the key.
 
 The proxy mints a token per conversation, not per turn:
 

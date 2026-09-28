@@ -36,6 +36,7 @@ const VERDICT: RcVerifyResult = {
   userId: 'user-1',
   user: 'Ada',
   participants: [{ agentId: AGENT, daemonId: DAEMON, primary: true }],
+  apiProtocols: ['ai-sdk-ui'],
   remoteMcp: {
     authorityId: '66666666-6666-4666-8666-666666666666',
     authorityGeneration: 1,
@@ -401,6 +402,19 @@ describe('POST /ai-sdk/chat/:conversationId', () => {
     const h = await start({ verdict: async () => ({ ok: false, reason: 'bad signature' }) })
     expect((await post(h, turnBody(), null)).status).toBe(401)
     expect((await post(h, turnBody())).status).toBe(401)
+    expect(h.daemon.sent).toHaveLength(0)
+  })
+
+  it('refuses with 403 an agent that has not added the AI SDK UI API', async () => {
+    const without = { ...VERDICT, apiProtocols: [] }
+    const h = await start({ verdict: async () => without })
+    const res = await post(h, turnBody())
+    expect(res.status).toBe(403)
+    expect(((await res.json()) as { reason?: string }).reason).toBe('api_disabled')
+    // A CP that names no protocols at all refuses the same way.
+    const { apiProtocols: _omitted, ...bare } = VERDICT
+    h.verify.mockImplementation(async () => bare)
+    expect((await post(h, turnBody(), tokenFor(T0 / 1000 + 300, 'b'))).status).toBe(403)
     expect(h.daemon.sent).toHaveLength(0)
   })
 

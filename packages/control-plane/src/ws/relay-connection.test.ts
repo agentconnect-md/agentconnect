@@ -284,6 +284,7 @@ function buildWebchatVerifier(
         participants: async () => over.participants ?? [],
         target: async () => (over.conversationRow === undefined ? { targetSessionId: null } : over.conversationRow)
       },
+      apiEntries: { listForAgent: async () => [] },
       sessions: { getUnscoped: async (id) => over.sessionById?.[id] ?? null },
       memberSets: { sharedStoreMemberIdsOf: async (setId) => over.sharedStoreMembersBySet?.[setId] ?? [] },
       orgs: { roleOf: async () => (over.role === undefined ? 'collaborator' : over.role) },

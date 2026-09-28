@@ -32,6 +32,7 @@ import { keyRoutes } from './routes/keys.js'
 import { agentRoutes } from './routes/agents.js'
 import { agentRepoRoutes } from './routes/agent-repos.js'
 import { webchatTokenRoutes } from './routes/webchat-token.js'
+import { agentApiRoutes } from './routes/agent-api.js'
 import { webchatMcpOperationRoutes } from './routes/webchat-mcp-operations.js'
 import { integrationRoutes } from './routes/integrations.js'
 import { botRoutes } from './routes/bots.js'
@@ -351,6 +352,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(agentRoutes(deps))
           await scope.register(agentRepoRoutes(deps))
           await scope.register(webchatTokenRoutes(deps))
+          await scope.register(agentApiRoutes(deps))
           await scope.register(webchatMcpOperationRoutes(deps))
           await scope.register(integrationRoutes(deps))
           // Org-scoped platform routes from the registry (§9 `installRoutes('org')`):

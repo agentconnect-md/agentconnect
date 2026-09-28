@@ -273,7 +273,9 @@ only in whose identity it carries.
   agent outside it.
 - The only v1 route that declares `agent:chat` is
   `POST /orgs/:orgId/agents/:agentId/webchat/token`. On a resume, the
-  conversation's bound agent must also be in the selection.
+  conversation's bound agent must also be in the selection. The agent must
+  also have added the chat API under its Integrations, or the route answers 403
+  ([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api)).
 - A token minted by a key inherits the key's limits. When the minting key's
   permission is not `full`, the token route stamps the permission and the agent
   into the token's claims, `rc/verify` returns them, and the relay enforces them

@@ -11,6 +11,7 @@
  */
 import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
+  AgentApiProtocol,
   AuthReq,
   ProviderKeyProvider,
   SetProviderKeyInput,
@@ -174,6 +175,7 @@ export type AuditKind =
   | 'api_key_update'
   | 'api_key_revoke'
   | 'mcp_tool_call'
+  | 'agent_api_change'
 
 // ───────────────────────────────────────────────────────────────────────────
 // DaemonRepo (C4) — fleet registry & fencing root (§3.3)
@@ -1703,6 +1705,27 @@ export interface WebchatResumeBinding {
   /** One slot per roster participant — null until that participant has a session (a partial roster is normal: a
    *  targeted turn or a refused delivery leaves peers unmaterialized); the conversation's own pointer on a pre-roster row. */
   currentSessionIds: Array<SessionId | null>
+}
+
+/** A chat API the agent accepts calls on, as its Integrations tab lists it (shared-bot-relay.md §10.4). */
+export interface AgentApiEntryRecord {
+  agentId: AgentId
+  protocol: AgentApiProtocol
+  createdByUserId: string | null
+  createdAt: Date
+}
+
+/** The chat APIs each agent accepts calls on; an absent row refuses that API. */
+export interface AgentApiEntryRepo {
+  listForAgent(agentId: AgentId): Promise<AgentApiEntryRecord[]>
+  /** Idempotent: an existing entry is returned unchanged, with `created: false`. */
+  enable(
+    agentId: AgentId,
+    protocol: AgentApiProtocol,
+    createdByUserId: string | null
+  ): Promise<{ entry: AgentApiEntryRecord; created: boolean }>
+  /** False when there was no such entry. */
+  disable(agentId: AgentId, protocol: AgentApiProtocol): Promise<boolean>
 }
 
 export interface WebchatConversationRepo {

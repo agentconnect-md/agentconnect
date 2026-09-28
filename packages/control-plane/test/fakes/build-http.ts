@@ -21,6 +21,7 @@ import {
   PgSessionRepo,
   PgSessionUsageRepo,
   PgWebchatConversationRepo,
+  PgAgentApiEntryRepo,
   PgWebchatMcpDelegationRepo,
   PgWebchatMcpAccessGrantRepo,
   PgWebchatMcpOperationRepo,
@@ -326,6 +327,7 @@ export function buildHttpApp(
   const agentRepo = new PgAgentRepo(prisma)
   const orgRepo = new PgOrgRepo(prisma)
   const webchatConversationRepo = new PgWebchatConversationRepo(prisma)
+  const agentApiEntryRepo = new PgAgentApiEntryRepo(prisma)
   const webchatMcpDelegationRepo = new PgWebchatMcpDelegationRepo(prisma)
   const webchatMcpAccessGrantRepo = new PgWebchatMcpAccessGrantRepo(prisma)
   const webchatMcpOperationRepo = new PgWebchatMcpOperationRepo(prisma)
@@ -527,6 +529,7 @@ export function buildHttpApp(
       session: sessionRepo,
       sessionUsage: sessionUsageRepo,
       webchatConversation: webchatConversationRepo,
+      agentApiEntry: agentApiEntryRepo,
       user: new PgUserRepo(prisma),
       org: orgRepo,
       waitlist: waitlistRepo,

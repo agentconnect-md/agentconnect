@@ -31,6 +31,8 @@ export interface WebchatVerificationDeps {
     ): Promise<Array<{ agentId: AgentId; role: 'primary' | 'member'; currentSessionId?: string | null }>>
     target(conversationId: string): Promise<{ targetSessionId: string | null } | null>
   }
+  /** The primary agent's enabled chat APIs, which the relay's chat API is confined to (shared-bot-relay.md §10.4). */
+  apiEntries: { listForAgent(agentId: AgentId): Promise<Array<{ protocol: string }>> }
   /** Session-targeted continuation re-checks (webchat-cross-integration-continuation.md §6.2). */
   sessions: {
     getUnscoped(id: SessionId): Promise<{
@@ -95,6 +97,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
     const conversation = await deps.conversations.target(claims.conversationId)
     if (!conversation) return { ok: false, reason: 'unknown conversation' }
     const targetSessionId = conversation.targetSessionId
+    const apiProtocols = (await deps.apiEntries.listForAgent(AgentId(claims.agentId))).map((e) => e.protocol)
 
     const verifiedBase = {
       ok: true,
@@ -106,7 +109,8 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       orgId: claims.orgId,
       conversationId: claims.conversationId,
       // The minting key's agent-level permission, so the relay confines the token to the agent chat API (§10.4).
-      ...(claims.permission ? { permission: claims.permission } : {})
+      ...(claims.permission ? { permission: claims.permission } : {}),
+      apiProtocols
     }
 
     if (targetSessionId !== null) {

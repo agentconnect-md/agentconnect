@@ -164,11 +164,11 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Mint a webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). A resume answers 409 once an agent’s next turn would reach a machine that does not hold its session. An API key whose permission is `agent:chat` may call this route for the agents in its selection; the token it mints carries that permission and is accepted by the relay’s agent chat API only.',
+            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). A resume answers 409 once an agent’s next turn would reach a machine that does not hold its session. An API key whose permission is `agent:chat` may call this route for the agents in its selection that have added the AI SDK UI API under Integrations (403 otherwise); the token it mints carries that permission and is accepted by the relay’s agent chat API only.',
           operationId: 'mintWebchatToken',
           params: Params,
           body: Body,
-          response: { 200: WebchatTokenDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: WebchatTokenDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -182,6 +182,16 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.params.agentId))
         if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        }
+        // An agent-level key's token reaches only the chat API, so an agent that has not added it answers now rather than at the relay.
+        const permission = req.apiKeyPermission
+        if (
+          isAgentLevelPermission(permission) &&
+          !(await deps.repos.agentApiEntry.listForAgent(agent.id)).some((e) => e.protocol === 'ai-sdk-ui')
+        ) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'this agent does not accept API calls' })
         }
         const userId = req.principal!.userId
         const conversationId = req.body.conversationId?.toLowerCase() ?? randomUUID()
@@ -202,7 +212,6 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           await deps.repos.webchatConversation.create(binding)
         }
         // A token inherits its minting key's limits: an agent-level permission rides the claims so the relay can confine it; a console or full-key mint carries none.
-        const permission = req.apiKeyPermission
         const { token, expiresAt } = await deps.webchatTokens.mint({
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),

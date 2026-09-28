@@ -109,6 +109,7 @@ export function chatRefusalStatus(reason: string | undefined): number {
 const STATUS_TEXT: Record<number, string> = {
   400: 'Bad Request',
   401: 'Unauthorized',
+  403: 'Forbidden',
   404: 'Not Found',
   409: 'Conflict',
   413: 'Payload Too Large',
@@ -273,6 +274,9 @@ export function registerAiSdkChatRoute(app: FastifyInstance, deps: ChatRouteDeps
           `chat: refused request 401 — ${verdict.reason ?? (verdict.ok ? 'incomplete verification' : 'unverified')}`
         )
         return refuse(reply, 401, 'invalid or expired token')
+      }
+      if (!verdict.apiProtocols?.includes('ai-sdk-ui')) {
+        return refuse(reply, 403, 'this agent does not accept API calls', 'api_disabled')
       }
       const conversationId = rawConversationId.toLowerCase()
       // The path names the conversation and the token proves authority over it; any other id reads as absent.

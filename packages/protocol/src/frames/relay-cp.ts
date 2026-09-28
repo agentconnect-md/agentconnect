@@ -169,6 +169,11 @@ export const RcWebchatParticipant = z.object({
 })
 export type RcWebchatParticipant = z.infer<typeof RcWebchatParticipant>
 
+// A chat API an agent accepts calls on once its owner adds it under Integrations (shared-bot-relay.md §10.4).
+export const AgentApiProtocol = z.enum(['ai-sdk-ui'])
+export type AgentApiProtocol = z.infer<typeof AgentApiProtocol>
+export const AGENT_API_PROTOCOLS = AgentApiProtocol.options
+
 export const RcVerifyResult = z.object({
   ok: z.boolean(),
   reason: z.string().optional(),
@@ -192,7 +197,9 @@ export const RcVerifyResult = z.object({
   targetSessionId: z.string().min(1).optional(),
   remoteMcp: WebchatRemoteMcpEntitlement.optional(),
   // The minting API key's agent-level permission (daemon-api-key-auth.md §6), `agent:chat` in v1: the relay's agent chat API accepts such a token and the browser socket refuses it. Absent for a console or full-key mint. A plain string, and this object is not strict, so a relay and a CP on either side of this field still agree.
-  permission: z.string().min(1).optional()
+  permission: z.string().min(1).optional(),
+  // The primary agent's enabled chat APIs; the relay's chat API refuses a protocol absent here. Plain strings, so a newer CP's protocol never fails an older relay's parse.
+  apiProtocols: z.array(z.string().min(1)).max(16).optional()
 })
 export type RcVerifyResult = z.infer<typeof RcVerifyResult>
 
