@@ -317,7 +317,7 @@ function DecisionEditor() {
             : undefined
     if (platform) return <PlatformMark platform={platform} fillPct={100} />
     const agent =
-      usage.kind === 'model_selection' || usage.kind === 'agent_tool'
+      usage.kind === 'model_selection' || usage.kind === 'agent_tool' || usage.kind === 'api_gate'
         ? agents.find((row) => row.id === usage.id)
         : undefined
     // A runtime mark renders nothing until the registry loads, so the card's own glyph stands in until then.

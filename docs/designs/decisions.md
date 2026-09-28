@@ -1444,7 +1444,7 @@ days. The CP proxies these reads without persisting their content.
 
 Decision detail shows its places of use and their recent evaluations in one card:
 a tab per place (conversation gates, Shared Bot Routing, repository routing, Agent
-model selection, and agent tools, which record none) after an **All** tab that merges
+model selection, chat API gates, and agent tools, which record none) after an **All** tab that merges
 every recorded place's latest page by time. Each place shows its integration's, bot's,
 code host's, or agent's mark; a place whose conversation the viewer cannot read is
 shown as hidden rather than failed, and a row whose bodies have expired says so.
@@ -1460,8 +1460,9 @@ chain's history and labels that scope; a retained detail shows which child steps
 were reached. Agent tool calls have no evaluation history here.
 
 A chat API gate keeps its own Agent-scoped history per protocol, read like a gate's
-and opened from the API row's rules modal; only editors of the Agent read it, since
-its rows are callers' messages
+and opened from the API row's rules modal or the Decision page, where its usage names
+the protocol; only editors of the Agent read it, since its rows are callers' messages, and
+the Decision page shows it to anyone else as hidden
 ([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api)).
 
 Open Recent evaluations from a gate binding or Shared Bot Routing. The routing list

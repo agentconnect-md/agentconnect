@@ -19,14 +19,16 @@ import { fetchAgentModelEvaluations, type CodeHostRoutingKey } from '@/lib/api'
 import { useDecisionsPrototype, type DecisionGateUsage } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
 import { answerText } from '@/lib/decisions/evaluations'
-import { codeHostRoutingEvaluations } from '@/lib/decisions/evaluation-source'
+import { apiGateEvaluations, codeHostRoutingEvaluations } from '@/lib/decisions/evaluation-source'
 import { ruleNumbers } from '@/lib/decisions/routing-draft'
 import { EvaluationRow } from './EvaluationParts'
 import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
 import { ModelSelectionEvaluationsDrawer } from './ModelSelectionEvaluations'
 import { DecisionRoutingEvaluationsDrawer } from './routing/DecisionRoutingEvaluationsDrawer'
 
-type RecordedUsage = DecisionUsage & { kind: 'gate' | 'shared_bot_routing' | 'code_host_routing' | 'model_selection' }
+type RecordedUsage = DecisionUsage & {
+  kind: 'gate' | 'shared_bot_routing' | 'code_host_routing' | 'model_selection' | 'api_gate'
+}
 type Kind = DecisionUsage['kind']
 
 interface Place {
@@ -65,16 +67,18 @@ const ICONS: Record<Kind, string> = {
   shared_bot_routing: 'git-branch',
   code_host_routing: 'git-pull-request',
   model_selection: 'cpu',
-  agent_tool: 'wrench'
+  agent_tool: 'wrench',
+  api_gate: 'code-xml'
 }
-const usageKey = (usage: DecisionUsage) => `${usage.kind}:${usage.id}`
+const usageKey = (usage: DecisionUsage) => `${usage.kind}:${usage.id}${usage.protocol ? `:${usage.protocol}` : ''}`
 
 function recorded(usage: DecisionUsage): usage is RecordedUsage {
   return (
     (usage.kind === 'gate' && !!usage.integrationId && !!usage.channelId) ||
     usage.kind === 'shared_bot_routing' ||
     (usage.kind === 'code_host_routing' && !!usage.provider && !!usage.repoId && !!usage.family) ||
-    usage.kind === 'model_selection'
+    usage.kind === 'model_selection' ||
+    (usage.kind === 'api_gate' && !!usage.protocol)
   )
 }
 
@@ -179,16 +183,18 @@ export function DecisionRecentEvaluations({
       }
     }
     const page =
-      source.kind === 'gate'
-        ? await api.listEvaluations(
-            { integrationId: source.integrationId!, channelId: source.channelId! },
-            { decisionId: root, limit: PAGE }
-          )
-        : await codeHostRoutingEvaluations(api, orgId, {
-            provider: source.provider!,
-            repoId: source.repoId!,
-            family: source.family!
-          } satisfies CodeHostRoutingKey).list({ decisionId: root, limit: PAGE })
+      source.kind === 'api_gate'
+        ? await apiGateEvaluations(api, orgId, source.id, source.protocol!).list({ decisionId: root, limit: PAGE })
+        : source.kind === 'gate'
+          ? await api.listEvaluations(
+              { integrationId: source.integrationId!, channelId: source.channelId! },
+              { decisionId: root, limit: PAGE }
+            )
+          : await codeHostRoutingEvaluations(api, orgId, {
+              provider: source.provider!,
+              repoId: source.repoId!,
+              family: source.family!
+            } satisfies CodeHostRoutingKey).list({ decisionId: root, limit: PAGE })
     return {
       items: page.items.map((item) => ({
         ...common(item),
@@ -209,7 +215,9 @@ export function DecisionRecentEvaluations({
             try {
               return [usageKey(source), await read(source)] as const
             } catch (error) {
-              return [usageKey(source), errorParts(error)?.status === 404 ? { hidden: true } : { error }] as const
+              // An API gate's calls are its agent's editors' alone, so a 403 reads like an unseen place.
+              const status = errorParts(error)?.status
+              return [usageKey(source), status === 404 || status === 403 ? { hidden: true } : { error }] as const
             }
           })
         )
@@ -458,6 +466,15 @@ export function DecisionRecentEvaluations({
             repoId: drawerSource.repoId!,
             family: drawerSource.family!
           })}
+          channelName={drawerSource.label}
+          decisionId={drawerDecisionId}
+          initialSeq={opened?.seq}
+          onClose={() => setOpened(null)}
+        />
+      )}
+      {drawerSource?.kind === 'api_gate' && (
+        <DecisionEvaluationsDrawer
+          source={apiGateEvaluations(api, orgId, drawerSource.id, drawerSource.protocol!)}
           channelName={drawerSource.label}
           decisionId={drawerDecisionId}
           initialSeq={opened?.seq}

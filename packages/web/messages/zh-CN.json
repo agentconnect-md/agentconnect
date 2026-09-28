@@ -4474,7 +4474,8 @@
         "shared_bot_routing": "共享 Bot 路由",
         "code_host_routing": "仓库路由",
         "agent_tool": "Agent 工具",
-        "model_selection": "模型选择"
+        "model_selection": "模型选择",
+        "api_gate": "对话 API 门控"
       },
       "needsReview": "需要复核",
       "ok": "正常",

@@ -177,6 +177,41 @@ describe('DecisionRecentEvaluations', () => {
     expect(container!.querySelector('[role="alert"]')).toBeNull()
   })
 
+  // An agent's chat API gate records its calls; the Decision page reads them like a gate's (shared-bot-relay.md §10.4).
+  it("reads an API gate's evaluations under its agent, and a 403 as a place the viewer cannot see", async () => {
+    const apiGate: DecisionUsage = {
+      kind: 'api_gate',
+      id: 'agent-1',
+      label: 'docs-bot',
+      rootDecisionId: 'support-category',
+      protocol: 'ai-sdk-ui'
+    }
+    const { gate } = await mount(() => [apiGate])
+    expect(gate).toHaveBeenCalledWith(
+      { integrationId: 'api:agent-1:ai-sdk-ui', channelId: 'api:agent-1:ai-sdk-ui' },
+      expect.objectContaining({ decisionId: 'support-category' })
+    )
+    expect(tabs().some((tab) => tab.textContent?.includes('docs-bot'))).toBe(true)
+    expect(rows().length).toBeGreaterThan(0)
+    await act(async () => root?.unmount())
+    root = undefined
+    container?.remove()
+
+    await mount(() => [apiGate], {
+      before: (api) =>
+        vi
+          .spyOn(api, 'listEvaluations')
+          .mockRejectedValue(new decisionMock.DecisionMockApiError(403, { error: 'forbidden', message: 'forbidden' }))
+    })
+    expect(container!.querySelector('[role="alert"]')).toBeNull()
+    await act(async () =>
+      tabs()
+        .find((tab) => tab.textContent?.includes('docs-bot'))!
+        .click()
+    )
+    expect(container!.textContent).toContain("You cannot see this place's evaluations.")
+  })
+
   it('says a Decision is not used anywhere', async () => {
     await mount(() => [])
     expect(container!.textContent).toContain('Not used anywhere yet.')

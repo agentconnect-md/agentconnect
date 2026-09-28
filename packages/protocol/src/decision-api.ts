@@ -1,3 +1,4 @@
+import type { AgentApiProtocol } from './agent-api.js'
 import type {
   ChannelDecisionBinding,
   ChannelDecisionGate,
@@ -47,7 +48,7 @@ export interface DecisionProviderOption {
 }
 
 export interface DecisionUsage {
-  kind: 'gate' | 'shared_bot_routing' | 'code_host_routing' | 'agent_tool' | 'model_selection'
+  kind: 'gate' | 'shared_bot_routing' | 'code_host_routing' | 'agent_tool' | 'model_selection' | 'api_gate'
   id: string
   label: string
   rootDecisionId?: string
@@ -56,6 +57,8 @@ export interface DecisionUsage {
   provider?: CodeHostRoutingProvider
   repoId?: string
   family?: CodeHostRoutingFamily
+  // kind=api_gate: the agent's chat API the gate sits on.
+  protocol?: AgentApiProtocol
 }
 
 export interface DecisionDetail {

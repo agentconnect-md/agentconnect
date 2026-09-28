@@ -191,7 +191,9 @@ describe('agent chat API Decision gate', () => {
     const detail = (await a.app.inject({ method: 'GET', url: `${ORG}/decisions/${decisionId}` })).json() as {
       usages: Array<{ kind: string; id: string }>
     }
-    expect(detail.usages).toContainEqual(expect.objectContaining({ kind: 'api_gate', id: AGENT }))
+    expect(detail.usages).toContainEqual(
+      expect.objectContaining({ kind: 'api_gate', id: AGENT, protocol: 'ai-sdk-ui' })
+    )
     expect((await a.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${decisionId}` })).statusCode).toBe(409)
 
     expect((await remove(a)).statusCode).toBe(204)

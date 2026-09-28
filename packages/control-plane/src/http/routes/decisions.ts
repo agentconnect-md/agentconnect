@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
+  AgentApiProtocol,
   CodeHostRoutingFamily,
   CodeHostRoutingProvider,
   DECISION_PREVIEW_V1_FEATURE,
@@ -53,7 +54,9 @@ const UsageDto = z.object({
   // kind=code_host_routing: the routed repository scope.
   provider: CodeHostRoutingProvider.optional(),
   repoId: z.string().optional(),
-  family: CodeHostRoutingFamily.optional()
+  family: CodeHostRoutingFamily.optional(),
+  // kind=api_gate: the agent's chat API the gate sits on.
+  protocol: AgentApiProtocol.optional()
 })
 const DecisionInUseDto = ErrorDto.extend({ usages: z.array(UsageDto), hiddenUsageCount: z.number().int() })
 const ReadinessDto = z.object({
@@ -193,14 +196,17 @@ export function decisionRoutes(deps: HttpDeps) {
           id: agent.id,
           label: agent.displayName ?? agent.name
         })),
-        ...Object.values(agent.apiGates ?? {}).flatMap((gate) =>
-          decisionChainIds(gate).map((decisionId) => ({
-            decisionId,
-            kind: 'api_gate' as const,
-            id: agent.id,
-            label: agent.displayName ?? agent.name,
-            rootDecisionId: gate.decisionId
-          }))
+        ...Object.entries(agent.apiGates ?? {}).flatMap(([protocol, gate]) =>
+          gate
+            ? decisionChainIds(gate).map((decisionId) => ({
+                decisionId,
+                kind: 'api_gate' as const,
+                id: agent.id,
+                label: agent.displayName ?? agent.name,
+                rootDecisionId: gate.decisionId,
+                protocol: protocol as AgentApiProtocol
+              }))
+            : []
         )
       ])
     const agentUsages = async (req: FastifyRequest) =>

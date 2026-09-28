@@ -4474,7 +4474,8 @@
         "shared_bot_routing": "shared bot routing",
         "code_host_routing": "repository routing",
         "agent_tool": "agent tool",
-        "model_selection": "model selection"
+        "model_selection": "model selection",
+        "api_gate": "chat API gate"
       },
       "needsReview": "needs review",
       "ok": "ok",
