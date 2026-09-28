@@ -168,6 +168,7 @@ export function DecisionBindingStrip({
   saved,
   savedName,
   status,
+  surface = 'channel',
   onSave
 }: {
   /** The gate's identity: organization, owning bot, and conversation (see `gateKey`). */
@@ -186,6 +187,8 @@ export function DecisionBindingStrip({
   savedName?: string | null
   /** The saved gate's status; null without a saved gate. */
   status: GateStatus | null
+  /** What the gate judges: a conversation's messages, or the text of each call over an agent's chat API. */
+  surface?: 'channel' | 'api'
   /** Persist the gate; a rejection keeps the draft for Retry. */
   onSave: (gate: ChannelDecisionGate) => Promise<void>
 }) {
@@ -392,7 +395,7 @@ export function DecisionBindingStrip({
               </span>
               {agentName && (
                 <span className="mt-[2px] block font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  {t.rich('binding.rulesSubtitle', {
+                  {t.rich(surface === 'api' ? 'binding.rulesSubtitleApi' : 'binding.rulesSubtitle', {
                     agent: agentName,
                     name: (chunks) => <span className="mono text-(--text-secondary)">{chunks}</span>
                   })}
@@ -536,8 +539,14 @@ export function DecisionBindingStrip({
 
             {decision && helpOpen && (
               <div className="flex flex-col gap-1">
-                <Note icon="messages-square">{t('binding.helpMentions')}</Note>
-                <Note icon="clock">{t('binding.helpHistory')}</Note>
+                {surface === 'api' ? (
+                  <Note icon="message-square-text">{t('binding.helpApiText')}</Note>
+                ) : (
+                  <>
+                    <Note icon="messages-square">{t('binding.helpMentions')}</Note>
+                    <Note icon="clock">{t('binding.helpHistory')}</Note>
+                  </>
+                )}
                 <Note icon="shield-alert">{t('binding.helpUnavailable')}</Note>
               </div>
             )}

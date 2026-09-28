@@ -12,12 +12,17 @@ import { MOCK_MODE, agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { agentApiRelayUrl, agentChatUrls, aiSdkProxySnippet, API_PROTOCOLS, apiProtocolLabel } from '@/lib/agent-api'
+import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
+import type { SavedGate } from '@/lib/decisions/binding'
+import { DecisionBindingStrip, DecisionGateEntry } from '@/components/console/decisions/DecisionBindingStrip'
+import type { ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 import {
   cpRestBase,
   fetchMyApiKeys,
   fetchServiceAccounts,
   removeAgentApi,
   serviceAccountKeysApi,
+  setAgentApiGate,
   type AgentApiEntryDto,
   type AgentApiProtocol,
   type ServiceAccountDto,
@@ -71,17 +76,14 @@ export function AgentApiCard({
     </button>
   )
   const rows = entries.map((e) => (
-    <div
+    <ApiRow
       key={e.protocol}
-      className={`flex items-center gap-[10px] border-t border-(--border-subtle) py-[9px] ${mobile ? 'px-4' : 'px-[14px]'}`}
-    >
-      <Icon name="code-xml" size={14} color="var(--text-tertiary)" className="flex-none" />
-      <span className="mono min-w-0 flex-1 truncate text-[12px]">{apiProtocolLabel(e.protocol)}</span>
-      <Button variant="secondary" size="xs" onClick={() => setQuickstart(e.protocol)}>
-        <Icon name="code-xml" size={13} color="var(--text-tertiary)" />
-        {t('quickstart')}
-      </Button>
-    </div>
+      agent={agent}
+      entry={e}
+      mobile={mobile}
+      onQuickstart={() => setQuickstart(e.protocol)}
+      onChanged={onChanged}
+    />
   ))
   const dialogs = (
     <>
@@ -130,6 +132,69 @@ export function AgentApiCard({
       {rows}
       {dialogs}
     </div>
+  )
+}
+
+/** One protocol: its Decision gate (the same `+ Decision` and rules as a channel's By decision) and its Quickstart. */
+function ApiRow({
+  agent,
+  entry,
+  mobile,
+  onQuickstart,
+  onChanged
+}: {
+  agent: Agent
+  entry: AgentApiEntryDto
+  mobile: boolean
+  onQuickstart: () => void
+  onChanged: () => void
+}) {
+  const t = useTranslations('Integrations.api')
+  const decisions = useOptionalDecisionsPrototype()
+  const { activeOrg } = useOrgs()
+  const bindingKey = `api:${activeOrg?.id ?? ''}:${agent.id}:${entry.protocol}`
+  const saved: SavedGate | null = entry.gate ? (({ type: _type, ...gate }) => gate)(entry.gate) : null
+  const saveGate = async (gate: ChannelDecisionGate | null) => {
+    await setAgentApiGate(agent.id, entry.protocol, gate)
+    onChanged()
+  }
+  const padX = mobile ? 16 : 14
+  return (
+    <>
+      <div
+        className={`flex items-center gap-[10px] border-t border-(--border-subtle) py-[9px] ${mobile ? 'px-4' : 'px-[14px]'}`}
+      >
+        <Icon name="code-xml" size={14} color="var(--text-tertiary)" className="flex-none" />
+        <span className="mono min-w-0 flex-1 truncate text-[12px]">{apiProtocolLabel(entry.protocol)}</span>
+        {decisions && (
+          <DecisionGateEntry
+            bindingKey={bindingKey}
+            saved={saved}
+            canWrite={agent.canEdit}
+            offer
+            onStop={() => saveGate(null)}
+          />
+        )}
+        <Button variant="secondary" size="xs" onClick={onQuickstart}>
+          <Icon name="code-xml" size={13} color="var(--text-tertiary)" />
+          {t('quickstart')}
+        </Button>
+      </div>
+      {decisions && (saved || decisions.bindingDrafts[bindingKey]) && (
+        <DecisionBindingStrip
+          bindingKey={bindingKey}
+          conversation={null}
+          canWrite={agent.canEdit}
+          agentName={agentLabel(agent)}
+          channelName={apiProtocolLabel(entry.protocol)}
+          padX={padX}
+          saved={saved}
+          status={saved ? 'ready' : null}
+          surface="api"
+          onSave={(gate) => saveGate(gate)}
+        />
+      )}
+    </>
   )
 }
 

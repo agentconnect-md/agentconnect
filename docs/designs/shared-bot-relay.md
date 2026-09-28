@@ -666,7 +666,10 @@ relay's five-second acknowledgement, admits it. The daemon advertises
 `api-decision-gate-v1`, and the CP refuses to save a gate (409
 `DECISION_UNSUPPORTED_CONSUMER`) while a connected daemon serving the agent
 lacks it; an offline one takes the gate from its reconnect roster. Removing the
-API removes its gate, and a Decision a gate names cannot be deleted.
+API removes its gate, and a Decision a gate names cannot be deleted. In the
+Console, each API row carries the same Decision chip and rules modal as a
+channel's By decision; the modal's subtitle and help name what the API gate
+judges, the call's own message.
 
 Tool activity arrives as `data-tool` parts rather than AI SDK tool parts,
 because webchat carries a tool's title and status but not its name or

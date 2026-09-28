@@ -4319,6 +4319,8 @@ export interface AgentApiEntryDto {
   protocol: AgentApiProtocol
   createdBy: string | null
   createdAt: string
+  /** The Decision a turn over this API must pass; absent from a CP without gates. */
+  gate?: ChannelDecisionGate | null
 }
 
 const agentApiBase = (agentId: string, orgId?: string) => `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/api`
@@ -4333,6 +4335,15 @@ export async function addAgentApi(agentId: string, protocol: AgentApiProtocol): 
 
 export async function removeAgentApi(agentId: string, protocol: AgentApiProtocol): Promise<void> {
   await apiDelete<void>(`${agentApiBase(agentId)}/${protocol}`)
+}
+
+/** Gate turns over this API by a Decision, or `null` to admit every turn. */
+export async function setAgentApiGate(
+  agentId: string,
+  protocol: AgentApiProtocol,
+  gate: ChannelDecisionGate | null
+): Promise<AgentApiEntryDto> {
+  return apiPut<AgentApiEntryDto>(`${agentApiBase(agentId)}/${protocol}/gate`, { gate })
 }
 
 // The capability URL is sufficient by default. HMAC is an optional second
