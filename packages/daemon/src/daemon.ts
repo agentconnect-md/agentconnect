@@ -13639,21 +13639,16 @@ export class Daemon {
               await this.endTurnAcknowledgement(entry, ended)
               releaseDispatch()
             }
-            // A turn that genuinely COMPLETED is done — remove its row even during a shutdown
-            // drain (it must NOT replay). A cold turn explicitly aborted by shutdown is the
-            // exception: it never ran, so retain its admitted row for startup replay.
-            if (!(this.draining && entry.cancelledReason === 'shutdown')) await this.removeInbox(entry)
+            // A completed turn never replays, even in a shutdown drain; a cold turn that shutdown aborted keeps its row.
+            if (!this.retainsInboxRow(entry, false)) await this.removeInbox(entry)
             entry.resolve(sessionId)
           } else {
             await this.removeInbox(entry)
             entry.resolve(null)
           }
         } catch (err) {
-          // On shutdown (`this.draining`) the throw is the deadline-cancel unwinding a blocked
-          // ACP prompt (drainForShutdown → host.cancel → dispatchOne throws). That message was
-          // admitted (delivered:true); KEEP its row so startup replay recovers it. Only remove
-          // on a genuine (non-shutdown) turn failure. Same for the queued `rest` below.
-          if (!this.draining) await this.removeInbox(entry)
+          // A shutdown drain's throw is the deadline-cancel of an admitted turn, whose row startup replay recovers.
+          if (!this.retainsInboxRow(entry, true)) await this.removeInbox(entry)
           entry.reject(err)
           // Fail-stop: do NOT auto-continue draining onto a session whose turn just failed.
           // Reject every queued follow-up with a clear notice (their own promises) and drop
@@ -18127,17 +18122,20 @@ export class Daemon {
     if (rec) await this.reportSessionStatus({ ...rec, acpSessionId: rec.acpSessionId ?? reported })
   }
 
+  /** Whether runLoop keeps a dispatched turn's durable row for replay: a handoff, or a shutdown drain that failed or aborted it. */
+  private retainsInboxRow(entry: QueueEntry, failed: boolean): boolean {
+    if (entry.inboxId === undefined) return false
+    if (entry.inboxHandedOff === true) return true
+    return this.draining && (failed || entry.cancelledReason === 'shutdown')
+  }
+
   /** End the turn's acknowledgement once; a row runLoop keeps for replay makes it `rerun`, so the replay adopts it. */
   private async endTurnAcknowledgement(entry: QueueEntry, ended: TurnAcknowledgementEnd): Promise<void> {
     const ack = entry.acknowledgement
     if (!ack) return
     entry.acknowledgement = undefined
-    // runLoop's own retention: a handoff, or a shutdown drain that cut or failed the turn.
-    const kept =
-      entry.inboxId !== undefined &&
-      (entry.inboxHandedOff === true || (this.draining && (ended === 'failed' || entry.cancelledReason === 'shutdown')))
     try {
-      await ack.handle.end(kept ? 'rerun' : ended)
+      await ack.handle.end(this.retainsInboxRow(entry, ended === 'failed') ? 'rerun' : ended)
     } catch (err) {
       this.log.warn(`turn acknowledgement did not settle: ${formatErr(err)}`)
     } finally {
