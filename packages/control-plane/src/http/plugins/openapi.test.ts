@@ -220,7 +220,16 @@ describe('openapi plane', () => {
           'POST /api/v1/me/keys',
           'POST /api/v1/me/keys/:id/regenerate',
           'POST /api/v1/oauth/consent',
-          'POST /api/v1/orgs'
+          'POST /api/v1/orgs',
+          'GET /api/v1/orgs/:orgId/service-accounts',
+          'POST /api/v1/orgs/:orgId/service-accounts',
+          'PATCH /api/v1/orgs/:orgId/service-accounts/:id',
+          'DELETE /api/v1/orgs/:orgId/service-accounts/:id',
+          'GET /api/v1/orgs/:orgId/service-accounts/:id/keys',
+          'POST /api/v1/orgs/:orgId/service-accounts/:id/keys',
+          'PATCH /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId',
+          'POST /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId/regenerate',
+          'DELETE /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId'
         ].sort()
       )
       const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>

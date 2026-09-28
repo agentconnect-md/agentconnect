@@ -470,14 +470,15 @@ describe('gitlab ingress', () => {
     expect(h.reports).toEqual([expect.objectContaining({ status: 'failed', reason: 'rejected:unsupported' })])
   })
 
-  it('merged MRs and closed issues fan out as maintenance cleanup, bypassing the actor gate', async () => {
+  it('merged MRs and closed issues fan out as maintenance cleanup to their family rows, bypassing the actor gate', async () => {
     h.authzResult = false // the gate would deny — cleanup must not care
     h.table.upsert(rule({}, { events: ['merge_request:*'] }))
+    h.table.upsert(rule({ hookId: HOOK_B }, { events: ['issues:*'] }))
     const merged = mrPayload({ object_attributes: { action: 'merge', state: 'merged' } })
     expect((await post(h, merged)).statusCode).toBe(202)
     await flush()
     expect(h.authzRequests).toHaveLength(0)
-    expect(h.sent).toHaveLength(1)
+    expect(h.sent.map((m) => (m as RdMsgHook).hookId)).toEqual([HOOK])
     expect((h.sent[0] as RdMsgHook).event).toBe('merge_request:merged')
     expect((h.sent[0] as RdMsgHook).sessionKey).toBe(`gitlab:${PROJECT}:merge_request:77`)
   })

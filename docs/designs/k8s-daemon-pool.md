@@ -193,7 +193,11 @@ probe only sees what the image's runtimes report, and some of that moves without
 new image — opencode reads its model catalog from models.dev at runtime, and a
 deployment can declare Claude aliases or add a provider pair. Each member therefore
 re-runs the election every `AC_RUNTIME_PROBE_INTERVAL_MINUTES` (default 60, chart
-`daemonPool.runtimeProbeIntervalMinutes`; 0 disables the timer). A tick asks for an
+`daemonPool.runtimeProbeIntervalMinutes`; 0 disables the timer). A probe that adopts
+no table — a probe pod that missed its boot budget behind a cold image pull, say — is
+retried after 30 s, doubling up to the interval, whether or not the timer is on:
+readiness waits on that table, so waiting a whole interval would hold a new member
+unready past a rollout's progress deadline. A tick asks for an
 answer published within the last interval and adopts a peer's if one exists, so a
 pool still spends about one probe pod per interval rather than one per replica. A
 start-up probe adopts an answer younger than both the interval and the one-hour

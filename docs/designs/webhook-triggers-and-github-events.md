@@ -356,6 +356,8 @@ signed `changes.base` metadata is a target-branch revision and starts a new revi
 Signed issue-close, issue-delete, and merged-pull-request
 deliveries instead fan out as maintenance-only requests that apply the daemon's
 safe session-worktree cleanup without deleting session metadata or transcripts.
+They reach only the rows whose events or comment families cover the closed
+thread's family, so a release or push row records no cleanup it cannot own.
 For a sandboxed agent the session's directory is a mount of its own VM, so the
 cleanup stops that VM with it, ending the idle runtime a finished review leaves
 running there (#2246).

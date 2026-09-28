@@ -48,6 +48,8 @@ export interface SessionClassificationInput {
   launchCorrelationId?: string
   /** Resolved launching-principal user id, or null when the correlation is unknown. */
   launchOwnerUserId?: string | null
+  /** The resolved webchat or launch owner is a service account, whose sessions belong to the org. */
+  ownerIsServiceAccount?: boolean
 }
 
 /** A settled classification, or the marker that the row must inherit (§4.5). */
@@ -98,6 +100,11 @@ export function classifySession(input: SessionClassificationInput): SessionClass
       return { visibility, ownerIdentity: null, source: 'default' }
     }
     return { inherit: true }
+  }
+
+  // A service account's webchat or Web API session is org-visible and unowned, like automation.
+  if ((input.platform === 'webchat' || input.launchCorrelationId) && input.ownerIsServiceAccount) {
+    return { visibility: 'org', ownerIdentity: null, source: 'default' }
   }
 
   // Webchat/Playground. `triggeredBy` here is the console user's email, which

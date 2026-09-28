@@ -5615,6 +5615,22 @@ export interface OrgMemberRecord {
   joinedAt: Date
 }
 
+/** A service account is never an owner (daemon-api-key-auth.md §6). */
+export type ServiceAccountRole = Exclude<OrgMemberRole, 'owner'>
+
+/** Domain of every service account's fixed address. */
+export const SERVICE_ACCOUNT_EMAIL_DOMAIN = 'sa.agentconnect.md'
+
+export interface ServiceAccountRecord {
+  userId: string
+  /** Chosen at creation and fixed, since it is part of the address. */
+  name: string
+  email: string
+  displayName: string
+  role: ServiceAccountRole
+  createdAt: Date
+}
+
 // Reusable typed judgments; consumers own their bindings.
 export interface DecisionRepo {
   listForAgent(
@@ -5916,6 +5932,28 @@ export interface UserRepo {
 
   /** Attach a known user to an org. */
   addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void>
+
+  /** The org's service accounts, oldest first (daemon-api-key-auth.md §6). */
+  listServiceAccounts(orgId: string): Promise<ServiceAccountRecord[]>
+
+  /** One of the org's service accounts; null for any other user id. */
+  getServiceAccount(orgId: string, userId: string): Promise<ServiceAccountRecord | null>
+
+  /** Create a service account and its one membership; its address is `<name>-<id>@sa.agentconnect.md`. */
+  createServiceAccount(orgId: string, input: { name: string; role: ServiceAccountRole }): Promise<ServiceAccountRecord>
+
+  /** Edit a service account's display name or role; throws `OrgMembershipMissing` for any other user id. */
+  updateServiceAccount(
+    orgId: string,
+    userId: string,
+    patch: { displayName?: string; role?: ServiceAccountRole }
+  ): Promise<ServiceAccountRecord>
+
+  /** Remove a service account with the acting owner as repair member, then delete its user row, in one transaction. */
+  deleteServiceAccount(orgId: string, userId: string, actingUserId: string): Promise<void>
+
+  /** Whether `userId` names a service account; false for an unknown id. */
+  isServiceAccount(userId: string): Promise<boolean>
 
   /** The caller's own profile (`GET /me`); null when the row is gone. */
   getProfile(userId: string): Promise<UserProfileRecord | null>

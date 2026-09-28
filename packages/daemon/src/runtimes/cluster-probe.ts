@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { RuntimeDef } from '../config/config-schema.js'
+import { DEFAULT_READY_TIMEOUT_MS } from '../k8s/driver.js'
 import type { Logger } from '../log.js'
 import {
   applyClaudeModelAliases,
@@ -32,7 +33,7 @@ import { K8sRuntimeTableSchema, type K8sRuntimeTable } from './k8s-runtimes.js'
 export const CLUSTER_PROBE_TIMEOUT_MS = 60_000
 /** The rest of one member's sweep before the per-runtime sessions: a probe sandbox's cold boot,
  *  then the image's own table generation (the shim's `probe` request budget). */
-const CLUSTER_PROBE_PREAMBLE_MS = 90_000 + 180_000
+const CLUSTER_PROBE_PREAMBLE_MS = DEFAULT_READY_TIMEOUT_MS + 180_000
 /** The full image ships 15 runtimes; the probe claim covers all serial sessions plus one slot. */
 const CLUSTER_PROBE_MAX_RUNTIMES = 16
 

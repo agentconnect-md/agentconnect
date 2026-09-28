@@ -154,7 +154,7 @@ describe('explainUserNamespaceFailure', () => {
     expect(reason).toContain('/usr/bin/bwrap')
     expect(reason).toContain('set the sysctl to 0 persistently')
     expect(reason).toContain(
-      'https://docs.agentconnect.md/docs/sandboxing#ubuntu-2310-and-later-allow-user-namespaces-for-bubblewrap'
+      'https://www.agentconnect.md/docs/operate-govern/sandboxing#ubuntu-2310-and-later-allow-user-namespaces-for-bubblewrap'
     )
     expect(reason.endsWith(`(${failure})`)).toBe(true)
   })

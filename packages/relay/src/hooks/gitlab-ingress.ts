@@ -576,8 +576,9 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       if (cleanupEvent && cleanupIid !== undefined && cleanupIid > 0) {
         // Maintenance cleanup (§12): relay-authored, never a turn, and past the actor gate so no worktree leaks.
         const kind = cleanupEvent.startsWith('issues') ? ('issue' as const) : ('merge_request' as const)
+        const family = kind === 'issue' ? 'issues' : 'merge_request'
         for (const rule of rules) {
-          if (rule.kind !== 'gitlab' || !rule.gitlab) continue
+          if (rule.kind !== 'gitlab' || !rule.gitlab || !gitlabRuleFamilies(rule).has(family)) continue
           const gitlab: GitlabHookMetadata = {
             projectId: rule.gitlab.projectId,
             ...(rule.gitlab.host !== undefined ? { host: rule.gitlab.host } : {}),
@@ -597,7 +598,7 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
             gitlab,
             context: buildGitlabContext(payload, {
               eventAction: cleanupEvent,
-              family: kind === 'issue' ? 'issues' : 'merge_request',
+              family,
               labels: [],
               mentionText: undefined,
               iid: cleanupIid

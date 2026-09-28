@@ -47,6 +47,9 @@ async function classifyMilestone(p: EventSession, agentId: AgentId, deps: Daemon
   const launchOwnerUserId = p.launchCorrelationId
     ? ((await deps.launch?.ownerByCorrelationId(p.launchCorrelationId)) ?? null)
     : null
+  // Without the user port the owner reads as a person, which keeps the row private.
+  const ownerUserId = webchatOwnerUserId ?? launchOwnerUserId
+  const ownerIsServiceAccount = ownerUserId ? ((await deps.user?.isServiceAccount(ownerUserId)) ?? false) : false
   return classifySession({
     ...(p.platform !== undefined ? { platform: p.platform } : {}),
     ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
@@ -56,7 +59,8 @@ async function classifyMilestone(p: EventSession, agentId: AgentId, deps: Daemon
     ...(p.directDestination !== undefined ? { directDestination: p.directDestination } : {}),
     ...(p.launchCorrelationId !== undefined ? { launchCorrelationId: p.launchCorrelationId } : {}),
     webchatOwnerUserId,
-    launchOwnerUserId
+    launchOwnerUserId,
+    ownerIsServiceAccount
   })
 }
 

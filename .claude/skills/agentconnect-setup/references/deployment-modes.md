@@ -1,6 +1,6 @@
 # Deployment modes
 
-Source baseline: AgentConnect OSS documentation and Compose files verified 2026-08-07. Before changing a live deployment, compare with the checkout and the current [Get started](https://docs.agentconnect.md/docs/oss-get-started.md) and [Deployment and configuration](https://docs.agentconnect.md/docs/deployment-and-configuration.md) pages.
+Source baseline: AgentConnect OSS documentation and Compose files verified 2026-08-07. Before changing a live deployment, compare with the checkout and the current [Get started](https://www.agentconnect.md/docs/self-hosting/docker-compose/quick-start.md) and [Deployment and configuration](https://www.agentconnect.md/docs/self-hosting/docker-compose/configuration.md) pages.
 
 ## Shared prerequisites and architecture
 

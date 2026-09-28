@@ -1,4 +1,4 @@
-import type { Clock, TimerHandle } from '@agentconnect.md/connection'
+import { Backoff, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
 import { K8S_PROBE_FRESH_MS } from './cluster-probe.js'
 
@@ -7,6 +7,8 @@ export const RUNTIME_PROBE_INTERVAL_ENV = 'AC_RUNTIME_PROBE_INTERVAL_MINUTES'
 /** `true` lets the control plane request a probe; a self-hosted deployment sets it, a managed one does not. */
 export const RUNTIME_PROBE_ON_DEMAND_ENV = 'AC_RUNTIME_PROBE_ON_DEMAND'
 export const DEFAULT_RUNTIME_PROBE_INTERVAL_MS = 60 * 60_000
+/** First retry after a probe that settled no answer; it doubles up to the interval, so a cold image pull cannot hold readiness for an hour. */
+export const RUNTIME_PROBE_RETRY_BASE_MS = 30_000
 
 /** The re-probe interval this deployment declares, or the hourly default when it declares none or garbage. */
 export function configuredRuntimeProbeIntervalMs(env: NodeJS.ProcessEnv, warn?: (message: string) => void): number {
@@ -30,8 +32,8 @@ export interface ClusterProbeScheduleDeps {
   clock: Clock
   /** 0 disables the timer; a start-up probe and requests still run. */
   intervalMs: number
-  /** One pool probe that adopts only an answer published at or after `freshAfter` (epoch ms). */
-  run: (freshAfter: number) => Promise<void>
+  /** One pool probe that adopts only an answer published at or after `freshAfter` (epoch ms); false when it adopted none. */
+  run: (freshAfter: number) => Promise<boolean>
   /** True while the daemon drains: a tick that lands then is dropped rather than claiming a pod. */
   paused?: () => boolean
   log: Logger
@@ -43,8 +45,15 @@ export class ClusterProbeSchedule {
   private pendingFreshAfter: number | undefined
   private timer: TimerHandle | undefined
   private stopped = false
+  private readonly retry: Backoff
 
-  constructor(private readonly deps: ClusterProbeScheduleDeps) {}
+  constructor(private readonly deps: ClusterProbeScheduleDeps) {
+    this.retry = new Backoff({
+      baseMs: RUNTIME_PROBE_RETRY_BASE_MS,
+      capMs: deps.intervalMs > 0 ? deps.intervalMs : K8S_PROBE_FRESH_MS,
+      jitter: () => 0
+    })
+  }
 
   /** The start-up probe: inherit a pool answer younger than both the freshness window and the interval. */
   start(): void {
@@ -78,16 +87,34 @@ export class ClusterProbeSchedule {
     }
     if (this.timer !== undefined) this.deps.clock.clearTimeout(this.timer)
     this.timer = undefined
+    let answered = false
     this.running = this.deps
       .run(freshAfter)
+      .then((adopted) => {
+        answered = adopted
+      })
       .catch((err: unknown) => this.deps.log.warn(`runtimes: scheduled probe failed: ${(err as Error).message}`))
       .finally(() => {
         this.running = undefined
         const next = this.pendingFreshAfter
         this.pendingFreshAfter = undefined
+        if (answered) this.retry.reset()
         if (next !== undefined) this.trigger(next)
-        else this.arm()
+        else if (answered) this.arm()
+        else this.armRetry(freshAfter)
       })
+  }
+
+  /** Re-ask the same question after a probe that adopted nothing, backing off toward the interval. */
+  private armRetry(freshAfter: number): void {
+    if (this.stopped) return
+    const delayMs = this.retry.next()
+    this.deps.log.info(`runtimes: no runtime answer yet — retrying the probe in ${Math.round(delayMs / 1000)}s`)
+    this.timer = this.deps.clock.setTimeout(() => {
+      this.timer = undefined
+      if (this.deps.paused?.()) return this.armRetry(freshAfter)
+      this.trigger(freshAfter)
+    }, delayMs)
   }
 
   private arm(): void {

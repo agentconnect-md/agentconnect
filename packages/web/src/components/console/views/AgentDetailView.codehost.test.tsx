@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   hooks: [] as unknown[],
   grants: [] as unknown[],
   installations: [] as unknown[],
+  hookRuns: [] as unknown[],
   createGithubHook: vi.fn(),
   updateGithubHook: vi.fn(),
   openModal: vi.fn()
@@ -60,6 +61,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
     installations: mocks.installations
   })),
   fetchGitlabConnections: vi.fn(async () => ({ enabled: false, connections: [] })),
+  fetchHookRuns: vi.fn(async () => mocks.hookRuns),
   createGithubHook: mocks.createGithubHook,
   updateGithubHook: mocks.updateGithubHook
 }))
@@ -194,6 +196,7 @@ beforeEach(() => {
   mocks.hooks = [ISSUES_ROW, PR_ROW, DEPLOY_ROW, RELEASE_ROW, WEB_ISSUES_ROW]
   mocks.grants = []
   mocks.installations = []
+  mocks.hookRuns = []
   mocks.updateGithubHook.mockReset()
   mocks.updateGithubHook.mockRejectedValue(new Error('offline'))
   mocks.createGithubHook.mockReset()
@@ -381,6 +384,27 @@ describe('AgentDetailView, code-host repository blocks', () => {
     await act(async () => deployMore.click())
     expect(menuItem('Settings…')).toBeUndefined()
     expect(menuItem('Recent deliveries')).toBeTruthy()
+  })
+
+  it('names each recent delivery by its event, keeping the delivery id in the tooltip', async () => {
+    const run = {
+      status: 'success',
+      durationMs: 8000,
+      sessionId: null,
+      reason: null,
+      startedAt: new Date().toISOString()
+    }
+    mocks.hookRuns = [
+      { ...run, id: 'run-1', deliveryKey: 'delivery-merged', event: 'pull_request:merged' },
+      { ...run, id: 'run-2', deliveryKey: 'delivery-legacy', event: null }
+    ]
+    const scope = await render()
+    await act(async () => scope.querySelector<HTMLElement>('[aria-label="More for acme/api PRs"]')!.click())
+    await act(async () => menuItem('Recent deliveries')!.click())
+    const merged = byTitle(scope, 'delivery-merged')[0]!
+    expect(merged.textContent).toBe('pull_request:merged')
+    // A row recorded before events were stamped still reads as its delivery id.
+    expect(byTitle(scope, 'delivery-legacy')[0]!.textContent).toBe('delivery-legacy')
   })
 })
 

@@ -187,6 +187,8 @@ export interface ApiKeyAdmin {
     /** Defaults to `full`; an agent-level permission takes the selection (`all`, or agent ids the caller has already resolved). */
     permission?: ApiKeyPermission
     agents?: 'all' | readonly string[]
+    /** The owner minting a service account's key; defaults to `userId`. */
+    createdByUserId?: string
   }): Promise<MintedKeyView>
   /** A user's personal keys across all their orgs, active-only by default for the profile list. */
   listForUser(userId: string, opts?: { includeRevoked?: boolean }): Promise<UserApiKeyView[]>

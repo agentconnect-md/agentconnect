@@ -35,6 +35,7 @@ interface AgentBody {
   runtime: string | null
   daemonId: string | null
   icon: { kind: string; glyph?: string; color?: string } | null
+  allowRuntimeChangesInChat: boolean
 }
 
 describe('org-creation seam (POST /orgs)', () => {
@@ -56,6 +57,7 @@ describe('org-creation seam (POST /orgs)', () => {
       expect(preset.runtime).toBeNull() // deferred exec config
       expect(preset.daemonId).toBeNull() // unplaced
       expect(preset.icon).toEqual(GENERAL_PRESET.icon) // fixed brand glyph, not random
+      expect(preset.allowRuntimeChangesInChat).toBe(true) // chat users may change runtime settings
 
       const row = await prisma.presetAgent.findUnique({
         where: { orgId_preset: { orgId, preset: 'general' } }

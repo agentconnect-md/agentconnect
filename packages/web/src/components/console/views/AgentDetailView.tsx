@@ -3174,8 +3174,9 @@ function HookRunsPanel({ hookId, sessionHref }: { hookId: string; sessionHref: (
           >
             <span className={`h-[7px] w-[7px] flex-none rounded-full ${HOOK_RUN_DOT[r.status]}`} />
             <span className="flex min-w-0 flex-1 items-center gap-2">
+              {/* Name the event the delivery carried; the provider's delivery id stays in the tooltip. */}
               <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)" title={r.deliveryKey}>
-                {r.deliveryKey}
+                {r.event ?? r.deliveryKey}
               </span>
               {r.sessionId && (
                 <Link href={sessionHref(r.sessionId)} className="lnk flex-none whitespace-nowrap text-[11.5px]">

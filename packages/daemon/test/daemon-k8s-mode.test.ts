@@ -1198,6 +1198,33 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  it('tells its schedule when a probe adopted nothing, so a cold probe pod is retried rather than waited out', async () => {
+    let fail = true
+    const k8sDaemon = daemon({
+      root: root(),
+      k8s: true,
+      plane: {
+        probeRuntimes: async () => {
+          if (fail) throw new Error('sandbox agent-probe did not become ready in time')
+          return { runtimes: [{ id: 'claude', version: '1.2.3' }] }
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      await (k8sDaemon as any).k8sProbeSchedule.idle()
+      ;(k8sDaemon as any).cpClient = { state: 'READY' }
+      expect(await (k8sDaemon as any).probeK8sRuntimes(0)).toBe(false)
+      expect(k8sDaemon.readinessState()).toEqual({ ready: false, reason: 'runtime-probe-pending' })
+      fail = false
+      expect(await (k8sDaemon as any).probeK8sRuntimes(0)).toBe(true)
+      expect(k8sDaemon.readinessState()).toEqual({ ready: true, reason: 'ready' })
+    } finally {
+      ;(k8sDaemon as any).cpClient = undefined
+      await k8sDaemon.stop()
+    }
+  })
+
   // The image's own table is generated with no provider credentials, so it carries no model list at
   // all — which is how every cluster runtime reached the console with an empty model picker. The
   // credentialed probe is the answer: run the runtime in the pod that ships it and ASK.

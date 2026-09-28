@@ -158,8 +158,11 @@ export class ApiKeyService implements ApiKeyAdmin {
     expiresInDays?: number | null
     permission?: ApiKeyPermission
     agents?: 'all' | readonly string[]
+    createdByUserId?: string
   }): Promise<MintedKeyView> {
     const orgId = OrgId(input.orgId)
+    // An owner minting a service account's key is the actor; otherwise the user mints their own.
+    const actorUserId = input.createdByUserId ?? input.userId
     const permission: ApiKeyPermission = input.permission ?? 'full'
     // The selection is stored only for an agent-level permission; `full` and `read` reach every agent regardless.
     const selection = isAgentLevelPermission(permission)
@@ -183,13 +186,13 @@ export class ApiKeyService implements ApiKeyAdmin {
       permission,
       ...selection,
       expiresAt,
-      createdByUserId: input.userId
+      createdByUserId: actorUserId
     })
     void this.audit
       .append({
         kind: 'api_key_create',
         orgId,
-        actorUserId: input.userId,
+        actorUserId,
         details: { apiKeyId: rec.id, displayTail: rec.displayTail, principalType: 'user', permission }
       })
       .catch(() => {})
