@@ -93,7 +93,7 @@ export function GithubReviewSettings({
                     type="button"
                     onClick={onAuthorizeRepo}
                     disabled={authorizingRepo}
-                    className="flex-none rounded-sm border border-(--status-error) px-2 py-[5px] font-sans text-[11.5px] font-semibold leading-normal disabled:cursor-default disabled:opacity-60"
+                    className="flex-none cursor-pointer rounded-sm border border-(--status-error) px-2 py-[5px] font-sans text-[11.5px] font-semibold leading-normal disabled:cursor-default disabled:opacity-60"
                   >
                     {authorizingRepo
                       ? t('authorizing')
