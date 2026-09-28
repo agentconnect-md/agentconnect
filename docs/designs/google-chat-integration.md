@@ -665,8 +665,8 @@ missing message counting as already clear. The
 create, patches, and delete take the per-Space queue and the write budget like
 every other write. The daemon seam is the Layer-2 `acknowledge` member
 ([integration-plugin-architecture.md](integration-plugin-architecture.md) §7.3).
-Deleting under app authentication has not yet been verified against a live Chat
-app.
+The delete was verified live (§11.7); Chat leaves its own "Message deleted by its
+author" line where the placeholder stood.
 
 Membership loss, revoked credentials, missing threads, and deleted reply messages
 terminate or suspend the affected delivery with an actionable status. Keep
@@ -1339,7 +1339,7 @@ refuses a line the grammar does not parse or a grammar word the list omits. For
 an unclaimed tenant the help also says the organization must connect the app
 first by sending it a message; the anchor still answers a `/help` naming no
 Workspace tenant with `{}`. Both text answers use the `createMessageAction` the
-welcome card was verified with (§11.7); neither has been checked live yet.
+welcome card was verified with, and both were verified live (§11.7).
 
 Google defines `resource` as the display name of the protected resource or service
 shown on the prompt. The claim connects the person's Workspace to AgentConnect, so
@@ -1405,7 +1405,23 @@ per-agent app, both converted to add-ons:
 - An elicitation card posted after the conversion delivers its action back, and the
   empty body answering the click shows the person no error.
 
+Verified the same night on v2.1.0-rc.5 (relay) and rc.6 (daemon), with every card
+rendered in the add-on form only:
+
+- An @mention that adds the app to a Space arrives as the two requests §11.3
+  expects, the add and then the message. The claimed row answers the add with the
+  welcome text, the message starts a turn answered in its thread, and the app's
+  identity is learned from the adding mention.
+- The `/help` slash command, registered on the app, is offered by Chat's command
+  picker and answered by the relay with the help text.
+- The placeholder appears once a turn has shown nothing for two seconds; the first
+  text replaces it in place, so the answer carries Chat's "Edited" mark and nothing
+  else is left. A turn that ends on `AC_NO_RESPONSE` deletes it under app
+  authentication.
+- An elicitation card's click reaches the relay with the `agentconnect.action`
+  parameter and settles the card; the answer takes the placeholder above the card.
+- The console offers the preset agent the deployment app's Marketplace listing.
+
 Not yet verified:
 
-- An @mention that adds the app sending the two requests §11.3 expects.
 - Whether `chat.space` ever disagrees with the payload's Space.
