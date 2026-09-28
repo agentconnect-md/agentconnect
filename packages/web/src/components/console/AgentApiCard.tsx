@@ -2,7 +2,7 @@
 
 // The API card on an agent's Integrations tab: a row per added chat API, each with its Quickstart (shared-bot-relay.md §10.4).
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
@@ -11,6 +11,7 @@ import { ApiKeyFormModal, MY_KEYS, type ApiKeyOwner } from '@/components/console
 import { MOCK_MODE, agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
+import { highlight, loadHljs } from '@/lib/highlight'
 import { consoleKeys } from '@/lib/swr-keys'
 import { agentApiRelayUrl, agentChatUrls, aiSdkProxySnippet, API_PROTOCOLS, apiProtocolLabel } from '@/lib/agent-api'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
@@ -218,6 +219,29 @@ const reachesAgent = (k: UserApiKeyDto, orgId: string, agentId: string) =>
   !(k.expiresAt && new Date(k.expiresAt).getTime() <= Date.now()) &&
   (k.allAgents || k.agentIds.includes(agentId))
 
+/** The snippet as TypeScript, wrapped; plain text until highlight.js loads or if it fails. */
+function SnippetBlock({ code }: { code: string }) {
+  const [out, setOut] = useState<{ code: string; html: string | null } | null>(null)
+  useEffect(() => {
+    let active = true
+    loadHljs().then(
+      (hljs) => {
+        if (active) setOut({ code, html: highlight(hljs, code, 'route.ts') })
+      },
+      () => {}
+    )
+    return () => {
+      active = false
+    }
+  }, [code])
+  const html = out?.code === code ? out.html : null
+  return (
+    <pre className="codedark m-0">
+      {html != null ? <code dangerouslySetInnerHTML={{ __html: html }} /> : <code>{code}</code>}
+    </pre>
+  )
+}
+
 function QuickstartDialog({
   agent,
   protocol,
@@ -366,7 +390,7 @@ function QuickstartDialog({
                 <Icon name={copied === 'snippet' ? 'check' : 'copy'} size={14} />
               </button>
             </div>
-            <pre className="codedark m-0 overflow-x-auto whitespace-pre">{snippet}</pre>
+            <SnippetBlock code={snippet} />
           </div>
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">

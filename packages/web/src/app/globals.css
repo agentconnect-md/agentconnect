@@ -1622,6 +1622,16 @@
     white-space: pre-wrap;
     word-break: break-word;
     overflow: auto;
+    /* Near-black in both themes, so its syntax tokens take the dark theme's lifted hues. */
+    --magenta-600: #e479ac;
+    --magenta-700: #f4b8d3;
+    --purple-500: #b794e6;
+    --green-500: #2ec27e;
+    --blue-500: #6a97f5;
+  }
+  .codedark .hljs-meta,
+  .codedark .hljs-params {
+    color: inherit;
   }
 
   /* design-system Button */
