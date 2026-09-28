@@ -550,11 +550,11 @@ The key is an ordinary API key whose permission is `agent:chat` and whose
 selection includes the agent
 ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#key-permissions-and-agent-selection)).
 A personal key with that permission is the complete v1 credential; the
-conversations it opens are its user's. A service-account member, a
-non-signing-in member that an owner creates and whose keys an owner mints, is
-later work. Its keys use the same permission and selection, and its sessions
-are org-visible by identity. Nothing on this path forks on which of the two
-holds the key.
+conversations it opens are its user's. A
+[service-account member](daemon-api-key-auth.md#service-account-members), a
+non-signing-in member that an owner creates and whose keys an owner mints, uses
+the same permission and selection, and its sessions are org-visible by
+identity. Nothing on this path forks on which of the two holds the key.
 
 The proxy mints a token per conversation, not per turn:
 
@@ -697,7 +697,8 @@ two can coexist.
 4. **Web:** the agent detail page's API tab, hidden since it shipped
    unfinished, returns with the two endpoints and a proxy example.
 
-Later, separately: the service-account member.
+Later, separately: the
+[service-account member](daemon-api-key-auth.md#service-account-members).
 
 ## 11. Daemon Responsibilities
 

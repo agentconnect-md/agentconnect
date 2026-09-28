@@ -244,9 +244,9 @@ organization runs, such as a documentation site's backend, needs a key that can
 do one thing with one agent. The model follows a GitHub App installation: a
 permission set and a resource selection, on the credential rather than on the
 person. There is no separate principal type for it. The same two columns
-describe every key that human authentication admits, so a future service-account
-member's key ([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api),
-later work) differs from a personal key only in whose identity it carries.
+describe every key that human authentication admits, so a service-account
+member's key ([below](#service-account-members)) differs from a personal key
+only in whose identity it carries.
 
 - `ApiKey.permission` is one of `full`, `read`, or `agent:chat`. `full` is the
   default and is today's behavior. `read` admits only `GET`, `HEAD`, and
@@ -318,6 +318,79 @@ Tests should cover:
 - `full` keys ignoring the selection, and a selection emptied by agent deletion
   reaching no agent;
 - existing rows defaulting to `full` after the migration.
+
+### Service-account members
+
+**Status:** Proposed.
+
+A personal key belongs to a person and stops working when that person leaves
+the organization. A server that the organization runs needs a credential that
+belongs to the organization. The model follows GitLab's service accounts: a
+user who cannot sign in, a member of the organization with a role, and keys
+that an owner mints for it. There is no new principal type. A service
+account's key is a personal key whose user is the service account, so
+`humanAuth`, `permission`, agent selection, token claims, edit, and regenerate
+apply to it unchanged.
+
+| GitLab                             | AgentConnect                                         |
+| ---------------------------------- | ---------------------------------------------------- |
+| `User.user_type = service_account` | `User.kind`, `human` by default or `service_account` |
+| Created by a group Owner           | Created by an organization owner                     |
+| A group member with a role         | A member whose role is `collaborator` or `viewer`    |
+| Owners create and revoke its PATs  | Owners mint, edit, regenerate, and revoke its keys   |
+| Cannot sign in                     | Cannot sign in                                       |
+| Deleting it removes its tokens     | Deleting it removes its keys                         |
+
+The role is the one departure. GitLab allows any role; here a service account
+is never `owner`, so the last-owner check and the choice of a repair member
+([resource-visibility.md §8](resource-visibility.md#8-member-removal-and-audience-repair))
+never have to exclude it.
+
+- **Identity.** A service account is an `app_user` row with
+  `kind = service_account`, no `oidcSubject`, the display name its owner gives
+  it, and the email `<id>@service-account.invalid`. It has exactly one
+  membership, created with it. An invited member's row also has no
+  `oidcSubject`, and a first sign-in claims such a row by verified email. That
+  claim, and `POST /members`, which adds a member by email, skip or refuse a
+  `service_account` row, so no one can sign in as a service account or add it
+  to a second organization.
+- **Routes.** `GET` and `POST /orgs/:orgId/service-accounts`, and `PATCH` and
+  `DELETE /orgs/:orgId/service-accounts/:id`, take and change `name` and
+  `role`. Its keys live under `/orgs/:orgId/service-accounts/:id/keys`: list,
+  mint, `PATCH`, `regenerate`, and revoke, with the body, validation, expiry
+  policy, and one-time plaintext of `/me/keys`. `createdByUserId` records the
+  owner who minted a key. Every one of these routes is owner-only and sets
+  `interactiveOnly`, like `/me/keys`.
+- **Membership.** `GET /members` omits service accounts; the console lists
+  them on their own. The member routes answer 404 for a service account,
+  including its own self-removal, so its membership changes only through the
+  routes above. `POST /orgs` is already `interactiveOnly`, so a service account
+  never creates, and so never owns, another organization.
+- **Sessions.** A service account's sessions are visible to the organization:
+  a webchat conversation it owns, and a Web API launch it makes, classify as
+  `org` with no owner
+  ([session-visibility.md §4.2](session-visibility.md#42-default-rules)).
+- **Deletion.** `DELETE` runs managed member removal with the acting owner as
+  the repair member, then deletes the `app_user` row in the same transaction.
+  Its keys and webchat conversations cascade with the row. Its sessions stay,
+  since they are already visible to the organization.
+- **Console.** Settings gains an owner-only Service accounts section: the list,
+  a create dialog with name and role, and each account's keys in the personal
+  key dialog.
+
+Not in v1: a disabled state, seat accounting, and a distinct audit actor type.
+An audit row names a service account the way it names any user.
+
+Tests should cover:
+
+- a service account's `full` key admitted on an org route, and refused on
+  `POST /orgs`, `/me/keys`, and every service-account route;
+- a first sign-in whose verified email equals a service account's not claiming
+  it, and `POST /members` refusing that email;
+- `owner` refused as a service account's role, and the member routes answering
+  404 for it;
+- a webchat conversation owned by a service account classifying as `org`;
+- deletion revoking its keys and repairing an audience it alone held.
 
 ---
 
