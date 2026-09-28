@@ -828,7 +828,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                   {helpMenu && (
                     <>
                       <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
-                      <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[236px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
+                      <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-max rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
                         {/* The desktop way back to a skipped checklist, both auth modes — the
                           pill has no other desktop re-entry point. Owner-only, like the
                           checklist itself. */}
@@ -886,7 +886,11 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                         >
                           <Icon name="gift" size={15} color="var(--text-tertiary)" />
                           {t('help.whatsNew')}
-                          {help.version && <span className="kbd">{help.version}</span>}
+                          {help.version && (
+                            <span className="rounded-full bg-(--surface-active) px-[6px] font-mono text-[10px] font-medium leading-[16px] text-(--text-tertiary)">
+                              {help.version}
+                            </span>
+                          )}
                         </a>
                         <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
                           <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
