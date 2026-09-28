@@ -15294,6 +15294,8 @@ export class Daemon {
       } finally {
         p.promptInFlight = false
       }
+      // A tool_call can still be queued behind slower updates; settle them before judging the resend safe.
+      await this.acpUpdateChains.get(acpUpdateChainKey(p.hostKey, sessionId))
       if (attempt > 0 || p.promptRanTool || p.outputSuppressed || !isOAuthRefreshContention(failure)) throw failure
       this.log.warn(`session ${sessionId}: Claude OAuth refresh contended; resending the prompt once`)
       await new Promise<void>((resolve) => this.clock.setTimeout(resolve, OAUTH_REFRESH_CONTENTION_RETRY_MS))

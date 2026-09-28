@@ -265,11 +265,14 @@ describe('Claude OAuth refresh-lock contention', () => {
     }
   })
 
-  it('does not resend a prompt that already started a tool call', async () => {
+  it('does not resend a prompt whose tool call is still queued behind slower updates', async () => {
     const ref: { daemon?: any } = {}
     const { daemon, fakeHost } = await start(async (sessionId) => {
       const turn = [...ref.daemon.pending.values()].find((p: any) => p.acpSessionId === sessionId)
-      turn.promptRanTool = true
+      const queued = new Promise((resolve) => setTimeout(resolve, 20)).then(() => {
+        turn.promptRanTool = true
+      })
+      ref.daemon.acpUpdateChains.set(`${turn.hostKey}\u001f${sessionId}`, queued)
       throw contended()
     })
     ref.daemon = daemon
