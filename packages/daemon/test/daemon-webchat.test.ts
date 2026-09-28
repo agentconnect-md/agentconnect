@@ -1963,7 +1963,9 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     stream.sink.output({ conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'second' } })
     stream.sink.done({ conversationId: CONV, turnId, stopReason: 'end_turn' })
-    expect(first).toHaveLength(1) // future output moved to the resumed relay sink
+    // The admitting sink keeps the turn after a resume, so an Ask AI stream is not starved by a console watcher.
+    expect(first.map((event) => event.kind)).toEqual(['output', 'output', 'done'])
+    expect(first.at(-1)).toEqual(second.at(-1))
     expect(stale).toEqual([]) // delayed generation never steals the stream transport
     expect(second.at(-1)).toEqual({
       kind: 'done',
@@ -2020,18 +2022,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(retry).toMatchObject({ accepted: true, turnId })
 
     stream.sink.output({ conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'continued' } })
-    expect(original).toEqual([
-      {
-        kind: 'output',
-        output: {
-          conversationId: CONV,
-          turnId,
-          agentId: AGENT_ID,
-          index: 0,
-          event: { kind: 'message', text: 'missed' }
-        }
-      }
-    ])
+    expect(original).toEqual(resumed)
     expect(resumed).toEqual([
       {
         kind: 'output',

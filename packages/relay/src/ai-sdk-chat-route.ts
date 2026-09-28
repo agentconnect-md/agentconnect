@@ -153,6 +153,8 @@ class ChatTurn implements ChatSink {
   private idleTimer?: NodeJS.Timeout
   private keepaliveTimer?: NodeJS.Timeout
   private unwatchDaemon?: () => void
+  // A watcher resuming through this relay makes the daemon send each output twice; the index drops the copy.
+  private lastIndex = -1
 
   constructor(private readonly o: ChatTurnOptions) {}
 
@@ -165,6 +167,10 @@ class ChatTurn implements ChatSink {
     const ev = chat.event
     const turnId = ev.kind === 'output' ? ev.output.turnId : ev.done.turnId
     if (turnId !== this.turnId) return // another participant's turn on this conversation
+    if (ev.kind === 'output') {
+      if (ev.output.index <= this.lastIndex) return
+      this.lastIndex = ev.output.index
+    }
     this.armIdle()
     if (ev.kind === 'output') this.write(this.encoder!.output(ev.output))
     else this.settle(this.encoder!.done(ev.done), `done (${ev.done.error ? 'error' : (ev.done.stopReason ?? 'end')})`)

@@ -621,6 +621,7 @@ export class WebchatTransport {
       agentId,
       conversationId,
       turnId,
+      origin: transport,
       transport,
       ...(runtime ? { runtime } : {}),
       ...(worktree !== undefined ? { worktree } : {}),
@@ -711,6 +712,7 @@ export class WebchatTransport {
       stream.lastOutputIndex = Math.max(stream.lastOutputIndex, normalized.output.index)
     }
     if (!stream.replayDisabled) this.bufferWebchatStreamEvent(stream, normalized)
+    if (stream.origin !== stream.transport) this.deliverWebchatStreamEvent(stream.origin, normalized)
     this.deliverWebchatStreamEvent(stream.transport, normalized)
     if (normalized.kind === 'done') {
       stream.completedAt = this.host.now()
@@ -792,9 +794,7 @@ export class WebchatTransport {
       return { accepted: false, turnId: stream.turnId, reason: 'stream_cursor_invalid' }
     }
 
-    // Rebind first: outputs produced after this synchronous replay leave through
-    // the same new relay connection. Replay bypasses the stable buffering wrapper
-    // so retained frames are not inserted twice.
+    // Rebind before the unbuffered replay so later outputs follow it; the origin keeps receiving too.
     stream.transport = transport
     for (const buffered of stream.replay) {
       if (buffered.event.kind === 'output' && buffered.event.output.index <= afterIndex) continue

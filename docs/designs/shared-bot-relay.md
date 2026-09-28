@@ -520,7 +520,10 @@ completed, the daemon retains a bounded, short-lived output window keyed by the
 browser-allocated turn id. A reconnecting browser reports its last contiguous
 output index and an increasing connection generation through any healthy relay;
 the browser rejects frames for any other turn while the daemon rejects stale
-generations, rebinds the live stream, and replays the missing tail. This window
+generations, rebinds the live stream, and replays the missing tail. The
+transport that admitted the turn keeps receiving it after a rebind, so a
+watcher that attaches mid-turn, such as the console opening a conversation an
+Agent chat API request is streaming, never starves the requester. This window
 is volatile, has explicit size and age limits, and does not create a durable
 transcript or offline inbox.
 An optional image upload follows the same browser-to-relay-to-daemon content

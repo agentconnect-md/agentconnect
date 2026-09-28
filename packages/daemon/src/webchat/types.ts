@@ -64,11 +64,12 @@ export interface WebchatTurnContext {
   evaluation?: boolean
 }
 
-/** One daemon-owned turn stream. `sink` is stable for the turn engine; `transport`
- * is rebound when a browser resumes through any relay. The replay window is
- * ephemeral, bounded, and never written to disk. */
+/** One daemon-owned turn stream: `sink` is stable for the turn engine; the replay window is ephemeral and bounded. */
 export interface WebchatTurnStream extends WebchatTurnContext {
   agentId: string
+  // The transport that admitted the turn keeps receiving it, so a resuming watcher never starves the requester.
+  origin: WebchatSink
+  // The latest resumer's transport, rebound when a browser resumes through any relay.
   transport: WebchatSink
   resumeGeneration: number
   replay: BufferedWebchatEvent[]

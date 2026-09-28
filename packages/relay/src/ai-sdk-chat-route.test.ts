@@ -292,6 +292,31 @@ describe('POST /ai-sdk/chat/:conversationId', () => {
     expect(message.parts.filter((p) => p.type === 'text')).toMatchObject([{ text: 'mine only' }])
   })
 
+  it('streams an output once when a watcher resuming through this relay makes the daemon send it twice', async () => {
+    const h = await start()
+    const { stream } = await chat(h)
+    const turnId = h.daemon.turns()[0]!
+    const twice = (index: number, text: string) => {
+      for (let copy = 0; copy < 2; copy++) {
+        h.router.deliver({
+          chatId: CONV,
+          seq: seq++,
+          event: {
+            kind: 'output',
+            output: { conversationId: CONV, turnId, index, event: { kind: 'message', text } }
+          }
+        })
+      }
+    }
+    twice(0, 'once')
+    twice(1, ' each')
+    finish(h, turnId)
+    finish(h, turnId)
+    const { message, errors } = await read(stream)
+    expect(errors).toEqual([])
+    expect(message.parts.filter((p) => p.type === 'text')).toMatchObject([{ text: 'once each' }])
+  })
+
   it('streams output that races the ack', async () => {
     const h = await start()
     h.daemon.beforeAck = (m) => {
