@@ -225,8 +225,10 @@ interface DreamRecord {
 **Pipeline** (one job at a time per agent; a second trigger while
 `pending|running` is rejected):
 
-1. **Snapshot.** Copy `<agent-root>/memory/` (excluding `.history`) into
-   `memory-dreams/<dreamId>/input/`; record `snapshotDigest`.
+1. **Snapshot.** Read `<agent-root>/memory/` (excluding `.history`) and record
+   `snapshotDigest`. The snapshot is written into `memory-dreams/<dreamId>/input/`
+   together with the transcripts only in step 3, once the extraction host has
+   proven a read-only mode.
 2. **Gather signal.** Pull the relevant sessions' transcripts for this agent from
    the daemon store. The window is sized **automatically** (no operator config):
    the sessions with activity since the last successful dream — each one's
@@ -254,10 +256,13 @@ interface DreamRecord {
    policy prompt — not a hard pre-filter — keeps a person's private/personal
    conversation from becoming shared organization knowledge.
 3. **Dream.** Run an isolated ACP session on the agent's runtime host through
-   the shared extraction-session helper (§8): temp cwd, read-only / plan
-   permission mode when the runtime offers one, dream system prompt (§5),
-   snapshot + transcripts as untrusted prompt data. Collect the streamed text
-   exactly as distillation does.
+   the shared extraction-session helper (§8): cwd `input/`, a verified read-only
+   / plan permission mode (a runtime without one fails the dream before any
+   input is written), dream system prompt (§5), snapshot + transcripts as
+   untrusted data. Collect the streamed text exactly as distillation does. The
+   transcripts (`input/sessions/`) are removed as soon as the extraction ends:
+   staging sits where the agent's own sessions can read it, and nothing after
+   extraction needs them.
 4. **Validate & stage.** The store proposal is already on disk: the extraction
    session's `writeMemory`/`readMemory` are bound to `memory-dreams/<dreamId>/`
    as their store, so every topic file went through the same write path a turn
@@ -273,7 +278,8 @@ interface DreamRecord {
    does a run that wrote no topic file while the live store had some: the store
    is what the model wrote, so writing nothing is no proposal at all, not an
    empty one — completing it would let adoption install an index-only store over
-   a live one. The staging of a run that never completes is dropped.
+   a live one. The staging of a run that never completes is dropped, `input/`
+   included — a failed, canceled, or interrupted dream leaves nothing behind.
 5. **Finish.** Mark `completed`; emit `memory.dream.completed` on the
    evaluation-events channel (alongside the existing `memory.capture.*`
    events). If `autoAdopt` is set, run §6 adoption for the store — never for
@@ -281,6 +287,11 @@ interface DreamRecord {
 
 Cancel moves `pending|running → canceled` and aborts the ACP prompt (same
 cancellation path as a turn).
+
+Turning dreaming off — `dreaming.enabled: false`, or a provider other than
+`managed` — cancels the dream in flight, discards every `completed` proposal,
+and removes the agent's store staging. Unreviewed skill and organization
+candidates keep their own lifecycle (§7).
 
 ## 5. The dream prompt
 

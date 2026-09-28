@@ -219,6 +219,8 @@ export interface DreamRunnerDeps {
        *  memory tools to it, so the model writes its proposal the same way an agent
        *  writes memory — the daemon no longer transcribes files out of JSON. */
       stagedStore: MemoryFs
+      /** Writes the snapshot and transcripts into `inputDir`; call only once the host has a verified read-only mode. */
+      materializeInputs(): Promise<void>
     }
   ): Promise<DreamExtractionResult>
   /** Metadata-only lifecycle tap. Observer failures are contained by the
@@ -254,6 +256,8 @@ const LAST_SUCCESSFUL_DREAM_SCAN = 50
 // activity since the last successful dream" (no operator config), but a first
 // dream — or a long-idle agent — must not mine an unbounded corpus.
 const MAX_AUTO_SESSION_WINDOW = 100
+// How many of an agent's dreams turning dreaming off sweeps for staging.
+const RETIRE_SCAN_LIMIT = 200
 /** A dream stages into a real memory store (`<dream>/memory/`), so every store helper
  *  — listing, index generation, the memory tools — works on it unchanged. Dreams
  *  staged before that lived in `output/`; those keep resolving for review and adoption. */
@@ -377,9 +381,29 @@ export class DreamRunner {
         endedAt: this.nowIso()
       }
       // The CAS makes reclaim safe: a row that reached its own terminal state keeps it, and announces nothing.
-      if (await this.deps.store.failOpenDream(failed))
-        this.emitLifecycle({ type: 'memory.dream.failed', dream: failed })
+      if (!(await this.deps.store.failOpenDream(failed))) continue
+      this.emitLifecycle({ type: 'memory.dream.failed', dream: failed })
+      // Not awaited: the home may be asleep, and boot or a duty grant must not wait on it.
+      if (this.operationsAllowed()) void this.clearStaging(dream.agentId, dream.dreamId)
     }
+  }
+
+  /** Dreaming was turned off: cancel the run in flight, discard unadopted proposals, and drop the staging the
+   *  agent's sessions could read. Unreviewed skill candidates keep their own lifecycle. */
+  async retireStaging(agentId: string): Promise<void> {
+    if (!this.operationsAllowed() || !this.deps.agentDirByAgent(agentId)) return
+    await this.cancelInFlight(agentId)
+    await this.withLock(agentId, () =>
+      this.withMemoryHome(agentId, async () => {
+        for (const dream of await this.deps.store.listDreams(agentId, RETIRE_SCAN_LIMIT)) {
+          if (dream.status === 'pending' || dream.status === 'running') continue
+          if (dream.status === 'completed') {
+            await this.deps.store.updateDream({ ...dream, status: 'discarded', endedAt: this.nowIso() })
+          }
+          await this.removeStoreStaging(agentId, dream)
+        }
+      })
+    )
   }
 
   private operationsAllowed(): boolean {
@@ -714,25 +738,26 @@ export class DreamRunner {
         })
       }
 
-      // Materialize the dream inputs as FILES the model explores with its own
-      // read-only tools (task #36): the memory snapshot at input/ root, each mined
-      // transcript at input/sessions/<id>.md (already secret-hygiene filtered by
-      // dreamTranscriptText). input/ IS the dream's working directory now — it is
-      // read back, by the model, not the pipeline.
+      // The inputs are FILES the model explores with its own read-only tools (task #36): the memory snapshot at
+      // input/ root, each mined transcript at input/sessions/<id>.md. input/ is the dream's cwd, so it exists empty
+      // up front; the files land only through materializeInputs, after the host proves a read-only mode.
       const { staging } = this.portsFor(agentId)
       const base = this.dreamDir(agentId, dreamId)
       const inputDir = join(base, 'input')
       const sessionsDir = join(inputDir, 'sessions')
-      await staging.mkdir(sessionsDir)
-      for (const file of files) {
-        await staging.writeFile(join(inputDir, file.name), file.content)
-      }
-      const materializedSessionIds: string[] = []
-      for (const transcript of transcripts) {
-        const body = renderDreamSessionFile(transcript)
-        if (!body.trim()) continue
-        await staging.writeFile(join(sessionsDir, `${dreamSessionFileName(transcript.sessionId)}.md`), body)
-        materializedSessionIds.push(transcript.sessionId)
+      await staging.mkdir(inputDir)
+      const sessionFiles = transcripts
+        .map((transcript) => ({ sessionId: transcript.sessionId, body: renderDreamSessionFile(transcript) }))
+        .filter((file) => file.body.trim())
+      const materializedSessionIds = sessionFiles.map((file) => file.sessionId)
+      const materializeInputs = async (): Promise<void> => {
+        // An abandoned extraction may still call this after the cleanup below; it must not rewrite what was dropped.
+        if (signal.aborted) throw new Error('dream canceled before its inputs were written')
+        for (const file of files) await staging.writeFile(join(inputDir, file.name), file.content)
+        await staging.mkdir(sessionsDir)
+        for (const file of sessionFiles) {
+          await staging.writeFile(join(sessionsDir, `${dreamSessionFileName(file.sessionId)}.md`), file.body)
+        }
       }
 
       // The dreamer discovers existing org knowledge/skills on demand via its
@@ -772,8 +797,11 @@ export class DreamRunner {
         signal,
         join(staging.root, inputDir),
         stagedStore,
+        materializeInputs,
         mineSkills
       )
+      // The transcripts served only the extraction, and staging sits where the agent's sessions can read it.
+      await staging.rm(sessionsDir)
 
       // A cancel that landed mid-extraction wins: drop the output unstaged. This
       // also covers the backstop firing (extraction ignored the cancel and never
@@ -917,11 +945,12 @@ export class DreamRunner {
     }
   }
 
-  /** Drop every staged byte of a run that will never complete — both layouts, best effort. */
+  /** Drop every staged byte of a run that will never complete — inputs and both output layouts, best effort. */
   private async clearStaging(agentId: string, dreamId: string): Promise<void> {
     try {
       const { staging } = this.portsFor(agentId)
       const base = this.dreamDir(agentId, dreamId)
+      await staging.rm(join(base, 'input'))
       await staging.rm(join(base, MEMORY_DIRNAME))
       await staging.rm(join(base, LEGACY_STAGED_DIRNAME))
     } catch {
@@ -944,6 +973,7 @@ export class DreamRunner {
     signal: AbortSignal,
     inputDir: string,
     stagedStore: MemoryFs,
+    materializeInputs: () => Promise<void>,
     mineSkills = false
   ): Promise<({ abandoned: false } & DreamExtractionResult) | { abandoned: true; output: '' }> {
     const graceMs = this.deps.cancelGraceMs ?? 30_000
@@ -953,7 +983,8 @@ export class DreamRunner {
         trigger: dream.trigger,
         sessionIds: dream.sessionIds,
         inputDir,
-        stagedStore
+        stagedStore,
+        materializeInputs
       })
       .then((result) => ({ abandoned: false as const, ...result }))
     let timer: ReturnType<typeof setTimeout> | undefined

@@ -938,6 +938,7 @@ type DreamExtractionContext = {
   sessionIds: string[]
   inputDir: string
   stagedStore: MemoryFs
+  materializeInputs(): Promise<void>
 }
 
 /** Identity of a desired Feishu connection: appId + gateway region + ingress mode — a region or mode change on the same appId yields a distinct connection for reuse-matching, mapping-eviction, and the in-flight guard. */
@@ -4946,6 +4947,7 @@ export class Daemon {
         this.permissions.disableChatPermissionSurfaces(a.id)
       }
       await this.applyMemoryHomeBinding(previous, a as LoadedAgent)
+      if (dreamingPolicyOf(previous)?.enabled && !dreamingPolicyOf(a)?.enabled) this.retireDreamStaging(a.id)
       const removed = change.integrations
         ? (previous?.integrations ?? []).filter((old) => !a.integrations.some((current) => current.id === old.id))
         : []
@@ -5566,6 +5568,14 @@ export class Daemon {
       await plane.ensureChannel(agentId)
       return work()
     })
+  }
+
+  // Background: a pool agent's staging needs its sandbox woken, which reconcile must not wait on.
+  private retireDreamStaging(agentId: string): void {
+    if (!this.dreamOperationsAllowed()) return
+    void this.dreamRunner()
+      .retireStaging(agentId)
+      .catch((err) => this.log.warn(`dream: could not retire staging for agent "${agentId}" (${formatErr(err)})`))
   }
 
   // The CP recorded the copy: mirror its clear on the local replica now — the next resolution serves the CP tree — and
@@ -7948,9 +7958,12 @@ export class Daemon {
       const modes = host.permissionModeOptions?.(sessionId)?.modes ?? host.permissionModeOptions?.()?.modes ?? []
       const readOnlyMode = readOnlyExtractionMode(modes)
       await this.applyConfiguredRuntimeSettings(agent, host, sessionId, undefined, readOnlyMode)
-      if (readOnlyMode && host.setSessionPermissionMode) {
-        await host.setSessionPermissionMode(sessionId, readOnlyMode)
+      // Gate before the inputs land: a runtime that cannot dream safely never puts the mined transcripts on disk.
+      if (!readOnlyMode || !(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
+        throw new Error('runtime lacks a verified read-only/plan mode; dream extraction cannot run safely')
       }
+      if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
+      await context.materializeInputs()
       const result = await this.runDreamExtractionSession(
         host,
         owner,

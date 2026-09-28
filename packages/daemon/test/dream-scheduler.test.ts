@@ -271,7 +271,8 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
         dreamId: 'drm-nosandbox',
         trigger: 'manual',
         sessionIds: [],
-        inputDir: join(root, 'in')
+        inputDir: join(root, 'in'),
+        materializeInputs: async () => {}
       })
       // Never fail-closed: the dream still runs, on an unsandboxed dedicated host.
       expect(buildSpy).toHaveBeenCalledWith(
@@ -282,6 +283,53 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
       expect(stopped).toBe(1)
       expect(inner.hosts.has('bot-a')).toBe(false)
       expect(res.sessionId).toBe('dream-sess')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('retires the dream staging once when an update turns dreaming off', async () => {
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: () => stubDreamHost(() => {}),
+      dreamOperationPolicy: 'test-only'
+    })
+    await daemon.start()
+    try {
+      const inner = daemon as any
+      const retire = vi.spyOn(inner.dreamRunner(), 'retireStaging').mockResolvedValue(undefined)
+      const upsert = (memory: unknown) =>
+        inner.cpConfigApply().applyAgentUpsert({ agentId: 'bot-a', spec: { name: 'bot-a', runtime: 'claude', memory } })
+      await upsert({ provider: 'managed', dreaming: { enabled: true, schedule: '0 4 * * *' } })
+      expect(retire).not.toHaveBeenCalled()
+      await upsert({ provider: 'none' })
+      await upsert({ provider: 'none' })
+      expect(retire).toHaveBeenCalledTimes(1)
+      expect(retire).toHaveBeenCalledWith('bot-a')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('never materializes the dream inputs on a runtime without a read-only mode', async () => {
+    const root = scaffold()
+    let stopped = 0
+    const host = { ...stubDreamHost(() => stopped++), permissionModeOptions: () => ({ modes: ['default'] }) }
+    const daemon = new Daemon({ root, hostFactory: vi.fn(() => host), dreamOperationPolicy: 'test-only' })
+    await daemon.start()
+    try {
+      const materializeInputs = vi.fn(async () => {})
+      await expect(
+        (daemon as any).runDreamExtraction('bot-a', 'system', 'prompt', new AbortController().signal, {
+          dreamId: 'drm-no-read-only',
+          trigger: 'schedule',
+          sessionIds: [],
+          inputDir: join(root, 'in'),
+          materializeInputs
+        })
+      ).rejects.toThrow('read-only/plan mode')
+      expect(materializeInputs).not.toHaveBeenCalled()
+      expect(stopped).toBe(1)
     } finally {
       await daemon.stop()
     }
@@ -302,7 +350,8 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
         dreamId: 'drm-sandboxed',
         trigger: 'manual',
         sessionIds: [],
-        inputDir: join(root, 'in')
+        inputDir: join(root, 'in'),
+        materializeInputs: async () => {}
       })
       // Sandboxed (agent runs sandboxed + a mechanism exists) + cwd = the
       // materialized input dir — never the agent's warm host.
@@ -357,7 +406,8 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
         dreamId: 'drm-model-test',
         trigger: 'manual',
         sessionIds: [],
-        inputDir: join(root, 'in')
+        inputDir: join(root, 'in'),
+        materializeInputs: async () => {}
       })
       expect(modelSet).toBe('opencode/mimo-v2.6-flash-free')
       expect(permModeSet).toBe('read-only')

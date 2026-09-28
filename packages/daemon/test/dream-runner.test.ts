@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, sep } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { parse as parseYaml } from 'yaml'
@@ -212,7 +212,7 @@ async function setup(opts: {
   await ensureMemory(root, 'bot')
   await writeMemoryFile(root, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool', historyFor(root))
   const store = new FakeStore()
-  const prompts: { systemPrompt: string; prompt: string; inputDir: string }[] = []
+  const prompts: { systemPrompt: string; prompt: string; inputDir: string; inputs: Record<string, string> }[] = []
   const runner = new DreamRunner({
     agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
     memoryHomePortsFor: (id) => (id === 'a1' ? home(root, historyFor) : undefined),
@@ -220,7 +220,8 @@ async function setup(opts: {
     operationPolicy: opts.operationPolicy ?? 'test-only',
     store,
     extract: async (agentId, systemPrompt, prompt, signal, context) => {
-      prompts.push({ systemPrompt, prompt, inputDir: context.inputDir })
+      await context.materializeInputs()
+      prompts.push({ systemPrompt, prompt, inputDir: context.inputDir, inputs: await readInputs(context.inputDir) })
       const stage = async (): Promise<string[]> => {
         if (opts.stagedWrite) return opts.stagedWrite(context.stagedStore)
         if (opts.stagedFiles === null) return []
@@ -241,6 +242,18 @@ async function setup(opts: {
     log: silent
   })
   return { dir, store, runner, prompts, sandbox }
+}
+
+/** The input files as the extraction saw them, keyed by `/`-joined relative path — the transcripts are gone once it ends. */
+async function readInputs(dir: string): Promise<Record<string, string>> {
+  const inputs: Record<string, string> = {}
+  for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue
+    const path = join(entry.parentPath, entry.name)
+    const rel = relative(dir, path).split(sep).join('/')
+    inputs[rel] = await readFile(path, 'utf8')
+  }
+  return inputs
 }
 
 async function acceptedSkillBody(dir: string, name: string): Promise<string> {
@@ -337,7 +350,10 @@ describe('DreamRunner pipeline', () => {
     // the transcript lands in sessions/<id>.md, the memory snapshot at the input
     // root, and the prompt points at them under the untrusted-data system policy.
     const inputDir = prompts[0]!.inputDir
-    expect(await readFile(join(inputDir, 'sessions', 'sess-1.md'), 'utf8')).toContain('please use tabs')
+    expect(prompts[0]!.inputs['sessions/sess-1.md']).toContain('please use tabs')
+    expect(prompts[0]!.inputs['prefs.md']).toContain('uses tabs')
+    // The transcripts are dropped once extraction ends: staging sits where the agent's sessions can read it.
+    await expect(readdir(join(inputDir, 'sessions'))).rejects.toThrow()
     expect(await readFile(join(inputDir, 'prefs.md'), 'utf8')).toContain('uses tabs')
     expect(prompts[0]?.prompt).toContain('sess-1')
     expect(prompts[0]?.systemPrompt).toContain('memory dreamer')
@@ -348,6 +364,65 @@ describe('DreamRunner pipeline', () => {
     expect(staged?.map((f) => f.name)).toEqual(['MEMORY.md', 'prefs.md'])
     const read = await runner.stagedRead('a1', started.dreamId, 'prefs.md')
     expect(read?.content).toContain('2026-07-24')
+  })
+
+  it('drops the whole input dir when the extraction fails', async () => {
+    const { dir, store, runner, prompts } = await setup({
+      extract: async () => {
+        throw new Error('runtime exploded')
+      }
+    })
+    const started = await runner.start('a1', { trigger: 'schedule' })
+    expect((await settle(store, started.dreamId)).status).toBe('failed')
+    expect(prompts[0]!.inputs['sessions/sess-1.md']).toContain('please use tabs')
+    await expect(readdir(join(dir, 'memory-dreams', started.dreamId, 'input'))).rejects.toThrow()
+  })
+
+  it('never writes the inputs when the extraction refuses before materializing them', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    await ensureMemory(local(dir), 'bot')
+    const store = new FakeStore()
+    const runner = new DreamRunner({
+      agentDirByAgent: () => dir,
+      memoryHomePortsFor: () => home(local(dir)),
+      dreamingPolicyFor: () => ({ enabled: true }),
+      operationPolicy: 'test-only',
+      store,
+      extract: async (_a, _s, _p, _signal, context) => {
+        expect(await readdir(context.inputDir)).toEqual([])
+        throw new Error('runtime lacks a verified read-only/plan mode')
+      },
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'schedule' })
+    expect((await settle(store, started.dreamId)).status).toBe('failed')
+    await expect(readdir(join(dir, 'memory-dreams', started.dreamId, 'input'))).rejects.toThrow()
+  })
+
+  it('retires every staged byte when dreaming is turned off, keeping unreviewed skill candidates', async () => {
+    const { dir, store, runner } = await setup({})
+    const completed = await runner.start('a1', { trigger: 'manual' })
+    expect((await settle(store, completed.dreamId)).status).toBe('completed')
+    const failed = 'drm-failed-leftover'
+    await mkdir(join(dir, 'memory-dreams', failed, 'input', 'sessions'), { recursive: true })
+    await writeFile(join(dir, 'memory-dreams', failed, 'input', 'sessions', 's.md'), 'raw transcript')
+    await mkdir(join(dir, 'memory-dreams', failed, 'skills', 'keep-me'), { recursive: true })
+    await store.insertDream({
+      dreamId: failed,
+      agentId: 'a1',
+      status: 'failed',
+      trigger: 'schedule',
+      sessionIds: [],
+      snapshotDigest: 'sha256:x',
+      skills: [{ name: 'keep-me', description: 'Keep me', state: 'proposed' }],
+      createdAt: '2026-07-24T00:00:00.000Z'
+    })
+
+    await runner.retireStaging('a1')
+
+    expect(store.dreams.get(completed.dreamId)?.status).toBe('discarded')
+    await expect(readdir(join(dir, 'memory-dreams', completed.dreamId))).rejects.toThrow()
+    expect(await readdir(join(dir, 'memory-dreams', failed))).toEqual(['skills'])
   })
 
   it('stages what the model wrote through the shared write path, indexed by its own headers', async () => {
@@ -448,9 +523,8 @@ describe('DreamRunner pipeline', () => {
     expect(started.sessionIds).toEqual(['sess-channel', 'sess-dm', 'sess-github'])
     await settle(store, started.dreamId)
 
-    const inputDir = prompts[0]!.inputDir
-    expect(await readdir(join(inputDir, 'sessions'))).toEqual(
-      expect.arrayContaining(['sess-channel.md', 'sess-dm.md', 'sess-github.md'])
+    expect(Object.keys(prompts[0]!.inputs)).toEqual(
+      expect.arrayContaining(['sessions/sess-channel.md', 'sessions/sess-dm.md', 'sessions/sess-github.md'])
     )
     for (const id of ['sess-channel', 'sess-dm', 'sess-github']) expect(prompts[0]?.prompt).toContain(id)
   })
@@ -2326,7 +2400,7 @@ describe('DreamRunner skill mining — review findings', () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     await ensureMemory(local(dir), 'bot')
     const prompts: string[] = []
-    let inputDir = ''
+    let inputs: Record<string, string> = {}
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
       memoryHomePortsFor: () => home(local(dir)),
@@ -2335,14 +2409,15 @@ describe('DreamRunner skill mining — review findings', () => {
       store,
       extract: async (_a, _s, prompt, _signal, context) => {
         prompts.push(prompt)
-        inputDir = context.inputDir
+        await context.materializeInputs()
+        inputs = await readInputs(context.inputDir)
         return { output: opts.proposal ?? proposalWith([candidate()]) }
       },
       log: silent
     })
     const started = await runner.start('a1', { trigger: 'manual' })
     const done = await settle(store, started.dreamId)
-    return { dir, runner, store, prompts, inputDir, dreamId: started.dreamId, done }
+    return { dir, runner, store, prompts, inputs, dreamId: started.dreamId, done }
   }
 
   it('feeds tool titles into the session files the miner reads, and never tool bodies', async () => {
@@ -2352,8 +2427,8 @@ describe('DreamRunner skill mining — review findings', () => {
     const store = new TwoSession()
     store.rows = [{ sender: 'user-1', text: 'ship it' }]
     store.toolRows = [{ sender: 'agent', text: 'Bash(npm run deploy)', kind: 'tool' }]
-    const { inputDir } = await mine({ store })
-    const session = await readFile(join(inputDir, 'sessions', 'sess-1.md'), 'utf8')
+    const { inputs } = await mine({ store })
+    const session = inputs['sessions/sess-1.md']
     expect(session).toContain('[tool] Bash(npm run deploy)')
     expect(session).toContain('ship it')
   })
