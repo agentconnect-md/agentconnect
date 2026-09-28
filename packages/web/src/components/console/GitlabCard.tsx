@@ -26,6 +26,7 @@ import {
   GITLAB_DEFAULT_INSTANCE_URL,
   GITLAB_PROJECT_STATE,
   gitlabProfileUrl,
+  gitlabProjectUrl,
   gitlabStateReasonText,
   gitlabWebhookBadge
 } from '@/lib/gitlab-projects'
@@ -100,6 +101,7 @@ function orphanBindings(
  *  holds is removed where it is used, not from under the bot. */
 function ProjectRow({
   binding,
+  instanceUrl,
   canWrite,
   busy,
   stuck,
@@ -109,6 +111,7 @@ function ProjectRow({
   onTransfer
 }: {
   binding: GitlabProjectBindingDto
+  instanceUrl: string
   canWrite: boolean
   busy: boolean
   stuck: boolean
@@ -127,7 +130,15 @@ function ProjectRow({
     <div className="row grid-cols-[minmax(0,1fr)_auto] items-center gap-[11px]" data-gitlab-project={binding.id}>
       <div className="min-w-0">
         <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
-          <span className="mono min-w-0 truncate text-[12.5px]">{binding.projectPath}</span>
+          <a
+            href={gitlabProjectUrl(instanceUrl, binding.projectPath)}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t('openProject', { project: binding.projectPath })}
+            className="mono min-w-0 truncate text-[12.5px] no-underline hover:underline"
+          >
+            {binding.projectPath}
+          </a>
           <span className={`badge ${GITLAB_PROJECT_STATE[binding.state].badge}`}>
             {GITLAB_PROJECT_STATE[binding.state].label}
           </span>
@@ -730,7 +741,13 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               })}
               {open &&
                 wanting.map((binding) => (
-                  <ProjectRow key={binding.id} binding={binding} indented {...projectActions(binding, false)} />
+                  <ProjectRow
+                    key={binding.id}
+                    binding={binding}
+                    instanceUrl={instanceUrl}
+                    indented
+                    {...projectActions(binding, false)}
+                  />
                 ))}
             </div>
           )
@@ -746,7 +763,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
             </span>
           </div>
           {orphans.map((binding) => (
-            <ProjectRow key={binding.id} binding={binding} {...projectActions(binding)} />
+            <ProjectRow key={binding.id} binding={binding} instanceUrl={instanceUrl} {...projectActions(binding)} />
           ))}
         </div>
       )}

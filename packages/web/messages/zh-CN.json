@@ -1433,6 +1433,7 @@
         "leaveConfirm": "确定要离开{space}吗？{platform} Bot无法只离开一个{noun}——它会离开整个服务器，其中的所有{nounPlural}都会从列表中消失。重新邀请即可撤销。"
       },
       "directMessages": "私信",
+      "openIn": "在 {platform} 中打开 {name}",
       "ownerChange": {
         "title": "要更改此团队的默认Agent吗？",
         "body": "{owner}是私有Agent，只有成为{room}的默认Agent才能在那里工作。该团队中的实时会话仍可停止，但它不会再次响应这些会话。新的提及或委派会使用新的默认Agent开启会话。",
@@ -1492,6 +1493,7 @@
       "connectGitea": "连接 Gitea",
       "cancel": "取消",
       "openRepository": "在 Gitea 中打开 {repo}",
+      "openProject": "在 GitLab 中打开 {project}",
       "working": "处理中…",
       "repairRepository": "修复此仓库",
       "rotateSecret": "轮换 Webhook 签名密钥",

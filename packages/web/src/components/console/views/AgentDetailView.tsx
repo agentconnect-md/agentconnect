@@ -119,7 +119,7 @@ import {
   type GtFamily,
   type GtTriggerMode
 } from '@/lib/gitea-events'
-import { giteaInstanceHost } from '@/lib/gitea-repositories'
+import { giteaInstanceHost, giteaRepositoryUrl } from '@/lib/gitea-repositories'
 import {
   GL_TRIGGER_MODES,
   GL_TRIGGER_PILL,
@@ -137,7 +137,7 @@ import {
   type GlFamily,
   type GlTriggerMode
 } from '@/lib/gitlab-events'
-import { gitlabInstanceHost } from '@/lib/gitlab-projects'
+import { gitlabInstanceHost, gitlabProjectUrl } from '@/lib/gitlab-projects'
 import { orderedGiteaHookRows, orderedGithubHookRows, orderedGitlabHookRows } from '@/lib/code-host-hook-groups'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
@@ -285,6 +285,16 @@ export default function AgentDetailView() {
   )
 }
 
+/** A watched repository's name, linking to its page on the code host when that page is known. */
+function RepoName({ name, url, className }: { name: string; url: string | null; className: string }) {
+  if (!url) return <span className={className}>{name}</span>
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" className={`${className} hover:underline`}>
+      {name}
+    </a>
+  )
+}
+
 function AgentDetail() {
   const t = useTranslations('Agents.detail')
   const decisionsPrototype = useOptionalDecisionsPrototype()
@@ -424,6 +434,13 @@ function AgentDetail() {
     fetchGiteaConnections().then((result) => result.connections)
   )
   const giteaInstanceUrl = giteaConnectionsData?.[0]?.instanceUrl ?? null
+  // A watched repository's page on its host, once the host is known.
+  const repoPageUrl = (host: 'github' | 'gitlab' | 'gitea', repo: string | null): string | null => {
+    if (!repo) return null
+    if (host === 'github') return `https://github.com/${repo}`
+    if (host === 'gitlab') return gitlabInstanceUrl ? gitlabProjectUrl(gitlabInstanceUrl, repo) : null
+    return giteaInstanceUrl ? giteaRepositoryUrl(giteaInstanceUrl, repo) : null
+  }
 
   // Authorization provenance for the unauthorized-watch badge (multi-repo
   // design §web 3): numeric repo ids first, names only for rolling legacy rows.
@@ -1855,9 +1872,11 @@ function AgentDetail() {
                       <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
                         {first && (
                           <span className="flex min-w-0 items-center gap-2">
-                            <span className="mono min-w-0 truncate text-[13px] font-semibold">
-                              {h.repoFullName ?? h.name}
-                            </span>
+                            <RepoName
+                              name={h.repoFullName ?? h.name}
+                              url={repoPageUrl('github', h.repoFullName)}
+                              className="mono min-w-0 truncate text-[13px] font-semibold"
+                            />
                             {/* The repo's first row offers what it does not watch yet — same + menu as desktop. */}
                             {addFamilies.length > 0 && (
                               <RowMoreMenu
@@ -1926,9 +1945,11 @@ function AgentDetail() {
                       <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
                         {first && (
                           <span className="flex min-w-0 items-center gap-2">
-                            <span className="mono min-w-0 truncate text-[13px] font-semibold">
-                              {h.repoFullName ?? h.name}
-                            </span>
+                            <RepoName
+                              name={h.repoFullName ?? h.name}
+                              url={repoPageUrl('gitlab', h.repoFullName)}
+                              className="mono min-w-0 truncate text-[13px] font-semibold"
+                            />
                             {/* The project's first row offers what it does not watch yet — same + menu as desktop. */}
                             {addFamilies.length > 0 && (
                               <RowMoreMenu
@@ -1998,9 +2019,11 @@ function AgentDetail() {
                       <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
                         {first && (
                           <span className="flex min-w-0 items-center gap-2">
-                            <span className="mono min-w-0 truncate text-[13px] font-semibold">
-                              {h.repoFullName ?? h.name}
-                            </span>
+                            <RepoName
+                              name={h.repoFullName ?? h.name}
+                              url={repoPageUrl('gitea', h.repoFullName)}
+                              className="mono min-w-0 truncate text-[13px] font-semibold"
+                            />
                             {/* The repository's first row offers what it does not watch yet — same + menu as desktop. */}
                             {addFamilies.length > 0 && (
                               <RowMoreMenu
@@ -2217,9 +2240,11 @@ function AgentDetail() {
                                       color="var(--text-tertiary)"
                                       className="flex-none"
                                     />
-                                    <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
-                                      {h.repoFullName ?? h.name}
-                                    </span>
+                                    <RepoName
+                                      name={h.repoFullName ?? h.name}
+                                      url={repoPageUrl('github', h.repoFullName)}
+                                      className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)"
+                                    />
                                   </>
                                 ) : null}
                                 {/* The repo's first row offers what it does not watch yet — a + menu, so new subjects just add items. */}
@@ -2370,9 +2395,11 @@ function AgentDetail() {
                                       color="var(--text-tertiary)"
                                       className="flex-none"
                                     />
-                                    <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
-                                      {h.repoFullName ?? h.name}
-                                    </span>
+                                    <RepoName
+                                      name={h.repoFullName ?? h.name}
+                                      url={repoPageUrl('gitlab', h.repoFullName)}
+                                      className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)"
+                                    />
                                   </>
                                 ) : null}
                                 {/* The project's first row offers what it does not watch yet — a + menu, so new subjects just add items. */}
@@ -2522,9 +2549,11 @@ function AgentDetail() {
                                       color="var(--text-tertiary)"
                                       className="flex-none"
                                     />
-                                    <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
-                                      {h.repoFullName ?? h.name}
-                                    </span>
+                                    <RepoName
+                                      name={h.repoFullName ?? h.name}
+                                      url={repoPageUrl('gitea', h.repoFullName)}
+                                      className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)"
+                                    />
                                   </>
                                 ) : null}
                                 {/* The repository's first row offers what it does not watch yet. */}

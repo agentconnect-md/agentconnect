@@ -23,6 +23,11 @@ export function feishuConsoleOrigin(region: FeishuRegion): string {
   return region === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn'
 }
 
+/** The AppLink origin that opens the Lark or Feishu client on one cloud. */
+export function feishuAppLinkOrigin(region: FeishuRegion): string {
+  return region === 'lark' ? 'https://applink.larksuite.com' : 'https://applink.feishu.cn'
+}
+
 /** One app's Basic Info page, or the console's app index when the id is unknown. */
 export function feishuConsoleAppUrl(appId: string | null | undefined, region: FeishuRegion): string {
   const origin = feishuConsoleOrigin(region)

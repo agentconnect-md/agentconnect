@@ -780,7 +780,7 @@ The real per-platform web surface is roughly nine items, not three: install
 wizard, transcript text renderer, `PlatformMark`, bots-settings fragments
 (Slack refresh/reinstall state machines, portal deep-links per region),
 CP API-client bindings + install-polling hooks, channel-list semantics
-(`roomNoun`, leave-ability, glyphs), conversation-merge id/timestamp domain
+(`roomNoun`, leave-ability, glyphs, conversation links), conversation-merge id/timestamp domain
 knowledge, per-platform marketing/help copy, and helper libs
 (`slack-manifest.ts`, `discord-invite.ts`, `telegram-privacy-auto-refresh`).
 

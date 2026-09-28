@@ -1433,6 +1433,7 @@
         "leaveConfirm": "Leave {space}? A {platform} bot cannot leave one {noun} — it leaves the whole server, and every {nounPlural} of it disappears from this list. Re-invite it to undo."
       },
       "directMessages": "Direct messages",
+      "openIn": "Open {name} in {platform}",
       "ownerChange": {
         "title": "Move this team’s default?",
         "body": "{owner} is a private agent, and being {room}’s default is what lets it act there. Its live sessions in this team can still be stopped, but it will not answer in them again. A new mention or delegation opens a session with the new default.",
@@ -1492,6 +1493,7 @@
       "connectGitea": "Connect Gitea",
       "cancel": "Cancel",
       "openRepository": "Open {repo} on Gitea",
+      "openProject": "Open {project} on GitLab",
       "working": "Working…",
       "repairRepository": "Repair this repository",
       "rotateSecret": "Rotate the webhook signing secret",

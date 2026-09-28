@@ -75,6 +75,11 @@ export function gitlabProfileUrl(instanceUrl: string, username: string): string 
   return `${instanceUrl.replace(/\/+$/, '')}/${username}`
 }
 
+/** One project's page on the configured instance — the same concatenation rule. */
+export function gitlabProjectUrl(instanceUrl: string, projectPath: string): string {
+  return `${instanceUrl.replace(/\/+$/, '')}/${projectPath}`
+}
+
 /** §24.3: authority to create service accounts is not API-readable, so the copy
  *  has to name every way an operator can grant it — the tier-gated delegation
  *  setting, the administrator connection, and why Admin Mode defeats the latter. */

@@ -30,7 +30,7 @@ import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import { creatorLabel, type BotDto, type MeDto } from '@/lib/api'
 import { agentLabel, isDirectConversation, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
-import { roomGlyph, roomPlural, rowLabelParts, rowName } from '@/components/console/IntegrationChannelList'
+import { ConversationName, roomGlyph, roomPlural, rowLabelParts } from '@/components/console/IntegrationChannelList'
 import { RevokedMarkDot } from '@/components/console/IntegrationMarks'
 import {
   botCardCopy,
@@ -644,7 +644,6 @@ function BotsCard({
                           const glyph = roomGlyph(c.kind, b.platform)
                           const glyphIcon =
                             glyph === '@@' ? 'users' : glyph === '@' ? 'at-sign' : glyph === '#' ? 'hash' : null
-                          const Name = rowName(c.kind, b.platform)
                           return (
                             <Fragment key={c.channelId}>
                               {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
@@ -674,11 +673,7 @@ function BotsCard({
                                     :{' '}
                                   </span>
                                   <span className="flex min-w-0 items-baseline gap-[6px] truncate">
-                                    {Name ? (
-                                      <Name name={label.name} channelKey={c.key} url={c.url} />
-                                    ) : (
-                                      <span className="min-w-0 truncate">{label.name}</span>
-                                    )}
+                                    <ConversationName row={c.row} name={label.name} platform={b.platform} bot={b} />
                                     {label.hint && (
                                       <span className="flex-none text-(--text-tertiary)">{label.hint}</span>
                                     )}

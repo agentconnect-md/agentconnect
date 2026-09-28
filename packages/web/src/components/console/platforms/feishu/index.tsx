@@ -5,7 +5,7 @@ import { identityCards as identityCardsFor, inviteBotHint } from '../wizard-chro
 import { feishuApi, type FeishuApi } from './api'
 import { FeishuWizardBody, FEISHU_TRANSPORT_LABEL } from './Body'
 import { FeishuMark } from './mark'
-import { feishuBrand, feishuRegionOf } from './region'
+import { feishuAppLinkOrigin, feishuBrand, feishuRegionOf } from './region'
 import { feishuSettingsFragments } from './settings'
 
 /** Lark / Feishu's provider-native message id: an `om_`-prefixed opaque id,
@@ -42,7 +42,12 @@ export const feishuModule: WebPlatformModule<FeishuApi> = {
     // Lark groups have no `#name` convention, so the row shows the bare title.
     roomGlyph: '',
     // No console-driven leave: the bot is removed from a group in Lark itself.
-    leave: 'none'
+    leave: 'none',
+    // AppLink opens a group by its chat id on the bot's own cloud; a DM opens by user, which the row lacks.
+    conversationUrl: ({ channelId, kind, feishuRegion }) =>
+      kind === 'im'
+        ? undefined
+        : `${feishuAppLinkOrigin(feishuRegionOf({ feishuRegion }))}/client/chat/open?openChatId=${encodeURIComponent(channelId)}`
   },
   messageIdentity: (row) => (FEISHU_MESSAGE_ID.test(row.ts) ? `ts:${row.ts}` : null)
 }

@@ -16,7 +16,12 @@ export const GOOGLE_CHAT_CHANNEL_LIST: WebChannelListSemantics = {
   leave: 'none',
   triggers: ['off', 'mention', 'decision'],
   // Google delivers a Space message, thread replies included, only when it mentions the app; the host's hint promises more.
-  mentionHint: { key: 'googlechatMentionHint' }
+  mentionHint: { key: 'googlechatMentionHint' },
+  // A row's id is the space's resource name; Chat opens a DM under /dm and every other space under /room.
+  conversationUrl: ({ channelId, kind }) => {
+    const id = /^spaces\/([^/]+)$/.exec(channelId)?.[1]
+    return id ? `https://chat.google.com/${kind === 'im' ? 'dm' : 'room'}/${encodeURIComponent(id)}` : undefined
+  }
 }
 
 export const googleChatModule: WebPlatformModule<GoogleChatApi> = {
