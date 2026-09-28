@@ -25,7 +25,6 @@ import {
 } from '@/lib/decisions/routing-draft'
 import { useRoutingRoster } from '@/lib/decisions/routing-roster'
 import { RoutingChainFields } from './RoutingChainFields'
-import { DecisionRoutingTry } from './DecisionRoutingTry'
 import { DecisionRoutingEvaluationsDrawer } from './DecisionRoutingEvaluationsDrawer'
 import { Note, routingSaveError, saveErrorText } from './RoutingFields'
 
@@ -97,7 +96,6 @@ export function DecisionRoutingModal({
   const state = routingDrafts[routingKeyFor(botId)] ?? INITIAL_ROUTING_STATE
   const dispatch = useCallback((event: RoutingEvent) => dispatchRouting(botId, event), [botId, dispatchRouting])
   const [helpOpen, setHelpOpen] = useState(false)
-  const [tryOpen, setTryOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const saving = useRef(false)
   const { data, error, mutate } = useSWR(orgId && botId ? ['decision-routing', api.mode, orgId, botId] : null, () =>
@@ -273,28 +271,15 @@ export function DecisionRoutingModal({
         />
 
         {decision && (
-          <div className="flex flex-wrap items-center gap-[14px]">
-            <button
-              type="button"
-              className="lnk gap-[6px] text-[11.5px] font-medium"
-              aria-expanded={helpOpen}
-              onClick={() => setHelpOpen((open) => !open)}
-            >
-              <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-              {tDecisions('binding.howThisWorks')}
-            </button>
-            {canWrite && (
-              <button
-                type="button"
-                className="lnk gap-[6px] text-[11.5px] font-medium"
-                aria-expanded={tryOpen}
-                onClick={() => setTryOpen((open) => !open)}
-              >
-                <Icon name={tryOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-                {tDecisions('binding.tryMessage')}
-              </button>
-            )}
-          </div>
+          <button
+            type="button"
+            className="lnk gap-[6px] self-start text-[11.5px] font-medium"
+            aria-expanded={helpOpen}
+            onClick={() => setHelpOpen((open) => !open)}
+          >
+            <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+            {tDecisions('binding.howThisWorks')}
+          </button>
         )}
         {decision && helpOpen && (
           <div className="flex flex-col gap-1">
@@ -302,9 +287,6 @@ export function DecisionRoutingModal({
             <Note icon="git-branch">{t('notes.constrained')}</Note>
             <Note icon="clock">{t('notes.history')}</Note>
           </div>
-        )}
-        {rootDecision && canWrite && tryOpen && (
-          <DecisionRoutingTry botId={botId} draft={draft} decision={rootDecision!} roster={roster} open={tryOpen} />
         )}
 
         {serverError && (

@@ -1370,7 +1370,9 @@ The prototype must model those transitions rather than changing only its button 
 For the initial chat examples, input is Current message and optional ordered
 Conversation history with sender IDs. Routing also chooses a channel and a sample situation: new conversation,
 explicit mention, or established thread. These are preview inputs, not runtime
-policy switches. Draft edits make prior results stale until rerun.
+policy switches. Draft edits make prior results stale until rerun. The console's
+rules modal no longer offers routing Try; the routing rows below describe the
+`decision-routing/preview` endpoint, which remains.
 
 | Surface / situation          | Result shown                                                                                                                        |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -1957,7 +1959,7 @@ Decision opens as a sheet stacked over its parent. The sheet names the parent De
 and the rule that leads to it, and the parent's name returns to it with edits kept.
 A sheet's Save keeps its edits and returns one level. Its Cancel, ×, or Escape
 discards them and returns one level. Only the editor underneath saves or closes.
-Gate and shared-bot routing Try use the same traversal as live execution.
+Gate Try and the routing preview endpoint use the same traversal as live execution.
 Recent evaluation details retain the reached steps and their answers with the
 existing transcript retention boundary. The model-selection sample remains
 explicitly simulated.
