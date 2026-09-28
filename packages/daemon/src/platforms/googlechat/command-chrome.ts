@@ -57,5 +57,11 @@ export const googleChatCommandChrome: CommandChromeSurface<unknown, GoogleChatSt
   status(conn: unknown, _msg: unknown, ctx: CommandChromeContext, info: GoogleChatStatusInfo, link?: string): void {
     const line = renderGoogleChatStatus(info)
     post(conn, ctx, link ? `${line} · [View session](${link})` : line)
+  },
+
+  // A DM's thread coordinate is the Space itself, and a DM create carries no thread option (§5).
+  async notice(conn: unknown, channel: string, thread: string | undefined, text: string): Promise<void> {
+    const replyThread = thread === undefined ? undefined : googleChatReplyThread({ channel, replyThread: thread })
+    await (conn as GoogleChatChromePort).postChrome(channel, replyThread, text)
   }
 }

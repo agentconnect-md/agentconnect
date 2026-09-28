@@ -16345,11 +16345,14 @@ export class Daemon {
     const agent = this.agents.get(entry.agentId)
     const { msg } = entry
     // A browser turn got the notice in its terminal frame; a headless one has nowhere to show it.
-    const conn = msg.headless || entry.webchat ? undefined : this.replyConnFor(entry.agentId, entry.integrationId)
+    const suppressReplyConn = msg.headless === true || entry.webchat !== undefined
+    const conn = suppressReplyConn ? undefined : this.replyConnFor(entry.agentId, entry.integrationId)
+    const egress = this.platformTurnEgress.get(msg.platform)?.(entry.integrationId)
     await this.postTurnCutNotice(
       {
         entry,
         conn,
+        ...(egress ? { egress } : {}),
         plan: {
           agentId: entry.agentId,
           sessionKey: key,
@@ -16357,7 +16360,8 @@ export class Daemon {
           agentName: agent?.displayName?.trim() || agent?.name || entry.agentId,
           ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {}),
           transcriptChannel: transcriptChannelKey(msg.channel, msg.transportScope),
-          sessionThread: sessionThreadOf(msg)
+          sessionThread: sessionThreadOf(msg),
+          suppressReplyConn
         }
       },
       notice,
@@ -16370,9 +16374,18 @@ export class Daemon {
     p: {
       entry: QueueEntry
       conn?: ReplyConnection | undefined
+      /** The turn's own egress, for a platform whose output does not go through `conn`. */
+      egress?: PlatformConnection | undefined
       plan: Pick<
         TurnPlan,
-        'agentId' | 'sessionKey' | 'platform' | 'agentName' | 'iconUrl' | 'transcriptChannel' | 'sessionThread'
+        | 'agentId'
+        | 'sessionKey'
+        | 'platform'
+        | 'agentName'
+        | 'iconUrl'
+        | 'transcriptChannel'
+        | 'sessionThread'
+        | 'suppressReplyConn'
       >
     },
     notice: TurnCutNotice,
@@ -16387,6 +16400,8 @@ export class Daemon {
           chrome: true
         })
       else if (p.conn) await p.conn.postMessage(msg.channel, text, msg.thread)
+      else if (!p.plan.suppressReplyConn)
+        await this.chromeNotice(p.plan.platform, p.egress, msg.channel, msg.thread, text)
       await this.store.appendTranscript({
         channel: p.plan.transcriptChannel,
         thread: p.plan.sessionThread,
@@ -19708,26 +19723,40 @@ export class Daemon {
       // enabled channel is enabled too (the rule is scoped to the enclosing channel).
       if (routing.bindRules.some((r) => r.channel === msg.channel)) continue
       const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
-      const addressed = isDm || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
+      // A trusted mention cause is an address even before the bot's own identity is known.
+      const addressed = isDm || msg.trigger === 'mention' || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
       if (!addressed) continue
       const latch = `${integrationId}:${msg.channel}`
       if (this.gatedNoticesSent.has(latch)) return
       this.gatedNoticesSent.add(latch)
-      const conn = this.connForIntegration(integrationId)
-      if (!conn) return
       const text =
         '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
       const thread = isDm ? undefined : msg.thread
+      const conn = this.connForIntegration(integrationId)
       // Chrome-marked so peer daemons' thread backfill never re-ingests the notice.
-      const post =
-        conn instanceof SlackConnection
+      const post = !conn
+        ? this.chromeNotice(msg.platform, this.anyConnForIntegration(integrationId), msg.channel, thread, text)
+        : conn instanceof SlackConnection
           ? conn.postMessage(msg.channel, text, thread, { chrome: true })
           : conn.postChrome(msg.channel, text, { threadTs: thread })
+      if (!post) return
       void post.catch((err: unknown) =>
         this.log.warn(`gating: notice post failed in ch=${msg.channel}: ${(err as Error).message}`)
       )
       return // one notice per message even when several integrations share the socket
     }
+  }
+
+  /** Core's out-of-turn notice through the command-chrome surface of a platform whose connection is not a reply connection (§7.4). */
+  private chromeNotice(
+    platform: string,
+    conn: PlatformConnection | undefined,
+    channel: string,
+    thread: string | undefined,
+    text: string
+  ): Promise<void> | undefined {
+    const surface = this.commandChrome.for(platform)
+    return conn && surface.notice ? surface.notice(conn, channel, thread, text) : undefined
   }
 
   /** Surface an observed conversation as a configurable row. This is an incremental

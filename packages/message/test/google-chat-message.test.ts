@@ -23,6 +23,8 @@ import {
   buttonClicked,
   dmMessage,
   dmMessageFromWorkspace,
+  helpInDm,
+  helpInSpace,
   removedFromSpace,
   spaceMention,
   spaceMentionByExternalMember
@@ -420,5 +422,74 @@ describe('Google Chat tenant keys and button clicks (design §10)', () => {
     const byExternal = copy(buttonClicked)
     byExternal.chat.user = { ...spaceMentionByExternalMember.chat.user }
     expect(normalize(byExternal)).toMatchObject({ interaction: { user: EXTERNAL_PERSON }, tenant: CUSTOMER })
+  })
+})
+
+describe('Google Chat slash commands (design §11.3)', () => {
+  const commandIn = (event: any) => event.chat.appCommandPayload
+
+  it('classifies the /help slash command, matched by name, as help in a Space and in a DM', () => {
+    expect(normalize(helpInSpace)).toEqual({
+      kind: 'help',
+      help: { user: PERSON, space: SPACE, isDm: false },
+      tenant: CUSTOMER,
+      configCompleteRedirectUri: CONFIG_COMPLETE_URL
+    })
+    expect(normalize(helpInDm)).toMatchObject({
+      kind: 'help',
+      help: { user: PERSON, space: DM, isDm: true },
+      tenant: `domains/${DOMAIN_ID}`
+    })
+    // The name decides, never the operator-chosen command id.
+    const otherId = copy(helpInSpace)
+    commandIn(otherId).appCommandMetadata.appCommandId = '42'
+    commandIn(otherId).message.annotations[0].slashCommand.commandId = '42'
+    expect(normalize(otherId)).toMatchObject({ kind: 'help' })
+    expect(googleChatPayloadOf(helpInSpace)?.key).toBe('appCommandPayload')
+  })
+
+  it('starts nothing for another slash command, a quick command, or a command without its type', () => {
+    const other = copy(helpInSpace)
+    commandIn(other).message.annotations[0].slashCommand.commandName = '/status'
+    expect(normalize(other)).toEqual({ kind: 'unsupported', reason: 'slash_command' })
+    const unnamed = copy(helpInSpace)
+    delete commandIn(unnamed).message.annotations
+    expect(normalize(unnamed)).toEqual({ kind: 'unsupported', reason: 'slash_command' })
+    const quick = copy(helpInSpace)
+    commandIn(quick).appCommandMetadata.appCommandType = 'QUICK_COMMAND'
+    expect(normalize(quick)).toEqual({ kind: 'unsupported', reason: 'event_type' })
+    const untyped = copy(helpInSpace)
+    delete commandIn(untyped).appCommandMetadata
+    expect(normalize(untyped)).toEqual({ kind: 'unsupported', reason: 'event_type' })
+  })
+
+  it('refuses /help the way it refuses a click: Space checks, sender checks, dialogs, group DMs', () => {
+    const refused: [string, (e: any) => void, GoogleChatEventResult][] = [
+      [
+        'message in another Space',
+        (e) => (commandIn(e).message.name = 'spaces/OTHER/messages/M'),
+        { kind: 'invalid', reason: 'cross_space' }
+      ],
+      [
+        'thread elsewhere',
+        (e) => (commandIn(e).message.thread.name = 'spaces/OTHER/threads/T'),
+        { kind: 'invalid', reason: 'cross_space' }
+      ],
+      ['no Space', (e) => delete commandIn(e).space, { kind: 'invalid', reason: 'malformed' }],
+      ['a nameless user', (e) => delete e.chat.user.name, { kind: 'invalid', reason: 'malformed' }],
+      ['a bot asking', (e) => (e.chat.user.type = 'BOT'), { kind: 'ignored', reason: 'app_authored' }],
+      ['an untyped user', (e) => delete e.chat.user.type, { kind: 'unsupported', reason: 'sender_type' }],
+      ['a dialog', (e) => (commandIn(e).isDialogEvent = true), { kind: 'unsupported', reason: 'dialog' }],
+      [
+        'a group DM',
+        (e) => (commandIn(e).space = { name: DM, spaceType: 'GROUP_CHAT' }),
+        { kind: 'unsupported', reason: 'group_dm' }
+      ]
+    ]
+    for (const [label, mutate, expected] of refused) {
+      const event = copy(helpInSpace)
+      mutate(event)
+      expect(normalize(event), label).toEqual(expected)
+    }
   })
 })

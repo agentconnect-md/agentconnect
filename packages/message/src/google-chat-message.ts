@@ -38,6 +38,8 @@ export interface GoogleChatAnnotation {
   startIndex?: number
   length?: number
   userMention?: { user?: GoogleChatUser; type?: string }
+  /** A `SLASH_COMMAND` annotation's `SlashCommandMetadata`: the invoked command by name and id. */
+  slashCommand?: { bot?: GoogleChatUser; type?: string; commandName?: string; commandId?: string }
 }
 
 export interface GoogleChatMessage {
@@ -62,9 +64,14 @@ export interface GoogleChatPayload {
   configCompleteRedirectUri?: string
   isDialogEvent?: boolean
   dialogEventType?: string
+  /** An `appCommandPayload`'s command: `appCommandType` is `SLASH_COMMAND` or `QUICK_COMMAND`. */
+  appCommandMetadata?: { appCommandId?: string | number; appCommandType?: string }
 }
 
-/** Every payload Google sends a Chat app, exactly one per request; commands and widget updates start nothing here. */
+/** The one slash command the app registers (design §3), matched by name; the relay answers it. */
+export const GOOGLE_CHAT_HELP_COMMAND = '/help'
+
+/** Every payload Google sends a Chat app, exactly one per request; only `/help` of the commands and no widget update is answered. */
 export const GOOGLE_CHAT_PAYLOAD_KEYS = [
   'messagePayload',
   'addedToSpacePayload',
@@ -133,6 +140,15 @@ export interface GoogleChatInteraction {
   isDm: boolean
 }
 
+/** A `/help` slash command: who asked and where; the relay answers it in the HTTP body. */
+export interface GoogleChatHelpRequest {
+  /** The asking user's `users/…` name. */
+  user: string
+  /** Full `spaces/…` resource name. */
+  space: string
+  isDm: boolean
+}
+
 /** Facts every classified event carries beside its payload: its tenant key (design §10.4) and the configuration return URL. */
 export interface GoogleChatEventContext {
   /** `customers/…` for a Space event, `domains/…` for a DM event; absent for an event without a Workspace tenant. */
@@ -140,19 +156,22 @@ export interface GoogleChatEventContext {
   configCompleteRedirectUri?: string
 }
 
-/** `invalid` is a malformed request; `ignored`, `unsupported` and `interaction` are completed decisions that start no turn. */
+/** `invalid` is a malformed request; `ignored`, `unsupported`, `interaction` and `help` are completed decisions that start no turn. */
 export type GoogleChatEventResult =
   | ({ kind: 'message'; message: NormalizedPlatformMessage } & GoogleChatEventContext)
   | ({ kind: 'membership'; membership: GoogleChatMembershipChange } & GoogleChatEventContext)
   | ({ kind: 'interaction'; interaction: GoogleChatInteraction } & GoogleChatEventContext)
+  | ({ kind: 'help'; help: GoogleChatHelpRequest } & GoogleChatEventContext)
   | { kind: 'ignored'; reason: 'app_authored' }
   | { kind: 'unsupported'; reason: GoogleChatUnsupportedReason }
   | { kind: 'invalid'; reason: GoogleChatInvalidReason }
 
 type Obj = Record<string, unknown>
 type Invalid = { invalid: GoogleChatInvalidReason }
-type MessageOutcome = { message: NormalizedPlatformMessage } | { skip: GoogleChatEventResult } | Invalid
-type InteractionOutcome = { interaction: GoogleChatInteraction } | { skip: GoogleChatEventResult } | Invalid
+type Skip = { skip: GoogleChatEventResult }
+type MessageOutcome = { message: NormalizedPlatformMessage } | Skip | Invalid
+type InteractionOutcome = { interaction: GoogleChatInteraction } | Skip | Invalid
+type HelpOutcome = { help: GoogleChatHelpRequest } | Skip | Invalid
 // The request's parts as untrusted objects: `chat`, its one payload, the event's Space, and `commonEventObject`.
 type Parts = { key: GoogleChatPayloadKey; chat: Obj; payload: Obj; space?: Obj; common?: Obj }
 
@@ -278,6 +297,30 @@ function interactionFormInputs(common: Obj | undefined): Record<string, string[]
   return out
 }
 
+// A click's or a command's message and thread: optional, but a named one must belong to `space`.
+function eventCoordinates(parts: Parts, space: string): { message?: string; thread?: string } | Invalid {
+  const message = obj(parts.payload.message)
+  if (!message) return {}
+  const name = message.name === undefined ? undefined : childOf(space, 'messages', message.name)
+  if (name !== undefined && typeof name !== 'string') return name
+  const ownSpace = obj(message.space)?.name
+  if (ownSpace !== undefined && ownSpace !== space) return { invalid: 'cross_space' }
+  const thread = message.thread === undefined ? undefined : childOf(space, 'threads', message.thread)
+  if (thread !== undefined && typeof thread !== 'string') return thread
+  return { ...(name ? { message: name } : {}), ...(thread ? { thread } : {}) }
+}
+
+// The acting `chat.user` of a click or a command, under the sender checks a message gets.
+function humanActor(parts: Parts, context: GoogleChatNormalizeContext): { user: string } | Skip | Invalid {
+  const user = obj(parts.chat.user) ?? {}
+  const userName = str(user.name)
+  if (!userName || !USER_NAME.test(userName)) return { invalid: 'malformed' }
+  if (user.type === 'BOT' || userName === context.appUserName)
+    return { skip: { kind: 'ignored', reason: 'app_authored' } }
+  if (user.type !== 'HUMAN') return { skip: { kind: 'unsupported', reason: 'sender_type' } }
+  return { user: userName }
+}
+
 // A button click: the card's message and thread pass the Space checks a message does, the clicker the sender checks.
 function normalizeInteraction(
   parts: Parts,
@@ -285,25 +328,10 @@ function normalizeInteraction(
   isDm: boolean,
   context: GoogleChatNormalizeContext
 ): InteractionOutcome {
-  const message = obj(parts.payload.message)
-  let thread: string | undefined
-  let messageName: string | undefined
-  if (message) {
-    const name = message.name === undefined ? undefined : childOf(space, 'messages', message.name)
-    if (name !== undefined && typeof name !== 'string') return name
-    messageName = name
-    const ownSpace = obj(message.space)?.name
-    if (ownSpace !== undefined && ownSpace !== space) return { invalid: 'cross_space' }
-    const messageThread = message.thread === undefined ? undefined : childOf(space, 'threads', message.thread)
-    if (messageThread !== undefined && typeof messageThread !== 'string') return messageThread
-    thread = messageThread
-  }
-  const user = obj(parts.chat.user) ?? {}
-  const userName = str(user.name)
-  if (!userName || !USER_NAME.test(userName)) return { invalid: 'malformed' }
-  if (user.type === 'BOT' || userName === context.appUserName)
-    return { skip: { kind: 'ignored', reason: 'app_authored' } }
-  if (user.type !== 'HUMAN') return { skip: { kind: 'unsupported', reason: 'sender_type' } }
+  const coordinates = eventCoordinates(parts, space)
+  if (isInvalid(coordinates)) return coordinates
+  const actor = humanActor(parts, context)
+  if (!('user' in actor)) return actor
   const parameters = interactionParameters(parts.common)
   // A button's `function` is the events URL, so the action rides our own parameter.
   const fn = str(parameters[GOOGLE_CHAT_ACTION_PARAMETER])
@@ -313,13 +341,32 @@ function normalizeInteraction(
       function: fn,
       parameters,
       formInputs: interactionFormInputs(parts.common),
-      ...(messageName ? { message: messageName } : {}),
-      user: userName,
+      ...(coordinates.message ? { message: coordinates.message } : {}),
+      user: actor.user,
       space,
-      ...(thread ? { thread } : {}),
+      ...(coordinates.thread ? { thread: coordinates.thread } : {}),
       isDm
     }
   }
+}
+
+// The invoked slash command's name: the message's `SLASH_COMMAND` annotation, `slashCommand.commandName`.
+function slashCommandName(payload: Obj): string | undefined {
+  const annotations = obj(payload.message)?.annotations
+  for (const annotation of Array.isArray(annotations) ? annotations : []) {
+    const a = obj(annotation)
+    if (a?.type === 'SLASH_COMMAND') return str(obj(a.slashCommand)?.commandName)
+  }
+  return undefined
+}
+
+// A `/help` slash command, under the checks a click gets.
+function normalizeHelp(parts: Parts, space: string, isDm: boolean, context: GoogleChatNormalizeContext): HelpOutcome {
+  const coordinates = eventCoordinates(parts, space)
+  if (isInvalid(coordinates)) return coordinates
+  const actor = humanActor(parts, context)
+  if (!('user' in actor)) return actor
+  return { help: { user: actor.user, space, isDm } }
 }
 
 // Removes the receiving app's own mention spans, verified against the text so a misaligned index never erases user content.
@@ -409,8 +456,14 @@ export function normalizeGoogleChatEvent(event: unknown, context: GoogleChatNorm
     throw new TypeError('Google Chat app identity must be a users/… resource name')
   const parts = partsOf(event)
   if (!parts) return { kind: 'invalid', reason: 'malformed' }
-  if (parts.key === 'appCommandPayload' || parts.key === 'widgetUpdatedPayload')
-    return { kind: 'unsupported', reason: 'event_type' }
+  if (parts.key === 'widgetUpdatedPayload') return { kind: 'unsupported', reason: 'event_type' }
+  // Of the app commands only the `/help` slash command is answered; a quick command or another name starts nothing.
+  if (parts.key === 'appCommandPayload') {
+    if (obj(parts.payload.appCommandMetadata)?.appCommandType !== 'SLASH_COMMAND')
+      return { kind: 'unsupported', reason: 'event_type' }
+    if (slashCommandName(parts.payload) !== GOOGLE_CHAT_HELP_COMMAND)
+      return { kind: 'unsupported', reason: 'slash_command' }
+  }
   const space = str(parts.space?.name)
   if (!space || !SPACE_NAME.test(space)) return { kind: 'invalid', reason: 'malformed' }
   const spaceType = parts.space?.spaceType
@@ -424,6 +477,12 @@ export function normalizeGoogleChatEvent(event: unknown, context: GoogleChatNorm
       const outcome = normalizeInteraction(parts, space, isDm, context)
       if (isInvalid(outcome)) return { kind: 'invalid', reason: outcome.invalid }
       return 'interaction' in outcome ? { kind: 'interaction', interaction: outcome.interaction, ...ctx } : outcome.skip
+    }
+    case 'appCommandPayload': {
+      if (parts.payload.isDialogEvent === true) return { kind: 'unsupported', reason: 'dialog' }
+      const outcome = normalizeHelp(parts, space, isDm, context)
+      if (isInvalid(outcome)) return { kind: 'invalid', reason: outcome.invalid }
+      return 'help' in outcome ? { kind: 'help', help: outcome.help, ...ctx } : outcome.skip
     }
     case 'addedToSpacePayload':
     case 'removedFromSpacePayload': {

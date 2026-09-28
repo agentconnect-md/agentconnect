@@ -134,6 +134,43 @@ export const spaceAddingMention = request('2026-09-27T04:28:35.101528Z', {
   }
 })
 
+/** A slash command typed in `space`: an `appCommandPayload` whose message names the command in a `SLASH_COMMAND` annotation. */
+export function slashCommand(commandName: string, inDm = false): GoogleChatEventObject {
+  const space = inDm ? dmSpace : namedSpace
+  return request('2026-09-27T04:45:00.000000Z', {
+    appCommandPayload: {
+      appCommandMetadata: { appCommandId: '1', appCommandType: 'SLASH_COMMAND' },
+      space,
+      message: {
+        name: `${space.name}/messages/EXAMPLE_COMMAND.EXAMPLE_COMMAND`,
+        sender: person,
+        createTime: '2026-09-27T04:45:00.000000Z',
+        text: commandName,
+        annotations: [
+          {
+            type: 'SLASH_COMMAND',
+            length: commandName.length,
+            slashCommand: {
+              bot: { name: APP, displayName: 'AgentConnect Probe', type: 'BOT' },
+              type: 'INVOKE',
+              commandName,
+              commandId: '1'
+            }
+          }
+        ],
+        thread: { name: `${space.name}/threads/EXAMPLE_COMMAND` },
+        space,
+        argumentText: ''
+      },
+      configCompleteRedirectUri: REDIRECT
+    }
+  })
+}
+
+/** `/help` in the Space and in the DM. */
+export const spaceHelp = slashCommand('/help')
+export const dmHelp = slashCommand('/help', true)
+
 /** Removing the app from a Space. */
 export const spaceRemoved = request('2026-09-27T05:00:00.000000Z', { removedFromSpacePayload: { space: namedSpace } })
 

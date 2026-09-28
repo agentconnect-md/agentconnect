@@ -47,8 +47,8 @@ adapters remain a separate discussion.
 
 Ambient Space history, unmentioned thread follow-ups, group DMs, attachments,
 cards other than the welcome and elicitation cards, dialogs, app-home surfaces,
-Google-native commands, shared bots, Google identity linking, and synchronization
-of Google membership into Console session permissions are outside the first
+Google-native commands other than `/help` (§11.4), shared bots, Google identity
+linking, and synchronization of Google membership into Console session permissions are outside the first
 version. An elicitation the card cannot render (URL mode, an over-long option
 list) fails explicitly and never invents an answer or approval. Serving many Workspace customers from one
 published app, and the identity link that comes with it, are designed in §10.
@@ -198,7 +198,8 @@ The wizard should present these concrete steps:
 2. Complete Google's Cloud project, API, and configuration prerequisites.
 3. Build the app as a Google Workspace add-on with the HTTP endpoint URL
    connection and one URL for all triggers, copy the generated endpoint into
-   Google Cloud Console, and configure who can find and use the app.
+   Google Cloud Console, add the `/help` slash command, and configure who can
+   find and use the app.
 4. Create the service account in the Chat app's own project, grant it the Browser
    role on that project, and enable the Cloud Resource Manager API; then provide
    its credential through the secret form and validate it. Show an actionable
@@ -224,8 +225,8 @@ service account of step 4), links to the
 Chat API configuration page, and shows the values to enter: the HTTP endpoint
 URL with a copy button (the relay origin plus `GOOGLE_CHAT_EVENTS_PATH`), the
 add-on app type, the HTTP endpoint connection with one URL for all triggers, 1:1
-messages and joining spaces, and visibility. The form takes the project ID (filled
-from a pasted key), an optional project number, and the
+messages and joining spaces, visibility, and the `/help` slash command. The form
+takes the project ID (filled from a pasted key), an optional project number, and the
 key in a masked field that is cleared after every submission. Each
 `GOOGLE_CHAT_*` refusal maps to one sentence that names its fix; the two
 project-read refusals name the Browser role and the Cloud Resource Manager API.
@@ -265,7 +266,9 @@ credentials and shows the derived installation metadata:
 
 Keep the app and service account in one project for the first version. Build the
 app as a Google Workspace add-on with the HTTP endpoint URL connection and one URL
-for all triggers (§11). Leave native commands and link previews disabled.
+for all triggers (§11). Under Commands add one slash command: name `/help`,
+description "Show how to use this app", command ID 1. The relay matches the
+name, never the ID, so any free ID works (§11.3). Leave link previews disabled.
 Enable DMs and joining Spaces. Follow Google's API and visibility requirements;
 AgentConnect does not provision cloud resources. No Pub/Sub API, topic,
 subscription, or Pub/Sub IAM grant is required for this path.
@@ -379,16 +382,18 @@ Callback attempts share the Google message identity for deduplication; do not
 generate a new delivery ID each time the relay receives the event.
 
 Ignore app-authored messages. An `addedToSpacePayload` updates observed
-membership and starts no turn. When an @mention adds the app, Google sends that
-message as its own `messagePayload` request, which takes the ordinary normalization,
+membership, starts no turn, and is answered with a welcome (§10.7). When an
+@mention adds the app, Google sends that message as its own `messagePayload`
+request, which takes the ordinary normalization,
 gates, and durable admission. Google documents the split in its
 [request mapping](https://developers.google.com/workspace/add-ons/chat/convert#request-mapping-by-use-case).
 
 A `removedFromSpacePayload` updates membership and disables delivery there without
 starting a turn or attempting a farewell message. Reconcile stale or conflicting
-membership hints with bounded provider reads. Command and widget-update payloads do
-not activate an agent. The relay ingest keeps the Spaces it has observed the app in
-and reports that snapshot through `reportChannels` on every add and remove: the
+membership hints with bounded provider reads. The `/help` slash command is
+answered by the relay in the HTTP body (§11.3, §11.4); no command or widget-update
+payload activates an agent. The relay ingest keeps the Spaces it has observed the
+app in and reports that snapshot through `reportChannels` on every add and remove: the
 Space name, its display name when present, and `im` for a DM. The Control Plane
 applies whole-bot snapshots only to platforms whose manifest declares authoritative
 membership enumeration, and Google Chat declares observed enumeration, so it does
@@ -415,6 +420,19 @@ option carries this platform's own sentence, since the shared one promises
 replies in joined threads that Google never delivers; retain the common trigger
 policy without promising ambient capture. Admitted follow-ups use normal
 steering or queuing; `!queue` and `!cancel` keep their shared meanings.
+
+The app's connection is not one of the daemon's shared reply connections, so
+core's notices outside a turn's output reach Google Chat through the
+command-chrome surface's optional `notice` member
+([platform modules](integration-plugin-architecture.md) §7.4), never a
+platform branch in core. Two use it: the one-time notice that a restricted
+agent is not enabled in an addressed conversation, at the top of a DM or in the
+mentioned Space thread, and the notice that a cut turn's message will be picked
+up again or must be sent again
+([product conventions](../product-conventions.md), "A settings change does not
+cut a running answer"). A relayed Space delivery's trusted `mention` cause
+counts as the address, because the daemon learns the app's identity only from
+its first reply.
 
 ### ACK is an admission boundary
 
@@ -461,7 +479,8 @@ and never converts the old `accepted` result into an HTTP success.
 | Retryable or unknown  | `retry` (`durability`, `draining`, `capacity`, `not_ready`, `offline`) or an admission timeout               | 503 so Google may redeliver.                                                                                                       |
 | Invalid request       | never forwarded                                                                                              | 401 when no assigned bot owns the token or it fails verification; 400 when the body is not an add-on `EventObject` (§11.3).        |
 | Malformed event       | never forwarded                                                                                              | 200 with a log line after verification: the normalizer's `invalid` is permanent, and a 4xx would make Google redeliver it forever. |
-| Unclaimed tenant      | never forwarded: the deployment app's anchor answers it (§10.4)                                              | 200 with the welcome card or the authorization prompt (§11.4); nothing is admitted, marked, or reported.                           |
+| Unclaimed tenant      | never forwarded: the deployment app's anchor answers it (§10.4)                                              | 200 with the welcome card, the authorization prompt, or the help (§11.4); nothing is admitted, marked, or reported.                |
+| Welcome or `/help`    | never forwarded: a claimed or single-tenant row answers an add or `/help` itself (§10.7, §11.4)              | 200 with the welcome or the help as a created message; a `/help` is not marked.                                                    |
 
 The relay's inbound seam returns `HandledDelivery`; its optional `admission`
 member carries the `RelayAdmission` unchanged from the plugin's `handle` to the
@@ -944,8 +963,9 @@ The anchor serves no tenant: whatever core routed to it is unclaimed, and the
 plugin answers it in the HTTP body — `HandledDelivery.syncResponse`,
 which the Google route sends on its 200 — within Google's window and without a
 daemon: the welcome card of §10.7 on an add, the authorization prompt (§11.4)
-pointing at the claim page of §10.5 on a message, and an empty body for anything
-else, including a button click and an event that names no Workspace tenant
+pointing at the claim page of §10.5 on a message, the help of §11.4 on `/help`,
+and an empty body for anything else, including a button click and an event that
+names no Workspace tenant
 (§10.8). Nothing is forwarded, reported as
 membership, read from the dedup table, or marked in it. A bounded per-tenant
 memo (a few hundred entries, least recently seen first out) keeps the relay's
@@ -1078,6 +1098,19 @@ could not reach the private prompt. Any message from an unclaimed tenant still
 gets the authorization prompt of §10.4. Replies stay text; the only other card is
 the elicitation card of §5, which builds on the `interaction` path.
 
+A claimed customer row and a single-tenant row welcome an add too, in the DM or
+Space it happened in, because Marketplace review expects an app to introduce
+itself when it is added. The relay answers the `addedToSpacePayload`
+synchronously with a plain-text created message (`googleChatWelcome` in the
+relay's Google Chat module, §11.4): the app is an AI agent powered by
+AgentConnect, how to reach it (a direct message, or an @mention in a Space,
+answered in that thread), and that `/help` lists the commands. The relay knows
+no agent name, so the text is product-level. The add is still reported as
+membership, and a single-tenant row's fence refuses another customer's add
+before anything is posted; a removal is answered with an empty body. An
+@mention that adds the app therefore gets the welcome and then the agent's
+answer, from two requests.
+
 ### 10.8 Daemon, quotas, privacy
 
 - **Discovery**: a daemon serving a claimed customer never lists the whole app.
@@ -1209,13 +1242,29 @@ optional `space`, and exactly one payload. The normalizer in the message package
 (`normalizeGoogleChatEvent`) takes it directly and dispatches on the payload
 present, as Google's samples do:
 
-| Payload                                               | Result                                                                                        |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `chat.messagePayload`                                 | A message: a DM, or an app mention in a Space                                                 |
-| `chat.addedToSpacePayload`                            | Membership `added`; it carries no message, and the adding @mention arrives as its own request |
-| `chat.removedFromSpacePayload`                        | Membership `removed`                                                                          |
-| `chat.buttonClickedPayload`                           | An `interaction` (§11.5)                                                                      |
-| `chat.appCommandPayload`, `chat.widgetUpdatedPayload` | Unsupported: nothing starts                                                                   |
+| Payload                        | Result                                                                                                |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `chat.messagePayload`          | A message: a DM, or an app mention in a Space                                                         |
+| `chat.addedToSpacePayload`     | Membership `added`; it carries no message, and the adding @mention arrives as its own request         |
+| `chat.removedFromSpacePayload` | Membership `removed`                                                                                  |
+| `chat.buttonClickedPayload`    | An `interaction` (§11.5)                                                                              |
+| `chat.appCommandPayload`       | `help` for the `/help` slash command, answered by the relay (§11.4); any other command is unsupported |
+| `chat.widgetUpdatedPayload`    | Unsupported: nothing starts                                                                           |
+
+A command arrives as an `appCommandPayload` whose `appCommandMetadata` carries
+`appCommandId` (the ID configured for it) and `appCommandType` (`SLASH_COMMAND`
+or `QUICK_COMMAND`); a slash command's `message` names it in an annotation of
+type `SLASH_COMMAND`, whose `slashCommand` is the Chat API's
+`SlashCommandMetadata` (`bot`, `type`, `commandName`, `commandId`). The
+normalizer classifies a `SLASH_COMMAND` whose annotation's `commandName` is
+`/help` (`GOOGLE_CHAT_HELP_COMMAND`) as `help`, under the Space and sender
+checks a click gets; it matches the name, never the ID, so the operator's
+choice of ID does not matter. Another slash command is unsupported
+(`slash_command`), and a quick command or a command without its type is
+unsupported (`event_type`). See Google's
+[event object](https://developers.google.com/workspace/add-ons/concepts/event-objects#chat-event-object),
+[slash commands for add-ons](https://developers.google.com/workspace/add-ons/chat/commands),
+and the [message annotation](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages#annotation).
 
 The event's Space is the payload's `space`, else `chat.space`; the message is the
 payload's `message`, its thread in `message.thread`; the sender or clicker is
@@ -1228,18 +1277,38 @@ is malformed (a 200 and a log line, §4). Classification, tenant keys
 (`googleChatTenantKey`), the app identity learned from annotations, the dedup
 identity, and `interaction` are those of §4 and §10. The @mention that adds the app
 arrives as two requests, the add and then the message, so an unclaimed tenant gets
-both the welcome card and the prompt.
+both the welcome card and the prompt, and a claimed one the welcome and then the
+agent's answer.
 
 ### 11.4 Synchronous answers
 
-`googleChatWelcomeCard` and `googleChatClaimPrompt` in the relay's Google Chat
-module each build the add-on envelope directly:
+`googleChatWelcomeCard`, `googleChatClaimPrompt`, `googleChatWelcome`, and
+`googleChatHelp` in the relay's Google Chat module each build the add-on envelope
+directly:
 
-| Answer        | Body                                                                                           |
-| ------------- | ---------------------------------------------------------------------------------------------- |
-| Welcome card  | `{ hostAppDataAction: { chatDataAction: { createMessageAction: { message: { cardsV2 } } } } }` |
-| Claim prompt  | `{ basic_authorization_prompt: { authorization_url, resource: "AgentConnect" } }`              |
-| Anything else | `{}`                                                                                           |
+| Answer          | Body                                                                                           |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| Welcome card    | `{ hostAppDataAction: { chatDataAction: { createMessageAction: { message: { cardsV2 } } } } }` |
+| Claim prompt    | `{ basic_authorization_prompt: { authorization_url, resource: "AgentConnect" } }`              |
+| Welcome message | `{ hostAppDataAction: { chatDataAction: { createMessageAction: { message: { text } } } } }`    |
+| Help            | The same envelope, carrying the help text                                                      |
+| Anything else   | `{}`                                                                                           |
+
+The unclaimed welcome card and claim prompt come from the anchor (§10.4); a
+claimed customer row and a single-tenant row answer an add with the welcome
+message (§10.7). Every row answers `/help` with the help in the conversation it
+was typed in, and nothing is forwarded to a daemon. The help says what the app
+is, how to reach it, and the text commands the daemon understands, each in a few
+words: `!new`, `!stop`, `!cancel`, `!resume`, `!queue your message`, `!status`,
+`!model`, `!effort`, `!permission`, and `!fast on|off`, sent as a message and,
+in a Space, with an @mention. The list is `GOOGLE_CHAT_COMMAND_HELP`, keyed by
+the kinds of the shared command grammar (`parseCommand` in the activation policy
+package), so the type system refuses a grammar kind without a line and a test
+refuses a line the grammar does not parse or a grammar word the list omits. For
+an unclaimed tenant the help also says the organization must connect the app
+first by sending it a message; the anchor still answers a `/help` naming no
+Workspace tenant with `{}`. Both text answers use the `createMessageAction` the
+welcome card was verified with (§11.7); neither has been checked live yet.
 
 Google defines `resource` as the display name of the protected resource or service
 shown on the prompt. The claim connects the person's Workspace to AgentConnect, so

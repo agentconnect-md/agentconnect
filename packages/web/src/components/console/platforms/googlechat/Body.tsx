@@ -293,6 +293,12 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
                 {t('configure.visibilityValue')}
               </span>
             </div>
+            <div className="fld desktop:col-span-2">
+              <span className="fldlbl">{t('configure.commands')}</span>
+              <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                {t('configure.commandsValue')}
+              </span>
+            </div>
           </div>
         </div>
       </Step>

@@ -27,6 +27,7 @@ import {
   provenAppUserName,
   type VerifiedGoogleChatDelivery
 } from './http-ingest.js'
+import { googleChatHelp, googleChatWelcome } from './help.js'
 import { registerGoogleChatHttpIngress } from './http-ingress.js'
 import { GoogleChatTokenVerifier, bearerToken, unverifiedProjectNumber } from './token.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
@@ -121,7 +122,7 @@ export function googleChatAnchorAssignment(snapshot: RcDeploymentConfig | undefi
   ]
 }
 
-// An unclaimed tenant's answer (§10.4): the welcome card on an add, the authorization prompt on a message, nothing otherwise or without a tenant.
+// An unclaimed tenant's answer (§10.4): the welcome card on an add, the authorization prompt on a message, help that says to connect first, nothing otherwise or without a tenant.
 function unclaimedAnswer(
   ingest: GoogleChatHttpIngest,
   claimUrl: string,
@@ -130,6 +131,7 @@ function unclaimedAnswer(
 ): { body: unknown; tenant: string } | undefined {
   if (result.kind === 'ignored' || result.kind === 'unsupported' || result.tenant === undefined) return undefined
   const tenant = result.tenant
+  if (result.kind === 'help') return { body: googleChatHelp({ unclaimed: true }), tenant }
   const iat = Math.floor(nowMs / 1000)
   if (result.kind === 'membership' && result.membership.change === 'added') {
     const added = result.membership
@@ -236,7 +238,7 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
         const answer = unclaimedAnswer(ingest, ingest.claimUrl, result, now)
         if (!answer) return {}
         if (unclaimed.first(`${ingest.projectNumber}\0${answer.tenant}`, now))
-          host.log.info(`relay-ingress(${botId}): answering an unclaimed Google Chat tenant with the claim prompt`)
+          host.log.info(`relay-ingress(${botId}): answering an unclaimed Google Chat tenant in the body`)
         return { syncResponse: answer.body }
       }
       // The own-tenant fence (§10.3): a foreign customer's Space gets a 200 Google never retries; a learned key is reported.
@@ -259,11 +261,14 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
           await forwardElicitClick(host, botId, result.interaction, event.chat?.eventTime)
         return {}
       }
+      // `/help` is answered here, in the body, without a daemon.
+      if (result.kind === 'help') return { syncResponse: googleChatHelp() }
       if (result.kind === 'membership') {
         const displayName = googleChatPayloadOf(event)?.space?.displayName
         const name = typeof displayName === 'string' ? displayName : undefined
         host.reportChannels({ botId, channels: ingest.observeMembership(result.membership, name) })
-        return {}
+        // An add is welcomed in the conversation it happened in (§10.7); a removal answers nothing.
+        return result.membership.change === 'added' ? { syncResponse: googleChatWelcome(result.membership.isDm) } : {}
       }
       // Google delivers a Space message only to the apps it mentions or adds, and a DM is addressed by nature: the
       // trusted cause rides the payload, so the relay treats the delivery as an address before the identity is known.

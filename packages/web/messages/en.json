@@ -5505,6 +5505,8 @@
         "joinSpaces": "Join spaces and group conversations",
         "visibility": "Visibility",
         "visibilityValue": "The people and groups who can use the app",
+        "commands": "Commands",
+        "commandsValue": "A slash command named /help, described “Show how to use this app”, with command ID 1; any free ID works",
         "copy": "Copy",
         "copied": "Copied"
       },

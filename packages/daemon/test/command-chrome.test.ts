@@ -8,6 +8,7 @@ import {
 } from '../src/platforms/telegram/command-chrome.js'
 import { discordCommandChrome } from '../src/platforms/discord/command-chrome.js'
 import { feishuCommandChrome } from '../src/platforms/feishu/command-chrome.js'
+import { googleChatCommandChrome } from '../src/platforms/googlechat/command-chrome.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 
 const ctx = { channel: 'C1', replyThread: '1700000000.001', sessionKey: 'k1' }
@@ -108,5 +109,29 @@ describe('per-platform reply anchoring', () => {
   it('feishu offers no select card at all', () => {
     expect(feishuCommandChrome.selectCard).toBeUndefined()
     expect(slackCommandChrome.selectCard).toBeUndefined()
+  })
+})
+
+describe('out-of-turn notices (§7.4 notice)', () => {
+  it('only a platform outside the reply connections posts them through its surface', () => {
+    for (const surface of [slackCommandChrome, telegramCommandChrome, discordCommandChrome, feishuCommandChrome])
+      expect(surface.notice).toBeUndefined()
+    expect(googleChatCommandChrome.notice).toBeTypeOf('function')
+  })
+
+  it('google chat posts into a Space thread, and at the top of a DM whose thread is the Space itself', async () => {
+    const posts: [string, string | undefined, string][] = []
+    const conn = {
+      postChrome: async (space: string, thread: string | undefined, text: string) =>
+        void posts.push([space, thread, text])
+    }
+    await googleChatCommandChrome.notice!(conn, 'spaces/S', 'spaces/S/threads/T', 'a')
+    await googleChatCommandChrome.notice!(conn, 'spaces/D', 'spaces/D', 'b')
+    await googleChatCommandChrome.notice!(conn, 'spaces/D', undefined, 'c')
+    expect(posts).toEqual([
+      ['spaces/S', 'spaces/S/threads/T', 'a'],
+      ['spaces/D', undefined, 'b'],
+      ['spaces/D', undefined, 'c']
+    ])
   })
 })
