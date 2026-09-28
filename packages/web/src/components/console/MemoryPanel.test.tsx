@@ -160,6 +160,32 @@ const changeValue = async (element: HTMLInputElement | HTMLTextAreaElement, valu
 }
 
 describe('MemoryPanel settings draft', () => {
+  it('locks dreaming off when the runtime cannot dream', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="22222222-2222-4222-8222-222222222222"
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+          canDream={false}
+        />
+      )
+    })
+
+    await openSettings(container)
+    const dreaming = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((box) =>
+      box.parentElement?.textContent?.includes('Enable dreaming')
+    )
+    expect(dreaming?.checked).toBe(false)
+    expect(dreaming?.disabled).toBe(true)
+    expect(container.textContent).not.toContain('Run on a schedule')
+  })
+
   it('defaults managed memory to daily auto-adopting dreaming and lets users opt out', async () => {
     container = document.createElement('div')
     document.body.append(container)

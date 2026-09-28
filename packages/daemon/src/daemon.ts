@@ -23029,6 +23029,13 @@ export class Daemon {
       this.log.info(`scheduled dream skipped for agent "${agentId}": ${DREAM_MODEL_READABLE_CREDENTIALS_REASON}`)
       return
     }
+    // A runtime whose catalog offers no read-only/plan mode can only fail the extraction gate; an unknown catalog still tries.
+    const runtime = this.agents.get(agentId)?.runtime
+    const catalog = runtime ? this.runtimeFacts.modelCatalog(runtime) : undefined
+    if (catalog && !readOnlyExtractionMode((catalog.permissionModes ?? []).map((mode) => mode.value))) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": runtime "${runtime}" has no read-only/plan mode`)
+      return
+    }
     // Nothing to consolidate if no session has had activity since the last
     // successful dream — re-dreaming an unchanged corpus just burns a host + model
     // tokens to re-derive the same proposal. A manual dream bypasses this.

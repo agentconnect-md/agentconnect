@@ -22,6 +22,7 @@ import {
   isSetPlacementKind,
   MOCK_MODE,
   MOCK_PREFIX,
+  runtimeCanDream,
   runtimeLabel,
   selectedModelId,
   status,
@@ -2800,6 +2801,9 @@ function AgentDetail() {
           memoryHome={da.memoryHome}
           memoryHomeMigration={da.memoryHomeMigration}
           memoryDreaming={da.memoryDreaming}
+          canDream={runtimeCanDream(
+            capabilitySource?.runtimeModels.find((r) => r.runtime === da.runtime)?.modelCatalog
+          )}
           memoryConnectionId={da.memoryConnectionId}
           memoryRecall={da.memoryRecall}
           memoryCaptureMode={da.memoryCaptureMode}

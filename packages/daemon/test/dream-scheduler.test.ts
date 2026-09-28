@@ -206,6 +206,28 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     expect(await fire(daemon, 'bot-a')).toBe(true)
   })
 
+  it('skips a tick when the runtime catalog offers no read-only or plan mode, and tries an unknown catalog', async () => {
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: () => ({}) as any,
+      dreamOperationPolicy: 'test-only'
+    })
+    const inner = daemon as unknown as {
+      agents: Map<string, { pause?: boolean; runtime?: string }>
+      runtimeFacts: { modelCatalog(runtime: string): unknown }
+    }
+    inner.agents.set('bot-a', { pause: false, runtime: 'claude' })
+    const catalog = (modes: string[]) => ({ models: [], permissionModes: modes.map((value) => ({ value })) })
+    inner.runtimeFacts = { modelCatalog: () => catalog(['default', 'full-access']) }
+    expect(await fire(daemon, 'bot-a')).toBe(false)
+    inner.runtimeFacts = { modelCatalog: () => ({ models: [] }) }
+    expect(await fire(daemon, 'bot-a')).toBe(false)
+    inner.runtimeFacts = { modelCatalog: () => catalog(['default', 'plan']) }
+    expect(await fire(daemon, 'bot-a')).toBe(true)
+    inner.runtimeFacts = { modelCatalog: () => undefined }
+    expect(await fire(daemon, 'bot-a')).toBe(true)
+  })
+
   it('suppresses schedules without the explicit test-only policy and rejects a stale tick before state', async () => {
     const root = scaffold()
     const hostFactory = vi.fn(() => ({}) as any)

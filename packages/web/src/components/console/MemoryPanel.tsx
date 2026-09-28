@@ -220,6 +220,7 @@ export function MemoryPanel({
   memoryHome,
   memoryHomeMigration,
   memoryDreaming,
+  canDream = true,
   memoryConnectionId,
   memoryRecall,
   memoryCaptureMode,
@@ -237,6 +238,8 @@ export function MemoryPanel({
   /** Set while the owning daemon copies the tree into the Control Plane; the home control waits for it to clear. */
   memoryHomeMigration?: 'pending'
   memoryDreaming?: MemoryDreamingConfig
+  /** The runtime offers a read-only or plan mode; without one a dream can never run, so the switch is off and locked. */
+  canDream?: boolean
   memoryConnectionId?: string
   memoryRecall?: ExternalMemoryBindingDraft['recall']
   memoryCaptureMode?: ExternalMemoryBindingDraft['captureMode']
@@ -614,8 +617,8 @@ export function MemoryPanel({
                 <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
                   <input
                     type="checkbox"
-                    checked={settings.dreaming.enabled}
-                    disabled={!canEdit || savingProvider}
+                    checked={canDream && settings.dreaming.enabled}
+                    disabled={!canDream || !canEdit || savingProvider}
                     onChange={() => {
                       setSettings((current) => ({
                         ...current,
@@ -626,7 +629,7 @@ export function MemoryPanel({
                   />
                   {t('enableDreaming')}
                 </label>
-                {settings.dreaming.enabled ? (
+                {canDream && settings.dreaming.enabled ? (
                   <div className="ml-6 flex flex-col gap-2">
                     <DreamScheduleFields
                       value={settings.dreaming.schedule ?? ''}

@@ -288,6 +288,11 @@ interface DreamRecord {
 Cancel moves `pending|running → canceled` and aborts the ACP prompt (same
 cancellation path as a turn).
 
+A runtime whose reported catalog offers no read-only or plan mode can never
+pass the extraction gate, so its scheduled ticks are skipped without a dream
+record and the console locks the dreaming switch off; before a catalog is
+reported, the schedule runs and the gate decides.
+
 Turning dreaming off — `dreaming.enabled: false`, or a provider other than
 `managed` — cancels the dream in flight and retires every `completed`,
 `failed`, or `canceled` dream: its store staging is removed, then the row is
