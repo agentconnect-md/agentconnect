@@ -43,6 +43,7 @@ import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
 import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
 import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
 import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEnvironmentCard'
+import { ServiceAccountsCard } from '@/components/console/ServiceAccountsCard'
 
 // A session-access row is a platform name and its switch. What the switch does is
 // said once, in the card header — restating it per row ("People with Slack access"
@@ -751,6 +752,8 @@ export default function SettingsView() {
       </div>
 
       {isOwner && activeOrg && <InviteLinksCard orgId={activeOrg.id} />}
+
+      {isOwner && activeOrg && <ServiceAccountsCard org={activeOrg} />}
 
       {inviting && (
         <div className="scrim" onClick={() => setInviting(false)}>

@@ -199,6 +199,14 @@ const SETTING_CARDS: ConsolePage[] = [
     keywords: ['settings', 'invite'],
     ownerOnly: true
   },
+  {
+    href: '/settings#service-accounts',
+    label: 'Service accounts',
+    icon: 'bot',
+    kind: 'setting',
+    keywords: ['settings', 'api key', 'bot'],
+    ownerOnly: true
+  },
   { href: '/profile', label: 'Profile', icon: 'circle-user-round', kind: 'setting', keywords: ['account'] }
 ]
 

@@ -4808,6 +4808,58 @@ export async function revokeMyApiKey(id: string): Promise<UserApiKeyDto> {
   return apiDelete<UserApiKeyDto>(`/me/keys/${encodeURIComponent(id)}`)
 }
 
+// ── service accounts ─────────────────────────────────────────────────────────
+// Org members that never sign in; owners manage them and mint their keys (daemon-api-key-auth.md §6).
+export type ServiceAccountRole = Exclude<MemberRole, 'owner'>
+
+export interface ServiceAccountDto {
+  userId: string
+  name: string // fixed: part of `email`
+  email: string
+  displayName: string
+  role: ServiceAccountRole
+  createdAt: string
+}
+
+const serviceAccountBase = (orgId: string, id?: string) =>
+  `${orgBase(orgId)}/service-accounts${id ? `/${encodeURIComponent(id)}` : ''}`
+
+export async function fetchServiceAccounts(orgId: string): Promise<ServiceAccountDto[]> {
+  return apiGet<ServiceAccountDto[]>(serviceAccountBase(orgId))
+}
+
+export async function createServiceAccount(
+  orgId: string,
+  input: { name: string; role: ServiceAccountRole }
+): Promise<ServiceAccountDto> {
+  return apiPost<ServiceAccountDto>(serviceAccountBase(orgId), input)
+}
+
+export async function updateServiceAccount(
+  orgId: string,
+  id: string,
+  patch: { displayName?: string; role?: ServiceAccountRole }
+): Promise<ServiceAccountDto> {
+  return apiPatch<ServiceAccountDto>(serviceAccountBase(orgId, id), patch)
+}
+
+export async function deleteServiceAccount(orgId: string, id: string): Promise<void> {
+  await apiDelete<void>(serviceAccountBase(orgId, id))
+}
+
+// A service account's keys, with the /me/keys shapes minus the org the path already fixes.
+export const serviceAccountKeysApi = (orgId: string, id: string) => {
+  const base = `${serviceAccountBase(orgId, id)}/keys`
+  const one = (keyId: string) => `${base}/${encodeURIComponent(keyId)}`
+  return {
+    list: () => apiGet<UserApiKeyDto[]>(base),
+    create: ({ orgId: _orgId, ...body }: Parameters<typeof createMyApiKey>[0]) => apiPost<MintedUserKeyDto>(base, body),
+    update: (keyId: string, patch: Parameters<typeof updateMyApiKey>[1]) => apiPatch<UserApiKeyDto>(one(keyId), patch),
+    regenerate: (keyId: string) => apiPost<MintedUserKeyDto>(`${one(keyId)}/regenerate`, {}),
+    revoke: (keyId: string) => apiDelete<UserApiKeyDto>(one(keyId))
+  }
+}
+
 // ── orgs ──────────────────────────────────────────────────────────────────────
 // Every org the signed-in user belongs to (GET /orgs) — the picker + Settings.
 export async function fetchOrgs(): Promise<OrgDto[]> {

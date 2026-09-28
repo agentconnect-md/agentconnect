@@ -26,6 +26,27 @@ import {
 } from '@/lib/api'
 import { consoleKeys, profileKeys } from '@/lib/swr-keys'
 
+/** Where the card reads and writes keys; the default is the caller's own `/me/keys`. */
+export interface ApiKeySource {
+  swrKey: readonly unknown[] | null
+  list: () => Promise<UserApiKeyDto[]>
+  create: typeof createMyApiKey
+  update: typeof updateMyApiKey
+  regenerate: typeof regenerateMyApiKey
+  revoke: typeof revokeMyApiKey
+  /** A service account's keys: the org is fixed and the keys do not act as the caller. */
+  serviceAccount?: boolean
+}
+
+const MY_KEYS: ApiKeySource = {
+  swrKey: profileKeys.apiKeys,
+  list: fetchMyApiKeys,
+  create: createMyApiKey,
+  update: updateMyApiKey,
+  regenerate: regenerateMyApiKey,
+  revoke: revokeMyApiKey
+}
+
 // The dialog's permission choices, in the order offered (daemon-api-key-auth.md §6).
 const PERMISSIONS: ApiKeyPermission[] = ['full', 'read', 'agent:chat']
 
@@ -74,7 +95,8 @@ export default function ApiKeysCard({
   defaultName,
   embedded = false,
   title,
-  description
+  description,
+  source = MY_KEYS
 }: {
   orgs: OrgDto[]
   defaultOrgId?: string
@@ -87,6 +109,8 @@ export default function ApiKeysCard({
   embedded?: boolean
   title?: string
   description?: string
+  /** A service account's keys instead of the caller's own. */
+  source?: ApiKeySource
 }) {
   const t = useTranslations('Profile')
   const resolvedTitle = title ?? t('apiKeys.title')
@@ -99,7 +123,7 @@ export default function ApiKeysCard({
     error: loadError,
     isLoading: loading,
     mutate: mutateKeys
-  } = useSWR<UserApiKeyDto[]>(MOCK_MODE ? null : profileKeys.apiKeys, fetchMyApiKeys)
+  } = useSWR<UserApiKeyDto[]>(MOCK_MODE ? null : source.swrKey, source.list)
   const keys = keysData ?? []
   const reload = () => {
     void mutateKeys().catch(() => undefined)
@@ -219,6 +243,7 @@ export default function ApiKeysCard({
         <div className="scrim">
           <div className="modal">
             <ApiKeyFormModal
+              source={source}
               orgs={orgs}
               defaultOrgId={defaultOrgId}
               defaultName={defaultName}
@@ -231,21 +256,32 @@ export default function ApiKeysCard({
       {editing && (
         <div className="scrim">
           <div className="modal">
-            <ApiKeyFormModal orgs={orgs} editing={editing} onClose={() => setEditing(null)} onSaved={reload} />
+            <ApiKeyFormModal
+              source={source}
+              orgs={orgs}
+              editing={editing}
+              onClose={() => setEditing(null)}
+              onSaved={reload}
+            />
           </div>
         </div>
       )}
       {regenerating && (
         <div className="scrim">
           <div className="modal">
-            <RegenerateApiKeyModal apiKey={regenerating} onClose={() => setRegenerating(null)} onRegenerated={reload} />
+            <RegenerateApiKeyModal
+              source={source}
+              apiKey={regenerating}
+              onClose={() => setRegenerating(null)}
+              onRegenerated={reload}
+            />
           </div>
         </div>
       )}
       {revoking && (
         <div className="scrim">
           <div className="modal">
-            <RevokeApiKeyModal apiKey={revoking} onClose={() => setRevoking(null)} onRevoked={reload} />
+            <RevokeApiKeyModal source={source} apiKey={revoking} onClose={() => setRevoking(null)} onRevoked={reload} />
           </div>
         </div>
       )}
@@ -346,6 +382,7 @@ function RevealFooter({ onClose }: { onClose: () => void }) {
 
 // ── create / edit dialog (org picker → mint → one-time reveal; or edit in place) ──
 function ApiKeyFormModal({
+  source,
   orgs,
   defaultOrgId,
   defaultName,
@@ -353,6 +390,7 @@ function ApiKeyFormModal({
   onClose,
   onSaved
 }: {
+  source: ApiKeySource
   orgs: OrgDto[]
   defaultOrgId?: string
   defaultName?: string
@@ -410,13 +448,13 @@ function ApiKeyFormModal({
             : {})
         }
         if (Object.keys(patch).length > 0) {
-          await updateMyApiKey(editing.id, patch)
+          await source.update(editing.id, patch)
           onSaved()
         }
         onClose()
         return
       }
-      const m = await createMyApiKey({
+      const m = await source.create({
         orgId,
         ...(name.trim() ? { name: name.trim() } : {}),
         expiresInDays: expiresInDays === 'keep' ? 90 : expiresInDays,
@@ -450,11 +488,13 @@ function ApiKeyFormModal({
           <KeyReveal apiKey={minted.apiKey} />
         ) : (
           <>
-            <p className="mb-4 font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-              {t('apiKeys.description')}
-            </p>
+            {!source.serviceAccount && (
+              <p className="mb-4 font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
+                {t('apiKeys.description')}
+              </p>
+            )}
             <div className="flex flex-col gap-[14px]">
-              <div className="flex flex-col gap-[6px]">
+              <div className={source.serviceAccount ? 'hidden' : 'flex flex-col gap-[6px]'}>
                 <span className="fldlbl">{t('apiKeys.organization')}</span>
                 <FieldSelect
                   ariaLabel={t('apiKeys.organization')}
@@ -600,10 +640,12 @@ function ApiKeyFormModal({
 
 // ── regenerate: confirm, then the new plaintext once ─────────────────────────
 function RegenerateApiKeyModal({
+  source,
   apiKey,
   onClose,
   onRegenerated
 }: {
+  source: ApiKeySource
   apiKey: UserApiKeyDto
   onClose: () => void
   onRegenerated: () => void
@@ -618,7 +660,7 @@ function RegenerateApiKeyModal({
     setBusy(true)
     setErr(null)
     try {
-      setMinted(await regenerateMyApiKey(apiKey.id))
+      setMinted(await source.regenerate(apiKey.id))
       onRegenerated()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -682,10 +724,12 @@ function RegenerateApiKeyModal({
 
 // ── revoke confirm ────────────────────────────────────────────────────────────
 function RevokeApiKeyModal({
+  source,
   apiKey,
   onClose,
   onRevoked
 }: {
+  source: ApiKeySource
   apiKey: UserApiKeyDto
   onClose: () => void
   onRevoked: () => void
@@ -699,7 +743,7 @@ function RevokeApiKeyModal({
     setBusy(true)
     setErr(null)
     try {
-      await revokeMyApiKey(apiKey.id)
+      await source.revoke(apiKey.id)
       onRevoked()
       onClose()
     } catch (e) {
