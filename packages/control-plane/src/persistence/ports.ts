@@ -5679,6 +5679,8 @@ export interface DecisionRepo {
     actor: ViewCtx
   ): Promise<{
     decision: import('@agentconnect.md/protocol').DecisionDefinition
+    /** Every agent whose chat API gate uses this Decision; each is bumped in the same tx, its spec carrying the Decision. */
+    consumerAgentIds: AgentId[]
     /** Every integration with a gate on this Decision; incompatible gates are marked Needs review in the same tx. */
     consumerIntegrationIds: IntegrationId[]
     /** Every bot whose router uses this Decision; incompatible routers are marked Needs review in the same tx. */

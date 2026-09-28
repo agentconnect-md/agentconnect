@@ -134,7 +134,10 @@ describe('agent chat API Decision gate', () => {
     expect(saved.statusCode).toBe(200)
     expect(saved.json()).toMatchObject({ protocol: 'ai-sdk-ui', gate: gateOf(decisionId) })
     expect((await list(a)).json()).toMatchObject({ entries: [{ gate: gateOf(decisionId) }] })
-    expect(specs.at(-1)?.apiGates).toEqual({ 'ai-sdk-ui': gateOf(decisionId) })
+    // The spec carries the gate with its Decision, so the daemon admits without reading the CP.
+    expect(specs.at(-1)?.apiGates).toMatchObject({
+      'ai-sdk-ui': { gate: gateOf(decisionId), definitions: [{ id: decisionId, providerId: 'typesafe' }] }
+    })
 
     expect((await setGate(a, null)).json()).toMatchObject({ gate: null })
     expect(specs.at(-1)?.apiGates).toEqual({})
@@ -152,6 +155,27 @@ describe('agent chat API Decision gate', () => {
     const hidden = await setGate(a, gateOf('44444444-4444-4444-8444-444444444444'))
     expect(hidden.statusCode).toBe(404)
     expect(hidden.json()).toMatchObject({ code: 'DECISION_NOT_FOUND' })
+  })
+
+  it('re-ships a gate when its Decision changes, and leaves out one whose condition no longer fits', async () => {
+    const { a, specs, decisionId } = await setup()
+    await add(a)
+    await setGate(a, gateOf(decisionId))
+    const edit = (question: unknown) =>
+      a.app.inject({ method: 'PATCH', url: `${ORG}/decisions/${decisionId}`, payload: { ...draft, question } })
+
+    specs.length = 0
+    expect((await edit({ ...draft.question, instructions: 'Is it about the product or its docs?' })).statusCode).toBe(
+      200
+    )
+    expect(specs.at(-1)?.apiGates).toMatchObject({
+      'ai-sdk-ui': { definitions: [{ question: { instructions: 'Is it about the product or its docs?' } }] }
+    })
+
+    // A boolean condition cannot judge a score question: the gate fails open until it is saved again.
+    const score = { type: 'score', instructions: 'How relevant?', criteria: ['low', 'high'] }
+    expect((await edit(score)).statusCode).toBe(200)
+    expect(specs.at(-1)?.apiGates).toEqual({})
   })
 
   it('keeps the Decision in use while the gate holds it, and releases it with the API', async () => {

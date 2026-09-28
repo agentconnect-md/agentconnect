@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { AgentDecisionIds, AgentModelSelection, AgentRepositorySelector, HookRoutingProjection } from '../decision.js'
-import { AgentApiGates } from '../agent-api.js'
+import { AgentApiGateProjections } from '../agent-api.js'
 import { CodeHostProviderString } from '../code-host.js'
 import { AgentMemoryBinding } from './memory-connection.js'
 import { IntegrationSpec } from './integration.js'
@@ -435,8 +435,8 @@ export const AgentSpec = z.object({
   skills: z.array(CompatibleAgentSkillEntry).default([]),
   decisionIds: AgentDecisionIds.optional(),
   modelSelection: AgentModelSelection.nullable().optional(),
-  // The Decision gate on each chat API the agent added (shared-bot-relay.md §10.4); a current CP ships it, {} when none.
-  apiGates: AgentApiGates.optional(),
+  // The Decision gate on each chat API the agent added, with its Decisions (shared-bot-relay.md §10.4); a current CP ships it, {} when none.
+  apiGates: AgentApiGateProjections.optional(),
   // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); a current CP ships value or null.
   repositorySelector: AgentRepositorySelector.nullable().optional(),
   // The code-host routings this agent hosts (code-host-decisions.md §3.2); absent leaves them unchanged, [] clears.

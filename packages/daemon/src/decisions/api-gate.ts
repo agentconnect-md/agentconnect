@@ -2,29 +2,27 @@
 import {
   nextGateStep,
   runDecisionChain,
-  type ChannelDecisionGate,
+  type AgentApiGateProjection,
   type DecisionEvaluation,
-  type DecisionGateStep,
-  type DecisionGetReply,
-  type DecisionToolDefinition
+  type DecisionGateStep
 } from '@agentconnect.md/protocol'
 import type { DecisionEvaluationInput } from './evaluator.js'
 import type { SlotResult } from './limiter.js'
 import { modelSelectionState } from './model-selection.js'
 
-// The relay's ack budget is five seconds a try, so the gate never holds a turn much longer.
-export const API_GATE_DEADLINE_MS = 5_000
+// Inside the relay's five-second acknowledgement, so a verdict always arrives before the relay retries.
+export const API_GATE_DEADLINE_MS = 4_500
 
 export type ApiGateVerdict =
   { admit: true; reason: 'matched' | 'unavailable'; detail?: string } | { admit: false; reason: 'declined' }
 
 export interface ApiGateInput {
   agentId: string
-  gate: ChannelDecisionGate
+  /** The gate and its Decisions, shipped in the agent's spec: admission reads nothing remote. */
+  projection: AgentApiGateProjection
   text: string
   evaluationId: string
   now(): number
-  decision(id: string): Promise<DecisionGetReply>
   acquire(providerId: string, deadlineAt: number, signal: AbortSignal): Promise<SlotResult>
   evaluate(input: DecisionEvaluationInput, signal: AbortSignal): Promise<DecisionEvaluation>
 }
@@ -32,41 +30,53 @@ export interface ApiGateInput {
 const unavailable = (detail: string): ApiGateVerdict => ({ admit: true, reason: 'unavailable', detail })
 
 export async function evaluateApiGate(input: ApiGateInput): Promise<ApiGateVerdict> {
-  const deadlineAt = input.now() + API_GATE_DEADLINE_MS
-  const timeout = AbortSignal.timeout(API_GATE_DEADLINE_MS)
+  const abort = new AbortController()
+  let timer: NodeJS.Timeout | undefined
+  const deadline = new Promise<ApiGateVerdict>((resolve) => {
+    timer = setTimeout(() => {
+      abort.abort()
+      resolve(unavailable('timeout'))
+    }, API_GATE_DEADLINE_MS)
+  })
+  try {
+    return await Promise.race([evaluate(input, input.now() + API_GATE_DEADLINE_MS, abort.signal), deadline])
+  } finally {
+    clearTimeout(timer)
+    abort.abort()
+  }
+}
+
+async function evaluate(input: ApiGateInput, deadlineAt: number, signal: AbortSignal): Promise<ApiGateVerdict> {
+  const { gate, definitions } = input.projection
+  const byId = new Map(definitions.map((d) => [d.id, d]))
+  const root = byId.get(gate.decisionId)
+  if (!root || (gate.steps ?? []).some((s) => !byId.has(s.decisionId))) return unavailable('decision_missing')
   let release: (() => void) | undefined
   try {
-    const definitions = new Map<string, DecisionToolDefinition>()
-    for (const id of new Set([input.gate.decisionId, ...(input.gate.steps ?? []).map((s) => s.decisionId)])) {
-      const { decision } = await input.decision(id)
-      if (decision?.id !== id) return unavailable('decision_missing')
-      definitions.set(id, decision)
-    }
-    const root = definitions.get(input.gate.decisionId)!
-    const slot = await input.acquire(root.providerId, deadlineAt, timeout)
+    const slot = await input.acquire(root.providerId, deadlineAt, signal)
     if (slot.kind !== 'acquired') return unavailable(slot.kind)
     release = slot.release
     const state = modelSelectionState('chat', input.text)
     let matched = false
     const { evaluation } = await runDecisionChain<DecisionGateStep>({
-      root: input.gate,
-      steps: input.gate.steps,
+      root: gate,
+      steps: gate.steps,
       deadlineAt,
       now: input.now,
-      signal: timeout,
-      evaluate: (step, index, signal) =>
+      signal,
+      evaluate: (step, index, stepSignal) =>
         input.evaluate(
           {
             agentId: input.agentId,
             evaluationId: index === 0 ? input.evaluationId : `${input.evaluationId}:${index}`,
-            decision: definitions.get(step.decisionId)!,
+            decision: byId.get(step.decisionId)!,
             state,
             deadlineAt
           },
-          signal
+          stepSignal
         ),
       next: (step, result) => {
-        const next = nextGateStep(definitions.get(step.decisionId)!.question, step, result.answer)
+        const next = nextGateStep(byId.get(step.decisionId)!.question, step, result.answer)
         matched = next.matched
         return next.nextStepId ? [next.nextStepId] : []
       }

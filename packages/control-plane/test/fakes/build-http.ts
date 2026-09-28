@@ -401,7 +401,8 @@ export function buildHttpApp(
     hookRepo,
     giteaSeam?.api.baseUrl,
     { routings: codeHostDecisionRoutingRepo, hooks: hookRepo },
-    agentInstallationAuthRepo
+    agentInstallationAuthRepo,
+    new PgDecisionRepo(prisma)
   )
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import {
   AgentAdditionalInstallation,
-  AgentApiGates,
+  AgentApiGateProjections,
   AgentDecisionIds,
   AgentModelSelection,
   AgentRepositorySelector,
@@ -192,7 +192,7 @@ export const AgentSchema = z.object({
   decisionIds: AgentDecisionIds.optional(),
   modelSelection: AgentModelSelection.optional(),
   // The Decision gate each chat API turn must pass before admission (shared-bot-relay.md §10.4); CP-owned.
-  apiGates: AgentApiGates.optional(),
+  apiGates: AgentApiGateProjections.optional(),
   // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); CP-owned.
   repositorySelector: AgentRepositorySelector.optional(),
   // The code-host routings this agent evaluates as host (code-host-decisions.md §3.2).

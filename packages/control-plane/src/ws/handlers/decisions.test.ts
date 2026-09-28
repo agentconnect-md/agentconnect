@@ -3,7 +3,6 @@ import {
   decodeEnvelope,
   encode,
   DECISION_LIST_MAX_BYTES,
-  type AgentApiGates,
   type AgentModelSelection,
   type DecisionToolDefinition
 } from '@agentconnect.md/protocol'
@@ -31,7 +30,6 @@ function setup() {
       daemonId: string
       decisionIds: string[]
       modelSelection?: AgentModelSelection
-      apiGates?: AgentApiGates
     }> => ({ id: agentId, orgId, daemonId, decisionIds: [decision.id] })
   )
   const listForAgent = vi.fn(async () => [decision])
@@ -88,31 +86,6 @@ describe('Decision configuration reads for agent tools', () => {
     expect(conn.replyTo).toHaveBeenLastCalledWith(expect.anything(), 'decision/get/result', { decision: next })
     agent.mockResolvedValue({ ...bound, modelSelection: undefined }).mockResolvedValueOnce(bound)
     await run('decision/get', { decisionId: next.id, purpose: 'model_selection' })
-    expect(conn.replyTo).toHaveBeenLastCalledWith(expect.anything(), 'decision/get/result', { decision: null })
-  })
-  it('authorizes a chat API gate read only while the gate names the Decision', async () => {
-    const { agent, getForAgent, conn, run } = setup()
-    const bound = {
-      id: agentId,
-      orgId,
-      daemonId,
-      decisionIds: [],
-      apiGates: {
-        'ai-sdk-ui': {
-          type: 'gate' as const,
-          decisionId: decision.id,
-          when: { type: 'boolean' as const, values: [true] }
-        }
-      }
-    }
-    agent.mockResolvedValue(bound)
-    getForAgent.mockResolvedValue(decision)
-    await run('decision/get')
-    expect(getForAgent).not.toHaveBeenCalled()
-    await run('decision/get', { purpose: 'api_gate' })
-    expect(conn.replyTo).toHaveBeenLastCalledWith(expect.anything(), 'decision/get/result', { decision })
-    agent.mockResolvedValue({ ...bound, apiGates: {} }).mockResolvedValueOnce(bound)
-    await run('decision/get', { purpose: 'api_gate' })
     expect(conn.replyTo).toHaveBeenLastCalledWith(expect.anything(), 'decision/get/result', { decision: null })
   })
   it('separates the model-selection grant from MCP attachments and rechecks revocation', async () => {

@@ -7,7 +7,6 @@
  */
 import { randomUUID } from 'node:crypto'
 import type {
-  AgentApiProtocol,
   RdChatEvent,
   RdWebchatPost,
   WebchatAck,
@@ -101,8 +100,6 @@ export interface WebchatHost {
   safetyDraining(agentId: string): boolean
   /** The daemon as a whole is draining. */
   draining(): boolean
-  /** An API turn's Decision gate: false only when it answered no; no gate or an unavailable evaluation admits. */
-  admitApiTurn(agentId: string, protocol: AgentApiProtocol, text: string, turnId: string): Promise<boolean>
   agentDraining(agentId: string): boolean
   /** `features.turnFinalContextRefresh` — gates the admission-time observed inbound row. */
   turnFinalContextRefresh(): boolean
@@ -179,8 +176,7 @@ export class WebchatTransport {
     mentions?: string[],
     post?: { postId: string; at: number },
     requestedWorktree?: boolean,
-    steer?: boolean,
-    apiOrigin?: AgentApiProtocol
+    steer?: boolean
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
@@ -219,11 +215,6 @@ export class WebchatTransport {
     if (this.host.draining() || this.host.agentDraining(result.agentId)) {
       this.host.info(`webchat: agent "${result.agentId}" is draining — rejecting turn`)
       return { accepted: false, turnId, reason: 'draining' }
-    }
-    // An API turn passes its Decision gate before anything is recorded, so a declined one leaves no trace in the session.
-    if (apiOrigin && !(await this.host.admitApiTurn(result.agentId, apiOrigin, text, turnId))) {
-      this.host.info(`webchat: API turn ${turnId} for "${result.agentId}" declined by its Decision gate`)
-      return { accepted: false, turnId, reason: 'declined' }
     }
     await this.rememberAuthorName(author)
     // platform:'webchat', channel:conversationId, no thread (the wire SessionKey omits

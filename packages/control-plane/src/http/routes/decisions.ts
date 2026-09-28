@@ -410,6 +410,14 @@ export function decisionRoutes(deps: HttpDeps) {
             .reconcile(scope)
             .catch((err: unknown) => req.log.warn({ err }, 'decision converge: code-host routing reconcile failed'))
         }
+        // A chat API gate carries the Decision in its agent's spec; an unreachable daemon catches up on reconnect.
+        for (const agentId of result.consumerAgentIds) {
+          const agent = await deps.repos.agent.get(orgOf(req), agentId)
+          if (agent)
+            await deps.agentDelivery.upsert(agent, (err) =>
+              req.log.warn({ err, agentId }, 'decision converge: API gate agent upsert failed')
+            )
+        }
         return dto(result.decision, req)
       }
     )

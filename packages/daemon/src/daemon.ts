@@ -2286,7 +2286,6 @@ export class Daemon {
       startFailure: (agentId) => this.lastStartFailure.get(agentId),
       safetyDraining: (agentId) => this.safetyDrainingAgents.has(agentId),
       draining: () => this.draining,
-      admitApiTurn: (agentId, protocol, text, turnId) => this.admitApiTurn(agentId, protocol, text, turnId),
       agentDraining: (agentId) => this.drainingAgents.has(agentId),
       turnFinalContextRefresh: () => this.cfg.features.turnFinalContextRefresh,
       inflight: () => this.inflight,
@@ -2391,28 +2390,22 @@ export class Daemon {
     return this.decisionEvaluator.evaluate(input, signal)
   }
 
-  /** An API turn's Decision gate: only an answered no refuses it; no gate, no CP link, or a failed evaluation admits. */
-  private async admitApiTurn(agentId: string, protocol: AgentApiProtocol, text: string, turnId: string) {
-    const gate = this.agents.get(agentId)?.apiGates?.[protocol]
-    const client = this.cpClient
-    if (!gate) return true
-    if (!client) {
-      this.log.warn(`api gate: no control plane link for agent ${agentId}; admitting turn ${turnId} unevaluated`)
-      return true
-    }
+  /** An API turn's Decision gate, from the agent's spec: only an answered no refuses it; no gate or a failed evaluation admits. */
+  private async admitApiTurn(agentId: string, protocol: AgentApiProtocol, text: string, msgId: string) {
+    const projection = this.agents.get(agentId)?.apiGates?.[protocol]
+    if (!projection) return true
     const verdict = await evaluateApiGate({
       agentId,
-      gate,
+      projection,
       text,
-      evaluationId: turnId,
+      evaluationId: msgId,
       now: () => this.clock.now(),
-      decision: (decisionId) => client.decisionGet({ requesterAgentId: agentId, decisionId, purpose: 'api_gate' }),
       acquire: (providerId, deadlineAt, signal) =>
         this.decisionLanes.slots.acquire(providerId, deadlineAt, signal, () => this.clock.now()),
       evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal)
     })
     if (verdict.reason === 'unavailable')
-      this.log.warn(`api gate: evaluation unavailable (${verdict.detail}) for turn ${turnId}; admitting it`)
+      this.log.warn(`api gate: evaluation unavailable (${verdict.detail}) for ${msgId}; admitting it`)
     return verdict.admit
   }
 
@@ -10861,6 +10854,10 @@ export class Daemon {
         detail: 'this conversation ran on another machine of the group, which no longer serves the agent'
       }
     }
+    // An API turn passes its Decision gate here, once, before either dispatch shape below records anything.
+    if (op.op === 'turn' && op.origin && !(await this.admitApiTurn(msg.agentId, op.origin, op.text, msg.msgId))) {
+      return { msgId: msg.msgId, accepted: false, reason: 'declined' }
+    }
     // Session-targeted continuation: `turn` dispatches onto the target session's
     // own coordinates; runtime-set ops are refused (this ingress adds human
     // input, never session-global administration); a context copy is a no-op
@@ -10913,8 +10910,7 @@ export class Daemon {
           op.mentions,
           op.post,
           op.worktree,
-          op.steer,
-          op.origin
+          op.steer
         )
         return {
           msgId: msg.msgId,

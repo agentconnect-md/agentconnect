@@ -681,7 +681,9 @@ export function buildContainer(
     giteaCfg.baseUrl,
     { routings: repos.codeHostDecisionRouting, hooks: repos.hook },
     // The installation grants projected beside the allowlist, never expanded into it.
-    repos.agentInstallationAuth
+    repos.agentInstallationAuth,
+    // The Decisions each chat API gate names, shipped with it.
+    repos.decision
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
