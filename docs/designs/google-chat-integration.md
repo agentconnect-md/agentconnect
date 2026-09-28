@@ -1013,8 +1013,9 @@ collaborator):
    and answers 201. Either way it answers the completion URL when the state
    carried one, which the page follows.
 6. Chat removes the prompt and sends the original event again; it now routes
-   like any other delivery. Without a completion URL the page ends on a link
-   back to the conversation (`https://chat.google.com/room/{id}` for a Space,
+   like any other delivery. Without a completion URL the page closes itself
+   when the browser allows it, as for a tab Chat opened; otherwise it ends on a
+   link back to the conversation (`https://chat.google.com/room/{id}` for a Space,
    `https://chat.google.com/dm/{id}` for a DM) and asks the person to send
    their message again.
 

@@ -70,6 +70,7 @@ beforeEach(() => {
   sessionStorage.clear()
   window.history.replaceState({}, '', `/googlechat/claim?state=${STATE}`)
   vi.spyOn(window.location, 'assign').mockImplementation(() => undefined)
+  vi.spyOn(window, 'close').mockImplementation(() => undefined)
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -106,6 +107,7 @@ describe('GoogleChatClaim', () => {
     await act(async () => button('Connect').click())
     expect(mocks.claim).toHaveBeenCalledWith('org-edit', STATE)
     expect(window.location.assign).toHaveBeenCalledWith(REDIRECT)
+    expect(window.close).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -120,6 +122,7 @@ describe('GoogleChatClaim', () => {
     await act(async () => button('Connect').click())
     expect(mocks.claim).toHaveBeenCalledWith('org-edit', state)
     expect(window.location.assign).not.toHaveBeenCalled()
+    expect(window.close).toHaveBeenCalledOnce()
     expect(host.textContent).toContain('Google Chat is connected')
     expect(host.textContent).toContain('send your message again')
     const link = host.querySelector('a.dsbtn-primary')

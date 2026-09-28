@@ -78,6 +78,8 @@ export default function GoogleChatClaim() {
       // Without a completion URL Chat cannot resume the prompt, so the person goes back and writes again.
       if (redirect === undefined) {
         setPhase('done')
+        // Best effort: a tab Chat opened closes itself; one the browser keeps open shows the way back.
+        window.close()
         return
       }
       if (!isGoogleChatRedirect(redirect)) throw new Error('unexpected redirect')
