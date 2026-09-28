@@ -24,7 +24,7 @@ const GoogleChatDeploymentAppDto = z.object({
     .string()
     .nullable()
     .describe(
-      'The deployment app’s Google Cloud project number, which is also its Google Workspace Marketplace app ID; null when the deployment has no Google Chat app.'
+      'The deployment app’s Google Cloud project number, which is also its Google Workspace Marketplace app ID; null when the deployment has no Google Chat app an organization can connect.'
     )
 })
 
@@ -97,7 +97,7 @@ export function googleChatAppRoutes(googleChat: Pick<GoogleChatRouteSeams, 'app'
           tags: [Tag.Integrations],
           summary: 'Get the deployment Google Chat app',
           description:
-            'The Google Chat app configured in the Setup Server, by its public identity: the Google Cloud project number, which is also its Google Workspace Marketplace app ID, or null when the deployment has none. An organization installs that app from its Marketplace listing and then connects itself from Google Chat (`POST /integrations/googlechat/claim`). Never returns the app’s key.',
+            'The Google Chat app configured in the Setup Server, by its public identity: the Google Cloud project number, which is also its Google Workspace Marketplace app ID, or null when the deployment has none or its console cannot serve the claim page (it is not https). An organization installs that app from its Marketplace listing and then connects itself from Google Chat (`POST /integrations/googlechat/claim`). Never returns the app’s key.',
           operationId: 'getGoogleChatDeploymentApp',
           response: { 200: GoogleChatDeploymentAppDto, 401: ErrorDto }
         }

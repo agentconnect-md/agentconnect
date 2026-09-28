@@ -2294,7 +2294,8 @@ export function buildContainer(
       fetch: googleChatSeams.fetch,
       installRoutes: {
         org: [
-          googleChatAppRoutes(googleChatSeams),
+          // The console offers the listing only where a claim can complete, so only with the anchor.
+          googleChatAppRoutes(googleChatAnchor && googleChatPlatformApp ? { app: googleChatPlatformApp } : {}),
           googleChatKeyRoutes(httpDeps, googleChatSeams),
           googleChatClaimRoutes(httpDeps, googleChatSeams)
         ],

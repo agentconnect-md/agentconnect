@@ -92,6 +92,7 @@ describe('setup values', () => {
     expect(googleChatMarketplaceUrl('100000000000')).toBe(
       'https://workspace.google.com/marketplace/app/agentconnect/100000000000'
     )
+    expect(googleChatMarketplaceUrl('not-a-number')).toBeNull()
   })
 
   it('accepts an empty or numeric project number', () => {

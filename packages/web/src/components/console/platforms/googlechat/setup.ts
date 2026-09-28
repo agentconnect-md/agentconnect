@@ -9,8 +9,10 @@ export const GOOGLE_CHAT_EVENTS_PATH = '/googlechat/events'
 export const GOOGLE_CHAT_CONFIG_URL = 'https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat'
 
 /** A Chat app's Google Workspace Marketplace listing: its app ID is the project number, and Google redirects the fixed slug to the listing's own. */
-export function googleChatMarketplaceUrl(projectNumber: string): string {
-  return `https://workspace.google.com/marketplace/app/agentconnect/${encodeURIComponent(projectNumber)}`
+export function googleChatMarketplaceUrl(projectNumber: string): string | null {
+  return /^[1-9]\d{0,19}$/.test(projectNumber)
+    ? `https://workspace.google.com/marketplace/app/agentconnect/${projectNumber}`
+    : null
 }
 
 /** The HTTPS endpoint to copy into the Chat app: the relay's public origin plus the module route. */

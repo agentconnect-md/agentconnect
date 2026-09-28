@@ -214,7 +214,8 @@ The console module (`packages/web/src/components/console/platforms/googlechat/`)
 builds these steps for an organization's own app. On the organization's preset
 agent, where a claim lands (§10.5), it first links the deployment app's Google
 Workspace Marketplace listing, `https://workspace.google.com/marketplace/app/<slug>/<project number>`
-from the number `GET /integrations/googlechat/app` reports (a Chat app's
+from the number `GET /integrations/googlechat/app` reports only where a claim
+can complete, that is, with the relay anchor of §10.4 (a Chat app's
 Marketplace ID is its project number, and Google redirects any slug to the
 listing's own); the organization then connects itself from Google Chat. Without a
 public relay the pane says so and offers nothing, because Google Chat has no
