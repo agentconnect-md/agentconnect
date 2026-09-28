@@ -45,6 +45,14 @@ describe('splitHtmlLines', () => {
     ])
   })
 
+  it('takes CRLF as one line break and leaves no carriage return behind', () => {
+    expect(splitHtmlLines('<span class="c">a\r\nb</span>\r\nc')).toEqual([
+      '<span class="c">a</span>',
+      '<span class="c">b</span>',
+      'c'
+    ])
+  })
+
   it('keeps nested spans and a trailing empty line', () => {
     expect(splitHtmlLines('<b class="k"><i>a\nb</i></b>\n')).toEqual([
       '<b class="k"><i>a</i></b>',

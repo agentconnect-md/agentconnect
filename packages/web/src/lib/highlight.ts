@@ -248,8 +248,9 @@ export function splitHtmlLines(html: string): string[] {
   const lines: string[] = []
   const open: { tag: string; name: string }[] = []
   let line = ''
-  for (const [token] of html.matchAll(/<\/?([a-z][a-z0-9]*)[^>]*>|\n|[^<\n]+|</gi)) {
-    if (token === '\n') {
+  // CRLF is one separator: a leftover `\r` would draw as an extra break in a pre-wrap cell.
+  for (const [token] of html.matchAll(/<\/?([a-z][a-z0-9]*)[^>]*>|\r?\n|[^<\r\n]+|[<\r]/gi)) {
+    if (token === '\n' || token === '\r\n') {
       lines.push(
         line +
           open

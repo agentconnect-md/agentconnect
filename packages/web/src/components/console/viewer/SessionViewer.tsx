@@ -288,7 +288,7 @@ export function SessionViewer({
   // Lines as an editor counts them: a trailing newline ENDS the last line rather than beginning an empty one, so the gutter and the header's count describe the same rows.
   const lines = useMemo(() => {
     if (!read.content) return []
-    const parts = read.content.split('\n')
+    const parts = read.content.split(/\r?\n/)
     if (parts.length > 1 && parts[parts.length - 1] === '') parts.pop()
     return parts
   }, [read.content])

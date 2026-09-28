@@ -283,6 +283,13 @@ describe('SessionViewer body', () => {
     expect(container?.querySelectorAll('[data-viewer-code] b.hljs-keyword')).toHaveLength(2)
   })
 
+  it('numbers a CRLF file one row per line, with no carriage return left in the code', async () => {
+    wire.slices[0] = { content: 'one\r\ntwo\r\n' }
+    await render()
+    expect(gutter()).toBe('1\n2')
+    expect(code()).toBe('one\ntwo')
+  })
+
   it('previews a Markdown file by default and toggles to its numbered source', async () => {
     wire.slices[0] = { content: '# Title\n\nbody\n' }
     await render({ path: 'README.md' })
