@@ -102,15 +102,16 @@ Draft responses should identify and link each release outside its Markdown snipp
 
 ## When invoked by an authorized release watcher
 
-- Handle stable `release:published` events; ignore summary-edit events. Identify
-  work by repository and release ID. An existing complete summary skips only the
-  summary write; continue any unfinished, authorized issue follow-up. Do not
-  backfill older releases unless requested.
+- Handle `release:published` only for non-draft, non-prerelease releases; ignore
+  summary-edit events. Identify work by repository and release ID. An existing
+  complete summary skips only the summary write; continue any unfinished,
+  authorized issue follow-up. Do not backfill older releases unless requested.
 - Check the workflow for the release's exact commit/tag. A published Release can
-  precede completion of image or artifact publication. Only write the summary
-  after all required publication jobs succeed. While pending, recheck once a
-  minute for up to 90 minutes. On failure, cancellation, or timeout, leave the
-  body and issues unchanged and report that state to the caller.
+  precede completion of image or artifact publication. Update the summary or
+  issues only after all required artifact and image publication jobs succeed.
+  While pending, recheck once a minute for up to 90 minutes. On failure,
+  cancellation, or timeout, leave the body and issues unchanged and report that
+  state to the caller.
 - Release publication is not evidence of deployment. Do not claim that an
   environment was upgraded.
 

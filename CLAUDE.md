@@ -155,25 +155,8 @@ For work split across PRs, each PR states which acceptance items it covers and
 what remains. Keep the issue's acceptance checklist and required PR references
 current; a partial implementation must not be presented as the complete fix.
 
-When watching releases, use the
-[`agentconnect-release`](.claude/skills/agentconnect-release/SKILL.md) skill:
-
-1. Handle published, non-draft, non-prerelease releases. Verify the release's exact
-   tag/commit and wait for all required artifact and image publication jobs to
-   succeed. A tag, merged PR, or pending/failed release job is insufficient.
-2. Find candidate issues from the included PRs' non-closing references and issue
-   discussions. Read each issue's acceptance checklist and all required PRs,
-   including work from earlier releases. Close only when every required change
-   is present in the release tag and the acceptance criteria are met. All PRs
-   being merged is insufficient. Leave partial fixes, reverted changes, missing
-   release work, and uncertain cases open.
-3. Comment `Fixed and released in version vX.Y.Z.` with links to the release and
-   relevant PRs. Verify the comment was posted, then close the issue as completed.
-   Re-read issue state and comments before writing; retries must not duplicate
-   comments or re-close an issue reopened after that release's comment.
-4. Track issue follow-up separately from the release summary: an existing summary
-   must not skip unfinished issue work. Release publication alone does not prove
-   deployment to an environment.
+For release summaries and post-release issue closure, use the
+[`agentconnect-release`](.claude/skills/agentconnect-release/SKILL.md) skill.
 
 When creating a pull request, report the actual coding harness and model at
 the end of its description. Keep any attribution footer the harness provides
