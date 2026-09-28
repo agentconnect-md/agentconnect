@@ -32,6 +32,7 @@ import type {
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
 import type {
+  AgentApiProtocol,
   HookKind,
   SessionStayedHomeReason,
   ProviderKeyProvider,
@@ -4312,7 +4313,7 @@ export async function fetchAgentHooks(agentId: string, orgId?: string): Promise<
 }
 
 // ── agent chat APIs (the API card on the Integrations tab, shared-bot-relay.md §10.4) ──
-export type AgentApiProtocol = 'ai-sdk-ui'
+export type { AgentApiProtocol }
 
 export interface AgentApiEntryDto {
   protocol: AgentApiProtocol

@@ -571,7 +571,8 @@ therefore stops a live token within its five-minute lifetime, like revoking
 the key.
 
 In the Console, API sits in the Add integration dialog's Workflow group, where
-the owner picks a protocol; protocols not yet offered show as coming. The
+the owner picks a protocol; ACP 2, the remote ACP endpoint under Relation to
+ACP below, is listed as coming and cannot be picked yet. The
 agent's Integrations tab then shows one API card with a row per protocol and a
 single remove action. Each row's Quickstart shows this deployment's token and
 chat endpoints, a server-side proxy snippet for `useChat`, and the Agent chat
@@ -705,7 +706,8 @@ relay's output with the `ai` package's own client, not by string assertions.
 
 **Relation to ACP:** this path is a lossy projection for chat UIs. A remote ACP
 endpoint for agent clients such as editors would carry full fidelity, and the
-two can coexist.
+two can coexist. It is proposed as the next protocol an agent can add, ACP 2,
+as its own `AgentApiProtocol` entry.
 
 **Milestones:**
 

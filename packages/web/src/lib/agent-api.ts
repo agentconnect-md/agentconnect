@@ -38,20 +38,45 @@ export function agentChatUrls(apiBase: string, orgId: string, agentId: string, r
   }
 }
 
-/** A server-side proxy for `useChat`: the key mints a conversation's token, and each turn is forwarded with it. */
+/** A server-side proxy for `useChat`: one conversation per browser, its token reused until expiry, the relay stream returned. */
 export function aiSdkProxySnippet(mintUrl: string): string {
-  return `// Server: the key stays here. Mint once per conversation and reuse the token until expiresAt.
-const minted = await fetch(${JSON.stringify(mintUrl)}, {
-  method: "POST",
-  headers: { Authorization: \`Bearer \${process.env.AGENTCONNECT_API_KEY}\` },
-}).then((res) => res.json());
+  return `// app/api/chat/route.ts: the key stays on the server; each browser keeps one conversation.
+const tokens = new Map<string, { token: string; relayUrl: string; conversationId: string; expiresAt: string }>();
 
-// Each turn: forward the useChat request body and stream the answer back.
-const answer = await fetch(\`\${minted.relayUrl}/ai-sdk/chat/\${minted.conversationId}\`, {
-  method: "POST",
-  headers: { Authorization: \`Bearer \${minted.token}\`, "Content-Type": "application/json" },
-  body: await request.text(),
-});
+async function mint(conversationId?: string) {
+  const cached = conversationId ? tokens.get(conversationId) : undefined;
+  if (cached && Date.parse(cached.expiresAt) - 30_000 > Date.now()) return cached;
+  const res = await fetch(${JSON.stringify(mintUrl)}, {
+    method: "POST",
+    headers: { Authorization: \`Bearer \${process.env.AGENTCONNECT_API_KEY}\`, "Content-Type": "application/json" },
+    body: JSON.stringify(conversationId ? { conversationId } : {}),
+  });
+  if (!res.ok) throw new Error(\`token mint failed: \${res.status}\`);
+  const minted = await res.json();
+  tokens.set(minted.conversationId, minted);
+  return minted;
+}
+
+export async function POST(req: Request) {
+  const body = await req.text();
+  // A lone first question starts a new conversation; later turns continue the browser's one.
+  const turns = JSON.parse(body).messages.filter((m: { role: string }) => m.role === "user").length;
+  const bound = req.headers.get("cookie")?.match(/chat_conversation=([0-9a-f-]{36})/)?.[1];
+  const { token, relayUrl, conversationId } = await mint(turns > 1 ? bound : undefined);
+  const upstream = await fetch(\`\${relayUrl}/ai-sdk/chat/\${conversationId}\`, {
+    method: "POST",
+    headers: { Authorization: \`Bearer \${token}\`, "Content-Type": "application/json" },
+    body,
+    signal: req.signal,
+  });
+  const headers = new Headers({ "Cache-Control": "no-store" });
+  for (const name of ["content-type", "x-vercel-ai-ui-message-stream"]) {
+    const value = upstream.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  headers.append("Set-Cookie", \`chat_conversation=\${conversationId}; Path=/; HttpOnly; Secure; SameSite=Lax\`);
+  return new Response(upstream.body, { status: upstream.status, headers });
+}
 
 // Browser
 const { messages, sendMessage } = useChat({
