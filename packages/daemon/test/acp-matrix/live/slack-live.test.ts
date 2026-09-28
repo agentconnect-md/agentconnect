@@ -37,6 +37,7 @@ const SHORT: Record<FeatureId, string> = {
   'usage-fold': 'usage',
   memory: 'mem',
   sandbox: 'sbox',
+  vm: 'vm',
   mcp: 'mcp',
   skills: 'skills'
 }

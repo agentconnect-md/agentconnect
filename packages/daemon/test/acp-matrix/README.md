@@ -7,8 +7,14 @@ scriptable ACP fixture and it does not require Slack.
 
 The suite exercises real lifecycle and memory replies, model and permission-mode
 configuration, native resume, interactive permission requests, usage, a sandboxed
-provider turn, an HTTP MCP tool call, and a skill installed by the exact bundled
-skills CLI.
+provider turn, a provider turn inside a microsandbox VM, an HTTP MCP tool call, and
+a skill installed by the exact bundled skills CLI.
+
+The VM probe needs Linux with a usable `/dev/kvm` and a built daemon (it stages the
+bundled shim), and runs only runtimes the image ships. It boots
+`ghcr.io/agentconnect-md/runtime-sandbox-full:latest` unless the daemon config sets
+`sandbox.microsandbox.image` or `AC_RUNTIME_MATRIX_VM_IMAGE` names another; the msb
+package and image are cached under `$TMPDIR/acm-matrix` between runs.
 
 CI skips this suite. Run it locally with:
 
@@ -26,7 +32,8 @@ AC_RUNTIME_MATRIX_TARGETS=codex-acp,opencode \
   pnpm --filter @agentconnect.md/daemon test:runtime-matrix
 ```
 
-To rerun only the sandbox probe and show child-runtime diagnostics:
+To rerun only the sandbox (or `vm`) probe and show child-runtime diagnostics and
+the reason behind every degraded cell:
 
 ```bash
 AC_RUNTIME_MATRIX_TARGETS=claude-acp AC_RUNTIME_MATRIX_ONLY=sandbox \

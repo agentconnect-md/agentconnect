@@ -476,6 +476,36 @@ export const PROFILES: Profile[] = [
       usage: false,
       skillsAgentId: 'qoder'
     }
+  },
+  {
+    // Kimi Code CLI (`kimi acp`): loadSession, http+sse MCP, image prompts, model + mode selectors, no usage.
+    id: 'kimi',
+    registryId: 'kimi',
+    memory: {
+      runtime: runtime('./kimi', ['acp']),
+      expected: { managed: true, none: false, native: false }
+    },
+    scenario: {
+      agentCapabilities: {
+        loadSession: true,
+        mcpCapabilities: { http: true, sse: true },
+        promptCapabilities: { image: true, audio: false, embeddedContext: true }
+      },
+      configOptions: [
+        select('model', 'model', ['kimi-code/kimi-for-coding', 'kimi-code/k3']),
+        select('thinking', 'thought_level', ['low', 'high', 'max'], 'high'),
+        select('mode', 'mode', ['default', 'plan', 'auto', 'yolo'])
+      ]
+    },
+    caps: {
+      loadSession: true,
+      mcp: { http: true, sse: true },
+      promptImage: true,
+      models: ['kimi-code/kimi-for-coding', 'kimi-code/k3'],
+      permissionModes: ['default', 'plan', 'auto', 'yolo'],
+      usage: false,
+      skillsAgentId: 'kimi-code-cli'
+    }
   }
 ]
 
