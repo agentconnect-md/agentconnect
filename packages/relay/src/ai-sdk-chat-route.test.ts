@@ -225,7 +225,14 @@ describe('POST /ai-sdk/chat/:conversationId', () => {
     const turnId = h.daemon.turns()[0]!
     expect(sent).toMatchObject({ source: 'webchat', agentId: AGENT, sessionKey: CONV, chatId: CONV })
     expect(sent.remoteMcp).toBeUndefined()
-    expect(sent.payload).toEqual({ op: 'turn', text: 'first line\nsecond line', user: 'Ada', userId: 'user-1', turnId })
+    expect(sent.payload).toEqual({
+      op: 'turn',
+      text: 'first line\nsecond line',
+      user: 'Ada',
+      userId: 'user-1',
+      turnId,
+      origin: 'ai-sdk-ui'
+    })
 
     emit(h, turnId, { kind: 'thinking', text: 'looking' })
     emit(h, turnId, { kind: 'message', text: 'Here ' })
@@ -341,10 +348,23 @@ describe('POST /ai-sdk/chat/:conversationId', () => {
     expect(failed.status).toBe(502)
     expect(await failed.json()).toMatchObject({ reason: 'start_failed', message: 'the runtime exited' })
 
+    // The agent's Decision gate answered no.
+    h.daemon.ack = (m) => ({ msgId: m.msgId, accepted: false, reason: 'declined' })
+    const declined = await post(h, turnBody())
+    expect(declined.status).toBe(422)
+    expect(await declined.json()).toMatchObject({ reason: 'declined' })
+
     h.daemon.ack = (m) => ({ msgId: m.msgId, accepted: true, turnId: (m.payload as { turnId: string }).turnId })
     const { stream } = await chat(h)
-    finish(h, h.daemon.turns()[2]!)
+    finish(h, h.daemon.turns()[3]!)
     expect((await read(stream)).errors).toEqual([])
+  })
+
+  it('names the chat API as the turn’s origin, so the daemon applies its Decision gate', async () => {
+    const h = await start()
+    h.daemon.ack = (m) => ({ msgId: m.msgId, accepted: false, reason: 'busy' })
+    await post(h, turnBody())
+    expect(h.daemon.sent[0]!.payload).toMatchObject({ op: 'turn', origin: 'ai-sdk-ui' })
   })
 
   it('answers 503 when the agent daemon is not connected to this relay', async () => {
@@ -497,6 +517,7 @@ describe('chatTurnText', () => {
 describe('chatRefusalStatus', () => {
   it('maps daemon refusals to statuses', () => {
     expect(chatRefusalStatus('busy')).toBe(409)
+    expect(chatRefusalStatus('declined')).toBe(422)
     expect(chatRefusalStatus('paused')).toBe(503)
     expect(chatRefusalStatus('no_agent')).toBe(503)
     expect(chatRefusalStatus('start_failed')).toBe(502)

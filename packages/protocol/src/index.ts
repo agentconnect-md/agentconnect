@@ -177,6 +177,8 @@ export type { OrganizationMode, FrameOrgPeer, FrameOrgRef, FrameOrgVerdict } fro
 
 // ── relay wires (separate frame unions; shared-bot-relay.md §7/§8) ──
 export * from './frames/relay-cp.js'
+// An agent's chat APIs and their Decision gates (shared-bot-relay.md §10.4).
+export * from './agent-api.js'
 // Manifest-declared Slack shortcut id — defined in the bundler-facing
 // `./slack-app-manifest.ts` leaf, re-exported here so the package root keeps
 // serving it next to the runtime Slack action ids above.

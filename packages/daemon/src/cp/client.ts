@@ -1458,6 +1458,7 @@ export class CpClient {
 
   async decisionGet(payload: DecisionGetRequest): Promise<DecisionGetReply> {
     this.requireReady('decision/get')
+    // An API gate only arrives from a CP that serves its reads, so it needs no feature of its own.
     if (
       !this.supportsServerFeature(
         payload.purpose === 'model_selection' ? DECISION_MODEL_SELECTION_V1_FEATURE : DECISION_TOOLS_V1_FEATURE

@@ -29,6 +29,7 @@ import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { CodeHostRoutingFamily, DecisionAnswer, DecisionQuestion } from '../decision.js'
+import { AgentApiProtocol } from '../agent-api.js'
 import { DECISION_ROUTING_FORWARD_V1_FEATURE } from './decision.js'
 
 /**
@@ -214,7 +215,9 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     worktree: z.boolean().optional(),
     // Steer-or-refuse (#1847): the browser sent this while a turn was running and keeps its
     // own queue, so the daemon steers it into that turn or refuses `busy` — never parks it.
-    steer: z.boolean().optional()
+    steer: z.boolean().optional(),
+    // The chat API the turn came through; the daemon evaluates that API's Decision gate before admitting it.
+    origin: AgentApiProtocol.optional()
   }),
   // A conversation post another participant produced (a user turn targeted
   // elsewhere, or a peer agent's reply), fanned out by the relay so THIS frame's

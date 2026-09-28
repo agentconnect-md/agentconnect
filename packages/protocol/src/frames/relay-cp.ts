@@ -169,11 +169,6 @@ export const RcWebchatParticipant = z.object({
 })
 export type RcWebchatParticipant = z.infer<typeof RcWebchatParticipant>
 
-// A chat API an agent accepts calls on once its owner adds it under Integrations (shared-bot-relay.md §10.4).
-export const AgentApiProtocol = z.enum(['ai-sdk-ui'])
-export type AgentApiProtocol = z.infer<typeof AgentApiProtocol>
-export const AGENT_API_PROTOCOLS = AgentApiProtocol.options
-
 export const RcVerifyResult = z.object({
   ok: z.boolean(),
   reason: z.string().optional(),

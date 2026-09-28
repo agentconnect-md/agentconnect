@@ -18,6 +18,8 @@ import {
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
+  API_DECISION_GATE_V1_FEATURE,
+  type AgentApiProtocol,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
@@ -596,6 +598,7 @@ import {
   modelSelectionState,
   pinnedDecisionModel
 } from './decisions/model-selection.js'
+import { evaluateApiGate } from './decisions/api-gate.js'
 import {
   evaluateChunks,
   evaluateWithRetryWait,
@@ -2283,6 +2286,7 @@ export class Daemon {
       startFailure: (agentId) => this.lastStartFailure.get(agentId),
       safetyDraining: (agentId) => this.safetyDrainingAgents.has(agentId),
       draining: () => this.draining,
+      admitApiTurn: (agentId, protocol, text, turnId) => this.admitApiTurn(agentId, protocol, text, turnId),
       agentDraining: (agentId) => this.drainingAgents.has(agentId),
       turnFinalContextRefresh: () => this.cfg.features.turnFinalContextRefresh,
       inflight: () => this.inflight,
@@ -2385,6 +2389,31 @@ export class Daemon {
   // Evaluate without starting an ACP turn; consumers supply their own admission and replay fences.
   evaluateDecision(input: DecisionEvaluationInput, signal?: AbortSignal) {
     return this.decisionEvaluator.evaluate(input, signal)
+  }
+
+  /** An API turn's Decision gate: only an answered no refuses it; no gate, no CP link, or a failed evaluation admits. */
+  private async admitApiTurn(agentId: string, protocol: AgentApiProtocol, text: string, turnId: string) {
+    const gate = this.agents.get(agentId)?.apiGates?.[protocol]
+    const client = this.cpClient
+    if (!gate) return true
+    if (!client) {
+      this.log.warn(`api gate: no control plane link for agent ${agentId}; admitting turn ${turnId} unevaluated`)
+      return true
+    }
+    const verdict = await evaluateApiGate({
+      agentId,
+      gate,
+      text,
+      evaluationId: turnId,
+      now: () => this.clock.now(),
+      decision: (decisionId) => client.decisionGet({ requesterAgentId: agentId, decisionId, purpose: 'api_gate' }),
+      acquire: (providerId, deadlineAt, signal) =>
+        this.decisionLanes.slots.acquire(providerId, deadlineAt, signal, () => this.clock.now()),
+      evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal)
+    })
+    if (verdict.reason === 'unavailable')
+      this.log.warn(`api gate: evaluation unavailable (${verdict.detail}) for turn ${turnId}; admitting it`)
+    return verdict.admit
   }
 
   /** Wait until collaboration-spawned turns and all post-turn memory chains have settled. */
@@ -7046,6 +7075,8 @@ export class Daemon {
       DECISION_TOOLS_V1_FEATURE,
       DECISION_MODEL_SELECTION_V1_FEATURE,
       DECISION_CHAIN_V1_FEATURE,
+      // This daemon evaluates an API turn's Decision gate from AgentSpec.apiGates before admitting it.
+      API_DECISION_GATE_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
@@ -10882,7 +10913,8 @@ export class Daemon {
           op.mentions,
           op.post,
           op.worktree,
-          op.steer
+          op.steer,
+          op.origin
         )
         return {
           msgId: msg.msgId,

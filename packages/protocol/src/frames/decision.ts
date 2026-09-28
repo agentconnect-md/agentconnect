@@ -66,7 +66,8 @@ export type DecisionListReply = z.infer<typeof DecisionListReply>
 export const DecisionGetRequest = z.strictObject({
   requesterAgentId: z.string().uuid(),
   decisionId: z.string().uuid(),
-  purpose: z.literal('model_selection').optional()
+  // Authorizes the read against the agent's model selection or its chat API gates instead of its tool list.
+  purpose: z.enum(['model_selection', 'api_gate']).optional()
 })
 export type DecisionGetRequest = z.infer<typeof DecisionGetRequest>
 export const DecisionGetReply = z.strictObject({ decision: DecisionToolDefinition.nullable() })

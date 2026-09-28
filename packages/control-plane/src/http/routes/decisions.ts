@@ -9,6 +9,7 @@ import {
   DecisionDraft,
   DecisionEvaluation,
   DecisionPreviewRequest,
+  decisionChainIds,
   modelSelectionDecisionIds,
   supportsDecision,
   type DecisionDefinition
@@ -43,7 +44,7 @@ const DefinitionDto = z.object({
 })
 const IdParam = z.object({ id: z.string().uuid() })
 const UsageDto = z.object({
-  kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool', 'model_selection', 'code_host_routing']),
+  kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool', 'model_selection', 'code_host_routing', 'api_gate']),
   id: z.string(),
   label: z.string(),
   rootDecisionId: z.string().optional(),
@@ -191,7 +192,16 @@ export function decisionRoutes(deps: HttpDeps) {
           kind: 'agent_tool' as const,
           id: agent.id,
           label: agent.displayName ?? agent.name
-        }))
+        })),
+        ...Object.values(agent.apiGates ?? {}).flatMap((gate) =>
+          decisionChainIds(gate).map((decisionId) => ({
+            decisionId,
+            kind: 'api_gate' as const,
+            id: agent.id,
+            label: agent.displayName ?? agent.name,
+            rootDecisionId: gate.decisionId
+          }))
+        )
       ])
     const agentUsages = async (req: FastifyRequest) =>
       agentReferences(await deps.repos.agent.list(orgOf(req), ctxOf(req)))

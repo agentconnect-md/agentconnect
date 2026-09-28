@@ -1,5 +1,6 @@
 import type { FastifyRequest } from 'fastify'
 import {
+  API_DECISION_GATE_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   OWNER_DEFAULT_DECISION_V1_FEATURE,
   manifestFor,
@@ -101,6 +102,28 @@ export async function decisionGateReadiness(
     )
       return { status: 'unsupported', reason: 'Upgrade the relay to use By decision.' }
   }
+  return { status: 'ready' }
+}
+
+/** Whether every daemon serving this agent evaluates a chat API's Decision gate (shared-bot-relay.md §10.4). */
+export async function apiGateReadiness(
+  deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns'>,
+  agent: AgentRecord,
+  chained: boolean
+): Promise<DecisionGateReadiness> {
+  const ready = (await deps.placementResolver.routableDaemons(agent))
+    .map((daemonId) => deps.daemonConns.get(daemonId))
+    .filter((conn) => conn?.state === 'READY')
+  if (ready.length === 0) return { status: 'daemon_offline', reason: 'No daemon serving this agent is connected.' }
+  const features = (conn: (typeof ready)[number]) => conn?.capabilities?.features ?? []
+  if (
+    ready.some(
+      (conn) =>
+        !features(conn).includes(API_DECISION_GATE_V1_FEATURE) ||
+        (chained && !features(conn).includes(DECISION_CHAIN_V1_FEATURE))
+    )
+  )
+    return { status: 'unsupported', reason: 'Upgrade the daemon to gate API calls by decision.' }
   return { status: 'ready' }
 }
 

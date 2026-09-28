@@ -92,6 +92,8 @@ export function chatRefusalStatus(reason: string | undefined): number {
   switch (reason) {
     case 'busy':
       return 409
+    case 'declined':
+      return 422
     case 'no_agent':
     case 'paused':
     case 'draining':
@@ -113,6 +115,7 @@ const STATUS_TEXT: Record<number, string> = {
   404: 'Not Found',
   409: 'Conflict',
   413: 'Payload Too Large',
+  422: 'Unprocessable Content',
   502: 'Bad Gateway',
   503: 'Service Unavailable'
 }
@@ -344,7 +347,9 @@ export function registerAiSdkChatRoute(app: FastifyInstance, deps: ChatRouteDeps
         user: verdict.user ?? 'webchat',
         ...(verdict.userId ? { userId: verdict.userId } : {}),
         ...(verdict.userPicture ? { userPicture: verdict.userPicture } : {}),
-        turnId
+        turnId,
+        // The daemon evaluates this API's Decision gate before admitting the turn.
+        origin: 'ai-sdk-ui'
       }
       const binding = {
         chatId: conversationId,

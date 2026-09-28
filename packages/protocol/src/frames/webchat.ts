@@ -65,7 +65,9 @@ export const WebchatAck = z.object({
       'integration_delivery_failed',
       // The daemon owns this agent but its runtime would not start — distinct from `no_agent`,
       // which says no daemon serves it at all. Only this one carries `detail`.
-      'start_failed'
+      'start_failed',
+      // The API turn's Decision gate answered no (shared-bot-relay.md §10.4).
+      'declined'
     ])
     .optional(),
   // One bounded, path-free line naming the fault, so the client can state the cause instead of

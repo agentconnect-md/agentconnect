@@ -5,7 +5,9 @@ import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
 import {
   AgentMemoryBinding,
+  apiGateDecisionIds,
   modelSelectionDecisionIds,
+  type AgentApiGates,
   type AgentModelSelection,
   type AgentRepositorySelector,
   isCodeHostProvider,
@@ -200,6 +202,8 @@ type RuntimeOverrides = {
   skills?: string[]
   decisionIds?: string[]
   modelSelection?: AgentModelSelection
+  // The Decision gate on each chat API the agent added (shared-bot-relay.md §10.4).
+  apiGates?: AgentApiGates
   // Which memory backend the agent uses (managed | native | external). Stored in
   // the overrides bag like the sibling knobs; the daemon builds the provider from it.
   memory?: AgentMemoryBinding
@@ -321,6 +325,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     skills: ov.skills ?? [],
     decisionIds: ov.decisionIds ?? [],
     ...(ov.modelSelection ? { modelSelection: ov.modelSelection } : {}),
+    apiGates: ov.apiGates ?? {},
     ...repositorySelectorOf(a),
     managedSkills: a.managedSkills,
     memory: storedMemoryBinding(ov.memory),
@@ -581,7 +586,11 @@ export class PgAgentRepo implements AgentRepo {
     const authorizeDecisions = await enterDecisionBindingFence(
       tx,
       orgId,
-      [...(patch.decisionIds ?? []), ...modelSelectionDecisionIds(patch.modelSelection)],
+      [
+        ...(patch.decisionIds ?? []),
+        ...modelSelectionDecisionIds(patch.modelSelection),
+        ...apiGateDecisionIds(patch.apiGates)
+      ],
       patch.lastModifiedByUserId
     )
     // model/reasoningEffort/env live in the runtimeOverrides JSON — merge key by
@@ -602,6 +611,7 @@ export class PgAgentRepo implements AgentRepo {
       patch.skills !== undefined ||
       patch.decisionIds !== undefined ||
       patch.modelSelection !== undefined ||
+      patch.apiGates !== undefined ||
       patch.memory !== undefined ||
       opts?.memoryHome !== undefined
     ) {
@@ -642,6 +652,8 @@ export class PgAgentRepo implements AgentRepo {
         modelSelectionDecisionIds(cur?.modelSelection),
         modelSelectionDecisionIds(patch.modelSelection)
       )
+      if (patch.apiGates !== undefined)
+        authorizeDecisions(apiGateDecisionIds(cur?.apiGates), apiGateDecisionIds(patch.apiGates))
       if (patch.modelSelection !== undefined || patch.model !== undefined) {
         await validateModelSelection(
           tx,
@@ -695,6 +707,10 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.modelSelection !== undefined) {
         if (patch.modelSelection === null) delete next.modelSelection
         else next.modelSelection = patch.modelSelection
+      }
+      if (patch.apiGates !== undefined) {
+        if (patch.apiGates === null || Object.keys(patch.apiGates).length === 0) delete next.apiGates
+        else next.apiGates = patch.apiGates
       }
       if (patch.skills !== undefined) {
         if (patch.skills === null) delete next.skills

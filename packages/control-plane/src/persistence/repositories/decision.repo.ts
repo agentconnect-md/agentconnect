@@ -1,4 +1,5 @@
 import {
+  AGENT_API_PROTOCOLS,
   ChannelDecisionGate,
   DecisionDraft,
   DecisionQuestion,
@@ -277,7 +278,11 @@ export class PgDecisionRepo implements DecisionRepo {
             OR: [
               { runtimeOverrides: { path: ['decisionIds'], array_contains: [id] } },
               { runtimeOverrides: { path: ['modelSelection', 'decisionId'], equals: id } },
-              { runtimeOverrides: { path: ['modelSelection', 'steps'], array_contains: [{ decisionId: id }] } }
+              { runtimeOverrides: { path: ['modelSelection', 'steps'], array_contains: [{ decisionId: id }] } },
+              ...AGENT_API_PROTOCOLS.flatMap((protocol) => [
+                { runtimeOverrides: { path: ['apiGates', protocol, 'decisionId'], equals: id } },
+                { runtimeOverrides: { path: ['apiGates', protocol, 'steps'], array_contains: [{ decisionId: id }] } }
+              ])
             ]
           }
         })

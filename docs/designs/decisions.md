@@ -177,7 +177,10 @@ shared-bot router independently to the same primary delivery.
 
 The initial surfaces are group conversations that already expose Off / Mention /
 Any message. Binary 1:1 DM controls, webchat, code-host hooks, cron, and direct agent
-calls retain their existing behavior. A gate evaluates all eligible conversational
+calls retain their existing behavior. A chat API the agent added is the one webchat
+exception: its gate lives in the agent's `apiGates`, keyed by protocol, and the
+daemon evaluates it on each API turn's text before admission
+([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api)). A gate evaluates all eligible conversational
 messages, including explicit mentions and replies in an existing thread. A negative
 answer never chooses another agent or clears a `!stop` mute.
 
