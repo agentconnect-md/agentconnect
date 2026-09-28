@@ -3820,10 +3820,15 @@ describe.skipIf(pg)('decision table migrations', () => {
   }
 
   it('creates the decision tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(33)
+    expect(SCHEMA_VERSION).toBe(34)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
-    expect(tables(path)).toEqual(['decision_model_evaluation', 'decision_release', 'decision_verdict'])
+    expect(tables(path)).toEqual([
+      'decision_api_gate_evaluation',
+      'decision_model_evaluation',
+      'decision_release',
+      'decision_verdict'
+    ])
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
@@ -3836,7 +3841,12 @@ describe.skipIf(pg)('decision table migrations', () => {
     const upgraded = await LocalStore.open(path)
     expect(await upgraded.listPendingDecisionVerdicts()).toEqual([])
     await upgraded.close()
-    expect(tables(path)).toEqual(['decision_model_evaluation', 'decision_release', 'decision_verdict'])
+    expect(tables(path)).toEqual([
+      'decision_api_gate_evaluation',
+      'decision_model_evaluation',
+      'decision_release',
+      'decision_verdict'
+    ])
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
@@ -3848,6 +3858,19 @@ describe.skipIf(pg)('decision table migrations', () => {
     old.close()
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toContain('decision_model_evaluation')
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
+  })
+
+  it('adds API gate history to a v33 store', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v33-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('DROP TABLE decision_api_gate_evaluation; PRAGMA user_version = 33')
+    old.close()
+    const upgraded = await LocalStore.open(path)
+    expect(await upgraded.listDecisionApiGateEvaluations('', 'agent', 'ai-sdk-ui', undefined, 10)).toEqual([])
+    await upgraded.close()
+    expect(tables(path)).toContain('decision_api_gate_evaluation')
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 

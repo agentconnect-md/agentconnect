@@ -4665,6 +4665,12 @@
         "offline": "The daemon that evaluates this repository's routing is not connected, so recent evaluations can't be read right now.",
         "unsupported": "Upgrade the daemon that evaluates this repository's routing to see its recent evaluations."
       },
+      "api": {
+        "empty": "No evaluations yet. Calls this API judged appear here.",
+        "offline": "No daemon serving this agent is connected, so recent evaluations can't be read right now.",
+        "unsupported": "Upgrade the daemon serving this agent to see this API's recent evaluations.",
+        "retention": "Details are kept for 24 hours, or for the 20 most recent evaluations of this API; the summary stays after that."
+      },
       "error": "Couldn't load recent evaluations. {message}",
       "loadMore": "Load more",
       "columns": {

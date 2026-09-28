@@ -86,7 +86,7 @@ function outcomeOf(row: DecisionVerdictRow): DecisionEvaluationOutcome {
   return 'pending'
 }
 
-function summaryOf(answer: DecisionAnswer): DecisionAnswerSummary {
+export function summaryOf(answer: DecisionAnswer): DecisionAnswerSummary {
   if (answer.type === 'boolean') return { type: 'boolean', value: answer.value, probability: answer.probability }
   if (answer.type === 'choice') return { type: 'choice', value: answer.value, confidence: answer.confidence }
   return { type: 'score', value: answer.value, confidence: answer.confidence }

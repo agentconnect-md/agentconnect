@@ -53,7 +53,8 @@ export function DecisionEvaluationsDrawer({
     () => givenSource ?? conversationEvaluations(api, orgId, { integrationId: integrationId!, channelId: channelId! }),
     [givenSource, api, orgId, integrationId, channelId]
   )
-  const copy = source.lane === 'code_host' ? 'evaluations.codeHost' : 'evaluations'
+  const copy =
+    source.lane === 'code_host' ? 'evaluations.codeHost' : source.lane === 'api' ? 'evaluations.api' : 'evaluations'
   const words = { yes: t('condition.yes'), no: t('condition.no') }
   const decisionName = useCallback(
     (id: string) => decisions.find((entry) => entry.id === id)?.name ?? t('binding.hiddenDecision'),
@@ -177,7 +178,7 @@ export function DecisionEvaluationsDrawer({
         )}
         <div className="px-[18px] py-3">
           <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-            {t('evaluations.retention')}
+            {t(source.lane === 'api' ? 'evaluations.api.retention' : 'evaluations.retention')}
           </span>
         </div>
       </>

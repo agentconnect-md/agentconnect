@@ -746,6 +746,8 @@ consumer kind without restricting the reusable resource to gates and routers.
 | `GET /integrations/:id/channels/:channelId/decision-evaluations/:seq`  | One evaluation's frozen snapshot, input, answer, and evidence, or `detailsExpired`          |
 | `GET /agents/:id/model-evaluations`                                    | Session-start model choices, scoped to the Agent and each session's audience                |
 | `GET /agents/:id/model-evaluations/:seq`                               | One frozen model choice and its retained input, answer, and rules                           |
+| `GET /agents/:id/api/:protocol/evaluations`                            | A chat API gate's verdicts, newest first; editors of the Agent only                         |
+| `GET /agents/:id/api/:protocol/evaluations/:seq`                       | One API gate verdict's frozen snapshot, call text, answer, and chain                        |
 | `POST /bots/:id/decision-routing/preview` (Stage 2)                    | Routing draft, channel and sample context; precedence outcome or answer/rule/target         |
 | `GET /bots/:id/decision-routing/evaluations` (Stage 2)                 | Router verdicts newest first by `channelId`/`cursor`/`limit`; each row's audience checked   |
 | `GET /bots/:id/decision-routing/evaluations/:seq?channelId=` (Stage 2) | One router verdict's snapshots, constraint, input, answer, and per-target admissions        |
@@ -1456,6 +1458,11 @@ older daemons report upgrade required for filtered reads. These histories identi
 the root Decision of a recorded evaluation. A child Decision page reads its root
 chain's history and labels that scope; a retained detail shows which child steps
 were reached. Agent tool calls have no evaluation history here.
+
+A chat API gate keeps its own Agent-scoped history per protocol, read like a gate's
+and opened from the API row's rules modal; only editors of the Agent read it, since
+its rows are callers' messages
+([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api)).
 
 Open Recent evaluations from a gate binding or Shared Bot Routing. The routing list
 shows Time, Channel, Decision answer, Matched keys/intervals and rules / Otherwise,

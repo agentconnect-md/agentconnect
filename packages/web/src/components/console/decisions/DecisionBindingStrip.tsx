@@ -25,6 +25,7 @@ import {
 import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
 import { DecisionConditionFields, conditionSummary } from './DecisionConditionFields'
 import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
+import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import { DecisionGateTry } from './DecisionGateTry'
 import { DecisionChip } from './DecisionChip'
 import { GateChainFields } from './GateChainFields'
@@ -169,6 +170,7 @@ export function DecisionBindingStrip({
   savedName,
   status,
   surface = 'channel',
+  evaluations,
   onSave
 }: {
   /** The gate's identity: organization, owning bot, and conversation (see `gateKey`). */
@@ -189,6 +191,8 @@ export function DecisionBindingStrip({
   status: GateStatus | null
   /** What the gate judges: a conversation's messages, or the text of each call over an agent's chat API. */
   surface?: 'channel' | 'api'
+  /** Where Recent evaluations read when there is no conversation, as for an API gate. */
+  evaluations?: DecisionEvaluationSource
   /** Persist the gate; a rejection keeps the draft for Retry. */
   onSave: (gate: ChannelDecisionGate) => Promise<void>
 }) {
@@ -230,7 +234,7 @@ export function DecisionBindingStrip({
     return () => document.removeEventListener('keydown', onKey)
   }, [open, busy, historyOpen, collapse])
 
-  const historyLink = conversation && saved && (
+  const historyLink = (conversation || evaluations) && saved && (
     <button
       type="button"
       className="lnk gap-[6px] text-[11.5px] font-medium"
@@ -241,9 +245,9 @@ export function DecisionBindingStrip({
       {t('evaluations.toggle')}
     </button>
   )
-  const historyDrawer = conversation && historyOpen && (
+  const historyDrawer = (conversation || evaluations) && historyOpen && (
     <DecisionEvaluationsDrawer
-      conversation={conversation}
+      {...(conversation ? { conversation } : { source: evaluations! })}
       {...(channelName ? { channelName } : {})}
       {...(agentName ? { agentName } : {})}
       onClose={() => setHistoryOpen(false)}

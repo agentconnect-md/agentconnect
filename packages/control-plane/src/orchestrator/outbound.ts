@@ -1,4 +1,9 @@
 import {
+  API_GATE_EVALUATIONS_V1_FEATURE,
+  ApiGateEvaluationReply,
+  ApiGateEvaluationsReply,
+  type ApiGateEvaluationRequest,
+  type ApiGateEvaluationsRequestInput,
   DECISION_EVALUATION_RAW_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_EVALUATION_FILTER_V1_FEATURE,
@@ -972,6 +977,45 @@ export class ControlSender {
     return DecisionModelEvaluationReply.parse(
       await c.conn.request(
         'decision/model-evaluation',
+        req,
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 5000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  /** An agent's chat API gate verdicts; proxied, never persisted or logged. */
+  async decisionApiGateEvaluations(
+    daemonId: string,
+    orgId: string,
+    req: ApiGateEvaluationsRequestInput
+  ): Promise<ApiGateEvaluationsReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(API_GATE_EVALUATIONS_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return ApiGateEvaluationsReply.parse(
+      await c.conn.request(
+        'decision/api-gate-evaluations',
+        req,
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 5000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  async decisionApiGateEvaluation(
+    daemonId: string,
+    orgId: string,
+    req: ApiGateEvaluationRequest
+  ): Promise<ApiGateEvaluationReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(API_GATE_EVALUATIONS_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return ApiGateEvaluationReply.parse(
+      await c.conn.request(
+        'decision/api-gate-evaluation',
         req,
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 5000, maxTries: 1 },

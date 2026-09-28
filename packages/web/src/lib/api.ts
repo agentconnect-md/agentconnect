@@ -4346,6 +4346,30 @@ export async function setAgentApiGate(
   return apiPut<AgentApiEntryDto>(`${agentApiBase(agentId)}/${protocol}/gate`, { gate })
 }
 
+/** The verdicts this API's gate reached, newest first, read from the agent's serving daemon. */
+export function fetchAgentApiGateEvaluations(
+  agentId: string,
+  protocol: AgentApiProtocol,
+  page: { cursor?: number; limit?: number; decisionId?: string } = {},
+  orgId?: string
+): Promise<DecisionEvaluationRecordPage> {
+  const query = new URLSearchParams()
+  if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
+  if (page.limit !== undefined) query.set('limit', String(page.limit))
+  if (page.decisionId) query.set('decisionId', page.decisionId)
+  const suffix = query.toString()
+  return apiGet(`${agentApiBase(agentId, orgId)}/${protocol}/evaluations${suffix ? `?${suffix}` : ''}`)
+}
+
+export function fetchAgentApiGateEvaluation(
+  agentId: string,
+  protocol: AgentApiProtocol,
+  seq: number,
+  orgId?: string
+): Promise<DecisionEvaluationRecordDetail> {
+  return apiGet(`${agentApiBase(agentId, orgId)}/${protocol}/evaluations/${encodeURIComponent(String(seq))}`)
+}
+
 // The capability URL is sufficient by default. HMAC is an optional second
 // factor, with its signing secret revealed once by the create response.
 export async function createHook(input: CreateHookInput): Promise<CreatedHookDto> {

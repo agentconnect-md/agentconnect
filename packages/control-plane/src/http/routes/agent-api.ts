@@ -1,9 +1,12 @@
 // The chat APIs an agent accepts calls on (shared-bot-relay.md §10.4), anchored on the agent like a hook: reads need visibility, writes `denyViewerWrite`.
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
+  API_GATE_EVALUATIONS_V1_FEATURE,
   AgentApiProtocol,
   ChannelDecisionGate,
+  DecisionEvaluationRecordDetail,
+  DecisionEvaluationRecordPage,
   decisionGateIssues,
   type AgentApiGates
 } from '@agentconnect.md/protocol'
@@ -12,6 +15,8 @@ import type { HttpDeps } from '../deps.js'
 import type { AgentApiEntryRecord, AgentRecord } from '../../persistence/ports.js'
 import { DecisionBindingDenied } from '../../persistence/decision-binding-fence.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
+import { ConnectionClosed } from '../../ws/registry.js'
+import { ProtocolError } from '../../domain/errors.js'
 import { AgentId } from '../../domain/ids.js'
 import { canEdit, canView } from '../../authorization/policy.js'
 import { ctxOf, denyViewerWrite, orgOf } from '../rbac.js'
@@ -30,6 +35,12 @@ const AgentApiEntryDto = z.object({
 })
 const AgentApiEntryListDto = z.object({ entries: z.array(AgentApiEntryDto) })
 const GateBody = z.object({ gate: ChannelDecisionGate.nullable() })
+const unavailable = (message: string, code: string) => ({
+  error: 'Service Unavailable',
+  statusCode: 503,
+  message,
+  code
+})
 
 const toDto = (e: AgentApiEntryRecord, gates: AgentApiGates | undefined): z.infer<typeof AgentApiEntryDto> => ({
   protocol: e.protocol,
@@ -175,6 +186,109 @@ export function agentApiRoutes(deps: HttpDeps) {
           throw e
         }
         return reply.send(toDto(entry, saved.apiGates))
+      }
+    )
+
+    // Gate verdicts judge callers' messages, so only those who may edit the agent read them.
+    const editableAgent = async (req: FastifyRequest<{ Params: z.infer<typeof AgentParams> }>, reply: FastifyReply) => {
+      const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.params.agentId))
+      if (!agent || !canView(agent, ctxOf(req))) {
+        await notFound(reply, 'agent not found')
+        return null
+      }
+      if (!canEdit(agent, ctxOf(req))) {
+        await reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        return null
+      }
+      return agent
+    }
+    // Read from a serving daemon that records verdicts, trying the next on a dropped connection or a lane it no longer serves.
+    const fromDaemon = async <T>(reply: FastifyReply, agent: AgentRecord, read: (id: string) => Promise<T>) => {
+      const ready = (await deps.placementResolver.servingDaemons(agent)).filter(
+        (id) => deps.daemonConns.get(id)?.state === 'READY'
+      )
+      const capable = ready.filter((id) =>
+        deps.daemonConns.get(id)?.capabilities?.features.includes(API_GATE_EVALUATIONS_V1_FEATURE)
+      )
+      if (ready.length && !capable.length) {
+        await reply
+          .code(503)
+          .send(unavailable('upgrade the evaluation host to read API gate evaluations', 'DAEMON_UPGRADE_REQUIRED'))
+        return null
+      }
+      for (const id of capable) {
+        try {
+          return await read(id)
+        } catch (cause) {
+          if (!(
+            cause instanceof NoConnection ||
+            cause instanceof ConnectionClosed ||
+            (cause instanceof ProtocolError && cause.code === 'SCOPE_DENIED')
+          ))
+            throw cause
+        }
+      }
+      await reply.code(503).send(unavailable('the evaluation host is offline', 'DAEMON_OFFLINE'))
+      return null
+    }
+
+    r.get(
+      '/agents/:agentId/api/:protocol/evaluations',
+      {
+        schema: {
+          tags: [Tag.Decisions],
+          summary: "List a chat API gate's recent evaluations",
+          description:
+            "Lists the verdicts this agent's Decision gate on `protocol` reached, newest first, from its serving daemon: `triggered` admitted the turn, `skipped` refused it, `unavailable` admitted it without an answer. `decisionId` filters by the root Decision before paging. Only callers who can edit the agent may read them. Each row's `title` is the call's first line; detail bodies expire after 24 hours or 20 newer verdicts, summaries after seven days.",
+          operationId: 'listAgentApiGateEvaluations',
+          params: EntryParams,
+          querystring: z.object({
+            cursor: z.coerce.number().int().positive().optional(),
+            limit: z.coerce.number().int().min(1).max(50).default(20),
+            decisionId: z.string().uuid().optional()
+          }),
+          response: { 200: DecisionEvaluationRecordPage, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await editableAgent(req, reply)
+        if (!agent) return reply
+        const page = await fromDaemon(reply, agent, (id) =>
+          deps.control.decisionApiGateEvaluations(id, orgOf(req), {
+            agentId: agent.id,
+            protocol: req.params.protocol,
+            ...req.query
+          })
+        )
+        return page ?? reply
+      }
+    )
+
+    r.get(
+      '/agents/:agentId/api/:protocol/evaluations/:seq',
+      {
+        schema: {
+          tags: [Tag.Decisions],
+          summary: "Get a chat API gate's evaluation",
+          description:
+            'Reads one frozen gate verdict from the serving daemon: the Decision as it was asked, the call it judged, the answer, the chain trace, and the provider JSON while retained. Only callers who can edit the agent may read it.',
+          operationId: 'getAgentApiGateEvaluation',
+          params: EntryParams.extend({ seq: z.coerce.number().int().positive() }),
+          response: { 200: DecisionEvaluationRecordDetail, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await editableAgent(req, reply)
+        if (!agent) return reply
+        const result = await fromDaemon(reply, agent, (id) =>
+          deps.control.decisionApiGateEvaluation(id, orgOf(req), {
+            agentId: agent.id,
+            protocol: req.params.protocol,
+            seq: req.params.seq
+          })
+        )
+        if (!result) return reply
+        return result.evaluation ?? notFound(reply, 'evaluation not found')
       }
     )
 

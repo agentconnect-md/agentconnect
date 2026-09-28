@@ -671,6 +671,17 @@ Console, each API row carries the same Decision chip and rules modal as a
 channel's By decision; the modal's subtitle and help name what the API gate
 judges, the call's own message.
 
+The daemon records each gated turn's verdict in its own `decision_api_gate_evaluation`
+table, keyed by agent and protocol, in the shape a channel gate's Recent evaluations
+read: Triggered when the gate admitted the turn, Skipped when it refused it, and
+Unavailable when it admitted it unanswered, with the frozen Decision, the call's text
+and caller, the answer, the chain trace, and the root step's provider JSON. The CP
+proxies `GET /agents/:agentId/api/:protocol/evaluations` and `.../evaluations/:seq`
+from a serving daemon advertising `api-gate-evaluations-v1`, only to callers who can
+edit the agent, since the rows are callers' messages; nothing is persisted on the CP.
+The rules modal on an API row opens them in the Recent evaluations drawer. Bodies
+expire after 24 hours or 20 newer verdicts per API, summaries after seven days.
+
 Tool activity arrives as `data-tool` parts rather than AI SDK tool parts,
 because webchat carries a tool's title and status but not its name or
 arguments. A client that ignores data parts shows text only. The encoder sits

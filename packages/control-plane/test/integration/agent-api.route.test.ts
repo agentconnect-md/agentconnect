@@ -1,6 +1,10 @@
 // `/agents/:agentId/api` — the chat APIs an agent accepts calls on (shared-bot-relay.md §10.4).
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { API_DECISION_GATE_V1_FEATURE } from '@agentconnect.md/protocol'
+import {
+  API_DECISION_GATE_V1_FEATURE,
+  API_GATE_EVALUATIONS_V1_FEATURE,
+  type DecisionEvaluationRecord
+} from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
@@ -194,5 +198,65 @@ describe('agent chat API Decision gate', () => {
     const agent = await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })
     expect((agent.runtimeOverrides as { apiGates?: unknown } | null)?.apiGates).toBeUndefined()
     expect((await a.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${decisionId}` })).statusCode).toBe(204)
+  })
+})
+
+describe('chat API gate evaluations', () => {
+  const DAEMON = 'd8d8d8d8-dddd-4ddd-8ddd-d8d8d8d8d8d8'
+  const row: DecisionEvaluationRecord = {
+    seq: 1,
+    at: '2026-01-01T00:00:00.000Z',
+    messageId: 'msg-1',
+    title: 'How do I install the daemon?',
+    decisionId: '33333333-3333-4333-8333-333333333333',
+    outcome: 'skipped',
+    reason: null,
+    answer: { type: 'boolean', value: false, probability: 0.1 },
+    matchedKeys: [],
+    latencyMs: 12,
+    requestedModel: 'example-model',
+    actualModel: 'example-model',
+    usage: { inputTokens: 1, outputTokens: 1 },
+    detailsExpired: false
+  }
+
+  it('proxies the verdicts from the serving daemon to those who can edit the agent', async () => {
+    const viewer = await makeUser('api-eval-viewer', 'viewer')
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, visibility: 'restricted', sharedWith: [viewer] })
+    const requests: unknown[] = []
+    const control = {
+      decisionApiGateEvaluations: async (_daemonId: string, _orgId: string, req: unknown) => {
+        requests.push(req)
+        return { items: [row], nextCursor: null }
+      },
+      decisionApiGateEvaluation: async (_daemonId: string, _orgId: string, req: { seq: number }) => ({
+        evaluation: req.seq === 1 ? { ...row, snapshot: null, input: null, fullAnswer: null, evidence: null } : null
+      })
+    }
+    let features = [API_GATE_EVALUATIONS_V1_FEATURE]
+    const liveness = { get: () => ({ state: 'READY', capabilities: { features } }) }
+    const build = (over?: Parameters<typeof buildHttpApp>[1]) => {
+      const a = buildHttpApp(prisma, over, liveness as never, control as unknown as ControlSender)
+      opened.push(a)
+      return a
+    }
+    const a = build()
+    const url = `${ORG}/agents/${AGENT}/api/ai-sdk-ui/evaluations`
+
+    const page = await a.app.inject({ method: 'GET', url: `${url}?limit=5` })
+    expect(page.statusCode, page.body).toBe(200)
+    expect(page.json()).toEqual({ items: [row], nextCursor: null })
+    expect(requests).toEqual([{ agentId: AGENT, protocol: 'ai-sdk-ui', limit: 5 }])
+    expect((await a.app.inject({ method: 'GET', url: `${url}/1` })).json()).toMatchObject({ seq: 1, evidence: null })
+    expect((await a.app.inject({ method: 'GET', url: `${url}/2` })).statusCode).toBe(404)
+
+    // A viewer sees the agent, not the calls its gate judged.
+    expect((await build({ DEFAULT_OWNER_ID: viewer }).app.inject({ method: 'GET', url })).statusCode).toBe(403)
+
+    features = [API_DECISION_GATE_V1_FEATURE]
+    const old = await a.app.inject({ method: 'GET', url })
+    expect(old.statusCode).toBe(503)
+    expect(old.json().code).toBe('DAEMON_UPGRADE_REQUIRED')
   })
 })

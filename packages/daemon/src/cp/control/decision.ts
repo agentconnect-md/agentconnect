@@ -5,10 +5,13 @@ import {
   DecisionRoutingEvaluationRequest,
   DecisionRoutingEvaluationsRequest,
   DecisionModelEvaluationsRequest,
-  DecisionModelEvaluationRequest
+  DecisionModelEvaluationRequest,
+  ApiGateEvaluationsRequest,
+  ApiGateEvaluationRequest
 } from '@agentconnect.md/protocol'
 import { DecisionEvaluationScopeError, type DecisionEvaluationReader } from '../../decisions/evaluations.js'
 import type { DecisionModelEvaluationReader } from '../../decisions/model-evaluations.js'
+import type { DecisionApiGateEvaluationReader } from '../../decisions/api-gate-evaluations.js'
 import type { DecisionEvaluator } from '../../decisions/evaluator.js'
 import type { ControlHandler } from './context.js'
 
@@ -16,6 +19,7 @@ export interface DecisionControlDeps {
   decisionEvaluator?: Pick<DecisionEvaluator, 'catalog' | 'evaluate'>
   decisionEvaluations?: Pick<DecisionEvaluationReader, 'list' | 'get' | 'listRouting' | 'getRouting'>
   decisionModelEvaluations?: Pick<DecisionModelEvaluationReader, 'list' | 'get'>
+  decisionApiGateEvaluations?: Pick<DecisionApiGateEvaluationReader, 'list' | 'get'>
 }
 
 export const decisionCatalog: ControlHandler<DecisionControlDeps> = (frame, deps, wire) => {
@@ -155,5 +159,29 @@ export const decisionModelEvaluation: ControlHandler<DecisionControlDeps> = asyn
     () => DecisionModelEvaluationRequest.parse(frame.payload),
     (orgId, req) => reader.get(orgId, req),
     'decision/model-evaluation/result'
+  )
+}
+
+export const decisionApiGateEvaluations: ControlHandler<DecisionControlDeps> = async (frame, deps, wire) => {
+  const reader = deps.decisionApiGateEvaluations
+  if (!reader) return wire.sendError(frame.id, 'BAD_PAYLOAD', 'API gate evaluations are unavailable', false)
+  await readEvaluations(
+    frame,
+    wire,
+    () => ApiGateEvaluationsRequest.parse(frame.payload),
+    (orgId, req) => reader.list(orgId, req),
+    'decision/api-gate-evaluations/page'
+  )
+}
+
+export const decisionApiGateEvaluation: ControlHandler<DecisionControlDeps> = async (frame, deps, wire) => {
+  const reader = deps.decisionApiGateEvaluations
+  if (!reader) return wire.sendError(frame.id, 'BAD_PAYLOAD', 'API gate evaluations are unavailable', false)
+  await readEvaluations(
+    frame,
+    wire,
+    () => ApiGateEvaluationRequest.parse(frame.payload),
+    (orgId, req) => reader.get(orgId, req),
+    'decision/api-gate-evaluation/result'
   )
 }

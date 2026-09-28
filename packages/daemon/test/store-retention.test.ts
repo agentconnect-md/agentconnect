@@ -226,6 +226,26 @@ describe('store retention rule table', () => {
       { selection: null, question: null, input: null, fullAnswer: null, rawRequest: null, rawResponse: null },
       AT
     )
+    await s.saveDecisionApiGateEvaluation(
+      LIVE,
+      'ai-sdk-ui',
+      'msg-1',
+      {
+        at: new Date(AT).toISOString(),
+        messageId: 'msg-1',
+        decisionId: '55555555-5555-4555-8555-555555555555',
+        outcome: 'triggered',
+        reason: null,
+        answer: null,
+        matchedKeys: [],
+        latencyMs: null,
+        requestedModel: 'example-model',
+        actualModel: null,
+        usage: null
+      },
+      { snapshot: null, input: null, fullAnswer: null, rawRequest: null, rawResponse: null },
+      AT
+    )
 
     const { instance } = sweeper(s, AT + 1_000)
     const summary = await instance.sweep()

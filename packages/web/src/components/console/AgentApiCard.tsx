@@ -14,6 +14,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { agentApiRelayUrl, agentChatUrls, aiSdkProxySnippet, API_PROTOCOLS, apiProtocolLabel } from '@/lib/agent-api'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import type { SavedGate } from '@/lib/decisions/binding'
+import { apiGateEvaluations } from '@/lib/decisions/evaluation-source'
 import { DecisionBindingStrip, DecisionGateEntry } from '@/components/console/decisions/DecisionBindingStrip'
 import type { ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 import {
@@ -191,6 +192,10 @@ function ApiRow({
           saved={saved}
           status={saved ? 'ready' : null}
           surface="api"
+          // Only those who can edit the agent read the calls its gate judged.
+          {...(agent.canEdit
+            ? { evaluations: apiGateEvaluations(decisions.api, decisions.orgId, agent.id, entry.protocol) }
+            : {})}
           onSave={(gate) => saveGate(gate)}
         />
       )}

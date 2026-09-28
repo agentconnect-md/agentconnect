@@ -19,6 +19,7 @@ import {
   DECISION_MODEL_SELECTION_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
   API_DECISION_GATE_V1_FEATURE,
+  API_GATE_EVALUATIONS_V1_FEATURE,
   type AgentApiProtocol,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
@@ -559,6 +560,7 @@ import { KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
 import { DecisionEvaluationReader } from './decisions/evaluations.js'
 import { DecisionModelEvaluationReader } from './decisions/model-evaluations.js'
+import { DecisionApiGateEvaluationReader, apiGateEvaluationRecord } from './decisions/api-gate-evaluations.js'
 import { backgroundConversationText, intakeEvidenceText, routeSelectionEvidence } from './decisions/evidence.js'
 import { DecisionLaneRuntime } from './decisions/lanes.js'
 import {
@@ -598,7 +600,7 @@ import {
   modelSelectionState,
   pinnedDecisionModel
 } from './decisions/model-selection.js'
-import { evaluateApiGate } from './decisions/api-gate.js'
+import { evaluateApiGate, type ApiGateEvidence } from './decisions/api-gate.js'
 import {
   evaluateChunks,
   evaluateWithRetryWait,
@@ -1566,6 +1568,7 @@ export class Daemon {
   private readonly decisionEvaluator: DecisionEvaluator
   private readonly decisionEvaluations: DecisionEvaluationReader
   private readonly decisionModelEvaluations: DecisionModelEvaluationReader
+  private readonly decisionApiGateEvaluations: DecisionApiGateEvaluationReader
   private readonly decisionGate: DecisionGate
   /** The shared-bot router (message-intake.md §6), sharing the gate's lanes and provider budget. */
   private readonly decisionRouter: DecisionRouter
@@ -1962,6 +1965,10 @@ export class Daemon {
       }
     })
     this.decisionModelEvaluations = new DecisionModelEvaluationReader({
+      store: () => this.store,
+      servesAgent: (orgId, agentId) => this.servesAgent(agentId) && this.orgForAgent(agentId) === orgId
+    })
+    this.decisionApiGateEvaluations = new DecisionApiGateEvaluationReader({
       store: () => this.store,
       servesAgent: (orgId, agentId) => this.servesAgent(agentId) && this.orgForAgent(agentId) === orgId
     })
@@ -2391,9 +2398,17 @@ export class Daemon {
   }
 
   /** An API turn's Decision gate, from the agent's spec: only an answered no refuses it; no gate or a failed evaluation admits. */
-  private async admitApiTurn(agentId: string, protocol: AgentApiProtocol, text: string, msgId: string) {
+  private async admitApiTurn(
+    agentId: string,
+    protocol: AgentApiProtocol,
+    text: string,
+    msgId: string,
+    sender: string | undefined
+  ) {
     const projection = this.agents.get(agentId)?.apiGates?.[protocol]
     if (!projection) return true
+    const at = this.clock.now()
+    let evidence: ApiGateEvidence | undefined
     const verdict = await evaluateApiGate({
       agentId,
       projection,
@@ -2402,10 +2417,26 @@ export class Daemon {
       now: () => this.clock.now(),
       acquire: (providerId, deadlineAt, signal) =>
         this.decisionLanes.slots.acquire(providerId, deadlineAt, signal, () => this.clock.now()),
-      evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal)
+      evaluate: (input, signal) => this.decisionEvaluator.evaluate(input, signal),
+      onEvidence: (e) => (evidence = e)
     })
     if (verdict.reason === 'unavailable')
       this.log.warn(`api gate: evaluation unavailable (${verdict.detail}) for ${msgId}; admitting it`)
+    const record =
+      evidence &&
+      apiGateEvaluationRecord({
+        projection,
+        verdict,
+        evidence,
+        messageId: msgId,
+        sender: sender ?? 'api',
+        text,
+        at
+      })
+    if (record)
+      void this.store
+        .saveDecisionApiGateEvaluation(agentId, protocol, msgId, record.summary, record.detail, at)
+        .catch((error: Error) => this.log.warn(`api gate evaluation could not be saved (${error.name})`))
     return verdict.admit
   }
 
@@ -7070,6 +7101,8 @@ export class Daemon {
       DECISION_CHAIN_V1_FEATURE,
       // This daemon evaluates an API turn's Decision gate from AgentSpec.apiGates before admitting it.
       API_DECISION_GATE_V1_FEATURE,
+      // It records each API gate verdict and answers decision/api-gate-evaluations for the API row's Recent evaluations.
+      API_GATE_EVALUATIONS_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
@@ -10855,7 +10888,11 @@ export class Daemon {
       }
     }
     // An API turn passes its Decision gate here, once, before either dispatch shape below records anything.
-    if (op.op === 'turn' && op.origin && !(await this.admitApiTurn(msg.agentId, op.origin, op.text, msg.msgId))) {
+    if (
+      op.op === 'turn' &&
+      op.origin &&
+      !(await this.admitApiTurn(msg.agentId, op.origin, op.text, msg.msgId, op.user))
+    ) {
       return { msgId: msg.msgId, accepted: false, reason: 'declined' }
     }
     // Session-targeted continuation: `turn` dispatches onto the target session's
@@ -20187,6 +20224,7 @@ export class Daemon {
       await this.store.sweepAllObservations().catch(() => undefined)
       await this.store.stripDecisionVerdictBodies(this.clock.now()).catch(() => undefined)
       await this.store.stripDecisionModelEvaluationBodies(this.clock.now()).catch(() => undefined)
+      await this.store.stripDecisionApiGateEvaluationBodies(this.clock.now()).catch(() => undefined)
       if (!this.draining) this.armStoreRetentionSweep()
     }, SESSION_RETENTION_SWEEP_INTERVAL_MS)
   }
@@ -22932,6 +22970,7 @@ export class Daemon {
       decisionEvaluator: () => this.decisionEvaluator,
       decisionEvaluations: () => this.decisionEvaluations,
       decisionModelEvaluations: () => this.decisionModelEvaluations,
+      decisionApiGateEvaluations: () => this.decisionApiGateEvaluations,
       runtimeCommands: () => this.runtimeCommands,
       memoryHomePortsFor: (agentId) => this.memoryHomePortsFor(agentId),
       wakeMemoryOutbox: () => this.memoryOutbox?.wake(),

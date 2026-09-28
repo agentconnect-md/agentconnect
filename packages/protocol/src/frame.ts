@@ -113,6 +113,12 @@ import {
   DecisionRoutingEvaluationRequest,
   DecisionRoutingEvaluationReply
 } from './frames/decision.js'
+import {
+  ApiGateEvaluationsRequest,
+  ApiGateEvaluationsReply,
+  ApiGateEvaluationRequest,
+  ApiGateEvaluationReply
+} from './agent-api.js'
 import { SecretsRequest, SecretsGrant, SecretsRenew, SecretsRevoke, ScopeAttestation } from './frames/secrets.js'
 import {
   SessionHistoryReq,
@@ -393,6 +399,10 @@ export const FRAME_SCHEMAS = {
   'decision/model-evaluations/page': DecisionModelEvaluationsReply,
   'decision/model-evaluation': DecisionModelEvaluationRequest,
   'decision/model-evaluation/result': DecisionModelEvaluationReply,
+  'decision/api-gate-evaluations': ApiGateEvaluationsRequest,
+  'decision/api-gate-evaluations/page': ApiGateEvaluationsReply,
+  'decision/api-gate-evaluation': ApiGateEvaluationRequest,
+  'decision/api-gate-evaluation/result': ApiGateEvaluationReply,
   'decision/routing-evaluations': DecisionRoutingEvaluationsRequest,
   'decision/routing-evaluations/page': DecisionRoutingEvaluationsReply,
   'decision/routing-evaluation': DecisionRoutingEvaluationRequest,

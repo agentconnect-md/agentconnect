@@ -3,8 +3,10 @@ import {
   nextGateStep,
   runDecisionChain,
   type AgentApiGateProjection,
+  type DecisionChainTrace,
   type DecisionEvaluation,
-  type DecisionGateStep
+  type DecisionGateStep,
+  type DecisionToolDefinition
 } from '@agentconnect.md/protocol'
 import type { DecisionEvaluationInput } from './evaluator.js'
 import type { SlotResult } from './limiter.js'
@@ -25,11 +27,31 @@ export interface ApiGateInput {
   now(): number
   acquire(providerId: string, deadlineAt: number, signal: AbortSignal): Promise<SlotResult>
   evaluate(input: DecisionEvaluationInput, signal: AbortSignal): Promise<DecisionEvaluation>
+  /** What the gate saw and answered, reported once the verdict is settled, for Recent evaluations. */
+  onEvidence?(evidence: ApiGateEvidence): void
+}
+
+export interface ApiGateEvidence {
+  root: DecisionToolDefinition | null
+  evaluation: DecisionEvaluation | null
+  chain: DecisionChainTrace
+  rawRequest: string | null
+  rawResponse: string | null
+  latencyMs: number
 }
 
 const unavailable = (detail: string): ApiGateVerdict => ({ admit: true, reason: 'unavailable', detail })
 
 export async function evaluateApiGate(input: ApiGateInput): Promise<ApiGateVerdict> {
+  const startedAt = input.now()
+  const evidence: ApiGateEvidence = {
+    root: null,
+    evaluation: null,
+    chain: [],
+    rawRequest: null,
+    rawResponse: null,
+    latencyMs: 0
+  }
   const abort = new AbortController()
   let timer: NodeJS.Timeout | undefined
   const deadline = new Promise<ApiGateVerdict>((resolve) => {
@@ -39,17 +61,24 @@ export async function evaluateApiGate(input: ApiGateInput): Promise<ApiGateVerdi
     }, API_GATE_DEADLINE_MS)
   })
   try {
-    return await Promise.race([evaluate(input, input.now() + API_GATE_DEADLINE_MS, abort.signal), deadline])
+    return await Promise.race([evaluate(input, evidence, input.now() + API_GATE_DEADLINE_MS, abort.signal), deadline])
   } finally {
     clearTimeout(timer)
     abort.abort()
+    input.onEvidence?.({ ...evidence, latencyMs: Math.max(0, Math.round(input.now() - startedAt)) })
   }
 }
 
-async function evaluate(input: ApiGateInput, deadlineAt: number, signal: AbortSignal): Promise<ApiGateVerdict> {
+async function evaluate(
+  input: ApiGateInput,
+  evidence: ApiGateEvidence,
+  deadlineAt: number,
+  signal: AbortSignal
+): Promise<ApiGateVerdict> {
   const { gate, definitions } = input.projection
   const byId = new Map(definitions.map((d) => [d.id, d]))
   const root = byId.get(gate.decisionId)
+  evidence.root = root ?? null
   if (!root || (gate.steps ?? []).some((s) => !byId.has(s.decisionId))) return unavailable('decision_missing')
   let release: (() => void) | undefined
   try {
@@ -58,7 +87,7 @@ async function evaluate(input: ApiGateInput, deadlineAt: number, signal: AbortSi
     release = slot.release
     const state = modelSelectionState('chat', input.text)
     let matched = false
-    const { evaluation } = await runDecisionChain<DecisionGateStep>({
+    const { evaluation, trace } = await runDecisionChain<DecisionGateStep>({
       root: gate,
       steps: gate.steps,
       deadlineAt,
@@ -71,7 +100,13 @@ async function evaluate(input: ApiGateInput, deadlineAt: number, signal: AbortSi
             evaluationId: index === 0 ? input.evaluationId : `${input.evaluationId}:${index}`,
             decision: byId.get(step.decisionId)!,
             state,
-            deadlineAt
+            deadlineAt,
+            onRawRequest: (text) => {
+              if (index === 0) evidence.rawRequest = text
+            },
+            onRawResponse: (text) => {
+              if (index === 0) evidence.rawResponse = text
+            }
           },
           stepSignal
         ),
@@ -81,6 +116,8 @@ async function evaluate(input: ApiGateInput, deadlineAt: number, signal: AbortSi
         return next.nextStepId ? [next.nextStepId] : []
       }
     })
+    evidence.evaluation = evaluation
+    evidence.chain = trace
     if (evaluation.status === 'unavailable') return unavailable(evaluation.reason)
     return matched ? { admit: true, reason: 'matched' } : { admit: false, reason: 'declined' }
   } catch (err) {

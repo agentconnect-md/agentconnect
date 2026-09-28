@@ -6,7 +6,13 @@ import type {
   DecisionEvaluation,
   DecisionToolDefinition
 } from '@agentconnect.md/protocol'
-import { API_GATE_DEADLINE_MS, evaluateApiGate, type ApiGateInput } from '../src/decisions/api-gate.js'
+import {
+  API_GATE_DEADLINE_MS,
+  evaluateApiGate,
+  type ApiGateEvidence,
+  type ApiGateInput
+} from '../src/decisions/api-gate.js'
+import { apiGateEvaluationRecord } from '../src/decisions/api-gate-evaluations.js'
 
 const ROOT = '11111111-1111-4111-8111-111111111111'
 const SECOND = '22222222-2222-4222-8222-222222222222'
@@ -105,5 +111,64 @@ describe('evaluateApiGate', () => {
     const release = vi.fn()
     await evaluateApiGate(input({ acquire: async () => ({ kind: 'acquired', release }) }))
     expect(release).toHaveBeenCalledOnce()
+  })
+
+  it("reports what it asked and was answered, with the root step's raw bodies", async () => {
+    let evidence: ApiGateEvidence | undefined
+    const verdict = await evaluateApiGate(
+      input({
+        evaluate: async (req) => {
+          req.onRawRequest?.('{"request":1}')
+          req.onRawResponse?.('{"response":1}')
+          return answered(false)
+        },
+        onEvidence: (e) => (evidence = e)
+      })
+    )
+    expect(evidence).toMatchObject({
+      root: { id: ROOT },
+      evaluation: answered(false),
+      chain: [{ decisionId: ROOT, evaluation: answered(false) }],
+      rawRequest: '{"request":1}',
+      rawResponse: '{"response":1}'
+    })
+    const record = apiGateEvaluationRecord({
+      projection: projection(),
+      verdict,
+      evidence: evidence!,
+      messageId: 'turn-1',
+      sender: 'Example caller',
+      text: 'How do I install the daemon?',
+      at: 0
+    })
+    expect(record?.summary).toMatchObject({ outcome: 'skipped', reason: null, answer: { value: false } })
+    expect(record?.detail).toMatchObject({
+      snapshot: { decisionId: ROOT, condition: gate.when },
+      input: {
+        currentMessage: { id: 'turn-1', sender: { id: 'Example caller' }, text: 'How do I install the daemon?' }
+      },
+      rawRequest: { text: '{"request":1}', truncated: false }
+    })
+  })
+
+  it('records a failed evaluation as unavailable and a missing Decision not at all', async () => {
+    let evidence: ApiGateEvidence | undefined
+    const onEvidence = (e: ApiGateEvidence) => (evidence = e)
+    const failed = await evaluateApiGate(
+      input({ evaluate: async () => ({ status: 'unavailable', reason: 'provider' }), onEvidence })
+    )
+    const record = (verdict: typeof failed) =>
+      apiGateEvaluationRecord({
+        projection: projection(),
+        verdict,
+        evidence: evidence!,
+        messageId: 'm',
+        sender: 'api',
+        text: 'x',
+        at: 0
+      })
+    expect(record(failed)?.summary).toMatchObject({ outcome: 'unavailable', reason: 'provider' })
+    const missing = await evaluateApiGate(input({ projection: projection(gate, [SECOND]), onEvidence }))
+    expect(record(missing)).toBeNull()
   })
 })

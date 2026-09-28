@@ -147,6 +147,38 @@ describe('API turn Decision gate', () => {
     expect(await turn({ origin: 'ai-sdk-ui' })).toMatchObject({ accepted: true })
   })
 
+  it("records each gated API turn for the API row's Recent evaluations", async () => {
+    const { internal, answer, turn } = await start()
+    answer(false)
+    await turn({ origin: 'ai-sdk-ui' })
+    answer(true)
+    await turn({ origin: 'ai-sdk-ui' })
+    const orgId = internal.orgForAgent(agentId)
+    const reader = internal.decisionApiGateEvaluations
+    const req = { agentId, protocol: 'ai-sdk-ui' as const, limit: 20 }
+    await vi.waitFor(async () => expect((await reader.list(orgId, req)).items).toHaveLength(2))
+    const page = await reader.list(orgId, req)
+    expect(page.items.map((item: { outcome: string }) => item.outcome)).toEqual(['triggered', 'skipped'])
+    expect(page.items[1]).toMatchObject({
+      messageId: 'msg-1',
+      title: 'Is the weather nice today?',
+      decisionId,
+      answer: { type: 'boolean', value: false },
+      requestedModel: 'jev-latest',
+      detailsExpired: false
+    })
+    const { evaluation } = await reader.get(orgId, { agentId, protocol: 'ai-sdk-ui', seq: page.items[1].seq })
+    expect(evaluation).toMatchObject({
+      snapshot: { decisionId, condition: { type: 'boolean', values: [true] } },
+      input: {
+        currentMessage: { id: 'msg-1', sender: { id: 'Example user' }, text: 'Is the weather nice today?' },
+        history: []
+      },
+      fullAnswer: { type: 'boolean', value: false },
+      evidence: null
+    })
+  })
+
   it('never gates a console turn on the same agent', async () => {
     const { evaluate, answer, turn } = await start()
     answer(false)
