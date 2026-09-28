@@ -15,6 +15,8 @@ import {
   buildPermissionDmUnanswerableCard,
   buildPermissionResolvedCard,
   buildPermissionUpdateCard,
+  buildApprovalDmIntro,
+  buildApprovalOrphanCard,
   buildElicitationCard,
   buildElicitationResolvedCard,
   buildAttributionBlocks,
@@ -2706,5 +2708,61 @@ describe('a FORM-mode elicitation card never renders a URL as clickable', () => 
   it('defuses the same URL on the settled card, which outlives the buttons', () => {
     const blocks = buildElicitationResolvedCard(askWith('See https://evil.test/steal'), ':white_check_mark: Yes')
     expect((blocks[0] as any).text.text).toContain('`https://evil.test/steal`')
+  })
+})
+
+// #1809: every Slack card that quotes agent-authored text escapes Slack's link syntax and sets `verbatim`, so no bare URL or domain autolinks.
+describe('agent-authored text on a Slack card never becomes a link', () => {
+  const SPOOF = '<https://evil.test/steal|Approve in Slack> then evil.test/x'
+  const expectNoLink = (text: { text: string; verbatim?: boolean }) => {
+    expect(text.verbatim).toBe(true)
+    expect(text.text).not.toMatch(/<https?:/)
+    expect(text.text).toContain('&lt;')
+  }
+  const perm = (over: Partial<RequestPermissionRequest> = {}) =>
+    ({
+      sessionId: 's1',
+      toolCall: { toolCallId: 'tc1', title: SPOOF },
+      options: [{ optionId: 'a', name: 'Allow Once', kind: 'allow_once' }],
+      ...over
+    }) as RequestPermissionRequest
+
+  it('on the permission card', () => {
+    expectNoLink((buildPermissionCard('p', perm())![0] as any).text)
+  })
+
+  it('on the resolved permission card, tool title and agent-named option both', () => {
+    expectNoLink((buildPermissionResolvedCard(perm(), 'Allow Once', true)[0] as any).text)
+    const byOption = buildPermissionResolvedCard(perm({ toolCall: { toolCallId: 'tc1', title: 'ls' } }), SPOOF, true)
+    expectNoLink((byOption[0] as any).text)
+  })
+
+  it('on the approval DM stand-in for a permission it cannot offer', () => {
+    expectNoLink((buildPermissionDmUnanswerableCard(perm())[0] as any).text)
+  })
+
+  it('on the orphaned approval card rebuilt from the stored command', () => {
+    expectNoLink((buildApprovalOrphanCard(SPOOF, 'allowed')[0] as any).text)
+  })
+
+  it('on every elicitation card and its settled form', () => {
+    const ask = {
+      mode: 'form',
+      sessionId: 's1',
+      message: SPOOF,
+      requestedSchema: { type: 'object', properties: { ok: { type: 'boolean' } } }
+    } as any
+    expectNoLink((buildElicitationCard('r1', ask)![0] as any).text)
+    expectNoLink((buildElicitationResolvedCard(ask, ':white_check_mark: Yes')[0] as any).text)
+  })
+
+  it('in the approval DM intro and the status bar', () => {
+    const [intro] = buildApprovalDmIntro({
+      agentName: SPOOF,
+      requesterName: SPOOF,
+      sessionUrl: 'https://console.example.test/s/1'
+    }) as any[]
+    expect(intro.text.text.match(/<https?:/g)).toEqual(['<https:'])
+    expect(renderStatusBar({ model: SPOOF })).not.toMatch(/<https?:/)
   })
 })

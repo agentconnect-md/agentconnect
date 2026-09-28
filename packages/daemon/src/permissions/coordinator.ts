@@ -72,9 +72,9 @@ import type { ElicitKind, ElicitSurface, ElicitTarget } from '../slack/render.js
 import { consolePermissionOptions, editorDecisionOption } from './editor-options.js'
 import { slackThreadUrl } from '../platforms/slack/permalink.js'
 import { slackAgentIdentityOptions } from '../platforms/slack/turn-output.js'
-import { turnChromeFor } from '../platforms/turn-chrome.js'
+import { turnChromeFor, type NoticeMarkup } from '../platforms/turn-chrome.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
-import { buildElicitDeclinedNotice } from './elicit-notice.js'
+import { buildElicitDeclinedNotice, defuseNoticeText } from './elicit-notice.js'
 import { elicitCardPayload, elicitRowBody, elicitUnrenderablePayload, elicitUrlCardPayload } from './elicit-record.js'
 import { formatErr } from '../daemon/text.js'
 import {
@@ -726,8 +726,9 @@ export class PermissionCoordinator {
 
   /** Say in the channel that a too-long option list was declined; every surface, the console included, shares the cap (#1969). */
   private noticePermissionOptionsUnrenderable(p: Pending, params: RequestPermissionRequest): void {
-    const text =
-      `:lock: The agent asked for permission to run ${permToolLabel(params)} with more options ` +
+    // The webchat copy joins the agent's Markdown reply; a chat copy is read as its surface's notice markup.
+    const notice = (markup?: NoticeMarkup) =>
+      `:lock: The agent asked for permission to run ${defuseNoticeText(permToolLabel(params), markup)} with more options ` +
       `than any surface here can show (${params.options.length}), so it was declined. Nothing was allowed.`
     try {
       // Said on whichever surface this turn HAS, exactly as the editor path's own notice is: a
@@ -737,10 +738,11 @@ export class PermissionCoordinator {
           conversationId: p.webchat.conversationId,
           turnId: p.webchat.turnId,
           index: p.webchat.index++,
-          event: { kind: 'message', text }
+          event: { kind: 'message', text: notice('markdown') }
         })
       }
-      if ((!p.webchat || p.webchat.continuation) && p.conn) this.host.enqueueApply(p, { kind: 'notice', text })
+      if ((!p.webchat || p.webchat.continuation) && p.conn)
+        this.host.enqueueApply(p, { kind: 'notice', text: notice(turnChromeFor(p.plan.platform).noticeMarkup) })
     } catch (err) {
       this.host.log().warn(`permission option notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
     }

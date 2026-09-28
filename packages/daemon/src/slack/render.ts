@@ -459,7 +459,7 @@ function compactCount(n: number): string {
  *  line, and an empty snapshot degrades to a bare `:bar_chart: —` placeholder. */
 export function renderStatusBar(info: StatusBarInfo): string {
   const parts: string[] = []
-  if (info.model) parts.push(`*${info.model}*`)
+  if (info.model) parts.push(`*${escapeMrkdwnLabel(info.model)}*`)
   if (info.fastMode) parts.push('fast')
   if (info.contextUsed !== undefined && info.contextSize !== undefined && info.contextSize > 0) {
     const pct = Math.round((info.contextUsed / info.contextSize) * 100)
@@ -523,7 +523,7 @@ export function buildPermissionCard(
   sessionTarget?: string
 ): unknown[] | null {
   if (!params.options.length || params.options.length > SLACK_PERMISSION_MAX_OPTIONS) return null
-  const header = `:lock: *Permission requested* — ${permToolLabel(params)}`
+  const header = `:lock: *Permission requested* — ${escapeSlackMrkdwn(permToolLabel(params))}`
   const buttons = params.options.map((o, i) => {
     const style = permOptionStyle(o.kind)
     return {
@@ -535,7 +535,7 @@ export function buildPermissionCard(
     }
   })
   return [
-    { type: 'section', text: { type: 'mrkdwn', text: header } },
+    { type: 'section', text: agentMrkdwn(header) },
     { type: 'actions', ...(sessionTarget ? { block_id: sessionTarget } : {}), elements: buttons }
   ]
 }
@@ -555,7 +555,9 @@ export function buildPermissionResolvedCard(
   return [
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: `:lock: *Permission* — ${permToolLabel(params)}\n${icon} ${decision}` }
+      text: agentMrkdwn(
+        `:lock: *Permission* — ${escapeSlackMrkdwn(permToolLabel(params))}\n${icon} ${escapeSlackMrkdwn(decision)}`
+      )
     }
   ]
 }
@@ -570,7 +572,7 @@ export function buildApprovalDmIntro(info: {
   sourceUrl?: string
   sourceText?: string
 }): unknown[] {
-  const requester = info.requesterName ? ` for *${clampTo(info.requesterName, 60)}*` : ''
+  const requester = info.requesterName ? ` for *${escapeMrkdwnLabel(clampTo(info.requesterName, 60))}*` : ''
   // Quoted on every line so a multi-line message stays one visual quote block.
   const quote = info.sourceText?.trim()
     ? `\n${clampTo(info.sourceText.trim(), 300)
@@ -584,7 +586,7 @@ export function buildApprovalDmIntro(info: {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${clampTo(info.agentName, 60)}* is waiting on an approval${requester}.${quote}\n${links.join(' · ')}`
+        text: `*${escapeMrkdwnLabel(clampTo(info.agentName, 60))}* is waiting on an approval${requester}.${quote}\n${links.join(' · ')}`
       }
     }
   ]
@@ -594,11 +596,11 @@ export function buildApprovalDmIntro(info: {
  * stored row survives, so this renders from its bounded summary, no ACP params. Pure. */
 export function buildApprovalOrphanCard(command: string, status: string, resolvedByName?: string | null): unknown[] {
   const icon = status === 'allowed' ? ':white_check_mark:' : status === 'denied' ? ':no_entry_sign:' : ':hourglass:'
-  const by = resolvedByName ? ` by ${clampTo(resolvedByName, 60)}` : ''
+  const by = resolvedByName ? ` by ${escapeSlackMrkdwn(clampTo(resolvedByName, 60))}` : ''
   return [
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: `:lock: *Permission* — ${clampTo(command, 150)}\n${icon} ${status}${by}` }
+      text: agentMrkdwn(`:lock: *Permission* — ${escapeSlackMrkdwn(clampTo(command, 150))}\n${icon} ${status}${by}`)
     }
   ]
 }
@@ -1369,6 +1371,11 @@ function escapeSlackMrkdwn(raw: string): string {
   return raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+/** The text object for a section quoting agent words, already escaped: `verbatim` stops Slack autolinking a bare URL or domain. */
+function agentMrkdwn(text: string): { type: 'mrkdwn'; text: string; verbatim: true } {
+  return { type: 'mrkdwn', text, verbatim: true }
+}
+
 /** Slack's own limit on one section's mrkdwn text. */
 const SLACK_SECTION_TEXT_CAP = 3000
 
@@ -1548,7 +1555,7 @@ export function buildElicitationCard(
   }))
   buttons.push(elicitDismissButton(requestId) as (typeof buttons)[number])
   return [
-    { type: 'section', text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}` } },
+    { type: 'section', text: agentMrkdwn(`:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}`) },
     { type: 'actions', ...(sessionTarget ? { block_id: sessionTarget } : {}), elements: buttons }
   ]
 }
@@ -1583,7 +1590,7 @@ export function buildElicitDmUnanswerableCard(params: CreateElicitationRequest):
 export function buildElicitationResolvedCard(params: CreateElicitationRequest, decision: string): unknown[] {
   const message = elicitCardMessage(params)
   const text = clampTo(`:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}\n${decision}`, SLACK_SECTION_TEXT_CAP)
-  return [{ type: 'section', text: { type: 'mrkdwn', text } }]
+  return [{ type: 'section', text: agentMrkdwn(text) }]
 }
 
 // ── Elicitation form cards (`input` blocks in the message, issue #1794's last Slack item) ────
@@ -1713,7 +1720,7 @@ export function buildElicitationFormCard(
   return [
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP)}` }
+      text: agentMrkdwn(`:speech_balloon: ${clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP)}`)
     },
     ...inputs,
     {
@@ -1907,9 +1914,9 @@ export function buildUrlConsentCard(
   return [
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: `:link: ${clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP)}` }
+      text: agentMrkdwn(`:link: ${clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP)}`)
     },
-    { type: 'section', text: { type: 'mrkdwn', text: clampTo(detail, SLACK_SECTION_TEXT_CAP) } },
+    { type: 'section', text: agentMrkdwn(clampTo(detail, SLACK_SECTION_TEXT_CAP)) },
     {
       type: 'actions',
       ...(sessionTarget ? { block_id: sessionTarget } : {}),
@@ -1940,7 +1947,7 @@ export function buildUrlConsentResolvedCard(params: CreateElicitationRequest, de
   const url = elicitUrl(params)
   const shown = url && !url.url.includes('`') ? `\n\`${escapeSlackMrkdwn(url.url)}\`` : ''
   const text = `:link: ${clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP)}${shown}\n${decision}`
-  return [{ type: 'section', text: { type: 'mrkdwn', text: clampTo(text, SLACK_SECTION_TEXT_CAP) } }]
+  return [{ type: 'section', text: agentMrkdwn(clampTo(text, SLACK_SECTION_TEXT_CAP)) }]
 }
 
 export interface SharedStatusActions {

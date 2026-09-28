@@ -63,8 +63,7 @@ const FEISHU_ELICIT_DECISION_CAP = 300
  *  reserved, so the rewrite still fits after the ask did. */
 const FEISHU_ELICIT_MESSAGE_CAP = FEISHU_MESSAGE_LIMIT - FEISHU_ELICIT_DECISION_CAP - 8
 
-/** How Feishu spells each settlement mark. Literal emoji: a CardKit markdown element has no
- *  shortcode vocabulary, so Slack's `:white_check_mark:` would reach the reader as source text. */
+/** How Feishu spells each settlement mark. Literal emoji: a CardKit text element has no shortcode vocabulary. */
 const FEISHU_ELICIT_MARK: Record<ElicitCardMark, string> = {
   answered: '✅',
   dismissed: '🚫',
@@ -118,11 +117,14 @@ export function parseFeishuElicit(value: unknown): { requestId: string; token: s
   return { requestId, token: token === FEISHU_ELICIT_DISMISS ? null : token }
 }
 
-/** The card's own heading: the question, on the same speech-balloon line every surface opens
- *  with. A CardKit `markdown` element renders the agent's words as markup, so they are clamped
- *  here and never given a link syntax of our own to inherit. Pure. */
+/** The card's own heading: the question, on the same speech-balloon line every surface opens with. Pure. */
 export function feishuElicitText(message: string): string {
   return `💬 ${clampTo(message, FEISHU_ELICIT_MESSAGE_CAP)}`
+}
+
+/** A `plain_text` div for text quoting the agent or the reader: a `markdown` element would honour their `[label](url)`. */
+function feishuPlainText(content: string): Record<string, unknown> {
+  return { tag: 'div', text: { tag: 'plain_text', content } }
 }
 
 /** A row of buttons, as CardKit 2.0 spells one: buttons live directly in `elements`, and a
@@ -155,7 +157,7 @@ export function buildFeishuElicitButtons(
   options: readonly { label: string }[]
 ): Record<string, unknown> {
   return feishuCard([
-    { tag: 'markdown', content: feishuElicitText(message) },
+    feishuPlainText(feishuElicitText(message)),
     feishuButtonRow([
       ...options.map((o, i) => ({
         tag: 'button',
@@ -218,7 +220,7 @@ export function buildFeishuElicitForm(
     })
   }
   return feishuCard([
-    { tag: 'markdown', content: feishuElicitText((params as { message?: string }).message?.trim() ?? '') },
+    feishuPlainText(feishuElicitText((params as { message?: string }).message?.trim() ?? '')),
     {
       tag: 'form',
       name: FEISHU_ELICIT_FORM_ID,
@@ -246,9 +248,7 @@ export function buildFeishuElicitForm(
 
 /** The settled card: the question with the decision under it, and no control left to press. */
 export function buildFeishuElicitSettled(message: string, decision: string): Record<string, unknown> {
-  return feishuCard([
-    { tag: 'markdown', content: clampTo(`${feishuElicitText(message)}\n${decision}`, FEISHU_MESSAGE_LIMIT) }
-  ])
+  return feishuCard([feishuPlainText(clampTo(`${feishuElicitText(message)}\n${decision}`, FEISHU_MESSAGE_LIMIT))])
 }
 
 /** The CardKit 2.0 envelope every card here shares. */
