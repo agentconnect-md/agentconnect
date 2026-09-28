@@ -322,7 +322,7 @@ function QuickstartDialog({
 
   return (
     <div className="scrim">
-      <div className="modal" role="dialog" aria-modal="true" aria-label={t('quickstart')}>
+      <div className="modal max-w-[920px]" role="dialog" aria-modal="true" aria-label={t('quickstart')}>
         <div className="modalhead">
           <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
             <Icon name="code-xml" size={16} color="var(--brand)" />
