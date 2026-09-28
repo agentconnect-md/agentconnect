@@ -5,7 +5,7 @@ import { modelSelectionState } from '../src/decisions/model-selection.js'
 import { fitCodeHostDecisionState } from '../src/codehost/decision-state.js'
 import {
   evaluateChunks,
-  evaluateWithCapacityWait,
+  evaluateWithRetryWait,
   hasDecisionAuthorizations,
   hasDecisionGrants,
   parseSelectedRepositories,
@@ -386,7 +386,7 @@ describe('the snapshot (decision 19)', () => {
   })
 })
 
-describe('evaluateWithCapacityWait', () => {
+describe('evaluateWithRetryWait', () => {
   const capacity: DecisionEvaluation = { status: 'unavailable', reason: 'capacity' }
   // A fake clock the sleeps advance, so the wait's deadline is exercised without real time.
   const clock = () => {
@@ -405,26 +405,34 @@ describe('evaluateWithCapacityWait', () => {
   it('waits out the shared slots and returns the answer once one is free', async () => {
     const deps = clock()
     const answers = [capacity, capacity, answered({ r1: 0.7, none: 0.3 })]
-    const result = await evaluateWithCapacityWait(async () => answers.shift()!, deps)
+    const result = await evaluateWithRetryWait(async () => answers.shift()!, deps)
     expect(result.status).toBe('answered')
     expect(deps.sleeps).toEqual([250, 500])
   })
 
   it('gives up with capacity once the wait runs out', async () => {
     const deps = clock()
-    const result = await evaluateWithCapacityWait(async () => capacity, { ...deps, waitMs: 1_000 })
+    const result = await evaluateWithRetryWait(async () => capacity, { ...deps, waitMs: 1_000 })
     expect(result).toEqual(capacity)
     expect(deps.sleeps.reduce((a, b) => a + b, 0)).toBe(1_000)
   })
 
-  it('never retries any other refusal', async () => {
+  it.each(['timeout', 'provider'] as const)('asks again after a %s and returns the answer', async (reason) => {
+    const deps = clock()
+    const answers: DecisionEvaluation[] = [{ status: 'unavailable', reason }, answered({ r1: 0.7, none: 0.3 })]
+    const result = await evaluateWithRetryWait(async () => answers.shift()!, deps)
+    expect(result.status).toBe('answered')
+    expect(deps.sleeps).toEqual([250])
+  })
+
+  it.each(['credentials', 'invalid_response', 'unsupported_input'] as const)('never retries %s', async (reason) => {
     const deps = clock()
     let calls = 0
-    const result = await evaluateWithCapacityWait(async () => {
+    const result = await evaluateWithRetryWait(async () => {
       calls++
-      return { status: 'unavailable', reason: 'credentials' }
+      return { status: 'unavailable', reason }
     }, deps)
-    expect(result).toEqual({ status: 'unavailable', reason: 'credentials' })
+    expect(result).toEqual({ status: 'unavailable', reason })
     expect(calls).toBe(1)
     expect(deps.sleeps).toEqual([])
   })

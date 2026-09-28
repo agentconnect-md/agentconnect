@@ -598,7 +598,7 @@ import {
 } from './decisions/model-selection.js'
 import {
   evaluateChunks,
-  evaluateWithCapacityWait,
+  evaluateWithRetryWait,
   hasDecisionAuthorizations,
   hasDecisionGrants,
   parseSelectedRepositories,
@@ -14510,13 +14510,13 @@ export class Daemon {
       if (!state) throw new Error('Repository selection failed: the input is unavailable (unsupported_input).')
       signal.throwIfAborted()
       const evaluationId = randomUUID()
-      // Other Decision consumers share the evaluator's slots, so a chunk waits out `capacity` rather than failing the start on it.
+      // A chunk retries a transient refusal (shared slots, a timeout, a provider blip) rather than failing the start on it.
       const waitDeps = {
         now: () => this.clock.now(),
         sleep: (ms: number) => sleepFor(ms, undefined, { signal })
       }
       const evaluations = await evaluateChunks(chunks, (chunk, index) =>
-        evaluateWithCapacityWait(
+        evaluateWithRetryWait(
           () =>
             this.decisionEvaluator.evaluate(
               {
