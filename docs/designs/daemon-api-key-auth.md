@@ -347,8 +347,14 @@ is never `owner`, so the last-owner check and the choice of a repair member
 never have to exclude it.
 
 - **Identity.** A service account is an `app_user` row with
-  `kind = service_account`, no `oidcSubject`, the display name its owner gives
-  it, and the email `<id>@service-account.invalid`. It has exactly one
+  `kind = service_account`, no `oidcSubject`, and the email
+  `<name>-<id>@sa.agentconnect.md`, where `name` is what its owner calls it at
+  creation, and `id` is its random `app_user` id, which makes the address unique
+  without any naming rule beyond lowercase letters, digits, and hyphens. As
+  with Google's service accounts, the address never changes, so `name` is fixed
+  once created. The display name starts as `name` and can be edited. The
+  project serves no mail on that domain, so no identity provider can verify
+  the address, but the claims below still check `kind`. It has exactly one
   membership, created with it. An invited member's row also has no
   `oidcSubject`, and two paths claim such a row by verified email: a first
   sign-in, and a later sign-in that upgrades a synthetic email and merges the
@@ -357,8 +363,8 @@ never have to exclude it.
   member by email, skip or refuse a `service_account` row, so no one can sign
   in as a service account, absorb it, or add it to a second organization.
 - **Routes.** `GET` and `POST /orgs/:orgId/service-accounts`, and `PATCH` and
-  `DELETE /orgs/:orgId/service-accounts/:id`, take and change `name` and
-  `role`. Its keys live under `/orgs/:orgId/service-accounts/:id/keys`: list,
+  `DELETE /orgs/:orgId/service-accounts/:id`: create takes `name` and `role`,
+  and edit changes the display name and `role`. Its keys live under `/orgs/:orgId/service-accounts/:id/keys`: list,
   mint, `PATCH`, `regenerate`, and revoke, with the body, validation, expiry
   policy, and one-time plaintext of `/me/keys`. `createdByUserId` records the
   owner who minted a key. Every one of these routes is owner-only and sets
