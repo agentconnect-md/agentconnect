@@ -98,8 +98,18 @@ function clock() {
   }
 }
 
-function rig(opts: { msg?: NormalizedMessage; mode?: string; rerun?: boolean; interrupted?: () => boolean } = {}) {
+function rig(
+  opts: {
+    msg?: NormalizedMessage
+    mode?: string
+    rerun?: boolean
+    interrupted?: () => boolean
+    /** Messages an earlier run left on the wire before this turn starts. */
+    seed?: Record<string, string>
+  } = {}
+) {
   const g = google()
+  for (const [name, text] of Object.entries(opts.seed ?? {})) g.wire.set(name, text)
   const c = clock()
   const msg = opts.msg ?? message()
   const ctx = { mode: opts.mode ?? 'low', isDm: msg.isDm, showFooter: false, message: msg, egress: g.port }
@@ -254,16 +264,24 @@ describe('a placeholder the answer never took is resolved when the turn ends', (
     expect(r.wire.size).toBe(0)
   })
 
-  it('is never armed in a mode that posts nothing, and one a rerun adopts there is withdrawn', async () => {
+  it('is never armed in a mode that posts nothing, and a rerun there withdraws an earlier one by name without creating one', async () => {
     expect(rig({ mode: 'none' }).ack).toBeUndefined()
-    const r = rig({ mode: 'none', rerun: true })
-    r.wire.set(`${SPACE}/messages/${FIRST}`, GOOGLE_CHAT_PLACEHOLDER_TEXT)
-    await r.advance(0)
+    const r = rig({ mode: 'none', rerun: true, seed: { [`${SPACE}/messages/${FIRST}`]: GOOGLE_CHAT_PLACEHOLDER_TEXT } })
+    await r.flush()
+    expect(r.writes).toEqual([['delete', FIRST]])
+    expect(r.wire.size).toBe(0)
     await r.apply({ kind: 'post', text: 'kept in the transcript only', recordOnly: true })
+    expect(await r.ack!.replace('⚠️ failed')).toBe(false)
     await r.ack!.end('completed')
     expect(r.recorded).toEqual(['kept in the transcript only'])
-    expect(r.writes.map((w) => w[0])).toEqual(['create', 'delete'])
-    expect(r.wire.size).toBe(0)
+    expect(r.writes).toEqual([['delete', FIRST]])
+
+    // With nothing left earlier, the withdrawal is a no-op delete and nothing is ever shown.
+    const clear = rig({ mode: 'none', rerun: true })
+    await clear.flush()
+    await clear.ack!.end('completed')
+    expect(clear.writes).toEqual([['delete', FIRST]])
+    expect(clear.wire.size).toBe(0)
   })
 
   it('is withdrawn when the turn is cancelled, and never posted once the turn is interrupted', async () => {

@@ -6,11 +6,12 @@ import { AgentMessageRun, WorkBoundary } from '../../messages/message-boundary.j
 import { stableMessageId, type NormalizedMessage } from '../../messages/normalized.js'
 import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-links.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../../session/no-response.js'
-import type { TurnOutputContext } from '../turn-output.js'
+import type { TurnAcknowledgement, TurnOutputContext } from '../turn-output.js'
 import { GoogleChatApiError, type GoogleChatMessageRef } from './connection.js'
 import {
   GOOGLE_CHAT_PLACEHOLDER_DELAY_MS,
   GoogleChatPlaceholder,
+  withdrawGoogleChatPlaceholder,
   type GoogleChatPlaceholderOptions,
   type GoogleChatPlaceholderPort
 } from './placeholder.js'
@@ -332,21 +333,21 @@ export function initialGoogleChatTurnState(ctx: TurnOutputContext<NormalizedMess
 export function acknowledgeGoogleChatTurn(
   ctx: TurnOutputContext<NormalizedMessage>,
   turn: { rerun: boolean; interrupted: () => boolean },
-  opts: Omit<GoogleChatPlaceholderOptions, 'silent' | 'interrupted'> & { delayMs?: number } = {}
-): GoogleChatPlaceholder | undefined {
+  opts: Omit<GoogleChatPlaceholderOptions, 'interrupted'> & { delayMs?: number } = {}
+): TurnAcknowledgement | undefined {
   const port = ctx.egress as GoogleChatPlaceholderPort | undefined
   if (!port || ctx.message.source !== 'user' || ctx.message.headless) return undefined
-  // A turn that posts nothing needs no placeholder, but a rerun still adopts one to withdraw it.
-  if (ctx.mode === 'none' && !turn.rerun) return undefined
   const { space, thread, deliveryId } = initialGoogleChatTurnState(ctx)
+  // The answer's first message id, so the answer adopts the placeholder rather than posting beside it.
+  const clientId = googleChatClientId(deliveryId, 0, 0)
+  // A turn that posts nothing shows none; its rerun withdraws an earlier one by name without creating one.
+  if (ctx.mode === 'none')
+    return turn.rerun ? withdrawGoogleChatPlaceholder(port, `${space}/messages/${clientId}`, opts.warn) : undefined
   const { delayMs, ...timers } = opts
-  const placeholder = new GoogleChatPlaceholder(
-    port,
-    { space, ...(thread ? { thread } : {}) },
-    // The answer's first message id, so the answer adopts the placeholder rather than posting beside it.
-    googleChatClientId(deliveryId, 0, 0),
-    { ...timers, silent: ctx.mode === 'none', interrupted: turn.interrupted }
-  )
+  const placeholder = new GoogleChatPlaceholder(port, { space, ...(thread ? { thread } : {}) }, clientId, {
+    ...timers,
+    interrupted: turn.interrupted
+  })
   placeholder.arm(turn.rerun ? 0 : (delayMs ?? GOOGLE_CHAT_PLACEHOLDER_DELAY_MS))
   return placeholder
 }

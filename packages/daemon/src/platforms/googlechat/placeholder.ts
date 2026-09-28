@@ -1,6 +1,6 @@
 // Google Chat's turn acknowledgement (google-chat-integration.md §5): one placeholder that becomes the answer.
 import type { TurnAcknowledgement, TurnAcknowledgementEnd } from '../turn-output.js'
-import { GoogleChatApiError } from './connection.js'
+import { GoogleChatApiError, spaceOf } from './connection.js'
 import type { GoogleChatEgressPort } from './turn-output.js'
 
 /** How long a turn may show nothing before its placeholder is posted. */
@@ -16,8 +16,6 @@ export interface GoogleChatPlaceholderPort extends GoogleChatEgressPort {
 }
 
 export interface GoogleChatPlaceholderOptions {
-  /** The turn posts nothing on purpose (output mode `none`), so a placeholder it adopted is withdrawn. */
-  silent?: boolean
   /** Whether the turn was interrupted since it started; a placeholder not yet posted then never is. */
   interrupted?: () => boolean
   warn?: (message: string) => void
@@ -35,6 +33,20 @@ function describe(err: unknown): string {
   return err instanceof GoogleChatApiError ? `${err.kind}: ${err.message}` : (err as Error).message
 }
 
+/** A rerun in a mode that posts nothing: withdraw what an earlier run left under the derived name at once, and create nothing. */
+export function withdrawGoogleChatPlaceholder(
+  port: GoogleChatPlaceholderPort,
+  name: string,
+  warn: (message: string) => void = () => {}
+): TurnAcknowledgement {
+  const withdrawn = port
+    .deleteOwnMessage(name)
+    .catch((err: unknown) =>
+      warn(`googlechat: earlier placeholder in ${spaceOf(name)} not withdrawn (${describe(err)})`)
+    )
+  return { replace: async () => false, end: async () => withdrawn }
+}
+
 /** A turn's one placeholder, posted under the answer's first client id so the first text adopts and patches it. */
 export class GoogleChatPlaceholder implements TurnAcknowledgement {
   private timer: unknown
@@ -43,7 +55,7 @@ export class GoogleChatPlaceholder implements TurnAcknowledgement {
   private name: string | undefined
   /** The answer or a failure notice took the placeholder's place. */
   private taken = false
-  private silent: boolean
+  private silent = false
   private closed = false
   private readonly interrupted: () => boolean
   private readonly warn: (message: string) => void
@@ -56,7 +68,6 @@ export class GoogleChatPlaceholder implements TurnAcknowledgement {
     readonly clientId: string,
     opts: GoogleChatPlaceholderOptions = {}
   ) {
-    this.silent = opts.silent === true
     this.interrupted = opts.interrupted ?? (() => false)
     this.warn = opts.warn ?? (() => {})
     this.setTimer = opts.setTimer ?? defaultSetTimer

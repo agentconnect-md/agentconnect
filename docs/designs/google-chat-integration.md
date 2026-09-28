@@ -627,15 +627,17 @@ recorded in the transcript.
 
 A placeholder no text took is resolved once, when the turn's dispatch ends: an
 app-authenticated `spaces.messages.delete` of the app's own message when the turn
-ended silently on purpose (the `AC_NO_RESPONSE` marker, or output mode `none`),
-was cancelled, or failed without a notice; a patch to `Finished without a reply.`
+ended silently on purpose (the `AC_NO_RESPONSE` marker), was cancelled, or failed without a notice; a patch to `Finished without a reply.`
 when it completed with no text; nothing when its durable row runs the message
 again (a shutdown drain, a duty handoff, a settings-change cut). A rerun posts its
 placeholder at once instead of after two seconds, so its create adopts whatever
 the earlier run left under that id — the placeholder, or a partial answer, as it
 stands — and resolves it by the same rules; because the id is derived rather than
 recorded, a crash needs nothing more. A turn that answers or ends within two
-seconds never posts one, and an interrupted turn never posts one late. The
+seconds never posts one, and an interrupted turn never posts one late. A turn in
+output mode `none` posts none; its rerun deletes whatever an earlier run left by
+the derived name (`{space}/messages/{client id}`) at once and creates nothing, a
+missing message counting as already clear. The
 create, patches, and delete take the per-Space queue and the write budget like
 every other write. The daemon seam is the Layer-2 `acknowledge` member
 ([integration-plugin-architecture.md](integration-plugin-architecture.md) §7.3).
