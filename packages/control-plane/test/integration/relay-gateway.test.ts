@@ -37,6 +37,8 @@ import { systemClock } from '../../src/domain/clock.js'
 import { MemorySecretsProvider } from '../../src/secrets/providers/memory.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { PgWebchatConversationRepo } from '../../src/persistence/repositories/webchat-conversation.repo.js'
+import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { agentChatConversationId } from '../../src/registry/agentChatKeyVerification.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
@@ -1365,7 +1367,7 @@ describe('rc/verify(agent-chat-key)', () => {
     const daemonWs = await connectDaemonReady(base)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     await addApi(AGENT)
-    const key = await mintKey(app, { permission: 'agent:chat', agents: [AGENT] })
+    const key = await mintKey(app, { name: 'docs-site', permission: 'agent:chat', agents: [AGENT] })
     const { ws } = await openRelay(base, 'pod-key', 'wss://pod-key.example.test')
 
     const first = await verifyKey(ws, key, AGENT)
@@ -1380,6 +1382,19 @@ describe('rc/verify(agent-chat-key)', () => {
     expect((await verifyKey(ws, key, AGENT, 'chat-2')).conversationId).not.toBe(first.conversationId)
     // A full key reaches the agent too, under the same owner's conversation.
     expect((await verifyKey(ws, await mintKey(app, {}), AGENT)).conversationId).toBe(first.conversationId)
+    // The key that opened the conversation names its sessions; a console conversation has none.
+    const consoleConversation = randomUUID()
+    const conversations = new PgWebchatConversationRepo(prisma)
+    await conversations.create({
+      conversationId: consoleConversation,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(AGENT),
+      userId: DEFAULT_OWNER_ID
+    })
+    expect(
+      await conversations.apiKeyNames(OrgId(DEFAULT_ORG_ID), [first.conversationId!, consoleConversation])
+    ).toEqual(new Map([[first.conversationId, 'docs-site']]))
+    expect(await conversations.apiKeyNames(OrgId('another-org'), [first.conversationId!])).toEqual(new Map())
     ws.close()
     daemonWs.close()
   })

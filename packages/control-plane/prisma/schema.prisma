@@ -634,12 +634,13 @@ model ApiKey {
   revokedAt     DateTime? @db.Timestamptz(6) // kill switch — checked on every auth
   revokedReason String?
 
-  org    Org?    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org                  Org?                  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   // Cascade: deleting a daemon (DELETE /daemons/:id) removes its keys, so no
   // orphaned credential rows (daemonId-null but still hash-valid) survive.
-  daemon Daemon? @relation(fields: [daemonId], references: [id], onDelete: Cascade)
-  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  agents ApiKeyAgent[]
+  daemon               Daemon?               @relation(fields: [daemonId], references: [id], onDelete: Cascade)
+  user                 User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agents               ApiKeyAgent[]
+  webchatConversations WebchatConversation[]
 
   @@index([daemonId])
   @@index([userId])
@@ -1540,6 +1541,8 @@ model WebchatConversation {
   // deletion removes the row; retention purge keeps it and every continuation
   // gate rejects on the session's contentPurgedAt.
   targetSessionId      String?
+  // The API key that opened it through the agent chat API (shared-bot-relay.md §10.4); null for a console conversation.
+  apiKeyId             String?
   createdAt            DateTime @default(now()) @db.Timestamptz(6)
 
   org            Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -1547,6 +1550,7 @@ model WebchatConversation {
   user           User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
   currentSession SessionMeta?               @relation("WebchatCurrentSession", fields: [currentSessionId], references: [id], onDelete: SetNull)
   targetSession  SessionMeta?               @relation("WebchatTargetSession", fields: [targetSessionId], references: [id], onDelete: Cascade)
+  apiKey         ApiKey?                    @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
   delegations    WebchatMcpDelegation[]
   mcpOperations  WebchatMcpOperation[]
   participants   WebchatConversationAgent[]
@@ -1558,6 +1562,7 @@ model WebchatConversation {
   @@index([agentId])
   @@index([userId])
   @@index([currentSessionId])
+  @@index([apiKeyId])
   @@map("webchat_conversation")
 }
 

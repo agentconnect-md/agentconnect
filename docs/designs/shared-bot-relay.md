@@ -723,8 +723,9 @@ relay's output with the `ai` package's own client, not by string assertions.
 - The session is a webchat session of the key's user, classified by the
   existing webchat rule in
   [session-visibility.md §4.2](session-visibility.md#42-default-rules):
-  `private`, owned by that user. The console shows the key's name as the
-  session's source.
+  `private`, owned by that user. The conversation records the key that opened
+  it, and the console shows that key's name as the session's source, where a
+  console conversation reads Playground.
 - The admission bound above is per relay instance, not a global cap. There is
   no per-key request limit; personal keys are unlimited on every route, and
   this route is no exception. Per-visitor limits belong to the same-origin route.

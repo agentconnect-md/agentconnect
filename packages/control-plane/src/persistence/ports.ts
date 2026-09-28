@@ -1738,7 +1738,9 @@ export interface WebchatConversationRepo {
    *  at creation). Conversation + participant rows commit atomically. */
   create(binding: WebchatConversationBinding, memberAgentIds?: AgentId[]): Promise<void>
   /** Create a single-agent conversation under a caller-derived id unless it exists, converging when two first turns race. */
-  ensure(binding: WebchatConversationBinding): Promise<void>
+  ensure(binding: WebchatConversationBinding, apiKeyId: string): Promise<void>
+  /** The name of the API key that opened each of these conversations through the agent chat API, org-fenced; console conversations are absent. */
+  apiKeyNames(orgId: OrgId, conversationIds: readonly string[]): Promise<Map<string, string>>
   /** The conversation's full roster (primary first, then pick order). Empty
    *  for an unknown conversation — callers fail closed. Org-fenced
    *  (org-scoped-data-layer.md §3): a cross-org conversation id yields the same

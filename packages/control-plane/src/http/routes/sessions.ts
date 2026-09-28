@@ -287,34 +287,32 @@ function conversationNameKey(platform: string | null, channel: string): string {
   return `${platform ?? 'slack'} ${channel}`
 }
 
-/**
- * Names for the conversations in these rows the reporting daemon never labeled, read
- * from the org's channel directory — the same source a schedule's target channel is
- * named through.
- *
- * `channelName` is a snapshot of the daemon's own name cache at the moment it emitted
- * `event/session`, and that cache learns a channel from the bot's membership listing.
- * A conversation the agent only ever POSTS into can therefore leave the column null for
- * good, leaving the console to print a raw platform id. The directory is durable and
- * already holds the name, so reading it here repairs existing rows too.
- */
+/** Names for rows the daemon never labeled: a chat conversation from the org's channel directory, an agent chat API conversation from its key. */
 async function channelNamesForSessions(
   deps: HttpDeps,
   sessions: readonly (HookSessionRow & { channelName: string | null })[],
   orgId: OrgId
 ): Promise<Map<string, string>> {
   const wanted = new Map<string, ConversationCoordinate>()
+  const webchat = new Set<string>()
   for (const s of sessions) {
     const platform = s.platform ?? 'slack'
-    // A session-identity platform holds no conversation of its own here — a hook
-    // session's `channel` is its hook id, and webchat's is its conversation id.
-    if (s.channelName || !s.channel || isSessionIdentityPlatform(platform)) continue
-    wanted.set(conversationNameKey(platform, s.channel), { platform, channelId: s.channel })
+    if (s.channelName || !s.channel) continue
+    // A webchat session's `channel` is its conversation id; another session-identity platform's names no conversation.
+    if (platform === 'webchat') webchat.add(s.channel)
+    else if (!isSessionIdentityPlatform(platform))
+      wanted.set(conversationNameKey(platform, s.channel), { platform, channelId: s.channel })
   }
   const names = new Map<string, string>()
-  if (wanted.size === 0) return names
-  for (const row of await deps.repos.integrationChannel.namesForOrg(orgId, [...wanted.values()])) {
-    names.set(conversationNameKey(row.platform, row.channelId), row.name)
+  if (wanted.size > 0) {
+    for (const row of await deps.repos.integrationChannel.namesForOrg(orgId, [...wanted.values()])) {
+      names.set(conversationNameKey(row.platform, row.channelId), row.name)
+    }
+  }
+  if (webchat.size > 0) {
+    for (const [conversationId, name] of await deps.repos.webchatConversation.apiKeyNames(orgId, [...webchat])) {
+      names.set(conversationNameKey('webchat', conversationId), name)
+    }
   }
   return names
 }

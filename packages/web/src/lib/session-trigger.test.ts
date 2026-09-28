@@ -119,6 +119,18 @@ describe('sessionTriggerKind', () => {
     expect(platName('playground')).toBe('Playground')
   })
 
+  it('labels an agent chat API session by its key and a console webchat session as Playground', () => {
+    const conversationId = '5f0c2a9e-7d1b-5c3e-9a4f-0b1c2d3e4f50'
+    const api = sessionFromDto(
+      sessionDto({ sessionKey: { platform: 'webchat', channel: conversationId }, channelName: 'docs-site' })
+    )
+    expect(api.channel).toBe('docs-site')
+    expect(api.channelId).toBe(conversationId)
+    const playground = sessionFromDto(sessionDto({ sessionKey: { platform: 'webchat', channel: conversationId } }))
+    expect(playground.channel).toBe('Playground')
+    expect(playground.channelId).toBe(conversationId)
+  })
+
   it('labels dream execution sessions without exposing their synthetic routing key', () => {
     const dream = sessionFromDto(
       sessionDto({

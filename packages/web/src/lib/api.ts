@@ -2129,9 +2129,7 @@ function sessionChannelLabel(
   triggeredByName: string | null,
   hookKind: HookKind | null | undefined
 ): string {
-  // webchat's `channel` is the conversationId (a UUID) — never a human channel. Show the
-  // "Playground" label (matching platName + the live playground session), and keep the raw
-  // id in channelId so the detail view can RESUME it (reconnect with `?conversation_id=`).
+  // webchat's `channel` is its conversation id: show the API key that opened it, else "Playground"; channelId keeps the id for resume.
   const isWebchat = platform === 'webchat'
   const isDream = platform === 'dream'
   // A headless webhook's `channel` is the hook id (and `thread` may be the delivery key),
@@ -2148,7 +2146,7 @@ function sessionChannelLabel(
   // The sigil is the platform's, not the channel convention's: a Linear room is a team
   // named "<Workspace> / <Team>", and a Telegram or Lark group has no marker either.
   return isWebchat
-    ? 'Playground'
+    ? channelName?.trim() || 'Playground'
     : isDream
       ? 'Memory'
       : isHook

@@ -31,14 +31,15 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
     return fn(this.db as Prisma.TransactionClient)
   }
 
-  async create(binding: WebchatConversationBinding, memberAgentIds: AgentId[] = []): Promise<void> {
+  async create(binding: WebchatConversationBinding, memberAgentIds: AgentId[] = [], apiKeyId?: string): Promise<void> {
     await this.inTx(async (tx) => {
       await tx.webchatConversation.create({
         data: {
           id: binding.conversationId,
           orgId: binding.orgId,
           agentId: binding.agentId,
-          userId: binding.userId
+          userId: binding.userId,
+          ...(apiKeyId ? { apiKeyId } : {})
         }
       })
       await tx.webchatConversationAgent.createMany({
@@ -62,9 +63,9 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
     })
   }
 
-  async ensure(binding: WebchatConversationBinding): Promise<void> {
+  async ensure(binding: WebchatConversationBinding, apiKeyId: string): Promise<void> {
     try {
-      await this.create(binding)
+      await this.create(binding, [], apiKeyId)
     } catch (err) {
       // A concurrent first turn created the same id; converge on its row.
       const raced = await this.db.webchatConversation.findUnique({
@@ -73,6 +74,21 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
       })
       if (!raced) throw err
     }
+  }
+
+  async apiKeyNames(orgId: OrgId, conversationIds: readonly string[]): Promise<Map<string, string>> {
+    const ids = conversationIds.filter((id) => UUID_RE.test(id))
+    if (ids.length === 0) return new Map()
+    const rows = await this.db.webchatConversation.findMany({
+      where: { id: { in: ids }, orgId, apiKey: { isNot: null } },
+      select: { id: true, apiKey: { select: { name: true, displayTail: true } } }
+    })
+    // An unnamed key is still named by its tail, the way the key list shows it.
+    return new Map(
+      rows.flatMap((r) =>
+        r.apiKey ? [[r.id, r.apiKey.name?.trim() || `API key ${r.apiKey.displayTail}`] as const] : []
+      )
+    )
   }
 
   async participants(orgId: OrgId, conversationId: string): Promise<WebchatParticipant[]> {

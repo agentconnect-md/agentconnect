@@ -25,7 +25,7 @@ export interface AgentChatKeyVerificationDeps extends Omit<
   agents: { getUnscoped(agentId: AgentId): Promise<(ResolvableAgent & Shareable & { orgId: string }) | null> }
   conversations: WebchatVerificationDeps['conversations'] & {
     resumeBinding(conversationId: string, orgId: OrgId): Promise<WebchatResumeBinding | null>
-    ensure(binding: WebchatConversationBinding): Promise<void>
+    ensure(binding: WebchatConversationBinding, apiKeyId: string): Promise<void>
   }
   users: { getProfile(userId: string): Promise<UserProfileRecord | null> }
   iconStore?: IconStore
@@ -94,7 +94,10 @@ export function createAgentChatKeyVerifier(
     const conversationId = agentChatConversationId(key.orgId, key.userId, agent.id, chatId)
     const existing = await deps.conversations.resumeBinding(conversationId, orgId)
     if (!existing) {
-      await deps.conversations.ensure({ conversationId, userId: key.userId, agentId: AgentId(agent.id), orgId })
+      await deps.conversations.ensure(
+        { conversationId, userId: key.userId, agentId: AgentId(agent.id), orgId },
+        key.apiKeyId
+      )
     } else {
       // The id folds in owner and agent, so a mismatch is a collision; a member added since must still be visible.
       if (existing.ownerUserId !== key.userId || existing.primaryAgentId !== agent.id) {

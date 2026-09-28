@@ -20,6 +20,8 @@ const ORG_ID = 'org-1'
 const AGENT_ID = 'agent-1'
 const HOOK_ID = '11111111-1111-4111-8111-111111111111'
 const CRON_ID = '22222222-2222-4222-8222-222222222222'
+const API_CONVERSATION = '33333333-3333-5333-8333-333333333333'
+const CONSOLE_CONVERSATION = '44444444-4444-4444-8444-444444444444'
 const at = new Date('2026-08-30T02:00:00Z')
 
 /** A directory entry the daemon's own cache is missing — the case under test. */
@@ -57,6 +59,10 @@ function fakeDeps(sessions: ReturnType<typeof row>[]) {
     total: sessions.length,
     hasMore: false
   }))
+  const apiKeyNames = vi.fn(
+    async (_orgId: string, ids: readonly string[]) =>
+      new Map(ids.filter((id) => id === API_CONVERSATION).map((id) => [id, 'docs-site'] as const))
+  )
   const deps = {
     repos: {
       agent: { list: vi.fn(async () => [{ id: AGENT_ID, name: 'build-agent', orgId: ORG_ID }]) },
@@ -76,11 +82,12 @@ function fakeDeps(sessions: ReturnType<typeof row>[]) {
         listIdsForOrgKind: vi.fn(async () => []),
         listForOrgKind: vi.fn(async () => [])
       },
-      integrationChannel: { namesForOrg }
+      integrationChannel: { namesForOrg },
+      webchatConversation: { apiKeyNames }
     },
     clock: { now: () => Date.now() }
   } as unknown as HttpDeps
-  return { deps, namesForOrg }
+  return { deps, namesForOrg, apiKeyNames }
 }
 
 async function app(deps: HttpDeps): Promise<FastifyInstance> {
@@ -132,5 +139,16 @@ describe('session channel label falls back to the org conversation directory', (
     expect(await channelNames(deps)).toEqual(['deploys', 'deploys'])
     expect(namesForOrg).toHaveBeenCalledTimes(1)
     expect(namesForOrg.mock.calls[0]?.[1]).toEqual([{ platform: 'slack', channelId: 'C0AAA0AAA00' }])
+  })
+
+  it('names an agent chat API session by its key and leaves a console webchat session unnamed', async () => {
+    const webchat = (id: string, channel: string) => row({ id, platform: 'webchat', channel, triggeredBy: 'user-1' })
+    const { deps, namesForOrg, apiKeyNames } = fakeDeps([
+      webchat('sess-1', API_CONVERSATION),
+      webchat('sess-2', CONSOLE_CONVERSATION)
+    ])
+    expect(await channelNames(deps)).toEqual(['docs-site', null])
+    expect(apiKeyNames).toHaveBeenCalledWith(ORG_ID, [API_CONVERSATION, CONSOLE_CONVERSATION])
+    expect(namesForOrg).not.toHaveBeenCalled()
   })
 })
