@@ -109,22 +109,6 @@ jobs:
           TEST_SUMMARY: ${{ needs.test.outputs.integration_test_summary }}
         run: printf '\n---\n\n%s\n' "$TEST_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
 
-      # Stable releases only (the `release` branch): refresh the public API
-      # reference on ReadMe using the configured external API contract.
-      - name: Publish API docs to ReadMe
-        if: github.ref == 'refs/heads/release'
-        env:
-          README_API_KEY: ${{ secrets.README_API_KEY }}
-          PUBLIC_CP_URL: ${{ vars.PUBLIC_CP_URL }}
-          OPENAPI_PATH_PREFIX: ${{ vars.OPENAPI_PATH_PREFIX }}
-        run: |
-          pnpm --filter @agentconnect.md/control-plane openapi:generate "${GITHUB_WORKSPACE}/openapi.json"
-          npx --yes rdme@10 openapi upload "${GITHUB_WORKSPACE}/openapi.json" \
-            --key "$README_API_KEY" \
-            --slug openapi.json \
-            --branch stable \
-            --confirm-overwrite
-
   # Docker Bake publishes its own downstream summary after the release card.
   build-images:
     name: Build & Push Images
