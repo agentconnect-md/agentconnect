@@ -141,7 +141,7 @@ describe('AgentApiCard', () => {
     expect(text).toContain('https://relay.example.test/ai-sdk/agents/agent-1/chat')
     expect(text).not.toContain('webchat/token')
     expect(text).toContain('$AGENTCONNECT_API_KEY')
-    await click('Web app')
+    await click('Browser')
     const web = document.body.textContent ?? ''
     expect(web).toContain('app/api/chat/route.ts')
     expect(web).toContain('app/page.tsx')

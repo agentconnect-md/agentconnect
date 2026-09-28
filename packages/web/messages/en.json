@@ -1949,8 +1949,8 @@
       "examples": "Examples",
       "tabs": {
         "curl": "curl",
-        "script": "Script",
-        "web": "Web app"
+        "node": "Node",
+        "browser": "Browser"
       },
       "keys": "Agent chat keys",
       "createKey": "Create key",

@@ -30,17 +30,17 @@ describe('quickstartExamples', () => {
     for (const { file, code } of files.filter((f) => /\.tsx?$/.test(f.file))) {
       expect(compile(file, code).diagnostics, file).toEqual([])
     }
-    const page = examples.web.find((f) => f.file === 'app/page.tsx')!
+    const page = examples.browser.find((f) => f.file === 'app/page.tsx')!
     expect(page.code).not.toContain('AGENTCONNECT_API_KEY')
     expect(page.code).toContain('import { useChat } from "@ai-sdk/react"')
-    for (const f of [...examples.curl, ...examples.script, examples.web[0]!]) {
+    for (const f of [...examples.curl, ...examples.node, examples.browser[0]!]) {
       expect(f.code).toContain(CHAT)
       expect(f.code).toContain('AGENTCONNECT_API_KEY')
     }
   })
 
   it("forwards useChat's request with the key and streams the relay's answer back", async () => {
-    const route = quickstartExamples(CHAT).web.find((f) => f.file === 'app/api/chat/route.ts')!
+    const route = quickstartExamples(CHAT).browser.find((f) => f.file === 'app/api/chat/route.ts')!
     const exports: { POST?: (req: Request) => Promise<Response> } = {}
     const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toBe(CHAT)

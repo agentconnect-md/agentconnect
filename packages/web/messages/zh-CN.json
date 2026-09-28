@@ -1949,8 +1949,8 @@
       "examples": "示例",
       "tabs": {
         "curl": "curl",
-        "script": "脚本",
-        "web": "网页应用"
+        "node": "Node",
+        "browser": "浏览器"
       },
       "keys": "Agent 对话密钥",
       "createKey": "创建密钥",

@@ -28,8 +28,8 @@ export function agentChatUrl(agentId: string, relayUrl?: string): string | null 
   return relay ? `${relay}/ai-sdk/agents/${encodeURIComponent(agentId)}/chat` : null
 }
 
-export type QuickstartTab = 'curl' | 'script' | 'web'
-export const QUICKSTART_TABS: readonly QuickstartTab[] = ['curl', 'script', 'web']
+export type QuickstartTab = 'curl' | 'node' | 'browser'
+export const QUICKSTART_TABS: readonly QuickstartTab[] = ['curl', 'node', 'browser']
 
 /** One file of an example: its name, which also picks its highlighting, and its text. */
 export interface QuickstartFile {
@@ -37,7 +37,7 @@ export interface QuickstartFile {
   code: string
 }
 
-/** The Quickstart's examples: a raw request, a script over the AI SDK's transport, and a web app whose same-origin route adds the key. */
+/** The Quickstart's examples: a raw request, Node over the AI SDK's transport, and a browser `useChat` behind a same-origin route that adds the key. */
 export function quickstartExamples(chatUrl: string): Record<QuickstartTab, QuickstartFile[]> {
   const url = JSON.stringify(chatUrl)
   return {
@@ -50,7 +50,7 @@ export function quickstartExamples(chatUrl: string): Record<QuickstartTab, Quick
   -d '{"id":"chat-1","messages":[{"role":"user","parts":[{"type":"text","text":"Hello"}]}]}'`
       }
     ],
-    script: [
+    node: [
       {
         file: 'chat.ts',
         code: `// npm i ai (AI SDK 5 or later)
@@ -70,7 +70,7 @@ const stream = await transport.sendMessages({
 for await (const chunk of stream) if (chunk.type === "text-delta") process.stdout.write(chunk.delta);`
       }
     ],
-    web: [
+    browser: [
       {
         file: 'app/api/chat/route.ts',
         code: `// The key stays on the server: this route adds it and forwards useChat's request unchanged.
