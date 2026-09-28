@@ -20,6 +20,21 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
+function projection(admit: boolean) {
+  return {
+    gate: { type: 'gate', decisionId, when: { type: 'boolean', values: [admit] } },
+    definitions: [
+      {
+        id: decisionId,
+        name: 'On topic',
+        providerId: 'typesafe',
+        model: 'jev-latest',
+        question: { type: 'boolean', instructions: 'Is it about the product?', criteria: { true: 'Yes', false: 'No' } }
+      }
+    ]
+  }
+}
+
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-api-gate-'))
   roots.push(root)
@@ -38,24 +53,8 @@ function scaffold(): string {
       workspace: { mode: 'from-scratch', path: join(dir, 'workspace') },
       integrations: [],
       memory: { provider: 'none' },
-      apiGates: {
-        'ai-sdk-ui': {
-          gate: { type: 'gate', decisionId, when: { type: 'boolean', values: [true] } },
-          definitions: [
-            {
-              id: decisionId,
-              name: 'On topic',
-              providerId: 'typesafe',
-              model: 'jev-latest',
-              question: {
-                type: 'boolean',
-                instructions: 'Is it about the product?',
-                criteria: { true: 'Yes', false: 'No' }
-              }
-            }
-          ]
-        }
-      }
+      // AG-UI admits the opposite answer, so a turn shows which gate it read; a newer CP's protocol is kept and never read.
+      apiGates: { 'ai-sdk-ui': projection(true), 'ag-ui': projection(false), 'future-protocol': projection(true) }
     })
   )
   return root
@@ -94,7 +93,7 @@ async function start() {
       answer: { type: 'boolean', value, probability: value ? 0.9 : 0.1 }
     } satisfies DecisionEvaluation)
   let seq = 0
-  const turn = (over: { origin?: 'ai-sdk-ui'; targetSessionId?: string } = {}) =>
+  const turn = (over: { origin?: string; targetSessionId?: string } = {}) =>
     internal.dispatchRelayOp(
       {
         source: 'webchat',
@@ -177,6 +176,21 @@ describe('API turn Decision gate', () => {
       fullAnswer: { type: 'boolean', value: false },
       evidence: null
     })
+  })
+
+  it('gates each API turn by its own protocol gate', async () => {
+    const { evaluate, answer, turn } = await start()
+    answer(false)
+    expect(await turn({ origin: 'ai-sdk-ui' })).toMatchObject({ accepted: false, reason: 'declined' })
+    expect(await turn({ origin: 'ag-ui' })).toMatchObject({ accepted: true })
+    expect(evaluate).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses a turn over a protocol this build does not know, without evaluating it', async () => {
+    const { evaluate, prompted, turn } = await start()
+    expect(await turn({ origin: 'future-protocol' })).toMatchObject({ accepted: false, reason: 'unsupported' })
+    expect(evaluate).not.toHaveBeenCalled()
+    expect(prompted).toEqual([])
   })
 
   it('never gates a console turn on the same agent', async () => {

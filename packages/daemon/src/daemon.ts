@@ -18,9 +18,10 @@ import {
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
+  API_AG_UI_V1_FEATURE,
   API_DECISION_GATE_V1_FEATURE,
   API_GATE_EVALUATIONS_V1_FEATURE,
-  type AgentApiProtocol,
+  AgentApiProtocol,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
@@ -7068,6 +7069,8 @@ export class Daemon {
       DECISION_CHAIN_V1_FEATURE,
       // This daemon evaluates an API turn's Decision gate from AgentSpec.apiGates before admitting it.
       API_DECISION_GATE_V1_FEATURE,
+      // The CP adds an agent's AG-UI API only while every connected daemon serving it lists this.
+      API_AG_UI_V1_FEATURE,
       // It records each API gate verdict and answers decision/api-gate-evaluations for the API row's Recent evaluations.
       API_GATE_EVALUATIONS_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
@@ -10855,12 +10858,12 @@ export class Daemon {
       }
     }
     // An API turn passes its Decision gate here, once, before either dispatch shape below records anything.
-    if (
-      op.op === 'turn' &&
-      op.origin &&
-      !(await this.admitApiTurn(msg.agentId, op.origin, op.text, msg.msgId, op.user))
-    ) {
-      return { msgId: msg.msgId, accepted: false, reason: 'declined' }
+    if (op.op === 'turn' && op.origin !== undefined) {
+      const protocol = AgentApiProtocol.safeParse(op.origin)
+      // A protocol this build does not know has no gate it could evaluate; the relay sends one only where it is advertised.
+      if (!protocol.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported' }
+      if (!(await this.admitApiTurn(msg.agentId, protocol.data, op.text, msg.msgId, op.user)))
+        return { msgId: msg.msgId, accepted: false, reason: 'declined' }
     }
     // Session-targeted continuation: `turn` dispatches onto the target session's
     // own coordinates; runtime-set ops are refused (this ingress adds human

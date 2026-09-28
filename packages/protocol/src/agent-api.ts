@@ -15,9 +15,18 @@ import {
 import { encodedBytes } from './wire-slice.js'
 
 // A chat API an agent accepts calls on once its owner adds it under Integrations.
-export const AgentApiProtocol = z.enum(['ai-sdk-ui'])
+export const AgentApiProtocol = z.enum(['ai-sdk-ui', 'ag-ui'])
 export type AgentApiProtocol = z.infer<typeof AgentApiProtocol>
 export const AGENT_API_PROTOCOLS = AgentApiProtocol.options
+// A protocol named on a frame a daemon parses: a string, so a newer peer's protocol never fails an older daemon's decode.
+export const AgentApiProtocolName = z.string().min(1).max(64)
+
+// The daemon takes AG-UI turns and gates; it advertises this to the CP and on `rd/hello`, and neither sends it one without.
+export const API_AG_UI_V1_FEATURE = 'api-ag-ui-v1'
+// The daemon feature a protocol needs beyond the chat API itself; `ai-sdk-ui` shipped with it.
+export const AGENT_API_PROTOCOL_FEATURE: Readonly<Partial<Record<AgentApiProtocol, string>>> = {
+  'ag-ui': API_AG_UI_V1_FEATURE
+}
 
 // A Decision gate per protocol: a turn is admitted only when the chain matches, or when it cannot be evaluated.
 export const AgentApiGates = z.partialRecord(AgentApiProtocol, ChannelDecisionGate)
@@ -29,7 +38,7 @@ export const AgentApiGateProjection = z.strictObject({
   definitions: z.array(DecisionToolDefinition).min(1).max(DECISION_CHAIN_MAX_STEPS)
 })
 export type AgentApiGateProjection = z.infer<typeof AgentApiGateProjection>
-export const AgentApiGateProjections = z.partialRecord(AgentApiProtocol, AgentApiGateProjection)
+export const AgentApiGateProjections = z.record(AgentApiProtocolName, AgentApiGateProjection)
 export type AgentApiGateProjections = z.infer<typeof AgentApiGateProjections>
 
 // The daemon evaluates an API turn's gate before admitting it and refuses a negative answer as `declined`.
@@ -42,7 +51,7 @@ export function apiGateDecisionIds(gates: AgentApiGates | null | undefined): str
 // The peer records each API gate verdict and answers decision/api-gate-evaluations and decision/api-gate-evaluation.
 export const API_GATE_EVALUATIONS_V1_FEATURE = 'api-gate-evaluations-v1'
 
-const ApiGateLane = { agentId: z.string().uuid(), protocol: AgentApiProtocol }
+const ApiGateLane = { agentId: z.string().uuid(), protocol: AgentApiProtocolName }
 export const ApiGateEvaluationsRequest = z.strictObject({
   ...ApiGateLane,
   decisionId: z.string().uuid().optional(),

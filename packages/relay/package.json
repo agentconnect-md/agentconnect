@@ -45,6 +45,8 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@ag-ui/client": "^1.0.0",
+    "@ag-ui/core": "^1.0.0",
     "@types/node": "^24.13.6",
     "@types/ws": "^8.18.1",
     "ai": "^6.0.287",
