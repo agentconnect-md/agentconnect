@@ -71,8 +71,8 @@
 </p>
 
 AgentConnect is an open-source platform where teams and multiple AI agents work
-together across Slack, Telegram, Discord, Lark, GitHub, GitLab, Gitea, and
-Linear. Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any
+together across Slack, Telegram, Discord, Lark, Google Chat, GitHub, GitLab,
+Gitea, and Linear. Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any
 ACP-compatible agent into the conversations and workflows your team already has
 open. Use Jev for agent routing and model selection.
 
@@ -129,8 +129,8 @@ Teams use it to:
   other ACP-compatible runtime run side by side, and changing one does not
   rebuild the workflow around it.
 - **Keep work where it happens.** Link agents to bots in Slack, Telegram,
-  Discord, and Lark, or to repositories, issues, and workflows on GitHub,
-  GitLab, Gitea, and Linear.
+  Discord, Lark, and Google Chat, or to repositories, issues, and workflows on
+  GitHub, GitLab, Gitea, and Linear.
 - **Choose the right agent for every job.** Configure each agent's runtime,
   model, workspace, tools, and machine independently.
 - **Decide when and how agents act.** Use reusable Decisions powered by
@@ -158,10 +158,10 @@ knowledge, and daemons:
 </p>
 
 <p align="center">
-  <a href="https://chatgpt.com/?q=I%27m%20evaluating%20AgentConnect%20%28agentconnect.md%29%2C%20an%20open-source%20platform%20where%20teams%20and%20multiple%20AI%20agents%20work%20together%20across%20Slack%2C%20Telegram%2C%20Discord%2C%20GitHub%2C%20and%20GitLab.%20What%20does%20it%20do%2C%20what%20are%20its%20strengths%20and%20weaknesses%2C%20and%20who%20is%20it%20best%20for%3F"><img src="https://img.shields.io/badge/Ask%20ChatGPT-000000?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTIyLjI4MiA5LjgyMWE2IDYgMCAwIDAtLjUxNi00LjkxYTYuMDUgNi4wNSAwIDAgMC02LjUxLTIuOUE2LjA2NSA2LjA2NSAwIDAgMCA0Ljk4MSA0LjE4YTYgNiAwIDAgMC0zLjk5OCAyLjlhNi4wNSA2LjA1IDAgMCAwIC43NDMgNy4wOTdhNS45OCA1Ljk4IDAgMCAwIC41MSA0LjkxMWE2LjA1IDYuMDUgMCAwIDAgNi41MTUgMi45QTYgNiAwIDAgMCAxMy4yNiAyNGE2LjA2IDYuMDYgMCAwIDAgNS43NzItNC4yMDZhNiA2IDAgMCAwIDMuOTk3LTIuOWE2LjA2IDYuMDYgMCAwIDAtLjc0Ny03LjA3M00xMy4yNiAyMi40M2E0LjQ4IDQuNDggMCAwIDEtMi44NzYtMS4wNGwuMTQxLS4wODFsNC43NzktMi43NThhLjguOCAwIDAgMCAuMzkyLS42ODF2LTYuNzM3bDIuMDIgMS4xNjhhLjA3LjA3IDAgMCAxIC4wMzguMDUydjUuNTgzYTQuNTA0IDQuNTA0IDAgMCAxLTQuNDk0IDQuNDk0TTMuNiAxOC4zMDRhNC40NyA0LjQ3IDAgMCAxLS41MzUtMy4wMTRsLjE0Mi4wODVsNC43ODMgMi43NTlhLjc3Ljc3IDAgMCAwIC43OCAwbDUuODQzLTMuMzY5djIuMzMyYS4wOC4wOCAwIDAgMS0uMDMzLjA2Mkw5Ljc0IDE5Ljk1YTQuNSA0LjUgMCAwIDEtNi4xNC0xLjY0Nk0yLjM0IDcuODk2YTQuNSA0LjUgMCAwIDEgMi4zNjYtMS45NzNWMTEuNmEuNzcuNzcgMCAwIDAgLjM4OC42NzdsNS44MTUgMy4zNTRsLTIuMDIgMS4xNjhhLjA4LjA4IDAgMCAxLS4wNzEgMGwtNC44My0yLjc4NkE0LjUwNCA0LjUwNCAwIDAgMSAyLjM0IDcuODcyem0xNi41OTcgMy44NTVsLTUuODMzLTMuMzg3TDE1LjExOSA3LjJhLjA4LjA4IDAgMCAxIC4wNzEgMGw0LjgzIDIuNzkxYTQuNDk0IDQuNDk0IDAgMCAxLS42NzYgOC4xMDV2LTUuNjc4YS43OS43OSAwIDAgMC0uNDA3LS42NjdtMi4wMS0zLjAyM2wtLjE0MS0uMDg1bC00Ljc3NC0yLjc4MmEuNzguNzggMCAwIDAtLjc4NSAwTDkuNDA5IDkuMjNWNi44OTdhLjA3LjA3IDAgMCAxIC4wMjgtLjA2MWw0LjgzLTIuNzg3YTQuNSA0LjUgMCAwIDEgNi42OCA0LjY2em0tMTIuNjQgNC4xMzVsLTIuMDItMS4xNjRhLjA4LjA4IDAgMCAxLS4wMzgtLjA1N1Y2LjA3NWE0LjUgNC41IDAgMCAxIDcuMzc1LTMuNDUzbC0uMTQyLjA4TDguNzA0IDUuNDZhLjguOCAwIDAgMC0uMzkzLjY4MXptMS4wOTctMi4zNjVsMi42MDItMS41bDIuNjA3IDEuNXYyLjk5OWwtMi41OTcgMS41bC0yLjYwNy0xLjVaIi8%2BPC9zdmc%2B" alt="Ask ChatGPT about AgentConnect" /></a>&nbsp;
-  <a href="https://claude.ai/new?q=I%27m%20evaluating%20AgentConnect%20%28agentconnect.md%29%2C%20an%20open-source%20platform%20where%20teams%20and%20multiple%20AI%20agents%20work%20together%20across%20Slack%2C%20Telegram%2C%20Discord%2C%20GitHub%2C%20and%20GitLab.%20What%20does%20it%20do%2C%20what%20are%20its%20strengths%20and%20weaknesses%2C%20and%20who%20is%20it%20best%20for%3F"><img src="https://img.shields.io/badge/Ask%20Claude-D97757?logo=claude&logoColor=fff" alt="Ask Claude about AgentConnect" /></a>&nbsp;
-  <a href="https://www.perplexity.ai/search?q=I%27m%20evaluating%20AgentConnect%20%28agentconnect.md%29%2C%20an%20open-source%20platform%20where%20teams%20and%20multiple%20AI%20agents%20work%20together%20across%20Slack%2C%20Telegram%2C%20Discord%2C%20GitHub%2C%20and%20GitLab.%20What%20does%20it%20do%2C%20what%20are%20its%20strengths%20and%20weaknesses%2C%20and%20who%20is%20it%20best%20for%3F"><img src="https://img.shields.io/badge/Ask%20Perplexity-1FB8CD?logo=perplexity&logoColor=fff" alt="Ask Perplexity about AgentConnect" /></a>&nbsp;
-  <a href="https://www.google.com/search?udm=50&q=I%27m%20evaluating%20AgentConnect%20%28agentconnect.md%29%2C%20an%20open-source%20platform%20where%20teams%20and%20multiple%20AI%20agents%20work%20together%20across%20Slack%2C%20Telegram%2C%20Discord%2C%20GitHub%2C%20and%20GitLab.%20What%20does%20it%20do%2C%20what%20are%20its%20strengths%20and%20weaknesses%2C%20and%20who%20is%20it%20best%20for%3F"><img src="https://img.shields.io/badge/Ask%20Google%20AI-8E75B2?logo=googlegemini&logoColor=fff" alt="Ask Google AI about AgentConnect" /></a>
+  <a href="https://chatgpt.com/?q=I%27m%20evaluating%20AgentConnect%20%28agentconnect.md%29%2C%20an%20open-source%20platform%20where%20teams%20and%20multiple%20AI%20agents%20work%20together%20across%20Slack%2C%20Telegram%2C%20Discord%2C%20Google%20Chat%2C%20GitHub%2C%20and%20GitLab.%20What%20does%20it%20do%2C%20what%20are%20its%20strengths%20and%20weaknesses%2C%20and%20who%20is%20it%20best%20for%3F"><img src="https://img.shields.io/badge/Ask%20ChatGPT-000000?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTIyLjI4MiA5LjgyMWE2IDYgMCAwIDAtLjUxNi00LjkxYTYuMDUgNi4wNSAwIDAgMC02LjUxLTIuOUE2LjA2NSA2LjA2NSAwIDAgMCA0Ljk4MSA0LjE4YTYgNiAwIDAgMC0zLjk5OCAyLjlhNi4wNSA2LjA1IDAgMCAwIC43NDMgNy4wOTdhNS45OCA1Ljk4IDAgMCAwIC41MSA0LjkxMWE2LjA1IDYuMDUgMCAwIDAgNi41MTUgMi45QTYgNiAwIDAgMCAxMy4yNiAyNGE2LjA2IDYuMDYgMCAwIDAgNS43NzItNC4yMDZhNiA2IDAgMCAwIDMuOTk3LTIuOWE2LjA2IDYuMDYgMCAwIDAtLjc0Ny03LjA3M00xMy4yNiAyMi40M2E0LjQ4IDQuNDggMCAwIDEtMi44NzYtMS4wNGwuMTQxLS4wODFsNC43NzktMi43NThhLjguOCAwIDAgMCAuMzkyLS42ODF2LTYuNzM3bDIuMDIgMS4xNjhhLjA3LjA3IDAgMCAxIC4wMzguMDUydjUuNTgzYTQuNTA0IDQuNTA0IDAgMCAxLTQuNDk0IDQuNDk0TTMuNiAxOC4zMDRhNC40NyA0LjQ3IDAgMCAxLS41MzUtMy4wMTRsLjE0Mi4wODVsNC43ODMgMi43NTlhLjc3Ljc3IDAgMCAwIC43OCAwbDUuODQzLTMuMzY5djIuMzMyYS4wOC4wOCAwIDAgMS0uMDMzLjA2Mkw5Ljc0IDE5Ljk1YTQuNSA0LjUgMCAwIDEtNi4xNC0xLjY0Nk0yLjM0IDcuODk2YTQuNSA0LjUgMCAwIDEgMi4zNjYtMS45NzNWMTEuNmEuNzcuNzcgMCAwIDAgLjM4OC42NzdsNS44MTUgMy4zNTRsLTIuMDIgMS4xNjhhLjA4LjA4IDAgMCAxLS4wNzEgMGwtNC44My0yLjc4NkE0LjUwNCA0LjUwNCAwIDAgMSAyLjM0IDcuODcyem0xNi41OTcgMy44NTVsLTUuODMzLTMuMzg3TDE1LjExOSA3LjJhLjA4LjA4IDAgMCAxIC4wNzEgMGw0LjgzIDIuNzkxYTQuNDk0IDQuNDk0IDAgMCAxLS42NzYgOC4xMDV2LTUuNjc4YS43OS43OSAwIDAgMC0uNDA3LS42NjdtMi4wMS0zLjAyM2wtLjE0MS0uMDg1bC00Ljc3NC0yLjc4MmEuNzguNzggMCAwIDAtLjc4NSAwTDkuNDA5IDkuMjNWNi44OTdhLjA3LjA3IDAgMCAxIC4wMjgtLjA2MWw0LjgzLTIuNzg3YTQuNSA0LjUgMCAwIDEgNi42OCA0LjY2em0tMTIuNjQgNC4xMzVsLTIuMDItMS4xNjRhLjA4LjA4IDAgMCAxLS4wMzgtLjA1N1Y2LjA3NWE0LjUgNC41IDAgMCAxIDcuMzc1LTMuNDUzbC0uMTQyLjA4TDguNzA0IDUuNDZhLjguOCAwIDAgMC0uMzkzLjY4MXptMS4wOTctMi4zNjVsMi42MDItMS41bDIuNjA3IDEuNXYyLjk5OWwtMi41OTcgMS41bC0yLjYwNy0xLjVaIi8%2BPC9zdmc%2B" alt="Ask ChatGPT about AgentConnect" /></a>&nbsp;
+  <a href="https://claude.ai/new?q=I%27m%20evaluating%20AgentConnect%20%28agentconnect.md%29%2C%20an%20open-source%20platform%20where%20teams%20and%20multiple%20AI%20agents%20work%20together%20across%20Slack%2C%20Telegram%2C%20Discord%2C%20Google%20Chat%2C%20GitHub%2C%20and%20GitLab.%20What%20does%20it%20do%2C%20what%20are%20its%20strengths%20and%20weaknesses%2C%20and%20who%20is%20it%20best%20for%3F"><img src="https://img.shields.io/badge/Ask%20Claude-D97757?logo=claude&logoColor=fff" alt="Ask Claude about AgentConnect" /></a>&nbsp;
+  <a href="https://www.perplexity.ai/search?q=I%27m%20evaluating%20AgentConnect%20%28agentconnect.md%29%2C%20an%20open-source%20platform%20where%20teams%20and%20multiple%20AI%20agents%20work%20together%20across%20Slack%2C%20Telegram%2C%20Discord%2C%20Google%20Chat%2C%20GitHub%2C%20and%20GitLab.%20What%20does%20it%20do%2C%20what%20are%20its%20strengths%20and%20weaknesses%2C%20and%20who%20is%20it%20best%20for%3F"><img src="https://img.shields.io/badge/Ask%20Perplexity-1FB8CD?logo=perplexity&logoColor=fff" alt="Ask Perplexity about AgentConnect" /></a>&nbsp;
+  <a href="https://www.google.com/search?udm=50&q=I%27m%20evaluating%20AgentConnect%20%28agentconnect.md%29%2C%20an%20open-source%20platform%20where%20teams%20and%20multiple%20AI%20agents%20work%20together%20across%20Slack%2C%20Telegram%2C%20Discord%2C%20Google%20Chat%2C%20GitHub%2C%20and%20GitLab.%20What%20does%20it%20do%2C%20what%20are%20its%20strengths%20and%20weaknesses%2C%20and%20who%20is%20it%20best%20for%3F"><img src="https://img.shields.io/badge/Ask%20Google%20AI-8E75B2?logo=googlegemini&logoColor=fff" alt="Ask Google AI about AgentConnect" /></a>
 </p>
 
 ## Get started
@@ -199,9 +199,10 @@ rather than a one-liner. The chart source lives in
 
 **Setup Server** runs in the base stack at `http://localhost:8091`, always on
 loopback. It configures browser authentication through Logto, the deployment's
-GitHub, Slack, Google, and Lark / Feishu apps, the sign-in methods you show, and
-preset-agent behavior. Deployment topology — images, ports, public URLs,
-database and bootstrap secrets — stays in `compose.env` or your Helm values.
+GitHub, Slack, Google, Google Chat, and Lark / Feishu apps, the sign-in methods
+you show, and preset-agent behavior. Deployment topology — images, ports,
+public URLs, database and bootstrap secrets — stays in `compose.env` or your
+Helm values.
 
 Prefer to be walked through it? This repository ships a **setup skill** at
 `.claude/skills/agentconnect-setup`, also exposed at `.agents/skills`, so Claude
