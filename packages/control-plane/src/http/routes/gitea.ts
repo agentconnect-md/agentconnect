@@ -27,7 +27,7 @@ import {
 import { REPOSITORY_IN_USE_REASON } from '../../gitea/binding-state.js'
 import { collectGiteaReferences, describeGiteaReferences } from '../../gitea/references.js'
 import { unionGiteaWebhookEvents } from '../../gitea/webhook-events.js'
-import { GITEA_MINIMUM_VERSION_LABEL, parseGiteaVersion } from '../../gitea/version.js'
+import { parseGiteaVersion } from '../../gitea/version.js'
 import {
   ConnectGiteaBody,
   CreateGiteaRepositoryBody,
@@ -99,7 +99,8 @@ function connectionToDto(
     instanceUrl,
     instanceVersion: r.instanceVersion,
     instanceVersionSupported: r.instanceVersion !== null ? parseGiteaVersion(r.instanceVersion).supported : null,
-    instanceVersionFloor: GITEA_MINIMUM_VERSION_LABEL,
+    // The floor of the product the instance reported (Gitea or Forgejo), Gitea's until first contact.
+    instanceVersionFloor: parseGiteaVersion(r.instanceVersion).floor,
     requiredScopes: [...GITEA_REQUIRED_TOKEN_SCOPES],
     lastVerifiedAt: r.lastVerifiedAt ? r.lastVerifiedAt.toISOString() : null,
     createdAt: r.createdAt.toISOString()
@@ -164,7 +165,7 @@ export function giteaRoutes(deps: HttpDeps) {
           tags: [Tag.Gitea],
           summary: 'Connect Gitea with a bot token',
           description:
-            'Verifies a bot user’s personal access token against the instance (§4.1): reads the user, applies the 1.23 floor, probes the required scopes (read:user, write:repository, write:issue, read:organization), refuses a bot already serving another connection on this deployment and a second connection in this organization, then seals the token. The token is write-only and never returned.',
+            'Verifies a bot user’s personal access token against the instance (§4.1): reads the user, applies the version floor (Gitea 1.23, Forgejo 15), probes the required scopes (read:user, write:repository, write:issue, read:organization), refuses a bot already serving another connection on this deployment and a second connection in this organization, then seals the token. The token is write-only and never returned.',
           operationId: 'connectGitea',
           body: ConnectGiteaBody,
           response: { 200: GiteaConnectionDto, 400: ErrorDto, 403: ErrorDto, 409: ErrorDto, 502: ErrorDto }

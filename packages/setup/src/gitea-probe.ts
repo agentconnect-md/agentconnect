@@ -10,7 +10,8 @@
  * a network position — an instance this process cannot reach may be perfectly reachable from the
  * Control Plane, and refusing would be this process guessing about someone else's network.
  */
-import { normalizeGiteaBaseUrl, GITEA_MINIMUM_VERSION } from '@agentconnect.md/control-plane/gitea-config'
+import { normalizeGiteaBaseUrl } from '@agentconnect.md/control-plane/gitea-config'
+import { GITEA_VERSION_REQUIREMENT, parseGiteaVersion } from '@agentconnect.md/control-plane/gitea-version'
 
 export type GiteaProbeStatus =
   'ok' | 'invalid_url' | 'instance_version_unsupported' | 'unreachable' | 'tls_untrusted' | 'not_a_gitea_api_root'
@@ -45,29 +46,6 @@ const TLS_FAILURE_CODES = new Set([
 /** Whether a probe verdict must stop the save: the URL shape, and the version floor (§3). */
 export function probeBlocksSave(probe: GiteaProbeResult): boolean {
   return probe.status === 'invalid_url' || probe.status === 'instance_version_unsupported'
-}
-
-/**
- * The `<major>.<minor>` the floor applies to, or undefined when the string carries none.
- *
- * A build marker naming GITEA COMPATIBILITY (`11.0.0+gitea-1.22.0`, how Forgejo reports itself) is
- * what the floor reads, because the leading version is then the fork's own. Forgejo forked from
- * Gitea 1.22 and diverges in ways that matter here, so its string lands below the floor and is
- * refused — that is §3's refusal, not an accident of parsing leniency. A genuine Gitea reports
- * `1.23.1` or `1.27.0+dev` and is read from the front.
- */
-export function parseGiteaVersion(raw: unknown): { major: number; minor: number } | undefined {
-  if (typeof raw !== 'string') return undefined
-  const match = /\+gitea-(\d+)\.(\d+)/.exec(raw) ?? /^\s*v?(\d+)\.(\d+)/.exec(raw)
-  if (!match) return undefined
-  return { major: Number(match[1]), minor: Number(match[2]) }
-}
-
-const FLOOR = parseGiteaVersion(GITEA_MINIMUM_VERSION)!
-
-/** Fail CLOSED on a version this build cannot read (§3). */
-function meetsFloor(version: { major: number; minor: number }): boolean {
-  return version.major > FLOOR.major || (version.major === FLOOR.major && version.minor >= FLOOR.minor)
 }
 
 export async function probeGiteaInstance(rawBaseUrl: string, fetchImpl: typeof fetch): Promise<GiteaProbeResult> {
@@ -106,16 +84,22 @@ export async function probeGiteaInstance(rawBaseUrl: string, fetchImpl: typeof f
       message: `${baseUrl}/api/v1/version answered ${response.status} rather than a Gitea version; check the URL and any path prefix`
     }
   }
+  // The Control Plane's own parser, so the save and the connect step apply one floor per product (§3).
   const parsed = parseGiteaVersion(reported)
-  if (!parsed || !meetsFloor(parsed)) {
+  if (!parsed.supported) {
     return {
       status: 'instance_version_unsupported',
       baseUrl,
       version: reported,
-      message: `${baseUrl} reports version ${reported}; AgentConnect requires Gitea ${GITEA_MINIMUM_VERSION} or later`
+      message: `${baseUrl} reports version ${reported}; AgentConnect requires ${GITEA_VERSION_REQUIREMENT}`
     }
   }
-  return { status: 'ok', baseUrl, version: reported, message: `${baseUrl} answered as Gitea ${reported}` }
+  return {
+    status: 'ok',
+    baseUrl,
+    version: reported,
+    message: `${baseUrl} answered as ${parsed.product === 'forgejo' ? 'Forgejo' : 'Gitea'} ${reported}`
+  }
 }
 
 /** The `{ version }` string of a Gitea API root, or undefined for any other body. */

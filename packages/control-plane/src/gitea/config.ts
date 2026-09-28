@@ -22,6 +22,9 @@ export function normalizeGiteaBaseUrl(raw: string): string {
 /** The release whose token model and review-request webhook are both stable (§3). */
 export const GITEA_MINIMUM_VERSION = '1.23'
 
+/** Forgejo's oldest maintained line, its current LTS (§3); it versions independently of Gitea. */
+export const FORGEJO_MINIMUM_VERSION = '15.0'
+
 export interface GiteaInstanceConfig {
   /** Normalized instance base URL; `GITEA_DEFAULT_BASE_URL` when the axis is unset. */
   baseUrl: string

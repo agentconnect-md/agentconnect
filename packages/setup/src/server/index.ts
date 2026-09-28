@@ -952,7 +952,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     if (!parsed.success) return problem(reply, 400, 'a valid Gitea instance base URL is required')
     const instance = parsed.data.instance
     const requestedBaseUrl = instance?.baseUrl?.trim()
-    // The staged probe (gitea-integration.md §3): the URL shape and the 1.23 version floor refuse
+    // The staged probe (gitea-integration.md §3): the URL shape and the version floor refuse
     // the save; unreachable, untrusted and not-an-API-root are warnings the operator reads, because
     // this process and the Control Plane need not share a network position.
     const probe = requestedBaseUrl ? await probeGiteaInstance(requestedBaseUrl, fetchImpl) : null

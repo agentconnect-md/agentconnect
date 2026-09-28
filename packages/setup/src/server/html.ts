@@ -282,8 +282,8 @@ export const SETUP_HTML = String.raw`<!doctype html>
         </dl>
         <p id="gitea-status" class="muted"></p>
         <p id="gitea-probe" class="muted" hidden></p>
-        <p class="muted">Each organization connects Gitea by pasting the personal access token of a bot user it created, in the console — nothing about that identity is a deployment setting. Gitea 1.23 or later is required, and the address is checked against that floor when it is saved.</p>
-        <p class="muted">Leave the field empty for gitea.com. A self-hosted instance under a path prefix keeps the prefix. Forgejo and Codeberg are not supported.</p>
+        <p class="muted">Each organization connects Gitea by pasting the personal access token of a bot user it created, in the console — nothing about that identity is a deployment setting. Gitea 1.23 or later, or Forgejo 15 or later, is required, and the address is checked against that floor when it is saved.</p>
+        <p class="muted">Leave the field empty for gitea.com. A self-hosted instance under a path prefix keeps the prefix. A Forgejo instance, Codeberg included, is entered the same way.</p>
         <div id="gitea-config-controls" class="subsection">
           <label class="field">Instance base URL<input id="gitea-base-url" autocomplete="off" placeholder="Leave empty for https://gitea.com"></label>
         </div>

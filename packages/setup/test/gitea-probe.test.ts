@@ -4,7 +4,7 @@
  * the URL shape, blocks the save. Everything else warns.
  */
 import { describe, expect, it } from 'vitest'
-import { parseGiteaVersion, probeBlocksSave, probeGiteaInstance } from '../src/gitea-probe.js'
+import { probeBlocksSave, probeGiteaInstance } from '../src/gitea-probe.js'
 
 const INSTANCE = 'https://gitea.example.test'
 
@@ -62,8 +62,8 @@ describe('the Gitea instance probe (§3)', () => {
     expect(seen).toEqual([])
   })
 
-  it('refuses an instance below the floor, and a Forgejo build with it', async () => {
-    for (const version of ['1.22.6', '1.18.0', '0.9.0', '11.0.1+gitea-1.22.0']) {
+  it('refuses a Gitea below 1.23 and a Forgejo below 15', async () => {
+    for (const version of ['1.22.6', '1.18.0', '0.9.0', '14.0.2+gitea-1.22.0', '11.0.1+gitea-1.22.0']) {
       const probe = await probeGiteaInstance(INSTANCE, apiRoot(version))
       expect(probe, version).toMatchObject({ status: 'instance_version_unsupported', version })
       expect(probeBlocksSave(probe)).toBe(true)
@@ -99,11 +99,13 @@ describe('the Gitea instance probe (§3)', () => {
     expect(await probeGiteaInstance(INSTANCE, html)).toMatchObject({ status: 'not_a_gitea_api_root' })
   })
 
-  it('reads the gitea-compatibility marker in preference to a fork version', () => {
-    expect(parseGiteaVersion('1.23.1')).toEqual({ major: 1, minor: 23 })
-    expect(parseGiteaVersion('v1.27.0+dev')).toEqual({ major: 1, minor: 27 })
-    expect(parseGiteaVersion('11.0.1+gitea-1.22.0')).toEqual({ major: 1, minor: 22 })
-    expect(parseGiteaVersion('nope')).toBeUndefined()
-    expect(parseGiteaVersion(undefined)).toBeUndefined()
+  it('accepts a supported Forgejo, whose compatibility marker stays at gitea-1.22.0', async () => {
+    const probe = await probeGiteaInstance(INSTANCE, apiRoot('15.0.9+gitea-1.22.0'))
+    expect(probe).toMatchObject({
+      status: 'ok',
+      version: '15.0.9+gitea-1.22.0',
+      message: `${INSTANCE} answered as Forgejo 15.0.9+gitea-1.22.0`
+    })
+    expect(probeBlocksSave(probe)).toBe(false)
   })
 })

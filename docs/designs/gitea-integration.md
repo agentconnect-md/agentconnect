@@ -2,8 +2,9 @@
 
 > Status: **Implemented** — platform assumptions verified 2026-09-11 against
 > Gitea 1.27 (the current stable line; gitea.com tracks the development
-> branch). Scope: **gitea.com and one self-hosted Gitea instance per
-> deployment, 1.23 or later**. Forgejo and Codeberg are outside the contract.
+> branch). Scope: **gitea.com and one self-hosted instance per deployment,
+> Gitea 1.23 or later or Forgejo 15 or later**; Codeberg is a Forgejo
+> instance. Forgejo verified 2026-09-28 against 15.0.9 (§16).
 
 Gitea is the third code host, after GitHub and GitLab. It reuses the GitLab
 integration's skeleton — a per-repository managed webhook verified at the
@@ -86,18 +87,22 @@ base is immutable while any Gitea state exists, and multi-instance stays a
 non-goal for the same claim-key reason.
 
 The floor is **Gitea 1.23**, the release whose token model and review
-request webhook are both stable. `GET /api/v1/version` answers without
+request webhook are both stable, or **Forgejo 15**, its oldest maintained
+line (the LTS released 2026-04-16). `GET /api/v1/version` answers without
 authentication, so the Setup Server checks the floor when the URL is saved
 rather than at first credentialed contact; the Control Plane re-reads it at
 connection time and on reconciliation. Below the floor, or unparseable, the
 save is refused with `instance_version_unsupported`. Only URL shape blocks a
 save; unreachability and an untrusted chain warn, as in §24.2.
 
-Forgejo (and therefore Codeberg) forked from Gitea 1.22 and diverges in ways
-that matter here — no scoped OAuth grants, a different inline-comment shape,
-different webhook headers and event vocabulary. Its version string
-(`…+gitea-1.22.0`) parses below the floor and is refused; supporting it is a
-separate decision, not an accident of parsing leniency.
+Forgejo reports `15.0.9+gitea-1.22.0`: its own version, then a
+compatibility marker it pins at `gitea-1.22.0` on every release. The marker
+therefore identifies the product and never the version; the floor reads the
+leading number against Forgejo's own floor. Forgejo shares every surface this
+integration uses — the same scoped tokens, `X-Gitea-*` headers (sent beside
+its `X-Forgejo-*` copies), event types, payload fields, review endpoints and
+self-review refusal texts — which the §16 Forgejo probe verified request by
+request against Gitea 1.23. There is no Forgejo branch in the code.
 
 Gitea refuses webhook deliveries to loopback and private addresses by default
 (`[webhook] ALLOWED_HOST_LIST`, inherited from `[security]`). The failure is at
@@ -820,7 +825,7 @@ multi-instance design will actually need.
   bot's password.
 - Webhooks installed by hand, organization-level webhooks, or a `write`-only
   bot.
-- Forgejo, Codeberg, or any instance below 1.23.
+- A Gitea below 1.23 or a Forgejo below 15.
 - SSH remotes, plain HTTP, mTLS, or an instance with HTTP Git disabled.
 - Multi-line inline review comments.
 - A `tea` wrapper.
@@ -1073,6 +1078,27 @@ eight `write:` categories — so the §4.1 set was confirmed by category
 attribution rather than by absence, and a token narrowed to the four listed
 scopes remains the recommendation to verify at connect time.
 
+### Forgejo probe (2026-09-28, Forgejo 15.0.9 beside Gitea 1.23.8)
+
+One script issued every request the Control Plane and the daemon make —
+the connect reads, both write-scope probes with and without their scope, the
+collaborator and team routes, webhook create, read-back, edit, test and
+delete, comments, reactions, commit statuses, pending and submitted reviews
+with inline comments on both sides, the author's own approve and reject —
+against a Forgejo 15.0.9 and a Gitea 1.23.8 container with identical
+fixtures, and captured every webhook delivery.
+
+- Every status code, every refusal text, and the webhook's expanded event list
+  matched. The only differences are the extra `X-Forgejo-*` headers and
+  added payload fields; no field Gitea sends is missing or renamed.
+- All 22 captured deliveries per host normalized identically through the
+  relay's matcher and cleanup, merge and issue close included; every
+  signature verified.
+- A left-side comment on an unchanged line reads back on the new side
+  (`position`, not `original_position`) because Forgejo re-anchors it to the
+  line's current number; a comment on a removed line keeps the old side. Both
+  are truthful, so §8's reading of a human review needs no change.
+
 ## 17. Validation
 
 - Unit: signature verification, event-type keying (including the lossy
@@ -1099,6 +1125,10 @@ scopes remains the recommendation to verify at connect time.
 ## 18. References
 
 - Gitea API reference (Swagger) — `https://gitea.com/api/swagger`
+- Forgejo release schedule — why 15 is the floor —
+  `https://forgejo.org/docs/latest/admin/release-schedule/`
+- Forgejo webhook headers (`services/webhook/shared/payloader.go`) —
+  `https://codeberg.org/forgejo/forgejo/src/branch/forgejo/services/webhook/shared/payloader.go`
 - Gitea webhook documentation — `https://docs.gitea.com/usage/webhooks`
 - Gitea OAuth2 provider documentation —
   `https://docs.gitea.com/development/oauth2-provider`

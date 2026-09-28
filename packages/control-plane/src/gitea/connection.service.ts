@@ -29,7 +29,7 @@ import {
   type GiteaApiClient
 } from './api.js'
 import { TOKEN_REJECTED_REASON } from './binding-state.js'
-import { GITEA_MINIMUM_VERSION_LABEL, GITEA_VERSION_UNSUPPORTED_REASON, parseGiteaVersion } from './version.js'
+import { GITEA_VERSION_REQUIREMENT, GITEA_VERSION_UNSUPPORTED_REASON, parseGiteaVersion } from './version.js'
 
 /** The scopes a bot token must carry (§4.1); the Console shows the list beside the input. */
 export const GITEA_REQUIRED_TOKEN_SCOPES = [
@@ -105,7 +105,7 @@ export class GiteaConnectionService {
     const version = parseGiteaVersion(reported)
     if (!version.supported) {
       throw new GiteaConnectDenied(
-        `${api.baseUrl} reports version ${version.raw || '(unreadable)'}; AgentConnect requires Gitea ${GITEA_MINIMUM_VERSION_LABEL} or later`,
+        `${api.baseUrl} reports version ${version.raw || '(unreadable)'}; AgentConnect requires ${GITEA_VERSION_REQUIREMENT}`,
         409,
         GITEA_VERSION_UNSUPPORTED_REASON
       )
