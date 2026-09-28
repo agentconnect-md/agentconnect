@@ -4435,6 +4435,8 @@ describe('buildHookMessage', () => {
       expect(standing).toContain('Other GitHub tools are for READ-only inspection')
       expect(standing).toContain('structured `submitCodeReview` tool')
       expect(standing).toContain('`Verdict amendment available` block may change that sealed verdict')
+      expect(standing).toContain('If an approval reviewer refuses a `submitCodeReview` call')
+      expect(standing).toContain('re-requesting the review retries it')
       expect(standing).toContain('replyGithubReviewThreads')
       expect(standing).toContain('never infer a finding from another checkout')
       // The per-turn text names THIS delivery and repeats only the ownership clause.
@@ -4442,6 +4444,7 @@ describe('buildHookMessage', () => {
       expect(withThread).toContain('Reply to this GitHub conversation on acme/infra#42')
       expect(withThread).toContain('Formal GitHub review submission is unavailable for this delivery')
       expect(withThread).toContain('The daemon owns the reply; post nothing yourself.')
+      expect(withThread).not.toContain('Requested action:')
       expect(withThread).not.toContain('submitCodeReview')
       expect(withThread).not.toContain('READ-only inspection')
       expect(withThread).not.toContain('# GitHub')
@@ -4782,7 +4785,7 @@ describe('buildHookMessage', () => {
     it('requires a formal verdict for an authorized explicit PR review mention', async () => {
       const text = buildHookText(
         ghFire(
-          { event: 'issue_comment', action: 'created' },
+          { event: 'issue_comment', action: 'created', bodyExcerpt: '@reviewer please review' },
           {
             reviewPolicy: 'full',
             github: {
@@ -4798,6 +4801,10 @@ describe('buildHookMessage', () => {
       )
       expect(text).toContain('opens a review generation for the current PR revision')
       expect(text).toContain('use APPROVE + pass when it passes')
+      // The trusted header states publication is the task before the untrusted body.
+      const requestedAt = text.indexOf('Requested action: review this revision and publish the verdict')
+      expect(requestedAt).toBeGreaterThan(-1)
+      expect(requestedAt).toBeLessThan(text.indexOf(UNTRUSTED_CONTENT_BEGIN))
     })
 
     it.each([
@@ -4846,6 +4853,7 @@ describe('buildHookMessage', () => {
       expect(text).not.toContain('use APPROVE + pass when it passes')
       expect(text).toContain('Formal GitHub review submission is unavailable for this delivery')
       expect(text).not.toContain('submitCodeReview')
+      expect(text).not.toContain('Requested action:')
     })
 
     it('a body quoting the delimiters cannot close the fence (delimiter lines are defanged)', async () => {

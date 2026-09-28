@@ -312,6 +312,16 @@ export function githubAmendmentPrompt(amendment: HookReviewAmendment, reviewPoli
 /** The one clause every per-turn line keeps: the standing rules can fade from a long session's context. */
 const DAEMON_OWNS_REPLY = 'The daemon owns the reply; post nothing yourself.'
 
+/** Trusted header line ahead of the untrusted body, so an approval reviewer sees publication is the requested task. */
+const REVIEW_PUBLICATION_REQUESTED =
+  'Requested action: review this revision and publish the verdict as a formal review through `submitCodeReview`; ' +
+  "this repository's configured review trigger authorizes that publication."
+
+/** Standing rule for a refused submission: a delivery turn has no one to answer an authorization request. */
+const REVIEW_REFUSAL_RULE =
+  '- If an approval reviewer refuses a `submitCodeReview` call, no one can answer an authorization request on a ' +
+  'delivery turn, so never ask for one: say the formal review was not submitted and that re-requesting the review retries it.'
+
 /** The block's scope line: a hook-origin session can be continued from the console, where no poster runs
  *  (webchat-cross-integration-continuation.md §9), so every rule binds a DELIVERY turn, never the session.
  *  Keyed on what survives final assembly — the review orchestrator appends its workspace block AFTER the
@@ -344,6 +354,7 @@ function githubStandingContext(): string {
       'does not complete a later one; do not merely describe the verdict in your final reply. A conversation delivery ' +
       'followed by a `Verdict amendment available` block may change that sealed verdict through the same tool, as the ' +
       'block says; any other delivery cannot submit a formal review.',
+    REVIEW_REFUSAL_RULE,
     '- A delivery that names an inline review conversation is answered there. When it lists several review threads from ' +
       'one submitted review, use the structured `replyGithubReviewThreads` tool exactly once with one answer per listed ' +
       'root and keep the final reply transcript-only.',
@@ -378,6 +389,20 @@ function trustedInlineReplyTarget(
   return { repo: github.repoFullName, number: github.pullNumber }
 }
 
+/** True when this numbered, non-review-comment GitHub delivery opens a review generation. */
+function githubDeliveryOpensReview(
+  c: HookContext,
+  github: GithubHookMetadata | undefined,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): boolean {
+  const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
+  return (
+    c.number !== undefined &&
+    c.event !== 'pull_request_review_comment' &&
+    githubOpensReviewGeneration(event, github, reviewPolicy)
+  )
+}
+
 /** The per-turn line for a github fire on a NUMBERED thread (issue/PR): what THIS delivery is and
  *  how it is answered — the standing block carries the rules. Push fires have no thread and get none. */
 function githubReplyHint(
@@ -387,7 +412,6 @@ function githubReplyHint(
 ): string {
   const inlineTarget = trustedInlineReplyTarget(c, github)
   const where = inlineTarget ? `${inlineTarget.repo}#${inlineTarget.number}` : `${c.repo ?? 'this thread'}#${c.number}`
-  const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
   if (inlineTarget) {
     const batched = github?.pullRequestReviewId !== undefined
     return (
@@ -404,7 +428,7 @@ function githubReplyHint(
       `unavailable for this review-comment event family. ${DAEMON_OWNS_REPLY}`
     )
   }
-  if (!githubOpensReviewGeneration(event, github, reviewPolicy)) {
+  if (!githubDeliveryOpensReview(c, github, reviewPolicy)) {
     return `\n\nReply to this GitHub conversation on ${where}. Formal GitHub review submission is unavailable for this delivery unless a verdict-amendment block follows. ${DAEMON_OWNS_REPLY}`
   }
   const { passing, failing } = reviewVerdictEvents(reviewPolicy)
@@ -446,7 +470,8 @@ function buildGithubHookText(
     ...(c.ref ? [`Ref: ${c.ref}`] : []),
     ...(c.sha ? [`Commit: ${c.sha}`] : []),
     ...(c.release ? releaseHeaderLines(c.release.tag, c) : []),
-    ...(c.htmlUrl ? [c.htmlUrl] : [])
+    ...(c.htmlUrl ? [c.htmlUrl] : []),
+    ...(githubDeliveryOpensReview(c, github, reviewPolicy) ? [REVIEW_PUBLICATION_REQUESTED] : [])
   ].join('\n')
   // Ordinary replies use the display context's number. Inline replies instead
   // use the complete, body-free PR target carried with the trusted root id.
@@ -518,7 +543,8 @@ function gitlabStandingContext(): string {
       'was attempted or the attempt definitively returns `not_submitted`. REQUEST_CHANGES works only while a user has ' +
       'requested the project service account as a reviewer in GitLab; if it is refused for that reason, record the same ' +
       'finding with COMMENT + fail. An approval or rejection from an earlier revision does not complete a later one; do ' +
-      'not merely describe the verdict in your final reply.'
+      'not merely describe the verdict in your final reply.',
+    REVIEW_REFUSAL_RULE
   ].join('\n')
 }
 
@@ -554,7 +580,8 @@ function buildGitlabHookText(
     ...(target.kind === 'merge_request' && target.isDraft !== undefined ? [`Draft: ${target.isDraft}`] : []),
     ...(target.kind === 'push' ? [`Ref: ${target.ref}`] : []),
     ...(target.kind === 'release' ? releaseHeaderLines(target.tag, c) : []),
-    ...(c.htmlUrl ? [c.htmlUrl] : [])
+    ...(c.htmlUrl ? [c.htmlUrl] : []),
+    ...(gitlabOpensReviewGeneration(event, gitlab, reviewPolicy) ? [REVIEW_PUBLICATION_REQUESTED] : [])
   ].join('\n')
   if (!c.bodyExcerpt) return head + tail
   return (
@@ -607,6 +634,7 @@ function giteaStandingContext(): string {
       'ordinary comment, which is posted only when no formal review was attempted or the attempt definitively returns ' +
       '`not_submitted`. An approval or rejection from an earlier revision does not complete a later one; do not merely ' +
       'describe the verdict in your final reply.',
+    REVIEW_REFUSAL_RULE,
     '- A review delivery carries only the reviewer’s summary. The daemon reads that review’s inline comments from ' +
       'Gitea and lists them under the summary, labeled by review id, or says so when none matched.'
   ].join('\n')
@@ -701,7 +729,8 @@ function buildGiteaHookText(
     ...(target.kind === 'pull' && target.isDraft !== undefined ? [`Draft: ${target.isDraft}`] : []),
     ...(target.kind === 'push' ? [`Ref: ${target.ref}`] : []),
     ...(target.kind === 'release' ? releaseHeaderLines(target.tag, c) : []),
-    ...(c.htmlUrl ? [c.htmlUrl] : [])
+    ...(c.htmlUrl ? [c.htmlUrl] : []),
+    ...(giteaOpensReviewGeneration(event, gitea, reviewPolicy) ? [REVIEW_PUBLICATION_REQUESTED] : [])
   ].join('\n')
   const review = supplement?.giteaReview
   if (!c.bodyExcerpt && !review) return head + tail
