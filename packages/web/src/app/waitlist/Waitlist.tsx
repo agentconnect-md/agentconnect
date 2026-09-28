@@ -30,7 +30,7 @@ type Phase = 'loading' | 'intake' | 'auth' | 'onlist' | 'error'
 type Platform = 'slack' | 'telegram' | 'discord'
 type Provider = SocialLoginTarget
 
-const DOCS_URL = 'https://docs.agentconnect.md'
+const DOCS_URL = 'https://www.agentconnect.md/docs'
 // Verified sender of the activation email. Deploy-time config, so it comes from the
 // runtime env (window.__AC_ENV, see lib/public-env) rather than being baked in —
 // a fork or tenant mailing from its own domain sets WAITLIST_FROM_EMAIL.

@@ -50,7 +50,7 @@
 <p align="center">
   <strong><a href="https://agentconnect.md">Website</a></strong> ·
   <strong><a href="https://app.agentconnect.md">Cloud</a></strong> ·
-  <strong><a href="https://docs.agentconnect.md">Documentation</a></strong> ·
+  <strong><a href="https://www.agentconnect.md/docs">Documentation</a></strong> ·
   <strong><a href="https://agentconnect.md/blog">Blog</a></strong>
 </p>
 
@@ -139,7 +139,7 @@ Teams use it to:
   for each new session.
 - **Carry context forward.** Give each agent its own memory and skills, and
   publish reviewed
-  [Knowledge](https://docs.agentconnect.md/docs/knowledge) that every agent can
+  [Knowledge](https://www.agentconnect.md/docs/build-your-team/knowledge) that every agent can
   find on demand.
 - **Set clear boundaries.** Decide who can see each agent and session, which
   repositories and tools it may use, and which other agents it may call.
@@ -191,7 +191,7 @@ oci://ghcr.io/agentconnect-md/charts/agentconnect
 
 A cluster install is three steps — create the namespace and its secrets, write
 the values file for your deployment, then install — so follow the
-[Kubernetes guide](https://docs.agentconnect.md/docs/kubernetes-deployment)
+[Kubernetes guide](https://www.agentconnect.md/docs/self-hosting/kubernetes/deploy)
 rather than a one-liner. The chart source lives in
 [`charts/agentconnect`](charts/agentconnect).
 
@@ -212,7 +212,7 @@ paste secrets into chat.
 
 For authentication, public URLs, Linux sandbox requirements, provider apps,
 image pinning, secrets, and optional Mem0 configuration, follow the
-[AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
+[AgentConnect OSS guide](https://www.agentconnect.md/docs/self-hosting).
 
 ## Community
 

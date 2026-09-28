@@ -1,6 +1,6 @@
 # Logto Cloud tutorial
 
-Use base `compose.yaml` with `--env-file compose.env`; never add the bundled Logto overlay. Follow the current [Logto authentication guide](https://docs.agentconnect.md/docs/logto-authentication.md) because Cloud plans and endpoint requirements can change.
+Use base `compose.yaml` with `--env-file compose.env`; never add the bundled Logto overlay. Follow the current [Logto authentication guide](https://www.agentconnect.md/docs/self-hosting/sign-in.md) because Cloud plans and endpoint requirements can change.
 
 ## 1. Establish final topology
 

@@ -799,7 +799,7 @@ function DaemonStep({
       <SaveError err={err} />
 
       <a
-        href="https://docs.agentconnect.md/docs/install-the-daemon"
+        href="https://www.agentconnect.md/docs/build-your-team/daemons/install-the-daemon"
         target="_blank"
         rel="noopener noreferrer"
         className="mt-5 inline-flex items-center gap-[6px] self-start font-sans text-[12.5px] text-(--text-tertiary) no-underline hover:text-(--brand)"

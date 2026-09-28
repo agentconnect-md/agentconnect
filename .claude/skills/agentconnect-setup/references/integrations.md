@@ -45,4 +45,4 @@ Never request secrets through chat. Ask the user to enter them directly into Set
 - Lark/Feishu cards configure trusted regional tenant Login Apps, not chat bots and not automatically Logto sign-in connectors.
 - Agent-specific bots, agents, environments, tools, skills, schedules, and repository grants belong in the AgentConnect console, not Setup.
 
-Use the current [deployment guide](https://docs.agentconnect.md/docs/deployment-and-configuration.md), [Slack guide](https://docs.agentconnect.md/docs/slack.md), and [GitHub guide](https://docs.agentconnect.md/docs/github.md) when provider UI or permissions have changed.
+Use the current [deployment guide](https://www.agentconnect.md/docs/self-hosting/docker-compose/configuration.md), [Slack guide](https://www.agentconnect.md/docs/connect-automate/chat-platforms/slack.md), and [GitHub guide](https://www.agentconnect.md/docs/connect-automate/triggers-automation/github.md) when provider UI or permissions have changed.

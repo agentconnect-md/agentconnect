@@ -108,8 +108,8 @@ const isActive = (pathname: string, href: string) =>
 // releases / support without rebuilding; unset ⇒ these agentconnect.md defaults. See
 // lib/public-env.tsx (HELP_* keys) + resolveHelpLinks().
 const HELP_LINK_DEFAULTS = {
-  mcp: 'https://docs.agentconnect.md/docs/mcp-connector',
-  docs: 'https://docs.agentconnect.md',
+  mcp: 'https://www.agentconnect.md/docs/connect-automate/mcp-connector',
+  docs: 'https://www.agentconnect.md/docs',
   releases: 'https://github.com/agentconnect-md/agentconnect/releases',
   support: 'mailto:contact@agentconnect.md'
 }

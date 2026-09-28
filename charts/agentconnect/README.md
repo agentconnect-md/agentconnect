@@ -46,7 +46,7 @@ release tag; `daemonPool.runtime.image` remains available for an exact image pin
 For Qwen Code, OpenCode, or another ACP runtime, map its API-key and endpoint variables
 from a Secret with `daemonPool.runtimeEnvironment.runtimes`. The mapping reaches both
 the pool's model probe and agent sessions. See the
-[Kubernetes runtime authentication guide](https://docs.agentconnect.md/docs/kubernetes-runtime-authentication).
+[Kubernetes runtime authentication guide](https://www.agentconnect.md/docs/self-hosting/kubernetes/runtime-authentication).
 
 A slimmer install turns the extras off explicitly — for example, no agent execution in
 this cluster and no public ingress:
@@ -88,4 +88,4 @@ kubectl -n agentconnect port-forward deployment/agentconnect-setup-server 8091:8
 ```
 
 The full self-hosting walkthrough (authentication, public URLs, provider apps, image
-pinning) is the [AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
+pinning) is the [AgentConnect OSS guide](https://www.agentconnect.md/docs/self-hosting).

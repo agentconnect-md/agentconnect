@@ -148,7 +148,7 @@ function probeFailureReason(probe: { stderr?: string; status: number | null; sig
 
 const APPARMOR_USERNS_SYSCTL = '/proc/sys/kernel/apparmor_restrict_unprivileged_userns'
 const APPARMOR_USERNS_DOCS =
-  'https://docs.agentconnect.md/docs/sandboxing#ubuntu-2310-and-later-allow-user-namespaces-for-bubblewrap'
+  'https://www.agentconnect.md/docs/operate-govern/sandboxing#ubuntu-2310-and-later-allow-user-namespaces-for-bubblewrap'
 const USERNS_FAILURE = /RTM_NEWADDR|uid map|Operation not permitted|Permission denied/i
 
 /** Ubuntu 23.10+ defaults the sysctl to 1, which strips unprivileged user namespaces of the capabilities bwrap needs. */
