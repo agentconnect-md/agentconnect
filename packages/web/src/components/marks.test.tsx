@@ -141,17 +141,17 @@ describe('PlatformMark', () => {
     expect(full).not.toContain('width:60%')
   })
 
-  it('caps the square brand glyphs at 80% while other marks honour a full-bleed box', () => {
+  it('caps every brand mark at 80% while padded glyphs honour a full-bleed box', () => {
     // No padding inside this artwork, so an uncapped fillPct=100 would outsize the marks beside it.
-    for (const platform of ['github', 'gitlab', 'discord', 'linear']) {
-      // Slack belongs here too, but renders without `ssr`, so SSR gives it an empty <span>.
+    for (const platform of ['github', 'gitlab', 'gitea', 'discord', 'linear', 'telegram', 'feishu', 'qq']) {
+      // Slack and webhook belong here too, but render without `ssr`, so SSR gives them an empty <span>.
       const markup = renderToStaticMarkup(<PlatformMark platform={platform} fillPct={100} />)
       expect(markup, platform).toContain('width:80%')
       expect(markup, platform).not.toContain('width:100%')
     }
-    // Below the cap nothing changes, and an uncapped mark still fills its box.
+    // Below the cap nothing changes, and a padded glyph still fills its box.
     expect(renderToStaticMarkup(<PlatformMark platform="discord" fillPct={70} />)).toContain('width:70%')
-    expect(renderToStaticMarkup(<PlatformMark platform="telegram" fillPct={100} />)).toContain('width:100%')
+    expect(renderToStaticMarkup(<PlatformMark platform="api" fillPct={100} />)).toContain('width:100%')
   })
 
   it('lands a full-bleed square glyph on the fill a directly-named mark can ask for', () => {

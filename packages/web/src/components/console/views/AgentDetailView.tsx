@@ -2672,15 +2672,9 @@ function AgentDetail() {
                           title={available ? INTEGRATION_BLURB[p.key] : 'Not supported by this daemon'}
                           onClick={available ? () => openModal('integration', da, { platform: p.key }) : undefined}
                         >
-                          {p.key === 'github' ? (
-                            <span className="flex h-[26px] w-[26px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
-                              <GithubMark />
-                            </span>
-                          ) : (
-                            <span className="flex h-[26px] w-[26px] flex-none items-center justify-center">
-                              <PlatformMark platform={p.key} fillPct={100} />
-                            </span>
-                          )}
+                          <span className="flex h-[26px] w-[26px] flex-none items-center justify-center">
+                            <PlatformMark platform={p.key} fillPct={100} />
+                          </span>
                           {/* Mobile tiles are icon-only; the name stays for screen readers. */}
                           {p.key === 'feishu' ? (
                             <>

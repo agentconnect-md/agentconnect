@@ -1561,15 +1561,9 @@ export default function AddIntegrationModal({
                   title={available ? undefined : t('notSupportedByDaemon')}
                   onClick={available ? () => pickPlatform(candidate.key) : undefined}
                 >
-                  {candidate.key === 'github' ? (
-                    <span className="flex h-[22px] w-[22px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
-                      <GithubMark />
-                    </span>
-                  ) : (
-                    <span className="flex h-[22px] w-[22px] flex-none items-center justify-center">
-                      <PlatformMark platform={candidate.key} fillPct={100} />
-                    </span>
-                  )}
+                  <span className="flex h-[22px] w-[22px] flex-none items-center justify-center">
+                    <PlatformMark platform={candidate.key} fillPct={100} />
+                  </span>
                   {/* Mobile tiles are icon-only; the name stays for screen readers. */}
                   {candidate.key === 'feishu' ? (
                     <>

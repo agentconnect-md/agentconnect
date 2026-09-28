@@ -274,13 +274,8 @@ export function KubernetesMark({ fillPct = 100 }: { fillPct?: number }) {
  */
 export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fillPct?: number }) {
   const x = (platform || '').toLowerCase()
-  // Marks render at 60% of their box to sit inside .av / .imark tiles; callers can override
-  // fillPct — e.g. the Bots row fills a 14px box (fillPct=100) to match the design's full-bleed mark.
+  // `s` is for glyphs whose artwork carries padding; `sq` caps full-bleed brand artwork, as every platform module's mark does.
   const s = fillPct === 60 ? fill : markBox(fillPct)
-  // GitHub ships as a full-bleed square glyph with no internal padding of its own,
-  // so a caller asking for a full-bleed box (fillPct=100, e.g. the session rail
-  // rows) would render it visibly larger than every other mark beside it. The
-  // Slack and Discord marks take the same cap inside their own modules.
   const sq = squareMarkBox(fillPct)
   if (x.includes('github')) {
     return <SiGithub style={sq} color="currentColor" aria-hidden />
@@ -293,7 +288,7 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
     return <GiteaProductGlyph style={sq} />
   }
   if (x.includes('hook')) {
-    return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />
+    return <IconifyIcon icon={webhooksLogoFillIcon} style={sq} color="var(--brand)" aria-hidden />
   }
   // The agent's chat API tile, a protocol rather than a platform.
   if (x === 'api') {
