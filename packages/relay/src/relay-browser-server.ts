@@ -91,17 +91,6 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
         const reason = result.reason ?? (result.ok ? 'incomplete verification' : 'unverified')
         return refuse(socket, 401, 'Unauthorized', deps.log, reason, requestedConversationId)
       }
-      // A token minted by an agent-level key is confined to the agent chat API (shared-bot-relay.md §10.4): the socket's other operations are out of the key holder's reach.
-      if (result.permission !== undefined) {
-        return refuse(
-          socket,
-          401,
-          'Unauthorized',
-          deps.log,
-          `token limited to ${result.permission}`,
-          requestedConversationId
-        )
-      }
       const { agentId, daemonId } = result
       const conversationId = result.conversationId.toLowerCase()
       // `conversation_id` is only a compatibility echo. The signed CP verdict is

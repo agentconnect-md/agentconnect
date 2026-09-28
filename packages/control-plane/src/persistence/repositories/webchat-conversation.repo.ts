@@ -62,6 +62,19 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
     })
   }
 
+  async ensure(binding: WebchatConversationBinding): Promise<void> {
+    try {
+      await this.create(binding)
+    } catch (err) {
+      // A concurrent first turn created the same id; converge on its row.
+      const raced = await this.db.webchatConversation.findUnique({
+        where: { id: binding.conversationId },
+        select: { id: true }
+      })
+      if (!raced) throw err
+    }
+  }
+
   async participants(orgId: OrgId, conversationId: string): Promise<WebchatParticipant[]> {
     if (!UUID_RE.test(conversationId)) return []
     // Roster rows carry no org of their own, so the fence rides the relational

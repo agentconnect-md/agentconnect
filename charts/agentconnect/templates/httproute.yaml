@@ -187,7 +187,7 @@ the relay host (relay.host, else apiHost, else the website host):
   /feishu/events                → relay pool (Feishu/Lark HTTP event callback)
   /linear/events                → relay pool (Linear app webhook)
   /googlechat/events            → relay pool (Google Chat add-on events; Google-signed ID token)
-  /ai-sdk/chat/:conversationId  → relay pool (agent chat API; bearer webchat token)
+  /ai-sdk/agents/:agentId/chat  → relay pool (agent chat API; bearer API key)
   /relays/<ordinal>/rd/ws       → that exact relay pod, rewritten to /rd/ws
 When the relay host == apiHost / the website host, Gateway API merges these rules with
 that host's existing route (ranked by path specificity) — no new listener needed. A
@@ -267,7 +267,7 @@ spec:
             value: /googlechat/events
         - path:
             type: PathPrefix
-            value: /ai-sdk/chat
+            value: /ai-sdk/agents
       backendRefs:
         - name: {{ include "agentconnect.fullname" . }}-relay
           port: {{ .Values.relay.port }}

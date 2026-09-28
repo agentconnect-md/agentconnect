@@ -1,9 +1,16 @@
-// `POST /ai-sdk/chat/:conversationId` over real HTTP, read with the `ai` package's own client; the daemon and the CP verdict are faked.
+// `POST /ai-sdk/agents/:agentId/chat` over real HTTP, read with the `ai` package's own client; the daemon and the CP verdict are faked.
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { AddressInfo } from 'node:net'
 import { DefaultChatTransport, readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai'
-import type { RcVerifyResult, RdAck, RdMsgWebchat, WebchatEvent } from '@agentconnect.md/protocol'
+import {
+  AGENT_CHAT_ID_MAX_CHARS,
+  AGENT_CHAT_KEY_REFUSAL,
+  type RcVerifyResult,
+  type RdAck,
+  type RdMsgWebchat,
+  type WebchatEvent
+} from '@agentconnect.md/protocol'
 import {
   registerAiSdkChatRoute,
   chatTurnText,
@@ -23,10 +30,9 @@ const CONV = '33333333-3333-4333-8333-333333333333'
 const FOREIGN_TURN = '44444444-4444-4444-8444-444444444444'
 const T0 = 1_800_000_000_000
 
-const b64 = (obj: unknown): string => Buffer.from(JSON.stringify(obj)).toString('base64url')
-const tokenFor = (expSec: number, nonce = 'a'): string =>
-  `${b64({ alg: 'HS256' })}.${b64({ sub: 'user-1', nonce, exp: expSec })}.sig`
-const TOKEN = tokenFor(T0 / 1000 + 300)
+const KEY = 'test-api-key'
+const CHAT_ID = 'client-chat-id'
+const VERDICT_TTL_MS = 60_000
 
 const VERDICT: RcVerifyResult = {
   ok: true,
@@ -76,11 +82,13 @@ class FakeDaemon {
   }
 }
 
+type Verify = (apiKey: string, agentId: string, chatId: string) => Promise<RcVerifyResult>
+
 interface Harness {
   base: string
   daemon: FakeDaemon
   router: WebchatRouter
-  verify: ReturnType<typeof vi.fn<(token: string) => Promise<RcVerifyResult>>>
+  verify: ReturnType<typeof vi.fn<Verify>>
   info: ReturnType<typeof vi.fn<(m: string) => void>>
   setNow: (ms: number) => void
 }
@@ -95,19 +103,21 @@ afterEach(async () => {
   route = undefined
 })
 
-async function start(
-  opts: { verdict?: (token: string) => Promise<RcVerifyResult>; online?: boolean } = {}
-): Promise<Harness> {
+async function start(opts: { verdict?: Verify; online?: boolean } = {}): Promise<Harness> {
   let now = T0
   const daemon = new FakeDaemon()
   const router = new WebchatRouter()
-  const verify = vi.fn(opts.verdict ?? (async () => VERDICT))
-  const cache = new WebchatVerdictCache(verify, () => now)
+  const verify = vi.fn<Verify>(opts.verdict ?? (async () => VERDICT))
+  const cache = new WebchatVerdictCache<[string, string, string]>(
+    verify,
+    () => now,
+    (_args, verifiedAtMs) => verifiedAtMs + VERDICT_TTL_MS
+  )
   const info = vi.fn<(m: string) => void>()
   const log: Logger = { debug: () => {}, info, warn: () => {}, error: () => {} }
   app = Fastify({ logger: false, forceCloseConnections: true })
   route = registerAiSdkChatRoute(app, {
-    verify: (token) => cache.verify(token),
+    verify: (apiKey, agentId, chatId) => cache.verify(apiKey, agentId, chatId),
     daemons: () => ({
       get: (id: string) =>
         opts.online !== false && id === DAEMON ? (daemon as unknown as RelayDaemonConnection) : undefined,
@@ -132,12 +142,12 @@ const userMessage = (id: string, ...texts: string[]): UIMessage => ({
 async function chat(
   h: Harness,
   messages: UIMessage[] = [userMessage('u1', 'hello')],
-  opts: { token?: string; signal?: AbortSignal; conversationId?: string } = {}
+  opts: { key?: string; signal?: AbortSignal; agentId?: string; chatId?: string } = {}
 ): Promise<{ stream: ReadableStream<UIMessageChunk>; headers: Headers }> {
   let headers: Headers | undefined
   const transport = new DefaultChatTransport<UIMessage>({
-    api: chatUrl(h, opts.conversationId),
-    headers: { Authorization: `Bearer ${opts.token ?? TOKEN}` },
+    api: chatUrl(h, opts.agentId),
+    headers: { Authorization: `Bearer ${opts.key ?? KEY}` },
     fetch: (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const res = await fetch(input, init)
       headers = res.headers
@@ -146,7 +156,7 @@ async function chat(
   })
   const stream = await transport.sendMessages({
     trigger: 'submit-message',
-    chatId: 'client-chat-id',
+    chatId: opts.chatId ?? CHAT_ID,
     messageId: undefined,
     messages,
     abortSignal: opts.signal
@@ -166,19 +176,19 @@ async function read(stream: ReadableStream<UIMessageChunk>): Promise<{ message: 
   return { message: message!, errors }
 }
 
-const chatUrl = (h: Harness, conversationId = CONV): string =>
-  `${h.base}${RELAY_AI_SDK_CHAT_PATH.replace(':conversationId', conversationId)}`
+const chatUrl = (h: Harness, agentId = AGENT): string =>
+  `${h.base}${RELAY_AI_SDK_CHAT_PATH.replace(':agentId', agentId)}`
 
 /** A raw POST, for the answers that come before any stream. */
-async function post(h: Harness, body: unknown, token: string | null = TOKEN, conversationId = CONV): Promise<Response> {
-  return fetch(chatUrl(h, conversationId), {
+async function post(h: Harness, body: unknown, key: string | null = KEY, agentId = AGENT): Promise<Response> {
+  return fetch(chatUrl(h, agentId), {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) },
     body: typeof body === 'string' ? body : JSON.stringify(body)
   })
 }
-const turnBody = (text = 'hello') => ({
-  id: 'client-chat-id',
+const turnBody = (text = 'hello', id = CHAT_ID) => ({
+  id,
   messages: [userMessage('u1', text)],
   trigger: 'submit-message'
 })
@@ -200,7 +210,7 @@ function finish(h: Harness, turnId: string, over: { stopReason?: string; error?:
   })
 }
 
-describe('POST /ai-sdk/chat/:conversationId', () => {
+describe('POST /ai-sdk/agents/:agentId/chat', () => {
   it('streams one turn as a UI message: text, reasoning, data parts, metadata, finish', async () => {
     const h = await start()
     const { stream, headers } = await chat(h, [
@@ -387,41 +397,52 @@ describe('POST /ai-sdk/chat/:conversationId', () => {
     await read(next.stream)
   })
 
-  it('verifies a token once per instance until its exp, and refuses it after', async () => {
-    const h = await start({
-      verdict: async (token) =>
-        token === TOKEN && h.verify.mock.calls.length > 1 ? { ok: false, reason: 'expired' } : VERDICT
-    })
+  it('verifies a key once per agent and chat id for a minute, then asks the CP again', async () => {
+    const h = await start()
     for (const text of ['one', 'two']) {
       const { stream } = await chat(h, [userMessage('u', text)])
       finish(h, h.daemon.turns().at(-1)!)
       await read(stream)
     }
-    expect(h.verify).toHaveBeenCalledTimes(1)
+    expect(h.verify.mock.calls).toEqual([[KEY, AGENT, CHAT_ID]])
 
-    h.setNow(T0 + 300_000)
-    const expired = await post(h, turnBody())
-    expect(expired.status).toBe(401)
+    h.verify.mockImplementation(async () => ({ ok: false, reason: AGENT_CHAT_KEY_REFUSAL.invalidKey }))
+    h.setNow(T0 + VERDICT_TTL_MS)
+    expect((await post(h, turnBody())).status).toBe(401)
     expect(h.verify).toHaveBeenCalledTimes(2)
     expect(h.daemon.sent).toHaveLength(2)
   })
 
-  it("answers 404 when the path names a conversation other than the token's, and matches it case-insensitively", async () => {
+  it('refuses a path without an agent id and a body without a usable chat id, before verifying', async () => {
     const h = await start()
-    expect((await post(h, turnBody(), TOKEN, FOREIGN_TURN)).status).toBe(404)
-    expect((await post(h, turnBody(), TOKEN, 'not-a-uuid')).status).toBe(404)
+    expect((await post(h, turnBody(), KEY, 'not-a-uuid')).status).toBe(404)
+    const { id: _id, ...noId } = turnBody()
+    expect((await post(h, noId)).status).toBe(400)
+    expect((await post(h, turnBody('hello', ''))).status).toBe(400)
+    expect((await post(h, turnBody('hello', 'x'.repeat(AGENT_CHAT_ID_MAX_CHARS + 1)))).status).toBe(400)
+    expect(h.verify).not.toHaveBeenCalled()
     expect(h.daemon.sent).toHaveLength(0)
-
-    const { stream } = await chat(h, undefined, { conversationId: CONV.toUpperCase() })
-    expect(h.daemon.sent.map((m) => m.chatId)).toEqual([CONV])
-    finish(h, h.daemon.turns()[0]!)
-    expect((await read(stream)).errors).toEqual([])
   })
 
-  it('refuses a missing or unverifiable token with 401', async () => {
-    const h = await start({ verdict: async () => ({ ok: false, reason: 'bad signature' }) })
+  it('answers each key refusal with its own status', async () => {
+    const h = await start()
     expect((await post(h, turnBody(), null)).status).toBe(401)
-    expect((await post(h, turnBody())).status).toBe(401)
+    const cases: Array<[string, number, string?]> = [
+      [AGENT_CHAT_KEY_REFUSAL.invalidKey, 401],
+      [AGENT_CHAT_KEY_REFUSAL.notPermitted, 403],
+      [AGENT_CHAT_KEY_REFUSAL.agentNotFound, 404],
+      [AGENT_CHAT_KEY_REFUSAL.agentMoved, 409, 'agent_moved'],
+      [AGENT_CHAT_KEY_REFUSAL.agentUnavailable, 503, 'no_agent']
+    ]
+    for (const [reason, status, machine] of cases) {
+      h.verify.mockImplementationOnce(async () => ({ ok: false, reason }))
+      const res = await post(h, turnBody())
+      expect(res.status).toBe(status)
+      expect(((await res.json()) as { reason?: string }).reason).toBe(machine)
+    }
+    // A verdict for another agent than the path names is not an answer for this request.
+    h.verify.mockImplementationOnce(async () => ({ ...VERDICT, agentId: OTHER_AGENT }))
+    expect((await post(h, turnBody())).status).toBe(503)
     expect(h.daemon.sent).toHaveLength(0)
   })
 
@@ -434,7 +455,7 @@ describe('POST /ai-sdk/chat/:conversationId', () => {
     // A CP that names no protocols at all refuses the same way.
     const { apiProtocols: _omitted, ...bare } = VERDICT
     h.verify.mockImplementation(async () => bare)
-    expect((await post(h, turnBody(), tokenFor(T0 / 1000 + 300, 'b'))).status).toBe(403)
+    expect((await post(h, turnBody('hello', 'another-chat'))).status).toBe(403)
     expect(h.daemon.sent).toHaveLength(0)
   })
 
@@ -470,8 +491,8 @@ describe('POST /ai-sdk/chat/:conversationId', () => {
       { agentId: AGENT, daemonId: DAEMON },
       { agentId: OTHER_AGENT, daemonId: DAEMON }
     ]
-    h.router.rememberRoster(CONV, joined, T0 + 60_000)
-    h.setNow(T0 + 120_000)
+    h.router.rememberRoster(CONV, joined, T0 + 10_000)
+    h.setNow(T0 + 30_000)
     const second = await chat(h, [userMessage('u2', 'again')])
     expect(h.verify).toHaveBeenCalledTimes(1) // served from the cache, verified at T0
     finish(h, h.daemon.turns()[1]!)
@@ -479,7 +500,7 @@ describe('POST /ai-sdk/chat/:conversationId', () => {
     expect(h.router.rosterOf(CONV)).toEqual(joined)
   })
 
-  it('addresses the token’s agent alone in a multi-participant conversation', async () => {
+  it('addresses the path’s agent alone in a multi-participant conversation', async () => {
     const h = await start({
       verdict: async () => ({
         ...VERDICT,

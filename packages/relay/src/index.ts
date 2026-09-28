@@ -49,6 +49,8 @@ import { startRelayOpenTelemetry } from './observability.js'
 const telemetry = startRelayOpenTelemetry()
 
 const RELAY_WS_PATH = '/api/v1/relays/ws'
+// How long a verified agent chat key keeps chatting without the CP (shared-bot-relay.md §10.4).
+const AGENT_CHAT_VERDICT_TTL_MS = 60_000
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -327,12 +329,18 @@ async function main(): Promise<void> {
 
   // The webchat router (chatId → browser or AI SDK chat turn) — a daemon's rd/chat is delivered here.
   const router = new WebchatRouter()
-  // One verdict per token until its `exp`, shared by the browser socket and the AI SDK chat route (§10.4).
+  // One verdict per browser token until its `exp` (§10.4).
   const webchatVerdicts = new WebchatVerdictCache((token) => client.verify('webchat-token', token))
+  // One verdict per (API key, agent, chat id) for a minute, the bound on how long a revoked key keeps chatting (§10.4).
+  const agentChatVerdicts = new WebchatVerdictCache<[apiKey: string, agentId: string, chatId: string]>(
+    (apiKey, agentId, chatId) => client.verifyAgentChatKey(apiKey, agentId, chatId),
+    Date.now,
+    (_args, verifiedAtMs) => verifiedAtMs + AGENT_CHAT_VERDICT_TTL_MS
+  )
 
-  // Agent chat API (POST /ai-sdk/chat/:conversationId, §10.4); registered before listen, the rd/* server is late-bound.
+  // Agent chat API (POST /ai-sdk/agents/:agentId/chat, §10.4); registered before listen, the rd/* server is late-bound.
   const chatRoute = registerAiSdkChatRoute(server, {
-    verify: (token) => webchatVerdicts.verify(token),
+    verify: (apiKey, agentId, chatId) => agentChatVerdicts.verify(apiKey, agentId, chatId),
     daemons: () => held.rdServer,
     router,
     log

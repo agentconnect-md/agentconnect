@@ -1,8 +1,13 @@
-// `POST /ai-sdk/chat/:conversationId` (shared-bot-relay.md §10.4): one text turn per request over the webchat token and `rd/*` bridge, streamed back as the AI SDK UI message stream.
+// `POST /ai-sdk/agents/:agentId/chat` (shared-bot-relay.md §10.4): one text turn per request under an API key, over the webchat conversation and `rd/*` bridge, streamed back as the AI SDK UI message stream.
 import { randomUUID } from 'node:crypto'
 import type { ServerResponse } from 'node:http'
 import type { FastifyInstance, FastifyReply } from 'fastify'
-import type { RdChat, RelayWebchatOp } from '@agentconnect.md/protocol'
+import {
+  AGENT_CHAT_ID_MAX_CHARS,
+  AGENT_CHAT_KEY_REFUSAL,
+  type RdChat,
+  type RelayWebchatOp
+} from '@agentconnect.md/protocol'
 import type { WebchatVerdict } from './webchat-verdict-cache.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -18,7 +23,7 @@ import {
 } from './webchat-daemon-bridge.js'
 import type { Logger } from './log.js'
 
-export const RELAY_AI_SDK_CHAT_PATH = '/ai-sdk/chat/:conversationId'
+export const RELAY_AI_SDK_CHAT_PATH = '/ai-sdk/agents/:agentId/chat'
 
 // `useChat` resends the whole history every turn; only its last user message is read.
 const CHAT_BODY_LIMIT_BYTES = 4 * 1024 * 1024
@@ -52,8 +57,8 @@ export class ChatTurnAdmission {
 }
 
 export interface ChatRouteDeps {
-  /** `rc/verify(webchat-token)` through the per-token verdict cache. */
-  verify: (token: string) => Promise<WebchatVerdict>
+  /** `rc/verify(agent-chat-key)` through the relay's verdict cache. */
+  verify: (apiKey: string, agentId: string, chatId: string) => Promise<WebchatVerdict>
   /** The rd/* server, late-bound because it is created after `listen`. */
   daemons: () => Pick<RelayDaemonServer, 'get' | 'rendezvousCandidate'> | undefined
   router: Pick<WebchatRouter, 'register' | 'unregister' | 'rememberRoster'>
@@ -85,6 +90,30 @@ export function chatTurnText(body: unknown): string | undefined {
     return text.trim() === '' ? undefined : text
   }
   return undefined
+}
+
+/** The `useChat` chat id, which names the conversation, or undefined when the body has none. */
+export function chatIdOf(body: unknown): string | undefined {
+  if (!isRecord(body) || typeof body.id !== 'string') return undefined
+  return body.id.length > 0 && body.id.length <= AGENT_CHAT_ID_MAX_CHARS ? body.id : undefined
+}
+
+/** How a refused key reads: the status, its message, and a machine reason where a caller acts on it. */
+function keyRefusal(reason: string | undefined): [status: number, message: string, reason?: string] {
+  switch (reason) {
+    case AGENT_CHAT_KEY_REFUSAL.invalidKey:
+      return [401, 'invalid or revoked API key']
+    case AGENT_CHAT_KEY_REFUSAL.notPermitted:
+      return [403, 'this API key cannot chat with agents']
+    case AGENT_CHAT_KEY_REFUSAL.agentNotFound:
+      return [404, 'agent not found']
+    case AGENT_CHAT_KEY_REFUSAL.agentMoved:
+      return [409, 'the agent moved since this conversation ran', 'agent_moved']
+    case AGENT_CHAT_KEY_REFUSAL.agentUnavailable:
+      return [503, 'the agent daemon is offline', 'no_agent']
+    default:
+      return [403, 'this API key cannot reach the agent']
+  }
 }
 
 /** The HTTP status for a daemon's turn refusal, answered before any stream starts. */
@@ -126,7 +155,7 @@ function refuse(reply: FastifyReply, status: number, message: string, reason?: s
     .send({ error: STATUS_TEXT[status] ?? 'Error', statusCode: status, message, ...(reason ? { reason } : {}) })
 }
 
-function bearerToken(header: string | undefined): string | undefined {
+function bearerCredential(header: string | undefined): string | undefined {
   const match = /^Bearer\s+(\S+)\s*$/i.exec(header ?? '')
   return match?.[1]
 }
@@ -258,34 +287,39 @@ export function registerAiSdkChatRoute(app: FastifyInstance, deps: ChatRouteDeps
   const live = new Set<ChatTurn>()
   const log = deps.log
 
-  app.post<{ Params: { conversationId: string } }>(
+  app.post<{ Params: { agentId: string } }>(
     RELAY_AI_SDK_CHAT_PATH,
     { bodyLimit: CHAT_BODY_LIMIT_BYTES },
     async (req, reply) => {
-      const token = bearerToken(req.headers.authorization)
-      if (!token) return refuse(reply, 401, 'missing bearer token')
+      const apiKey = bearerCredential(req.headers.authorization)
+      if (!apiKey) return refuse(reply, 401, 'missing API key')
+      const pathAgentId = req.params.agentId.toLowerCase()
+      if (!UUID_RE.test(pathAgentId)) return refuse(reply, 404, 'agent not found')
+      const chatId = chatIdOf(req.body)
+      if (chatId === undefined) {
+        return refuse(reply, 400, `the request needs a chat id of 1 to ${AGENT_CHAT_ID_MAX_CHARS} characters`)
+      }
       let verdict: WebchatVerdict
       try {
-        verdict = await deps.verify(token)
+        verdict = await deps.verify(apiKey, pathAgentId, chatId)
       } catch {
-        return refuse(reply, 503, 'token verification unavailable')
+        return refuse(reply, 503, 'key verification unavailable')
+      }
+      if (!verdict.ok) {
+        const [status, message, reason] = keyRefusal(verdict.reason)
+        log.warn(`chat: refused request ${status} — ${verdict.reason ?? 'unverified'}`)
+        return refuse(reply, status, message, reason)
       }
       const agentId = verdict.agentId
       const rawConversationId = verdict.conversationId
-      if (!verdict.ok || !agentId || !rawConversationId || !UUID_RE.test(rawConversationId)) {
-        log.warn(
-          `chat: refused request 401 — ${verdict.reason ?? (verdict.ok ? 'incomplete verification' : 'unverified')}`
-        )
-        return refuse(reply, 401, 'invalid or expired token')
+      if (agentId !== pathAgentId || !rawConversationId || !UUID_RE.test(rawConversationId)) {
+        log.warn('chat: refused request 503 — incomplete verification')
+        return refuse(reply, 503, 'key verification unavailable')
       }
       if (!verdict.apiProtocols?.includes('ai-sdk-ui')) {
         return refuse(reply, 403, 'this agent does not accept API calls', 'api_disabled')
       }
       const conversationId = rawConversationId.toLowerCase()
-      // The path names the conversation and the token proves authority over it; any other id reads as absent.
-      if (req.params.conversationId.toLowerCase() !== conversationId) {
-        return refuse(reply, 404, 'conversation not found')
-      }
       const text = chatTurnText(req.body)
       if (text === undefined) return refuse(reply, 400, 'the request has no user message with text')
       if (Buffer.byteLength(text, 'utf8') > CHAT_TEXT_MAX_BYTES) {

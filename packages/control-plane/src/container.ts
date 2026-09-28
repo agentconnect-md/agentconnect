@@ -200,7 +200,8 @@ import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
-import { createWebchatTokenVerifier } from './registry/webchatVerification.js'
+import { createWebchatTokenVerifier, everyTurnReachesItsContent } from './registry/webchatVerification.js'
+import { createAgentChatKeyVerifier } from './registry/agentChatKeyVerification.js'
 import { WebchatRemoteMcpService } from './registry/webchatRemoteMcpService.js'
 import { WebchatMcpGrantTokenCodec } from './registry/webchatMcpGrantToken.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
@@ -2487,6 +2488,27 @@ export function buildContainer(
       orgs: repos.org,
       remoteMcp: webchatRemoteMcp,
       placement: placementResolver
+    }),
+    // rc/verify(agent-chat-key): the HTTP key checks, then the caller's chat id mapped to its conversation (§10.4).
+    verifyAgentChatKey: createAgentChatKeyVerifier({
+      keys: apiKeys,
+      agents: repos.agent,
+      daemons: connReg,
+      conversations: repos.webchatConversation,
+      apiEntries: repos.agentApiEntry,
+      sessions: repos.session,
+      memberSets: repos.memberSet,
+      orgs: repos.org,
+      remoteMcp: webchatRemoteMcp,
+      placement: placementResolver,
+      users: repos.user,
+      ...(iconStore ? { iconStore } : {}),
+      reachesContent: (orgId, ids) =>
+        everyTurnReachesItsContent(
+          { sessions: repos.session, agents: repos.agent, placement: placementResolver, memberSets: repos.memberSet },
+          orgId,
+          ids
+        )
     }),
     // Current-permission fallback for GitHub comment webhooks whose
     // author_association snapshot is stale or inconsistent across event types.
