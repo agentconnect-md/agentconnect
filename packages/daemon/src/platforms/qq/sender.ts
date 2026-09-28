@@ -39,6 +39,7 @@ export interface QQReplyPort {
     signal?: AbortSignal
   ): Promise<UploadOutcome>
   sendText(channel: string, replyId: string, text: string): Promise<void>
+  sendCard?(channel: string, replyId: string, text: string): Promise<string | undefined>
   sendAcknowledgement?(channel: string, replyId: string, text: string, signal?: AbortSignal): Promise<void>
   sendProgress?(channel: string, replyId: string, text: string, signal?: AbortSignal): Promise<boolean>
   sendStream?(
@@ -154,7 +155,7 @@ export class QQSender {
     replyId: string,
     content: string,
     signal?: AbortSignal
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const state = this.replyState(target, replyId)
     if (state.uncertainTexts?.has(content))
       throw new Error('QQ text may already have been delivered; no automatic resend')
@@ -174,6 +175,7 @@ export class QQSender {
       }
       if (target.kind === 'group' && !result.id)
         throw new Error('QQ text returned no message id; delivery is uncertain')
+      return result.id
     } catch (error) {
       if (target.kind === 'group' && !(isQQApiError(error) && error.httpStatus >= 400 && error.httpStatus < 500))
         (state.uncertainTexts ??= new Set()).add(content)
@@ -198,6 +200,20 @@ export class QQSender {
         this.signal.throwIfAborted()
         await this.postText(token, target, replyId, content)
       }
+    })
+  }
+
+  // One unsplit message and its id; a group keeps `reserve` replies for the answer that follows.
+  sendCard(target: QQTarget, replyId: string, text: string, reserve: number): Promise<string | undefined> {
+    return this.enqueue(target, async () => {
+      if (this.remaining(target, replyId) <= reserve || Buffer.byteLength(text) > QQTextMaxBytes) return undefined
+      return await this.postText(await this.token(), target, replyId, text)
+    }).catch((error: unknown) => {
+      const reason = isQQApiError(error)
+        ? `HTTP ${error.httpStatus}, code ${error.bizCode ?? 'unknown'}`
+        : 'transport error'
+      this.warn(`qq: card delivery failed (${reason}); no automatic resend`)
+      return undefined
     })
   }
 

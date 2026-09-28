@@ -653,6 +653,8 @@ export interface Pending {
    *  persisted once from the collector so transport flushes cannot split one answer. */
   github?: GithubTurnState
   conn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
+  // The leased platform egress for a surface that posts outside `conn` (TurnRun.egressConn).
+  egress?: PlatformConnection
   /** §7.3 OPAQUE per-turn platform state, seeded by this turn's output surface and
    *  read only by that surface (see {@link turnState}). Core carries the slot and
    *  never inspects it — the reason platform-shaped fields stopped accreting here. */
