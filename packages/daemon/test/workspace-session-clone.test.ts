@@ -1,5 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -61,8 +62,13 @@ const roots: string[] = []
 const gitRuns: { args: string[]; env: Record<string, string> }[] = []
 /** Authorized clone URL (minus any `.git`) → the `file://` bare repository standing in for it. */
 const remotes = new Map<string, string>()
+const templateRoot = realpathSync(mkdtempSync(join(tmpdir(), 'ac-session-clone-templates-')))
+const templates = new Map<string, string>()
 
-afterAll(() => rmSync(join(SHIM, '..'), { recursive: true, force: true }))
+afterAll(() => {
+  rmSync(join(SHIM, '..'), { recursive: true, force: true })
+  rmSync(templateRoot, { recursive: true, force: true })
+})
 afterEach(() => {
   vi.restoreAllMocks()
   gitRuns.length = 0
@@ -97,9 +103,9 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', quiesced, { cwd, env: fixtureEnv(), encoding: 'utf8' }).trim()
 }
 
-/** A bare repository serving `branch` with one commit (partial clones allowed, as a code host allows them) plus the seed checkout that pushes more to it; served over `file://`, so `--filter` is honoured. */
-function bareRepo(branch = 'main'): { bare: string; seed: string; url: string } {
-  const root = tempRoot('ac-session-clone-remote-')
+// Seed each branch once; every test copies both the bare repository and its seed checkout.
+function buildTemplate(branch: string): string {
+  const root = mkdtempSync(join(templateRoot, 'repo-'))
   const bare = join(root, 'origin.git')
   const seed = join(root, 'seed')
   git(root, ['init', '-q', '--bare', `--initial-branch=${branch}`, bare])
@@ -112,6 +118,22 @@ function bareRepo(branch = 'main'): { bare: string; seed: string; url: string } 
   git(seed, ['commit', '-q', '-m', 'initial'])
   git(seed, ['remote', 'add', 'origin', bare])
   git(seed, ['push', '-q', 'origin', branch])
+  return root
+}
+
+/** A fresh bare repository and seed checkout, served over `file://` so `--filter` is honoured. */
+function bareRepo(branch = 'main'): { bare: string; seed: string; url: string } {
+  let template = templates.get(branch)
+  if (template === undefined) {
+    template = buildTemplate(branch)
+    templates.set(branch, template)
+  }
+  const root = tempRoot('ac-session-clone-remote-')
+  cpSync(template, root, { recursive: true })
+  const bare = join(root, 'origin.git')
+  const seed = join(root, 'seed')
+  // A test's pushes must target its own copy, never the template.
+  git(seed, ['remote', 'set-url', 'origin', bare])
   return { bare, seed, url: `file://${bare}` }
 }
 
