@@ -291,7 +291,7 @@ describe('the claim state', () => {
     expect(decodeGoogleChatClaimState(state({ redirect: 'https://console.example.test/' }))).toBeUndefined()
   })
 
-  it('accepts a state without a completion URL, as the welcome card’s click mints', () => {
+  it('accepts a state without a completion URL, as the welcome card’s link mints', () => {
     const decoded = decodeGoogleChatClaimState(state({ redirect: undefined }))
     expect(decoded).toMatchObject({ app: PROJECT_NUMBER, kind: 'space' })
     expect(decoded).not.toHaveProperty('redirect')
@@ -711,6 +711,35 @@ describe('POST /integrations/googlechat/claim: identity', () => {
     expect(res.json().code).toBe('GOOGLE_CHAT_CLAIM_IDENTITY')
     expect(h.googleCalls).toEqual([])
     expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('claims the welcome card’s link, which names nobody, as the signed-in Google account', async () => {
+    const h = await harness({ recorded: GOOGLE_USER })
+
+    const res = await h.claim(state({ user: undefined, redirect: undefined }))
+    expect(res.statusCode).toBe(201)
+    // The link names nobody, so the account is read afresh and the membership proof is the caller's own.
+    expect(h.googleAccountIdFor).toHaveBeenCalledWith('logto-subject', true)
+    expect(h.googleCalls).toContain(`${GOOGLE_CHAT_API_ROOT}/${SPACE}/members/${GOOGLE_USER}`)
+  })
+
+  it('refuses the welcome card’s DM link to anyone but the person in that DM', async () => {
+    const other = '100000000000000000001'
+    const h = await harness({ google: dmAnswers(), recorded: other, identity: other })
+
+    const res = await h.claim(dmState({ user: undefined }))
+    expect(res.statusCode).toBe(403)
+    expect(res.json().code).toBe('GOOGLE_CHAT_CLAIM_CONVERSATION')
+    expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('asks for Google sign-in when the link names nobody and the caller has no Google identity', async () => {
+    const h = await harness({ recorded: null, identity: null })
+
+    const res = await h.claim(state({ user: undefined }))
+    expect(res.statusCode).toBe(403)
+    expect(res.json().code).toBe('GOOGLE_CHAT_CLAIM_IDENTITY')
+    expect(h.googleCalls).toEqual([])
   })
 
   it('answers 503 when the identity provider cannot be read', async () => {

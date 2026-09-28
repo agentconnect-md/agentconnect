@@ -16,12 +16,11 @@ import {
   type WireGoogleChatCardAction
 } from '@agentconnect.md/protocol'
 import {
-  GOOGLE_CHAT_CLAIM_FUNCTION,
-  GOOGLE_CHAT_WELCOME_CARD,
   GoogleChatHttpIngest,
   UNKNOWN_APP_USER_NAME,
   UnclaimedTenantMemo,
   googleChatClaimPrompt,
+  googleChatWelcomeCard,
   googleChatDedupId,
   googleChatDedupKey,
   provenAppUserName,
@@ -121,8 +120,7 @@ export function googleChatAnchorAssignment(snapshot: RcDeploymentConfig | undefi
   ]
 }
 
-// The unclaimed tenant's answer (§10.4): the welcome card on an add, the claim prompt on a message or the card's own
-// click, nothing (`undefined`) for the rest. A tenant-less event (a personal account) gets nothing either.
+// An unclaimed tenant's answer (§10.4): the welcome card on an add, the claim prompt on a message, nothing otherwise or without a tenant.
 function unclaimedAnswer(
   ingest: GoogleChatHttpIngest,
   claimUrl: string,
@@ -132,22 +130,24 @@ function unclaimedAnswer(
 ): { body: unknown; tenant: string } | undefined {
   if (result.kind === 'ignored' || result.kind === 'unsupported' || result.tenant === undefined) return undefined
   const tenant = result.tenant
-  if (event.type === 'ADDED_TO_SPACE') return { body: GOOGLE_CHAT_WELCOME_CARD, tenant }
-  if (result.kind === 'membership') return undefined
-  if (result.kind === 'interaction' && result.interaction.function !== GOOGLE_CHAT_CLAIM_FUNCTION) return undefined
-  const [space, user, isDm] =
-    result.kind === 'interaction'
-      ? [result.interaction.space, result.interaction.user, result.interaction.isDm]
-      : [result.message.channel, result.message.sender.id, result.message.isDm]
+  const iat = Math.floor(nowMs / 1000)
+  if (event.type === 'ADDED_TO_SPACE') {
+    const added = result.kind === 'message' || result.kind === 'membership' ? result.membership : undefined
+    if (!added) return undefined
+    const kind = added.isDm ? 'dm' : 'space'
+    const state = { v: 1, app: ingest.audience, space: added.channel, kind, tenant, iat } as const
+    return { body: googleChatWelcomeCard(claimUrl, state), tenant }
+  }
+  if (result.kind !== 'message') return undefined
   const body = googleChatClaimPrompt(claimUrl, {
     v: 1,
     app: ingest.audience,
-    space,
-    user,
-    kind: isDm ? 'dm' : 'space',
+    space: result.message.channel,
+    user: result.message.sender.id,
+    kind: result.message.isDm ? 'dm' : 'space',
     tenant,
     ...(result.configCompleteRedirectUrl ? { redirect: result.configCompleteRedirectUrl } : {}),
-    iat: Math.floor(nowMs / 1000)
+    iat
   })
   return { body, tenant }
 }

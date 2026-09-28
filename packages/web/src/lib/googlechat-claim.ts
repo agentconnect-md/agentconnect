@@ -5,10 +5,10 @@ export interface GoogleChatClaimState {
   app: string
   /** `spaces/…` */
   space: string
-  /** `users/…`, the Chat user who asked. */
-  user: string
+  /** `users/…`, the Chat user who asked; absent on the welcome card's link, where the claimant is whoever signs in. */
+  user?: string
   kind: 'dm' | 'space'
-  /** Where Chat continues once the claim is done; absent when the prompt carried none, as the welcome card's click does. */
+  /** Where Chat continues once the claim is done; absent when the link carried none, as the welcome card's does. */
   redirect?: string
 }
 
@@ -43,13 +43,13 @@ export function decodeGoogleChatClaimState(raw: string | null): GoogleChatClaimS
   const fields = parsed as Record<string, unknown>
   const app = text(fields.app, /^[1-9]\d{0,19}$/)
   const space = text(fields.space, /^spaces\/[A-Za-z0-9_-]{1,128}$/)
-  const user = text(fields.user, /^users\/\d{1,64}$/)
+  const user = fields.user === undefined ? undefined : text(fields.user, /^users\/\d{1,64}$/)
   const kind = fields.kind === 'dm' || fields.kind === 'space' ? fields.kind : null
   const redirect = fields.redirect
   // A missing completion URL is fine; a present one off Chat's origin makes the whole link invalid.
   if (redirect !== undefined && !(typeof redirect === 'string' && isGoogleChatRedirect(redirect))) return null
-  if (fields.v !== 1 || !app || !space || !user || !kind) return null
-  return { app, space, user, kind, ...(redirect ? { redirect } : {}) }
+  if (fields.v !== 1 || !app || !space || user === null || !kind) return null
+  return { app, space, kind, ...(user ? { user } : {}), ...(redirect ? { redirect } : {}) }
 }
 
 /** Where the person goes back to Chat when no completion URL came along: the Space's room or the DM. */

@@ -18,39 +18,14 @@ export interface VerifiedGoogleChatDelivery {
 }
 
 /** The function the welcome card's button invokes; its `CARD_CLICKED` is answered with the claim prompt (design §10.7). */
-export const GOOGLE_CHAT_CLAIM_FUNCTION = 'agentconnect.claim'
-
-/** The one card the relay posts: the welcome message an unclaimed tenant sees on `ADDED_TO_SPACE` (design §10.7). */
-export const GOOGLE_CHAT_WELCOME_CARD = {
-  cardsV2: [
-    {
-      cardId: 'agentconnect-claim',
-      card: {
-        sections: [
-          {
-            widgets: [
-              { textParagraph: { text: 'Connect this Google Chat app to your AgentConnect organization to start.' } },
-              {
-                buttonList: {
-                  buttons: [{ text: 'Connect', onClick: { action: { function: GOOGLE_CHAT_CLAIM_FUNCTION } } }]
-                }
-              }
-            ]
-          }
-        ]
-      }
-    }
-  ]
-} as const
-
 /** What the claim page decodes from `state` (design §10.5): unsigned, since the page re-derives every fact it acts on. */
 export interface GoogleChatClaimState {
   v: 1
   /** The project number, the token audience. */
   app: string
   space: string
-  /** The initiating person's `users/…` name; the page accepts the claim only from that Google account. */
-  user: string
+  /** The asking person's `users/…` name, on a prompt only they see; the welcome card, seen by the whole conversation, names nobody and the claimant is whoever signs in. */
+  user?: string
   kind: 'dm' | 'space'
   /** The tenant key seen on the event. */
   tenant: string
@@ -60,14 +35,44 @@ export interface GoogleChatClaimState {
   iat: number
 }
 
-/** The private `REQUEST_CONFIG` answer that sends the initiating person to the claim page with `state` (design §10.4). */
+/** The claim page's address carrying `state` (design §10.5). */
+export function googleChatClaimLink(claimUrl: string, state: GoogleChatClaimState): string {
+  const url = new URL(claimUrl)
+  url.searchParams.set('state', Buffer.from(JSON.stringify(state)).toString('base64url'))
+  return url.toString()
+}
+
+/** The private `REQUEST_CONFIG` answer to a message that sends its sender to the claim page (design §10.4). */
 export function googleChatClaimPrompt(
   claimUrl: string,
   state: GoogleChatClaimState
 ): { actionResponse: { type: 'REQUEST_CONFIG'; url: string } } {
-  const url = new URL(claimUrl)
-  url.searchParams.set('state', Buffer.from(JSON.stringify(state)).toString('base64url'))
-  return { actionResponse: { type: 'REQUEST_CONFIG', url: url.toString() } }
+  return { actionResponse: { type: 'REQUEST_CONFIG', url: googleChatClaimLink(claimUrl, state) } }
+}
+
+/** The welcome card an unclaimed tenant sees on `ADDED_TO_SPACE` (design §10.7); its button opens the claim page, since Chat refuses `REQUEST_CONFIG` for a card click. */
+export function googleChatWelcomeCard(claimUrl: string, state: GoogleChatClaimState): unknown {
+  return {
+    cardsV2: [
+      {
+        cardId: 'agentconnect-claim',
+        card: {
+          sections: [
+            {
+              widgets: [
+                { textParagraph: { text: 'Connect this Google Chat app to your AgentConnect organization to start.' } },
+                {
+                  buttonList: {
+                    buttons: [{ text: 'Connect', onClick: { openLink: { url: googleChatClaimLink(claimUrl, state) } } }]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
 }
 
 /** How a single-tenant row's fence answers one event's tenant key (design §10.3). */

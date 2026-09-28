@@ -6,7 +6,7 @@ import {
   googleChatAnchorAssignment,
   type GoogleChatIngressPlugin
 } from './ingress-plugin.js'
-import { GOOGLE_CHAT_WELCOME_CARD, type GoogleChatHttpIngest } from './http-ingest.js'
+import type { GoogleChatHttpIngest } from './http-ingest.js'
 import { GOOGLE_CHAT_CERTIFICATE_REFETCH_MS, GOOGLE_CHAT_CERTIFICATE_URL } from './token.js'
 import type { RelayAdmission, RelayIngressHost } from '../contract.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
@@ -391,17 +391,41 @@ describe('googlechat ingress plugin — the deployment app’s anchor and custom
       state: JSON.parse(Buffer.from(url.searchParams.get('state')!, 'base64url').toString('utf8')) as unknown
     }
   }
+  const welcome = (syncResponse: unknown) => {
+    const body = syncResponse as {
+      cardsV2?: { card?: { sections?: { widgets?: { buttonList?: { buttons?: { onClick?: unknown }[] } }[] }[] } }[]
+    }
+    const button = body.cardsV2?.[0]?.card?.sections?.[0]?.widgets?.[1]?.buttonList?.buttons?.[0]
+    const url = new URL((button?.onClick as { openLink: { url: string } }).openLink.url)
+    return {
+      base: `${url.origin}${url.pathname}`,
+      state: JSON.parse(Buffer.from(url.searchParams.get('state')!, 'base64url').toString('utf8')) as unknown
+    }
+  }
   const anchor = () => setup({ claimUrl: CLAIM_URL })
 
   it('answers an unclaimed tenant in the body and forwards, reports, peeks, and marks nothing', async () => {
     const { plugin, h, ingest } = anchor()
     const bearer = `Bearer ${await token()}`
-    // An add, with or without its triggering message, gets the welcome card.
-    expect((await deliver(plugin, ingest, h, dmAdded, bearer)).handled).toEqual({
-      syncResponse: GOOGLE_CHAT_WELCOME_CARD
+    // An add, with or without its triggering message, gets the welcome card, whose button opens the claim page naming nobody.
+    const dmWelcome = welcome((await deliver(plugin, ingest, h, dmAdded, bearer)).handled?.syncResponse)
+    expect(dmWelcome.base).toBe(CLAIM_URL)
+    expect(dmWelcome.state).toEqual({
+      v: 1,
+      app: AUDIENCE,
+      space: DM,
+      kind: 'dm',
+      tenant: DOMAIN,
+      iat: Math.floor(NOW / 1000)
     })
-    expect((await deliver(plugin, ingest, h, spaceAddedByMention, bearer)).handled).toEqual({
-      syncResponse: GOOGLE_CHAT_WELCOME_CARD
+    const spaceWelcome = welcome((await deliver(plugin, ingest, h, spaceAddedByMention, bearer)).handled?.syncResponse)
+    expect(spaceWelcome.state).toEqual({
+      v: 1,
+      app: AUDIENCE,
+      space: SPACE,
+      kind: 'space',
+      tenant: CUSTOMER,
+      iat: Math.floor(NOW / 1000)
     })
     // A message gets the claim prompt, whose state carries the contract's fields and nothing else.
     const dm = await deliver(plugin, ingest, h, dmMessage, bearer)
@@ -420,11 +444,8 @@ describe('googlechat ingress plugin — the deployment app’s anchor and custom
     })
     const space = prompt((await deliver(plugin, ingest, h, spaceMention, bearer)).handled?.syncResponse)
     expect(space.state).toMatchObject({ space: SPACE, user: PERSON, kind: 'space', tenant: CUSTOMER })
-    // The welcome card's own button gets the prompt too; any other card function gets nothing.
-    const click = prompt((await deliver(plugin, ingest, h, cardClicked, bearer)).handled?.syncResponse)
-    expect(click.state).toMatchObject({ space: SPACE, user: PERSON, kind: 'space', tenant: CUSTOMER })
-    const otherClick = { ...cardClicked, action: { actionMethodName: 'other.function' }, common: undefined }
-    expect((await deliver(plugin, ingest, h, otherClick, bearer)).handled).toEqual({})
+    // Chat refuses `REQUEST_CONFIG` for a card click, so a click is nothing to answer.
+    expect((await deliver(plugin, ingest, h, cardClicked, bearer)).handled).toEqual({})
     // A removal is nothing to answer; an event without a return URL omits `redirect`.
     expect((await deliver(plugin, ingest, h, spaceRemoved, bearer)).handled).toEqual({})
     const noRedirect = { ...dmMessage, configCompleteRedirectUrl: undefined }
@@ -480,7 +501,7 @@ describe('googlechat ingress plugin — the deployment app’s anchor and custom
     expect(prompt(later.handled?.syncResponse).state).toMatchObject({ iat: Math.floor(now / 1000) })
   })
 
-  it('routes a customer row exactly as a single-tenant row, where the welcome card’s click has nothing left to do', async () => {
+  it('routes a customer row exactly as a single-tenant row, where a card click that is not an elicitation does nothing', async () => {
     const { plugin, h, ingest } = setup({ tenantIds: [DOMAIN, CUSTOMER] })
     const bearer = `Bearer ${await token()}`
     expect((await deliver(plugin, ingest, h, dmMessage, bearer)).handled).toEqual({
@@ -553,7 +574,7 @@ describe('googlechat ingress plugin — the deployment app’s anchor and custom
     // A redelivered click mints the same id, so the daemon replays its first ack.
     await deliver(plugin, ingest, h, click, bearer)
     expect(vi.mocked(h.forwardAction).mock.calls[1]![0].msgId).toBe(rd.msgId)
-    // The welcome card's click is not an elicitation and is never forwarded.
+    // A card click that is not an elicitation is never forwarded.
     await deliver(plugin, ingest, h, cardClicked, bearer)
     expect(h.forwardAction).toHaveBeenCalledTimes(2)
     expect(h.forwardStrict).not.toHaveBeenCalled()

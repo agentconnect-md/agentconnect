@@ -391,8 +391,8 @@ classifies it as an `interaction` — the invoked function
 card's input widgets (`common.formInputs`), the card message, the clicking user,
 the Space, and the thread — under the same Space and sender checks a message
 gets, and it starts no turn. An elicitation card's click is forwarded to the
-daemon (§5, Elicitation cards); the welcome card's click on a routed
-conversation has nothing left to do; both are answered with an empty body. Every message, membership, and interaction result
+daemon (§5, Elicitation cards) and answered with an empty body; any other
+click is answered the same way. Every message, membership, and interaction result
 also carries the event's tenant key (§10.4) and its `configCompleteRedirectUrl`.
 
 Run the existing discovery, conversation gate, trigger, command, session routing,
@@ -934,8 +934,8 @@ The anchor serves no tenant: whatever core routed to it is unclaimed, and the
 plugin answers it in the HTTP body — `HandledDelivery.syncResponse`,
 which the Google route sends on its 200 — within Google's window and without a
 daemon: the welcome card of §10.7 on `ADDED_TO_SPACE`, the `REQUEST_CONFIG`
-answer pointing at the claim page of §10.5 on a `MESSAGE` and on the welcome
-card's `CARD_CLICKED`, and an empty body for anything else, including an event
+answer pointing at the claim page of §10.5 on a `MESSAGE`, and an empty body
+for anything else, including a card click and an event
 that names no Workspace tenant (§10.8). Nothing is forwarded, reported as
 membership, read from the dedup table, or marked in it. A bounded per-tenant
 memo (a few hundred entries, least recently seen first out) keeps the relay's
@@ -951,28 +951,29 @@ taught it since.
 
 ### 10.5 Claiming a customer
 
-The claim page is the console's `/googlechat/claim?state=…`, reached only through
-`REQUEST_CONFIG`, and it posts to
+The claim page is the console's `/googlechat/claim?state=…`, reached through
+`REQUEST_CONFIG` or the welcome card's link (§10.7), and it posts to
 `POST /orgs/:orgId/integrations/googlechat/claim` (`{ state }`, owner or
 collaborator):
 
 1. The relay's `state` is base64url JSON, deliberately unsigned: the app's
-   project number, the space, the initiating `users/{id}`, whether the event
-   came from a DM or a Space, the tenant key it saw, the event's
-   `configCompleteRedirectUrl` when it carried one, and when it was minted.
-   Google documents that URL for `MESSAGE`, `ADDED_TO_SPACE`, and `APP_COMMAND`
-   but not for `CARD_CLICKED`, so the welcome card's Connect button yields a
-   state without it. The route re-derives every fact it acts on from Google and
+   project number, the space, the asking `users/{id}` on a prompt, whether the
+   event came from a DM or a Space, the tenant key it saw, the event's
+   `configCompleteRedirectUrl` when it carried one, and when it was minted. The
+   welcome card's link names no user and carries no completion URL: the whole
+   conversation sees the card, so its claimant is whoever signs in. The route re-derives every fact it acts on from Google and
    from the signed-in identity, so a forged state claims only what its bearer
    could claim anyway. A state for any app other than the deployment's one is
    refused (404), as is a present completion URL outside `https://chat.google.com/`.
 2. The page signs the person in with Google through the console, which is
    Logto with its Google connector. The route compares the caller's Google
    account id (§10.6), never the console token's `sub`, which is the issuer's
-   own user id, with the initiating user id in the state, Google's
-   recommendation for a configuration page, so a forwarded link claims nothing
-   (403 `GOOGLE_CHAT_CLAIM_IDENTITY`). A caller without a Google identity is
-   told to sign in with Google or link it on their profile first.
+   own user id, with the asking user id a prompt's state names, Google's
+   recommendation for a configuration page, so a forwarded prompt claims
+   nothing (403 `GOOGLE_CHAT_CLAIM_IDENTITY`). A link that names nobody takes
+   the caller's account as the claimant, and step 3 proves that account is in
+   the conversation. A caller without a Google identity is told to sign in with
+   Google or link it on their profile first.
 3. It binds only the claimant's own Workspace customer, reading Google with the
    app's key. A claim that started in a DM lists the DM's members: exactly one
    human, the claimant, whose `domainId` is the claimant's organization. A
@@ -1056,13 +1057,15 @@ visibility; Google membership still does not become a console ACL.
 ### 10.7 Cards and the welcome message
 
 The relay posts one card: the welcome message an unclaimed tenant sees on
-`ADDED_TO_SPACE`, one paragraph and a single `Connect` button whose action is
-the function `agentconnect.claim` (`GOOGLE_CHAT_WELCOME_CARD` in the relay's
-Google Chat module), mirroring what published Chat apps do. The button's
-`CARD_CLICKED` and any message from an unclaimed tenant get the `REQUEST_CONFIG`
-answer of §10.4; a click in a claimed conversation, or on any other function, is
-answered with an empty body. Replies stay text; the only other card is the
-elicitation card of §5, which builds on the same `interaction` path.
+`ADDED_TO_SPACE`, one paragraph and a single `Connect` button that opens the
+claim page (`googleChatWelcomeCard` in the relay's Google Chat module),
+mirroring what published Chat apps do. The button is an `openLink`, not an
+action: Chat refuses a `REQUEST_CONFIG` answer to `CARD_CLICKED` ("Requesting
+user authentication isn't allowed as a response to the event type", observed
+live on September 28, 2026), so a click could not reach the private prompt.
+Any message from an unclaimed tenant still gets the `REQUEST_CONFIG` answer of
+§10.4. Replies stay text; the only other card is the elicitation card of §5,
+which builds on the `interaction` path.
 
 ### 10.8 Daemon, quotas, privacy
 

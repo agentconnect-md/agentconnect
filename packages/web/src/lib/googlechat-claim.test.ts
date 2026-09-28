@@ -51,16 +51,16 @@ describe('decodeGoogleChatClaimState', () => {
     expect(isGoogleChatRedirect('javascript:alert(1)')).toBe(false)
   })
 
-  it('accepts a state without a completion URL, as the welcome card’s click mints, but not a malformed one', () => {
-    const { redirect: _, ...withoutRedirect } = FIELDS
-    expect(decodeGoogleChatClaimState(encode(withoutRedirect))).toEqual({
+  it('accepts the welcome card’s link, which names no user and no completion URL, but not a malformed one', () => {
+    const { redirect: _, user: __, ...welcome } = FIELDS
+    expect(decodeGoogleChatClaimState(encode(welcome))).toEqual({
       app: '123456789012',
       space: 'spaces/AAAAexample',
-      user: 'users/100000000000000000009',
       kind: 'space'
     })
     expect(decodeGoogleChatClaimState(encode({ ...FIELDS, redirect: 42 }))).toBeNull()
     expect(decodeGoogleChatClaimState(encode({ ...FIELDS, redirect: '' }))).toBeNull()
+    expect(decodeGoogleChatClaimState(encode({ ...FIELDS, user: 42 }))).toBeNull()
   })
 })
 

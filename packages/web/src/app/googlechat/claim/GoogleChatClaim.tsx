@@ -134,8 +134,12 @@ export default function GoogleChatClaim() {
             </div>
 
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[13px] leading-normal">
-              <dt className="text-(--text-tertiary)">{t('account')}</dt>
-              <dd className="mono break-all text-(--text-primary)">{claim.user}</dd>
+              {claim.user ? (
+                <>
+                  <dt className="text-(--text-tertiary)">{t('account')}</dt>
+                  <dd className="mono break-all text-(--text-primary)">{claim.user}</dd>
+                </>
+              ) : null}
               <dt className="text-(--text-tertiary)">{t('app')}</dt>
               <dd className="mono break-all text-(--text-primary)">{claim.app}</dd>
               <dt className="text-(--text-tertiary)">{t('conversation')}</dt>

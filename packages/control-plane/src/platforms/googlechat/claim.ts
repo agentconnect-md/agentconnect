@@ -47,7 +47,11 @@ export const GoogleChatClaimState = z.object({
   v: z.literal(1),
   app: z.string().regex(/^[1-9]\d{0,19}$/),
   space: z.string().regex(/^spaces\/[A-Za-z0-9_-]{1,128}$/),
-  user: z.string().regex(/^users\/\d{1,64}$/),
+  // The asker on a private prompt; absent on the welcome card, which the whole conversation sees, so the claimant is whoever signs in.
+  user: z
+    .string()
+    .regex(/^users\/\d{1,64}$/)
+    .optional(),
   kind: z.enum(['dm', 'space']),
   tenant: z.string().max(256).optional(),
   // Absent when the event carried no completion URL, as the welcome card's click does; a present one must be Chat's.
@@ -99,7 +103,7 @@ function domainIdOf(member: Record<string, unknown> | undefined): string | undef
 
 /** Bind only the claimant's own customer: an INTERNAL Space membership, or the claimant alone in a DM (§10.5 step 3). */
 export async function proveGoogleChatTenant(
-  state: GoogleChatClaimState,
+  state: GoogleChatClaimState & { user: string },
   read: (path: string) => Promise<GoogleChatAppRead>
 ): Promise<GoogleChatTenantProof> {
   const userId = state.user.slice('users/'.length)
@@ -298,10 +302,10 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
           return refuse(reply, 404, 'GOOGLE_CHAT_CLAIM_APP_UNKNOWN', 'This Google Chat app cannot be connected here.')
         }
 
-        // The caller's Google account must be the Chat user who asked, read from the identity provider, never the console token.
-        const expected = state.user.slice('users/'.length)
+        // The caller's Google account, read from the identity provider and never the console token, must be the asker a prompt names.
+        const expected = state.user?.slice('users/'.length)
         let accountId = await deps.repos.user.getGoogleAccountId(userId)
-        if (accountId !== expected && googleChat.identity) {
+        if ((expected === undefined || accountId !== expected) && googleChat.identity) {
           const oidcSubject = req.oidcSubject ?? (await deps.repos.user.getOidcSubject(userId))
           if (oidcSubject) {
             try {
@@ -328,7 +332,7 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
             'Sign in with Google, using the account you use in Google Chat, then try again.'
           )
         }
-        if (accountId !== expected) {
+        if (expected !== undefined && accountId !== expected) {
           return refuse(
             reply,
             403,
@@ -348,7 +352,7 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
           )
         }
         const proof = await proveGoogleChatTenant(
-          state,
+          { ...state, user: `users/${accountId}` },
           googleChatAppReader(key.key, googleChat.fetch, () => new Date(deps.clock.now()))
         )
         if (!proof.ok) return refuse(reply, proof.status, proof.code, proof.message)

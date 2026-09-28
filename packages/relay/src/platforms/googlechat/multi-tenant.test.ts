@@ -8,7 +8,6 @@ import {
   createGoogleChatIngressPlugin,
   type GoogleChatIngressPlugin
 } from './ingress-plugin.js'
-import { GOOGLE_CHAT_WELCOME_CARD } from './http-ingest.js'
 import type { DemuxIndex } from '../registry.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
 import { NOW, fakeCertificates, token } from '../../../test/fixtures/google-chat-token.js'
@@ -126,7 +125,7 @@ describe('googlechat multi-tenant demux (§10.4)', () => {
     expect(promptUrl(unclaimed.handled).origin + promptUrl(unclaimed.handled).pathname).toBe(CLAIM_URL)
     const added = await deliver(unknownDomainAdd)
     expect(added.by).toBe(ANCHOR)
-    expect(added.handled).toEqual({ syncResponse: GOOGLE_CHAT_WELCOME_CARD })
+    expect(JSON.stringify(added.handled)).toContain(`"openLink":{"url":"${CLAIM_URL}?state=`)
     // A row's key is in that row's composite entries alone; the anchor stays the only app-only entry.
     expect(demux.indexes.byApp.size).toBe(1)
     // Another audience owns none of it.
