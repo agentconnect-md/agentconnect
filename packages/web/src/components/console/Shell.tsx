@@ -883,6 +883,14 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
                           {t('help.support')}
                         </a>
+                        {process.env.NEXT_PUBLIC_APP_VERSION && (
+                          <>
+                            <div className="dmsep" />
+                            <div className="px-[10px] py-[6px] font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary) select-all">
+                              {process.env.NEXT_PUBLIC_APP_VERSION}
+                            </div>
+                          </>
+                        )}
                       </div>
                     </>
                   )}
