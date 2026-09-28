@@ -1,5 +1,5 @@
 <h1 align="center">
-  <a href="https://agentconnect.md"><picture>
+  <a href="https://www.agentconnect.md"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-wordmark-dark.svg" />
     <img src="docs/assets/logo-wordmark.svg" width="300" alt="AgentConnect" />
   </picture></a>
@@ -48,10 +48,10 @@
 </p>
 
 <p align="center">
-  <strong><a href="https://agentconnect.md">Website</a></strong> ·
+  <strong><a href="https://www.agentconnect.md">Website</a></strong> ·
   <strong><a href="https://app.agentconnect.md">Cloud</a></strong> ·
   <strong><a href="https://www.agentconnect.md/docs">Documentation</a></strong> ·
-  <strong><a href="https://agentconnect.md/blog">Blog</a></strong>
+  <strong><a href="https://www.agentconnect.md/blog">Blog</a></strong>
 </p>
 
 <p align="center">
@@ -81,7 +81,7 @@ conversations. Agents can call one another and remember what they learn, and
 work can begin from a message, issue, pull request, webhook, or schedule.
 
 <p align="center">
-  <a href="https://agentconnect.md"><img src="docs/assets/agents-across-channels.png" alt="People and agents working together in Slack, Telegram, and Discord conversations and in a GitHub pull request review" width="880" /></a>
+  <a href="https://www.agentconnect.md"><img src="docs/assets/agents-across-channels.png" alt="People and agents working together in Slack, Telegram, and Discord conversations and in a GitHub pull request review" width="880" /></a>
 </p>
 
 <p align="center">
