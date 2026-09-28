@@ -611,12 +611,41 @@ and leaves the row on its id when the read fails or finds more than one person. 
 way, because Google Chat has no status bar, typing indicator, or reaction to
 spend a richer mode on.
 
-Feedback is best effort after admission. Post no startup message, as on other
-chat platforms; do not promise native typing indicators or reactions. Membership loss,
-revoked credentials, missing threads, and deleted reply messages terminate or
-suspend the affected delivery with an actionable status. Keep generated output in
-the daemon transcript, subject to normal access rules; private DM output is not
-automatically available to a Console administrator.
+Feedback is best effort after admission. Google Chat gives an app no reaction
+without user authentication and no typing indicator, so a turn acknowledges itself
+with one placeholder that becomes the answer ([product
+conventions](../product-conventions.md), "A trigger is acknowledged before it is
+answered"). When a turn started by a real inbound message has shown nothing two
+seconds after it starts, the daemon posts `⏳ Working on it…` into the DM or the
+Space thread under the client id of the answer's first message
+(`googleChatClientId(delivery, 0, 0)`). The first visible text creates that same
+id, Google answers with the placeholder, and the stream patches it in the pass
+that already converges a stale echo; a failure notice takes it the same way,
+through the stream, or through the handle's `replace` for a turn that failed
+before it had output. Neither the placeholder nor the no-reply notice below is
+recorded in the transcript.
+
+A placeholder no text took is resolved once, when the turn's dispatch ends: an
+app-authenticated `spaces.messages.delete` of the app's own message when the turn
+ended silently on purpose (the `AC_NO_RESPONSE` marker, or output mode `none`),
+was cancelled, or failed without a notice; a patch to `Finished without a reply.`
+when it completed with no text; nothing when its durable row runs the message
+again (a shutdown drain, a duty handoff, a settings-change cut). A rerun posts its
+placeholder at once instead of after two seconds, so its create adopts whatever
+the earlier run left under that id — the placeholder, or a partial answer, as it
+stands — and resolves it by the same rules; because the id is derived rather than
+recorded, a crash needs nothing more. A turn that answers or ends within two
+seconds never posts one, and an interrupted turn never posts one late. The
+create, patches, and delete take the per-Space queue and the write budget like
+every other write. The daemon seam is the Layer-2 `acknowledge` member
+([integration-plugin-architecture.md](integration-plugin-architecture.md) §7.3).
+Deleting under app authentication has not yet been verified against a live Chat
+app.
+
+Membership loss, revoked credentials, missing threads, and deleted reply messages
+terminate or suspend the affected delivery with an actionable status. Keep
+generated output in the daemon transcript, subject to normal access rules;
+private DM output is not automatically available to a Console administrator.
 
 Attachments are explicitly unsupported, including attachment-only inputs. Report
 that limitation without claiming to read the file. In particular, Google's

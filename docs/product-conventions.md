@@ -200,7 +200,9 @@ workspace preparation; checkout and skills installation use the workspace label.
 The console replaces one live wait line below the agent's name. Slack keeps its native
 working indicator: its lifecycle API accepts a state, not phase text. Other chat
 platforms post no startup message, because it would stay in the conversation's history
-even when the turn ends silently; their typing indicator is the only wait signal. A
+even when the turn ends silently; their typing indicator is the only wait signal. Google
+Chat has none, so its wait signal is the turn's placeholder (see "A trigger is
+acknowledged before it is answered"), which names no phase and never outlives the turn. A
 code-host turn adds no startup comment. Status publication is best-effort and never
 holds up initialization.
 
@@ -258,6 +260,16 @@ the write is refused — the app lacks the scope, the API fails, the turn shows 
 indicator — does the reaction fall back in, so a Slack turn never shows neither.
 A typing hint is not an indicator in this sense: it acknowledges nothing, so
 Telegram and Discord react as before.
+
+Google Chat has neither: an app can react only with user authentication, and it has
+no typing indicator. There the acknowledgement is one placeholder message in the
+turn's conversation, posted only once the turn has shown nothing for two seconds, and
+it becomes the answer — the first text, or a failure notice, replaces it in place.
+Unlike a reaction it is swapped for the outcome, because a "working on it" line must
+not outlive the work: a turn that ends silently on purpose, or is cancelled, withdraws
+it; one that ends with no text says in its place that it finished without a reply; and
+a turn cut to run again leaves it for that run to take over. A turn that answers within
+two seconds never shows one.
 
 The reaction is an acknowledgement, not a status: it is placed once and never
 taken back or swapped for an outcome. That is deliberate — it records that the

@@ -40,6 +40,17 @@ import type { ImageUploader } from '../mcp/ops/context.js'
 
 export type TurnAdmissionStatus = 'processing' | 'queued' | 'steered'
 
+/** How a turn's dispatch ended, as its acknowledgement needs it: `rerun` means its durable row runs the message again. */
+export type TurnAcknowledgementEnd = 'completed' | 'interrupted' | 'failed' | 'rerun'
+
+/** A turn-start acknowledgement the surface posts itself; core holds it, and the egress lease, until the turn ends. */
+export interface TurnAcknowledgement {
+  /** Show a failure notice in the acknowledgement's place; false when none is showing, so the caller posts it. */
+  replace(notice: string): Promise<boolean>
+  /** Called exactly once, after the turn's dispatch has returned or thrown. */
+  end(end: TurnAcknowledgementEnd): Promise<void>
+}
+
 /** Platform inputs and narrow rendering capabilities; core turn state stays inside the daemon. */
 export interface TurnOutputContext<TMessage> {
   /** Rewrite a workspace target through the daemon's trusted session scope. */
@@ -68,6 +79,8 @@ export interface TurnOutputContext<TMessage> {
    *  even though only the first is self-delimiting. Surfaces with no such shape ignore it.
    *  Empty is always safe: it is exactly the behavior before the addresses existed. */
   protectedAddresses?: readonly string[]
+  /** The acknowledgement this surface's `acknowledge` returned at turn start, handed to `initialTurnState`. */
+  acknowledgement?: TurnAcknowledgement
 }
 
 /**
@@ -84,6 +97,11 @@ export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
   readonly platform: string
   // Best-effort admission feedback before runtime startup; the caller never awaits provider I/O.
   onAdmission?(ctx: TurnOutputContext<TMessage>, status: TurnAdmissionStatus, signal: AbortSignal): Promise<void>
+  // Turn-start acknowledgement for a surface with no reaction or indicator; `rerun` means an earlier run may have left one.
+  acknowledge?(
+    ctx: TurnOutputContext<TMessage>,
+    turn: { rerun: boolean; interrupted: () => boolean }
+  ): TurnAcknowledgement | undefined
   // Live delivery skips final-context regeneration; absence preserves staged chat delivery.
   answerDelivery?(ctx: TurnOutputContext<TMessage>): 'staged' | 'live'
   // Optional image sender bound to this turn's leased transport and provider reply anchor.

@@ -320,6 +320,18 @@ describe('creates and patches', () => {
     expect(chatCalls()[0]!.url.searchParams.has('allowMissing')).toBe(false)
   })
 
+  it('deletes its own message with a bare DELETE, and counts one already gone as deleted', async () => {
+    const { conn, chatCalls } = harness(() => reply(200, {}))
+    await conn.deleteOwnMessage(`${SPACE}/messages/client-abc`)
+    const call = chatCalls()[0]!
+    expect(call.method).toBe('DELETE')
+    expect(call.url.pathname).toBe(`/v1/${SPACE}/messages/client-abc`)
+    expect([...call.url.searchParams]).toEqual([])
+    const gone = harness(() => reply(404, { error: { message: 'Message not found' } }))
+    await expect(gone.conn.deleteOwnMessage(`${SPACE}/messages/client-abc`)).resolves.toBeUndefined()
+    expect(gone.chatCalls()).toHaveLength(1)
+  })
+
   it('reports no text when the create response carries none, so the stream patches instead of assuming a match', async () => {
     const { conn } = harness(() => reply(200, { name: `${SPACE}/messages/T.M`, sender: { name: APP_USER } }))
     const ref = await conn.createMessage({ space: SPACE, thread: THREAD, clientId: 'client-abc', text: '**hi**' })
@@ -602,6 +614,20 @@ describe('the tenant fence and the write budget (§10.8)', () => {
     expect(writes(calls)).toEqual([])
     // The Space's tenant was read once for the three attempts.
     expect(gets(calls)).toEqual([`/v1/${OTHER_SPACE}`])
+  })
+
+  it('withdraws a message as a write: fenced to its own customer and taking one budget token', async () => {
+    const clock = fakeClock()
+    const budget = new GoogleChatWriteBudget({ capacity: 1, refillPerMinute: 60 }, clock.now, clock.sleep)
+    const { conn, calls } = harness((call) => (call.method === 'DELETE' ? reply(200, {}) : answer(call)), {
+      budget,
+      config: { tenantIds: [C1] }
+    })
+    await refused(conn.deleteOwnMessage(`${OTHER_SPACE}/messages/client-a`))
+    await conn.deleteOwnMessage(`${SPACE}/messages/client-a`)
+    await conn.deleteOwnMessage(`${SPACE}/messages/client-b`)
+    expect(writes(calls)).toEqual([`DELETE /v1/${SPACE}/messages/client-a`, `DELETE /v1/${SPACE}/messages/client-b`])
+    expect(clock.slept).toEqual([1000])
   })
 
   it('writes into its own customer’s Space and its own people’s DM, reading each Space’s tenant once', async () => {

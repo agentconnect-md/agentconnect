@@ -232,13 +232,13 @@ describe('GoogleChatConverger', () => {
     expect(conv.onFinal()).toEqual([])
   })
 
-  it('records without sending in mode none, and drops a bare no-response marker', () => {
+  it('records without sending in mode none, and drops a bare no-response marker as a deliberate silence', () => {
     const silent = new GoogleChatConverger('none')
     expect(silent.onUpdate(chunk('hello'))).toEqual([])
     expect(silent.onFinal()).toEqual([{ kind: 'post', text: 'hello', attributed: false, recordOnly: true }])
     const marker = new GoogleChatConverger('low')
     expect(marker.onUpdate(chunk('AC_NO_RESPONSE'))).toEqual([])
-    expect(marker.onFinal()).toEqual([])
+    expect(marker.onFinal()).toEqual([{ kind: 'gchat-silent' }])
   })
 })
 

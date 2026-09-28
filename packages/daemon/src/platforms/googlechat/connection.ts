@@ -401,6 +401,18 @@ export class GoogleChatConnection implements PlatformConnection {
     )
   }
 
+  /** Delete a message this daemon created, as a withdrawn placeholder is; one already gone counts as deleted. */
+  async deleteOwnMessage(name: string): Promise<void> {
+    await this.assertOwnTenant(spaceOf(name))
+    await this.queueFor(spaceOf(name)).enqueue(async () => {
+      try {
+        await this.request<MessageResource>('DELETE', name, { retry: 'idempotent' })
+      } catch (err) {
+        if (!(err instanceof GoogleChatApiError && err.kind === 'not_found')) throw err
+      }
+    }, this.writeGate)
+  }
+
   /** Replace the cards of a message this daemon created, as a settled elicitation card is rewritten. */
   async patchCards(name: string, cardsV2: readonly unknown[]): Promise<void> {
     await this.assertOwnTenant(spaceOf(name))
@@ -615,7 +627,7 @@ export class GoogleChatConnection implements PlatformConnection {
 
   /** One Chat API call with bounded, jittered retries: `idempotent` retries every retryable refusal, `rate_limit_only` just a 429. */
   private async request<T>(
-    method: 'GET' | 'POST' | 'PATCH',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     path: string,
     opts: {
       query?: Record<string, string>

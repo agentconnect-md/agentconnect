@@ -759,7 +759,7 @@ import {
   telegramMessageId as telegramMessageIdExternal,
   telegramReplyTarget as telegramReplyTargetExternal
 } from './platforms/telegram/threading.js'
-import { TurnOutputRegistry } from './platforms/turn-output.js'
+import { TurnOutputRegistry, type TurnAcknowledgement, type TurnAcknowledgementEnd } from './platforms/turn-output.js'
 import type {
   RegisterReq,
   RelayRosterEntry,
@@ -12138,6 +12138,8 @@ export class Daemon {
       statusThread?: string
       /** Session coordinate for transcript rows; `statusThread` above is the chrome target. */
       sessionThread?: string
+      /** The turn's acknowledgement, which takes the notice in place of the answer it stood in for. */
+      acknowledgement?: TurnAcknowledgement
     }
   ): Promise<void> {
     // turnFailureReason digs the runtime's own message out of an ACP RequestError's
@@ -12154,23 +12156,25 @@ export class Daemon {
       if (!ctx.webchat.continuation) return
     }
     const notice = `⚠️ Agent failed to respond: ${reason}`
+    // A showing acknowledgement becomes the notice, so it is not posted a second time.
+    const replaced = (await ctx.acknowledgement?.replace(notice).catch(() => false)) === true
     if (ctx.replyConn) {
-      // Clear the Slack "is thinking…" status (Telegram's typing hint expires on its own).
-      // Duck-typed so test fakes work.
       // Settle the Slack slot (a sibling may still be working); Telegram's typing hint expires on its own.
       this.settleSlackSlot(ctx.replyConn, ctx.channel, ctx.statusThread, ctx.sessionKey)
-      if (turnChromeFor(ctx.platform).chromeMarkedNotices)
+      const chrome = turnChromeFor(ctx.platform).chromeMarkedNotices
+      if (!replaced && chrome)
         void (ctx.replyConn as SlackConnection).postMessage(ctx.channel, notice, ctx.thread, {
           ...(slackAgentIdentityOptions(ctx) ?? {}),
           chrome: true
         })
-      else void ctx.replyConn.postMessage(ctx.channel, notice, ctx.thread)
+      else if (!replaced) void ctx.replyConn.postMessage(ctx.channel, notice, ctx.thread)
     }
     // A platform with no free-text reply transport surfaces the failure through its own sink
     // instead. Registry-driven, so this stays one lookup rather than a platform-name branch.
-    await this.platformFailureSinks
-      .get(ctx.platform)?.({ reason, integrationId: ctx.integrationId, thread: ctx.thread, channel: ctx.channel })
-      .catch((err2: unknown) => this.log.warn(`${ctx.platform}: failure notice failed: ${formatErr(err2)}`))
+    if (!replaced)
+      await this.platformFailureSinks
+        .get(ctx.platform)?.({ reason, integrationId: ctx.integrationId, thread: ctx.thread, channel: ctx.channel })
+        .catch((err2: unknown) => this.log.warn(`${ctx.platform}: failure notice failed: ${formatErr(err2)}`))
     // Record the failure in the transcript too — the direct post above bypasses the
     // recorded apply path, which previously left the console session view showing an
     // empty reply for a failed turn.
@@ -13625,11 +13629,14 @@ export class Daemon {
             if (entry.deferObservedInbound) await this.admitInbound(entry.msg, entry.agentId)
             const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
             let sessionId: string | null
+            let ended: TurnAcknowledgementEnd = 'failed'
             try {
               await this.settleReviewBatch(entry)
               sessionId = await this.dispatchOne(entry, key)
+              ended = sessionId === null ? 'interrupted' : 'completed'
             } finally {
               await this.settleResumingReport(entry, key)
+              await this.endTurnAcknowledgement(entry, ended)
               releaseDispatch()
             }
             // A turn that genuinely COMPLETED is done — remove its row even during a shutdown
@@ -14212,7 +14219,8 @@ export class Daemon {
             transcriptChannel: plan.transcriptChannel,
             thread: msg.thread,
             statusThread: plan.statusThread,
-            sessionThread: plan.sessionThread
+            sessionThread: plan.sessionThread,
+            ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {})
           })
       } finally {
         releaseReplyConn()
@@ -14779,7 +14787,8 @@ export class Daemon {
       turnState: plan.turnSurface.initialTurnState({
         ...plan.turnCtx,
         ...(turn.resolveFileLink ? { resolveFileLink: turn.resolveFileLink } : {}),
-        ...(run.egressConn ? { egress: run.egressConn } : {})
+        ...(run.egressConn ? { egress: run.egressConn } : {}),
+        ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {})
       }),
       conn: run.replyConn,
       ...(run.egressConn ? { egress: run.egressConn } : {}),
@@ -17763,6 +17772,20 @@ export class Daemon {
         void this.githubReviews.acknowledgeTrigger(entry.agentId, entry.githubReply).catch(() => {})
       return
     }
+    // A surface with no reaction and no indicator acknowledges with its own output (§7.3 `acknowledge`).
+    const acknowledge = this.turnSurfaces.exact(plan.platform)?.acknowledge
+    if (acknowledge) {
+      const egress = run.egressConn
+      const handle =
+        egress && !entry.webchat
+          ? acknowledge(
+              { ...plan.turnCtx, egress },
+              { rerun: entry.fromInboxReplay === true, interrupted: () => entry.cancelledReason !== undefined }
+            )
+          : undefined
+      if (handle) entry.acknowledgement = { handle, release: this.holdReplyConnection(egress) }
+      return
+    }
     // Duck-typed like showActivity, so a connection fake without the optional facet is fine.
     const react = (replyConn as Partial<SlackConnection> | undefined)?.react
     const at = nativeMessageCoordinates(msg)
@@ -18102,6 +18125,24 @@ export class Daemon {
     entry.resumingReported = undefined
     const rec = await this.store.getSession(key).catch(() => undefined)
     if (rec) await this.reportSessionStatus({ ...rec, acpSessionId: rec.acpSessionId ?? reported })
+  }
+
+  /** End the turn's acknowledgement once; a row runLoop keeps for replay makes it `rerun`, so the replay adopts it. */
+  private async endTurnAcknowledgement(entry: QueueEntry, ended: TurnAcknowledgementEnd): Promise<void> {
+    const ack = entry.acknowledgement
+    if (!ack) return
+    entry.acknowledgement = undefined
+    // runLoop's own retention: a handoff, or a shutdown drain that cut or failed the turn.
+    const kept =
+      entry.inboxId !== undefined &&
+      (entry.inboxHandedOff === true || (this.draining && (ended === 'failed' || entry.cancelledReason === 'shutdown')))
+    try {
+      await ack.handle.end(kept ? 'rerun' : ended)
+    } catch (err) {
+      this.log.warn(`turn acknowledgement did not settle: ${formatErr(err)}`)
+    } finally {
+      ack.release()
+    }
   }
 
   /** Persist one authoritative title and push the CP metadata projection. */
@@ -21385,7 +21426,8 @@ export class Daemon {
       transcriptChannel: p.plan.transcriptChannel,
       thread: msg.thread,
       statusThread: p.plan.statusThread,
-      sessionThread: p.plan.sessionThread
+      sessionThread: p.plan.sessionThread,
+      ...(p.entry.acknowledgement ? { acknowledgement: p.entry.acknowledgement.handle } : {})
     })
   }
 

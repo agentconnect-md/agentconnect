@@ -106,9 +106,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function boot() {
+async function boot(host: () => unknown = fakeHost) {
   const root = scaffold()
-  const daemon = new Daemon({ root, hostFactory: () => fakeHost() as any })
+  const daemon = new Daemon({ root, hostFactory: () => host() as any })
   await daemon.start()
   await (daemon as any).connections.reconcileGoogleChatConnections()
   ;(daemon as any).cpClient = new Proxy({} as Record<string, unknown>, { get: () => () => undefined })
@@ -128,7 +128,10 @@ async function boot() {
     for (let i = 0; i < 4; i += 1) await pendingRows()
     expect(await pendingRows()).toBe(0)
   }
-  return { daemon, store, turnSettled }
+  const turnsDone = async (): Promise<void> => {
+    await Promise.all(turns)
+  }
+  return { daemon, store, turnSettled, turnsDone }
 }
 
 function delivery(msgId = `googlechat:${SPACE}:${MESSAGE}`) {
@@ -237,6 +240,117 @@ describe('§4 admission and receipts through the daemon', () => {
     expect(chatCalls.some((c) => c.path.endsWith('/members/app'))).toBe(false)
     expect(chatCalls.some((c) => c.method === 'POST')).toBe(false)
     expect((daemon as any).gcConnByIntegration.get(INTEGRATION)?.botUserId).toBeUndefined()
+    await daemon.stop()
+  })
+})
+
+describe('§5 the turn acknowledgement through the daemon', () => {
+  /** Swap the surface's acknowledgement for a recording one and note what each turn state was seeded with. */
+  function recordAcknowledgements(daemon: Daemon, replaces = false) {
+    const surface = (daemon as any).turnSurfaces.exact('googlechat')
+    const started: { rerun: boolean; interrupted: boolean }[] = []
+    const ends: string[] = []
+    const notices: string[] = []
+    const seeded: unknown[] = []
+    const ack = {
+      replace: async (notice: string) => {
+        notices.push(notice)
+        return replaces
+      },
+      end: async (end: string) => {
+        ends.push(end)
+      }
+    }
+    surface.acknowledge = (_ctx: unknown, turn: { rerun: boolean; interrupted: () => boolean }) => {
+      started.push({ rerun: turn.rerun, interrupted: turn.interrupted() })
+      return ack
+    }
+    const seed = surface.initialTurnState
+    surface.initialTurnState = (ctx: { acknowledgement?: unknown }) => {
+      seeded.push(ctx.acknowledgement)
+      return seed(ctx)
+    }
+    return { ack, started, ends, notices, seeded }
+  }
+
+  /** A host whose prompt waits until the turn is cancelled. */
+  const heldHost = () => {
+    let release: (reason: string) => void = () => {}
+    return {
+      ...fakeHost(),
+      prompt: vi.fn(() => new Promise((resolve) => (release = resolve))),
+      cancel: vi.fn(async () => release('cancelled'))
+    }
+  }
+
+  const liveKey = async (daemon: Daemon): Promise<string> => {
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(1))
+    return [...(daemon as any).pending.values()][0].plan.sessionKey
+  }
+
+  it('acknowledges a user turn as it starts, seeds its output with it, and ends it once as completed', async () => {
+    const { daemon, turnSettled } = await boot()
+    const rec = recordAcknowledgements(daemon)
+    await im(daemon, delivery())
+    await turnSettled()
+    expect(rec.started).toEqual([{ rerun: false, interrupted: false }])
+    expect(rec.seeded).toEqual([rec.ack])
+    expect(rec.ends).toEqual(['completed'])
+    await daemon.stop()
+  })
+
+  it('shows a failure before the turn had any output in the acknowledgement, and posts no second notice', async () => {
+    const { daemon, turnSettled } = await boot()
+    const rec = recordAcknowledgements(daemon, true)
+    ;(daemon as any).sessions.handle = async () => {
+      throw new Error('the runtime did not start')
+    }
+    await im(daemon, delivery())
+    await turnSettled()
+    expect(rec.notices).toEqual(['⚠️ Agent failed to respond: the runtime did not start'])
+    expect(rec.ends).toEqual(['failed'])
+    expect(chatCalls.filter((c) => c.method === 'POST')).toEqual([])
+    await daemon.stop()
+  })
+
+  it('ends a cancelled turn as interrupted', async () => {
+    const { daemon, turnsDone } = await boot(heldHost)
+    const rec = recordAcknowledgements(daemon)
+    await im(daemon, delivery())
+    await (daemon as any).interruptTurn(AGENT, await liveKey(daemon), 'cancel')
+    await turnsDone()
+    expect(rec.ends).toEqual(['interrupted'])
+    await daemon.stop()
+  })
+
+  it('ends a turn cut for a rerun as rerun, so the rerun can adopt what it showed', async () => {
+    const { daemon, turnsDone } = await boot(heldHost)
+    const rec = recordAcknowledgements(daemon)
+    await im(daemon, delivery())
+    await (daemon as any).interruptTurn(AGENT, await liveKey(daemon), 'stop', undefined, {
+      dropQueued: true,
+      handoffInbox: true
+    })
+    await turnsDone()
+    expect(rec.ends).toEqual(['rerun'])
+    await daemon.stop()
+  })
+
+  it('tells the acknowledgement of a delivery replayed from the durable inbox that it is a rerun', async () => {
+    const { daemon, turnsDone } = await boot()
+    const rec = recordAcknowledgements(daemon)
+    const scope = (daemon as any).transportScopeForIntegrationIds([INTEGRATION])
+    await (daemon as any).dispatch(
+      AGENT,
+      { ...delivery().payload, transportScope: scope },
+      INTEGRATION,
+      undefined,
+      undefined,
+      { fromInboxReplay: true }
+    )
+    await turnsDone()
+    expect(rec.started).toEqual([{ rerun: true, interrupted: false }])
+    expect(rec.ends).toEqual(['completed'])
     await daemon.stop()
   })
 })

@@ -503,6 +503,16 @@ adapter owns everything platform-shaped. The GitHub poster/collector
 implements this same interface (no Layer-1 facets), removing the hardcoded
 `github` turn field from the dispatch path.
 
+A surface with neither a reaction (§7.1 `react`) nor an indicator acknowledges a
+turn itself through the optional `acknowledge` member. Core calls it at turn
+start, keeps the returned handle and an egress lease with the queue entry, hands
+it to `initialTurnState`, lets a failure notice from a turn with no output yet
+`replace` it, and `end`s it once after the dispatch as `completed`,
+`interrupted`, `failed`, or `rerun` (its durable row runs the message again).
+Core decides only that outcome; what the handle shows, and how the answer takes
+its place, belong to the platform. Google Chat's placeholder is the first
+implementer ([google-chat-integration.md](google-chat-integration.md) §5).
+
 After opening the runtime session, core supplies an optional file-link resolver to
 the output context. It captures the session's exact working directory, the roots the
 Console can browse, and the outward session URL. A surface calls it on assembled

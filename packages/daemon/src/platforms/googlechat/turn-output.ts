@@ -8,6 +8,12 @@ import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-li
 import { isNoResponseBody, isNoResponsePrefix } from '../../session/no-response.js'
 import type { TurnOutputContext } from '../turn-output.js'
 import { GoogleChatApiError, type GoogleChatMessageRef } from './connection.js'
+import {
+  GOOGLE_CHAT_PLACEHOLDER_DELAY_MS,
+  GoogleChatPlaceholder,
+  type GoogleChatPlaceholderOptions,
+  type GoogleChatPlaceholderPort
+} from './placeholder.js'
 import { renderGoogleChatMarkdown, splitGoogleChatText } from './render.js'
 
 /** Minimum spacing between edits of one streaming message (§5). */
@@ -20,6 +26,8 @@ export type GoogleChatAction =
   | { kind: 'gchat-stream'; text: string }
   // A completed block or a notice; `recordOnly` writes the transcript without sending (mode `none`).
   | { kind: 'post'; text: string; recordOnly?: boolean; attributed?: boolean }
+  // The turn ends silently on purpose (the no-response marker), so its placeholder is withdrawn.
+  | { kind: 'gchat-silent' }
 
 /** `client-` plus 48 lowercase hex chars: inside Google's alphabet and 63-char cap, and distinct per (delivery, block, segment). */
 export function googleChatClientId(deliveryId: string, block: number, segment: number): string {
@@ -72,7 +80,7 @@ export class GoogleChatConverger {
     // A bare response-control marker means this message was not for the agent: post nothing.
     if (isNoResponseBody(this.buf.trim())) {
       this.buf = ''
-      return []
+      return [{ kind: 'gchat-silent' }]
     }
     return this.closeBlock()
   }
@@ -305,6 +313,8 @@ export interface GoogleChatTurnState {
   block: number
   stream?: GoogleChatStream
   streamOptions?: GoogleChatStreamOptions
+  /** The placeholder armed at turn start; the first visible text takes it over. */
+  acknowledgement?: GoogleChatPlaceholder
 }
 
 export function initialGoogleChatTurnState(ctx: TurnOutputContext<NormalizedMessage>): GoogleChatTurnState {
@@ -313,11 +323,37 @@ export function initialGoogleChatTurnState(ctx: TurnOutputContext<NormalizedMess
     space: ctx.message.channel,
     ...(ctx.isDm || ctx.message.thread === undefined ? {} : { thread: ctx.message.thread }),
     deliveryId: stableMessageId(ctx.message),
-    block: 0
+    block: 0,
+    ...(ctx.acknowledgement instanceof GoogleChatPlaceholder ? { acknowledgement: ctx.acknowledgement } : {})
   }
 }
 
+/** Arm a user turn's placeholder (§5); a rerun posts at once, so it adopts whatever an earlier run left under the id. */
+export function acknowledgeGoogleChatTurn(
+  ctx: TurnOutputContext<NormalizedMessage>,
+  turn: { rerun: boolean; interrupted: () => boolean },
+  opts: Omit<GoogleChatPlaceholderOptions, 'silent' | 'interrupted'> & { delayMs?: number } = {}
+): GoogleChatPlaceholder | undefined {
+  const port = ctx.egress as GoogleChatPlaceholderPort | undefined
+  if (!port || ctx.message.source !== 'user' || ctx.message.headless) return undefined
+  // A turn that posts nothing needs no placeholder, but a rerun still adopts one to withdraw it.
+  if (ctx.mode === 'none' && !turn.rerun) return undefined
+  const { space, thread, deliveryId } = initialGoogleChatTurnState(ctx)
+  const { delayMs, ...timers } = opts
+  const placeholder = new GoogleChatPlaceholder(
+    port,
+    { space, ...(thread ? { thread } : {}) },
+    // The answer's first message id, so the answer adopts the placeholder rather than posting beside it.
+    googleChatClientId(deliveryId, 0, 0),
+    { ...timers, silent: ctx.mode === 'none', interrupted: turn.interrupted }
+  )
+  placeholder.arm(turn.rerun ? 0 : (delayMs ?? GOOGLE_CHAT_PLACEHOLDER_DELAY_MS))
+  return placeholder
+}
+
 function openStream(state: GoogleChatTurnState, port: GoogleChatEgressPort): GoogleChatStream {
+  // The first visible text opens the first stream, whose segment 0 reuses the placeholder's client id.
+  state.acknowledgement?.take()
   const block = state.block
   return new GoogleChatStream(
     port,
@@ -339,6 +375,10 @@ export async function applyGoogleChatAction<TTurn extends GoogleChatTurn>(
   state: GoogleChatTurnState,
   action: { kind: string; text?: string; recordOnly?: boolean }
 ): Promise<void> {
+  if (action.kind === 'gchat-silent') {
+    state.acknowledgement?.silence()
+    return
+  }
   if (!action.text) return
   if (action.kind === 'gchat-stream') {
     if (!state.conn) return
