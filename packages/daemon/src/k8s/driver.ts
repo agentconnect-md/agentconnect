@@ -67,7 +67,8 @@ export interface K8sDriverDeps {
   metrics?: ClusterMetrics
 }
 
-const DEFAULT_READY_TIMEOUT_MS = 90_000
+/** Pod-up budget; a cold pull of the runtime image alone has taken ~110 s, so 90 s failed every first launch after an image bump. */
+export const DEFAULT_READY_TIMEOUT_MS = 180_000
 
 // Runs an ACP runtime in its own Sandbox pod — one per SUBJECT: the agent's shared pod, or a confined
 // session's own (git-workspace-model §11). A facade over `LaunchRegistry` (launches, release fence,

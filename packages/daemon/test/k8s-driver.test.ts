@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
-import { K8sDriver } from '../src/k8s/driver.js'
+import { DEFAULT_READY_TIMEOUT_MS, K8sDriver } from '../src/k8s/driver.js'
 import { AC_LABEL_AGENT, AC_LABEL_ORG, sessionSandboxSubject } from '../src/k8s/sandbox-identity.js'
 import { observeStartup } from '../src/session/startup-progress.js'
 import { LocalStore } from '../src/store/local-store.js'
@@ -234,7 +234,11 @@ describe('cluster spawn driver', () => {
         peer: 'pod'
       }
     ])
-    expect(connectChannel).toHaveBeenCalledWith(expect.objectContaining({ podName: 'sb-1' }), '10.0.0.8', 90_000)
+    expect(connectChannel).toHaveBeenCalledWith(
+      expect.objectContaining({ podName: 'sb-1' }),
+      '10.0.0.8',
+      DEFAULT_READY_TIMEOUT_MS
+    )
   })
 
   it('names the ADOPTED warm-pool pod, not the Sandbox, when one was adopted', async () => {
@@ -330,7 +334,7 @@ describe('cluster spawn driver', () => {
     expect(connectChannel).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ podName: 'sb-1' }),
       '192.0.2.11',
-      90_000
+      DEFAULT_READY_TIMEOUT_MS
     )
   })
 
