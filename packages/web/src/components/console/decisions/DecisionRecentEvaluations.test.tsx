@@ -201,7 +201,9 @@ describe('DecisionRecentEvaluations', () => {
       before: (api) =>
         vi
           .spyOn(api, 'listEvaluations')
-          .mockRejectedValue(new decisionMock.DecisionMockApiError(403, { error: 'forbidden', message: 'forbidden' }))
+          .mockRejectedValue(
+            new decisionMock.DecisionMockApiError(403, { error: 'unavailable', message: 'cannot edit this agent' })
+          )
     })
     expect(container!.querySelector('[role="alert"]')).toBeNull()
     await act(async () =>
