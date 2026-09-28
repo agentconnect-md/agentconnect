@@ -32,10 +32,6 @@ vi.mock('@/components/console/UnifiedMemoryPanel', async () => {
   }
 })
 
-vi.mock('@/components/console/NativeMemoryFiles', () => ({
-  NativeMemoryFiles: () => <div data-testid="native-memory-view" />
-}))
-
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
 
 vi.mock('@/lib/data-context', () => ({
@@ -673,12 +669,10 @@ describe('MemoryPanel memory views', () => {
     expect(entries(host)).not.toBeNull()
     expect(entries(host)?.getAttribute('data-sandboxed')).toBe('')
     expect(entries(host)?.getAttribute('data-overview')).toBe('no')
-    expect(host.querySelector('[data-testid="native-memory-view"]')).toBeNull()
   })
 
-  it('keeps the runtime file browser for native memory, which has no entry view', async () => {
+  it('shows no memory contents for native memory, which the runtime keeps to itself', async () => {
     const host = await mount({ memoryProvider: 'native', memoryDreaming: { enabled: true } })
-    expect(host.querySelector('[data-testid="native-memory-view"]')).not.toBeNull()
     expect(entries(host)).toBeNull()
     expect(host.querySelector('[data-testid="dream-memory-view"]')).toBeNull()
   })

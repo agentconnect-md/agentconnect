@@ -952,9 +952,11 @@ an incidental spawn detail:
   off-switch or that the harness has no persistent memory of its own. Unknown behavior
   fails closed; `none` must never silently mean "AgentConnect memory is off, but the
   harness may still remember."
-- `native` may be offered only after both the harness's per-agent storage redirect and
-  the console read/write root are verified. Redirecting a whole runtime home is not
-  sufficient when that home also contains shared auth or unrelated state.
+- `native` may be offered only after the harness's memory location is verified. It never
+  redirects runtime directories, because a runtime home also holds the login: under the
+  Host strategy the agent shares the host's runtime home and memory with every Host agent
+  on that daemon, and under a sandbox the memory stays in the agent's private HOME. The
+  console does not show native memory.
 
 The single source of truth is
 [`memory/runtime/capabilities.ts`](../packages/daemon/src/memory/runtime/capabilities.ts). Match a known

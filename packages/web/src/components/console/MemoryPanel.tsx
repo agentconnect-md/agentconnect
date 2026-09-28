@@ -46,7 +46,6 @@ import {
   type MemoryProviderChoice,
   type MemorySettingsDraft
 } from '@/components/console/memory-settings'
-import { NativeMemoryFiles } from '@/components/console/NativeMemoryFiles'
 import { DreamPanel } from '@/components/console/DreamPanel'
 import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
@@ -810,9 +809,7 @@ export function MemoryPanel({
           agentId={agentId}
           canEdit={canEdit}
         />
-      ) : persistedProvider === 'native' ? (
-        <NativeMemoryFiles key={agentId} agentId={agentId} canEdit={canEdit} />
-      ) : persistedProvider === 'none' ? (
+      ) : persistedProvider === 'native' ? null : persistedProvider === 'none' ? (
         <div className="rounded-(--radius-lg) border border-(--border-subtle) p-5 text-[13px] text-(--text-secondary)">
           {t('persistentDisabled')}
         </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { memoryFileFromHref, resolveMemoryMarkdownLink } from './memory-links'
+import { memoryFileFromHref } from './memory-links'
 
 describe('memoryFileFromHref', () => {
   it('resolves flat sibling Markdown files', () => {
@@ -32,18 +32,5 @@ describe('memoryFileFromHref', () => {
     expect(memoryFileFromHref('contacts%00.md')).toBeNull()
     expect(memoryFileFromHref('contacts%.md')).toBeNull()
     expect(memoryFileFromHref('contacts.txt')).toBeNull()
-  })
-
-  it('uses the shared action, external, and blocked link behavior', () => {
-    const opened: string[] = []
-    const action = resolveMemoryMarkdownLink('contacts.md', (name) => opened.push(name))
-
-    expect(action?.kind).toBe('action')
-    if (action?.kind === 'action') action.onActivate()
-    expect(opened).toEqual(['contacts.md'])
-    expect(resolveMemoryMarkdownLink('https://example.com', () => undefined)).toBeUndefined()
-    expect(resolveMemoryMarkdownLink('mailto:owner@example.com', () => undefined)).toBeUndefined()
-    expect(resolveMemoryMarkdownLink('../contacts.md', () => undefined)).toEqual({ kind: 'blocked' })
-    expect(resolveMemoryMarkdownLink('#contacts', () => undefined)).toEqual({ kind: 'blocked' })
   })
 })

@@ -2867,7 +2867,7 @@
         "inControlPlaneHelp": "The Control Plane keeps the memory files, so they follow the agent to any daemon and need no machine to be up.",
         "movingToControlPlane": "Moving memory to the Control Plane…",
         "externalDescription": "An owner-reviewed external plugin; configure exactly what may be recalled and captured below.",
-        "nativeDescription": "The runtime's own memory (Claude / Codex), isolated under the agent root.",
+        "nativeDescription": "The runtime's own memory (Claude / Codex), kept in its own directories.",
         "noneDescription": "No persistent memory is loaded or saved.",
         "managedDescription": "A memory directory we keep for the agent.",
         "autoDistillLabel": "Automatically distill durable facts after each turn (uses an additional model call).",
@@ -2913,7 +2913,7 @@
         "autoAccept": "Auto-accept {state}",
         "agentScope": "Agent scope",
         "channelScope": "Channel scope",
-        "nativeSummary": "Runtime-native memory · Agent scope",
+        "nativeSummary": "Runtime-native memory",
         "connectionNamed": "Connection {id}",
         "noConnection": "No connection",
         "recallEveryTurn": "Recall every turn",
@@ -2970,17 +2970,6 @@
         "unknownTimezone": "{human} · “{timezone}” is not a known IANA timezone",
         "nextRun": "{human} · next {next} ({timezone})",
         "daemonTimezone": "{human} · in the daemon host’s timezone"
-      },
-      "nativeMemory": {
-        "rendering": "Rendering…",
-        "retry": "Retry",
-        "noMemory": "No memory yet.",
-        "memoryFilePath": "Memory file path",
-        "newMemoryFileName": "New memory file name",
-        "addFile": "Add file",
-        "edit": "Edit",
-        "listError": "Couldn't list memory — the owning daemon may be offline.",
-        "readError": "Couldn't read the file — the owning daemon may be offline."
       },
       "toolsDialog": {
         "wrongOrganization": "This agent belongs to another organization.",

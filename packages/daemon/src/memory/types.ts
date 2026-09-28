@@ -150,12 +150,10 @@ export type MemoryAdminSurface = FileMemoryAdmin | RecordMemoryAdmin | null
 export interface MemoryProvider {
   readonly kind: MemoryProviderKind
 
-  // Additive read contract; native and none keep their existing lifecycle and file compatibility view.
+  // Additive read contract; native and none keep their own lifecycle and expose no entries.
   entryView?(scope: MemoryScope, writeSource?: MemoryWriteSource): Promise<MemoryEntriesView | null>
 
-  /** Env delta to merge into the runtime child so its OWN memory goes where this
-   *  provider wants it: `managed` disables it; `native` redirects it under the
-   *  agent root; applied by `daemon.ts` at spawn (see `memoryProviderFor`). */
+  /** Env delta for the runtime child: `managed`/`none`/`external` turn its own memory off, `native` adds nothing (see `memoryProviderFor`). */
   runtimeEnv(runtime: RuntimeDef, effectiveEnv?: NodeJS.ProcessEnv, runtimeId?: string): Record<string, string>
 
   /** Seed a brand-new agent's memory so injection and the tools always have a

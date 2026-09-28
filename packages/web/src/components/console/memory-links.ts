@@ -1,6 +1,3 @@
-import { resolveFileBrowserMarkdownLink } from '@/components/console/file-browser-links'
-import type { MarkdownLinkResolution } from '@/components/console/MarkdownView'
-
 const EXPLICIT_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/
 
 /** Resolve a Markdown href to one flat sibling memory file. */
@@ -26,19 +23,4 @@ export function memoryFileFromHref(href: string): string | null {
     return null
   }
   return name
-}
-
-/** Apply the shared file-browser link behavior with memory's flat `.md` policy. */
-export function resolveMemoryMarkdownLink(
-  href: string,
-  onOpen: (name: string) => void
-): MarkdownLinkResolution | undefined {
-  return resolveFileBrowserMarkdownLink(
-    href,
-    (candidate) => {
-      const name = memoryFileFromHref(candidate)
-      return name ? { path: name, name } : null
-    },
-    (target) => onOpen(target.name)
-  )
 }

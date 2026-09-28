@@ -294,8 +294,6 @@ it('binds a Dream to its staged root before consulting a changed live provider',
   const staged = new LocalMemoryFs(join(dir, 'draft'))
   const provider = createMemoryProvider({
     memoryHomePortsFor: () => localMemoryHome(new LocalMemoryFs(dir)),
-    agentDirByAgent: () => dir,
-    runtimeFor: () => undefined,
     providerKindFor: () => 'external'
   })
   const api = await service(db, async () => (await provider.entryView({ agentId: 'a', root: staged }))!)
@@ -486,8 +484,6 @@ it('pins synthetic MCP reads to the Dream draft even after the live provider cha
   await draft.writeFile('memory/draft.md', 'only the staged proposal')
   const memory = createMemoryProvider({
     memoryHomePortsFor: () => localMemoryHome(new LocalMemoryFs(dir)),
-    agentDirByAgent: () => dir,
-    runtimeFor: () => undefined,
     providerKindFor: () => 'external'
   })
   const { executeTool } = await import('../src/mcp/ops.js')

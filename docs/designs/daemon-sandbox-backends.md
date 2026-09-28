@@ -352,7 +352,7 @@ VM. Each new session owns a VM using the image configured at creation, including
 sessions that share workspace files. Its private HOME lives under
 `runtime-homes/<session-leaf>/home` unless it already owns a confined session
 directory. For shared workspaces, native-memory directories mount the agent's
-existing memory store so Console reads and edits reach every session; runtime
+existing memory store so every session shares it; runtime
 state stays in the session's HOME. Image changes apply to new sessions;
 resume keeps the original image, runtime versions, HOME and disks until session
 retention removes them. Sessions created in a legacy shared agent VM continue

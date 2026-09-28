@@ -2867,7 +2867,7 @@
         "inControlPlaneHelp": "Control Plane 会保存记忆文件，因此 Agent 可跟随到任意 Daemon，无需依赖某台机器在线。",
         "movingToControlPlane": "正在将记忆移动到 Control Plane…",
         "externalDescription": "由所有者审核的外部插件；请在下方准确配置可以召回和捕获的内容。",
-        "nativeDescription": "Runtime 自带的记忆（Claude / Codex），隔离在 Agent 根目录下。",
+        "nativeDescription": "Runtime 自带的记忆（Claude / Codex），保存在它自己的目录里。",
         "noneDescription": "不会加载或保存持久记忆。",
         "managedDescription": "我们为 Agent 维护的记忆目录。",
         "autoDistillLabel": "每轮对话后自动提炼长期事实（会额外调用一次模型）。",
@@ -2913,7 +2913,7 @@
         "autoAccept": "自动采纳：{state}",
         "agentScope": "Agent 范围",
         "channelScope": "频道范围",
-        "nativeSummary": "Runtime 原生记忆 · Agent 范围",
+        "nativeSummary": "Runtime 原生记忆",
         "connectionNamed": "连接 {id}",
         "noConnection": "无连接",
         "recallEveryTurn": "每轮都检索",
@@ -2970,17 +2970,6 @@
         "unknownTimezone": "{human} · “{timezone}”不是已知的 IANA 时区",
         "nextRun": "{human} · 下次运行 {next}（{timezone}）",
         "daemonTimezone": "{human} · 使用 Daemon 主机时区"
-      },
-      "nativeMemory": {
-        "rendering": "正在渲染…",
-        "retry": "重试",
-        "noMemory": "暂无记忆。",
-        "memoryFilePath": "记忆文件路径",
-        "newMemoryFileName": "新记忆文件名",
-        "addFile": "添加文件",
-        "edit": "编辑",
-        "listError": "无法列出记忆，所属 Daemon 可能已离线。",
-        "readError": "无法读取文件，所属 Daemon 可能已离线。"
       },
       "toolsDialog": {
         "wrongOrganization": "此 Agent 属于其他组织。",

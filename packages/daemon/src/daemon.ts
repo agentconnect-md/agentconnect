@@ -109,7 +109,7 @@ import {
   openMicrosandbox
 } from './microsandbox/install.js'
 import { resolveMicrosandboxImage } from './release-image.js'
-import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
+import { prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import { recordedImageModels, type MicrosandboxManager, type MicrosandboxEnvironment } from './microsandbox/driver.js'
 import { probeImageModels } from './microsandbox/model-probe.js'
 import { localShimGitRunner } from './execution/local-git.js'
@@ -189,7 +189,7 @@ import {
   sessionHostKey,
   type HostKey
 } from './acp/host-key.js'
-import { prepareRuntimeLaunch, privateRuntimeHomeFor, shimEnvironment } from './launch/prepare.js'
+import { prepareRuntimeLaunch, shimEnvironment } from './launch/prepare.js'
 import {
   SessionManager,
   transcriptCoords,
@@ -534,7 +534,6 @@ import {
 import { ModelCatalogService } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { clusterProbeHostFactory, defaultProbeHostFactory } from './acp/probe-host-factory.js'
-import { runtimeHomePath } from './runtimes/runtime-home.js'
 import { sessionMcpServersScope } from './runtimes/session-mcp-servers.js'
 import { planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
 import { RuntimeStore, parseNpxLaunch, storedRuntimeDef } from './runtimes/runtime-store.js'
@@ -1078,22 +1077,9 @@ export class Daemon {
   // Whether other members read and write this daemon's session rows; set once the shared data plane opens.
   private sharedStore = false
   private mcp!: McpControlServer
-  // The agent memory provider. Per-agent: it dispatches each call to the agent's
-  // configured backend (managed = our <agent-root>/memory/ dir; native = the
-  // runtime's own memory redirected under the private runtime HOME only while the
-  // agent runs in the sandbox). Backs the memory MCP tools, the session-start index
-  // injection, and the CP console's memory reads.
+  // Per-agent memory dispatch behind the memory MCP tools, the session-start index injection, and the console's memory reads.
   private memory: DispatchingMemoryProvider = createMemoryProvider({
     memoryHomePortsFor: (id) => this.memoryHomePortsFor(id),
-    agentDirByAgent: (id) => {
-      const agent = this.agents.get(id)
-      if (!agent) return undefined
-      return memoryKindOf(agent) === 'native' && this.agentRunsInSandbox(agent) ? runtimeHomePath(agent.dir) : agent.dir
-    },
-    runtimeFor: (id) => {
-      const a = this.agents.get(id)
-      return a ? this.runtimes[a.runtime] : undefined
-    },
     providerKindFor: (id) => {
       const a = this.agents.get(id)
       return a ? memoryKindOf(a) : 'managed'
@@ -6702,22 +6688,6 @@ export class Daemon {
     const srtShim = runInSandbox ? this.localSrtEnvironment(agent, opts.hostKey, opts.strategy) : undefined
     if (runInSandbox && !micro && !srtShim)
       throw new Error('srt unavailable: this daemon is not running its local shims')
-    // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11), or its executor's.
-    const memoryAgent =
-      memoryKindOf(agent) === 'native' && (runInSandbox || remoteHome)
-        ? {
-            ...agent,
-            dir:
-              remoteHome ??
-              (microPlacement
-                ? microsandboxRuntimeHome(
-                    agent.dir,
-                    microPlacement.homeKey ?? opts.hostKey,
-                    microPlacement.trustedSessionDir
-                  )
-                : privateRuntimeHomeFor(agent.dir, opts.hostKey))
-          }
-        : agent
     const runtimeEnv = {
       ...(runInSandbox ? cfg.sandbox.env : {}),
       ...Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
@@ -6745,11 +6715,8 @@ export class Daemon {
       : undefined
     const env: Record<string, string> = {
       ...baseEnv,
-      // Memory backend env: managed disables the runtime's own memory; native
-      // redirects it under the private runtime HOME. Throws
-      // MemoryProviderUnavailableError for an unbuildable provider (external, or
-      // native on an unregistered runtime) — surfaced here at spawn.
-      ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
+      // Managed, none and external turn the runtime's own memory off; an unbuildable provider throws here at spawn.
+      ...memoryProviderFor(agent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
       // App identity rides with the CREDENTIAL mode, not the workspace mode: a scratch workspace with
       // authorized repositories needs the capability for its git and gh exactly like a clone does.
       ...(sessionGitInjection ?? {})

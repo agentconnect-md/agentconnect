@@ -32,9 +32,6 @@ import {
 export interface MemoryProviderDeps {
   /** The ports over the agent's MANAGED memory home — the daemon's one placement decision. */
   memoryHomePortsFor: (agentId: string) => MemoryHomePorts | undefined
-  /** The agent's LOCAL root: the runtime's own (native) memory is redirected under it. */
-  agentDirByAgent: (agentId: string) => string | undefined
-  runtimeFor: (agentId: string) => RuntimeDef | undefined
   providerKindFor: (agentId: string) => MemoryProviderKind
   autoDistillFor?: (agentId: string) => boolean
   extract?: MemoryExtractor
@@ -71,7 +68,7 @@ export class DispatchingMemoryProvider implements MemoryProvider {
       deps.autoDistillFor ?? (() => false),
       deps.extract
     )
-    this.native = new NativeMemoryProvider(deps.agentDirByAgent, deps.runtimeFor)
+    this.native = new NativeMemoryProvider()
     this.none = new NoMemoryProvider()
   }
 

@@ -14,7 +14,6 @@ import { agentStrategyOf } from '../execution/strategies.js'
 import { detectSandbox } from '../acp/sandbox.js'
 import { agentHostKey } from '../acp/host-key.js'
 import { resolveRoot } from '../paths.js'
-import { runtimeHomePath } from '../runtimes/runtime-home.js'
 import { normalizeSandboxMounts } from '../runtimes/read-roots.js'
 import { installedRuntimeCatalog } from '../runtimes/probe.js'
 import { ArchiveStore, parseArchiveLaunch, storedArchiveRuntimeDef } from '../runtimes/archive-store.js'
@@ -142,11 +141,9 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     ...(runInSandbox ? cfg.sandbox.env : {}),
     ...Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
   }
-  const memoryAgent =
-    memoryKindOf(agent) === 'native' && runInSandbox ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
   // Memory backend env joins the agent env BEFORE materialization, as the daemon does, so
   // config-file detection sees the same child env on both paths.
-  Object.assign(agentEnv, memoryProviderFor(memoryAgent, runtime, agentEnv).runtimeEnv())
+  Object.assign(agentEnv, memoryProviderFor(agent, runtime, agentEnv).runtimeEnv())
   // The standalone chat CLI runs one agent locally, so it owns a plane with nothing registered
   // on it: git runs here and no path lives in a sandbox.
   const workspaces = new WorkspaceManager()

@@ -1,7 +1,6 @@
 import type { RuntimeDef } from '../../config/config-schema.js'
 import type { MemoryHomePorts } from '../home.js'
-import { isNativeRuntimeSupported, nativeRuntimeEnv } from '../runtime/native.js'
-import { describeRuntime } from '../runtime/capabilities.js'
+import { describeRuntime, runtimeMemoryCapabilities } from '../runtime/capabilities.js'
 import { MemoryProviderUnavailableError, type MemoryProvider, type MemoryProviderKind } from '../types.js'
 import { ManagedMemoryProvider } from './managed.js'
 import { NoMemoryProvider } from './none.js'
@@ -13,15 +12,9 @@ export function memoryKindOf(agent: { memory?: { provider?: MemoryProviderKind }
   return agent.memory?.provider ?? 'managed'
 }
 
-/**
- * Build the concrete provider for ONE agent — used at spawn (`daemon.ts` / `chat.ts`)
- * to source `runtimeEnv`, and validated eagerly so a misconfigured agent (external,
- * or native on an unregistered runtime) fails loudly with the agent's root bound.
- * Throws `MemoryProviderUnavailableError` on an unbuildable provider.
- */
+/** One agent's memory env at spawn; throws `MemoryProviderUnavailableError` for an unbuildable provider (external without admission, native on an unverified runtime). */
 export function memoryProviderFor(
   agent: {
-    dir: string
     runtime?: string
     memory?: { provider?: MemoryProviderKind; connectionId?: string }
   },
@@ -37,13 +30,13 @@ export function memoryProviderFor(
     return { runtimeEnv: () => p.runtimeEnv(runtime, effectiveEnv, agent.runtime) }
   }
   if (kind === 'native') {
-    if (!isNativeRuntimeSupported(runtime, agent.runtime)) {
+    if (!runtimeMemoryCapabilities(runtime, agent.runtime).native) {
       throw new MemoryProviderUnavailableError(
-        `native memory is not supported for this runtime (env levers unverified): ${describeRuntime(runtime, agent.runtime)}`
+        `native memory is not supported for this runtime (memory location unverified): ${describeRuntime(runtime, agent.runtime)}`
       )
     }
-    // Bind the agent root so runtimeEnv can compute the redirect target.
-    return { runtimeEnv: () => nativeRuntimeEnv(runtime, agent.dir, agent.runtime) }
+    // Neither an off-switch nor a redirect: the runtime's memory stays wherever this launch keeps its state (#2668).
+    return { runtimeEnv: () => ({}) }
   }
   const connectionId = agent.memory?.connectionId
   if (!connectionId) throw new MemoryProviderUnavailableError('external memory connection id is missing')

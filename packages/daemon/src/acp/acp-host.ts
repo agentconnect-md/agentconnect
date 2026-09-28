@@ -744,12 +744,7 @@ export class AcpHost {
         this.opts.log?.warn(`acp: leaving Codex's request_user_input tool off — ${(err as Error).message}`)
       }
     }
-    // NOTE: the memory-backend env (disable the runtime's own memory for `managed`,
-    // or redirect it under the private runtime HOME for `native`) is assembled by the daemon
-    // in ensureHost via memoryProviderFor(agent).runtimeEnv() and passed in through
-    // `opts.env` — it is NOT set here, so it stays per-agent-configurable. The
-    // runtime prober / chat CLI construct AcpHost without that env and therefore get
-    // the runtime's default memory behavior.
+    // The memory-backend env arrives in `opts.env` from memoryProviderFor at spawn; a host built without it keeps the runtime's default memory.
     // appendArgs carries any account-app-isolation flags (e.g. Copilot's
     // --disable-builtin-mcps) that must reach the adapter as CLI args.
     const spawnArgs = [...this.runtime.args, ...(isolateAccountApps ? appIsolation.appendArgs : [])]
