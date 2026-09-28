@@ -252,7 +252,11 @@ export class RelayCpClient {
    *
    * `daemonId` is forwarded unverified; CP requires it to match the reviewed install identity.
    */
-  async verify(kind: RcVerify['kind'], credential: string, daemonId?: string): Promise<RcVerifyResult> {
+  async verify(
+    kind: Exclude<RcVerify['kind'], 'agent-chat-key'>,
+    credential: string,
+    daemonId?: string
+  ): Promise<RcVerifyResult> {
     if (this.state !== 'READY' || !this.transport) {
       throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
     }
@@ -263,6 +267,20 @@ export class RelayCpClient {
           ? { kind, credential, ...(daemonId ? { daemonId } : {}) }
           : { kind, credential }
     const rep = await this.sendRequest(buildRelayCpFrame('rc/verify', request))
+    if (rep.type !== 'rc/verify/ok') {
+      throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
+    }
+    return rep.payload
+  }
+
+  /** An API key on the agent chat API, with the agent it names and the caller's chat id (§10.4); throws like {@link verify}. */
+  async verifyAgentChatKey(credential: string, agentId: string, chatId: string): Promise<RcVerifyResult> {
+    if (this.state !== 'READY' || !this.transport) {
+      throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
+    }
+    const rep = await this.sendRequest(
+      buildRelayCpFrame('rc/verify', { kind: 'agent-chat-key', credential, agentId, chatId })
+    )
     if (rep.type !== 'rc/verify/ok') {
       throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
     }

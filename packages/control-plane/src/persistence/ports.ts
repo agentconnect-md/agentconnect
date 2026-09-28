@@ -1737,6 +1737,8 @@ export interface WebchatConversationRepo {
    *  roster picks in order (webchat-multi-agents.md §3.1 — the roster is fixed
    *  at creation). Conversation + participant rows commit atomically. */
   create(binding: WebchatConversationBinding, memberAgentIds?: AgentId[]): Promise<void>
+  /** Create a single-agent conversation under a caller-derived id unless it exists, converging when two first turns race. */
+  ensure(binding: WebchatConversationBinding): Promise<void>
   /** The conversation's full roster (primary first, then pick order). Empty
    *  for an unknown conversation — callers fail closed. Org-fenced
    *  (org-scoped-data-layer.md §3): a cross-org conversation id yields the same

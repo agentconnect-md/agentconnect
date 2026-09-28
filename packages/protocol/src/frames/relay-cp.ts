@@ -124,6 +124,18 @@ export type RcHeartbeat = z.infer<typeof RcHeartbeat>
 
 // ── delegated verification (§9 / §10) ────────────────────────────────────────
 
+/** The longest chat id the agent chat API accepts; `useChat` generates far shorter ones. */
+export const AGENT_CHAT_ID_MAX_CHARS = 128
+
+/** Why the CP refused an agent chat key, each of which the relay answers with its own status. */
+export const AGENT_CHAT_KEY_REFUSAL = {
+  invalidKey: 'invalid key',
+  notPermitted: 'key not permitted',
+  agentNotFound: 'agent not found',
+  agentMoved: 'agent moved',
+  agentUnavailable: 'agent unavailable'
+} as const
+
 // R→C REQ → rc/verify/ok. The relay holds no database, so it delegates credential
 // checks to the CP: a daemon's API key on `rd/hello`, or a browser's CP-minted
 // short-lived webchat token. The credential is secret material — NEVER log.
@@ -146,6 +158,13 @@ export const RcVerify = z.discriminatedUnion('kind', [
     kind: z.literal('webchat-token'),
     credential: z.string().min(1),
     conversationBinding: z.literal('v1').optional()
+  }),
+  // An API key on the agent chat API (shared-bot-relay.md §10.4): the CP maps (key owner, agent, chat id) to its conversation.
+  z.object({
+    kind: z.literal('agent-chat-key'),
+    credential: z.string().min(1),
+    agentId: z.string().uuid(),
+    chatId: z.string().min(1).max(AGENT_CHAT_ID_MAX_CHARS)
   })
 ])
 export type RcVerify = z.infer<typeof RcVerify>
@@ -191,8 +210,6 @@ export const RcVerifyResult = z.object({
   // coordinate comes from the daemon's own session row.
   targetSessionId: z.string().min(1).optional(),
   remoteMcp: WebchatRemoteMcpEntitlement.optional(),
-  // The minting API key's agent-level permission (daemon-api-key-auth.md §6), `agent:chat` in v1: the relay's agent chat API accepts such a token and the browser socket refuses it. Absent for a console or full-key mint. A plain string, and this object is not strict, so a relay and a CP on either side of this field still agree.
-  permission: z.string().min(1).optional(),
   // The primary agent's enabled chat APIs; the relay's chat API refuses a protocol absent here. Plain strings, so a newer CP's protocol never fails an older relay's parse.
   apiProtocols: z.array(z.string().min(1)).max(16).optional()
 })

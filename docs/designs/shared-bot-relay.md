@@ -532,26 +532,29 @@ block at the daemon, and is never persisted by the relay or Control Plane.
 
 ### 10.4 Agent chat API
 
-**Status:** Milestones 1 and 2 are implemented: the relay's `/ai-sdk/chat`
-route, the UI message stream encoder, turn admission, the per-token verdict
-cache, and `expiresAt` on the token routes; then key permissions and agent
-selection, the token route's `agent:chat` declaration and claim stamping, the
-browser socket's claim check, and the personal key dialog's two new choices.
-The per-agent API entry, its enforcement, and its Console card are
-implemented. The rest is proposed.
+**Status:** The relay's `/ai-sdk/agents/:agentId/chat` route, the UI message
+stream encoder, turn admission, key verification with its verdict cache, key
+permissions and agent selection, and the per-agent API entry with its Console
+card are implemented. The rest is proposed.
 
 Chat frontends built on the AI SDK's `useChat`, such as a documentation site's
 Ask AI panel, speak the AI SDK UI message stream protocol: one HTTP POST per
 turn, answered with SSE parts under `x-vercel-ai-ui-message-stream: v1`. The
-agent chat API serves that protocol from the relay, over the same token,
-conversation binding, and `rd/*` bridge as webchat. A thin proxy that the
-organization runs holds an API key. No browser ever sees the key or a token.
+agent chat API serves that protocol from the relay, over the same conversation
+binding and `rd/*` bridge as webchat. A caller presents its API key on every
+request, the way a server calls a model API; there is no token step. A browser
+never holds the key: a web app puts a same-origin route in front of the relay
+that adds the key and forwards the request unchanged.
 
-The key is an ordinary API key whose permission is `agent:chat` and whose
-selection includes the agent
+    POST <PUBLIC_RELAY_URL>/ai-sdk/agents/:agentId/chat
+    Authorization: Bearer <API key>
+    body: the useChat request, { id, messages, ... }
+
+The key is an ordinary API key admitted for `agent:chat` whose selection
+includes the agent, or a `full` key; a `read` key and a read-only OAuth token
+are refused
 ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#key-permissions-and-agent-selection)).
-A personal key with that permission is the complete v1 credential; the
-conversations it opens are its user's. A
+A personal key's conversations are its user's. A
 [service-account member](daemon-api-key-auth.md#service-account-members), a
 non-signing-in member that an owner creates and whose keys an owner mints, uses
 the same permission and selection, and its sessions are org-visible by
@@ -563,72 +566,66 @@ Integrations, one entry per protocol (`ai-sdk-ui` today), stored as an
 `PUT`/`DELETE /agents/:agentId/api/:protocol`. A key's selection says which
 agents its holder may reach; the entry says the agent is reachable over this
 API at all, so a key selecting every agent still reaches only the agents that
-added it. The token route refuses an `agent:chat` mint for an agent without the
-entry with 403, and `rc/verify` returns the agent's entries as `apiProtocols`,
-which `/ai-sdk/chat` requires to name `ai-sdk-ui` for every token, a console
-mint included, answering 403 `api_disabled` otherwise. Removing the entry
-therefore stops a live token within its five-minute lifetime, like revoking
-the key.
+added it. `rc/verify` returns the agent's entries as `apiProtocols`, and the
+route answers 403 `api_disabled` when they do not name `ai-sdk-ui`.
 
 In the Console, API sits in the Add integration dialog's Workflow group, where
 the owner picks a protocol; ACP 2, the remote ACP endpoint under Relation to
 ACP below, is listed as coming and cannot be picked yet. The
 agent's Integrations tab then shows one API card with a row per protocol and a
-single remove action. Each row's Quickstart shows this deployment's token and
-chat endpoints, a server-side proxy snippet for `useChat`, and the Agent chat
-keys that reach the agent: the caller's own, and for an owner each service
-account's. Its Create key opens the key dialog preset to Agent chat on that
-agent, with an Owner choice of the caller or, for an owner, a service account.
+single remove action. Each row's Quickstart shows the chat endpoint, examples
+for curl, a script, and a web app, and the Agent chat keys that reach the
+agent: the caller's own, and for an owner each service account's. Its Create
+key opens the key dialog preset to Agent chat on that agent, with an Owner
+choice of the caller or, for an owner, a service account.
 
-The proxy mints a token per conversation, not per turn:
+**Verification:** the relay holds no database, so it asks the CP.
 
-1. The proxy calls `POST /api/v1/orgs/:orgId/agents/:agentId/webchat/token`,
-   the route the console already uses, with `Authorization: Bearer <key>` and
-   an optional `conversationId`. The response gains `expiresAt`. Without an id,
-   CP creates a conversation owned by the key's user. A resume follows the
-   route's existing rules: the caller's own conversation, the 409 fence for an
-   agent that moved, 404 otherwise. When the key's permission is `agent:chat`,
-   the token's claims carry that permission and the agent
-   ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#key-permissions-and-agent-selection)),
-   and `rc/verify` returns them with the verdict.
-2. For each turn, the proxy calls `POST <relayUrl>/ai-sdk/chat/:conversationId`
-   with `Authorization: Bearer <token>` and forwards the `useChat` request body.
-   The path names the conversation and must match the token's binding, or the
-   relay answers 404.
-   - The relay turns the last user message's text into a webchat turn. It
-     ignores the earlier messages, because the daemon session already holds the
-     history. The turn carries no delegated MCP entitlement, which stays with
-     the console's own socket.
-   - The relay streams the turn's `rd/chat` output back as UI message parts.
+1. The relay sends `rc/verify { kind: 'agent-chat-key', credential, agentId,
+chatId }`.
+2. The CP authenticates the key with the same hash lookup as HTTP and applies
+   the checks an HTTP route declaring `agent:chat` would: the permission, the
+   selection, a membership in the key's org, and `canView` on the agent. It
+   then resolves the conversation below and answers the verdict a webchat token
+   gets: identity, agent, placement, conversation, roster, and `apiProtocols`.
+   A refusal names its reason, which the relay answers as 401 for an unknown or
+   revoked key, 403 for a key without the permission, 404 for an agent the key
+   cannot reach, 409 `agent_moved` for the fence below, and 503 `no_agent` for an
+   agent with no live daemon.
+3. The relay caches an `ok` verdict for 60 seconds per instance, keyed by the
+   hash of the key, agent, and chat id. A turn inside that window never touches
+   the CP.
 
-The token is the browser webchat token, with its five-minute TTL. The proxy
-reuses it until `expiresAt`, and each relay instance caches the `rc/verify`
-verdict, keyed by the token's hash, until the same moment. So a turn on a live
-token never touches CP, on the instance that verified it. The cache is per
-instance, and a turn can land on any instance behind `PUBLIC_RELAY_URL`, so
-during a CP outage a turn keeps working only where its token was already
-verified. New conversations and renewals wait for CP. The same cache serves
-the browser socket, which verifies once per handshake today.
+Revoking the key, removing the API entry, or losing access to the agent takes
+effect within those 60 seconds. The cache is per instance, and a turn can land
+on any instance behind `PUBLIC_RELAY_URL`, so during a CP outage a conversation
+keeps working for up to 60 seconds only where it was already verified; new
+conversations wait for the CP.
 
-Revoking the key takes effect when its outstanding tokens expire, within five
-minutes.
+**Conversation:** the body's `id`, the chat id `useChat` generates, names the
+conversation; it is 1 to 128 characters. The CP maps it to the webchat
+conversation `uuidv5(org, key owner, agent, chat id)`. The first turn creates it,
+owned by the key's user, converging when two first turns race; a later turn
+resumes it under the existing rules, including the 409 fence for an agent whose
+next turn would reach a machine that does not hold its session. Because the
+owner is part of the id, the same chat id sent with another member's key is a
+different conversation, and a chat id can never reach a conversation someone
+else owns. A same-origin route may therefore forward the `useChat` body as is: a
+visitor reaches only the conversations its own random chat ids name. A new chat
+is a new id.
 
-The proxy maps each visitor to a conversation id and token itself, for example
-through a cookie. It must not trust the client-generated chat id, since any
-conversation the key's user owns can be resumed through the proxy. A request
-whose history holds a single user message is a new conversation; `useChat`
-clears its history client-side without telling the server.
+The relay turns the last user message's text into a webchat turn. It ignores
+the earlier messages, because the daemon session already holds the history. The
+turn carries no delegated MCP entitlement, and the relay streams the turn's
+`rd/chat` output back as UI message parts.
 
-A token whose claims carry `agent:chat` is confined to this route. The browser
-socket refuses it at the handshake, one check beside the verify call, so the
-socket's other operations, runtime and permission changes, per-turn overrides,
-`targets`, `mentions`, elicitation, and MCP App calls, are out of the key
-holder's reach, and so is any other participant of a conversation that has
-gained one since. `/ai-sdk/chat` exposes one operation, a text turn, and addresses it
-to the token's agent alone; a `useChat` request has no representation for
-anything else. A token without the claim, the console's own, is accepted by
-both entry points as today. The daemon's `allowRuntimeChangesInChat` gate is
-unaffected.
+**Scope:** the route exposes one operation, a text turn to the path's agent; a
+`useChat` request has no representation for anything else. The webchat token
+route is the console's alone: a key admitted only for `agent:chat` cannot mint a
+token, so the browser socket's other operations, runtime and permission
+changes, per-turn overrides, `targets`, `mentions`, elicitation, and MCP App
+calls, are out of the key holder's reach. The daemon's
+`allowRuntimeChangesInChat` gate is unaffected.
 
 | `rd/chat` output                         | UI message stream                                       |
 | ---------------------------------------- | ------------------------------------------------------- |
@@ -655,7 +652,7 @@ keyed by protocol. The AgentSpec ships each gate with the Decisions its chain
 names, the way a code-host routing rides its host's spec, so admission reads
 nothing from the CP: editing one of those Decisions bumps and re-pushes the
 agent, and a gate whose condition no longer fits its Decision is left out of
-the spec until it is saved again. The relay marks each `/ai-sdk/chat` turn with
+the spec until it is saved again. The relay marks each agent chat API turn with
 `origin: 'ai-sdk-ui'`, and the daemon evaluates the chain on the turn's text
 where the op enters it, before a plain turn and a session-targeted continuation
 diverge and before anything is recorded. An answered no refuses the turn as
@@ -709,8 +706,8 @@ relay's output with the `ai` package's own client, not by string assertions.
 
 **Resume (later milestone):**
 
-- `GET <relayUrl>/ai-sdk/chat/:conversationId/stream`, called with the conversation's
-  token, issues `attach` and then `resume` from index `-1` against the daemon's
+- `GET <PUBLIC_RELAY_URL>/ai-sdk/agents/:agentId/chat/:id/stream`, called with the
+  key, issues `attach` and then `resume` from index `-1` against the daemon's
   bounded output window (§10.3).
 - The replay works only while that window still holds the turn from its first
   output. Once the window has trimmed the head, the daemon refuses with
@@ -728,8 +725,8 @@ relay's output with the `ai` package's own client, not by string assertions.
   `private`, owned by that user. The console shows the key's name as the
   session's source.
 - The admission bound above is per relay instance, not a global cap. There is
-  no per-key limit on token mints; personal keys are unlimited on every route,
-  and this route is no exception. Per-visitor limits belong to the proxy.
+  no per-key request limit; personal keys are unlimited on every route, and
+  this route is no exception. Per-visitor limits belong to the same-origin route.
 - Usage is metered on the agent, as for any other turn.
 - The key adds no tool restriction. An agent behind a public proxy receives
   untrusted input on every turn, so its own configuration is the boundary: no
@@ -746,17 +743,18 @@ as its own `AgentApiProtocol` entry.
 
 **Milestones:**
 
-1. **Relay:** `/ai-sdk/chat`, the UI message stream encoder, turn admission, the
-   per-token verdict cache, and `expiresAt` on the token route's response. A
-   `full` personal key works from this point.
+1. **Relay:** the chat route, the UI message stream encoder, and turn
+   admission.
 2. **CP and Web:** key permissions and agent selection
-   ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#key-permissions-and-agent-selection)),
-   the token route's `agent:chat` declaration and claim stamping, the browser
-   socket's claim check, and the personal key dialog's two new choices.
-3. **Relay:** the stream-resume route.
-4. **CP, relay, and Web:** the per-agent API entry and its Integrations card,
-   whose Quickstart carries the two endpoints and a proxy example; it replaces
-   the agent detail page's unfinished API tab.
+   ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#key-permissions-and-agent-selection))
+   and the personal key dialog's two new choices.
+3. **CP, relay, and Web:** the per-agent API entry and its Integrations card; it
+   replaces the agent detail page's unfinished API tab.
+4. **CP and relay:** the key on the chat route itself: `rc/verify` for an agent
+   chat key, the chat id's conversation, and the 60-second verdict cache. It
+   replaces the first design's token step, in which a proxy minted a webchat
+   token with the key and sent turns under the token.
+5. **Relay:** the stream-resume route.
 
 Later, separately: the
 [service-account member](daemon-api-key-auth.md#service-account-members).

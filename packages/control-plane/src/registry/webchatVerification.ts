@@ -12,7 +12,7 @@ import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { servesSessionContent } from '../domain/session-content.js'
 import type { PlacementResolver, ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
-import type { WebchatTokenService } from './webchatToken.js'
+import type { WebchatTokenClaims, WebchatTokenService } from './webchatToken.js'
 
 interface VerificationDaemon {
   state: string
@@ -55,30 +55,21 @@ export interface WebchatVerificationDeps {
   placement: Pick<PlacementResolver, 'dispatchDaemon'>
 }
 
-/**
- * Builds the relay-facing webchat verifier. Ordinary token and live-placement
- * checks are authoritative. The PRIMARY agent must be placed on a READY daemon
- * (unchanged single-agent behavior); member participants resolve best-effort —
- * one whose daemon is unplaced or not READY is returned WITHOUT a `daemonId`,
- * and the relay refuses turns targeting it. Expected delegation denials return
- * no reference; unexpected dependency failures propagate to the relay handler's
- * retryable INTERNAL response instead of being misreported as a successful
- * verification.
- *
- * A SESSION-TARGETED conversation (non-null `targetSessionId`) re-checks the
- * continuation gates on every dial: the target session must exist un-purged and
- * chat-origin, the signed user must still hold a non-viewer role (private
- * sessions: console ownership), and the owner agent's dispatch daemon must still
- * serve the session's content (its recorder, or a holder of the shared store it
- * was written to) with the continuation capability. Any drift
- * fails the token instead of degrading into a fresh webchat session. The full
- * provider-identity expansion ran at mint (≤ token TTL ago); verify re-checks
- * with the console identity, which fails closed for platform-identity owners.
- */
+/** The relay's webchat token check: a primary placed on a READY daemon, members best-effort, and a targeted conversation's continuation gates re-run on every dial. */
 export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (token: string) => Promise<RcVerifyResult> {
+  const resolve = webchatBinding(deps)
   return async (token) => {
     const claims = await deps.tokens.verify(token)
     if (!claims) return { ok: false, reason: 'invalid token' }
+    return resolve(claims, { remoteMcp: true })
+  }
+}
+
+/** Everything a verdict needs once a credential proved `claims`: live placement, the conversation, its roster, and the agent's chat APIs. */
+export function webchatBinding(
+  deps: Omit<WebchatVerificationDeps, 'tokens'>
+): (claims: WebchatTokenClaims, opts: { remoteMcp: boolean }) => Promise<RcVerifyResult> {
+  return async (claims, opts) => {
     const agent = await deps.agents.getUnscoped(AgentId(claims.agentId))
     if (!agent || agent.orgId !== claims.orgId) return { ok: false, reason: 'invalid token' }
     // Readiness is the resolver's answer, not a member id the row happens to carry: a pool agent
@@ -108,8 +99,6 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       daemonId: agentDaemonId,
       orgId: claims.orgId,
       conversationId: claims.conversationId,
-      // The minting key's agent-level permission, so the relay confines the token to the agent chat API (§10.4).
-      ...(claims.permission ? { permission: claims.permission } : {}),
       apiProtocols
     }
 
@@ -194,7 +183,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
     const verified: RcVerifyResult = { ...verifiedBase, participants }
     // Delegated admin MCP is a single-participant privilege (webchat-multi-agents.md
     // §10.3): a multi-agent conversation never receives the entitlement.
-    if (participants.length > 1) return verified
+    if (participants.length > 1 || !opts.remoteMcp) return verified
     if (!daemon.capabilities?.features.includes(WEBCHAT_REMOTE_MCP_FEATURE)) {
       return verified
     }
@@ -208,4 +197,36 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
     })
     return entitlement ? { ...verified, remoteMcp: entitlement } : verified
   }
+}
+
+export interface ContentReachDeps {
+  sessions: {
+    get(
+      orgId: OrgId,
+      id: SessionId
+    ): Promise<{ agentId: string; daemonId: string | null; contentSetId: string | null } | null>
+  }
+  agents: { get(orgId: OrgId, id: AgentId): Promise<ResolvableAgent | null> }
+  placement: Pick<PlacementResolver, 'dispatchDaemon'>
+  memberSets: { sharedStoreMemberIdsOf(setId: string): Promise<string[]> }
+}
+
+/** Resume fence: each participant's current session must be served where its next turn goes, its recorder or a member of its shared store — a group keeps none, so after a failover the successor never takes a turn without the transcript. */
+export async function everyTurnReachesItsContent(
+  deps: ContentReachDeps,
+  orgId: OrgId,
+  currentSessionIds: Array<SessionId | null>
+): Promise<boolean> {
+  for (const id of currentSessionIds) {
+    if (id === null) continue
+    const s = await deps.sessions.get(orgId, id)
+    const agent = s ? await deps.agents.get(orgId, AgentId(s.agentId)) : null
+    if (!s || !agent) continue
+    // Nobody to reach right now is an offline agent, not a moved one: the turn waits for a member.
+    const target = await deps.placement.dispatchDaemon(agent)
+    if (!target) continue
+    const sharedStoreMembers = s.contentSetId ? await deps.memberSets.sharedStoreMemberIdsOf(s.contentSetId) : []
+    if (!servesSessionContent({ recordedDaemonId: s.daemonId, sharedStoreMembers }, target)) return false
+  }
+  return true
 }

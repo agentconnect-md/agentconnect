@@ -22,11 +22,10 @@ import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { canContinueSession, canView } from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
-import { servesSessionContent } from '../../domain/session-content.js'
 import { ctxOf, orgOf } from '../rbac.js'
-import { isAgentLevelPermission } from '../../domain/api-key-permission.js'
 import { ErrorDto } from '../dto/index.js'
-import { resolveProfilePictureUrl } from '../../icons/icon-store.js'
+import { webchatAuthorIdentity } from '../../registry/agentChatKeyVerification.js'
+import { everyTurnReachesItsContent as turnsReachContent } from '../../registry/webchatVerification.js'
 import { Tag } from '../plugins/openapi.js'
 
 const Params = z.object({ orgId: z.string(), agentId: z.string().uuid() })
@@ -65,19 +64,13 @@ export function webchatTokenRoutes(deps: HttpDeps) {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const sessionAccess = makeSessionAccessResolver(deps)
 
-    /** The identity the token attests: the handle names transcript lines and session branches, so the full name beats the sign-in address (`a10t/jane-doe/…`, not `a10t/jane-example-com/…`); the avatar is what a mirrored console turn posts under. */
-    const authorIdentity = async (
-      userId: string,
-      email: string | undefined
-    ): Promise<{ user: string; userPicture?: string }> => {
-      const profile = await deps.repos.user.getProfile(userId)
-      const picture = profile
-        ? resolveProfilePictureUrl(userId, profile.picture, profile.profilePictureUpdatedAt, deps.iconStore)
-        : null
-      // Only a fetchable https URL is worth carrying — the wire schema rejects anything else.
-      const userPicture = picture && picture.length <= 2_048 && /^https:\/\//.test(picture) ? picture : undefined
-      return { user: profile?.displayName?.trim() || email || userId, ...(userPicture ? { userPicture } : {}) }
-    }
+    /** The identity the token attests: the handle names transcript lines and session branches, so the full name beats the sign-in address. */
+    const authorIdentity = (userId: string, email: string | undefined) =>
+      webchatAuthorIdentity(
+        { users: deps.repos.user, ...(deps.iconStore ? { iconStore: deps.iconStore } : {}) },
+        userId,
+        email
+      )
 
     /** The first roster agent whose serving daemon does not advertise multi-agent webchat, or
      *  undefined when every one of them does. The daemon comes from the resolver — the same
@@ -132,39 +125,25 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       return rows.every((s) => canContinueSession(s, ctx, access.identitySet, access.externalAccess)) ? resumable : null
     }
 
-    /** Mint-time content fence: each participant's current session must be served where its next turn goes, its recorder or a member of its shared store — a group keeps none, so after a failover the successor never takes a turn without the transcript. */
-    const everyTurnReachesItsContent = async (
-      orgId: OrgId,
-      currentSessionIds: Array<SessionId | null>
-    ): Promise<boolean> => {
-      for (const id of currentSessionIds) {
-        if (id === null) continue
-        const s = await deps.repos.session.get(orgId, id)
-        const agent = s ? await deps.repos.agent.get(orgId, AgentId(s.agentId)) : null
-        if (!s || !agent) continue
-        // Nobody to reach right now is an offline agent, not a moved one: the turn waits for a member.
-        const target = await deps.placementResolver.dispatchDaemon(agent)
-        if (!target) continue
-        const sharedStoreMembers = s.contentSetId
-          ? await deps.repos.memberSet.sharedStoreMemberIdsOf(s.contentSetId)
-          : []
-        if (!servesSessionContent({ recordedDaemonId: s.daemonId, sharedStoreMembers }, target)) return false
-      }
-      return true
+    const contentReach = {
+      sessions: deps.repos.session,
+      agents: deps.repos.agent,
+      placement: deps.placementResolver,
+      memberSets: deps.repos.memberSet
     }
+    const everyTurnReachesItsContent = (orgId: OrgId, currentSessionIds: Array<SessionId | null>) =>
+      turnsReachContent(contentReach, orgId, currentSessionIds)
     const AGENT_MOVED = { error: 'Conflict', statusCode: 409, message: 'the agent moved since this conversation ran' }
 
-    // The one v1 route an `agent:chat` key reaches (daemon-api-key-auth.md §6): humanAuth admits such a key here alone and fences `:agentId` on its selection.
     r.post(
       '/agents/:agentId/webchat/token',
       {
         preHandler: app.humanAuth,
-        config: { permission: 'agent:chat' },
         schema: {
           tags: [Tag.Agents],
           summary: 'Mint a webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). A resume answers 409 once an agent’s next turn would reach a machine that does not hold its session. An API key whose permission is `agent:chat` may call this route for the agents in its selection that have added the AI SDK UI API under Integrations (403 otherwise); the token it mints carries that permission and is accepted by the relay’s agent chat API only.',
+            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). A resume answers 409 once an agent’s next turn would reach a machine that does not hold its session.',
           operationId: 'mintWebchatToken',
           params: Params,
           body: Body,
@@ -182,16 +161,6 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.params.agentId))
         if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        }
-        // An agent-level key's token reaches only the chat API, so an agent that has not added it answers now rather than at the relay.
-        const permission = req.apiKeyPermission
-        if (
-          isAgentLevelPermission(permission) &&
-          !(await deps.repos.agentApiEntry.listForAgent(agent.id)).some((e) => e.protocol === 'ai-sdk-ui')
-        ) {
-          return reply
-            .code(403)
-            .send({ error: 'Forbidden', statusCode: 403, message: 'this agent does not accept API calls' })
         }
         const userId = req.principal!.userId
         const conversationId = req.body.conversationId?.toLowerCase() ?? randomUUID()
@@ -211,14 +180,12 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         } else {
           await deps.repos.webchatConversation.create(binding)
         }
-        // A token inherits its minting key's limits: an agent-level permission rides the claims so the relay can confine it; a console or full-key mint carries none.
         const { token, expiresAt } = await deps.webchatTokens.mint({
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),
           agentId: agent.id,
           orgId: agent.orgId,
-          conversationId,
-          ...(isAgentLevelPermission(permission) ? { permission } : {})
+          conversationId
         })
         return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString() })
       }

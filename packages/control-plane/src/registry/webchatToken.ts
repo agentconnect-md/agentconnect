@@ -17,7 +17,6 @@
  */
 import { createHmac } from 'node:crypto'
 import { SignJWT, jwtVerify } from 'jose'
-import { isAgentLevelPermission, type AgentLevelPermission } from '../domain/api-key-permission.js'
 
 /** The identity a minted webchat token attests (authz already checked at mint time). */
 export interface WebchatTokenClaims {
@@ -31,8 +30,6 @@ export interface WebchatTokenClaims {
   conversationId: string
   /** Exact private-session owner proven by the mint-time identity expansion. */
   privateSessionOwnerIdentity?: string
-  /** The minting key's agent-level permission (daemon-api-key-auth.md §6); absent for a console or full-key mint. */
-  permission?: AgentLevelPermission
 }
 
 /** A minted token and the instant its `exp` claim names. */
@@ -68,10 +65,7 @@ export class WebchatTokenService {
       agentId: claims.agentId,
       orgId: claims.orgId,
       conversationId: claims.conversationId,
-      ...(claims.privateSessionOwnerIdentity
-        ? { privateSessionOwnerIdentity: claims.privateSessionOwnerIdentity }
-        : {}),
-      ...(claims.permission ? { permission: claims.permission } : {})
+      ...(claims.privateSessionOwnerIdentity ? { privateSessionOwnerIdentity: claims.privateSessionOwnerIdentity } : {})
     })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(claims.userId)
@@ -85,8 +79,10 @@ export class WebchatTokenService {
   async verify(token: string): Promise<WebchatTokenClaims | null> {
     try {
       const { payload } = await jwtVerify(token, this.key, { algorithms: ['HS256'] })
-      const { sub, user, userPicture, agentId, orgId, conversationId, privateSessionOwnerIdentity, permission } =
-        payload as Record<string, unknown>
+      const { sub, user, userPicture, agentId, orgId, conversationId, privateSessionOwnerIdentity } = payload as Record<
+        string,
+        unknown
+      >
       if (
         typeof sub !== 'string' ||
         typeof agentId !== 'string' ||
@@ -103,8 +99,7 @@ export class WebchatTokenService {
         agentId,
         orgId,
         conversationId: conversationId.toLowerCase(),
-        ...(typeof privateSessionOwnerIdentity === 'string' ? { privateSessionOwnerIdentity } : {}),
-        ...(isAgentLevelPermission(permission) ? { permission } : {})
+        ...(typeof privateSessionOwnerIdentity === 'string' ? { privateSessionOwnerIdentity } : {})
       }
     } catch {
       return null // bad signature / expired / malformed

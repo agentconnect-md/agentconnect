@@ -97,6 +97,7 @@ function build(
     auth?: Pick<RelayAuthService, 'authenticate' | 'verifyDaemonKey' | 'heartbeatSec'> &
       Partial<Pick<RelayAuthService, 'verifyDaemonToken'>>
     verifyWebchatToken?: (token: string) => Promise<RcVerifyResult>
+    verifyAgentChatKey?: (req: { credential: string; agentId: string; chatId: string }) => Promise<RcVerifyResult>
     authorizeGithubComment?: (req: RcGithubCommentAuthz) => Promise<boolean>
     authorizeGithubRerequest?: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
     onPullRequestFeedback?: ConstructorParameters<typeof RelayConnection>[1]['onPullRequestFeedback']
@@ -139,6 +140,8 @@ function build(
   const transport = new FakeServerTransport()
   const verifyWebchatToken =
     over.verifyWebchatToken ?? vi.fn(async () => ({ ok: false, reason: 'not tested' }) as RcVerifyResult)
+  const verifyAgentChatKey =
+    over.verifyAgentChatKey ?? vi.fn(async () => ({ ok: false, reason: 'not tested' }) as RcVerifyResult)
   const authorizeGithubComment = over.authorizeGithubComment ?? vi.fn(async () => false)
   const authorizeGithubRerequest = over.authorizeGithubRerequest ?? vi.fn(async () => ({ allowed: false as const }))
   const onPullRequestFeedback = over.onPullRequestFeedback ?? vi.fn(async () => false)
@@ -163,6 +166,7 @@ function build(
     onPullRequestFeedback,
     relayReg,
     verifyWebchatToken,
+    verifyAgentChatKey,
     authorizeGithubComment,
     authorizeGithubRerequest,
     authorizeCodeHostMembership: vi.fn(async () => false)
@@ -545,6 +549,7 @@ describe('RelayConnection FSM', () => {
       onGithubInstallation: vi.fn(async () => {}),
       relayReg,
       verifyWebchatToken,
+      verifyAgentChatKey: vi.fn(async () => ({ ok: false, reason: 'not tested' }) as RcVerifyResult),
       authorizeGithubComment: vi.fn(async () => false),
       authorizeGithubRerequest: vi.fn(async () => ({ allowed: false as const })),
       authorizeCodeHostMembership: vi.fn(async () => false)
@@ -834,6 +839,23 @@ describe('RelayConnection FSM', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(verifyWebchatToken).toHaveBeenCalledWith('browser-token')
+    expect(transport.lastRep('rc/verify/ok')!.payload).toMatchObject({ ok: true })
+  })
+
+  it('rc/verify(agent-chat-key) hands the key, agent and chat id to its verifier', async () => {
+    const verifyAgentChatKey = vi.fn(async () => ({ ok: true, conversationId: '55555555-5555-4555-8555-555555555555' }))
+    const { transport } = build({ verifyAgentChatKey })
+    await toReady(transport)
+    const req = {
+      kind: 'agent-chat-key',
+      credential: 'api-key',
+      agentId: '33333333-3333-4333-8333-333333333333',
+      chatId: 'chat-1'
+    }
+    transport.feed('rc/verify', req)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(verifyAgentChatKey).toHaveBeenCalledWith(req)
     expect(transport.lastRep('rc/verify/ok')!.payload).toMatchObject({ ok: true })
   })
 

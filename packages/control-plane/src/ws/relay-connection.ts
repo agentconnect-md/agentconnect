@@ -121,6 +121,8 @@ export interface RelayConnDeps {
    *  (userId, user, agentId, daemonId, orgId, conversationId), or `{ ok:false }` (§10). May throw on a
    *  transient store error → the handler answers a retryable error. */
   verifyWebchatToken: (token: string) => Promise<RcVerifyResult>
+  /** Resolve an API key on the agent chat API to the same verdict, its chat id mapped to a conversation (§10.4); may throw like the token check. */
+  verifyAgentChatKey: (req: { credential: string; agentId: string; chatId: string }) => Promise<RcVerifyResult>
   /** Re-check a GitHub comment sender against the current repository permission.
    *  A thrown store/GitHub error becomes a retryable correlated error without
    *  closing the shared relay link. */
@@ -430,14 +432,23 @@ export class RelayConnection implements RelayChannel {
     // rejects just this one dial-in and its peer retries.
     let result: RcVerifyResult
     try {
-      result =
-        req.kind === 'daemon-key'
-          ? await this.verifyDaemonCredential('daemon-key', req.credential)
-          : req.kind === 'daemon-token'
-            ? await this.verifyDaemonCredential('daemon-token', req.credential, req.daemonId)
-            : req.conversationBinding === 'v1'
+      switch (req.kind) {
+        case 'daemon-key':
+          result = await this.verifyDaemonCredential('daemon-key', req.credential)
+          break
+        case 'daemon-token':
+          result = await this.verifyDaemonCredential('daemon-token', req.credential, req.daemonId)
+          break
+        case 'webchat-token':
+          result =
+            req.conversationBinding === 'v1'
               ? await this.deps.verifyWebchatToken(req.credential)
               : { ok: false, reason: 'unsupported webchat binding' }
+          break
+        case 'agent-chat-key':
+          result = await this.deps.verifyAgentChatKey(req)
+          break
+      }
     } catch {
       this.sendError(frame.id, 'INTERNAL', 'verify failed', true)
       return

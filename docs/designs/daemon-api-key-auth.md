@@ -271,18 +271,11 @@ only in whose identity it carries.
   added later, refuses it. When the declaring route carries an `:agentId`
   parameter, `humanAuth` also checks the key's selection and answers 404 for an
   agent outside it.
-- The only v1 route that declares `agent:chat` is
-  `POST /orgs/:orgId/agents/:agentId/webchat/token`. On a resume, the
-  conversation's bound agent must also be in the selection. The agent must
-  also have added the chat API under its Integrations, or the route answers 403
-  ([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api)).
-- A token minted by a key inherits the key's limits. When the minting key's
-  permission is not `full`, the token route stamps the permission and the agent
-  into the token's claims, `rc/verify` returns them, and the relay enforces them
-  at every entry point ([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api)).
-  A console mint, or a `full` key's, carries no such claim. Minting another
-  token does not widen anything, since every token the key mints carries the
-  same claims.
+- No v1 HTTP route declares `agent:chat`, so every CP route, the webchat token
+  route included, refuses such a key. It is admitted by the relay's agent chat
+  API alone, where `rc/verify` applies the same admission, requires the agent to
+  be in the selection, and requires the agent to have added the chat API under
+  its Integrations ([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api)).
 - `POST /me/keys` takes `permission` and, for an agent-level permission,
   `agents: 'all' | string[]`, required then and refused with 400 for `full`
   and `read`, which cover every agent; an id that is not a visible agent of
@@ -311,12 +304,10 @@ Tests should cover:
 
 - a `read` key admitted on `GET /orgs/:orgId/agents` and refused on a write,
   including `POST /me/keys` and an MCP write tool;
-- an `agent:chat` key admitted by the token route and refused on every
-  undeclared route, including a `GET`, `/me/keys`, and MCP;
-- 404 from the token route for an agent outside the selection, and for a
-  resume whose conversation is bound to such an agent;
-- the token minted by an `agent:chat` key carrying the permission and agent
-  claims, and a console-minted token carrying neither;
+- an `agent:chat` key refused on every CP route, including a `GET`, the
+  webchat token route, `/me/keys`, and MCP;
+- the agent chat API's verification admitting an `agent:chat` key for a selected
+  agent and refusing it for an agent outside the selection;
 - `full` keys ignoring the selection, and a selection emptied by agent deletion
   reaching no agent;
 - existing rows defaulting to `full` after the migration.
