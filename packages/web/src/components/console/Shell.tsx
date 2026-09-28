@@ -117,13 +117,21 @@ const HELP_LINK_DEFAULTS = {
 // Resolve at render (not module load) so it reads the runtime config: window.__AC_ENV
 // in the browser, process.env during SSR — mirroring lib/auth.ts. `support` accepts a
 // mailto: or an https: URL. NEXT_PUBLIC_* is the local-dev build-time fallback.
-function resolveHelpLinks(): typeof HELP_LINK_DEFAULTS {
+function resolveHelpLinks(): typeof HELP_LINK_DEFAULTS & { version: string } {
   const src = typeof window === 'undefined' ? process.env : (window.__AC_ENV ?? {})
+  // The deployed release tag, else the release baked into this build without its +sha.
+  const version = src.RELEASE_VERSION || (process.env.NEXT_PUBLIC_APP_VERSION ?? '').replace(/\+.*$/, '')
+  // A fork's own releases URL is used as is; ours jumps to this release on the list page.
+  const releases =
+    src.HELP_RELEASES_URL ||
+    process.env.NEXT_PUBLIC_HELP_RELEASES_URL ||
+    (version ? `${HELP_LINK_DEFAULTS.releases}#release-${version}` : HELP_LINK_DEFAULTS.releases)
   return {
     mcp: src.HELP_MCP_URL || process.env.NEXT_PUBLIC_HELP_MCP_URL || HELP_LINK_DEFAULTS.mcp,
     docs: src.HELP_DOCS_URL || process.env.NEXT_PUBLIC_HELP_DOCS_URL || HELP_LINK_DEFAULTS.docs,
-    releases: src.HELP_RELEASES_URL || process.env.NEXT_PUBLIC_HELP_RELEASES_URL || HELP_LINK_DEFAULTS.releases,
-    support: src.HELP_SUPPORT_URL || process.env.NEXT_PUBLIC_HELP_SUPPORT_URL || HELP_LINK_DEFAULTS.support
+    releases,
+    support: src.HELP_SUPPORT_URL || process.env.NEXT_PUBLIC_HELP_SUPPORT_URL || HELP_LINK_DEFAULTS.support,
+    version
   }
 }
 
@@ -878,19 +886,12 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                         >
                           <Icon name="gift" size={15} color="var(--text-tertiary)" />
                           {t('help.whatsNew')}
+                          {help.version && <span className="kbd ml-auto">{help.version}</span>}
                         </a>
                         <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
                           <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
                           {t('help.support')}
                         </a>
-                        {process.env.NEXT_PUBLIC_APP_VERSION && (
-                          <>
-                            <div className="dmsep" />
-                            <div className="px-[10px] py-[6px] font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary) select-all">
-                              {process.env.NEXT_PUBLIC_APP_VERSION}
-                            </div>
-                          </>
-                        )}
                       </div>
                     </>
                   )}

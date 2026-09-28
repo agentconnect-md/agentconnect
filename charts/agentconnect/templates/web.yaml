@@ -38,6 +38,9 @@ spec:
             # immutable public runtime snapshot for browser auth/provider config.
             - name: CP_INTERNAL_URL
               value: {{ printf "http://%s-control-plane:%v/api/v1" (include "agentconnect.fullname" .) .Values.controlPlane.port | quote }}
+            # The release this install runs — the help menu's version label and release-notes link.
+            - name: RELEASE_VERSION
+              value: {{ include "agentconnect.imageTag" . | quote }}
             # Browser → CP API base, injected into window.__AC_ENV at runtime so the
             # image isn't pinned to a CP at build time. SUBDOMAIN mode (top-level
             # `apiHost` set) ⇒ https://<apiHost>/v1 (cross-origin; the api HTTPRoute
