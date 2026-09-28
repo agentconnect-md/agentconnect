@@ -123,6 +123,7 @@ import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   effectiveRepoAccess,
+  findRepoAuthorization,
   hasChecksWritePermission,
   hasPullRequestsReadPermission,
   hasPullRequestsWritePermission,
@@ -620,9 +621,7 @@ export default function AddIntegrationModal({
     null
   )
   const ghSelectedRepo = ghRepos?.find((repo) => repo.fullName.toLowerCase() === ghRepoPick?.toLowerCase())
-  const ghSelectedAuthorization = authorizedRepos.find(
-    (authorization) => authorization.repoFullName.toLowerCase() === ghRepoPick?.toLowerCase()
-  )
+  const ghSelectedAuthorization = findRepoAuthorization(authorizedRepos, ghSelectedRepo?.repoId, ghRepoPick)
   const ghSelectedIsWorkspace = isWorkspaceRepo({
     repoId: ghSelectedRepo?.repoId,
     repoFullName: ghRepoPick,
@@ -1752,10 +1751,10 @@ export default function AddIntegrationModal({
                   const pickedRepo = ghRepos?.find((r) => r.fullName === ghRepoPick)
                   const q = ghQ.trim().toLowerCase()
                   const wsLc = wsRepo?.toLowerCase() ?? null
-                  const authByName = new Map(authorizedRepos.map((r) => [r.repoFullName.toLowerCase(), r.access]))
-                  const tierOf = (fullName: string) => {
+                  const tierOf = (fullName: string, repoId?: string) => {
                     const tier =
-                      authByName.get(fullName.toLowerCase()) ?? installationGrantAccess(fullName, installationGrants)
+                      findRepoAuthorization(authorizedRepos, repoId, fullName)?.access ??
+                      installationGrantAccess(fullName, installationGrants)
                     return tier === 'none' ? undefined : tier
                   }
                   const reposLoading = ghRepos === null
@@ -1768,18 +1767,22 @@ export default function AddIntegrationModal({
                   // App-visible repo; scratch simply has no implicit workspace
                   // row. A manual GitHub workspace remains fixed to its repo.
                   const wsMeta = wsLc ? ghRepos?.find((r) => r.fullName.toLowerCase() === wsLc) : undefined
-                  const listSource: { fullName: string; private: boolean; description: string | null }[] =
-                    canAuthorizeAdditionalRepos
-                      ? (ghRepos ?? [])
-                      : wsRepo
-                        ? [
-                            {
-                              fullName: wsRepo,
-                              private: wsMeta ? wsMeta.private : true,
-                              description: wsMeta?.description ?? null
-                            }
-                          ]
-                        : []
+                  const listSource: {
+                    fullName: string
+                    repoId?: string
+                    private: boolean
+                    description: string | null
+                  }[] = canAuthorizeAdditionalRepos
+                    ? (ghRepos ?? [])
+                    : wsRepo
+                      ? [
+                          {
+                            fullName: wsRepo,
+                            private: wsMeta ? wsMeta.private : true,
+                            description: wsMeta?.description ?? null
+                          }
+                        ]
+                      : []
                   // Filtered by the query; workspace + authorized ones surface
                   // first (stable sort keeps GitHub's order within each rank).
                   const repoRows = listSource
@@ -1790,7 +1793,7 @@ export default function AddIntegrationModal({
                         repo: r,
                         watched: repoFullyWatched(lc),
                         isWorkspace: wsLc === lc,
-                        authTier: tierOf(r.fullName)
+                        authTier: tierOf(r.fullName, r.repoId)
                       }
                     })
                     .sort((a, b) => {

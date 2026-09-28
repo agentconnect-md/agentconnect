@@ -3,6 +3,7 @@ import {
   REPORTING_MODE_OPTIONS,
   REVIEW_POLICY_OPTIONS,
   effectiveRepoAccess,
+  findRepoAuthorization,
   githubReviewCapabilities,
   githubReviewSettingsFromCapabilities,
   hasChecksWritePermission,
@@ -127,6 +128,15 @@ describe('R1/R2a GitHub review settings', () => {
         authorizations: [...authorizations, { repoFullName: 'acme/infra', access: 'write' }]
       })
     ).toBe('write')
+  })
+
+  it("never hands a renamed repository's row to a new repository that reuses its name", () => {
+    const stale = { id: 'old', repoId: '11', repoFullName: 'acme/docs', access: 'write' as const }
+    const legacy = { id: 'legacy', repoFullName: 'acme/legacy', access: 'read' as const }
+    expect(findRepoAuthorization([stale, legacy], '22', 'acme/docs')).toBeUndefined()
+    expect(findRepoAuthorization([stale, legacy], '11', 'acme/docs-old')).toBe(stale)
+    expect(findRepoAuthorization([stale, legacy], '33', 'acme/legacy')).toBe(legacy)
+    expect(findRepoAuthorization([stale, legacy], undefined, 'acme/docs')).toBe(stale)
   })
 
   it('uses numeric repo provenance before names and falls back only for legacy rows', () => {

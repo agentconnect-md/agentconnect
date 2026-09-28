@@ -142,11 +142,22 @@ export function effectiveRepoAccess(input: {
     // write on the CP, so preserve that safe compatibility interpretation.
     return input.workspace.gitAccess ?? 'write'
   }
-  const explicit = wantedId
-    ? (input.authorizations.find((row) => row.repoId?.trim() === wantedId) ??
-      input.authorizations.find((row) => !row.repoId && !!wanted && row.repoFullName.toLowerCase() === wanted))
-    : input.authorizations.find((row) => !!wanted && row.repoFullName.toLowerCase() === wanted)
+  const explicit = findRepoAuthorization(input.authorizations, input.repoId, input.repoFullName)
   return explicit?.access ?? installationGrantAccess(input.repoFullName, input.installationGrants)
+}
+
+/** The explicit grant row for a repository; a name matches only when one side has no numeric id, so a renamed repo's row never claims its reused name. */
+export function findRepoAuthorization<T extends { repoId?: string; repoFullName: string }>(
+  authorizations: readonly T[],
+  repoId: string | null | undefined,
+  repoFullName: string | null | undefined
+): T | undefined {
+  const wantedId = repoId?.trim()
+  const wanted = repoFullName?.trim().toLowerCase()
+  return wantedId
+    ? (authorizations.find((row) => row.repoId?.trim() === wantedId) ??
+        authorizations.find((row) => !row.repoId && !!wanted && row.repoFullName.toLowerCase() === wanted))
+    : authorizations.find((row) => !!wanted && row.repoFullName.toLowerCase() === wanted)
 }
 
 export function installationForRepo<T extends { accountLogin: string }>(
