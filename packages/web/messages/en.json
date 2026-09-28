@@ -859,8 +859,10 @@
     "actions": {
       "account": "Account",
       "createOrganization": "Create organization",
+      "theme": "Theme",
       "lightMode": "Light mode",
       "darkMode": "Dark mode",
+      "systemMode": "System",
       "signOut": "Sign out",
       "yourProfile": "Your profile",
       "search": "Search",
@@ -869,6 +871,7 @@
       "collapseSidebar": "Collapse sidebar",
       "switchLight": "Switch to light theme",
       "switchDark": "Switch to dark theme",
+      "switchSystem": "Follow system theme",
       "toggleTheme": "Toggle theme",
       "add": "Add",
       "addAgent": "Add agent",

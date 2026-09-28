@@ -859,8 +859,10 @@
     "actions": {
       "account": "账户",
       "createOrganization": "创建组织",
+      "theme": "主题",
       "lightMode": "浅色模式",
       "darkMode": "深色模式",
+      "systemMode": "跟随系统",
       "signOut": "退出登录",
       "yourProfile": "个人资料",
       "search": "搜索",
@@ -869,6 +871,7 @@
       "collapseSidebar": "收起侧边栏",
       "switchLight": "切换到浅色主题",
       "switchDark": "切换到深色主题",
+      "switchSystem": "跟随系统主题",
       "toggleTheme": "切换主题",
       "add": "添加",
       "addAgent": "添加 Agent",
