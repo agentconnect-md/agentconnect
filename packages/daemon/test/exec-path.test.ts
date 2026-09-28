@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { delimiter, dirname } from 'node:path'
-import { realpathSync } from 'node:fs'
-import { ensureNodeBinOnPath } from '../src/runtimes/exec-path.js'
+import { describe, it, expect, afterEach } from 'vitest'
+import { delimiter, dirname, join } from 'node:path'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { ensureNodeBinOnPath, ensureRuntimeInstallDirsOnPath } from '../src/runtimes/exec-path.js'
 
 const nodeBin = dirname(process.execPath)
 const realNodeBin = dirname(realpathSync(process.execPath))
@@ -26,5 +27,47 @@ describe('ensureNodeBinOnPath', () => {
     const env: NodeJS.ProcessEnv = {}
     ensureNodeBinOnPath(env)
     expect(env.PATH!.split(delimiter)).toContain(nodeBin)
+  })
+})
+
+describe('ensureRuntimeInstallDirsOnPath', () => {
+  const roots: string[] = []
+  const tempHome = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-install-dirs-'))
+    roots.push(dir)
+    return dir
+  }
+  afterEach(() => {
+    for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('appends the Kimi Code install dir after the existing PATH', () => {
+    const home = tempHome()
+    const bin = join(home, '.kimi-code', 'bin')
+    mkdirSync(bin, { recursive: true })
+    const env: NodeJS.ProcessEnv = { HOME: home, USERPROFILE: home, PATH: ['/usr/bin', '/bin'].join(delimiter) }
+    ensureRuntimeInstallDirsOnPath(env)
+    expect(env.PATH!.split(delimiter)).toEqual(['/usr/bin', '/bin', bin])
+  })
+
+  it('honors KIMI_CODE_HOME', () => {
+    const home = tempHome()
+    const bin = join(home, 'relocated', 'bin')
+    mkdirSync(bin, { recursive: true })
+    const env: NodeJS.ProcessEnv = { HOME: home, USERPROFILE: home, KIMI_CODE_HOME: join(home, 'relocated'), PATH: '' }
+    ensureRuntimeInstallDirsOnPath(env)
+    expect(env.PATH).toBe(bin)
+  })
+
+  it('skips missing dirs and dirs already present', () => {
+    const home = tempHome()
+    const env: NodeJS.ProcessEnv = { HOME: home, USERPROFILE: home, PATH: '/usr/bin' }
+    ensureRuntimeInstallDirsOnPath(env)
+    expect(env.PATH).toBe('/usr/bin')
+    const bin = join(home, '.kimi-code', 'bin')
+    mkdirSync(bin, { recursive: true })
+    env.PATH = [bin, '/usr/bin'].join(delimiter)
+    ensureRuntimeInstallDirsOnPath(env)
+    expect(env.PATH).toBe([bin, '/usr/bin'].join(delimiter))
   })
 })

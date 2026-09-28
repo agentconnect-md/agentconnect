@@ -519,7 +519,7 @@ import {
   configuredRuntimeProbeIntervalMs,
   configuredRuntimeProbeOnDemand
 } from './runtimes/cluster-probe-schedule.js'
-import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
+import { ensureNodeBinOnPath, ensureRuntimeInstallDirsOnPath } from './runtimes/exec-path.js'
 import {
   isAuthRequiredError,
   sweepStaleProbeRoots,
@@ -2454,6 +2454,7 @@ export class Daemon {
     // keep npx/npm (siblings of the launching Node) resolvable for runtime
     // probing and launching before anything reads process.env.
     ensureNodeBinOnPath()
+    ensureRuntimeInstallDirsOnPath()
     const root = resolveRoot(this.opts.root)
     const cfg = loadConfig({
       root,
