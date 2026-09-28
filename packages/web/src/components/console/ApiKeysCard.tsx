@@ -9,6 +9,8 @@ import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { MOCK_MODE, agentLabel, type Agent } from '@/lib/data'
+import { AgentIconView } from '@/components/marks'
+import { FieldSelect } from '@/components/console/FieldSelect'
 import {
   fetchMyApiKeys,
   createMyApiKey,
@@ -454,23 +456,20 @@ function ApiKeyFormModal({
             <div className="flex flex-col gap-[14px]">
               <div className="flex flex-col gap-[6px]">
                 <span className="fldlbl">{t('apiKeys.organization')}</span>
-                <select
-                  className="dsinput-field disabled:opacity-60"
+                <FieldSelect
+                  ariaLabel={t('apiKeys.organization')}
                   value={orgId}
                   disabled={!!editing}
-                  onChange={(e) => pickOrg(e.target.value)}
-                >
-                  {(editing ? [{ id: editing.orgId, slug: editing.orgSlug, name: editing.orgName }] : orgs).map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.name ?? o.slug}
-                    </option>
-                  ))}
-                </select>
+                  onChange={pickOrg}
+                  options={(editing ? [{ id: editing.orgId, slug: editing.orgSlug, name: editing.orgName }] : orgs).map(
+                    (o) => ({ value: o.id, label: o.name ?? o.slug })
+                  )}
+                />
               </div>
               <div className="flex flex-col gap-[6px]">
                 <span className="fldlbl">{t('apiKeys.nameOptional')}</span>
                 <input
-                  className="dsinput-field"
+                  className="inp placeholder:text-(--text-tertiary)"
                   placeholder={t('apiKeys.namePlaceholder')}
                   value={name}
                   maxLength={120}
@@ -479,35 +478,35 @@ function ApiKeyFormModal({
               </div>
               <div className="flex flex-col gap-[6px]">
                 <span className="fldlbl">{t('apiKeys.permissionLabel')}</span>
-                <select
-                  className="dsinput-field"
+                <FieldSelect
+                  ariaLabel={t('apiKeys.permissionLabel')}
                   value={permission}
-                  onChange={(e) => setPermission(e.target.value as ApiKeyPermission)}
-                >
-                  {PERMISSIONS.map((p) => (
-                    <option key={p} value={p}>
-                      {p === 'full'
+                  onChange={setPermission}
+                  options={PERMISSIONS.map((p) => ({
+                    value: p,
+                    label:
+                      p === 'full'
                         ? t('apiKeys.permissionFull')
                         : p === 'read'
                           ? t('apiKeys.permissionRead')
-                          : t('apiKeys.permissionAgentChat')}
-                    </option>
-                  ))}
-                </select>
+                          : t('apiKeys.permissionAgentChat')
+                  }))}
+                />
               </div>
               {agentLevel && (
                 <div className="flex flex-col gap-[6px]">
                   <span className="fldlbl">{t('apiKeys.agentsLabel')}</span>
-                  <select
-                    className="dsinput-field"
+                  <FieldSelect
+                    ariaLabel={t('apiKeys.agentsLabel')}
                     value={agentScope}
-                    onChange={(e) => setAgentScope(e.target.value as 'all' | 'selected')}
-                  >
-                    <option value="all">{t('apiKeys.allAgents')}</option>
-                    <option value="selected">{t('apiKeys.selectedAgents')}</option>
-                  </select>
+                    onChange={setAgentScope}
+                    options={[
+                      { value: 'all', label: t('apiKeys.allAgents') },
+                      { value: 'selected', label: t('apiKeys.selectedAgents') }
+                    ]}
+                  />
                   {selecting && (
-                    <div className="max-h-[180px] overflow-y-auto rounded-sm border border-(--border-subtle)">
+                    <div className="max-h-[200px] overflow-y-auto rounded-md border border-(--border-subtle)">
                       {agents === undefined ? (
                         <div className="px-3 py-[9px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                           {t('apiKeys.agentsLoading')}
@@ -518,14 +517,20 @@ function ApiKeyFormModal({
                         </div>
                       ) : (
                         agents.map((a) => (
-                          <label key={a.id} className="flex cursor-pointer items-center gap-2 px-3 py-[7px]">
+                          <label
+                            key={a.id}
+                            className="flex cursor-pointer items-center gap-[9px] border-b border-(--border-subtle) px-3 py-[7px] last:border-b-0 hover:bg-(--surface-hover)"
+                          >
                             <input
                               type="checkbox"
-                              className="accent-(--brand)"
+                              className="flex-none accent-(--brand)"
                               checked={selectedAgentIds.includes(a.id)}
                               onChange={() => toggleAgent(a.id)}
                             />
-                            <span className="truncate font-sans text-[12.5px] font-normal leading-normal">
+                            <span className="av h-[22px] w-[22px] flex-none rounded-[6px]">
+                              <AgentIconView icon={a.icon} runtime={a.runtime} size={22} />
+                            </span>
+                            <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
                               {agentLabel(a)}
                             </span>
                           </label>
@@ -537,26 +542,23 @@ function ApiKeyFormModal({
               )}
               <div className="flex flex-col gap-[6px]">
                 <span className="fldlbl">{t('apiKeys.expiresLabel')}</span>
-                <select
-                  className="dsinput-field"
+                <FieldSelect
+                  ariaLabel={t('apiKeys.expiresLabel')}
                   value={expiresInDays === 'keep' ? 'keep' : expiresInDays === null ? 'never' : String(expiresInDays)}
-                  onChange={(e) =>
-                    setExpiresInDays(
-                      e.target.value === 'keep' ? 'keep' : e.target.value === 'never' ? null : Number(e.target.value)
-                    )
-                  }
-                >
-                  {editing && <option value="keep">{expiryText(editing.expiresAt, t)}</option>}
-                  {EXPIRY_OPTIONS.map((o) => (
-                    <option key={String(o.days)} value={o.days === null ? 'never' : String(o.days)}>
-                      {o.days === null
-                        ? t('apiKeys.never')
-                        : o.days === 365
-                          ? t('apiKeys.oneYear')
-                          : t('apiKeys.days', { count: o.days })}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setExpiresInDays(v === 'keep' ? 'keep' : v === 'never' ? null : Number(v))}
+                  options={[
+                    ...(editing ? [{ value: 'keep', label: expiryText(editing.expiresAt, t) }] : []),
+                    ...EXPIRY_OPTIONS.map((o) => ({
+                      value: o.days === null ? 'never' : String(o.days),
+                      label:
+                        o.days === null
+                          ? t('apiKeys.never')
+                          : o.days === 365
+                            ? t('apiKeys.oneYear')
+                            : t('apiKeys.days', { count: o.days })
+                    }))
+                  ]}
+                />
               </div>
             </div>
             {err && (
