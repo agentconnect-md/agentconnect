@@ -68,6 +68,7 @@ describe('POST /gitea/connections (§4.1)', () => {
       instanceUrl: 'https://gitea.com',
       instanceVersion: '1.27.3',
       instanceVersionSupported: true,
+      instanceProduct: 'gitea',
       instanceVersionFloor: '1.23',
       requiredScopes: ['read:user', 'write:repository', 'write:issue', 'read:organization']
     })
@@ -168,6 +169,7 @@ describe('POST /gitea/connections (§4.1)', () => {
     expect(body).toMatchObject({
       instanceVersion: '15.0.9+gitea-1.22.0',
       instanceVersionSupported: true,
+      instanceProduct: 'forgejo',
       instanceVersionFloor: '15.0'
     })
   })

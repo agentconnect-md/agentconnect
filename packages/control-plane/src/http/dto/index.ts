@@ -2161,6 +2161,8 @@ export const GiteaConnectionDto = z.object({
   /** What the instance last reported through this connection; null until first contact. */
   instanceVersion: z.string().nullable(),
   instanceVersionSupported: z.boolean().nullable(),
+  /** The product that version names (§3), so the console draws its mark; `gitea` until first contact. */
+  instanceProduct: z.enum(['gitea', 'forgejo']),
   /** The `MAJOR.MINOR` floor this deployment enforces, so the console names it. */
   instanceVersionFloor: z.string(),
   /** The token scopes the connect step verifies (§4.1); the console shows them beside the input. */

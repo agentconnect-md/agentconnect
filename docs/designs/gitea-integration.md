@@ -102,7 +102,10 @@ leading number against Forgejo's own floor. Forgejo shares every surface this
 integration uses — the same scoped tokens, `X-Gitea-*` headers (sent beside
 its `X-Forgejo-*` copies), event types, payload fields, review endpoints and
 self-review refusal texts — which the §16 Forgejo probe verified request by
-request against Gitea 1.23. There is no Forgejo branch in the code.
+request against Gitea 1.23. There is no Forgejo branch in the code beyond
+presentation: the connection carries `instanceProduct`, and the console draws
+Forgejo's mark and name wherever the Gitea mark stands once a connection has
+observed a Forgejo version.
 
 Gitea refuses webhook deliveries to loopback and private addresses by default
 (`[webhook] ALLOWED_HOST_LIST`, inherited from `[security]`). The failure is at

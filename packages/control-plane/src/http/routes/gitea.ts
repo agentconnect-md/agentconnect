@@ -99,7 +99,8 @@ function connectionToDto(
     instanceUrl,
     instanceVersion: r.instanceVersion,
     instanceVersionSupported: r.instanceVersion !== null ? parseGiteaVersion(r.instanceVersion).supported : null,
-    // The floor of the product the instance reported (Gitea or Forgejo), Gitea's until first contact.
+    // The product the instance reported and its floor; Gitea's until first contact.
+    instanceProduct: parseGiteaVersion(r.instanceVersion).product,
     instanceVersionFloor: parseGiteaVersion(r.instanceVersion).floor,
     requiredScopes: [...GITEA_REQUIRED_TOKEN_SCOPES],
     lastVerifiedAt: r.lastVerifiedAt ? r.lastVerifiedAt.toISOString() : null,

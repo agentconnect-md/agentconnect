@@ -3,7 +3,7 @@
 // Agent-type + IM-platform brand marks.
 // Sized to 60% of their container to match the .av / .imark CSS.
 
-import { useState, type ReactNode } from 'react'
+import { useState, type CSSProperties, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from './ui'
 import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
@@ -14,8 +14,9 @@ import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
 import { FcGoogle } from 'react-icons/fc'
-import { SiGitea, SiGithub } from 'react-icons/si'
+import { SiForgejo, SiGitea, SiGithub } from 'react-icons/si'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+import { useGiteaProduct } from '@/lib/gitea-product'
 import { LARK_MARK_SRC } from './console/platforms/feishu/mark'
 import { platformMark } from './console/platforms/marks'
 import { markBox, squareMarkBox } from './mark-box'
@@ -238,10 +239,17 @@ export function GitlabMark({ fillPct = 60 }: { fillPct?: number }) {
   return <IconifyIcon icon={gitlabIcon} ssr style={markBox(fillPct)} aria-hidden />
 }
 
-// Gitea mark — the simple-icons glyph in Gitea's brand green; `color` overrides it for a monochrome surface.
+// Gitea mark — the simple-icons glyph in its brand color, Forgejo's when the instance is Forgejo; `color` overrides it for a monochrome surface.
 export const GITEA_BRAND_COLOR = '#609926'
-export function GiteaMark({ color = GITEA_BRAND_COLOR, fillPct = 60 }: { color?: string; fillPct?: number }) {
-  return <SiGitea style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} aria-hidden />
+export const FORGEJO_BRAND_COLOR = '#FB923C'
+export function GiteaMark({ color, fillPct = 60 }: { color?: string; fillPct?: number }) {
+  return <GiteaProductGlyph style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} />
+}
+
+function GiteaProductGlyph({ style, color }: { style: CSSProperties; color?: string }) {
+  if (useGiteaProduct() === 'forgejo')
+    return <SiForgejo style={style} color={color ?? FORGEJO_BRAND_COLOR} aria-hidden />
+  return <SiGitea style={style} color={color ?? GITEA_BRAND_COLOR} aria-hidden />
 }
 
 /** The Kubernetes wheel — what a SELF-HOSTED pool is: the operator's own cluster, named by the
@@ -282,7 +290,7 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
     return <IconifyIcon icon={gitlabIcon} ssr style={sq} aria-hidden />
   }
   if (x.includes('gitea')) {
-    return <SiGitea style={sq} color={GITEA_BRAND_COLOR} aria-hidden />
+    return <GiteaProductGlyph style={sq} />
   }
   if (x.includes('hook')) {
     return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />

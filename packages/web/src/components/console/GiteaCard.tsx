@@ -10,10 +10,12 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
+import { useSWRConfig } from 'swr'
 import { Button, Icon } from '@/components/ui'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { GiteaMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
+import { consoleKeys } from '@/lib/swr-keys'
 import {
   GITEA_DEFAULT_INSTANCE_URL,
   GITEA_REPOSITORY_STATE,
@@ -227,6 +229,12 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
   // able to say that the read it raced no longer speaks for them.
   const readSeq = useRef(0)
   const supersedeReads = (): number => ++readSeq.current
+  const { mutate } = useSWRConfig()
+  // A connect, replacement or removal can change the instance product every Gitea mark draws.
+  const observedVersion = connection?.instanceVersion ?? null
+  useEffect(() => {
+    if (activeOrg) void mutate(consoleKeys.giteaConnections(activeOrg.id))
+  }, [activeOrg, observedVersion, mutate])
 
   useEffect(() => {
     if (!activeOrg) return
@@ -461,7 +469,12 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
       {/* Below the floor nothing on the instance can be set up, so the card says it once. */}
       {enabled === true && connection?.instanceVersionSupported === false && (
         <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          <span>{ct('version', { name: 'Gitea', version: connection.instanceVersion ?? '' })}</span>
+          <span>
+            {ct('version', {
+              name: connection.instanceProduct === 'forgejo' ? 'Forgejo' : 'Gitea',
+              version: connection.instanceVersion ?? ''
+            })}
+          </span>
           <span className="badge bg-(--status-paused-soft) text-(--amber-500)">
             {ct('belowVersion', { version: connection.instanceVersionFloor })}
           </span>

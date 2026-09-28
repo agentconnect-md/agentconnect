@@ -6101,6 +6101,8 @@ export interface GiteaConnectionDto {
    *  floor the CP enforces. Both null until the first credentialed contact. */
   instanceVersion: string | null
   instanceVersionSupported: boolean | null
+  /** The product that version names, decided by the CP; `gitea` until first contact. */
+  instanceProduct: 'gitea' | 'forgejo'
   instanceVersionFloor: string
   /** The token scopes the connect step verifies (§4.1) — shown beside the input. */
   requiredScopes: string[]

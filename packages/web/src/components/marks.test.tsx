@@ -1,7 +1,19 @@
+import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { SQUARE_MARK_FILL_PCT } from './mark-box'
-import { AgentIconView, GiteaMark, GithubMark, GitlabMark, OrgIconView, PlatformMark, modelProviderSlug } from './marks'
+import { GiteaProductContext } from '@/lib/gitea-product'
+import {
+  AgentIconView,
+  FORGEJO_BRAND_COLOR,
+  GITEA_BRAND_COLOR,
+  GiteaMark,
+  GithubMark,
+  GitlabMark,
+  OrgIconView,
+  PlatformMark,
+  modelProviderSlug
+} from './marks'
 
 describe('modelProviderSlug', () => {
   it('reads the provider prefix from provider/model ids', () => {
@@ -152,6 +164,20 @@ describe('PlatformMark', () => {
     expect(renderToStaticMarkup(<GithubMark fillPct={SQUARE_MARK_FILL_PCT} />)).toContain(fill)
     expect(renderToStaticMarkup(<GitlabMark fillPct={SQUARE_MARK_FILL_PCT} />)).toContain(fill)
     expect(renderToStaticMarkup(<GiteaMark fillPct={SQUARE_MARK_FILL_PCT} />)).toContain(fill)
+  })
+
+  it('draws the Forgejo mark wherever a Gitea mark stands when the instance is Forgejo', () => {
+    const forgejo = (node: ReactNode) =>
+      renderToStaticMarkup(<GiteaProductContext.Provider value="forgejo">{node}</GiteaProductContext.Provider>)
+    // Outside a provider, and before any connection reports a version, the mark stays Gitea's.
+    expect(renderToStaticMarkup(<GiteaMark />)).toContain(`color:${GITEA_BRAND_COLOR}`)
+    expect(forgejo(<GiteaMark />)).toContain(`color:${FORGEJO_BRAND_COLOR}`)
+    expect(forgejo(<PlatformMark platform="gitea" />)).toContain(`color:${FORGEJO_BRAND_COLOR}`)
+    expect(forgejo(<GiteaMark />)).not.toBe(
+      renderToStaticMarkup(<GiteaMark />).replace(GITEA_BRAND_COLOR, FORGEJO_BRAND_COLOR)
+    )
+    // A monochrome surface keeps its own color on either product.
+    expect(forgejo(<GiteaMark color="#fff" />)).toContain('color:#fff')
   })
 
   it('uses the filled Lark brand asset for the shared Lark and Feishu platform family', () => {

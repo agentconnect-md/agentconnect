@@ -18,6 +18,7 @@ export const consoleKeys = {
   daemon: (orgId: string | null | undefined, daemonId: string) => consoleKey(orgId, 'daemon', daemonId),
   crons: (orgId: string | null | undefined) => consoleKey(orgId, 'crons'),
   integrations: (orgId: string | null | undefined) => consoleKey(orgId, 'integrations'),
+  giteaConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'gitea-connections'),
   bots: (orgId: string | null | undefined) => consoleKey(orgId, 'bots'),
   mcpProviders: (orgId: string | null | undefined) => consoleKey(orgId, 'mcp-providers'),
   skillSources: (orgId: string | null | undefined) => consoleKey(orgId, 'skill-sources'),
