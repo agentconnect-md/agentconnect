@@ -13,14 +13,21 @@ import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { highlight, loadHljs } from '@/lib/highlight'
 import { consoleKeys } from '@/lib/swr-keys'
-import { agentApiRelayUrl, agentChatUrls, aiSdkProxySnippet, API_PROTOCOLS, apiProtocolLabel } from '@/lib/agent-api'
+import {
+  agentApiRelayUrl,
+  agentChatUrl,
+  API_PROTOCOLS,
+  apiProtocolLabel,
+  QUICKSTART_TABS,
+  quickstartExamples,
+  type QuickstartTab
+} from '@/lib/agent-api'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import type { SavedGate } from '@/lib/decisions/binding'
 import { apiGateEvaluations } from '@/lib/decisions/evaluation-source'
 import { DecisionBindingStrip, DecisionGateEntry } from '@/components/console/decisions/DecisionBindingStrip'
 import type { ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 import {
-  cpRestBase,
   fetchMyApiKeys,
   fetchServiceAccounts,
   removeAgentApi,
@@ -219,21 +226,21 @@ const reachesAgent = (k: UserApiKeyDto, orgId: string, agentId: string) =>
   !(k.expiresAt && new Date(k.expiresAt).getTime() <= Date.now()) &&
   (k.allAgents || k.agentIds.includes(agentId))
 
-/** The snippet as TypeScript, wrapped; plain text until highlight.js loads or if it fails. */
-function SnippetBlock({ code }: { code: string }) {
+/** An example file, highlighted by its name; plain text until highlight.js loads or if it fails. */
+function SnippetBlock({ code, file }: { code: string; file: string }) {
   const [out, setOut] = useState<{ code: string; html: string | null } | null>(null)
   useEffect(() => {
     let active = true
     loadHljs().then(
       (hljs) => {
-        if (active) setOut({ code, html: highlight(hljs, code, 'route.ts') })
+        if (active) setOut({ code, html: highlight(hljs, code, file) })
       },
       () => {}
     )
     return () => {
       active = false
     }
-  }, [code])
+  }, [code, file])
   const html = out?.code === code ? out.html : null
   return (
     <pre className="codedark m-0">
@@ -258,6 +265,7 @@ function QuickstartDialog({
   const owner = activeOrg?.role === 'owner'
   const [creating, setCreating] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
+  const [tab, setTab] = useState<QuickstartTab>('curl')
 
   const { data: accounts } = useSWR<ServiceAccountDto[]>(
     owner && !MOCK_MODE ? consoleKeys.serviceAccounts(orgId) : null,
@@ -293,13 +301,8 @@ function QuickstartDialog({
     }))
   ]
 
-  const urls = agentChatUrls(
-    cpRestBase(),
-    orgId,
-    agent.id,
-    agentApiRelayUrl() ?? (MOCK_MODE ? MOCK_RELAY_URL : undefined)
-  )
-  const snippet = aiSdkProxySnippet(urls.mintUrl)
+  const chatUrl = agentChatUrl(agent.id, agentApiRelayUrl() ?? (MOCK_MODE ? MOCK_RELAY_URL : undefined))
+  const examples = chatUrl ? quickstartExamples(chatUrl) : null
   const docsUrl = API_PROTOCOLS.find((p) => p.id === protocol)?.docsUrl
   const copy = async (what: string, text: string) => {
     try {
@@ -368,30 +371,42 @@ function QuickstartDialog({
           </button>
         </div>
         <div className="modalbody flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
-            <span className="fldlbl">{t('mintEndpoint')}</span>
-            {endpoint(t('mintEndpoint'), urls.mintUrl)}
-            {urls.chatTemplate && (
-              <>
-                <span className="fldlbl mt-1">{t('chatEndpoint')}</span>
-                {endpoint(t('chatEndpoint'), urls.chatTemplate)}
-              </>
-            )}
-          </div>
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <span className="fldlbl">useChat</span>
-              <button
-                className="iconbtn"
-                title={t('copy')}
-                aria-label={t('copySnippet')}
-                onClick={() => void copy('snippet', snippet)}
-              >
-                <Icon name={copied === 'snippet' ? 'check' : 'copy'} size={14} />
-              </button>
+          {chatUrl && examples && (
+            <div className="flex flex-col gap-2">
+              <span className="fldlbl">{t('chatEndpoint')}</span>
+              {endpoint(t('chatEndpoint'), chatUrl)}
+              <div className="pillbar mt-2 self-start" role="tablist" aria-label={t('examples')}>
+                {QUICKSTART_TABS.map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    aria-selected={tab === id}
+                    className={`pill${tab === id ? ' on' : ''}`}
+                    onClick={() => setTab(id)}
+                  >
+                    {t(`tabs.${id}`)}
+                  </button>
+                ))}
+              </div>
+              {examples[tab].map(({ file, code }) => (
+                <div key={file} className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="mono text-[12px] text-(--text-secondary)">{file}</span>
+                    <button
+                      className="iconbtn"
+                      title={t('copy')}
+                      aria-label={`${t('copySnippet')}: ${file}`}
+                      onClick={() => void copy(file, code)}
+                    >
+                      <Icon name={copied === file ? 'check' : 'copy'} size={14} />
+                    </button>
+                  </div>
+                  <SnippetBlock code={code} file={file} />
+                </div>
+              ))}
             </div>
-            <SnippetBlock code={snippet} />
-          </div>
+          )}
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <span className="fldlbl">{t('keys')}</span>

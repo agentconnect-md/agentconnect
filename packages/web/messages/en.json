@@ -1943,10 +1943,15 @@
       "removeBody": "{agent} stops accepting API calls. Keys that cover it stay valid for other agents.",
       "docs": "Docs",
       "close": "Close",
-      "mintEndpoint": "Token",
       "chatEndpoint": "Chat",
       "copy": "Copy",
       "copySnippet": "Copy code",
+      "examples": "Examples",
+      "tabs": {
+        "curl": "curl",
+        "script": "Script",
+        "web": "Web app"
+      },
       "keys": "Agent chat keys",
       "createKey": "Create key",
       "keysLoading": "Loading keys…",

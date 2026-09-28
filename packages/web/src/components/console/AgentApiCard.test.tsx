@@ -133,14 +133,19 @@ afterEach(async () => {
 })
 
 describe('AgentApiCard', () => {
-  it('shows each added protocol with a Quickstart that names this deployment’s endpoints', async () => {
+  it('shows each added protocol with a Quickstart that names this deployment’s chat endpoint, with an example per tab', async () => {
     await render()
     expect(host!.textContent).toContain('AI SDK UI')
     await click('Quickstart')
     const text = document.body.textContent ?? ''
-    expect(text).toContain('https://api.example.test/api/v1/orgs/o1/agents/agent-1/webchat/token')
-    expect(text).toContain('https://relay.example.test/ai-sdk/chat/{conversationId}')
-    expect(text).toContain('process.env.AGENTCONNECT_API_KEY')
+    expect(text).toContain('https://relay.example.test/ai-sdk/agents/agent-1/chat')
+    expect(text).not.toContain('webchat/token')
+    expect(text).toContain('$AGENTCONNECT_API_KEY')
+    await click('Web app')
+    const web = document.body.textContent ?? ''
+    expect(web).toContain('app/api/chat/route.ts')
+    expect(web).toContain('app/page.tsx')
+    expect(web).toContain('process.env.AGENTCONNECT_API_KEY')
   })
 
   it('lists only live Agent chat keys that reach this agent, the caller’s and each service account’s', async () => {

@@ -1,4 +1,4 @@
-// An agent's chat APIs: the protocols offered, this deployment's endpoints, and a proxy snippet (shared-bot-relay.md §10.4).
+// An agent's chat APIs: the protocols offered, this deployment's chat endpoint, and the Quickstart's examples (shared-bot-relay.md §10.4).
 import type { AgentApiProtocol } from './api'
 
 /** Every protocol the Add API pane lists, in order; one that is not yet `available` shows as coming. */
@@ -14,13 +14,6 @@ export const API_PROTOCOLS: readonly {
 
 export const apiProtocolLabel = (id: string): string => API_PROTOCOLS.find((p) => p.id === id)?.label ?? id
 
-export interface AgentChatUrls {
-  /** The Control Plane route that mints a conversation's token with an Agent chat key. */
-  mintUrl: string
-  /** The relay route one turn is posted to, or null when the deployment names no relay. */
-  chatTemplate: string | null
-}
-
 /** Public relay ingress injected into the Web image at request time (see public-env.tsx). */
 export function agentApiRelayUrl(): string | undefined {
   const runtime = typeof window !== 'undefined' ? window.__AC_ENV?.RELAY_URL : undefined
@@ -29,57 +22,97 @@ export function agentApiRelayUrl(): string | undefined {
   )
 }
 
-export function agentChatUrls(apiBase: string, orgId: string, agentId: string, relayUrl?: string): AgentChatUrls {
-  const base = apiBase.replace(/\/+$/, '')
+/** The relay route a turn is posted to with an API key, or null when the deployment names no relay. */
+export function agentChatUrl(agentId: string, relayUrl?: string): string | null {
   const relay = relayUrl?.replace(/\/+$/, '')
-  return {
-    mintUrl: `${base}/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/webchat/token`,
-    chatTemplate: relay ? `${relay}/ai-sdk/chat/{conversationId}` : null
-  }
+  return relay ? `${relay}/ai-sdk/agents/${encodeURIComponent(agentId)}/chat` : null
 }
 
-/** A server-side proxy for `useChat`: one conversation per browser, its token reused until expiry, the relay stream returned. */
-export function aiSdkProxySnippet(mintUrl: string): string {
-  return `// app/api/chat/route.ts: the key stays on the server; each browser keeps one conversation.
-const tokens = new Map<string, { token: string; relayUrl: string; conversationId: string; expiresAt: string }>();
+export type QuickstartTab = 'curl' | 'script' | 'web'
+export const QUICKSTART_TABS: readonly QuickstartTab[] = ['curl', 'script', 'web']
 
-async function mint(conversationId?: string) {
-  const cached = conversationId ? tokens.get(conversationId) : undefined;
-  if (cached && Date.parse(cached.expiresAt) - 30_000 > Date.now()) return cached;
-  const res = await fetch(${JSON.stringify(mintUrl)}, {
+/** One file of an example: its name, which also picks its highlighting, and its text. */
+export interface QuickstartFile {
+  file: string
+  code: string
+}
+
+/** The Quickstart's examples: a raw request, a script over the AI SDK's transport, and a web app whose same-origin route adds the key. */
+export function quickstartExamples(chatUrl: string): Record<QuickstartTab, QuickstartFile[]> {
+  const url = JSON.stringify(chatUrl)
+  return {
+    curl: [
+      {
+        file: 'chat.sh',
+        code: `curl -N ${chatUrl} \\
+  -H "Authorization: Bearer $AGENTCONNECT_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"id":"chat-1","messages":[{"role":"user","parts":[{"type":"text","text":"Hello"}]}]}'`
+      }
+    ],
+    script: [
+      {
+        file: 'chat.ts',
+        code: `// npm i ai (AI SDK 5 or later)
+import { DefaultChatTransport } from "ai";
+
+const transport = new DefaultChatTransport({
+  api: ${url},
+  headers: { Authorization: \`Bearer \${process.env.AGENTCONNECT_API_KEY}\` },
+});
+const stream = await transport.sendMessages({
+  trigger: "submit-message",
+  chatId: "chat-1", // the conversation; send the same id again to continue it
+  messageId: undefined,
+  abortSignal: undefined,
+  messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "Hello" }] }],
+});
+for await (const chunk of stream) if (chunk.type === "text-delta") process.stdout.write(chunk.delta);`
+      }
+    ],
+    web: [
+      {
+        file: 'app/api/chat/route.ts',
+        code: `// The key stays on the server: this route adds it and forwards useChat's request unchanged.
+export async function POST(req: Request) {
+  const upstream = await fetch(${url}, {
     method: "POST",
     headers: { Authorization: \`Bearer \${process.env.AGENTCONNECT_API_KEY}\`, "Content-Type": "application/json" },
-    body: JSON.stringify(conversationId ? { conversationId } : {}),
-  });
-  if (!res.ok) throw new Error(\`token mint failed: \${res.status}\`);
-  const minted = await res.json();
-  tokens.set(minted.conversationId, minted);
-  return minted;
-}
-
-export async function POST(req: Request) {
-  const body = await req.text();
-  // A lone first question starts a new conversation; later turns continue the browser's one.
-  const turns = JSON.parse(body).messages.filter((m: { role: string }) => m.role === "user").length;
-  const bound = req.headers.get("cookie")?.match(/chat_conversation=([0-9a-f-]{36})/)?.[1];
-  const { token, relayUrl, conversationId } = await mint(turns > 1 ? bound : undefined);
-  const upstream = await fetch(\`\${relayUrl}/ai-sdk/chat/\${conversationId}\`, {
-    method: "POST",
-    headers: { Authorization: \`Bearer \${token}\`, "Content-Type": "application/json" },
-    body,
+    body: await req.text(),
     signal: req.signal,
   });
-  const headers = new Headers({ "Cache-Control": "no-store" });
-  for (const name of ["content-type", "x-vercel-ai-ui-message-stream"]) {
-    const value = upstream.headers.get(name);
-    if (value) headers.set(name, value);
-  }
-  headers.append("Set-Cookie", \`chat_conversation=\${conversationId}; Path=/; HttpOnly; Secure; SameSite=Lax\`);
-  return new Response(upstream.body, { status: upstream.status, headers });
-}
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: { "Content-Type": "text/event-stream", "x-vercel-ai-ui-message-stream": "v1" },
+  });
+}`
+      },
+      {
+        file: 'app/page.tsx',
+        code: `// npm i ai @ai-sdk/react (AI SDK 5 or later)
+"use client";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 
-// Browser
-const { messages, sendMessage } = useChat({
-  transport: new DefaultChatTransport({ api: "/api/chat" }),
-});`
+export default function Chat() {
+  const { messages, sendMessage } = useChat({ transport: new DefaultChatTransport({ api: "/api/chat" }) });
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const input = e.currentTarget.elements.namedItem("text") as HTMLInputElement;
+        sendMessage({ text: input.value });
+        input.value = "";
+      }}
+    >
+      {messages.map((m) => (
+        <p key={m.id}>{m.parts.map((p) => (p.type === "text" ? p.text : "")).join("")}</p>
+      ))}
+      <input name="text" />
+    </form>
+  );
+}`
+      }
+    ]
+  }
 }
