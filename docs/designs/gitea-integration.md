@@ -86,9 +86,12 @@ because there is no application. Path-prefixed installs are first-class, the
 base is immutable while any Gitea state exists, and multi-instance stays a
 non-goal for the same claim-key reason.
 
-The floor is **Gitea 1.23**, the release whose token model and review
-request webhook are both stable, or **Forgejo 15**, its oldest maintained
-line (the LTS released 2026-04-16). `GET /api/v1/version` answers without
+The floor is **Gitea 1.23**, or **Forgejo 15**, its oldest maintained line
+(the LTS released 2026-04-16). Gitea 1.23 is the first release whose
+`pull_request_comment` delivery carries `pull_request`: on 1.22.6 it carries
+only `issue`, so the relay drops a pull-request mention and has no head or base
+SHA to fence a comment-triggered review on (verified 2026-09-28; every other
+surface matched 1.23). Forgejo carries the field. `GET /api/v1/version` answers without
 authentication, so the Setup Server checks the floor when the URL is saved
 rather than at first credentialed contact; the Control Plane re-reads it at
 connection time and on reconciliation. Below the floor, or unparseable, the

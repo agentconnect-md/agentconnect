@@ -19,7 +19,7 @@ export function normalizeGiteaBaseUrl(raw: string): string {
   return normalizeCodeHostBaseUrl(raw, 'gitea')
 }
 
-/** The release whose token model and review-request webhook are both stable (§3). */
+/** The first release whose pull-request comment deliveries carry `pull_request`, which the relay needs (§3). */
 export const GITEA_MINIMUM_VERSION = '1.23'
 
 /** Forgejo's oldest maintained line, its current LTS (§3); it versions independently of Gitea. */
