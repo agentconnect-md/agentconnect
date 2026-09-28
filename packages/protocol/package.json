@@ -1,6 +1,6 @@
 {
   "name": "@agentconnect.md/protocol",
-  "version": "1.0.0-dev",
+  "version": "2.0.0-dev",
   "description": "AgentConnect shared wire contracts and normalized message schemas",
   "license": "Apache-2.0",
   "type": "module",

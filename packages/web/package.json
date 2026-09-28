@@ -1,6 +1,6 @@
 {
   "name": "@agentconnect.md/web",
-  "version": "1.0.0-dev",
+  "version": "2.0.0-dev",
   "description": "AgentConnect Web UI — agent / channel / workspace / session config & monitoring",
   "license": "Apache-2.0",
   "files": [

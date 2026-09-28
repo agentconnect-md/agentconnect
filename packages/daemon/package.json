@@ -1,6 +1,6 @@
 {
   "name": "@agentconnect.md/daemon",
-  "version": "1.0.0-dev",
+  "version": "2.0.0-dev",
   "description": "AgentConnect daemon — edge message + agent execution unit",
   "license": "Apache-2.0",
   "repository": {

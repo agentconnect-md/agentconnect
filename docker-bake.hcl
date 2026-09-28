@@ -19,7 +19,7 @@ variable "GIT_SHA" {
 }
 
 variable "SETUP_VERSION" {
-  default = "1.0.0-dev"
+  default = "2.0.0-dev"
 }
 
 # Mem0 OSS does not publish its REST server as a container image. Build the

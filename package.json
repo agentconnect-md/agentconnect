@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "agentconnect",
-  "version": "1.0.0-dev",
+  "version": "2.0.0-dev",
   "description": "Multi-agent platform bridging IM platforms to AI coding agents",
   "license": "Apache-2.0",
   "scripts": {

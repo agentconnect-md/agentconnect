@@ -123,7 +123,7 @@ describe('versionInstall', () => {
     const r = root()
     resolveTarget.mockResolvedValue({ version: '1.0.0', channel: 'stable' })
     await versionInstall(r, {})
-    // Repo CLI version is `1.0.0-dev` → defaultChannel() === 'stable'.
+    // The repo CLI dev version defaults to the stable channel.
     expect(resolveTarget).toHaveBeenCalledWith({ to: undefined, channel: 'stable' })
     // No versions.json written: the default must not become a stored preference.
     expect(existsSync(join(r, 'versions.json'))).toBe(false)

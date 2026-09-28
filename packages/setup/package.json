@@ -1,6 +1,6 @@
 {
   "name": "@agentconnect.md/setup",
-  "version": "1.0.0-dev",
+  "version": "2.0.0-dev",
   "description": "AgentConnect self-hosted Setup Server",
   "license": "Apache-2.0",
   "repository": {
