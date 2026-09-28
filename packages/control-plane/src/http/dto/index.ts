@@ -1946,6 +1946,8 @@ export const BotDto = z.object({
   inUseByAgentId: z.string().nullable(),
   /** Every agent currently installed on the bot (a shareable bot may have many). */
   agentIds: z.array(z.string()),
+  /** Removing its last integration deletes the bot instead of keeping it freed for reuse, as its platform decides. */
+  releasedWhenFreed: z.boolean(),
   /** Stamped when the bot was last freed ("last used 12d ago"); null ⇒ never used. */
   lastUsedAt: z.string().nullable(), // ISO-8601
   /** Agent the bot was last freed from ("freed from support-bot"). */

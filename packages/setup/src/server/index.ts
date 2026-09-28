@@ -162,9 +162,7 @@ const ConfigureGoogleChatBody = z.strictObject({
       /** Optional cross-check; the stored number is the one resolved from the key's own project. */
       projectNumber: z.string().trim().min(1).max(40).optional(),
       /** The downloaded key file's JSON; omitted re-validates the stored key of the same project. */
-      serviceAccountKey: z.string().trim().min(1).max(20_000).optional(),
-      /** Serves other Google Workspace organizations, each claiming its customer in the console; omitted means off. */
-      multiTenant: z.boolean().optional()
+      serviceAccountKey: z.string().trim().min(1).max(20_000).optional()
     })
     .nullable()
 })
@@ -1045,8 +1043,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         put = googleChatDeploymentPut(current, {
           projectId: checked.key.projectId,
           projectNumber: checked.projectNumber,
-          ...(application.serviceAccountKey ? { serviceAccountKey: checked.key.json } : {}),
-          ...(application.multiTenant ? { multiTenant: true } : {})
+          ...(application.serviceAccountKey ? { serviceAccountKey: checked.key.json } : {})
         })
       } catch (error) {
         const message = error instanceof z.ZodError ? 'the project ID is not a Google Cloud project ID' : undefined

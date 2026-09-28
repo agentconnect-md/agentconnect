@@ -150,7 +150,7 @@ export class GoogleChatHttpIngest {
     readonly credentialRevision?: number,
     /** The tenant keys this row is known by: a customer row of a multi-tenant app (design §10.3), else absent. */
     readonly tenantIds?: readonly string[],
-    /** The console's claim page, present only on a multi-tenant app's anchor, which routes nothing itself (§10.4). */
+    /** The console's claim page, present only on the deployment app's anchor, which routes nothing itself (§10.4). */
     readonly claimUrl?: string,
     /** A single-tenant row's recorded keys (§10.3), the fence's memory across relay restarts. */
     ownTenantIds?: readonly string[]

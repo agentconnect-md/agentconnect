@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DeploymentConfigRuntime } from '../persistence/deployment-config.js'
-import { applyDeploymentEnvironment } from './deployment.js'
+import { googleChatClaimAnchor } from '../platforms/googlechat/provider.js'
+import { applyDeploymentEnvironment, relayDeploymentSnapshot } from './deployment.js'
 import { loadConfig } from './env.js'
 
 const bootstrap = {
@@ -162,22 +163,6 @@ describe('applyDeploymentEnvironment', () => {
     expect(cleared.GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY).toBeUndefined()
   })
 
-  it('projects the Google Chat multi-tenant switch only when the document turns it on', () => {
-    const base = runtime()
-    const googleChat = { projectId: 'example-project', projectNumber: '123456789012' }
-    const secrets = { 'googleChat.serviceAccountKey': '{"type":"service_account"}' }
-    const on = applyDeploymentEnvironment(
-      bootstrap,
-      runtime({ values: { ...base.values, googleChat: { ...googleChat, multiTenant: true } }, secrets })
-    )
-    expect(on.GOOGLE_CHAT_PLATFORM_MULTI_TENANT).toBe('true')
-    const off = applyDeploymentEnvironment(
-      { ...bootstrap, GOOGLE_CHAT_PLATFORM_MULTI_TENANT: 'true' },
-      runtime({ values: { ...base.values, googleChat }, secrets })
-    )
-    expect(off.GOOGLE_CHAT_PLATFORM_MULTI_TENANT).toBeUndefined()
-  })
-
   it('keeps regional Login Apps owned by the deployment document', () => {
     const base = runtime()
     const managed = applyDeploymentEnvironment(
@@ -197,5 +182,39 @@ describe('applyDeploymentEnvironment', () => {
     expect(managed.FEISHU_PLATFORM_APP_SECRET).toBeUndefined()
     expect(managed.LARK_PLATFORM_APP_ID).toBe('cli_lark')
     expect(managed.LARK_PLATFORM_APP_SECRET).toBe('db-secret')
+  })
+})
+
+describe('relayDeploymentSnapshot', () => {
+  const app = { projectNumber: '100000000000' }
+  const consoleUrl = 'https://console.example.test'
+  const anchor = { projectNumber: '100000000000', claimUrl: 'https://console.example.test/googlechat/claim' }
+
+  it('carries the Google Chat anchor exactly when the app and an https console URL are configured', () => {
+    const stored = runtime({ revision: 7 })
+    expect(relayDeploymentSnapshot(stored, googleChatClaimAnchor(app, consoleUrl))).toEqual({
+      revision: 7,
+      googleChatAnchor: anchor
+    })
+    // Configured from the startup environment alone, it still reaches the relay.
+    expect(relayDeploymentSnapshot(undefined, googleChatClaimAnchor(app, consoleUrl))).toEqual({
+      revision: 0,
+      googleChatAnchor: anchor
+    })
+    for (const missing of [googleChatClaimAnchor(undefined, consoleUrl), googleChatClaimAnchor(app, undefined)]) {
+      expect(relayDeploymentSnapshot(stored, missing)).toEqual({ revision: 7 })
+      expect(relayDeploymentSnapshot(undefined, missing)).toBeUndefined()
+    }
+  })
+
+  it('keeps the GitHub webhook secret only while the GitHub App is configured', () => {
+    const secrets = { 'github.webhookSecret': 'ghw_secret' }
+    const github = { appId: 123, slug: 'agentconnect-example', clientId: 'Iv1.example' }
+    const base = runtime()
+    expect(relayDeploymentSnapshot(runtime({ values: { ...base.values, github }, secrets }), undefined)).toEqual({
+      revision: 1,
+      githubWebhookSecret: 'ghw_secret'
+    })
+    expect(relayDeploymentSnapshot(runtime({ secrets }), undefined)).toEqual({ revision: 1 })
   })
 })

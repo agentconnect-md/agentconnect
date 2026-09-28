@@ -3040,6 +3040,66 @@ describe('RelayIngressManager lifecycle is registry-driven (a third platform)', 
     expect(await manager.handleInbound(SYNTHETIC, Buffer.alloc(0), {}, {})).toEqual({ admission })
   })
 
+  it('replaces deployment-owned assignments per snapshot, and their host forwards and reports nothing', async () => {
+    const DEPLOYMENT_BOT = 'deployment:synthetic'
+    const forwarded: unknown[] = []
+    const plugin: RelayPlatformIngressPlugin = {
+      ...syntheticPlugin([]),
+      extractDemuxHints: () => ({ appId: 'SYNTH_1' }),
+      verify: () => ({}),
+      // Asks the host for everything a CP row's ingest may do.
+      handle: async (_ingest, _verified, host) => {
+        const message = { msgId: 'm-1' } as unknown as WireNormalizedMessage
+        forwarded.push(await host.forward(DEPLOYMENT_BOT, message), await host.forwardStrict(DEPLOYMENT_BOT, message))
+        host.reportChannels({ botId: DEPLOYMENT_BOT, channels: [] })
+        host.reportRevoked(DEPLOYMENT_BOT, { reason: 'app_uninstalled', evidence: 'event' }, 1)
+        host.reportCredentialCheck(DEPLOYMENT_BOT, { result: 'ok', observedAtMs: 0 }, 1)
+        host.reportTenant(DEPLOYMENT_BOT, 'SYNTH_TENANT')
+        host.setChannelAgent(DEPLOYMENT_BOT, 'C1', AGENT_ID)
+        return {}
+      },
+      deploymentAssignments: (snapshot) =>
+        snapshot
+          ? [
+              syntheticAssignment({
+                botId: DEPLOYMENT_BOT,
+                apiAppId: `SYNTH_${snapshot.revision}`,
+                teamId: undefined,
+                members: [],
+                agents: [],
+                routes: []
+              })
+            ]
+          : []
+    }
+    const d = deps()
+    const manager = new RelayIngressManager(d, [...relayIngressPlugins, plugin])
+    const { demux, pool } = internalsOf(manager).entryFor(SYNTHETIC)
+
+    await manager.applyDeploymentSnapshot({ revision: 1 })
+    expect(demux.resolve({ appId: 'SYNTH_1' })).toBe(DEPLOYMENT_BOT)
+    expect(await manager.handleInbound(SYNTHETIC, Buffer.alloc(0), {}, {})).toEqual({})
+    expect(forwarded).toEqual(['refused', { disposition: 'rejected', reason: 'rejected' }])
+    for (const report of [
+      d.reportBotChannels,
+      d.reportBotRevoked,
+      d.reportBotCredentialCheck,
+      d.reportBotTenant,
+      d.setChannelAgent,
+      d.reportThreadAssign,
+      d.reportBotConversation
+    ])
+      expect(report).not.toHaveBeenCalled()
+
+    // A later registration's snapshot replaces the entry, and one without it removes it.
+    await manager.applyDeploymentSnapshot({ revision: 2 })
+    expect(demux.resolve({ appId: 'SYNTH_1' })).toBeUndefined()
+    expect(demux.resolve({ appId: 'SYNTH_2' })).toBe(DEPLOYMENT_BOT)
+    await manager.applyDeploymentSnapshot(undefined)
+    expect(demux.resolve({ appId: 'SYNTH_2' })).toBeUndefined()
+    expect(pool.get(DEPLOYMENT_BOT)).toBeUndefined()
+  })
+
   it('unassign stops the ingest, drops the pool entry, and forgets the demux entries', async () => {
     const { built, manager, internals } = build()
     await manager.assign(syntheticAssignment())

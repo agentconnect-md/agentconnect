@@ -998,6 +998,7 @@ export interface BotDto {
   agentIds: string[] // every agent currently installed on the bot (a shared bot may have many)
   lastUsedAt: string | null // ISO-8601; stamped when last freed; null ⇒ never used
   freedFromAgent: string | null // agent it was last freed from ("freed from support-bot")
+  releasedWhenFreed?: boolean // removing its last integration deletes it instead of freeing it
   teamId?: string | null // Slack workspace id (T…) — platform-app installs only
   workspaceId?: string | null // external workspace identity used only for Console grouping
   workspaceName?: string | null // human-readable external workspace label
@@ -4501,22 +4502,11 @@ export async function replaceSlackBotToken(id: string, botToken: string): Promis
 }
 
 // ── Google Chat (google-chat-integration.md §3) ──
-/** `GET /integrations/googlechat/platform-install` — whether the deployment-owned Chat app can be installed here. */
-export interface GoogleChatPlatformInstallDto {
-  available: boolean
-}
-export async function fetchGoogleChatPlatformInstall(orgId?: string): Promise<GoogleChatPlatformInstallDto> {
-  return apiGet<GoogleChatPlatformInstallDto>(`${orgBase(orgId)}/integrations/googlechat/platform-install`)
-}
-/** Install the deployment-owned Chat app on an agent (201), or re-stamp it with the current deployment key (200). */
-export async function installGoogleChatPlatformApp(input: { agentId?: string } = {}): Promise<IntegrationDto> {
-  return apiPost<IntegrationDto>(`${orgBase()}/integrations/googlechat/platform-install`, input)
-}
 /** Replace a per-agent Chat app's service-account key under the create path's validation; the key is write-only. */
 export async function replaceGoogleChatKey(botId: string, serviceAccountKey: string): Promise<BotDto> {
   return apiPut<BotDto>(`${orgBase()}/bots/${encodeURIComponent(botId)}/googlechat/key`, { serviceAccountKey })
 }
-/** Claim the caller's Google Workspace for `orgId` on the deployment's multi-tenant Chat app; returns where Chat continues, when the prompt carried a completion URL. */
+/** Claim the caller's Google Workspace for `orgId` on the deployment's Chat app; returns where Chat continues, when the prompt carried a completion URL. */
 export async function claimGoogleChatCustomer(orgId: string, state: string): Promise<{ redirect?: string }> {
   return apiPost<{ redirect?: string }>(`${orgBase(orgId)}/integrations/googlechat/claim`, { state })
 }

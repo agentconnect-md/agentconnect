@@ -1,11 +1,10 @@
 import { GOOGLE_CHAT_EVENTS_PATH as PROTOCOL_EVENTS_PATH } from '@agentconnect.md/protocol'
 import { describe, expect, it } from 'vitest'
 import english from '../../../../../messages/en.json'
-import { ApiError, type BotDto } from '@/lib/api'
+import { ApiError } from '@/lib/api'
 import {
   GOOGLE_CHAT_ERROR_KEYS,
   GOOGLE_CHAT_EVENTS_PATH,
-  deploymentAppOffered,
   googleChatCallbackUrl,
   googleChatErrorMessage,
   googleChatSetupState,
@@ -16,7 +15,7 @@ import {
 const messages = english.Platforms.googlechat.errors as Record<string, string>
 const translate = (key: string) => messages[key.replace(/^errors\./, '')] ?? `missing:${key}`
 
-// Every refusal the Control Plane's provider and install route can send (platforms/googlechat/provider.ts, routes.ts).
+// Every refusal the Control Plane's provider can send to the wizard (platforms/googlechat/provider.ts).
 const CONTROL_PLANE_CODES = [
   'GOOGLE_CHAT_PROJECT_NUMBER_INVALID',
   'GOOGLE_CHAT_KEY_INVALID',
@@ -28,7 +27,7 @@ const CONTROL_PLANE_CODES = [
   'GOOGLE_CHAT_KEY_REJECTED',
   'GOOGLE_CHAT_APP_UNAVAILABLE',
   'GOOGLE_CHAT_UNREACHABLE',
-  'GOOGLE_CHAT_PROJECT_CHANGED'
+  'GOOGLE_CHAT_DEPLOYMENT_APP'
 ]
 
 describe('Google Chat error mapping', () => {
@@ -55,28 +54,6 @@ describe('Google Chat error mapping', () => {
     expect(googleChatErrorMessage(new ApiError(taken, 409), translate)).toBe(taken)
     expect(googleChatErrorMessage(new ApiError('other', 400, 'SOMETHING_ELSE'), translate)).toBe('other')
     expect(googleChatErrorMessage(new Error('offline'), translate)).toBe('offline')
-  })
-})
-
-describe('deployment app availability', () => {
-  const bot = (over: Partial<BotDto>): Pick<BotDto, 'platform' | 'prebuilt' | 'agentIds'> => ({
-    platform: 'googlechat',
-    prebuilt: true,
-    agentIds: [],
-    ...over
-  })
-
-  it('is offered only when the Control Plane reports it installable', () => {
-    expect(deploymentAppOffered(false, [], 'agent-a')).toBe(false)
-    expect(deploymentAppOffered(true, [], 'agent-a')).toBe(true)
-  })
-
-  it('is withheld once another agent here holds the deployment app, and kept for the agent that holds it', () => {
-    expect(deploymentAppOffered(true, [bot({ agentIds: ['agent-b'] })], 'agent-a')).toBe(false)
-    expect(deploymentAppOffered(true, [bot({ agentIds: ['agent-a'] })], 'agent-a')).toBe(true)
-    // A per-agent app or another platform's built-in app is not the deployment app.
-    expect(deploymentAppOffered(true, [bot({ prebuilt: false, agentIds: ['agent-b'] })], 'agent-a')).toBe(true)
-    expect(deploymentAppOffered(true, [bot({ platform: 'slack', agentIds: ['agent-b'] })], 'agent-a')).toBe(true)
   })
 })
 

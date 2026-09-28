@@ -45,14 +45,6 @@ describe('DeploymentConfigValuesV1Schema', () => {
         .success
     ).toBe(false)
   })
-
-  it('keeps the Google Chat multi-tenant switch, absent on documents written before it', () => {
-    const googleChat = { projectId: 'example-project', projectNumber: '123456789012', multiTenant: true }
-    expect(DeploymentConfigValuesV1Schema.parse({ ...base, googleChat }).googleChat).toEqual(googleChat)
-    expect(
-      DeploymentConfigValuesV1Schema.safeParse({ ...base, googleChat: { ...googleChat, multiTenant: 'yes' } }).success
-    ).toBe(false)
-  })
 })
 
 describe('deploymentSecretsRequiringRefresh', () => {

@@ -1,14 +1,17 @@
 /** Google Chat CpPlatformProvider (google-chat-integration.md §3, §7) — unit, against a fake Google HTTP layer. */
 import { generateKeyPairSync } from 'node:crypto'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { FastifyPluginAsync } from 'fastify'
 import { IntegrationGoogleChatConfig, manifestFor, type IntegrationCoreEnvelope } from '@agentconnect.md/protocol'
 import {
   createGoogleChatCpProvider,
   GOOGLE_CHAT_APP_TAKEN_MESSAGE,
+  GOOGLE_CHAT_DEPLOYMENT_APP_MESSAGE,
   GoogleChatCpEnvSchema,
   googleChatBotAssignBags,
+  googleChatClaimAnchor,
   googleChatRowKind,
+  googleChatRowShadowsAnchor,
   buildGoogleChatInstall
 } from './provider.js'
 import { GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE } from './tenant.js'
@@ -21,6 +24,7 @@ import {
   googleCloudProjectUrl
 } from './credential.js'
 import { buildCpPlatformRegistry } from '../registry.js'
+import { toBotDto } from '../../http/routes/bots.js'
 import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
 import type { BotRecord, CreateBotInput, IntegrationRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
@@ -331,6 +335,24 @@ describe('validateConfig', () => {
     expect(several.identity).not.toHaveProperty('platformConfig')
   })
 
+  it('refuses the deployment’s own app with 409 once Google resolves it, pointing the organization at Google Chat', async () => {
+    const google = fakeGoogle()
+    const provider = createGoogleChatCpProvider({ fetch: google.fetchImpl, app: { projectNumber: PROJECT_NUMBER } })
+
+    expect(await provider.validateConfig(CREDENTIALS, 'http')).toEqual({
+      ok: false,
+      status: 409,
+      code: 'GOOGLE_CHAT_DEPLOYMENT_APP',
+      message: GOOGLE_CHAT_DEPLOYMENT_APP_MESSAGE
+    })
+    // The resolved number decides, so an omitted one is refused all the same.
+    const { projectNumber: _, ...withoutNumber } = CREDENTIALS
+    expect(await provider.validateConfig(withoutNumber, 'http')).toMatchObject({ status: 409 })
+    // Another deployment app leaves this per-agent app alone.
+    const other = createGoogleChatCpProvider({ fetch: google.fetchImpl, app: { projectNumber: '210987654321' } })
+    expect(await other.validateConfig(CREDENTIALS, 'http')).toMatchObject({ ok: true })
+  })
+
   it('never echoes the key in a refusal', async () => {
     for (const answer of ['rejected', 'offline', 'no_app'] as const) {
       const result = await createGoogleChatCpProvider({ fetch: fakeGoogle(answer).fetchImpl }).validateConfig(
@@ -481,15 +503,12 @@ describe('wire projections', () => {
     expect(bags.ingress).toEqual({ apiAppId: PROJECT_NUMBER, appUserName: 'users/100000000000000000009' })
   })
 
-  const CLAIM_URL = 'https://console.example.test/googlechat/claim'
-  const anchored = createGoogleChatCpProvider({ claimAnchor: { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL } })
-
-  it('gives a customer row every tenant key it knows, one per domain, and never the claim page', async () => {
+  it('gives a customer row every tenant key it knows, one per domain', async () => {
     const customer = bot({
       externalTenantId: 'customers/C0000000000',
       platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000,0000000001' }
     })
-    expect((await anchored.projectBotAssign!(customer, secrets)).ingress).toEqual({
+    expect((await provider.projectBotAssign!(customer, secrets)).ingress).toEqual({
       apiAppId: PROJECT_NUMBER,
       tenantIds: ['customers/C0000000000', 'domains/0000000000', 'domains/0000000001']
     })
@@ -497,35 +516,30 @@ describe('wire projections', () => {
       externalTenantId: 'domains/0000000000',
       platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
     })
-    expect((await anchored.projectBotAssign!(domainOnly, secrets)).ingress).toEqual({
+    expect((await provider.projectBotAssign!(domainOnly, secrets)).ingress).toEqual({
       apiAppId: PROJECT_NUMBER,
       tenantIds: ['domains/0000000000']
     })
   })
 
-  it('hands the daemon a customer row’s strict keys, the anchor none at all, and a single-tenant row its own keys', async () => {
+  it('hands the daemon a customer row’s strict keys and a single-tenant row its own keys', async () => {
     const customer = bot({
       externalTenantId: 'customers/C0000000000',
       platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
     })
-    expect(await anchored.projectIntegrationConfig(integration(), customer, CORE, secrets)).toMatchObject({
+    expect(await provider.projectIntegrationConfig(integration(), customer, CORE, secrets)).toMatchObject({
       tenantIds: ['customers/C0000000000', 'domains/0000000000']
     })
     const stamped = bot({
       platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
     })
-    // The anchor serves no tenant, whatever was stamped on it while the switch was off.
-    const anchor = await anchored.projectIntegrationConfig(integration(), stamped, CORE, secrets)
-    expect(anchor).toMatchObject({ tenantIds: [] })
-    expect(anchor).not.toHaveProperty('ownTenantIds')
     const own = await provider.projectIntegrationConfig(integration(), stamped, CORE, secrets)
     expect(own).toMatchObject({ ownTenantIds: ['customers/C0000000000', 'domains/0000000000'] })
     expect(own).not.toHaveProperty('tenantIds')
     const bare = await provider.projectIntegrationConfig(integration(), bot(), CORE, secrets)
     expect(bare).not.toHaveProperty('tenantIds')
     expect(bare).not.toHaveProperty('ownTenantIds')
-    expect(googleChatRowKind(customer, { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL })).toBe('customer')
-    expect(googleChatRowKind(stamped, { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL })).toBe('anchor')
+    expect(googleChatRowKind(customer)).toBe('customer')
     expect(googleChatRowKind(stamped)).toBe('single')
   })
 
@@ -535,30 +549,41 @@ describe('wire projections', () => {
       apiAppId: PROJECT_NUMBER,
       ownTenantIds: ['customers/C0000000000']
     })
-    // The stamped anchor stays the anchor: the claim page and nothing else.
-    expect((await anchored.projectBotAssign!(stamped, secrets)).ingress).toEqual({
-      apiAppId: PROJECT_NUMBER,
-      claimUrl: CLAIM_URL
-    })
   })
 
-  it('points only the multi-tenant anchor row at the claim page', async () => {
-    expect((await anchored.projectBotAssign!(bot(), secrets)).ingress).toEqual({
-      apiAppId: PROJECT_NUMBER,
-      claimUrl: CLAIM_URL
+  it('keeps a tenantless row of the deployment app off the relay and off the daemon, and nothing else', async () => {
+    const deployment = createGoogleChatCpProvider({ app: { projectNumber: PROJECT_NUMBER } })
+    const shadowing = bot()
+    const customer = bot({ externalTenantId: 'customers/C0000000000' })
+    const ownApp = bot({ externalAppId: '210987654321' })
+
+    expect(googleChatRowShadowsAnchor(shadowing, PROJECT_NUMBER)).toBe(true)
+    expect(deployment.relayAssignable!(shadowing)).toBe(false)
+    expect(await deployment.projectIntegrationConfig(integration(), shadowing, CORE, secrets)).toBeUndefined()
+    for (const served of [customer, ownApp]) {
+      expect(deployment.relayAssignable!(served)).toBe(true)
+      expect(await deployment.projectIntegrationConfig(integration(), served, CORE, secrets)).toBeDefined()
+    }
+    // Without a deployment app every tenantless row is some organization's own app.
+    expect(provider.relayAssignable!(shadowing)).toBe(true)
+    expect(googleChatBotAssignBags(shadowing).ingress).toEqual({ apiAppId: PROJECT_NUMBER })
+  })
+
+  it('anchors the relay at the claim page only for a configured app and an https console', () => {
+    const app = { projectNumber: PROJECT_NUMBER }
+    expect(googleChatClaimAnchor(app, 'https://console.example.test/')).toEqual({
+      projectNumber: PROJECT_NUMBER,
+      claimUrl: 'https://console.example.test/googlechat/claim'
     })
-    // A per-agent app of another project is never the anchor.
-    expect((await anchored.projectBotAssign!(bot({ externalAppId: '210987654321' }), secrets)).ingress).toEqual({
-      apiAppId: '210987654321'
-    })
-    // A single-tenant deployment projects today's bag.
-    expect((await provider.projectBotAssign!(bot(), secrets)).ingress).toEqual({ apiAppId: PROJECT_NUMBER })
-    expect(googleChatBotAssignBags(bot(), { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL }).secrets).toEqual({})
+    expect(googleChatClaimAnchor(undefined, 'https://console.example.test')).toBeUndefined()
+    expect(googleChatClaimAnchor(app, undefined)).toBeUndefined()
+    expect(googleChatClaimAnchor(app, 'http://localhost:3000')).toBeUndefined()
+    expect(googleChatClaimAnchor({ projectNumber: 'example-project' }, 'https://console.example.test')).toBeUndefined()
   })
 })
 
 describe('composition', () => {
-  it('contributes the injected install route at the org scope only, and owns the deployment app keys', () => {
+  it('contributes the injected routes at the org scope only, and owns the deployment app keys', () => {
     const route: FastifyPluginAsync = async () => {}
     const provider = createGoogleChatCpProvider({ installRoutes: { org: [route], publicCallback: [] } })
     expect(provider.platformId).toBe('googlechat')
@@ -567,19 +592,28 @@ describe('composition', () => {
     expect(Object.keys(GoogleChatCpEnvSchema)).toEqual([
       'GOOGLE_CHAT_PLATFORM_PROJECT_ID',
       'GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER',
-      'GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY',
-      'GOOGLE_CHAT_PLATFORM_MULTI_TENANT'
+      'GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY'
     ])
     expect(provider.envSchema).toBe(GoogleChatCpEnvSchema)
     // Google offers no app-authenticated read of the app's own identity, so there is nothing to poll.
     expect(provider.backgroundLoops).toBeUndefined()
   })
+
+  it('declares the key re-stamp as its one background loop', () => {
+    const credentialReconciler = { start: vi.fn(), stop: vi.fn() }
+    const [loop, ...rest] = createGoogleChatCpProvider({ credentialReconciler }).backgroundLoops ?? []
+    expect(rest).toEqual([])
+    expect(loop?.label).toBe('googlechat-credential-restamp')
+    loop?.start()
+    loop?.stop()
+    expect(credentialReconciler.start).toHaveBeenCalledOnce()
+    expect(credentialReconciler.stop).toHaveBeenCalledOnce()
+  })
 })
 
 describe('a single-tenant row learns its tenant, and a freed customer row is released (§10.3, §10.5)', () => {
-  const CLAIM_URL = 'https://console.example.test/googlechat/claim'
   const single = createGoogleChatCpProvider()
-  const anchored = createGoogleChatCpProvider({ claimAnchor: { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL } })
+  const deployment = createGoogleChatCpProvider({ app: { projectNumber: PROJECT_NUMBER } })
   const snapshot = (platformConfig: Record<string, unknown>, externalTenantId: string | null = '-') => ({
     platformConfig,
     externalTenantId
@@ -600,24 +634,28 @@ describe('a single-tenant row learns its tenant, and a freed customer row is rel
     })
   })
 
-  it('refuses a report for a customer row, which learns only through claims, and for the anchor', () => {
+  it('refuses a report for a customer row, which learns only through claims, and for a tenantless row of the deployment app', () => {
     const customer = bot({ externalTenantId: 'customers/C0000000001' })
     expect(
       single.learnTenant!(customer, snapshot({ projectId: PROJECT_ID }, 'customers/C0000000001'), 'domains/0000000001')
     ).toMatchObject({ kind: 'refused' })
-    expect(anchored.learnTenant!(bot(), snapshot({ projectId: PROJECT_ID }), 'customers/C0000000001')).toMatchObject({
+    expect(deployment.learnTenant!(bot(), snapshot({ projectId: PROJECT_ID }), 'customers/C0000000001')).toMatchObject({
       kind: 'refused'
     })
-    // The same row is single-tenant to a deployment whose switch is off.
+    // The same row is some organization's own app where the deployment has none of that project.
     expect(single.learnTenant!(bot(), snapshot({ projectId: PROJECT_ID }), 'customers/C0000000001')).toMatchObject({
       kind: 'record'
     })
   })
 
-  it('releases a freed customer row for a new claim, and keeps a single-tenant row and the anchor', () => {
-    expect(anchored.releasesFreedBot!(bot({ externalTenantId: 'customers/C0000000001' }))).toBe(true)
-    expect(anchored.releasesFreedBot!(bot({ externalTenantId: 'domains/0000000001' }))).toBe(true)
-    expect(anchored.releasesFreedBot!(bot())).toBe(false)
+  it('releases a freed customer row for a new claim, and keeps a single-tenant row', () => {
+    expect(deployment.releasesFreedBot!(bot({ externalTenantId: 'customers/C0000000001' }))).toBe(true)
+    expect(deployment.releasesFreedBot!(bot({ externalTenantId: 'domains/0000000001' }))).toBe(true)
+    expect(deployment.releasesFreedBot!(bot())).toBe(false)
     expect(single.releasesFreedBot!(bot())).toBe(false)
+    // The bot DTO carries the same decision, so the console's delete confirmation can say the row goes with it.
+    const registry = buildCpPlatformRegistry([deployment])
+    expect(toBotDto(bot({ externalTenantId: 'customers/C0000000001' }), registry).releasedWhenFreed).toBe(true)
+    expect(toBotDto(bot(), registry).releasedWhenFreed).toBe(false)
   })
 })

@@ -1,3 +1,4 @@
+import type { RcDeploymentConfig, RcGoogleChatAnchor } from '@agentconnect.md/protocol'
 import type { DeploymentConfigRuntime } from '../persistence/deployment-config.js'
 
 /**
@@ -31,7 +32,6 @@ const MANAGED_KEYS = [
   'GOOGLE_CHAT_PLATFORM_PROJECT_ID',
   'GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER',
   'GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY',
-  'GOOGLE_CHAT_PLATFORM_MULTI_TENANT',
   'FEISHU_PLATFORM_APP_ID',
   'FEISHU_PLATFORM_APP_SECRET',
   'LARK_PLATFORM_APP_ID',
@@ -100,7 +100,6 @@ export function applyDeploymentEnvironment(
     set('GOOGLE_CHAT_PLATFORM_PROJECT_ID', values.googleChat.projectId)
     set('GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER', values.googleChat.projectNumber)
     set('GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY', secrets['googleChat.serviceAccountKey'])
-    if (values.googleChat.multiTenant) set('GOOGLE_CHAT_PLATFORM_MULTI_TENANT', 'true')
   }
 
   if (values.feishu) {
@@ -120,4 +119,19 @@ export function applyDeploymentEnvironment(
 
   env.PRESET_AGENTS_ENABLED = String(values.features.presetAgentsEnabled)
   return env
+}
+
+/** The snapshot every relay receives on authentication; undefined when there is nothing to send. */
+export function relayDeploymentSnapshot(
+  deployment: Pick<DeploymentConfigRuntime, 'revision' | 'values' | 'secrets'> | undefined,
+  googleChatAnchor: RcGoogleChatAnchor | undefined
+): RcDeploymentConfig | undefined {
+  if (!deployment && !googleChatAnchor) return undefined
+  const githubWebhookSecret = deployment?.values.github ? deployment.secrets['github.webhookSecret'] : undefined
+  return {
+    // Zero when the Google Chat app came from the startup environment rather than a stored document.
+    revision: deployment?.revision ?? 0,
+    ...(githubWebhookSecret ? { githubWebhookSecret } : {}),
+    ...(googleChatAnchor ? { googleChatAnchor } : {})
+  }
 }

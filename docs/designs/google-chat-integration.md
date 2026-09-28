@@ -26,15 +26,15 @@ Google Chat integration does not depend on deciding the external-adapter protoco
 proposed in #2262. It uses the current first-party module contracts; external
 adapters remain a separate discussion.
 
-| Capability       | First version                                                                                              |
-| ---------------- | ---------------------------------------------------------------------------------------------------------- |
-| Installation     | Deployment-owned app in Setup Server for the preset agent, or a per-agent app from its integrations page.  |
-| Conversations    | Ordinary text in a 1:1 DM; explicit app mentions in a named Space, with replies in the originating thread. |
-| Output           | Text, supported Markdown, coalesced message edits, and final replies.                                      |
-| Session behavior | Existing conversation gates, session modes, steering, queuing, and text control commands.                  |
-| Elicitation      | Agent questions as an in-thread card of buttons or form inputs, settled in place (§5).                     |
-| Approvals        | Existing Console approval queue; a chat card decides only where the agent allows it (§6).                  |
-| Context          | Messages delivered to this app and the daemon's retained session history.                                  |
+| Capability       | First version                                                                                                |
+| ---------------- | ------------------------------------------------------------------------------------------------------------ |
+| Installation     | Deployment-owned app in Setup Server that each Workspace organization claims, or a per-agent app of its own. |
+| Conversations    | Ordinary text in a 1:1 DM; explicit app mentions in a named Space, with replies in the originating thread.   |
+| Output           | Text, supported Markdown, coalesced message edits, and final replies.                                        |
+| Session behavior | Existing conversation gates, session modes, steering, queuing, and text control commands.                    |
+| Elicitation      | Agent questions as an in-thread card of buttons or form inputs, settled in place (§5).                       |
+| Approvals        | Existing Console approval queue; a chat card decides only where the agent allows it (§6).                    |
+| Context          | Messages delivered to this app and the daemon's retained session history.                                    |
 
 Ambient Space history, unmentioned thread follow-ups, group DMs, attachments,
 cards other than the welcome and elicitation cards, dialogs, app-home surfaces,
@@ -136,20 +136,16 @@ See Google's [per-app project requirement](https://developers.google.com/workspa
 
 Two credential holders exist, mirroring Slack. The deployment-owned app is
 configured once in the Setup Server, which keeps its project ID and project number
-in the typed deployment document and its key as a write-only deployment secret.
-The Control Plane receives them as `GOOGLE_CHAT_PLATFORM_PROJECT_ID`,
+in the typed deployment document and its key as a write-only deployment secret;
+the Control Plane receives them as `GOOGLE_CHAT_PLATFORM_PROJECT_ID`,
 `GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER`, and
-`GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY`. Google has no install consent to
-round-trip, so `POST /integrations/googlechat/platform-install` installs that app
-directly on the preset `agentconnect` agent, or on a named one: it validates the
-stored key again, creates a prebuilt HTTP bot, and copies the key into that bot's
-encrypted secret row. A rotated deployment key reaches the installed bot by
-running the install again for the agent that holds it, which re-stamps the same
-bot; the app never moves to another agent or organization that way. Per-agent
-apps are configured from an agent's integrations page in the Console through
-`POST /integrations` with a `googlechat` credential block on the HTTP transport.
-Both produce the same bot row, uniqueness key, and relay assignment; only the
-surface that collects the credential differs.
+`GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY`. That app serves every Google
+Workspace organization: each one connects itself from Google Chat by claiming
+its customer (§10), and no route installs the app on an agent. An organization
+that wants an app of its own configures a per-agent app from an agent's
+integrations page in the Console through `POST /integrations` with a
+`googlechat` credential block on the HTTP transport; a key whose resolved project
+number is the deployment app's is refused with 409 `GOOGLE_CHAT_DEPLOYMENT_APP`.
 
 The key check, the project-number resolution, and the `chat.bot` probe live in
 the Control Plane's Google Chat module, which the Setup Server imports. The Setup
@@ -172,19 +168,12 @@ must match it. The service account therefore needs the Browser role
 (`resourcemanager.projects.get`) on its project, and that project needs the Cloud
 Resource Manager API enabled.
 
-In this version the deployment-owned app serves one agent. Google requires one
-Cloud project per Chat app and this design keeps one app per agent, so a hosted
-deployment serving every organization's preset agent through one app is the
-shared-bot follow-up, not this version.
-
-The Setup Server's Google Chat card has one more setting under the app's fields,
-**Serves other Google Workspace organizations** (`googleChat.multiTenant` in the
-deployment document, projected to the Control Plane as
-`GOOGLE_CHAT_PLATFORM_MULTI_TENANT`; off by default). Turned on, the installed
-row of the deployment app becomes the anchor of §10: its relay assignment
-carries the console's claim page, and every other Google Workspace customer
-claims a row of its own there, installed on its organization's preset agent.
-The deployment app must still be installed on one agent for the anchor to exist.
+The deployment app has no single-organization mode. One app for one agent of
+one organization would be a first-come slot on a deployment serving several
+organizations, and an organization that wants its own app has the per-agent
+path; the Slack deployment app serves every workspace the same way. Claiming
+signs the person in with Google, so the deployment needs Google sign-in
+configured (§10.5).
 
 The initial experience is guided setup, not one-click app creation. Slack offers
 both manifest-prefilled creation links and `apps.manifest.create`, which our
@@ -214,14 +203,11 @@ Google documents organization-level [key-creation constraints](https://docs.clou
 Account and credential readiness therefore belong at the start of setup.
 
 The console module (`packages/web/src/components/console/platforms/googlechat/`)
-builds these steps as one pane. `GET /integrations/googlechat/platform-install`
-answers `{ available }`: the deployment app is configured and a relay is
-connected, the two deployment gates of the install itself. When it is available
-and no other agent in the organization holds that app, the pane leads with **Use
-the deployment app**, which runs the install for this agent, and **Use your own
-Chat app** opens the steps. Without a public relay the pane says so and offers
-nothing, because Google Chat has no other transport. The own-app pane lists the
-prerequisites (steps 1 and 2 and the service account of step 4), links to the
+builds these steps as its one pane, for an organization's own app; the
+deployment app is claimed from Google Chat, not from the console. Without a
+public relay the pane says so and offers nothing, because Google Chat has no
+other transport. The pane lists the prerequisites (steps 1 and 2 and the
+service account of step 4), links to the
 Chat API configuration page, and shows the values to copy with copy buttons: the
 HTTPS endpoint (the relay origin plus `GOOGLE_CHAT_EVENTS_PATH`), the **Project
 Number** audience, 1:1 messages and joining spaces, and visibility. The form
@@ -260,7 +246,7 @@ credentials and shows the derived installation metadata:
 | Google Cloud project ID  | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                                           |
 | Verified project number  | Canonical app identity and token audience, resolved through Cloud Resource Manager with the key; must match any entered number. |
 | HTTPS callback URL       | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings.                   |
-| Service-account key JSON | Write-only credential in the encrypted bot secret store; the deployment app's deployment secret is copied there at install.     |
+| Service-account key JSON | Write-only credential in the encrypted bot secret store; the deployment app's secret is copied onto each claimed customer row.  |
 | Chat app user identity   | The app's `users/…` name from traffic (a verified add or mention, or the first reply); Google has no app-authenticated read.    |
 
 Keep the app and service account in one project for the first version. Configure
@@ -327,8 +313,8 @@ Validation checks credential structure, resolves the project number with the
 key, and makes a bounded Chat API read with app authentication: one page of the
 named Spaces the app is in. When every listed Space belongs to one Workspace
 customer, a single-tenant row is stamped with that customer as its own fence from
-the start (§10.3); the multi-tenant anchor is never stamped. It must not send
-a test message from the Control Plane or the Setup Server. A saved configuration
+the start (§10.3). It must not send a test message from the Control Plane or the
+Setup Server. A saved configuration
 is not proof of working ingress. Combine relay assignment and daemon readiness,
 distinguish authentication and connectivity failures, and provide an explicit
 DM/mention test to verify the complete round trip. Two resolution failures have
@@ -464,7 +450,7 @@ and never converts the old `accepted` result into an HTTP success.
 | Retryable or unknown  | `retry` (`durability`, `draining`, `capacity`, `not_ready`, `offline`) or an admission timeout               | 503 so Google may redeliver.                                                                                                       |
 | Invalid request       | never forwarded                                                                                              | 401 when no assigned bot owns the token or it fails verification; 400 when the body is not a JSON object with a string `type`.     |
 | Malformed event       | never forwarded                                                                                              | 200 with a log line after verification: the normalizer's `invalid` is permanent, and a 4xx would make Google redeliver it forever. |
-| Unclaimed tenant      | never forwarded: a multi-tenant app's anchor answers it (§10.4)                                              | 200 with the welcome card or the `REQUEST_CONFIG` body; nothing is admitted, marked, or reported.                                  |
+| Unclaimed tenant      | never forwarded: the deployment app's anchor answers it (§10.4)                                              | 200 with the welcome card or the `REQUEST_CONFIG` body; nothing is admitted, marked, or reported.                                  |
 
 The relay's inbound seam returns `HandledDelivery`; its optional `admission`
 member carries the `RelayAdmission` unchanged from the plugin's `handle` to the
@@ -691,8 +677,8 @@ behavior for private DM turns as part of the acceptance checks.
 | Daemon platform module  | Done in `packages/daemon/src/platforms/googlechat/`: the config schema registration, the app-authenticated Chat REST connection and read port, the `relayIngress` member on the shared relay-ingress host port, the Markdown renderer and byte-budget splitter, the streaming turn output, command chrome, and the connection-registry lifecycle. |
 | Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals.                                                                                                                                                 |
 | Daemon output           | Done: client ids derive from the durable delivery identity, results land on transcript rows keyed by the message resource name, an ambiguous create reconciles by `GET` on its client id, and every write goes through one per-Space `PlatformSendQueue`.                                                                                         |
-| Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment-owned app's install, secret rotation, daemon spec, and relay assignment projection.                                                                                                                                                         |
-| Console platform module | Mark, wizard (deployment app first when offered; guided own-app steps; mapped refusals; saved, connected, tested), Settings identity and key replacement, mention-only Space triggers, renderer.                                                                                                                                                  |
+| Control Plane provider  | Credential validation shared with the Setup Server, storage, app identity, uniqueness, the deployment app's claim and anchor, secret rotation, daemon spec, and relay assignment projection.                                                                                                                                                      |
+| Console platform module | Mark, wizard (guided own-app steps; mapped refusals; saved, connected, tested), Settings identity and key replacement, mention-only Space triggers, renderer.                                                                                                                                                                                     |
 
 Start with observed membership discovery and no bot-sender routing or multi-agent
 sharing. Add manifest fields only when an actual pre-dispatch consumer requires
@@ -776,13 +762,15 @@ patches remain provider-validation gates, not claims of completed support.
 Status: **steps A and B implemented, step C pending**. Step A: the message
 package's tenant keys and `interaction` event, the relay's per-customer demux
 and fence, the welcome card, and the `REQUEST_CONFIG` answer (§10.4, §10.7);
-the Setup switch (§3), the customer rows and their relay assignment (§10.3),
-the claim route and page (§10.5), and the Google account id on the user row
-(§10.6). Step B: the customer fence of both install paths, the tenant a
-single-tenant row records from its traffic and reports as `rc/bot-tenant`
+the customer rows and their relay assignment (§10.3), the claim route and page
+(§10.5), and the Google account id on the user row (§10.6). Step B: the customer
+fence of both install paths, the tenant a single-tenant row records from its
+traffic and reports as `rc/bot-tenant`
 (§10.3), filtered discovery and the fenced writes on the daemon, the per-app
 write budget (§10.8), re-stamping customer rows on key rotation (§10.3), and
-releasing a freed customer (§10.5). Every provider fact below was verified on
+releasing a freed customer (§10.5). Since then the deployment app always
+serves every organization and its anchor rides the relay's deployment snapshot
+instead of a bot row (§3, §10.4). Every provider fact below was verified on
 September 27, 2026, either in Google's reference documentation or against a
 live Chat app; the items left in §10.9 still need a live check.
 
@@ -790,9 +778,8 @@ live Chat app; the items left in §10.9 still need a live check.
 
 One published Chat app serves many Google Workspace customers, each mapped to one
 organization, so an organization no longer has to create a Google Cloud project
-to use Google Chat. The bring-your-own-app path of §3 stays as it is: a per-agent
-app or the deployment app remains one app for one organization, and nothing in
-this section changes how it is configured.
+to use Google Chat. That app is the deployment app of §3; the bring-your-own-app
+path of §3 stays as it is, one per-agent app for one organization.
 
 Google offers exactly one way for another organization to install a Chat app: a
 [Google Workspace Marketplace](https://developers.google.com/workspace/chat/apps-publish)
@@ -821,22 +808,24 @@ organization proves the cross-customer path once the listing is approved.
 
 ### 10.3 Data model: one row per customer, as Slack does per team
 
-The published app is a deployment-owned platform app whose bot rows follow the
-Slack platform app. The deployment app's existing row, keyed by the project
-number and the tenantless sentinel of §3, is the **anchor**; when the Setup
-switch of §3 is on, its relay assignment carries `claimUrl`, the console's
-claim page (`<PUBLIC_WEB_URL>/googlechat/claim`). Every claimed customer gets a
-**customer row** of its own: the same `externalAppId`, and as
+The published app is the deployment-owned app, whose bot rows follow the Slack
+platform app. It has no row of its own: the relay derives its **anchor** from
+the Control Plane's deployment snapshot (§10.4). Every claimed customer gets a
+**customer row**: the same `externalAppId`, and as
 `externalTenantId` the customer's primary tenant key, `customers/{customer}`
 when the claim proved it and `domains/{domainId}` otherwise, one row per
 `(app, customer)`, each owned by one organization. Its public `platformConfig`
 keeps the project ID beside the bare `customerId` and `domainIds`, its credential
-is a copy of the deployment key exactly as the deployment-app install copies it,
-and it is marked prebuilt, so the key follows the Setup Server rather than a
+is a copy of the deployment key, and it is marked prebuilt, so the key follows the Setup Server rather than a
 console paste. Its relay assignment carries `tenantIds`, every tenant key the
-row knows, beside the unchanged `apiAppId`; the anchor carries none, and a
-single-tenant row carries the keys it has recorded as `ownTenantIds` (below),
-which core neither indexes nor fences on.
+row knows, beside the unchanged `apiAppId`; a single-tenant row carries the keys
+it has recorded as `ownTenantIds` (below), which core neither indexes nor fences
+on. A row is therefore a customer row (tenant-keyed) or a single row (an
+organization's own app, tenantless). A tenantless row of the deployment project, an
+organization's own install made before the project became the deployment app,
+would shadow the anchor in the relay's app-only index and take other Workspaces'
+direct messages, so the provider keeps it off the relay (`relayAssignable`) and
+off the daemon; its organization claims its customer instead.
 
 The row identifies its customer twice over, because a DM event names only the
 sender's `user.domainId` and a Space event names the Space's `space.customer`.
@@ -883,22 +872,22 @@ sender's row. One customer maps to one organization, exactly as one Slack team
 does; a second organization cannot claim a customer or a domain another one
 holds.
 
-Customer rows copy the deployment key when a claim writes them, and a rotated
-deployment key reaches them the way it reaches the anchor: running the
-deployment-app install again re-stamps the anchor and then every customer row of
-the app with the current key, re-syncing each.
+Customer rows copy the deployment key when a claim writes them. The key moves
+only across a restart, so a boot pass of the provider
+(`GoogleChatCredentialReconciler`) compares each customer row of the app with the
+configured key, logging neither, and re-stamps and re-syncs every row that
+differs.
 
-A bring-your-own app keeps its single row, and so does the deployment app while
-the switch is off. Such a single-tenant row records its own tenant beside the
-tenantless key rather than being keyed by it: the customer the install probe
+A bring-your-own app keeps its single row. Such a single-tenant row records its
+own tenant beside the tenantless key rather than being keyed by it: the customer the install probe
 proves (§3) or the `customers/…` key of its first Space event, and the
 `domains/…` key of every DM it serves. The relay's Google Chat plugin, not core,
 fences it (§10.4): a Space of another customer is refused with a 200 that Google
 never retries and one log line a minute, while a DM passes and its domain is
 recorded, because Google shows an unlisted app only to its own organization's
-people, so a DM's domain is that organization's; an app listed publicly must
-turn the switch on instead. A key the relay learns is reported as `rc/bot-tenant`
-(`{ botId, tenantId }`, at least once, acknowledged, deduplicated by the Control
+people, so a DM's domain is that organization's; an app meant for other
+organizations is the deployment app instead. A key the relay learns is reported
+as `rc/bot-tenant` (`{ botId, tenantId }`, at least once, acknowledged, deduplicated by the Control
 Plane, and sent only to a Control Plane advertising `bot-tenant-v1`); the
 Control Plane records it through the row's identity merge, refusing a second
 customer, and re-syncs the row so its assignment and daemon config carry the
@@ -918,9 +907,9 @@ key as the second demux hint — a Space event's `space.customer`, a DM event's
 may be an external member (`googleChatTenantKey` in the message package, the
 same derivation the normalizer stamps on every result) — and the assignment
 supplies the keys a row is known by: a customer row's `ingress` bag carries
-`tenantIds`, the anchor's carries `claimUrl`, and a single-tenant row carries
-neither. Core does the rest exactly as [ingress tenant fencing](ingress-tenant-fence.md)
-does for a distributed Slack app, generalized to a row known by several keys: a
+`tenantIds`, a single-tenant row's carries neither, and the anchor carries
+`claimUrl`. Core does the rest exactly as
+[ingress tenant fencing](ingress-tenant-fence.md) does for a distributed Slack app, generalized to a row known by several keys: a
 row with `tenantIds` enters only the composite `(app, tenant)` index, one entry
 per key, is never learned app-only, and passes the fence only for a delivery
 naming one of its keys; the anchor sits in the app-only index beside it. A
@@ -930,8 +919,19 @@ tenant of the audience resolves to the anchor. A malformed `tenantIds` or a
 as absent, because absent would make the row serve every tenant of its
 audience.
 
-An anchor that carries `claimUrl` serves no tenant: whatever core routed to it is
-unclaimed, and the plugin answers it in the HTTP body — `HandledDelivery.syncResponse`,
+The anchor is not a bot row. The Control Plane sends every relay its deployment
+snapshot on authentication (`RcDeploymentConfig`), and while the deployment app
+is configured and the console URL is https the snapshot carries
+`googleChatAnchor`: the project number and the claim page
+(`<PUBLIC_WEB_URL>/googlechat/claim`). The plugin turns it into a
+deployment-owned assignment (`deploymentAssignments`) under an id no Control
+Plane row can carry, with no secret and no members. Core indexes it app-only like
+any row, replaces or removes it on every registration, since bot assignments are
+replayed then too, and hands its ingest a host that forwards nothing and reports
+nothing to the Control Plane.
+
+The anchor serves no tenant: whatever core routed to it is unclaimed, and the
+plugin answers it in the HTTP body — `HandledDelivery.syncResponse`,
 which the Google route sends on its 200 — within Google's window and without a
 daemon: the welcome card of §10.7 on `ADDED_TO_SPACE`, the `REQUEST_CONFIG`
 answer pointing at the claim page of §10.5 on a `MESSAGE` and on the welcome
@@ -964,9 +964,8 @@ collaborator):
    but not for `CARD_CLICKED`, so the welcome card's Connect button yields a
    state without it. The route re-derives every fact it acts on from Google and
    from the signed-in identity, so a forged state claims only what its bearer
-   could claim anyway. A state for any app other than the deployment's
-   multi-tenant one is refused (404), as is a present completion URL outside
-   `https://chat.google.com/`.
+   could claim anyway. A state for any app other than the deployment's one is
+   refused (404), as is a present completion URL outside `https://chat.google.com/`.
 2. The page signs the person in with Google through the console, which is
    Logto with its Google connector. The route compares the caller's Google
    account id (§10.6), never the console token's `sub`, which is the issuer's
@@ -1004,10 +1003,9 @@ collaborator):
    re-syncs the relay assignment when it changed, and goes back on the preset
    agent if its integration was removed. With no row, the route writes the
    customer row (`customers/…` for a Space claim, `domains/…` for a DM claim),
-   installs the app on the organization's preset agent through the same install
-   path the deployment app uses (§3), syncs the assignment, and answers 201.
-   Either way it answers the completion URL when the state carried one, which
-   the page follows.
+   installs the app on the organization's preset agent, syncs the assignment,
+   and answers 201. Either way it answers the completion URL when the state
+   carried one, which the page follows.
 6. Chat removes the prompt and sends the original event again; it now routes
    like any other delivery. Without a completion URL the page ends on a link
    back to the conversation (`https://chat.google.com/room/{id}` for a Space,
@@ -1018,7 +1016,8 @@ Removing the last integration of a customer row deletes the row and its
 credential: the provider declares such a row released, and the integration
 removal runs the same bot deletion the console uses, so another organization
 can claim that customer later, and a later claim by the same organization
-starts over with a new row (201). A row that loses its installs another way, an
+starts over with a new row (201); the bot DTO's `releasedWhenFreed` lets the
+console's delete confirmation say so. A row that loses its installs another way, an
 agent deleted with its integrations, is freed rather than released, and that
 organization's next claim puts it back on the preset agent. The install-time
 welcome message (§10.7) points people at the claim before they write anything,
@@ -1070,9 +1069,8 @@ elicitation card of §5, which builds on the same `interaction` path.
 - **Discovery**: a daemon serving a claimed customer never lists the whole app.
   Its integration config carries the row's `tenantIds`; `spaces.list` is bounded
   and filtered locally on each Space's `customer`, a row without a `customers/…`
-  key lists nothing, the anchor (an empty list, since it serves no tenant) lists
-  nothing, and DMs surface from traffic as today (§5). A single-tenant row
-  (`ownTenantIds`) lists everything until its customer is known, then that
+  key lists nothing, and DMs surface from traffic as today (§5). A single-tenant
+  row (`ownTenantIds`) lists everything until its customer is known, then that
   customer's Spaces alone. Nothing from another customer is reported as an
   observed conversation.
 - **Fence**: every write, whether a create, a patch, chrome, or a tool-driven
@@ -1122,10 +1120,14 @@ Order of work:
   return `affiliation`, `member.domainId`, and `role` for a human member in
   Spaces and DMs, and `spaces.get` to return `customer` for a named Space and
   nothing for a DM, which is what the fences and the claim read.
+- **B2** (done): the deployment app always multi-tenant, its anchor on the relay
+  snapshot, the key re-stamp on a boot pass, and the 409 for a per-agent install
+  of its project.
 - **C**: the listing, the unlisted publication, and the cross-customer round
   trip from a second Workspace organization.
 
-Still to verify live: whether a domain-wide administrator install delivers one
-`ADDED_TO_SPACE` per user; that a `REQUEST_CONFIG` body answered by the relay is
-honoured within Google's window; and that a sign-in's `sub` equals the Chat user
-id for a real account.
+Verified live on September 28, 2026: Google honours the `REQUEST_CONFIG` body
+the relay answers synchronously, and a claim from a direct message and then from
+a Space round-trips, which also proves a sign-in's Google account id equals the
+Chat user id. Still to verify live: whether a domain-wide administrator install
+delivers one `ADDED_TO_SPACE` per user.

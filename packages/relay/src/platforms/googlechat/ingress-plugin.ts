@@ -11,6 +11,7 @@ import {
 import {
   GOOGLE_CHAT_ELICIT_FUNCTION,
   GOOGLE_CHAT_PLATFORM,
+  type RcDeploymentConfig,
   type RdMsgPlatformAction,
   type WireGoogleChatCardAction
 } from '@agentconnect.md/protocol'
@@ -99,6 +100,27 @@ async function forwardElicitClick(
   if (timeout) clearTimeout(timeout)
 }
 
+/** The deployment app's anchor id: not a UUID, so no CP row can ever carry it. */
+export const GOOGLE_CHAT_ANCHOR_BOT_ID = 'deployment:googlechat:anchor'
+
+/** The anchor the CP's snapshot names (§10.4): an app-only entry for the deployment audience that routes nothing and answers the unclaimed. */
+export function googleChatAnchorAssignment(snapshot: RcDeploymentConfig | undefined): BotAssignment[] {
+  const anchor = snapshot?.googleChatAnchor
+  if (!anchor) return []
+  return [
+    {
+      botId: GOOGLE_CHAT_ANCHOR_BOT_ID,
+      platform: GOOGLE_CHAT_PLATFORM,
+      secrets: {},
+      apiAppId: anchor.projectNumber,
+      claimUrl: anchor.claimUrl,
+      members: [],
+      agents: [],
+      routes: []
+    }
+  ]
+}
+
 // The unclaimed tenant's answer (§10.4): the welcome card on an add, the claim prompt on a message or the card's own
 // click, nothing (`undefined`) for the rest. A tenant-less event (a personal account) gets nothing either.
 function unclaimedAnswer(
@@ -140,6 +162,8 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
 
     // `POST /googlechat/events`, the path the Setup Server publishes; pinned by route-mounts.test.ts.
     installRoutes: registerGoogleChatHttpIngress,
+
+    deploymentAssignments: googleChatAnchorAssignment,
 
     buildIngest(a: BotAssignment, host: RelayIngressHost): GoogleChatHttpIngest | undefined {
       // No Google secret here, the audience is the check; a row cannot be a customer and the anchor, nor own-fenced and either.
@@ -198,8 +222,7 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
         host.log.warn(`relay-ingress(${botId}): dropped a malformed Google Chat event (${result.reason})`)
         return {}
       }
-      // A multi-tenant app's anchor serves no tenant: an event core routed to it has no customer row (§10.4), so it
-      // is answered in the body and never forwarded, reported, or marked.
+      // The anchor serves no tenant (§10.4): what core routed to it is unclaimed, answered in the body, never forwarded, reported, or marked.
       if (ingest.claimUrl !== undefined) {
         const now = host.clock.now()
         const answer = unclaimedAnswer(ingest, ingest.claimUrl, event, result, now)

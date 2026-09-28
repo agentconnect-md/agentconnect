@@ -76,9 +76,9 @@ export interface LinearRouteSeams {
   tokens: LinearTokenService
 }
 
-/** Seams for the deployment-owned Google Chat app's install and claim routes (google-chat-integration.md §3, §10.5). */
+/** Seams for the Google Chat key and claim routes (google-chat-integration.md §3, §10.5). */
 export interface GoogleChatRouteSeams {
-  /** The deployment-owned Chat app; absent ⇒ `GOOGLE_CHAT_PLATFORM_*` unset and the route 404s. Secret material — NEVER log or DTO. */
+  /** The deployment-owned Chat app; absent ⇒ `GOOGLE_CHAT_PLATFORM_*` unset and the claim route 404s. Secret material — NEVER log or DTO. */
   app?: GoogleChatPlatformAppConfig
   /** The Google HTTP layer the credential probe and the claim's reads call; suites pass a fake. */
   fetch: typeof fetch

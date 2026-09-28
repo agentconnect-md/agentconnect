@@ -1770,6 +1770,7 @@
       "deleteIntegration": {
         "title": "删除集成",
         "body": "<name></name>将被移除，且所属 Daemon 会关闭该连接。Bot 身份会保留，可在“设置 → Bots”中彻底删除以便重新使用。",
+        "bodyReleased": "<name></name>将被移除，且所属 Daemon 会关闭该连接。Bot 身份会随之删除，之后可以重新连接这个应用。",
         "cancel": "取消",
         "deleting": "删除中…",
         "delete": "删除"
@@ -5450,11 +5451,6 @@
     "googlechat": {
       "checking": "正在检查这个部署…",
       "relayRequired": "Google Chat 只通过 HTTPS 回调投递，因此需要一个公开的回调地址。请管理员配置后再在这里连接应用。",
-      "deployment": {
-        "use": "使用部署自带的应用",
-        "installing": "安装中…",
-        "useOwn": "使用自己的 Chat 应用"
-      },
       "prerequisites": {
         "title": "开始之前",
         "account": "一个能配置 Chat 应用的 Google Workspace 账号",
@@ -5530,7 +5526,7 @@
         "keyRejected": "Google 拒绝了这个密钥。请为该服务账号创建一个新的 JSON 密钥并粘贴。",
         "appUnavailable": "这个项目中没有配置 Chat 应用。请启用 Google Chat API 并配置应用，然后重新连接。",
         "unreachable": "无法连接到 Google。请重试。",
-        "projectChanged": "部署自带的应用现在指向另一个 Google Cloud 项目。请先移除当前安装，再重新安装。"
+        "deploymentApp": "这是部署自带的 Chat 应用，请在 Google Chat 中给它发一条消息来连接。"
       }
     }
   }

@@ -18,22 +18,12 @@ describe('resolveGoogleChatPlatformAppConfig', () => {
     ).toBeUndefined()
   })
 
-  it('resolves all three into the deployment app, serving one Workspace organization by default', () => {
+  it('resolves all three into the deployment app', () => {
     expect(resolveGoogleChatPlatformAppConfig(FULL)).toEqual({
       projectId: 'example-project',
       projectNumber: '123456789012',
-      serviceAccountKey: '{"type":"service_account"}',
-      multiTenant: false
+      serviceAccountKey: '{"type":"service_account"}'
     })
-    expect(resolveGoogleChatPlatformAppConfig({ ...FULL, GOOGLE_CHAT_PLATFORM_MULTI_TENANT: false })?.multiTenant).toBe(
-      false
-    )
-  })
-
-  it('carries the multi-tenant switch', () => {
-    expect(resolveGoogleChatPlatformAppConfig({ ...FULL, GOOGLE_CHAT_PLATFORM_MULTI_TENANT: true })?.multiTenant).toBe(
-      true
-    )
   })
 
   it('fails fast on a partial set, naming the missing keys without echoing the key', () => {

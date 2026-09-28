@@ -1,4 +1,4 @@
-// Claims a Google Workspace customer of the multi-tenant deployment Chat app for one organization (google-chat-integration.md §10.5).
+// Claims a Google Workspace customer of the deployment Chat app for one organization (google-chat-integration.md §10.5).
 import { randomUUID } from 'node:crypto'
 import type { FastifyBaseLogger, FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
@@ -262,7 +262,7 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
           tags: [Tag.Integrations],
           summary: 'Claim a Google Workspace customer for Google Chat',
           description:
-            'Connect the caller’s Google Workspace customer to this organization on the deployment’s multi-tenant Google Chat app. `state` is the unsigned base64url JSON the Chat prompt carried; every fact is re-derived: the caller’s linked Google account must be the Chat user who asked, a Space claim requires the caller’s membership in that Space to be INTERNAL, and a DM claim requires the caller to be its only human member, whose domain is the one bound. A DM claim matches only the row that already lists its domain; a Space claim’s domain and customer append the domain to the customer’s row, upgrade and re-key a domain-only row, or consolidate the two rows into the customer’s. A new customer is installed on the organization’s preset agent (201). A customer this organization already holds answers 200; one held by another organization answers 409 without naming it, and a domain bound to a different customer answers 409 GOOGLE_CHAT_CLAIM_CONFLICT. Answers the Chat prompt’s completion URL when the state carried one.',
+            'Connect the caller’s Google Workspace customer to this organization on the deployment’s Google Chat app. `state` is the unsigned base64url JSON the Chat prompt carried; every fact is re-derived: the caller’s linked Google account must be the Chat user who asked, a Space claim requires the caller’s membership in that Space to be INTERNAL, and a DM claim requires the caller to be its only human member, whose domain is the one bound. A DM claim matches only the row that already lists its domain; a Space claim’s domain and customer append the domain to the customer’s row, upgrade and re-key a domain-only row, or consolidate the two rows into the customer’s. A new customer is installed on the organization’s preset agent (201). A customer this organization already holds answers 200; one held by another organization answers 409 without naming it, and a domain bound to a different customer answers 409 GOOGLE_CHAT_CLAIM_CONFLICT. Answers the Chat prompt’s completion URL when the state carried one.',
           operationId: 'claimGoogleChatCustomer',
           body: GoogleChatClaimBody,
           response: {
@@ -294,7 +294,7 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
           )
         }
         const platform = googleChat.app
-        if (!platform?.multiTenant || state.app !== platform.projectNumber) {
+        if (!platform || state.app !== platform.projectNumber) {
           return refuse(reply, 404, 'GOOGLE_CHAT_CLAIM_APP_UNKNOWN', 'This Google Chat app cannot be connected here.')
         }
 
@@ -353,7 +353,7 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
         )
         if (!proof.ok) return refuse(reply, proof.status, proof.code, proof.message)
 
-        // One customer maps to one organization: the customer rows of this app decide; the anchor may carry keys stamped while the switch was off and is never one.
+        // One customer maps to one organization: the customer rows of this app decide, never a tenantless row of it.
         const rows = (await deps.repos.bot.listForPlatform(GOOGLE_CHAT_PLATFORM)).filter(
           (bot) => bot.externalAppId === platform.projectNumber && googleChatRowKind(bot) === 'customer'
         )

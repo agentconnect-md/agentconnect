@@ -282,7 +282,7 @@ export class HttpBotOrchestrator {
   async syncBot(botId: string): Promise<void> {
     const bot = await this.bots.getUnscoped(BotId(botId))
     if (!bot) return
-    if (bot.transport !== 'http' || bot.agentIds.length === 0) {
+    if (!this.relayHosted(bot)) {
       await this.unassign(bot)
       return
     }
@@ -380,7 +380,7 @@ export class HttpBotOrchestrator {
    */
   async syncRoutes(botId: string): Promise<void> {
     const bot = await this.bots.getUnscoped(BotId(botId))
-    if (!bot || bot.transport !== 'http' || bot.agentIds.length === 0) return this.syncBot(botId)
+    if (!bot || !this.relayHosted(bot)) return this.syncBot(botId)
     if (this.relayReg.all().length === 0) return this.syncBot(botId) // nobody connected → defer
     const compiled = await this.compile(bot)
     if (!compiled) return this.unassign(bot)
@@ -551,6 +551,7 @@ export class HttpBotOrchestrator {
   async replayTo(ch: RelayChannel): Promise<void> {
     const bots = await this.bots.listHttpActive()
     for (const bot of bots) {
+      if (!this.relayHosted(bot)) continue
       const compiled = await this.compile(bot)
       if (!compiled) continue
       const secret = await this.botSecret.get(bot.orgId, bot.id)
@@ -1716,6 +1717,12 @@ export class HttpBotOrchestrator {
       ).values()
     ]
     return { ...spec, core: { ...spec.core, decisions: { ...decisions, definitions, sharedBotRouting: projection } } }
+  }
+
+  /** An installed HTTP bot its platform lets the relay host; any other is released. */
+  private relayHosted(bot: BotRecord): boolean {
+    if (bot.transport !== 'http' || bot.agentIds.length === 0) return false
+    return this.platforms.get(bot.platform)?.relayAssignable?.(bot) !== false
   }
 
   /**

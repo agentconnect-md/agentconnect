@@ -1,6 +1,5 @@
 // No 'use client' here: pure rules shared by the wizard pane and the settings fragment.
 
-import type { BotDto } from '@/lib/api'
 import { ApiError } from '@/lib/api'
 
 // The protocol's GOOGLE_CHAT_EVENTS_PATH, restated because the console may value-import only leaf protocol modules; setup.test.ts keeps them equal.
@@ -49,7 +48,7 @@ export const GOOGLE_CHAT_ERROR_KEYS = {
   GOOGLE_CHAT_KEY_REJECTED: 'keyRejected',
   GOOGLE_CHAT_APP_UNAVAILABLE: 'appUnavailable',
   GOOGLE_CHAT_UNREACHABLE: 'unreachable',
-  GOOGLE_CHAT_PROJECT_CHANGED: 'projectChanged'
+  GOOGLE_CHAT_DEPLOYMENT_APP: 'deploymentApp'
 } as const
 
 export type GoogleChatErrorKey = (typeof GOOGLE_CHAT_ERROR_KEYS)[keyof typeof GOOGLE_CHAT_ERROR_KEYS]
@@ -63,16 +62,6 @@ export function googleChatErrorMessage(error: unknown, translate: (key: `errors.
       : null
   if (key) return translate(`errors.${key}`)
   return error instanceof Error ? error.message : String(error)
-}
-
-/** Offer the deployment app when it is installable and no other agent here holds it, which the install would refuse. */
-export function deploymentAppOffered(
-  available: boolean,
-  bots: readonly Pick<BotDto, 'platform' | 'prebuilt' | 'agentIds'>[],
-  agentId: string
-): boolean {
-  if (!available) return false
-  return !bots.some((bot) => bot.platform === 'googlechat' && bot.prebuilt && !bot.agentIds.includes(agentId))
 }
 
 /** What the console can honestly say about a new installation (§3): saved is not connected, and connected does not mean the app is anywhere yet. */

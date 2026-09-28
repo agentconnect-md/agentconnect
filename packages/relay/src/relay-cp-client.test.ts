@@ -332,6 +332,62 @@ describe('RelayCpClient', () => {
     await client.stop()
   })
 
+  it('hands every connection’s snapshot, or its absence, to onDeploymentSnapshot', async () => {
+    const clock = new FakeClock()
+    const transports: FakeTransport[] = []
+    const onDeploymentSnapshot = vi.fn()
+    const client = new RelayCpClient({
+      auth: { method: 'token', credential: TOKEN },
+      name: 'relay-0',
+      daemonUrl: 'wss://relay-0.example',
+      heartbeatDefaultMs: 15_000,
+      clock,
+      connect: async () => {
+        const transport = new FakeTransport()
+        transports.push(transport)
+        return transport
+      },
+      log: silentLog,
+      jitter: () => 0,
+      onDeploymentSnapshot
+    })
+    const anchored = {
+      revision: 9,
+      googleChatAnchor: { projectNumber: '100000000000', claimUrl: 'https://console.example.test/googlechat/claim' }
+    }
+    const connect = async (index: number, deploymentConfig?: typeof anchored) => {
+      const transport = transports[index]!
+      const auth = transport.lastReq('rc/auth')!
+      transport.inject(
+        buildRelayCpFrame(
+          'rc/auth/ok',
+          {
+            heartbeatSec: 15,
+            serverTime: new Date(0).toISOString(),
+            ...(deploymentConfig ? { deploymentConfig } : {})
+          },
+          { corr: auth.id }
+        )
+      )
+      await flush()
+      const register = transport.lastReq('rc/register')!
+      transport.inject(buildRelayCpFrame('rc/registered', { relayId: RELAY_ID }, { corr: register.id }))
+      await flush()
+    }
+
+    client.start()
+    await flush()
+    await connect(0, anchored)
+    expect(onDeploymentSnapshot).toHaveBeenLastCalledWith(anchored)
+    transports[0]!.simulateClose(1012)
+    clock.advance(1_000)
+    await flush()
+    await connect(1)
+    expect(onDeploymentSnapshot).toHaveBeenCalledTimes(2)
+    expect(onDeploymentSnapshot).toHaveBeenLastCalledWith(undefined)
+    await client.stop()
+  })
+
   it('emits rc/heartbeat at the CP-dictated cadence', async () => {
     const { client, clock, transport } = makeClient()
     await handshakeToReady(client, transport, 20) // heartbeatSec = 20

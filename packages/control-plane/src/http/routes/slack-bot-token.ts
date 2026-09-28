@@ -104,7 +104,7 @@ export function slackBotTokenRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'Slack bot not found' })
         }
         await pushBotConfig(deps, req.log, updated)
-        return toBotDto(updated)
+        return toBotDto(updated, deps.platforms)
       }
     )
   }

@@ -197,9 +197,7 @@ const GoogleChatAppSchema = z.preprocess(
     projectNumber: z
       .string()
       .trim()
-      .regex(/^[1-9]\d{0,19}$/, 'must be a numeric Google Cloud project number'),
-    // The app also serves other Google Workspace organizations, each claiming its own customer (§10); absent means off.
-    multiTenant: z.boolean().optional()
+      .regex(/^[1-9]\d{0,19}$/, 'must be a numeric Google Cloud project number')
   })
 )
 

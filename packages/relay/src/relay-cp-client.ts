@@ -153,6 +153,8 @@ export interface RelayCpClientDeps {
   /** First authenticated deployment snapshot in this process. Later reconnects
    *  deliberately do not hot-reload it; an operator restart applies changes. */
   onDeploymentConfig?: (config: RcDeploymentConfig) => void
+  /** Every connection's deployment snapshot, undefined when the CP sent none, for state that must follow the CP's current configuration. */
+  onDeploymentSnapshot?: (config: RcDeploymentConfig | undefined) => void
 }
 
 export class RelayCpClient {
@@ -611,6 +613,7 @@ export class RelayCpClient {
       this.deploymentConfigDecided = true
       if (ok.deploymentConfig) this.deps.onDeploymentConfig?.(ok.deploymentConfig)
     }
+    this.deps.onDeploymentSnapshot?.(ok.deploymentConfig)
 
     // ── register (upsert by name → relayId; re-sent every reconnect) ──
     this.state = 'REGISTERING'

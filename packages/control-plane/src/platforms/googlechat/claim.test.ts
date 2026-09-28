@@ -34,11 +34,10 @@ const KEY = {
   private_key: PRIVATE_KEY,
   client_email: `chat-app@${PROJECT_ID}.iam.gserviceaccount.com`
 }
-const MULTI_TENANT_APP: GoogleChatPlatformAppConfig = {
+const DEPLOYMENT_APP: GoogleChatPlatformAppConfig = {
   projectId: PROJECT_ID,
   projectNumber: PROJECT_NUMBER,
-  serviceAccountKey: JSON.stringify(KEY, null, 2),
-  multiTenant: true
+  serviceAccountKey: JSON.stringify(KEY, null, 2)
 }
 
 interface StateFields {
@@ -240,7 +239,7 @@ async function harness(
     req.principal = { userId: 'user-1' }
     req.orgCtx = { orgId: ORG, role: opts.role ?? 'collaborator', userId: 'user-1' } as never
   })
-  const platform = opts.app === null ? undefined : (opts.app ?? MULTI_TENANT_APP)
+  const platform = opts.app === null ? undefined : (opts.app ?? DEPLOYMENT_APP)
   await app.register(
     googleChatClaimRoutes(deps, {
       ...(platform ? { app: platform } : {}),
@@ -300,13 +299,13 @@ describe('the claim state', () => {
 })
 
 describe('POST /integrations/googlechat/claim: a new customer', () => {
-  it('writes a new customer row even when the anchor carries that customer from single-tenant days (§10.3)', async () => {
-    const anchor = customerRow({
+  it('writes a new customer row even when a tenantless row of the app carries that customer (§10.3)', async () => {
+    const tenantless = customerRow({
       id: BotId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
       externalTenantId: '-',
       platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
     })
-    const h = await harness({ rows: [anchor] })
+    const h = await harness({ rows: [tenantless] })
 
     const res = await h.claim()
     expect(res.statusCode).toBe(201)
@@ -666,7 +665,7 @@ describe('POST /integrations/googlechat/claim: a customer that already has a row
     expect(h.syncBot).toHaveBeenCalledWith(BOT)
   })
 
-  it('ignores rows of other apps and the anchor', async () => {
+  it('ignores rows of other apps and a tenantless row of this one', async () => {
     const h = await harness({
       rows: [
         customerRow({ orgId: OTHER_ORG, externalAppId: '210987654321' }),
@@ -735,15 +734,11 @@ describe('POST /integrations/googlechat/claim: refusals', () => {
     expect(offsite.json().code).toBe('GOOGLE_CHAT_CLAIM_STATE_INVALID')
   })
 
-  it('answers 404 for another app, a single-tenant app, and no deployment app', async () => {
+  it('answers 404 for another app and without a deployment app', async () => {
     const other = await harness()
     const res = await other.claim(state({ app: '210987654321' }))
     expect(res.statusCode).toBe(404)
     expect(res.json().code).toBe('GOOGLE_CHAT_CLAIM_APP_UNKNOWN')
-    await running?.close()
-
-    const single = await harness({ app: { ...MULTI_TENANT_APP, multiTenant: false } })
-    expect((await single.claim()).statusCode).toBe(404)
     await running?.close()
 
     const none = await harness({ app: null })

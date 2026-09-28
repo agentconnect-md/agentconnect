@@ -39,6 +39,7 @@ import type {
   RcBotCredentialCheck,
   RcBotRevoked,
   RcBotTenant,
+  RcDeploymentConfig,
   WireNormalizedMessage,
   RcThreadAssign,
   RcThreadParticipant,
@@ -284,6 +285,45 @@ export class RelayIngressManager {
       reportBotUserId: (botId, botUserId) => this.router.setBotUserId(botId, botUserId),
       clock: { now: () => this.deps.clock.now() },
       log: this.deps.log
+    }
+  }
+
+  /** Bots a plugin derived from the CP's deployment snapshot: the CP holds no row for them, so they route and report nothing. */
+  private readonly deploymentBots = new Set<string>()
+  /** The host a deployment-owned ingest gets: every forward is refused and every report to the CP is dropped. */
+  private get deploymentHost(): RelayIngressHost {
+    return (this.deploymentHostMemo ??= {
+      ...this.ingressHost,
+      forward: async () => 'refused',
+      forwardStrict: async () => rejected('rejected'),
+      forwardAction: async (msg) => ({ msgId: msg.msgId, accepted: false, reason: 'offline' }),
+      reportChannels: () => {},
+      reportRevoked: () => {},
+      reportCredentialCheck: () => {},
+      reportTenant: () => {},
+      setChannelAgent: () => {},
+      selectThreadAgent: () => {}
+    })
+  }
+  private deploymentHostMemo?: RelayIngressHost
+  private hostFor(botId: string): RelayIngressHost {
+    return this.deploymentBots.has(botId) ? this.deploymentHost : this.ingressHost
+  }
+
+  /** Replace the deployment-owned assignments with those the plugins derive from `snapshot`; run on every registration, as bot assignments are replayed then too. */
+  async applyDeploymentSnapshot(snapshot: RcDeploymentConfig | undefined): Promise<void> {
+    const next = new Map<string, BotAssignment>()
+    for (const { plugin } of this.ingressPlugins.values()) {
+      for (const a of plugin.deploymentAssignments?.(snapshot) ?? []) next.set(a.botId, a)
+    }
+    for (const botId of [...this.deploymentBots]) {
+      if (next.has(botId)) continue
+      await this.unassign(botId)
+      this.deploymentBots.delete(botId)
+    }
+    for (const a of next.values()) {
+      this.deploymentBots.add(a.botId)
+      await this.assign(a)
     }
   }
 
@@ -744,7 +784,7 @@ export class RelayIngressManager {
       this.deps.log.warn(`relay-ingress(${a.botId}): platform '${a.platform}' ingest not yet supported (milestone C)`)
       return
     }
-    const ingest = entry.plugin.buildIngest(a, this.ingressHost)
+    const ingest = entry.plugin.buildIngest(a, this.hostFor(a.botId))
     if (!ingest) return
     entry.pool.set(a.botId, ingest)
     entry.demux.indexAssign(a.botId, {
@@ -829,7 +869,7 @@ export class RelayIngressManager {
       const ingest = botId ? pool.get(botId) : undefined
       if (!ingest || !this.tenantFencePasses(botId!, hints.tenantId)) return undefined
       const verified = await plugin.verify(ingest, rawBody, body, headers, now)
-      return verified === undefined ? undefined : { ingest, verified }
+      return verified === undefined ? undefined : { botId: botId!, ingest, verified }
     }
     // Composite fast path — assign-derived, so a hit is exact (still verified).
     let hit = hints.appId && hints.tenantId ? await tryCandidate(demux.resolve(hints)) : undefined
@@ -847,13 +887,13 @@ export class RelayIngressManager {
           const owner = this.router.get(botId)
           if (hints.appId && owner?.teamId === undefined && owner?.tenantIds === undefined)
             demux.learn(hints.appId, botId)
-          hit = { ingest, verified }
+          hit = { botId, ingest, verified }
           break
         }
       }
     }
     if (!hit) return undefined
-    return entry.plugin.handle(hit.ingest, hit.verified, this.ingressHost)
+    return entry.plugin.handle(hit.ingest, hit.verified, this.hostFor(hit.botId))
   }
 
   /**

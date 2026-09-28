@@ -51,6 +51,7 @@ import type {
   BotRevocationEvidence,
   RcBotChannels,
   RcBotRevoked,
+  RcDeploymentConfig,
   RdAck,
   RdMsgPlatformAction,
   RdRouteAck,
@@ -380,4 +381,6 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
    * `syncResponse`.
    */
   handle(ingest: TIngest, verified: TVerified, host: RelayIngressHost): Promise<HandledDelivery>
+  /** OPTIONAL: assignments derived from the CP's deployment snapshot rather than a bot row; core replaces them on every registration, and they route and report nothing. */
+  deploymentAssignments?(snapshot: RcDeploymentConfig | undefined): BotAssignment[]
 }

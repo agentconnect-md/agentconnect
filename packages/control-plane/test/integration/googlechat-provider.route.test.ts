@@ -1,4 +1,4 @@
-/** The Google Chat provider against real Postgres (google-chat-integration.md §3): both credential holders, one bot per Chat app. */
+/** The Google Chat provider against real Postgres (google-chat-integration.md §3, §10): per-agent apps, one bot per Chat app, and the claimed deployment app. */
 import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { prisma } from '../setup.db.js'
@@ -33,8 +33,7 @@ const KEY = JSON.stringify({
 const DEPLOYMENT_APP = {
   projectId: PROJECT_ID,
   projectNumber: PROJECT_NUMBER,
-  serviceAccountKey: KEY,
-  multiTenant: false
+  serviceAccountKey: KEY
 }
 const CRM_URL = googleCloudProjectUrl(PROJECT_ID)
 
@@ -84,7 +83,7 @@ function harness(opts: { deploymentApp?: boolean } = {}) {
     close() {}
   } as unknown as RelayChannel)
   running = app
-  return { app, control, googleCalls, relaySends }
+  return { app, control, googleCalls, relaySends, relay: app.relayReg.get('r1')! }
 }
 
 async function placedAgent(): Promise<string> {
@@ -201,71 +200,40 @@ describe('a per-agent Chat app from POST /integrations', () => {
   })
 })
 
-describe('POST /integrations/googlechat/platform-install', () => {
-  const install = (app: HttpApp, payload: Record<string, unknown> = {}) =>
-    app.app.inject({ method: 'POST', url: `${ORG}/integrations/googlechat/platform-install`, payload })
-
-  it('404s without a deployment-owned app', async () => {
-    const { app } = harness()
-    expect((await install(app)).statusCode).toBe(404)
-  })
-
-  it('installs the deployment app on the preset agent from the stored key, placement not required', async () => {
-    const { app, googleCalls } = harness({ deploymentApp: true })
-    await provisionPresetAgents(prisma, { orgId: DEFAULT_ORG_ID })
-    const preset = await prisma.agent.findUnique({
-      where: { orgId_name: { orgId: DEFAULT_ORG_ID, name: 'agentconnect' } }
+describe('the deployment app is claimed, never installed per agent (§3, §10.4)', () => {
+  const install = (app: HttpApp, agentId: string) =>
+    app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'googlechat', agentId, transport: 'http', googlechat: DEPLOYMENT_APP }
     })
 
-    const res = await install(app)
-    expect(res.statusCode).toBe(201)
-    expect(res.body).not.toContain('PRIVATE KEY')
-    expect(res.json()).toMatchObject({ platform: 'googlechat', agentId: preset!.id, channels: [] })
-    expect(googleCalls).toHaveLength(4)
-
-    const bot = await prisma.bot.findFirst({ where: { platform: 'googlechat' }, include: { secret: true } })
-    expect(bot).toMatchObject({
-      prebuilt: true,
-      transport: 'http',
-      shareable: false,
-      externalAppId: PROJECT_NUMBER,
-      externalTenantId: '-',
-      platformConfig: { projectId: PROJECT_ID }
-    })
-    expect(bot?.secret?.botToken).toBe(KEY)
-  })
-
-  it('installs on a named agent, re-stamps the same bot when run again, and refuses another agent', async () => {
+  it('refuses a per-agent install of the deployment app’s project with 409, storing nothing', async () => {
     const agentId = await placedAgent()
-    const other = randomUUID()
-    await seedAgent(prisma, other, { daemonId: DAEMON })
-    const { app, googleCalls } = harness({ deploymentApp: true })
+    const { app } = harness({ deploymentApp: true })
 
-    const first = await install(app, { agentId })
-    expect(first.statusCode).toBe(201)
-    const { id, botId } = first.json() as { id: string; botId: string }
-    const before = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
-
-    // Running it again is how a rotated deployment key reaches the bot: same bot, same integration, a new generation.
-    const again = await install(app, { agentId })
-    expect(again.statusCode).toBe(200)
-    expect(again.json()).toMatchObject({ id, botId, agentId })
-    expect(googleCalls).toHaveLength(8)
-    const after = await prisma.bot.findUniqueOrThrow({ where: { id: botId }, include: { secret: true } })
-    expect(after.credentialRevision).toBeGreaterThan(before.credentialRevision)
-    expect(after.secret?.botToken).toBe(KEY)
-    expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(1)
-
-    const taken = await install(app, { agentId: other })
-    expect(taken.statusCode).toBe(409)
-    expect(taken.json().message).toMatch(/already connected/)
+    const res = await install(app, agentId)
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ error: 'Conflict', code: 'GOOGLE_CHAT_DEPLOYMENT_APP' })
+    expect(res.body).not.toContain('PRIVATE KEY')
+    expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(0)
   })
 
-  it('409s when neither an agentId nor a preset exists', async () => {
-    const { app } = harness({ deploymentApp: true })
-    const res = await install(app)
-    expect(res.statusCode).toBe(409)
-    expect(res.json().message).toMatch(/no target agent/)
+  it('never assigns a tenantless row of the deployment app’s project to the relay, where the anchor owns its audience', async () => {
+    const agentId = await placedAgent()
+    const { app, relaySends, relay } = harness()
+    // An organization's own install of the project, made before the project became the deployment app.
+    const created = await install(app, agentId)
+    expect(created.statusCode).toBe(201)
+    const { botId } = created.json() as { botId: string }
+    expect(relaySends.filter((send) => send.type === 'rc/bot-assign')).toHaveLength(1)
+
+    app.platformStubs.googleChatPlatformApp = DEPLOYMENT_APP
+    relaySends.length = 0
+    await app.deps.httpBot.syncBot(botId)
+    await app.deps.httpBot.replayTo(relay)
+    expect(relaySends.map((send) => send.type)).toEqual(['rc/bot-unassign'])
+    expect(relaySends[0]!.payload).toMatchObject({ botId })
   })
 })
 
@@ -313,7 +281,7 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
       { PUBLIC_RELAY_URL: 'https://relay.example.test' },
       undefined,
       new SpyControl() as unknown as ControlSender,
-      { googleChatFetch: claimGoogle(), googleChatPlatformApp: { ...DEPLOYMENT_APP, multiTenant: true } }
+      { googleChatFetch: claimGoogle(), googleChatPlatformApp: DEPLOYMENT_APP }
     )
     app.relayReg.add({
       relayId: 'r1',

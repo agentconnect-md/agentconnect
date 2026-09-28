@@ -305,31 +305,13 @@ describe('POST /api/v1/configure/google-chat (§3)', () => {
     expect(writes[0]?.secrets).toBeUndefined()
   })
 
-  it('stores the multi-tenant switch with the app, and saving it off turns it off', async () => {
-    const { app, writes } = server({ values: configured, storedKey: KEY })
-
-    const on = await configure(app, { projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER, multiTenant: true })
-    expect(on.statusCode).toBe(200)
-    expect(writes[0]?.values.googleChat).toEqual({
-      projectId: PROJECT_ID,
-      projectNumber: PROJECT_NUMBER,
-      multiTenant: true
-    })
-    const off = await configure(app, { projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER, multiTenant: false })
-    expect(off.statusCode).toBe(200)
-    expect(writes[1]?.values.googleChat).toEqual({ projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER })
-  })
-
-  it('shows the switch on the Google Chat card and sends it on save', async () => {
+  it('describes one app that every Google Workspace organization claims', async () => {
     const { app } = server()
 
     const page = await app.inject({ method: 'GET', url: '/' })
     expect(page.statusCode).toBe(200)
-    expect(page.body).toContain(
-      '<label><input id="googlechat-multi-tenant-input" type="checkbox"> Serves other Google Workspace organizations</label>'
-    )
-    expect(page.body).toContain('<dt>Serves other Google Workspace organizations</dt>')
-    expect(page.body).toContain("multiTenant: el('googlechat-multi-tenant-input').checked")
+    expect(page.body).toContain('Each Google Workspace organization connects itself from Google Chat.')
+    expect(page.body).toContain('Configure Google sign-in above')
   })
 
   it('requires a key for a different project', async () => {

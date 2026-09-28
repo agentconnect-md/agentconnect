@@ -131,6 +131,11 @@ async function main(): Promise<void> {
     onDeploymentConfig: (snapshot) => {
       deploymentConfig.githubWebhookSecret = snapshot.githubWebhookSecret
     },
+    // Unlike the GitHub secret, applied on every registration: bot assignments are replayed then too, so the anchor follows a restarted CP.
+    onDeploymentSnapshot: (snapshot) =>
+      void held.relayIngress
+        ?.applyDeploymentSnapshot(snapshot)
+        .catch((err) => log.error(`relay: deployment snapshot failed: ${String(err)}`)),
     // Link (re)became READY — re-emit thread-assign reports and channel snapshots
     // dropped while it was down.
     onReady: () => {

@@ -23,8 +23,9 @@ import { multiAgentUnsupportedMessage } from '../../platforms/sharing.js'
 import { botJoinsPublicChannels } from '../../platforms/slack/provider.js'
 import { deleteBotIdentity } from '../uninstall.js'
 import { pushBotConfig } from '../bot-config-push.js'
+import type { CpPlatformRegistry } from '../../platforms/provider.js'
 
-export function toBotDto(b: BotRecord): BotDtoT {
+export function toBotDto(b: BotRecord, platforms: Pick<CpPlatformRegistry, 'get'>): BotDtoT {
   return {
     id: b.id,
     name: b.name,
@@ -42,6 +43,7 @@ export function toBotDto(b: BotRecord): BotDtoT {
     transport: b.transport,
     inUseByAgentId: b.inUseByAgentId,
     agentIds: b.agentIds,
+    releasedWhenFreed: platforms.get(b.platform)?.releasesFreedBot?.(b) === true,
     lastUsedAt: b.lastUsedAt?.toISOString() ?? null,
     freedFromAgent: b.lastAgentName,
     teamId: b.teamId,
@@ -84,7 +86,7 @@ export function botRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const rows = await deps.repos.bot.listForOrg(orgOf(req))
-        return rows.map(toBotDto)
+        return rows.map((row) => toBotDto(row, deps.platforms))
       }
     )
 
@@ -107,7 +109,7 @@ export function botRoutes(deps: HttpDeps) {
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
-        return toBotDto(bot)
+        return toBotDto(bot, deps.platforms)
       }
     )
 
@@ -188,9 +190,10 @@ export function botRoutes(deps: HttpDeps) {
             bot = (await deps.repos.bot.get(bot.orgId, bot.id)) ?? bot
             await pushBotConfig(deps, app.log, bot)
           }
-          if (req.body.shareable === undefined) return toBotDto(bot)
+          if (req.body.shareable === undefined) return toBotDto(bot, deps.platforms)
         }
-        if (req.body.shareable === undefined || req.body.shareable === bot.shareable) return toBotDto(bot) // no-op
+        if (req.body.shareable === undefined || req.body.shareable === bot.shareable)
+          return toBotDto(bot, deps.platforms) // no-op
         // Multi-agent bots are a per-PLATFORM capability, and this route used to
         // check only the transport — so any HTTP-transport bot on a platform the
         // install path refuses (`validateShareableInstall`) could be flipped
@@ -271,7 +274,7 @@ export function botRoutes(deps: HttpDeps) {
           // ingest re-open; the transport, hence the ingest, is unchanged).
           await deps.httpBot.syncRoutes(bot.id)
           const updated = await deps.repos.bot.get(bot.orgId, bot.id)
-          return toBotDto(updated!)
+          return toBotDto(updated!, deps.platforms)
         } finally {
           release()
         }

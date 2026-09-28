@@ -56,14 +56,19 @@ export const RcAuth = z.object({
 })
 export type RcAuth = z.infer<typeof RcAuth>
 
+// The deployment Google Chat app's anchor (google-chat-integration.md §10.4): its audience and the console's claim page.
+export const RcGoogleChatAnchor = z.object({
+  projectNumber: z.string().regex(/^[1-9]\d{0,19}$/),
+  claimUrl: z.string().url({ protocol: /^https$/ })
+})
+export type RcGoogleChatAnchor = z.infer<typeof RcGoogleChatAnchor>
+
 // C→R REP (corr = rc/auth id). Rejection is a `error` REP + close, not a reply.
-// `deploymentConfig` is the immutable startup snapshot for this relay process.
-// It is carried on the already-authenticated control connection so the relay
-// stays DB-less. A deployment change is deliberately restart-driven: callers
-// consume only the first snapshot they receive in one process lifetime.
+// The CP's deployment snapshot, sent on every authentication; the GitHub secret is applied once per relay process, the Google Chat anchor on every registration.
 export const RcDeploymentConfig = z.object({
   revision: z.number().int().nonnegative(),
-  githubWebhookSecret: z.string().min(1).optional()
+  githubWebhookSecret: z.string().min(1).optional(),
+  googleChatAnchor: RcGoogleChatAnchor.optional()
 })
 export type RcDeploymentConfig = z.infer<typeof RcDeploymentConfig>
 

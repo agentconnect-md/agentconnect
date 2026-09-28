@@ -206,13 +206,10 @@ export function integrationRoutes(deps: HttpDeps) {
       return null
     }
 
-    // A provider's refusal from `validateConfig` (§9), sent verbatim: 400 for a
-    // DEFINITIVE credential rejection, 503 when the provider was unreachable
-    // (inconclusive, never proof the credential is bad). `code` rides along only
-    // where the platform defines one — the console branches on it.
+    // A provider's `validateConfig` refusal (§9), sent verbatim with its `code` where the platform defines one.
     const sendConfigRefusal = (reply: FastifyReply, refusal: CpConfigRefusal) =>
       reply.code(refusal.status).send({
-        error: refusal.status === 400 ? 'Bad Request' : 'Service Unavailable',
+        error: { 400: 'Bad Request', 409: 'Conflict', 503: 'Service Unavailable' }[refusal.status],
         statusCode: refusal.status,
         ...(refusal.code ? { code: refusal.code } : {}),
         message: refusal.message

@@ -64,7 +64,7 @@ export interface BotAssignment {
   workspaceId?: string
   /** Every tenant key this bot serves: one customer row of a multi-tenant app (google-chat-integration.md §10.3), whose siblings share the audience, so it is demuxed only on the composite `(apiAppId, tenant)` keys and fenced strictly. */
   tenantIds?: string[]
-  /** The console's claim page, present only on a multi-tenant app's anchor row: the plugin answers an event no sibling serves with it (§10.4). */
+  /** The console's claim page, present only on the deployment app's anchor: the plugin answers an event no sibling serves with it (§10.4). */
   claimUrl?: string
   /** A single-tenant row's own tenant keys, recorded from its traffic (§10.3): the plugin fences with them by its platform's rules; core neither indexes nor fences on them. */
   ownTenantIds?: string[]

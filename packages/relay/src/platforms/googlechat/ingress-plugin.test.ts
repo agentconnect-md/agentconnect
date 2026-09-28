@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { WireNormalizedMessage } from '@agentconnect.md/protocol'
-import { createGoogleChatIngressPlugin, type GoogleChatIngressPlugin } from './ingress-plugin.js'
+import {
+  GOOGLE_CHAT_ANCHOR_BOT_ID,
+  createGoogleChatIngressPlugin,
+  googleChatAnchorAssignment,
+  type GoogleChatIngressPlugin
+} from './ingress-plugin.js'
 import { GOOGLE_CHAT_WELCOME_CARD, type GoogleChatHttpIngest } from './http-ingest.js'
 import { GOOGLE_CHAT_CERTIFICATE_REFETCH_MS, GOOGLE_CHAT_CERTIFICATE_URL } from './token.js'
 import type { RelayAdmission, RelayIngressHost } from '../contract.js'
@@ -374,7 +379,7 @@ describe('googlechat ingress plugin — the trusted activation cause', () => {
   })
 })
 
-describe('googlechat ingress plugin — a multi-tenant app’s anchor and customer rows (§10.4)', () => {
+describe('googlechat ingress plugin — the deployment app’s anchor and customer rows (§10.4)', () => {
   const CLAIM_URL = 'https://console.example.test/googlechat/claim'
   const REDIRECT = 'https://chat.example.test/config-complete?token=REDACTED'
   const prompt = (syncResponse: unknown) => {
@@ -493,7 +498,7 @@ describe('googlechat ingress plugin — a multi-tenant app’s anchor and custom
     expect(ingest.claimUrl).toBeUndefined()
   })
 
-  it('a single-tenant anchor, with no claim page, still routes every event, including one naming no tenant', async () => {
+  it('an own app’s row, with no claim page, still routes every event, including one naming no tenant', async () => {
     const { plugin, h, ingest } = setup()
     const bearer = `Bearer ${await token()}`
     const personal = { ...dmMessage, user: { ...dmMessage.user, domainId: undefined } }
@@ -572,6 +577,28 @@ describe('googlechat ingress plugin — a multi-tenant app’s anchor and custom
     const noCustomer = { ...spaceMention, space: { ...spaceMention.space, customer: undefined } }
     expect(plugin.extractDemuxHints(raw, noCustomer, headers)).toEqual({ appId: AUDIENCE })
     expect(plugin.extractDemuxHints(raw, dmMessage, {})).toEqual({ tenantId: DOMAIN })
+  })
+
+  it('derives the anchor from the CP’s snapshot alone: the audience and the claim page, no secret, no member', () => {
+    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    expect(plugin.deploymentAssignments).toBe(googleChatAnchorAssignment)
+    const [anchored] = googleChatAnchorAssignment({
+      revision: 4,
+      googleChatAnchor: { projectNumber: AUDIENCE, claimUrl: CLAIM_URL }
+    })
+    expect(anchored).toEqual({
+      botId: GOOGLE_CHAT_ANCHOR_BOT_ID,
+      platform: 'googlechat',
+      secrets: {},
+      apiAppId: AUDIENCE,
+      claimUrl: CLAIM_URL,
+      members: [],
+      agents: [],
+      routes: []
+    })
+    expect(plugin.buildIngest(anchored!, host())?.claimUrl).toBe(CLAIM_URL)
+    expect(googleChatAnchorAssignment({ revision: 4 })).toEqual([])
+    expect(googleChatAnchorAssignment(undefined)).toEqual([])
   })
 
   it('refuses a row that is both a customer and the anchor', () => {

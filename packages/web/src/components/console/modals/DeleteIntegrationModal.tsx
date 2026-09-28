@@ -6,9 +6,7 @@ import { useConsoleData } from '@/lib/data-context'
 import type { IntegrationRow } from '@/lib/data'
 import { Button, Icon } from '@/components/ui'
 
-// Confirm-delete an integration. Drops the CP record and tells the owning daemon
-// to close the connection; the bot identity (+ its tokens) survives, freed for
-// reuse — delete it from Settings → Bots. The list re-pulls via the data context.
+// Confirm-delete an integration: the bot identity stays freed for reuse, unless its platform releases it with the last install.
 export default function DeleteIntegrationModal({
   integration,
   onClose
@@ -17,7 +15,9 @@ export default function DeleteIntegrationModal({
   onClose: () => void
 }) {
   const t = useTranslations('Integrations.dialog.deleteIntegration')
-  const { deleteIntegration } = useConsoleData()
+  const { deleteIntegration, bots } = useConsoleData()
+  const bot = bots.find((candidate) => candidate.id === integration.botId)
+  const released = bot?.releasedWhenFreed === true && bot.agentIds.every((id) => id === integration.agentId)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -47,7 +47,9 @@ export default function DeleteIntegrationModal({
       </div>
       <div className="modalbody">
         <p className="m-0 font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
-          {t.rich('body', { name: () => <span className="mono text-(--text-primary)">{integration.name}</span> })}
+          {t.rich(released ? 'bodyReleased' : 'body', {
+            name: () => <span className="mono text-(--text-primary)">{integration.name}</span>
+          })}
         </p>
         {err && (
           <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>

@@ -1,14 +1,14 @@
 import type { FastifyPluginAsync } from 'fastify'
 import { z } from 'zod'
-import type { CpPlatformProvider, CpConfigValidation } from '../provider.js'
+import type { CpPlatformProvider, CpConfigRefusal, CpValidatedIdentity } from '../provider.js'
 
 export const QQCreateCredentials = z.object({ appId: z.string().regex(/^\d+$/), appSecret: z.string().trim().min(1) })
 type Credentials = z.infer<typeof QQCreateCredentials>
 
-export async function verifyQQBot(
-  credentials: Credentials,
-  fetchImpl: typeof fetch = fetch
-): Promise<CpConfigValidation> {
+/** QQ's check refuses with 400 or 503 only, which the credential route relays as is. */
+type QQValidation = { ok: true; identity: CpValidatedIdentity } | (CpConfigRefusal & { status: 400 | 503 })
+
+export async function verifyQQBot(credentials: Credentials, fetchImpl: typeof fetch = fetch): Promise<QQValidation> {
   try {
     const response = await fetchImpl('https://bots.qq.com/app/getAppAccessToken', {
       method: 'POST',
@@ -31,7 +31,7 @@ export async function verifyQQBot(
   }
 }
 
-function unavailable(): CpConfigValidation {
+function unavailable(): QQValidation {
   return {
     ok: false,
     status: 503,

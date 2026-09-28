@@ -1,4 +1,4 @@
-// The deployment-owned Google Chat app (google-chat-integration.md §3), configured in the Setup Server; all three keys or none, plus the optional multi-tenant switch.
+// The deployment-owned Google Chat app (google-chat-integration.md §3), configured in the Setup Server; all three keys or none.
 import type { AppConfig } from './env.js'
 
 export interface GoogleChatPlatformAppConfig {
@@ -6,15 +6,12 @@ export interface GoogleChatPlatformAppConfig {
   projectNumber: string
   /** Service-account key JSON; secret material, never logged or returned. */
   serviceAccountKey: string
-  /** The app also serves other Google Workspace organizations, which claim their customer through the console (§10). */
-  multiTenant: boolean
 }
 
 type GoogleChatPlatformEnvSlice = Pick<
   AppConfig,
   'GOOGLE_CHAT_PLATFORM_PROJECT_ID' | 'GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER' | 'GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY'
-> &
-  Partial<Pick<AppConfig, 'GOOGLE_CHAT_PLATFORM_MULTI_TENANT'>>
+>
 
 /** Undefined ⇒ no deployment-owned app. Throws on a partial set. */
 export function resolveGoogleChatPlatformAppConfig(
@@ -38,7 +35,6 @@ export function resolveGoogleChatPlatformAppConfig(
   return {
     projectId: config.GOOGLE_CHAT_PLATFORM_PROJECT_ID!,
     projectNumber: config.GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER!,
-    serviceAccountKey: config.GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY!,
-    multiTenant: config.GOOGLE_CHAT_PLATFORM_MULTI_TENANT === true
+    serviceAccountKey: config.GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY!
   }
 }

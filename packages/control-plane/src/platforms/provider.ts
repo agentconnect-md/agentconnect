@@ -151,22 +151,10 @@ export interface CpValidatedIdentity {
 export type CpTenantLearning =
   { kind: 'record'; change: BotIdentityChange } | { kind: 'known' } | { kind: 'refused'; reason: string }
 
-/**
- * Refusal from {@link CpPlatformProvider.validateConfig}: the HTTP status +
- * user-facing copy the create route sends verbatim. The audited refusals are
- * 400 (definitive credential rejection, Telegram Privacy Mode still on,
- * Discord intent setup rejected, Slack token pair from different apps —
- * `integrations.ts:408-415,424-432,479-487,652-659`) and 503 (provider
- * unreachable = inconclusive, never proof the token is bad —
- * `:416-423,488-496,573-580`). 409s stay core (relay availability, D6
- * identity taken, bot-reuse conflicts). `code` is the stable machine-readable
- * error the console switches copy on where one exists today
- * (`TELEGRAM_PRIVACY_MODE_ENABLED`,
- * `DISCORD_MESSAGE_CONTENT_INTENT_SETUP_FAILED`, …).
- */
+/** A `validateConfig` refusal the create route sends verbatim: 400 a definitive rejection, 409 an app the deployment itself owns, 503 an unreachable provider; `code` is what the console switches copy on. */
 export interface CpConfigRefusal {
   ok: false
-  status: 400 | 503
+  status: 400 | 409 | 503
   code?: string
   message: string
 }
@@ -530,6 +518,9 @@ export interface CpPlatformProvider<TCredentials = unknown> {
 
   /** Whether a bot whose last install was removed is deleted rather than kept freed (§10.5: a claimed customer row is released for a new claim). Absent ⇒ kept. */
   releasesFreedBot?(bot: BotRecord): boolean
+
+  /** Whether an HTTP row may take a relay assignment now; false ⇒ core releases it and replays nothing for it. Absent ⇒ every row may. */
+  relayAssignable?(bot: BotRecord): boolean
 
   /** Whether a daemon socket's `integration/revoked` is about this bot's CURRENT credential: the socket identity it reports must match the stored one; absent ⇒ every report refused. */
   socketLifecycleRevocation?(bot: BotRecord, reported: Pick<IntegrationRevoked, 'botUserId' | 'workspaceId'>): boolean

@@ -3,32 +3,22 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { BotDto, IntegrationDto, SlackConfigDto } from '@/lib/api'
+import type { IntegrationDto, SlackConfigDto } from '@/lib/api'
 import type { Agent, IntegrationRow } from '@/lib/data'
 import type { WizardFooterState, WizardHost, WizardIdentityChromeState } from '../contract'
 
 const mocks = vi.hoisted(() => ({
   probeConfig: null as SlackConfigDto | null,
-  deploymentAvailable: null as boolean | null,
-  bots: [] as BotDto[],
   integrations: [] as IntegrationRow[],
-  create: vi.fn(),
-  installPlatformApp: vi.fn()
+  create: vi.fn()
 }))
 
 vi.mock('../deployment-config', () => ({
   useDeploymentConfig: () => ({ config: mocks.probeConfig, failed: false, apply: vi.fn() })
 }))
-vi.mock('./availability', () => ({ useGoogleChatPlatformInstall: () => mocks.deploymentAvailable }))
-vi.mock('./api', () => ({
-  googleChatApi: { create: mocks.create, installPlatformApp: mocks.installPlatformApp }
-}))
+vi.mock('./api', () => ({ googleChatApi: { create: mocks.create } }))
 vi.mock('@/lib/data-context', () => ({
-  useConsoleData: () => ({
-    bots: mocks.bots,
-    integrations: mocks.integrations,
-    getAgent: () => undefined
-  })
+  useConsoleData: () => ({ integrations: mocks.integrations, getAgent: () => undefined })
 }))
 
 import { ApiError } from '@/lib/api'
@@ -110,11 +100,8 @@ beforeEach(() => {
   footer = null
   identity = null
   mocks.probeConfig = answered
-  mocks.deploymentAvailable = false
-  mocks.bots = []
   mocks.integrations = []
   mocks.create.mockReset()
-  mocks.installPlatformApp.mockReset()
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -126,28 +113,17 @@ afterEach(async () => {
 })
 
 describe('googleChatPane', () => {
-  const facts = {
-    relayAvailable: true as boolean | null,
-    deploymentAvailable: true as boolean | null,
-    deploymentOffered: true,
-    source: 'deployment' as const,
-    created: false
-  }
-
-  it('waits for both reads, then needs a relay, then leads with the deployment app', () => {
-    expect(googleChatPane({ ...facts, relayAvailable: null })).toBe('checking')
-    expect(googleChatPane({ ...facts, deploymentAvailable: null })).toBe('checking')
-    expect(googleChatPane({ ...facts, relayAvailable: false })).toBe('relay_required')
-    expect(googleChatPane(facts)).toBe('deployment')
-    expect(googleChatPane({ ...facts, source: 'own' })).toBe('own')
-    expect(googleChatPane({ ...facts, deploymentOffered: false })).toBe('own')
-    expect(googleChatPane({ ...facts, relayAvailable: null, created: true })).toBe('test')
+  it('waits for the relay read, then needs a relay, then shows the own-app steps', () => {
+    expect(googleChatPane({ relayAvailable: null, created: false })).toBe('checking')
+    expect(googleChatPane({ relayAvailable: false, created: false })).toBe('relay_required')
+    expect(googleChatPane({ relayAvailable: true, created: false })).toBe('own')
+    expect(googleChatPane({ relayAvailable: null, created: true })).toBe('test')
   })
 })
 
 describe('GoogleChatWizardBody', () => {
   it('shows nothing to fill in while the deployment is being read', async () => {
-    mocks.deploymentAvailable = null
+    mocks.probeConfig = null
     await render()
     expect(text()).toContain('Checking this deployment')
     expect(identity?.hidden).toBe(true)
@@ -161,10 +137,11 @@ describe('GoogleChatWizardBody', () => {
     expect(footer?.hidden).toBe(true)
   })
 
-  it('lays out the prerequisites, the values to copy, and the credential form for an own app', async () => {
+  it('lays out the prerequisites, the values to copy, and the credential form for an own app, and nothing else', async () => {
     await render()
     expect(identity?.hidden).toBe(false)
     expect(identity?.headerAction).toBeUndefined()
+    expect(text()).not.toContain('deployment app')
     expect(text()).toContain('Browser role')
     expect(text()).toContain('Cloud Resource Manager API')
     expect(text()).toContain('https://relay.example.test/googlechat/events')
@@ -240,48 +217,16 @@ describe('GoogleChatWizardBody', () => {
     expect(text()).not.toContain('Test it in Google Chat')
   })
 
-  it('offers the deployment app first and installs it for this agent', async () => {
-    mocks.deploymentAvailable = true
-    mocks.installPlatformApp.mockResolvedValue(CREATED)
+  it('points a key of the deployment’s own app at Google Chat', async () => {
+    mocks.create.mockRejectedValue(new ApiError('raw', 409, 'GOOGLE_CHAT_DEPLOYMENT_APP'))
     const state = await render()
-    expect(identity?.hidden).toBe(true)
-    expect(footer?.hidden).toBe(true)
-    expect(host.querySelector('input')).toBeNull()
+    await type(field('Service account key'), KEY)
+    await act(async () => footer?.onSubmit())
 
-    await act(async () => buttonWith('Use the deployment app')?.click())
-    expect(mocks.installPlatformApp).toHaveBeenCalledWith({ agentId: 'agent-a' })
-    expect(state.invalidate).toHaveBeenCalled()
-    expect(text()).toContain('Test it in Google Chat')
-  })
-
-  it('switches to an own app and back through the host header', async () => {
-    mocks.deploymentAvailable = true
-    await render()
-    await act(async () => buttonWith('Use your own Chat app')?.click())
-    expect(identity?.hidden).toBe(false)
-    expect(identity?.headerAction?.label).toBe('Use the deployment app')
-    expect(field('Project ID')).toBeDefined()
-
-    await act(async () => identity?.headerAction?.onSelect())
-    expect(identity?.hidden).toBe(true)
-    expect(buttonWith('Use the deployment app')).toBeDefined()
-  })
-
-  it('does not offer the deployment app another agent already holds', async () => {
-    mocks.deploymentAvailable = true
-    mocks.bots = [{ platform: 'googlechat', prebuilt: true, agentIds: ['agent-b'] } as BotDto]
-    await render()
-    expect(buttonWith('Use the deployment app')).toBeUndefined()
-    expect(identity?.headerAction).toBeUndefined()
-    expect(field('Project ID')).toBeDefined()
-  })
-
-  it('maps a deployment install refusal under its button', async () => {
-    mocks.deploymentAvailable = true
-    mocks.installPlatformApp.mockRejectedValue(new ApiError('raw', 400, 'GOOGLE_CHAT_CRM_DISABLED'))
-    await render()
-    await act(async () => buttonWith('Use the deployment app')?.click())
-    expect(text()).toContain('Enable the Cloud Resource Manager API in the Chat app’s project')
+    expect(state.setError).toHaveBeenLastCalledWith(
+      'This Chat app belongs to this deployment; connect it by sending the app a message in Google Chat.'
+    )
+    expect(field('Service account key').value).toBe('')
   })
 
   it('renders nothing of its own when reusing a freed app', async () => {

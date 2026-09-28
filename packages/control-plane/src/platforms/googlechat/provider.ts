@@ -2,7 +2,8 @@
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
-import { GOOGLE_CHAT_PLATFORM, type IntegrationGoogleChatConfig } from '@agentconnect.md/protocol'
+import { GOOGLE_CHAT_PLATFORM, RcGoogleChatAnchor, type IntegrationGoogleChatConfig } from '@agentconnect.md/protocol'
+import type { GoogleChatPlatformAppConfig } from '../../config/google-chat-platform.js'
 import {
   TENANTLESS_SENTINEL,
   type BotIdentitySnapshot,
@@ -54,17 +55,16 @@ export function refineGoogleChatCreateBody(
 export const GoogleChatCpEnvSchema = {
   GOOGLE_CHAT_PLATFORM_PROJECT_ID: z.string().optional(),
   GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER: z.string().optional(),
-  GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY: z.string().optional(),
-  // Explicit enum, not z.coerce.boolean(), so 'false' stays false.
-  GOOGLE_CHAT_PLATFORM_MULTI_TENANT: z
-    .enum(['true', 'false'])
-    .default('false')
-    .transform((v) => v === 'true')
+  GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY: z.string().optional()
 } satisfies ZodRawShape
 
 /** The 409 copy of the one-bot-per-app fence; a Chat app cannot move between agents or organizations. */
 export const GOOGLE_CHAT_APP_TAKEN_MESSAGE =
   'This Google Chat app is already connected to an agent. Each Chat app serves one agent; create a Chat app in its own Google Cloud project for this agent.'
+
+/** The 409 copy when a per-agent install names the deployment's own app, which organizations claim from Google Chat (§10.5). */
+export const GOOGLE_CHAT_DEPLOYMENT_APP_MESSAGE =
+  'This is the deployment’s own Google Chat app. Your organization connects it from Google Chat: send the app a message there.'
 
 /** The machine code the console switches on, per refusal. */
 const REFUSAL_CODES: Record<GoogleChatAppFailure, string> = {
@@ -111,13 +111,17 @@ export async function resolveGoogleChatApp(
   return { ok: false, status, code: REFUSAL_CODES[checked.status], message: checked.message }
 }
 
-/** The provider's `validateConfig`: the resolved app becomes the identity core persists. */
+/** The provider's `validateConfig`: the resolved app becomes the identity core persists, unless it is the deployment's own app. */
 export async function validateGoogleChatApp(
   credentials: GoogleChatCreateCredentials,
-  fetchImpl: typeof fetch
+  fetchImpl: typeof fetch,
+  deploymentProjectNumber?: string
 ): Promise<CpConfigValidation> {
   const resolved = await resolveGoogleChatApp(credentials, fetchImpl)
   if (!resolved.ok) return resolved
+  if (resolved.projectNumber === deploymentProjectNumber) {
+    return { ok: false, status: 409, code: 'GOOGLE_CHAT_DEPLOYMENT_APP', message: GOOGLE_CHAT_DEPLOYMENT_APP_MESSAGE }
+  }
   return {
     ok: true,
     identity: {
@@ -161,7 +165,7 @@ export function buildGoogleChatInstall(
   }
 }
 
-/** Every tenant key a bot row is known by; empty for a single-tenant row and for the anchor. */
+/** Every tenant key a bot row is known by; empty for a single-tenant row. */
 export function googleChatRowTenantKeys(bot: Pick<BotRecord, 'externalTenantId' | 'platformConfig'>): string[] {
   const keys = googleChatTenantKeys(googleChatTenantOf(bot.platformConfig))
   const primary = bot.externalTenantId
@@ -169,48 +173,56 @@ export function googleChatRowTenantKeys(bot: Pick<BotRecord, 'externalTenantId' 
   return keys
 }
 
-/** The multi-tenant deployment app's anchor: its project number and the console's claim page (§10.5). */
-export interface GoogleChatClaimAnchor {
-  projectNumber: string
-  claimUrl: string
+/** The deployment app's anchor for the relay snapshot (§10.4): its audience and the console's claim page; none unless the page is https. */
+export function googleChatClaimAnchor(
+  app: Pick<GoogleChatPlatformAppConfig, 'projectNumber'> | undefined,
+  webAppUrl: string | undefined
+): RcGoogleChatAnchor | undefined {
+  if (!app || !webAppUrl) return undefined
+  const anchor = RcGoogleChatAnchor.safeParse({
+    projectNumber: app.projectNumber,
+    claimUrl: `${webAppUrl.replace(/\/+$/, '')}/googlechat/claim`
+  })
+  return anchor.success ? anchor.data : undefined
 }
 
-/** The three shapes a Google Chat bot row takes (§10.3): a claimed customer row, the multi-tenant anchor, or one organization's own app. */
-export type GoogleChatRowKind = 'customer' | 'anchor' | 'single'
+/** The two shapes a Google Chat bot row takes (§10.3): a claimed customer of the deployment app, or one organization's own app. */
+export type GoogleChatRowKind = 'customer' | 'single'
 
 type GoogleChatRowIdentity = Pick<BotRecord, 'externalAppId'> &
   Partial<Pick<BotRecord, 'externalTenantId' | 'platformConfig'>>
 
-/** A row keyed by a tenant is a customer row; the deployment app's tenantless row is the anchor while the switch is on; every other row is single-tenant. */
-export function googleChatRowKind(bot: GoogleChatRowIdentity, anchor?: GoogleChatClaimAnchor): GoogleChatRowKind {
-  const primary = bot.externalTenantId ?? TENANTLESS_SENTINEL
-  if (primary !== TENANTLESS_SENTINEL) return 'customer'
-  return anchor && bot.externalAppId === anchor.projectNumber ? 'anchor' : 'single'
+/** A row keyed by a tenant is a customer row; every tenantless row is single-tenant. */
+export function googleChatRowKind(bot: GoogleChatRowIdentity): GoogleChatRowKind {
+  return (bot.externalTenantId ?? TENANTLESS_SENTINEL) === TENANTLESS_SENTINEL ? 'single' : 'customer'
 }
 
-/** The tenant fields the daemon and the relay both read, by row kind: strict keys for a customer row (none for the anchor), the recorded own keys for a single-tenant row. */
-function googleChatRowTenantFields(
+/** A tenantless row of the deployment app's project (an organization's own install of it): it would shadow the relay's anchor and take other Workspaces' DMs, so it serves nothing (§10.4). */
+export function googleChatRowShadowsAnchor(
   bot: GoogleChatRowIdentity,
-  anchor?: GoogleChatClaimAnchor
-): { tenantIds?: string[]; ownTenantIds?: string[] } {
-  const identity = { externalTenantId: bot.externalTenantId ?? null, platformConfig: bot.platformConfig ?? null }
-  switch (googleChatRowKind(bot, anchor)) {
-    case 'customer':
-      return { tenantIds: googleChatRowTenantKeys(identity) }
-    case 'anchor':
-      return { tenantIds: [] }
-    case 'single': {
-      const own = googleChatTenantKeys(googleChatTenantOf(bot.platformConfig))
-      return own.length > 0 ? { ownTenantIds: own } : {}
+  deploymentProjectNumber: string | undefined
+): boolean {
+  return googleChatRowKind(bot) === 'single' && !!bot.externalAppId && bot.externalAppId === deploymentProjectNumber
+}
+
+/** The tenant fields the daemon and the relay both read, by row kind: strict keys for a customer row, the recorded own keys for a single-tenant row. */
+function googleChatRowTenantFields(bot: GoogleChatRowIdentity): { tenantIds?: string[]; ownTenantIds?: string[] } {
+  if (googleChatRowKind(bot) === 'customer') {
+    return {
+      tenantIds: googleChatRowTenantKeys({
+        externalTenantId: bot.externalTenantId ?? null,
+        platformConfig: bot.platformConfig ?? null
+      })
     }
   }
+  const own = googleChatTenantKeys(googleChatTenantOf(bot.platformConfig))
+  return own.length > 0 ? { ownTenantIds: own } : {}
 }
 
 /** The daemon spec payload; undefined when the row lacks its app identity or key, which withholds the integration. */
 export function googleChatIntegrationConfig(
   bot: GoogleChatRowIdentity,
-  secrets: Pick<BotSecretMaterial, 'botToken'>,
-  anchor?: GoogleChatClaimAnchor
+  secrets: Pick<BotSecretMaterial, 'botToken'>
 ): IntegrationGoogleChatConfig | undefined {
   const projectId = bot.platformConfig?.projectId
   if (!bot.externalAppId || typeof projectId !== 'string' || !secrets.botToken) return undefined
@@ -218,41 +230,38 @@ export function googleChatIntegrationConfig(
     projectId,
     projectNumber: bot.externalAppId,
     serviceAccountKey: secrets.botToken,
-    ...googleChatRowTenantFields(bot, anchor)
+    ...googleChatRowTenantFields(bot)
   }
 }
 
-/** The relay assignment: no secret, the project number as audience (§2), the app's identity, a customer row's tenant keys, a single-tenant row's own keys, and the anchor's claim page. */
-export function googleChatBotAssignBags(
-  bot: GoogleChatRowIdentity & Pick<BotRecord, 'botUserId'>,
-  anchor?: GoogleChatClaimAnchor
-): {
+/** The relay assignment: no secret, the project number as audience (§2), the app's identity, a customer row's tenant keys, and a single-tenant row's own keys. */
+export function googleChatBotAssignBags(bot: GoogleChatRowIdentity & Pick<BotRecord, 'botUserId'>): {
   secrets: Record<string, unknown>
   ingress: Record<string, unknown>
 } {
-  const kind = googleChatRowKind(bot, anchor)
-  const fields = googleChatRowTenantFields(bot, anchor)
+  const fields = googleChatRowTenantFields(bot)
   return {
     secrets: {},
     ingress: {
       ...(bot.externalAppId ? { apiAppId: bot.externalAppId } : {}),
       ...(bot.botUserId ? { appUserName: bot.botUserId } : {}),
       ...(fields.tenantIds?.length ? { tenantIds: fields.tenantIds } : {}),
-      ...(fields.ownTenantIds ? { ownTenantIds: fields.ownTenantIds } : {}),
-      ...(kind === 'anchor' && anchor ? { claimUrl: anchor.claimUrl } : {})
+      ...(fields.ownTenantIds ? { ownTenantIds: fields.ownTenantIds } : {})
     }
   }
 }
 
-/** A single-tenant row records what its traffic names (§10.3); a customer row learns only through claims and the anchor serves no tenant. */
+/** A single-tenant row records what its traffic names (§10.3); a customer row learns only through claims and a row shadowing the anchor serves nothing. */
 export function learnGoogleChatTenant(
   bot: GoogleChatRowIdentity,
   current: BotIdentitySnapshot,
   tenantId: string,
-  anchor?: GoogleChatClaimAnchor
+  deploymentProjectNumber?: string
 ): CpTenantLearning {
-  const kind = googleChatRowKind({ ...bot, externalTenantId: current.externalTenantId }, anchor)
-  if (kind !== 'single') return { kind: 'refused', reason: `a ${kind} row does not learn tenants` }
+  const row = { ...bot, externalTenantId: current.externalTenantId }
+  if (googleChatRowKind(row) === 'customer') return { kind: 'refused', reason: 'a customer row does not learn tenants' }
+  if (googleChatRowShadowsAnchor(row, deploymentProjectNumber))
+    return { kind: 'refused', reason: 'the deployment app’s tenantless row serves nothing' }
   const learning = googleChatTenantLearning(current.platformConfig, tenantId)
   return learning.kind === 'record' ? { kind: 'record', change: { platformConfig: learning.entries } } : learning
 }
@@ -260,10 +269,12 @@ export function learnGoogleChatTenant(
 export interface GoogleChatCpProviderDeps {
   /** The Google HTTP layer for the credential probe; tests pass a fake. Defaults to the global fetch. */
   fetch?: typeof fetch
-  /** The deployment-app install route, pre-bound by the composition root. */
+  /** The key and claim routes, pre-bound by the composition root. */
   installRoutes?: { org: FastifyPluginAsync[]; publicCallback: FastifyPluginAsync[] }
-  /** Present only when the deployment app is multi-tenant: its anchor row's assignment carries the claim page. */
-  claimAnchor?: GoogleChatClaimAnchor
+  /** The deployment app, read per call: organizations claim it from Google Chat and never install it per agent (§3). */
+  readonly app?: Pick<GoogleChatPlatformAppConfig, 'projectNumber'>
+  /** The boot pass that re-stamps a rotated deployment key on the customer rows (§10.3). */
+  credentialReconciler?: { start(): void; stop(): void }
 }
 
 export function createGoogleChatCpProvider(
@@ -280,7 +291,7 @@ export function createGoogleChatCpProvider(
 
     refineCreateBody: refineGoogleChatCreateBody,
 
-    validateConfig: (credentials) => validateGoogleChatApp(credentials, fetchImpl),
+    validateConfig: (credentials) => validateGoogleChatApp(credentials, fetchImpl, deps.app?.projectNumber),
 
     // One app serves one agent in this version, so a requested `shareable` is dropped.
     buildNewBotInstall: ({ credentials, identity }) => {
@@ -320,19 +331,35 @@ export function createGoogleChatCpProvider(
 
     envSchema: GoogleChatCpEnvSchema,
 
-    // No background loop: Google offers no app-authenticated read of the app's `users/…` name, so only traffic reveals it (§3).
+    // The one loop re-stamps keys; Google offers no app-authenticated read of the app's `users/…` name, so only traffic reveals it (§3).
+    ...(deps.credentialReconciler
+      ? {
+          backgroundLoops: [
+            {
+              label: 'googlechat-credential-restamp',
+              start: () => deps.credentialReconciler!.start(),
+              stop: () => deps.credentialReconciler!.stop()
+            }
+          ]
+        }
+      : {}),
 
-    learnTenant: (bot, current, tenantId) => learnGoogleChatTenant(bot, current, tenantId, deps.claimAnchor),
+    learnTenant: (bot, current, tenantId) => learnGoogleChatTenant(bot, current, tenantId, deps.app?.projectNumber),
 
     // A freed customer row is deleted so the customer can be claimed anew, by any organization (§10.5).
-    releasesFreedBot: (bot) => googleChatRowKind(bot, deps.claimAnchor) === 'customer',
+    releasesFreedBot: (bot) => googleChatRowKind(bot) === 'customer',
+
+    // The relay's anchor owns the deployment audience app-only; a tenantless row of that project must not shadow it (§10.4).
+    relayAssignable: (bot) => !googleChatRowShadowsAnchor(bot, deps.app?.projectNumber),
 
     async projectIntegrationConfig(_integration, bot, _core, secrets) {
-      return googleChatIntegrationConfig(bot, secrets, deps.claimAnchor)
+      return googleChatRowShadowsAnchor(bot, deps.app?.projectNumber)
+        ? undefined
+        : googleChatIntegrationConfig(bot, secrets)
     },
 
     async projectBotAssign(bot) {
-      return googleChatBotAssignBags(bot, deps.claimAnchor)
+      return googleChatBotAssignBags(bot)
     }
   }
 }

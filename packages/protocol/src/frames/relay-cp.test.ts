@@ -103,6 +103,23 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     ).toBe(false)
   })
 
+  it('carries the Google Chat anchor with a numeric project number and an https claim page only', () => {
+    const anchor = { projectNumber: '100000000000', claimUrl: 'https://console.example.test/googlechat/claim' }
+    const authOk = (googleChatAnchor: unknown) =>
+      decodeRelayCpFrame(
+        envelope('rc/auth/ok', {
+          heartbeatSec: 15,
+          serverTime: '2026-08-05T00:00:00.000Z',
+          deploymentConfig: { revision: 0, googleChatAnchor }
+        })
+      )
+    const decoded = authOk(anchor)
+    if (!decoded.ok || decoded.frame.type !== 'rc/auth/ok') throw new Error('expected rc/auth/ok')
+    expect(decoded.frame.payload.deploymentConfig?.googleChatAnchor).toEqual(anchor)
+    expect(authOk({ ...anchor, projectNumber: 'example-project' }).ok).toBe(false)
+    expect(authOk({ ...anchor, claimUrl: 'http://console.example.test/googlechat/claim' }).ok).toBe(false)
+  })
+
   it('decodes rc/heartbeat (empty payload)', () => {
     const r = decodeRelayCpFrame(envelope('rc/heartbeat', {}))
     expect(r.ok).toBe(true)

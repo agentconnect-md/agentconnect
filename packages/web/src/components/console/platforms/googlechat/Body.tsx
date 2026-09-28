@@ -10,13 +10,11 @@ import type { WizardHost } from '../contract'
 import { useDeploymentConfig } from '../deployment-config'
 import { usePublishedFooter, usePublishedIdentityChrome } from '../publish'
 import { googleChatApi } from './api'
-import { useGoogleChatPlatformInstall } from './availability'
 import { CopyField } from './fields'
 import { GoogleChatMark } from './mark'
 import {
   GOOGLE_CHAT_AUDIENCE,
   GOOGLE_CHAT_CONFIG_URL,
-  deploymentAppOffered,
   googleChatCallbackUrl,
   googleChatErrorMessage,
   googleChatSetupState,
@@ -28,52 +26,35 @@ import {
 const PRIMARY =
   'flex h-[46px] w-full items-center justify-center gap-[10px] rounded-[10px] border-0 bg-(--surface-inverse) font-sans text-[14px] font-semibold leading-normal text-white'
 
-/** Which pane shows: a probe in flight, no relay to receive events, the deployment app, the own-app steps, or the test. */
-export type GoogleChatPane = 'checking' | 'relay_required' | 'deployment' | 'own' | 'test'
+/** Which pane shows: a probe in flight, no relay to receive events, the own-app steps, or the test. */
+export type GoogleChatPane = 'checking' | 'relay_required' | 'own' | 'test'
 
 /** The pane for the wizard's current facts; pure so the step flow is testable without rendering. */
-export function googleChatPane(input: {
-  relayAvailable: boolean | null
-  deploymentAvailable: boolean | null
-  deploymentOffered: boolean
-  source: 'deployment' | 'own'
-  created: boolean
-}): GoogleChatPane {
+export function googleChatPane(input: { relayAvailable: boolean | null; created: boolean }): GoogleChatPane {
   if (input.created) return 'test'
-  if (input.relayAvailable === null || input.deploymentAvailable === null) return 'checking'
-  if (!input.relayAvailable) return 'relay_required'
-  return input.deploymentOffered && input.source === 'deployment' ? 'deployment' : 'own'
+  if (input.relayAvailable === null) return 'checking'
+  return input.relayAvailable ? 'own' : 'relay_required'
 }
 
-/** Google Chat's pane (§3): the deployment app when offered, else the own-app steps, then a test where saved, connected and tested differ. */
+/** Google Chat's pane (§3): an organization's own app, then a test where saved, connected and tested differ; the deployment app is claimed from Google Chat instead. */
 export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
   const t = useTranslations('Platforms.googlechat')
   const translate = (key: Parameters<typeof t>[0]) => t(key)
   // The chassis reads this same probe for its relay capability; only "has it answered" is read here.
   const probe = useDeploymentConfig(true)
-  const deploymentAvailable = useGoogleChatPlatformInstall(host.mockMode)
-  const { bots, integrations, getAgent } = useConsoleData()
+  const { integrations, getAgent } = useConsoleData()
 
-  const [source, setSource] = useState<'deployment' | 'own'>('deployment')
   const [projectId, setProjectId] = useState('')
   const [projectNumber, setProjectNumber] = useState('')
   const [serviceAccountKey, setServiceAccountKey] = useState('')
   const [saving, setSaving] = useState(false)
-  const [installErr, setInstallErr] = useState<string | null>(null)
   const [created, setCreated] = useState<IntegrationDto | null>(null)
   // Synchronous re-entry guard; `saving` only commits on the next render.
   const busyRef = useRef(false)
 
   // An answer wins over a later error, as in the other relay-only panes.
   const relayAvailable: boolean | null = probe.config ? host.relayCapability.available : probe.failed ? false : null
-  const offered = deploymentAppOffered(deploymentAvailable === true, bots, agent.id)
-  const pane = googleChatPane({
-    relayAvailable,
-    deploymentAvailable,
-    deploymentOffered: offered,
-    source,
-    created: !!created
-  })
+  const pane = googleChatPane({ relayAvailable, created: !!created })
   const callbackUrl = googleChatCallbackUrl(host.relayCapability.publicUrl)
 
   const keyTrim = serviceAccountKey.trim()
@@ -117,29 +98,9 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
     }
   }
 
-  const installDeploymentApp = async () => {
-    if (busyRef.current) return
-    busyRef.current = true
-    setSaving(true)
-    setInstallErr(null)
-    try {
-      const integration = await googleChatApi.installPlatformApp({ agentId: agent.id })
-      host.invalidate()
-      setCreated(integration)
-    } catch (e) {
-      setInstallErr(googleChatErrorMessage(e, translate))
-    } finally {
-      setSaving(false)
-      busyRef.current = false
-    }
-  }
-
   // Only the own-app steps use the host's identity chassis and footer; every other pane carries its own action.
   const own = pane === 'own'
-  usePublishedIdentityChrome(host, {
-    hidden: !own,
-    ...(own && offered ? { headerAction: { label: t('deployment.use'), onSelect: () => setSource('deployment') } } : {})
-  })
+  usePublishedIdentityChrome(host, { hidden: !own })
   usePublishedFooter(host, {
     label: saving ? t('footer.connecting') : t('footer.connect'),
     enabled: own && valid && !saving,
@@ -213,44 +174,6 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
           {t('test.done')}
         </button>
       </Frame>
-    )
-  }
-
-  if (pane === 'deployment') {
-    return (
-      <>
-        <div className="mb-3 rounded-[9px] border border-(--border-subtle) bg-(--surface-card) p-4">
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => void installDeploymentApp()}
-            className={`${PRIMARY} ${saving ? 'cursor-default opacity-85' : 'cursor-pointer'}`}
-          >
-            {saving ? (
-              <Icon name="loader" size={16} className="flex-none animate-spin" />
-            ) : (
-              <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                <GoogleChatMark fillPct={100} />
-              </span>
-            )}
-            {saving ? t('deployment.installing') : t('deployment.use')}
-          </button>
-          {installErr && (
-            <div className="mt-2 font-sans text-[11.5px] font-normal leading-[1.4] text-(--status-error)">
-              {installErr}
-            </div>
-          )}
-        </div>
-        <button
-          type="button"
-          disabled={saving}
-          onClick={() => setSource('own')}
-          className="mb-4 flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)"
-        >
-          <Icon name="chevron-right" size={14} color="var(--text-tertiary)" />
-          {t('deployment.useOwn')}
-        </button>
-      </>
     )
   }
 

@@ -378,14 +378,13 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
       <section id="googlechat-section" class="panel setup-section" aria-labelledby="googlechat-heading">
         <div class="provider-head">
-          <div><h3 id="googlechat-heading">Google Chat</h3><p class="muted">One Chat app for the deployment, installed on one agent at a time.</p></div>
+          <div><h3 id="googlechat-heading">Google Chat</h3><p class="muted">One Chat app for the deployment. Each Google Workspace organization connects itself from Google Chat.</p></div>
           <span id="googlechat-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
           <dt>Project ID</dt><dd class="value-line"><code id="googlechat-project-id">Not configured</code><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
           <dt>Project number</dt><dd class="value-line"><code id="googlechat-project-number">Not configured</code><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
           <dt>Service-account key</dt><dd class="value-line"><span id="googlechat-key-display" class="muted">Not configured</span><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
-          <dt>Serves other Google Workspace organizations</dt><dd class="value-line"><code id="googlechat-multi-tenant">Not configured</code><button class="edit-configuration" data-provider="googlechat">Edit</button></dd>
         </dl>
         <p id="googlechat-status" class="muted"></p>
         <div id="googlechat-drift" class="notice" hidden></div>
@@ -397,8 +396,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <li>On the Chat API Configuration page, set the HTTP endpoint URL and the Project Number audience above, allow 1:1 messages and joining spaces, and choose who can use the app.</li>
           <li>In the same project, create a service account and a JSON key for it, grant it the Browser role on the project, and enable the Cloud Resource Manager API; AgentConnect reads the project number with that key.</li>
           <li>Save the project ID and key here. The project number is optional: when entered, it must match the number read from the key's project.</li>
-          <li>Add the app in Google Chat, then send it a direct message or mention it in a space to test.</li>
-          <li>To serve other Google Workspace organizations, turn on the switch below, install the app on one agent, and publish it on the Google Workspace Marketplace; each organization then connects itself from Google Chat.</li>
+          <li>Configure Google sign-in above, then add the app in Google Chat and send it a message. Each Google Workspace organization connects itself from Google Chat by signing in to the console with Google; publish the app on the Google Workspace Marketplace to reach other organizations.</li>
         </ol>
         <div class="row"><a id="googlechat-configuration" class="button" href="https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat" target="_blank" rel="noopener">Open Chat API configuration</a></div>
         <div id="googlechat-config-controls" class="subsection">
@@ -406,7 +404,6 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <label class="field">Project ID<input id="googlechat-project-id-input" autocomplete="off"></label>
           <label class="field">Project number (optional)<input id="googlechat-project-number-input" inputmode="numeric" autocomplete="off" placeholder="Read from the key's project"></label>
           <label class="field">Service-account key JSON<input id="googlechat-key" type="password" autocomplete="off" placeholder="Required when the project ID changes"></label>
-          <label><input id="googlechat-multi-tenant-input" type="checkbox"> Serves other Google Workspace organizations</label>
         </div>
         <div class="row"><button id="save-googlechat">Save Google Chat app</button><button id="cancel-googlechat-configuration" hidden>Cancel</button><button id="clear-googlechat" class="danger" hidden>Clear configuration</button></div>
       </section>
@@ -807,14 +804,12 @@ export const SETUP_HTML = String.raw`<!doctype html>
         : []);
       text('googlechat-project-id', googleChat && googleChat.projectId);
       text('googlechat-project-number', googleChat && googleChat.projectNumber);
-      text('googlechat-multi-tenant', googleChat && (googleChat.multiTenant ? 'Yes' : 'No'));
       el('googlechat-key-display').textContent = googleChatKey ? '***' : 'Not configured';
       el('googlechat-key-display').className = googleChatKey ? 'redacted' : 'muted';
       showIdentityEditors('googlechat', Boolean(googleChat));
       el('googlechat-project-id-input').value = googleChat ? googleChat.projectId : '';
       el('googlechat-project-number-input').value = googleChat ? googleChat.projectNumber : '';
       el('googlechat-key').value = '';
-      el('googlechat-multi-tenant-input').checked = Boolean(googleChat && googleChat.multiTenant);
       if (expectedGoogleChat) el('googlechat-configuration').href = expectedGoogleChat.configurationUrl;
       el('googlechat-status').textContent = googleChat
         ? googleChat.projectId + ' is configured.'
@@ -992,7 +987,6 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('googlechat-project-id-input').value = values.googleChat.projectId;
         el('googlechat-project-number-input').value = values.googleChat.projectNumber;
         el('googlechat-key').value = '';
-        el('googlechat-multi-tenant-input').checked = Boolean(values.googleChat.multiTenant);
         el('googlechat-edit-heading').hidden = false;
         el('googlechat-config-controls').hidden = false;
         el('save-googlechat').hidden = false;
@@ -1507,8 +1501,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       const projectNumber = el('googlechat-project-number-input').value.trim();
       const application = {
         projectId: requiredInput('googlechat-project-id-input', 'the Google Cloud project ID'),
-        ...(projectNumber ? { projectNumber } : {}),
-        multiTenant: el('googlechat-multi-tenant-input').checked
+        ...(projectNumber ? { projectNumber } : {})
       };
       const serviceAccountKey = el('googlechat-key').value.trim();
       let saved;

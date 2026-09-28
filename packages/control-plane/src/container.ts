@@ -56,6 +56,7 @@ import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
 import { resolveLinearPlatformAppConfig } from './config/linear-platform.js'
 import { resolveGoogleChatPlatformAppConfig } from './config/google-chat-platform.js'
+import { relayDeploymentSnapshot } from './config/deployment.js'
 import type { FetchLike } from './github/api.js'
 import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/index.js'
 import { GithubService } from './github/service.js'
@@ -288,8 +289,9 @@ import { LinearApiClient } from './platforms/linear/api.js'
 import { LinearTokenService } from './platforms/linear/token-service.js'
 import { LinearOrphanTokenSweeper } from './platforms/linear/orphan-token-sweeper.js'
 import { linearConnectRoutes, linearOauthCallbackRoutes } from './platforms/linear/routes.js'
-import { createGoogleChatCpProvider } from './platforms/googlechat/provider.js'
-import { googleChatKeyRoutes, googleChatPlatformInstallRoutes } from './platforms/googlechat/routes.js'
+import { createGoogleChatCpProvider, googleChatClaimAnchor } from './platforms/googlechat/provider.js'
+import { GoogleChatCredentialReconciler } from './platforms/googlechat/credential-reconciler.js'
+import { googleChatKeyRoutes } from './platforms/googlechat/routes.js'
 import { googleChatClaimRoutes } from './platforms/googlechat/claim.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
@@ -2175,20 +2177,27 @@ export function buildContainer(
     log: { info: (obj, msg) => http.log.info(obj, msg), warn: (obj, msg) => http.log.warn(obj, msg) }
   })
 
-  // The deployment-owned Google Chat app's install and claim routes read the app, Google, and the caller's Google identity from here.
+  // The Google Chat key and claim routes read the deployment app, Google, and the caller's Google identity from here.
   const googleChatSeams: GoogleChatRouteSeams = {
     ...(googleChatPlatformApp ? { app: googleChatPlatformApp } : {}),
     fetch: (input, init) => fetch(input, init),
     ...(logtoIdentity ? { identity: logtoIdentity } : {})
   }
-  // A multi-tenant deployment app's anchor row points unclaimed customers at the console's claim page (§10.5).
-  const googleChatClaimAnchor =
-    googleChatPlatformApp?.multiTenant && webAppUrl
-      ? {
-          projectNumber: googleChatPlatformApp.projectNumber,
-          claimUrl: `${webAppUrl.replace(/\/+$/, '')}/googlechat/claim`
-        }
-      : undefined
+  // The relay's anchor points every unclaimed Workspace customer of the deployment app at the console's claim page (§10.4).
+  const googleChatAnchor = googleChatClaimAnchor(googleChatPlatformApp, webAppUrl)
+  if (googleChatPlatformApp && !googleChatAnchor) {
+    http.log.warn('google chat: no https console URL, so unclaimed Workspace organizations get no claim prompt')
+  }
+  // A rotated deployment key reaches the claimed customer rows on the next boot (§10.3).
+  const googleChatCredentialReconciler = new GoogleChatCredentialReconciler({
+    bots: repos.bot,
+    secrets: repos.botSecret,
+    credentials: repos.botCredential,
+    resync: (botId) => httpBot.syncBot(botId),
+    ...(googleChatPlatformApp ? { app: googleChatPlatformApp } : {}),
+    clock,
+    log: http.log
+  })
 
   // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
   // instances — all four platforms — constructed with the SAME verify/sync
@@ -2277,18 +2286,15 @@ export function buildContainer(
       },
       orphanTokenSweeper: linearOrphanTokenSweeper
     }),
-    // Registered unconditionally for per-agent apps; the deployment-owned app only adds its install route.
+    // Registered unconditionally for per-agent apps; the deployment-owned app is claimed, never installed per agent.
     createGoogleChatCpProvider({
       fetch: googleChatSeams.fetch,
       installRoutes: {
-        org: [
-          googleChatPlatformInstallRoutes(httpDeps, googleChatSeams),
-          googleChatKeyRoutes(httpDeps, googleChatSeams),
-          googleChatClaimRoutes(httpDeps, googleChatSeams)
-        ],
+        org: [googleChatKeyRoutes(httpDeps, googleChatSeams), googleChatClaimRoutes(httpDeps, googleChatSeams)],
         publicCallback: []
       },
-      ...(googleChatClaimAnchor ? { claimAnchor: googleChatClaimAnchor } : {})
+      ...(googleChatPlatformApp ? { app: googleChatPlatformApp } : {}),
+      credentialReconciler: googleChatCredentialReconciler
     })
   ])
 
@@ -2446,21 +2452,13 @@ export function buildContainer(
     )
   }
 
+  const relayDeploymentConfig = relayDeploymentSnapshot(opts.deploymentConfig, googleChatAnchor)
   const relayWsDeps: RelayWsServerDeps = {
     auth: relayAuth,
     relays: repos.relay,
     relayReg,
     clock,
-    ...(opts.deploymentConfig
-      ? {
-          deploymentConfig: {
-            revision: opts.deploymentConfig.revision,
-            ...(opts.deploymentConfig.values.github && opts.deploymentConfig.secrets['github.webhookSecret']
-              ? { githubWebhookSecret: opts.deploymentConfig.secrets['github.webhookSecret'] }
-              : {})
-          }
-        }
-      : {}),
+    ...(relayDeploymentConfig ? { deploymentConfig: relayDeploymentConfig } : {}),
     // rc/verify(webchat-token): validate the token, then re-resolve the agent's CURRENT
     // placement (agent.daemonId + connReg READY) — placement can move between mint + dial.
     verifyWebchatToken: createWebchatTokenVerifier({
