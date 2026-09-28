@@ -19,6 +19,15 @@ export interface PullRequestContext {
   files: PullRequestFile[]
   filesTruncated: boolean
   reasons: string[]
+  /** Milliseconds since the read began when each step finished; a missing step never completed. */
+  timings?: PullContextTimings
+}
+
+export interface PullContextTimings {
+  tokenMs?: number
+  metadataMs?: number
+  listsMs?: number
+  verifyMs?: number
 }
 
 interface PullContextPaths {
@@ -61,6 +70,9 @@ export async function readPullRequestContext(
   fetchImpl: typeof fetch = fetch
 ): Promise<PullRequestContext | undefined> {
   signal.throwIfAborted()
+  const started = performance.now()
+  const timings: PullContextTimings = {}
+  const mark = (step: keyof PullContextTimings) => (timings[step] = Math.round(performance.now() - started))
   const optional = new AbortController()
   const timer = setTimeout(() => optional.abort(), PULL_CONTEXT_TIMEOUT_MS)
   const extraSignal = AbortSignal.any([signal, optional.signal])
@@ -118,7 +130,9 @@ export async function readPullRequestContext(
   }
   try {
     token = await abortable(lease.token(), extraSignal)
+    mark('tokenMs')
     const before = await metadata()
+    mark('metadataMs')
     const text = field(before, [paths.descriptionField])
     if (text !== null && typeof text !== 'string') return undefined
     const start = revision(before)
@@ -128,7 +142,8 @@ export async function readPullRequestContext(
       commitMessages: [],
       files: [],
       filesTruncated: true,
-      reasons: []
+      reasons: [],
+      timings
     }
     if (!start) return { ...context, reasons: ['revision_unverified'] }
     const [commits, changedFiles, rawDiff] = await Promise.allSettled([
@@ -140,7 +155,9 @@ export async function readPullRequestContext(
       ),
       paths.rawDiff ? read(paths.rawDiff, RESPONSE_MAX_BYTES, extraSignal, 'text/plain') : undefined
     ])
+    mark('listsMs')
     const after = await metadata().catch(() => undefined)
+    if (after) mark('verifyMs')
     const end = revision(after)
     if (!end) return { ...context, reasons: ['revision_unverified'] }
     if (start.headSha !== end.headSha || start.baseSha !== end.baseSha)

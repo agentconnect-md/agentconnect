@@ -259,7 +259,8 @@ describe('session model evaluation', () => {
       commitMessages: ['Fix login'],
       files: [file],
       filesTruncated: false,
-      reasons: []
+      reasons: [],
+      timings: expect.any(Object)
     })
     expect(getPostToken).toHaveBeenCalledOnce()
     expect(fetcher).toHaveBeenCalledTimes(4)
@@ -329,7 +330,8 @@ describe('session model evaluation', () => {
         commitMessages: ['Fix login'],
         files: [file],
         filesTruncated: false,
-        reasons: []
+        reasons: [],
+        timings: expect.any(Object)
       })
       expect(token).toHaveBeenCalledExactlyOnceWith('example-agent', '100', 'hook-1')
       const urls = fetcher.mock.calls.map(([url]) => String(url))
@@ -384,7 +386,8 @@ describe('session model evaluation', () => {
           commitMessages: [],
           files: [],
           filesTruncated: true,
-          reasons: ['revision_unverified']
+          reasons: ['revision_unverified'],
+          timings: expect.any(Object)
         })
       }
     }
@@ -435,7 +438,8 @@ describe('session model evaluation', () => {
         commitMessages: [],
         files: [],
         filesTruncated: true,
-        reasons: ['revision_unverified']
+        reasons: ['revision_unverified'],
+        timings: { tokenMs: 0, metadataMs: 0, listsMs: PULL_CONTEXT_TIMEOUT_MS }
       })
       expect(cancelled).toHaveBeenCalledOnce()
       expect(pending.size).toBe(0)
@@ -532,7 +536,8 @@ describe('session model evaluation', () => {
       commitMessages: [],
       files: [],
       filesTruncated: true,
-      reasons: ['revision_changed']
+      reasons: ['revision_changed'],
+      timings: expect.any(Object)
     })
   })
 })

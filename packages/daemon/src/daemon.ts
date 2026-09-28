@@ -1931,7 +1931,7 @@ export class Daemon {
       ownerFence: () => `${this.cfg.daemonId ?? 'local'}:${this.decisionBootNonce}`,
       currentProjection: (agentId, routingId) =>
         this.agents.get(agentId)?.hookRoutings?.find((r) => r.routingId === routingId),
-      log: { warn: (message) => this.log.warn(message) }
+      log: { warn: (message) => this.log.warn(message), info: (message) => this.log.info(message) }
     })
     this.decisionEvaluations = new DecisionEvaluationReader({
       store: () => this.store,
