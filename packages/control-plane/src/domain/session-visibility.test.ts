@@ -64,6 +64,21 @@ describe('classifySession — the §4.2 default rules', () => {
     })
   })
 
+  it('classifies a service account’s webchat and Web API sessions org with no owner', () => {
+    const org = { visibility: 'org', ownerIdentity: null, source: 'default' }
+    expect(classifySession({ platform: 'webchat', webchatOwnerUserId: 'sa1', ownerIsServiceAccount: true })).toEqual(
+      org
+    )
+    expect(
+      classifySession({
+        platform: 'slack',
+        launchCorrelationId: 'c1',
+        launchOwnerUserId: 'sa1',
+        ownerIsServiceAccount: true
+      })
+    ).toEqual(org)
+  })
+
   it('classifies automation org with no owner', () => {
     for (const triggeredBy of ['cron:abc', 'hook:def', 'dream:ghi']) {
       expect(classifySession({ platform: 'slack', triggeredBy, transportScope: 'T1' })).toEqual({

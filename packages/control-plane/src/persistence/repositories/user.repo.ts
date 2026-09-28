@@ -14,6 +14,7 @@
  * placeholder, or be stored as the user's address. Emails are normalized to
  * lowercase everywhere so invites and sign-ins can't miss on case.
  */
+import { randomUUID } from 'node:crypto'
 import { Prisma, withAmbientTx, type PrismaLike } from '../prisma.js'
 import {
   type UserRepo,
@@ -23,10 +24,13 @@ import {
   type OrgMemberRole,
   type VisibilityResourceKind,
   type UserProfileRecord,
+  type ServiceAccountRecord,
+  type ServiceAccountRole,
+  SERVICE_ACCOUNT_EMAIL_DOMAIN,
   SYNTHETIC_EMAIL_SUFFIX,
   isSyntheticEmail
 } from '../ports.js'
-import { OrgMembershipMissing, OrgOwnerRequired } from '../errors.js'
+import { OrgMembershipMissing, OrgOwnerRequired, ServiceAccountNotAddable } from '../errors.js'
 
 const RESOURCE_AUDIENCE_TABLES = ['agent', 'daemon', 'cron_def', 'mcp_provider', 'skill_source', 'decision'] as const
 const ORG_ROLE_RANK: Record<OrgMemberRole, number> = { viewer: 0, collaborator: 1, owner: 2 }
@@ -242,7 +246,73 @@ function chooseAudienceReplacement(
   return snapshot.find((m) => m.role === 'owner' && m.userId !== departingUserId)?.userId ?? null
 }
 
+/** Member routes treat a service account as absent, and service-account routes treat a person as absent. */
+async function assertUserKind(
+  db: Pick<Prisma.TransactionClient, 'user'>,
+  userId: string,
+  kind: 'human' | 'service_account'
+): Promise<void> {
+  const row = await db.user.findUnique({ where: { id: userId }, select: { kind: true } })
+  if (row && row.kind !== kind) throw new OrgMembershipMissing()
+}
+
+// Prune Selected audiences, repair only ones that would empty, then delete the membership; createdByUserId stays.
+async function removeMembershipTx(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  userId: string,
+  actingUserId: string
+): Promise<void> {
+  await lockOrgOwnerTransition(tx, orgId)
+  const membershipSnapshot = await tx.membership.findMany({
+    where: { orgId },
+    select: { userId: true, role: true },
+    orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
+  })
+  const actor = membershipSnapshot.find((membership) => membership.userId === actingUserId)
+  const departing = membershipSnapshot.find((membership) => membership.userId === userId)
+  const leaving = userId === actingUserId
+  if (!departing || (!leaving && actor?.role !== 'owner')) throw new OrgMembershipMissing()
+
+  const replacementUserId = chooseAudienceReplacement(membershipSnapshot, userId, actingUserId)
+  if (!replacementUserId) throw new OrgOwnerRequired()
+
+  // Fence audience writes on both ends and recheck the snapshot; the transition lock holds out competing removals.
+  const locked = await lockOrgMemberships(tx, orgId, [userId, replacementUserId])
+  const byUserId = new Map(locked.map((membership) => [membership.userId, membership]))
+  if (!byUserId.has(userId) || byUserId.get(replacementUserId)?.role !== 'owner') {
+    throw new OrgMembershipMissing()
+  }
+
+  for (const table of RESOURCE_AUDIENCE_TABLES) {
+    await tx.$executeRaw(removeMemberFromResourceAudiencesSql(table, orgId, userId, replacementUserId))
+  }
+  // A membership-delete trigger ends GitLab OAuth authority (§9.4) on every removal path.
+  await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
+}
+
 const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === 'P2002'
+
+const serviceAccountEmail = (name: string, userId: string) => `${name}-${userId}@${SERVICE_ACCOUNT_EMAIL_DOMAIN}`
+
+// The name is the address's local part minus the `-<id>` suffix, so it needs no column of its own.
+function toServiceAccountRecord(m: {
+  userId: string
+  role: string
+  createdAt: Date
+  user: { email: string; displayName: string | null }
+}): ServiceAccountRecord {
+  const local = m.user.email.slice(0, m.user.email.indexOf('@'))
+  const name = local.slice(0, local.length - m.userId.length - 1)
+  return {
+    userId: m.userId,
+    name,
+    email: m.user.email,
+    displayName: m.user.displayName ?? name,
+    role: m.role as ServiceAccountRole,
+    createdAt: m.createdAt
+  }
+}
 
 export class PgUserRepo implements UserRepo {
   constructor(private readonly db: PrismaLike) {}
@@ -273,11 +343,12 @@ export class PgUserRepo implements UserRepo {
     let storedEmail = email
     if (email) {
       const invited = await this.db.user.findUnique({ where: { email } })
-      if (invited && !invited.oidcSubject) {
+      // A service account has no subject either, but it is never an invite to claim.
+      if (invited && !invited.oidcSubject && invited.kind === 'human') {
         // Guarded claim: only bind our subject if the row is STILL unclaimed —
         // count 0 means a concurrent racer (same or another subject) won.
         const res = await this.db.user.updateMany({
-          where: { id: invited.id, oidcSubject: null },
+          where: { id: invited.id, oidcSubject: null, kind: 'human' },
           data: {
             oidcSubject,
             ...(displayName && !invited.displayName ? { displayName } : {}),
@@ -343,7 +414,7 @@ export class PgUserRepo implements UserRepo {
           throw err
         }
       }
-      if (holder.id === userId || holder.oidcSubject) return
+      if (holder.id === userId || holder.oidcSubject || holder.kind !== 'human') return
 
       const expectedOrgIds = [...new Set(holder.memberships.map((membership) => membership.orgId))].sort()
       const userIds = [holder.id, userId].sort()
@@ -381,9 +452,11 @@ export class PgUserRepo implements UserRepo {
 
         // Membership/resource writers take their membership locks before an FK
         // can lock app_user. Keep that order here too.
-        const lockedUsers = await tx.$queryRaw<Array<{ id: string; email: string; oidcSubject: string | null }>>(
+        const lockedUsers = await tx.$queryRaw<
+          Array<{ id: string; email: string; oidcSubject: string | null; kind: string }>
+        >(
           Prisma.sql`
-            SELECT "id", "email", "oidcSubject"
+            SELECT "id", "email", "oidcSubject", "kind"::text AS "kind"
             FROM "app_user"
             WHERE "id" IN (${Prisma.join(userIds)})
             ORDER BY "id"
@@ -398,6 +471,7 @@ export class PgUserRepo implements UserRepo {
           !canonical ||
           lockedHolder.email !== email ||
           lockedHolder.oidcSubject !== null ||
+          lockedHolder.kind !== 'human' ||
           !isSyntheticEmail(canonical.email)
         ) {
           return 'retry' as const
@@ -508,7 +582,7 @@ export class PgUserRepo implements UserRepo {
 
   async listMembers(orgId: string): Promise<OrgMemberRecord[]> {
     const rows = await this.db.membership.findMany({
-      where: { orgId },
+      where: { orgId, user: { kind: 'human' } },
       include: { user: true },
       orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
     })
@@ -522,6 +596,7 @@ export class PgUserRepo implements UserRepo {
     actingUserId: string
   ): Promise<OrgMemberRecord> {
     return withAmbientTx(this.db, async (tx) => {
+      await assertUserKind(tx, userId, 'human')
       await lockOrgOwnerTransition(tx, orgId)
       const memberships = await lockOrgMemberships(tx, orgId, [actingUserId, userId])
       const actor = memberships.find((membership) => membership.userId === actingUserId)
@@ -550,6 +625,7 @@ export class PgUserRepo implements UserRepo {
     // email keeps two racers from colliding; normalized like the claim path.
     const normalized = email.trim().toLowerCase()
     const user = await this.db.user.upsert({ where: { email: normalized }, create: { email: normalized }, update: {} })
+    if (user.kind !== 'human') throw new ServiceAccountNotAddable()
     const row = await this.db.membership.create({
       data: { orgId, userId: user.id, role },
       include: { user: true }
@@ -558,47 +634,16 @@ export class PgUserRepo implements UserRepo {
   }
 
   async removeMember(orgId: string, userId: string, actingUserId: string): Promise<void> {
-    // Prune the departing user from Selected audiences, repair only audiences
-    // that would become empty, then remove membership in ONE transaction.
-    // createdByUserId is immutable audit attribution and is deliberately untouched.
     await withAmbientTx(this.db, async (tx) => {
-      await lockOrgOwnerTransition(tx, orgId)
-      const membershipSnapshot = await tx.membership.findMany({
-        where: { orgId },
-        select: { userId: true, role: true },
-        orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
-      })
-      const actor = membershipSnapshot.find((membership) => membership.userId === actingUserId)
-      const departing = membershipSnapshot.find((membership) => membership.userId === userId)
-      const leaving = userId === actingUserId
-      if (!departing || (!leaving && actor?.role !== 'owner')) throw new OrgMembershipMissing()
-
-      const replacementUserId = chooseAudienceReplacement(membershipSnapshot, userId, actingUserId)
-      if (!replacementUserId) throw new OrgOwnerRequired()
-
-      // Fence audience-bearing resource writes on both ends, then recheck the
-      // snapshot used above. The org transition lock keeps every competing
-      // demotion/removal out until this transaction commits.
-      const locked = await lockOrgMemberships(tx, orgId, [userId, replacementUserId])
-      const byUserId = new Map(locked.map((membership) => [membership.userId, membership]))
-      if (!byUserId.has(userId) || byUserId.get(replacementUserId)?.role !== 'owner') {
-        throw new OrgMembershipMissing()
-      }
-
-      for (const table of RESOURCE_AUDIENCE_TABLES) {
-        await tx.$executeRaw(removeMemberFromResourceAudiencesSql(table, orgId, userId, replacementUserId))
-      }
-      // GitLab OAuth authority ends with membership (§9.4) via the database
-      // trigger on membership deletes — the same transition for EVERY removal
-      // path, including account deletions that never reach this method.
-      // The row is still locked here; deletion completes the same transaction.
-      await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
+      await assertUserKind(tx, userId, 'human')
+      await removeMembershipTx(tx, orgId, userId, actingUserId)
     })
   }
 
   async previewMemberRemoval(orgId: string, userId: string, actingUserId: string): Promise<MemberRemovalPreview> {
     // Unlocked and outside any transaction: this only feeds a confirmation
     // dialog. `removeMember` re-derives everything under the transition lock.
+    await assertUserKind(this.db, userId, 'human')
     const rows = await this.db.membership.findMany({
       where: { orgId },
       include: { user: true },
@@ -633,6 +678,79 @@ export class PgUserRepo implements UserRepo {
 
   async addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void> {
     await this.db.membership.create({ data: { orgId, userId, role } })
+  }
+
+  async listServiceAccounts(orgId: string): Promise<ServiceAccountRecord[]> {
+    const rows = await this.db.membership.findMany({
+      where: { orgId, user: { kind: 'service_account' } },
+      include: { user: true },
+      orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
+    })
+    return rows.map(toServiceAccountRecord)
+  }
+
+  async getServiceAccount(orgId: string, userId: string): Promise<ServiceAccountRecord | null> {
+    const row = await this.db.membership.findFirst({
+      where: { orgId, userId, user: { kind: 'service_account' } },
+      include: { user: true }
+    })
+    return row ? toServiceAccountRecord(row) : null
+  }
+
+  async createServiceAccount(
+    orgId: string,
+    input: { name: string; role: ServiceAccountRole }
+  ): Promise<ServiceAccountRecord> {
+    return withAmbientTx(this.db, async (tx) => {
+      // The address embeds the row's own id, so the row is created under a unique placeholder first.
+      const placeholder = `${randomUUID()}@${SERVICE_ACCOUNT_EMAIL_DOMAIN}`
+      const user = await tx.user.create({
+        data: { kind: 'service_account', email: placeholder, displayName: input.name }
+      })
+      await tx.user.update({ where: { id: user.id }, data: { email: serviceAccountEmail(input.name, user.id) } })
+      const row = await tx.membership.create({
+        data: { orgId, userId: user.id, role: input.role },
+        include: { user: true }
+      })
+      return toServiceAccountRecord(row)
+    })
+  }
+
+  async updateServiceAccount(
+    orgId: string,
+    userId: string,
+    patch: { displayName?: string; role?: ServiceAccountRole }
+  ): Promise<ServiceAccountRecord> {
+    return withAmbientTx(this.db, async (tx) => {
+      const current = await tx.membership.findFirst({
+        where: { orgId, userId, user: { kind: 'service_account' } },
+        select: { id: true }
+      })
+      if (!current) throw new OrgMembershipMissing()
+      if (patch.displayName !== undefined) {
+        await tx.user.update({ where: { id: userId }, data: { displayName: patch.displayName } })
+      }
+      const row = await tx.membership.update({
+        where: { id: current.id },
+        data: patch.role !== undefined ? { role: patch.role } : {},
+        include: { user: true }
+      })
+      return toServiceAccountRecord(row)
+    })
+  }
+
+  async deleteServiceAccount(orgId: string, userId: string, actingUserId: string): Promise<void> {
+    await withAmbientTx(this.db, async (tx) => {
+      await assertUserKind(tx, userId, 'service_account')
+      await removeMembershipTx(tx, orgId, userId, actingUserId)
+      // Keys and webchat conversations cascade with the row.
+      await tx.user.delete({ where: { id: userId } })
+    })
+  }
+
+  async isServiceAccount(userId: string): Promise<boolean> {
+    const row = await this.db.user.findUnique({ where: { id: userId }, select: { kind: true } })
+    return row?.kind === 'service_account'
   }
 
   async getProfile(userId: string): Promise<UserProfileRecord | null> {

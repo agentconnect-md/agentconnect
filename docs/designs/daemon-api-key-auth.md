@@ -321,7 +321,7 @@ Tests should cover:
 
 ### Service-account members
 
-**Status:** Proposed.
+**Status:** Control Plane implemented; the console section is not built yet.
 
 A personal key belongs to a person and stops working when that person leaves
 the organization. A server that the organization runs needs a credential that

@@ -22,6 +22,7 @@ import type {
   ExternalMemoryConnectionRepo,
   WebchatConversationRepo,
   LaunchRepo,
+  UserRepo,
   OrganizationKnowledgeRepo,
   BotRepo,
   GithubInstallationRepo,
@@ -102,6 +103,8 @@ export interface DaemonWsDeps {
   webchatRemoteMcp?: Pick<WebchatRemoteMcpService, 'issue' | 'accept' | 'revoke'>
   /** Resolves Web API launch provenance for the same classification (§4.4). */
   launch?: LaunchRepo
+  /** Tells a service-account owner apart for the same classification; absent ⇒ every owner reads as a person. */
+  user?: Pick<UserRepo, 'isServiceAccount'>
   /** Pushes the CP-confirmed capture gate to the owning daemon (§5.1); absent ⇒
    *  daemons converge on their next register snapshot instead. */
   visibilityPush?: SessionVisibilityPushService

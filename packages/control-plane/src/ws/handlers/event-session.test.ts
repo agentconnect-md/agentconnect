@@ -259,6 +259,29 @@ describe('handleEventSession', () => {
     )
   })
 
+  it('classifies a service account’s webchat session org with no owner', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
+    const isServiceAccount = vi.fn().mockResolvedValue(true)
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      webchatConversation: { findOwner: vi.fn().mockResolvedValue('sa-1') },
+      user: { isServiceAccount },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      platform: 'webchat',
+      channel: '0f0f0f0f-0000-4000-8000-0f0f0f0f0f0f'
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
+
+    expect(isServiceAccount).toHaveBeenCalledWith('sa-1')
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({ classification: { visibility: 'org', ownerIdentity: null, source: 'default' } })
+    )
+  })
+
   it('binds a Slack audience only after validating its integration and workspace', async () => {
     const recordMilestone = vi.fn().mockResolvedValue(recorded())
     const deps = scopedDeps({
