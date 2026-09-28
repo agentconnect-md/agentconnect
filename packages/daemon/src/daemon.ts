@@ -83,6 +83,7 @@ import {
   effectiveManagedMemoryScope,
   RdSlackAction,
   WireFeishuCardActionEvent,
+  WireGoogleChatCardAction,
   gitRepoLabel,
   hasReachedAgentCallHopLimit,
   RD_AGENTMSG_NOT_READY,
@@ -748,6 +749,7 @@ import { GoogleChatWriteBudgets, googleChatWriteBudgetSettings } from './platfor
 import { googleChatCommandChrome } from './platforms/googlechat/command-chrome.js'
 import { googleChatPlatformModule } from './platforms/googlechat/relay-ingress.js'
 import { createGoogleChatTurnOutput } from './platforms/googlechat/surface.js'
+import { parseGoogleChatElicitClick } from './platforms/googlechat/elicit-card.js'
 import type { RelayIngressHost } from './platforms/relay-ingress-host.js'
 import type { ChannelInfoSource } from './messages/channel-name-resolver.js'
 import { PlatformModuleRegistry } from './platforms/registry.js'
@@ -9977,6 +9979,14 @@ export class Daemon {
       }
     ],
     [
+      'googlechat',
+      async (msg) => {
+        const payload = WireGoogleChatCardAction.safeParse(msg.payload)
+        if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+        return await this.handleRelayGoogleChatAction(msg, payload.data)
+      }
+    ],
+    [
       'linear',
       async (msg) => {
         const payload = LinearStopActionSchema.safeParse(msg.payload)
@@ -9985,6 +9995,35 @@ export class Daemon {
       }
     ]
   ])
+
+  /** A Google Chat elicitation-card click: anyone who can see the card may answer it, and core re-derives every answer. */
+  private async handleRelayGoogleChatAction(
+    msg: RdMsgPlatformAction,
+    payload: WireGoogleChatCardAction
+  ): Promise<RdAck> {
+    const agent = this.agents.get(msg.agentId)
+    if (!agent) {
+      this.log.warn(`relay: Google Chat card click for unknown agent ${msg.agentId} — dropping`)
+      return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
+    }
+    if (!agent.integrations.some((i) => i.id === msg.integrationId && i.platform === 'googlechat')) {
+      this.log.warn(`relay: Google Chat card click for unknown integration ${msg.integrationId} — dropping`)
+      return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
+    }
+    const click = parseGoogleChatElicitClick(payload)
+    if (!click) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+    const actor = msg.userId ? { actor: { userId: msg.userId } } : {}
+    if (click.kind === 'submit')
+      await this.permissions.submitElicitEditor({ requestId: click.requestId, values: click.values, ...actor })
+    else
+      await this.permissions.handleElicitCardTap({
+        requestId: click.requestId,
+        token: click.token,
+        ...(payload.message ? { ts: payload.message } : {}),
+        ...actor
+      })
+    return { msgId: msg.msgId, accepted: true }
+  }
 
   /**
    * Linear's native Stop (§5.1's stop row): interrupt the turn, then post the settling

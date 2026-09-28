@@ -298,6 +298,8 @@ describe('Google Chat tenant keys and card clicks (design §10)', () => {
       interaction: {
         function: 'agentconnect.claim',
         parameters: { source: 'welcome' },
+        formInputs: {},
+        message: `${SPACE}/messages/EXAMPLE_CARD_MESSAGE`,
         user: PERSON,
         space: SPACE,
         thread: `${SPACE}/threads/EXAMPLE_ADD_THREAD`,
@@ -327,6 +329,21 @@ describe('Google Chat tenant keys and card clicks (design §10)', () => {
       tenant: DOMAIN
     })
     expect(normalize(inDm)).not.toHaveProperty(['interaction', 'thread'])
+    expect(normalize(inDm)).not.toHaveProperty(['interaction', 'message'])
+  })
+
+  it("reads a card click's input widgets as string lists and drops any other shape", () => {
+    const submitted = copy(cardClicked) as any
+    submitted.common.formInputs = {
+      text: { stringInputs: { value: ['typed'] } },
+      picks: { stringInputs: { value: ['o0', 7, 'o2'] } },
+      date: { dateInput: { msSinceEpoch: '1' } },
+      odd: 'not an object'
+    }
+    expect(normalize(submitted)).toMatchObject({
+      interaction: { formInputs: { text: ['typed'], picks: ['o0', 'o2'] } }
+    })
+    expect(normalize(submitted)).not.toHaveProperty(['interaction', 'formInputs', 'date'])
   })
 
   it('refuses a card click the way it refuses a message: Space checks, sender checks, dialogs, group DMs', () => {

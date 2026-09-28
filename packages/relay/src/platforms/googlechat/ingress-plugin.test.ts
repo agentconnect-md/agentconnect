@@ -507,6 +507,61 @@ describe('googlechat ingress plugin — a multi-tenant app’s anchor and custom
     expect((await deliver(plugin, ingest, h, cardClicked, bearer)).handled).toEqual({})
   })
 
+  it('forwards an elicitation-card click to the sole integration and answers Google with an empty body', async () => {
+    const target = {
+      agentId: '22222222-2222-4222-8222-222222222222',
+      integrationId: '33333333-3333-4333-8333-333333333333'
+    }
+    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    const h = host({ directory: { ...host().directory, soleTarget: () => target as never } })
+    const ingest = plugin.buildIngest(assignment(), h)!
+    const bearer = `Bearer ${await token()}`
+    const click = {
+      ...cardClicked,
+      action: {
+        actionMethodName: 'agentconnect.elicit',
+        parameters: [
+          { key: 'request', value: 'req-1' },
+          { key: 'token', value: 'ok' }
+        ]
+      },
+      common: { invokedFunction: 'agentconnect.elicit', formInputs: { f0: { stringInputs: { value: ['typed'] } } } }
+    }
+    expect((await deliver(plugin, ingest, h, click, bearer)).handled).toEqual({})
+    expect(h.forwardAction).toHaveBeenCalledTimes(1)
+    const [rd, route] = vi.mocked(h.forwardAction).mock.calls[0]!
+    expect(route).toBe(target)
+    expect(rd).toMatchObject({
+      source: 'platform_action',
+      platformId: 'googlechat',
+      ...target,
+      botId: BOT_ID,
+      userId: PERSON,
+      sessionKey: `googlechat-action:${SPACE}/messages/EXAMPLE_CARD.EXAMPLE_CARD`,
+      payload: {
+        function: 'agentconnect.elicit',
+        parameters: { request: 'req-1', token: 'ok' },
+        formInputs: { f0: ['typed'] },
+        message: `${SPACE}/messages/EXAMPLE_CARD.EXAMPLE_CARD`
+      }
+    })
+    // A redelivered click mints the same id, so the daemon replays its first ack.
+    await deliver(plugin, ingest, h, click, bearer)
+    expect(vi.mocked(h.forwardAction).mock.calls[1]![0].msgId).toBe(rd.msgId)
+    // The welcome card's click is not an elicitation and is never forwarded.
+    await deliver(plugin, ingest, h, cardClicked, bearer)
+    expect(h.forwardAction).toHaveBeenCalledTimes(2)
+    expect(h.forwardStrict).not.toHaveBeenCalled()
+  })
+
+  it('answers an elicitation click with no current target without forwarding it', async () => {
+    const { plugin, h, ingest } = setup()
+    const click = { ...cardClicked, common: { invokedFunction: 'agentconnect.elicit' }, action: undefined }
+    expect((await deliver(plugin, ingest, h, click, `Bearer ${await token()}`)).handled).toEqual({})
+    expect(h.forwardAction).not.toHaveBeenCalled()
+    expect(h.log.warn).toHaveBeenCalledWith(expect.stringContaining('no current integration target'))
+  })
+
   it("supplies the event's tenant key as the demux hint: the Space's customer, the DM sender's domain, never a Space sender's domain", async () => {
     const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
     const headers = { authorization: `Bearer ${await token()}` }

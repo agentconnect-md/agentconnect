@@ -32,15 +32,16 @@ adapters remain a separate discussion.
 | Conversations    | Ordinary text in a 1:1 DM; explicit app mentions in a named Space, with replies in the originating thread. |
 | Output           | Text, supported Markdown, coalesced message edits, and final replies.                                      |
 | Session behavior | Existing conversation gates, session modes, steering, queuing, and text control commands.                  |
-| Approvals        | Existing Console approval queue for authorized agent editors; no Google Chat approval buttons.             |
+| Elicitation      | Agent questions as an in-thread card of buttons or form inputs, settled in place (§5).                     |
+| Approvals        | Existing Console approval queue; a chat card decides only where the agent allows it (§6).                  |
 | Context          | Messages delivered to this app and the daemon's retained session history.                                  |
 
 Ambient Space history, unmentioned thread follow-ups, group DMs, attachments,
-cards, dialogs, app-home surfaces, Google-native commands, shared bots, Google
-identity linking, and synchronization of Google membership into Console session
-permissions are outside the first version. Interactive elicitation requires a
-separate collectable response surface; unsupported requests must fail explicitly,
-never invent an answer or approval. Serving many Workspace customers from one
+cards other than the welcome and elicitation cards, dialogs, app-home surfaces,
+Google-native commands, shared bots, Google identity linking, and synchronization
+of Google membership into Console session permissions are outside the first
+version. An elicitation the card cannot render (URL mode, an over-long option
+list) fails explicitly and never invents an answer or approval. Serving many Workspace customers from one
 published app, and the identity link that comes with it, are designed in §10.
 
 Google Chat exists for both personal and Workspace accounts. Developing and
@@ -401,10 +402,11 @@ snapshots, or enumerating membership through `spaces.list`, is a follow-up.
 `CARD_CLICKED` is the one interaction event the relay handles. The normalizer
 classifies it as an `interaction` — the invoked function
 (`action.actionMethodName`, else `common.invokedFunction`), its parameters, the
-clicking user, the Space, and the thread — under the same Space and sender checks
-a message gets, and it starts no turn: the only card is the welcome card of
-§10.7, so on a routed conversation a click has nothing left to do and is
-answered with an empty body. Every message, membership, and interaction result
+card's input widgets (`common.formInputs`), the card message, the clicking user,
+the Space, and the thread — under the same Space and sender checks a message
+gets, and it starts no turn. An elicitation card's click is forwarded to the
+daemon (§5, Elicitation cards); the welcome card's click on a routed
+conversation has nothing left to do; both are answered with an empty body. Every message, membership, and interaction result
 also carries the event's tenant key (§10.4) and its `configCompleteRedirectUrl`.
 
 Run the existing discovery, conversation gate, trigger, command, session routing,
@@ -632,6 +634,29 @@ that limitation without claiming to read the file. In particular, Google's
 requires user authentication; adding uploads is not simply another `chat.bot`
 operation.
 
+### Elicitation cards
+
+An agent's question (ACP `elicitation/create`) is a `cardsV2` message posted on
+the turn's own egress, in the turn's thread, through the elicitation-card facet
+of [integration-plugin-architecture.md](integration-plugin-architecture.md) §7.3
+(`platforms/googlechat/elicit-card.ts`). A lone single-select or boolean is a row
+of buttons, one per option plus `Dismiss`; anything else is a form of named input
+widgets — a text input for a typed or numeric answer, a dropdown for one option,
+checkboxes for several — with one `Confirm` and a `Dismiss`. Every button invokes
+the function `agentconnect.elicit` with the request id and a token; an option
+carries its position, never its value, as on every other surface. A URL-mode
+consent card is declined, since a link button reports nothing back.
+
+The relay forwards the click's `CARD_CLICKED` to the bot's integration as a
+`platform_action` whose payload carries the function, its parameters, the card's
+`common.formInputs`, and the card message's name, and it answers Google with an
+empty body. The daemon re-checks the agent and integration, then hands the click
+to the permission coordinator: a `Confirm` goes through `submitElicitEditor`,
+anything else through `handleElicitCardTap`, so every answer is re-derived against
+the card's own params. The settled card is rewritten with `messages.patch`
+(`updateMask=cardsV2`): the question with the decision under it and no controls.
+Anyone who can see the card may answer it, as on every other surface.
+
 ## 6. Identity, privacy, and approvals
 
 Google app authentication proves the connection's app identity, not that a sender
@@ -650,9 +675,12 @@ Explain both consequences during setup, especially for restricted Google Spaces.
 
 Permission requests remain in the existing Console queue authorized for agent
 editors. That approval authority is separate from private transcript readership.
-No Google message, card, or mention grants approval authority, and the absence of
-a Chat approval UI must never select a permissive fallback. Verify this behavior
-for private DM turns as part of the acceptance checks.
+An approval posted as an elicitation card (§5) follows the core rule every chat
+surface shares: a click answers it only when the agent allows runtime changes in
+chat, and otherwise settles the card as editor-only and leaves the decision to
+the Console. No Google message or mention grants approval authority, and an ask
+the card cannot render must never select a permissive fallback. Verify this
+behavior for private DM turns as part of the acceptance checks.
 
 ## 7. Implementation boundaries
 
@@ -735,7 +763,8 @@ The implementation must then demonstrate:
 - Bounded send queues and backoff under throttling; key rotation, removal, relay
   revocation, and assignment handover without stale delivery.
 - Honest saved/connected/tested states, private DM visibility, authorized Console
-  approvals, and explicit attachment/elicitation limitations.
+  approvals, explicit attachment limitations, and an elicitation card answered
+  and settled in place.
 
 Use focused contract and recovery tests around these boundaries plus the live
 round trip. Do not add broad mock tests that merely restate the mapping table.
@@ -1033,9 +1062,8 @@ the function `agentconnect.claim` (`GOOGLE_CHAT_WELCOME_CARD` in the relay's
 Google Chat module), mirroring what published Chat apps do. The button's
 `CARD_CLICKED` and any message from an unclaimed tenant get the `REQUEST_CONFIG`
 answer of §10.4; a click in a claimed conversation, or on any other function, is
-answered with an empty body. Rendering, replies, and everything in §5 stay
-text; cards for elicitation are a separate change that would build on the same
-`interaction` path.
+answered with an empty body. Replies stay text; the only other card is the
+elicitation card of §5, which builds on the same `interaction` path.
 
 ### 10.8 Daemon, quotas, privacy
 

@@ -50,6 +50,9 @@ export const CP_WS_PATH = '/daemon/ws'
 /** The relay route Google Chat posts interaction events to (google-chat-integration.md §2); the Setup Server publishes the same path as the app's HTTPS endpoint. */
 export const GOOGLE_CHAT_EVENTS_PATH = '/googlechat/events'
 
+/** The card function an elicitation card's buttons invoke; the relay forwards its `CARD_CLICKED` to the owning daemon. */
+export const GOOGLE_CHAT_ELICIT_FUNCTION = 'agentconnect.elicit'
+
 /** CP accepts metadata-only transcript activity invalidations from current daemons. */
 export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
 

@@ -1,13 +1,19 @@
 // Google Chat's relay ingress plugin (google-chat-integration.md §2, §4): a pure HTTP decoder — no `start`, a no-op
 // `stop`, no `egress` facet and no secret on the relay; Google signs each callback and the daemon owns every write.
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   googleChatTenantKey,
   normalizeGoogleChatEvent,
   type GoogleChatEvent,
-  type GoogleChatEventResult
+  type GoogleChatEventResult,
+  type GoogleChatInteraction
 } from '@agentconnect.md/message'
-import { GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
+import {
+  GOOGLE_CHAT_ELICIT_FUNCTION,
+  GOOGLE_CHAT_PLATFORM,
+  type RdMsgPlatformAction,
+  type WireGoogleChatCardAction
+} from '@agentconnect.md/protocol'
 import {
   GOOGLE_CHAT_CLAIM_FUNCTION,
   GOOGLE_CHAT_WELCOME_CARD,
@@ -36,6 +42,62 @@ export type GoogleChatIngressPlugin = RelayPlatformIngressPlugin<GoogleChatHttpI
 }
 
 type ClassifiedResult = Exclude<GoogleChatEventResult, { kind: 'invalid' }>
+
+/** How long a card click waits on the daemon before the relay answers Google anyway; Chat allows 30 s. */
+const CARD_ACTION_FORWARD_TIMEOUT_MS = 10_000
+
+/** A card click's dedup identity: one click is one event, so its content is its identity. */
+export function googleChatActionMsgId(botId: string, interaction: GoogleChatInteraction, eventTime?: string): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ v: 1, botId, eventTime, interaction }))
+    .digest('hex')
+  return `googlechat-action:${digest}`
+}
+
+// Forward one elicitation-card click to the bot's integration; the daemon settles the card itself, so Google gets `{}`.
+async function forwardElicitClick(
+  host: RelayIngressHost,
+  botId: string,
+  interaction: GoogleChatInteraction,
+  eventTime: string | undefined
+): Promise<void> {
+  const route = host.directory.soleTarget(botId)
+  if (!route) {
+    host.log.warn(`relay-ingress(${botId}): Google Chat card click has no current integration target`)
+    return
+  }
+  const payload: WireGoogleChatCardAction = {
+    function: interaction.function,
+    parameters: interaction.parameters,
+    formInputs: interaction.formInputs,
+    ...(interaction.message ? { message: interaction.message } : {})
+  }
+  const rd: RdMsgPlatformAction = {
+    source: 'platform_action',
+    platformId: GOOGLE_CHAT_PLATFORM,
+    agentId: route.agentId,
+    integrationId: route.integrationId,
+    sessionKey: `googlechat-action:${interaction.message ?? interaction.space}`,
+    msgId: googleChatActionMsgId(botId, interaction, eventTime),
+    botId,
+    userId: interaction.user,
+    payload
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  const forwarded = host.forwardAction(rd, route).then(
+    (ack) => {
+      if (!ack.accepted)
+        host.log.warn(`relay-ingress(${botId}): daemon rejected a Google Chat card click (${ack.reason ?? 'unknown'})`)
+    },
+    (err: unknown) =>
+      host.log.warn(`relay-ingress(${botId}): Google Chat card click forward failed: ${(err as Error).message}`)
+  )
+  await Promise.race([
+    forwarded,
+    new Promise<void>((resolve) => (timeout = setTimeout(resolve, CARD_ACTION_FORWARD_TIMEOUT_MS)))
+  ])
+  if (timeout) clearTimeout(timeout)
+}
 
 // The unclaimed tenant's answer (§10.4): the welcome card on an add, the claim prompt on a message or the card's own
 // click, nothing (`undefined`) for the rest. A tenant-less event (a personal account) gets nothing either.
@@ -160,8 +222,12 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
         host.dedupMark(googleChatDedupKey(botId, googleChatDedupId(event)))
         return {}
       }
-      // The only card is the welcome card, and a click on it in a claimed conversation has nothing left to do.
-      if (result.kind === 'interaction') return {}
+      // An elicitation card's click goes to the daemon that posted it; the welcome card's has nothing left to do here.
+      if (result.kind === 'interaction') {
+        if (result.interaction.function === GOOGLE_CHAT_ELICIT_FUNCTION)
+          await forwardElicitClick(host, botId, result.interaction, event.eventTime)
+        return {}
+      }
       // Both remaining kinds may carry a membership change; a message-bearing add reports it before forwarding.
       if (result.membership) {
         host.reportChannels({
