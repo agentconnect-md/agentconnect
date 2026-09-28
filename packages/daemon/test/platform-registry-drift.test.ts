@@ -72,11 +72,10 @@ describe('daemon platform registry (audit F16)', () => {
   })
 
   it('pins which surfaces declare an elicitation card, and lets no other origin inherit one', () => {
-    // #1794 gap 6: the facet is OPTIONAL, so this is not a drift check against `platformIds()` —
-    // it pins the platforms that opt in; QQ intentionally has no elicitation card.
+    // #1794 gap 6: the facet is OPTIONAL, so this pins the platforms that opt in rather than checking drift.
     const daemon = new Daemon({ root: bareRoot() }) as any
     const withCards = platformIds().filter((id: string) => daemon.turnSurfaces.exact(id)?.elicitCards)
-    expect(withCards).toEqual(['slack', 'telegram', 'discord', 'feishu'])
+    expect(withCards).toEqual(['slack', 'telegram', 'discord', 'feishu', 'qq'])
     // Exact lookup, so a webchat / hook / dream turn rendering through the core (Slack) surface
     // does not inherit Slack's cards — webchat's own card is core-owned.
     for (const origin of ['webchat', 'hook', 'dream']) {
