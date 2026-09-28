@@ -4,9 +4,9 @@ Status: **implemented** — the four platform modules, the Setup Server card, an
 chart route are merged, and §9 was verified end to end against a live Chat app on
 September 27, 2026 (DM and Space mention, threaded replies, streamed edits, the
 Markdown subset, and the console views). A Chat app built as a Google Workspace
-add-on is served on the same endpoint (§11), implemented and awaiting its live
-checks (§11.7). Open follow-ups: several agents sharing one app, and a Marketplace
-listing for more than one Workspace customer.
+add-on is served on the same endpoint (§11), verified live against a converted app
+on September 28, 2026 (§11.7). Open follow-ups: several agents sharing one app, and
+a Marketplace listing for more than one Workspace customer.
 
 The console offers Google Chat only where the deployment turns on the `google-chat`
 feature flag (the chart's `features.googleChat`, off by default); an existing Google
@@ -1291,27 +1291,38 @@ into the add-on's and the `adapterExt` stamp goes away.
 Outbound is unchanged: the daemon's app-authenticated `spaces.messages.create` and
 `patch` with the key of §3. Google's own add-on quickstart replies asynchronously
 through the Chat API with a service-account key, so no second outbound path is
-added; that it keeps working for a converted app is a live check. Nothing new is
-configured: a converted app keeps its HTTP endpoint URL, and where the conversion
+added, and it was verified to keep working for a converted app (§11.7). Nothing new
+is configured: a converted app keeps its HTTP endpoint URL, and where the conversion
 asks for a Card Interaction URL it is the same URL. The Setup Server and the console
 still show the **Project Number** audience, now labelled as not asked of an add-on.
 
-### 11.7 Live checks once the test app is converted
+### 11.7 Live checks
 
-- A DM and a Space mention of the converted app arrive with a Google ID token whose
-  audience is the configured URL and whose `email` is the console's
-  `service-<PROJECT_NUMBER>@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`, with
-  `email_verified: true`, and route to the anchor, a customer row, and a
-  single-tenant row as §10.4 says.
-- App-authenticated create and patch keep working for the converted app.
-- The welcome card renders from `createMessageAction`; the authorization prompt
-  renders and shows `AgentConnect`; the add-on's `configCompleteRedirectUri` lies
-  under `https://chat.google.com/`, which the claim route requires (§10.5), and
-  completing the claim sends the original event again.
-- An @mention that adds the app sends the two requests §11.3 expects.
-- An empty body answering an add-on button click shows the person no error.
-- A click on a card posted before the conversion reaches the Card Interaction URL
-  with `__action_method_name__`, and a card posted after it with a URL `function`
-  delivers `agentconnect.action` back.
+Verified on September 28, 2026 against a multi-tenant deployment app converted to
+an add-on:
+
+- A DM and a Space mention arrive with the add-on's ID token, verify, and route to
+  the claimed customer row; while the Workspace is unclaimed, the anchor answers
+  them (§10.4).
+- App-authenticated create and patch keep working: the agent's replies post, and a
+  settled elicitation card is rewritten in place.
+- Adding the app to a Space of an unclaimed Workspace renders the welcome card from
+  `createMessageAction`, and its `openLink` button opens the claim page.
+- A DM from an unclaimed Workspace renders the authorization prompt, which Chat
+  shows as `<app name> requires configuration` with a **Configure** button that
+  opens `authorization_url`. The redirect it carries is
+  `https://chat.google.com/api/bot_config_complete?token=…`, which the claim route
+  accepts (§10.5), and completing the claim sends the original message again, which
+  the new customer row answers.
+- An elicitation card posted after the conversion delivers its action back, and the
+  empty body answering the click shows the person no error.
+
+Not yet verified:
+
+- A single-tenant row served by an add-on app.
+- An @mention that adds the app sending the two requests §11.3 expects.
+- A click on a card posted before the conversion reaching the Card Interaction URL
+  with `__action_method_name__`. The test app had posted no card with an action
+  before its conversion; the welcome card's button is an `openLink`.
 - Whether a Chat app that is not an add-on accepts a URL `function` (§11.5).
 - Whether `chat.space` ever disagrees with the payload's Space.
