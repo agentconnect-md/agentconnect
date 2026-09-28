@@ -2,6 +2,7 @@
 import { turnState, type DaemonRenderAction, type Pending } from '../../daemon/turn-types.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { TurnOutputSurface } from '../turn-output.js'
+import { googleChatElicitCards } from './elicit-card.js'
 import {
   applyGoogleChatAction,
   GoogleChatConverger,
@@ -23,6 +24,7 @@ export function createGoogleChatTurnOutput(
 ): TurnOutputSurface<Pending, DaemonRenderAction, GoogleChatConverger, NormalizedMessage> {
   return {
     platform: 'googlechat',
+    elicitCards: googleChatElicitCards,
     createConverger: (ctx) => new GoogleChatConverger(normalizeMode(ctx.mode), ctx.resolveFileLink),
     initialTurnState: (ctx): GoogleChatTurnState => initialGoogleChatTurnState(ctx),
     apply: (turn, action) =>

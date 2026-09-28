@@ -75,7 +75,7 @@ describe('daemon platform registry (audit F16)', () => {
     // #1794 gap 6: the facet is OPTIONAL, so this pins the platforms that opt in rather than checking drift.
     const daemon = new Daemon({ root: bareRoot() }) as any
     const withCards = platformIds().filter((id: string) => daemon.turnSurfaces.exact(id)?.elicitCards)
-    expect(withCards).toEqual(['slack', 'telegram', 'discord', 'feishu', 'qq'])
+    expect(withCards).toEqual(['slack', 'telegram', 'discord', 'feishu', 'qq', 'googlechat'])
     // Exact lookup, so a webchat / hook / dream turn rendering through the core (Slack) surface
     // does not inherit Slack's cards — webchat's own card is core-owned.
     for (const origin of ['webchat', 'hook', 'dream']) {

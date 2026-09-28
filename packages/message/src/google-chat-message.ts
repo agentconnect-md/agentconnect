@@ -29,6 +29,8 @@ export interface GoogleChatFormAction {
 export interface GoogleChatCommonEventObject {
   invokedFunction?: string
   parameters?: Record<string, string>
+  /** A card's input widgets by `name`; text and selection inputs answer in `stringInputs.value`. */
+  formInputs?: Record<string, { stringInputs?: { value?: string[] } }>
   userLocale?: string
   hostApp?: string
   timeZone?: { id?: string; offset?: number }
@@ -96,6 +98,10 @@ export type GoogleChatInvalidReason = 'malformed' | 'cross_space' | 'thread_mism
 export interface GoogleChatInteraction {
   function: string
   parameters: Record<string, string>
+  /** The card's input widgets by `name`, each as its list of string values. */
+  formInputs: Record<string, string[]>
+  /** The card message's `spaces/…/messages/…` name, when the event names one. */
+  message?: string
   /** The clicking user's `users/…` name. */
   user: string
   /** Full `spaces/…` resource name. */
@@ -214,6 +220,16 @@ function interactionParameters(event: Obj): Record<string, string> {
   return out
 }
 
+// `common.formInputs` carries each text or selection widget as `stringInputs.value`; any other shape is dropped.
+function interactionFormInputs(event: Obj): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const [name, input] of Object.entries(obj(obj(event.common)?.formInputs) ?? {})) {
+    const values = obj(obj(input)?.stringInputs)?.value
+    if (Array.isArray(values)) out[name] = values.filter((v): v is string => typeof v === 'string')
+  }
+  return out
+}
+
 // A card click: the card's message and thread pass the Space checks a message does, the clicker the sender checks.
 function normalizeInteraction(
   event: Obj,
@@ -224,9 +240,11 @@ function normalizeInteraction(
 ): InteractionOutcome {
   const message = obj(event.message)
   let messageThread: string | undefined
+  let messageName: string | undefined
   if (message) {
     const name = message.name === undefined ? undefined : childOf(space, 'messages', message.name)
     if (name !== undefined && typeof name !== 'string') return name
+    messageName = name
     const ownSpace = obj(message.space)?.name
     if (ownSpace !== undefined && ownSpace !== space) return { invalid: 'cross_space' }
     const thread = message.thread === undefined ? undefined : childOf(space, 'threads', message.thread)
@@ -247,6 +265,8 @@ function normalizeInteraction(
     interaction: {
       function: fn,
       parameters: interactionParameters(event),
+      formInputs: interactionFormInputs(event),
+      ...(messageName ? { message: messageName } : {}),
       user: userName,
       space,
       ...(thread ? { thread } : {}),

@@ -329,13 +329,16 @@ export class GoogleChatConnection implements PlatformConnection {
     space: string
     thread?: string
     clientId: string
-    text: string
+    text?: string
+    cardsV2?: readonly unknown[]
+    fallbackText?: string
   }): Promise<GoogleChatMessageRef> {
     const query: Record<string, string> = { messageId: input.clientId, requestId: input.clientId }
     if (input.thread) query.messageReplyOption = 'REPLY_MESSAGE_OR_FAIL'
     const body = {
-      text: input.text,
-      markupSyntax: GOOGLE_CHAT_MARKUP,
+      ...(input.text !== undefined ? { text: input.text, markupSyntax: GOOGLE_CHAT_MARKUP } : {}),
+      ...(input.cardsV2 ? { cardsV2: input.cardsV2 } : {}),
+      ...(input.fallbackText ? { fallbackText: input.fallbackText } : {}),
       ...(input.thread ? { thread: { name: input.thread } } : {})
     }
     const byClientId = `${input.space}/messages/${input.clientId}`
@@ -378,6 +381,20 @@ export class GoogleChatConnection implements PlatformConnection {
         this.request<MessageResource>('PATCH', name, {
           query: { updateMask: 'text' },
           body: { text, markupSyntax: GOOGLE_CHAT_MARKUP },
+          retry: 'idempotent'
+        }),
+      this.writeGate
+    )
+  }
+
+  /** Replace the cards of a message this daemon created, as a settled elicitation card is rewritten. */
+  async patchCards(name: string, cardsV2: readonly unknown[]): Promise<void> {
+    await this.assertOwnTenant(spaceOf(name))
+    await this.queueFor(spaceOf(name)).enqueue(
+      () =>
+        this.request<MessageResource>('PATCH', name, {
+          query: { updateMask: 'cardsV2' },
+          body: { cardsV2 },
           retry: 'idempotent'
         }),
       this.writeGate
