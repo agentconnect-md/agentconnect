@@ -164,7 +164,8 @@ string is defensive compatibility behavior, not an active lifecycle.
 ## 5. Rotation, listing, and revocation
 
 Daemon-key management inherits the visibility and edit permissions of the
-parent daemon:
+parent daemon. These routes, like `POST /daemons/token` and
+`POST /agents?connect=true`, take an interactive sign-in only (§6):
 
 | Endpoint                          | Behavior                                                                    |
 | --------------------------------- | --------------------------------------------------------------------------- |
@@ -209,8 +210,9 @@ organization-bound keys; `PATCH /me/keys/:id` edits one in place and
 - The default expiry is 90 days; callers may request a non-expiring key.
 - A request authenticated by a personal key cannot mint another personal key.
 - A request authenticated by a personal key cannot create or delete an
-  organization, and cannot list, edit, regenerate, or revoke personal keys
-  either. These routes, and OAuth consent and grant management, set
+  organization, cannot list, edit, regenerate, or revoke personal keys, and
+  cannot list, issue, or revoke daemon keys or provision a daemon (§5). These
+  routes, and OAuth consent and grant management, set
   `interactiveOnly` in their Fastify route config. `humanAuth` refuses any API
   key, OAuth access token, or delegated invocation on them with 403
   `interactive sign-in required`, and the OpenAPI document leaves them out. A

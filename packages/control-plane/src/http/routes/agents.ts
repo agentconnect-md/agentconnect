@@ -1833,7 +1833,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Create an agent',
           description:
-            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason. The legacy `runInSandbox` maps to `host` or the placement’s sandbox, and a request naming both must agree (400). `repositorySelector` names the Decision provider and model the per-session repository selector asks; one that does not answer Choice questions is refused with 400.',
+            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding; a request authenticated by an API key cannot use it. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason. The legacy `runInSandbox` maps to `host` or the placement’s sandbox, and a request naming both must agree (400). `repositorySelector` names the Decision provider and model the per-session repository selector asks; one that does not answer Choice questions is refused with 400.',
           operationId: 'createAgent',
           body: CreateAgentBody,
           querystring: z.object({ connect: z.stringbool().default(false) }),
@@ -1850,6 +1850,10 @@ export function agentRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
+        // `?connect=true` mints a daemon key, which only an interactive sign-in may do, as on `POST /daemons/token`.
+        if (req.query.connect && (req.apiKeyId !== undefined || req.delegatedInvocation !== undefined)) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'interactive sign-in required' })
+        }
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
         // Placement accepts visible org-owned daemons and this org's member sets, never another
         // org's daemon — or a SET, which names no member and is validated against its live members

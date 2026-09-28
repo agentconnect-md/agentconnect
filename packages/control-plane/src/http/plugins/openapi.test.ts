@@ -207,6 +207,10 @@ describe('openapi plane', () => {
       expect(marked.sort()).toEqual(
         [
           'DELETE /api/v1/me/keys/:id',
+          'DELETE /api/v1/orgs/:orgId/daemons/:id/keys/:keyId',
+          'GET /api/v1/orgs/:orgId/daemons/:id/keys',
+          'POST /api/v1/orgs/:orgId/daemons/:id/keys',
+          'POST /api/v1/orgs/:orgId/daemons/token',
           'DELETE /api/v1/oauth/grants/:id',
           'DELETE /api/v1/orgs/:orgId',
           'GET /api/v1/me/keys',
@@ -226,7 +230,9 @@ describe('openapi plane', () => {
         expect(doc.paths?.[path]?.[method.toLowerCase()], entry).toBeUndefined()
       }
       expect(doc.paths?.['/api/v1/orgs']?.get?.operationId).toBe('listOrganizations')
-      expect(doc.tags.map((t: { name: string }) => t.name)).not.toContain('API keys')
+      const tags = doc.tags.map((t: { name: string }) => t.name)
+      expect(tags).not.toContain('API keys')
+      expect(tags).not.toContain('Daemon keys')
     } finally {
       await app.close()
     }

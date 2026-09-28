@@ -98,7 +98,6 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
     name: Tag.MemberSets,
     description: 'Named sets of daemons an agent’s duty may be claimed within — the failover unit.'
   },
-  { name: Tag.DaemonKeys, description: 'A daemon’s API keys (issue, list, revoke).' },
   {
     name: Tag.ProviderKeys,
     description:

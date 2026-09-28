@@ -52,13 +52,14 @@ export function keyRoutes(deps: HttpDeps) {
     r.get(
       '/daemons/:id/keys',
       {
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.DaemonKeys],
           summary: 'List a daemon’s keys',
           description: 'Lists a daemon’s API keys, never exposing the secret or its hash.',
           operationId: 'listDaemonKeys',
           params: IdParam,
-          response: { 200: ApiKeyListDto, 404: ErrorDto }
+          response: { 200: ApiKeyListDto, 403: ErrorDto, 404: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -75,6 +76,7 @@ export function keyRoutes(deps: HttpDeps) {
     r.post(
       '/daemons/:id/keys',
       {
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.DaemonKeys],
           summary: 'Issue a daemon key',
@@ -108,6 +110,7 @@ export function keyRoutes(deps: HttpDeps) {
     r.delete(
       '/daemons/:id/keys/:keyId',
       {
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.DaemonKeys],
           summary: 'Revoke a daemon key',

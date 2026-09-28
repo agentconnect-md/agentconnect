@@ -277,3 +277,9 @@ raw JSON at `/api/v1/openapi.json`). **When you add or change a route, give its
 `schema` a `tags` (from the exported `Tag` map), `summary`, `description`, and a
 unique `operationId`** — the transform passes these through, and without them a
 docs UI (ReadMe / Swagger) renders only the bare path with no name or group.
+
+A route that manages credentials (API, daemon or OAuth keys and grants) or an
+organization's lifecycle sets `config: { interactiveOnly: true }`: API keys,
+OAuth tokens and agents' delegated calls get 403, and the route leaves the
+OpenAPI doc. `openapi.test.ts` pins the list of marked routes — update it with
+the flag.
