@@ -37,8 +37,8 @@ const ALIASES = ['lark']
 
 /** Not modules and never will be: picking one mints an inbound trigger, not a
  *  bot identity (contract, registry doc). The picker still offers them. */
-// The code hosts follow the chat platforms; the generic webhook closes the row.
-const CORE_TRIGGER_KINDS = ['github', 'gitlab', 'gitea', 'webhook']
+// The code hosts follow the chat platforms, then the generic webhook, then the agent's chat API (no daemon adapter either).
+const CORE_TRIGGER_KINDS = ['github', 'gitlab', 'gitea', 'webhook', 'api']
 
 describe('platform set', () => {
   it('gives every registered module a mark and a label', () => {

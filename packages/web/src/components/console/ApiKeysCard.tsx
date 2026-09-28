@@ -2,7 +2,7 @@
 
 // The caller's personal API keys: each acts as you, with your role, in the one org it is minted for (daemon-api-key-auth.md §8).
 // Name, expiry, permission and agents are edited in place with the same secret; Regenerate alone reveals a new plaintext once (§6).
-// Self-contained: fetches `/me/keys` and renders its own scrim dialogs, so it drops into the Profile layouts and the agent API tab.
+// Self-contained: fetches `/me/keys` and renders its own scrim dialogs, so it drops into the Profile layouts and a service account's keys.
 
 import { useState } from 'react'
 import useSWR from 'swr'
@@ -38,7 +38,7 @@ export interface ApiKeySource {
   serviceAccount?: boolean
 }
 
-const MY_KEYS: ApiKeySource = {
+export const MY_KEYS: ApiKeySource = {
   swrKey: profileKeys.apiKeys,
   list: fetchMyApiKeys,
   create: createMyApiKey,
@@ -380,13 +380,24 @@ function RevealFooter({ onClose }: { onClose: () => void }) {
   )
 }
 
+/** Who a new key is minted for, when the dialog offers the choice: the caller, or one of the org's service accounts. */
+export interface ApiKeyOwner {
+  id: string
+  label: string
+  serviceAccount: boolean
+  source: ApiKeySource
+}
+
 // ── create / edit dialog (org picker → mint → one-time reveal; or edit in place) ──
-function ApiKeyFormModal({
+export function ApiKeyFormModal({
   source,
   orgs,
   defaultOrgId,
   defaultName,
   editing,
+  owners,
+  defaultPermission,
+  defaultAgentIds,
   onClose,
   onSaved
 }: {
@@ -396,17 +407,27 @@ function ApiKeyFormModal({
   defaultName?: string
   /** The key being edited; the org is fixed and the same secret stays in force. */
   editing?: UserApiKeyDto
+  /** Offer an Owner choice, first entry preselected; the org is then fixed to `defaultOrgId`. */
+  owners?: ApiKeyOwner[]
+  defaultPermission?: ApiKeyPermission
+  /** Preselected agents for an agent-level permission. */
+  defaultAgentIds?: string[]
   onClose: () => void
   onSaved: () => void
 }) {
   const t = useTranslations('Profile')
   const [orgId, setOrgId] = useState(editing?.orgId ?? defaultOrgId ?? orgs[0]?.id ?? '')
   const [name, setName] = useState(editing?.name ?? defaultName ?? '')
+  const [ownerId, setOwnerId] = useState(owners?.[0]?.id ?? '')
+  const owner = owners?.find((o) => o.id === ownerId)
+  const target = owner?.source ?? source
   // `'keep'` (edit only) leaves the stored expiry alone; a number or null is a new lifetime from now.
   const [expiresInDays, setExpiresInDays] = useState<number | null | 'keep'>(editing ? 'keep' : 90)
-  const [permission, setPermission] = useState<ApiKeyPermission>(editing?.permission ?? 'full')
-  const [agentScope, setAgentScope] = useState<'all' | 'selected'>(editing && !editing.allAgents ? 'selected' : 'all')
-  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>(editing?.agentIds ?? [])
+  const [permission, setPermission] = useState<ApiKeyPermission>(editing?.permission ?? defaultPermission ?? 'full')
+  const [agentScope, setAgentScope] = useState<'all' | 'selected'>(
+    (editing && !editing.allAgents) || (!editing && defaultAgentIds?.length) ? 'selected' : 'all'
+  )
+  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>(editing?.agentIds ?? defaultAgentIds ?? [])
   const [minted, setMinted] = useState<MintedUserKeyDto | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -454,7 +475,7 @@ function ApiKeyFormModal({
         onClose()
         return
       }
-      const m = await source.create({
+      const m = await target.create({
         orgId,
         ...(name.trim() ? { name: name.trim() } : {}),
         expiresInDays: expiresInDays === 'keep' ? 90 : expiresInDays,
@@ -488,13 +509,13 @@ function ApiKeyFormModal({
           <KeyReveal apiKey={minted.apiKey} />
         ) : (
           <>
-            {!source.serviceAccount && (
+            {!source.serviceAccount && !owners && (
               <p className="mb-4 font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
                 {t('apiKeys.description')}
               </p>
             )}
             <div className="flex flex-col gap-[14px]">
-              <div className={source.serviceAccount ? 'hidden' : 'flex flex-col gap-[6px]'}>
+              <div className={source.serviceAccount || owners ? 'hidden' : 'flex flex-col gap-[6px]'}>
                 <span className="fldlbl">{t('apiKeys.organization')}</span>
                 <FieldSelect
                   ariaLabel={t('apiKeys.organization')}
@@ -516,6 +537,21 @@ function ApiKeyFormModal({
                   onChange={(e) => setName(e.target.value)}
                 />
               </div>
+              {owners && (
+                <div className="flex flex-col gap-[6px]">
+                  <span className="fldlbl">{t('apiKeys.owner')}</span>
+                  <FieldSelect
+                    ariaLabel={t('apiKeys.owner')}
+                    value={ownerId}
+                    onChange={setOwnerId}
+                    options={owners.map((o) => ({
+                      value: o.id,
+                      label: o.label,
+                      ...(o.serviceAccount ? { tag: t('apiKeys.serviceAccount') } : {})
+                    }))}
+                  />
+                </div>
+              )}
               <div className="flex flex-col gap-[6px]">
                 <span className="fldlbl">{t('apiKeys.permissionLabel')}</span>
                 <FieldSelect

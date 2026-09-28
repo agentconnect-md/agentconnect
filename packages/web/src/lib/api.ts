@@ -102,8 +102,7 @@ function cpBase(): string {
   return (runtime || process.env.NEXT_PUBLIC_CP_URL || 'http://localhost:8080/api/v1').replace(/\/+$/, '')
 }
 
-/** The CP REST base (`http(s)://…/api/v1`). Exposed so the API tab can show the exact
- *  mint endpoint the console calls. */
+/** The CP REST base (`http(s)://…/api/v1`), so an agent's API Quickstart shows the exact mint endpoint. */
 export function cpRestBase(): string {
   return cpBase()
 }
@@ -4310,6 +4309,29 @@ export async function removeTrustedActor(hookId: string, actorId: string): Promi
 // agent's visibility (404 for an agent you can't see).
 export async function fetchAgentHooks(agentId: string, orgId?: string): Promise<HookDto[]> {
   return apiGet<HookDto[]>(`${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/hooks`)
+}
+
+// ── agent chat APIs (the API card on the Integrations tab, shared-bot-relay.md §10.4) ──
+export type AgentApiProtocol = 'ai-sdk-ui'
+
+export interface AgentApiEntryDto {
+  protocol: AgentApiProtocol
+  createdBy: string | null
+  createdAt: string
+}
+
+const agentApiBase = (agentId: string, orgId?: string) => `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/api`
+
+export async function fetchAgentApiEntries(agentId: string, orgId?: string): Promise<AgentApiEntryDto[]> {
+  return (await apiGet<{ entries: AgentApiEntryDto[] }>(agentApiBase(agentId, orgId))).entries
+}
+
+export async function addAgentApi(agentId: string, protocol: AgentApiProtocol): Promise<AgentApiEntryDto> {
+  return apiPut<AgentApiEntryDto>(`${agentApiBase(agentId)}/${protocol}`)
+}
+
+export async function removeAgentApi(agentId: string, protocol: AgentApiProtocol): Promise<void> {
+  await apiDelete<void>(`${agentApiBase(agentId)}/${protocol}`)
 }
 
 // The capability URL is sufficient by default. HMAC is an optional second

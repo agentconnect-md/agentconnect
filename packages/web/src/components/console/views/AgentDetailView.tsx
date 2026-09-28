@@ -40,6 +40,7 @@ import {
   createGiteaHook,
   createGitlabHook,
   creatorLabel,
+  fetchAgentApiEntries,
   fetchAgentHooks,
   fetchAgentInstallations,
   fetchAgentRepos,
@@ -75,6 +76,7 @@ import { useCodeHostRowRouting } from '@/components/console/decisions/routing/us
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
+import { AgentApiCard } from '@/components/console/AgentApiCard'
 import { RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import { TriggerSelect } from '@/components/console/TriggerSelect'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
@@ -372,6 +374,11 @@ function AgentDetail() {
   })
   const agentHooks = agentHooksData ?? []
   const hooksLoadError = agentHooksData === undefined && hooksError
+  const { data: apiEntriesData, mutate: mutateApiEntries } = useSWR(
+    consoleKeys.agentApi(activeOrg?.id, id),
+    ([, orgId, , agentId]) => fetchAgentApiEntries(agentId, orgId)
+  )
+  const apiEntries = apiEntriesData ?? []
   // Each code host renders as ONE group with a row per watched repository or
   // project (design); webhooks stay flat rows.
   const webhookHooks = agentHooks.filter((h) => h.kind === 'webhook')
@@ -969,7 +976,7 @@ function AgentDetail() {
   const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []
   // Webhook triggers share the Integrations card (the Add modal offers both);
   // `agentHooks` is fetched per-agent above.
-  const hasInt = agentInts.length > 0 || agentHooks.length > 0
+  const hasInt = agentInts.length > 0 || agentHooks.length > 0 || apiEntries.length > 0
   // Match the list's enabled, distinct hook-kind summary. Use the agent snapshot
   // only until this page's live hook query resolves; hook mutations revalidate
   // that query immediately, keeping the header and Integrations card in sync.
@@ -977,7 +984,10 @@ function AgentDetail() {
     agentHooksData === undefined
       ? (da.hookKinds ?? [])
       : [...new Set(agentHooks.filter((hook) => hook.enabled).map((hook) => hook.kind))]
-  const hasIntegrationMarks = agentInts.length > 0 || integrationHookKinds.length > 0
+  // The API card counts as an integration too, marked by its protocol glyph.
+  const markIntegrations =
+    apiEntries.length > 0 ? [...agentInts, { id: 'api', platform: 'api', revoked: false }] : agentInts
+  const hasIntegrationMarks = markIntegrations.length > 0 || integrationHookKinds.length > 0
   const sessionCount = MOCK_MODE ? getSessions(da.id).length : agentSessionTotal
   // Icon upload is available only when the object store is configured (org flag) — the
   // picker hides Upload otherwise. On success the CP has persisted the new icon; refetch.
@@ -1091,7 +1101,7 @@ function AgentDetail() {
               </span>
             )}
             {hasIntegrationMarks ? (
-              <IntegrationMarks integrations={agentInts} hookKinds={integrationHookKinds} />
+              <IntegrationMarks integrations={markIntegrations} hookKinds={integrationHookKinds} />
             ) : (
               <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-semibold leading-normal text-(--amber-500)">
                 <Icon name="triangle-alert" size={14} />
@@ -2041,6 +2051,15 @@ function AgentDetail() {
                       )}
                     </div>
                   ))}
+                  {apiEntries.length > 0 && (
+                    <AgentApiCard
+                      agent={da}
+                      entries={apiEntries}
+                      mobile
+                      divided={agentInts.length + agentHooks.length > 0}
+                      onChanged={() => void mutateApiEntries()}
+                    />
+                  )}
                 </div>
                 <div className="hidden flex-col gap-3 px-4 py-[14px] desktop:flex">
                   {agentInts.map((g, i) => {
@@ -2611,6 +2630,14 @@ function AgentDetail() {
                         </div>
                       </div>
                     </div>
+                  )}
+                  {apiEntries.length > 0 && (
+                    <AgentApiCard
+                      agent={da}
+                      entries={apiEntries}
+                      mobile={false}
+                      onChanged={() => void mutateApiEntries()}
+                    />
                   )}
                 </div>
               </>
