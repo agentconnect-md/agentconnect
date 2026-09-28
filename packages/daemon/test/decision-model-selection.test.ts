@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DecisionToolDefinition, AgentModelSelection } from '@agentconnect.md/protocol'
 import { evaluateSessionModel, modelSelectionState } from '../src/decisions/model-selection.js'
@@ -24,6 +25,26 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.useRealTimers()
 })
+// The worker is shared (isolate: false), so track only the fake timers `call` schedules, not another file's.
+function ownTimers<T>(call: () => T): { result: T; pending: Set<unknown> } {
+  const scope = new AsyncLocalStorage<true>()
+  const pending = new Set<unknown>()
+  const { setTimeout: set, clearTimeout: clear } = globalThis
+  vi.stubGlobal('setTimeout', (callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+    if (!scope.getStore()) return set(callback, ms, ...args)
+    const timer = set(() => {
+      pending.delete(timer)
+      scope.run(true, callback, ...args)
+    }, ms)
+    pending.add(timer)
+    return timer
+  })
+  vi.stubGlobal('clearTimeout', (timer: Parameters<typeof clearTimeout>[0]) => {
+    pending.delete(timer)
+    clear(timer)
+  })
+  return { result: scope.run(true, call), pending }
+}
 const lease = {
   token: async () => 'fixture-token',
   invalidateToken: () => {},
@@ -129,32 +150,34 @@ describe('session model evaluation', () => {
       answer: { type: 'boolean' as const, value: true, probability: 0.9 }
     }))
     const nextId = '44444444-4444-4444-8444-444444444444'
-    const result = evaluateSessionModel({
-      agentId: 'example-agent',
-      supported: () => true,
-      signal: new AbortController().signal,
-      evaluationId: 'example-evaluation',
-      current: () => true,
-      selection: {
-        decisionId: decision.id,
-        rules: [{ when: { type: 'boolean', values: [true] }, nextStepId: 'next' }],
-        steps: [{ id: 'next', decisionId: nextId, rules: selection.rules }]
-      },
-      state: async () => ({}),
-      evaluate,
-      decision: async (id) =>
-        id === decision.id
-          ? { decision }
-          : new Promise((resolve) => {
-              release = resolve
-            })
-    })
+    const { result, pending } = ownTimers(() =>
+      evaluateSessionModel({
+        agentId: 'example-agent',
+        supported: () => true,
+        signal: new AbortController().signal,
+        evaluationId: 'example-evaluation',
+        current: () => true,
+        selection: {
+          decisionId: decision.id,
+          rules: [{ when: { type: 'boolean', values: [true] }, nextStepId: 'next' }],
+          steps: [{ id: 'next', decisionId: nextId, rules: selection.rules }]
+        },
+        state: async () => ({}),
+        evaluate,
+        decision: async (id) =>
+          id === decision.id
+            ? { decision }
+            : new Promise((resolve) => {
+                release = resolve
+              })
+      })
+    )
     await vi.advanceTimersByTimeAsync(5_000)
     expect(await result).toBeUndefined()
     release({ decision: { ...decision, id: nextId } })
     await vi.advanceTimersByTimeAsync(1)
     expect(evaluate).not.toHaveBeenCalled()
-    expect(vi.getTimerCount()).toBe(0)
+    expect(pending.size).toBe(0)
   })
 
   it('bounds input and ignores stale, invalid, failed and unadvertised results', async () => {
@@ -397,7 +420,9 @@ describe('session model evaluation', () => {
         if (String(url).endsWith(paths.files)) return Response.json([fileRow])
         return Response.json({ ...revision, body: 'Description' })
       })
-      const result = readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
+      const { result, pending } = ownTimers(() =>
+        readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
+      )
       const settled = vi.fn()
       void result.then(settled)
       await vi.advanceTimersByTimeAsync(PULL_CONTEXT_TIMEOUT_MS - 1)
@@ -413,7 +438,7 @@ describe('session model evaluation', () => {
         reasons: ['revision_unverified']
       })
       expect(cancelled).toHaveBeenCalledOnce()
-      expect(vi.getTimerCount()).toBe(0)
+      expect(pending.size).toBe(0)
     }
   )
 
