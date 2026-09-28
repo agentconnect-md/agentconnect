@@ -221,6 +221,12 @@ function partsOf(event: unknown): Parts | undefined {
   return { key, chat, payload, ...(space ? { space } : {}), ...(common ? { common } : {}) }
 }
 
+/** The body as an add-on `EventObject`: an object with its `chat` object; anything else is not a Google Chat request. */
+export function googleChatEventObjectOf(body: unknown): GoogleChatEventObject | undefined {
+  const b = obj(body)
+  return b && obj(b.chat) ? (b as GoogleChatEventObject) : undefined
+}
+
 /** The request's one payload and the Space it happened in (the payload's, else `chat.space`); undefined without exactly one payload or when those Spaces disagree. */
 export function googleChatPayloadOf(
   event: unknown

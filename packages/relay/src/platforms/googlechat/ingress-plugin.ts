@@ -1,10 +1,10 @@
 // Google Chat's relay ingress plugin (google-chat-integration.md §2, §4, §11): a pure HTTP decoder of add-on requests with no secret on the relay.
 import { createHash, randomUUID } from 'node:crypto'
 import {
+  googleChatEventObjectOf,
   googleChatPayloadOf,
   googleChatTenantKey,
   normalizeGoogleChatEvent,
-  type GoogleChatEventObject,
   type GoogleChatEventResult,
   type GoogleChatInteraction
 } from '@agentconnect.md/message'
@@ -151,14 +151,6 @@ function unclaimedAnswer(
   return { body, tenant }
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value)
-
-// An add-on request is an object with its `chat` object; anything else is never verified.
-function eventObjectOf(body: unknown): GoogleChatEventObject | undefined {
-  return isObject(body) && isObject(body.chat) ? (body as GoogleChatEventObject) : undefined
-}
-
 export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps = {}): GoogleChatIngressPlugin {
   const verifier = new GoogleChatTokenVerifier((input, init) => (deps.fetch ?? fetch)(input, init))
   const unclaimed = new UnclaimedTenantMemo()
@@ -212,7 +204,7 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
 
     async verify(ingest, _rawBody, body, headers, now): Promise<VerifiedGoogleChatDelivery | undefined> {
       const token = bearerToken(headers.authorization)
-      const event = eventObjectOf(body)
+      const event = googleChatEventObjectOf(body)
       // The token's audience is the relay's own events URL, so nothing verifies until the CP's snapshot names it.
       const eventsUrl = ingest.eventsUrl()
       if (!token || !event || !eventsUrl) return undefined

@@ -258,7 +258,7 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
             </span>
             <input
               className={`inp mn ${numberOk ? '' : 'border-(--status-error)'}`}
-              placeholder={t('credentials.projectNumberPlaceholder')}
+              placeholder="123456789012"
               inputMode="numeric"
               value={projectNumber}
               onChange={(e) => setProjectNumber(e.target.value)}

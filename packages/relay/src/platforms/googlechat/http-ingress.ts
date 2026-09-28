@@ -1,6 +1,7 @@
 // Google Chat's public callback route (google-chat-integration.md §4): the HTTP answer IS the admission verdict.
 import type { FastifyInstance } from 'fastify'
 import { GOOGLE_CHAT_EVENTS_PATH, GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
+import { googleChatEventObjectOf } from '@agentconnect.md/message'
 import { GOOGLE_CHAT_BODY_LIMIT } from './http-ingest.js'
 import type { HandledDelivery, RelayIngressRouteDeps } from '../contract.js'
 
@@ -26,9 +27,6 @@ function settleWithin(work: Promise<HandledDelivery | undefined>, deadlineMs: nu
   })
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value)
-
 // An add-on `EventObject` with its `chat` object is the least a delivery can be (§11.3).
 function parseEventBody(rawBody: Buffer): Record<string, unknown> | undefined {
   let body: unknown
@@ -37,7 +35,7 @@ function parseEventBody(rawBody: Buffer): Record<string, unknown> | undefined {
   } catch {
     return undefined
   }
-  return isObject(body) && isObject(body.chat) ? body : undefined
+  return googleChatEventObjectOf(body) as Record<string, unknown> | undefined
 }
 
 /** Mount the route; `deadlineMs` is the admission deadline, overridden only by tests that exercise its expiry. */

@@ -5484,7 +5484,6 @@
         "projectId": "项目 ID",
         "projectIdPlaceholder": "example-project",
         "projectNumber": "项目编号",
-        "projectNumberPlaceholder": "见项目信息中心",
         "optional": "可选",
         "key": "服务账号密钥（JSON）",
         "keyPlaceholder": "粘贴下载的密钥文件"

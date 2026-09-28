@@ -220,7 +220,7 @@ Chat API configuration page, and shows the values to enter: the HTTP endpoint
 URL with a copy button (the relay origin plus `GOOGLE_CHAT_EVENTS_PATH`), the
 add-on app type, the HTTP endpoint connection with one URL for all triggers, 1:1
 messages and joining spaces, and visibility. The form takes the project ID (filled
-from a pasted key), an optional project number (on the project dashboard), and the
+from a pasted key), an optional project number, and the
 key in a masked field that is cleared after every submission. Each
 `GOOGLE_CHAT_*` refusal maps to one sentence that names its fix; the two
 project-read refusals name the Browser role and the Cloud Resource Manager API.
@@ -1278,12 +1278,14 @@ dashboard and in the add-on's service account email.
 
 ### 11.7 Live checks
 
-Verified on September 28, 2026 against a multi-tenant deployment app converted to
-an add-on:
+Verified on September 28, 2026 against a multi-tenant deployment app and a
+per-agent app, both converted to add-ons:
 
 - A DM and a Space mention arrive with the add-on's ID token, verify, and route to
   the claimed customer row; while the Workspace is unclaimed, the anchor answers
   them (§10.4).
+- The converted per-agent app keeps routing to its single-tenant row, which
+  answers its DMs.
 - App-authenticated create and patch keep working: the agent's replies post, and a
   settled elicitation card is rewritten in place.
 - Adding the app to a Space of an unclaimed Workspace renders the welcome card from
@@ -1299,6 +1301,5 @@ an add-on:
 
 Not yet verified:
 
-- A single-tenant row served by an add-on app.
 - An @mention that adds the app sending the two requests §11.3 expects.
 - Whether `chat.space` ever disagrees with the payload's Space.

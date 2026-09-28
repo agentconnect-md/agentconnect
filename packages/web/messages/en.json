@@ -5484,7 +5484,6 @@
         "projectId": "Project ID",
         "projectIdPlaceholder": "example-project",
         "projectNumber": "Project number",
-        "projectNumberPlaceholder": "On the project dashboard",
         "optional": "optional",
         "key": "Service account key (JSON)",
         "keyPlaceholder": "Paste the downloaded key file"

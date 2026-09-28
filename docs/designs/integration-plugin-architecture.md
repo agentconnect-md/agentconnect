@@ -684,10 +684,10 @@ disposition is settled. The registry (`platforms/registry.ts`) lists Slack,
 Feishu, Linear, and Google Chat; Google Chat is the first plugin that answers
 from the admission disposition, holds no secret (Google signs each callback as
 the app's Workspace add-on service account, whose project number the assignment
-carries, for the relay's own events URL), and verifies asynchronously. Four platform reads that would
-otherwise sit in core are capability reads per D2: Slack-only bot-mention
-admission (`botSenderRouting`), thread-root detection (adapter `isThreadRoot`
-or the threading capability), the Feishu egress-ownership fork
+carries, for the relay's own events URL), and verifies asynchronously. Four
+platform reads that would otherwise sit in core are capability reads per D2:
+Slack-only bot-mention admission (`botSenderRouting`), thread-root detection
+(adapter `isThreadRoot` or the threading capability), the Feishu egress-ownership fork
 (`relayOwnsEgress` derived from the `egress` facet), and the echo-suppression
 guard. The existing `hooks/signature.ts` primitives are shared relay-core
 infrastructure serving both this seam and the webhook seam.
