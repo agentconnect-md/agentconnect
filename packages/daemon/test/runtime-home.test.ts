@@ -268,6 +268,35 @@ describe('private runtime HOME', () => {
     }
   )
 
+  it('seeds the environment-scoped Kimi Code login its config.toml refers to', () => {
+    const { hostHome, scopeDir } = fixture()
+    const kimi = join(hostHome, '.kimi-code')
+    mkdirSync(join(kimi, 'credentials'), { recursive: true })
+    writeFileSync(
+      join(kimi, 'config.toml'),
+      [
+        '[providers."managed:kimi-code".oauth]',
+        'storage = "file"',
+        'key = "oauth/kimi-code-env-example"',
+        '[services.search.oauth]',
+        'storage = "file"',
+        'key = "oauth/../escape"'
+      ].join('\n')
+    )
+    const scoped = join(kimi, 'credentials', 'kimi-code-env-example.json')
+    const credential = { access_token: 'synthetic', refresh_token: 'synthetic', expires_at: 1 }
+    writeFileSync(scoped, JSON.stringify(credential))
+    expect(discoverSeededRuntimeCredentials('kimi', { HOME: hostHome })).toEqual({
+      paths: [scoped],
+      providers: ['kimi-code']
+    })
+    const home = prepareRuntimeHome('kimi', scopeDir, { HOME: hostHome })
+    expect(
+      JSON.parse(readFileSync(join(home, '.kimi-code', 'credentials', 'kimi-code-env-example.json'), 'utf8'))
+    ).toEqual(credential)
+    expect(existsSync(join(home, '.kimi-code', 'escape.json'))).toBe(false)
+  })
+
   it('requires a stored Qwen key for the corresponding model provider or selected auth type', () => {
     const { hostHome, scopeDir } = fixture()
     const source = join(hostHome, '.qwen', 'settings.json')
