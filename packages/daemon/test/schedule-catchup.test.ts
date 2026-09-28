@@ -74,7 +74,8 @@ async function boot(root: string) {
       return { dreamId: 'drm-test' }
     },
     hasNewSessionsSinceLastDream: () => true,
-    reclaimDreams: () => {}
+    reclaimDreams: () => {},
+    retireStaging: async () => {}
   })
   // Duty leases gate service, exactly like an install-wide pool member.
   inner.cpClient = {

@@ -4680,6 +4680,8 @@ export class Daemon {
     // constructor: it reads the store, and the sweep needs the loaded agents' directories. A
     // deployment with dreams blocked still builds no runner at boot — it recovers on first use.
     if (this.dreamOperationsAllowed()) await this.dreamRunner().initialize()
+    // Dreaming may have been turned off while this daemon was down.
+    for (const a of this.agents.values()) if (!dreamingPolicyOf(a)?.enabled) this.retireDreamStaging(a.id)
   }
 
   /** Phase 31 — curated admission, the deferred CP connect, the periodic sweeps, and only then: ready. */
@@ -5059,6 +5061,8 @@ export class Daemon {
       // must not read as "this agent has never run" until a session happens to start.
       void this.hydrateRuntimeCommands(a.id)
       await this.syncAgentSchedules(a)
+      // Dreaming may have been turned off while this daemon did not hold the agent.
+      if (!dreamingPolicyOf(a)?.enabled) this.retireDreamStaging(a.id)
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
     // detach ACKs only after last-reference connections have actually stopped.
@@ -5570,9 +5574,9 @@ export class Daemon {
     })
   }
 
-  // Background: a pool agent's staging needs its sandbox woken, which reconcile must not wait on.
+  // Background: a pool agent's staging needs its sandbox woken, which reconcile must not wait on; only the holder sweeps.
   private retireDreamStaging(agentId: string): void {
-    if (!this.dreamOperationsAllowed()) return
+    if (!this.dreamOperationsAllowed() || !this.servesAgent(agentId)) return
     void this.dreamRunner()
       .retireStaging(agentId)
       .catch((err) => this.log.warn(`dream: could not retire staging for agent "${agentId}" (${formatErr(err)})`))
@@ -21946,6 +21950,8 @@ export class Daemon {
       void this.webchatMcpRevocations.drainWebchatMcpRevocations()
     }
     await this.dreamRunner().reclaimDreams(agentIds)
+    // The former holder may never have seen dreaming turned off.
+    for (const id of agentIds) if (!dreamingPolicyOf(this.agents.get(id))?.enabled) this.retireDreamStaging(id)
   }
 
   /** Await the single-flight reconcile and any coalesced trailing pass. Registry

@@ -289,9 +289,13 @@ Cancel moves `pending|running → canceled` and aborts the ACP prompt (same
 cancellation path as a turn).
 
 Turning dreaming off — `dreaming.enabled: false`, or a provider other than
-`managed` — cancels the dream in flight, discards every `completed` proposal,
-and removes the agent's store staging. Unreviewed skill and organization
-candidates keep their own lifecycle (§7).
+`managed` — cancels the dream in flight and retires every `completed`,
+`failed`, or `canceled` dream: its store staging is removed, then the row is
+marked `discarded`, so a removal that fails is retried. The duty holder runs
+this on the live change, at boot, and when it takes an agent over, since the
+change may have landed while no daemon held the agent. An agent with nothing
+to retire is not woken. Unreviewed skill and organization candidates keep
+their own lifecycle (§7).
 
 ## 5. The dream prompt
 

@@ -126,6 +126,8 @@ export interface DreamStorePort {
   strandedDreams(agentIds: readonly string[]): Promise<DreamInfo[]>
   /** Every completed store proposal for one agent, without the public list cap. */
   completedDreams(agentId: string): Promise<DreamInfo[]>
+  /** Every completed, failed, or canceled dream for one agent, uncapped — the rows that can still hold staging. */
+  retirableDreams(agentId: string): Promise<DreamInfo[]>
   /** Proposals reconciled as superseded during a store upgrade. */
   supersededDreams(): Promise<DreamInfo[]>
   /** Dreams still carrying a proposed organization suggestion, newest first. */
@@ -256,8 +258,6 @@ const LAST_SUCCESSFUL_DREAM_SCAN = 50
 // activity since the last successful dream" (no operator config), but a first
 // dream — or a long-idle agent — must not mine an unbounded corpus.
 const MAX_AUTO_SESSION_WINDOW = 100
-// How many of an agent's dreams turning dreaming off sweeps for staging.
-const RETIRE_SCAN_LIMIT = 200
 /** A dream stages into a real memory store (`<dream>/memory/`), so every store helper
  *  — listing, index generation, the memory tools — works on it unchanged. Dreams
  *  staged before that lived in `output/`; those keep resolving for review and adoption. */
@@ -388,22 +388,22 @@ export class DreamRunner {
     }
   }
 
-  /** Dreaming was turned off: cancel the run in flight, discard unadopted proposals, and drop the staging the
-   *  agent's sessions could read. Unreviewed skill candidates keep their own lifecycle. */
+  /** Dreaming is off: cancel the run in flight, then drop the staging the agent's sessions could read and discard
+   *  its row — staging first, so a failed removal leaves the row to retry. Unreviewed candidates keep their lifecycle. */
   async retireStaging(agentId: string): Promise<void> {
     if (!this.operationsAllowed() || !this.deps.agentDirByAgent(agentId)) return
     await this.cancelInFlight(agentId)
-    await this.withLock(agentId, () =>
-      this.withMemoryHome(agentId, async () => {
-        for (const dream of await this.deps.store.listDreams(agentId, RETIRE_SCAN_LIMIT)) {
-          if (dream.status === 'pending' || dream.status === 'running') continue
-          if (dream.status === 'completed') {
-            await this.deps.store.updateDream({ ...dream, status: 'discarded', endedAt: this.nowIso() })
-          }
+    await this.withLock(agentId, async () => {
+      const dreams = await this.deps.store.retirableDreams(agentId)
+      // Nothing left to retire must not wake a pool agent's sandbox.
+      if (dreams.length === 0) return
+      await this.withMemoryHome(agentId, async () => {
+        for (const dream of dreams) {
           await this.removeStoreStaging(agentId, dream)
+          await this.deps.store.updateDream({ ...dream, status: 'discarded', endedAt: dream.endedAt ?? this.nowIso() })
         }
       })
-    )
+    })
   }
 
   private operationsAllowed(): boolean {

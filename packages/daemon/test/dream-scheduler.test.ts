@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { MemoryDreamingPolicy } from '@agentconnect.md/protocol'
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DreamRunner } from '../src/dream/runner.js'
 import { DreamScheduler } from '../src/scheduler/dream-scheduler.js'
 import { Daemon } from '../src/daemon.js'
 import { waitBudget } from './wait-support.js'
@@ -307,6 +308,24 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
       expect(retire).toHaveBeenCalledTimes(1)
       expect(retire).toHaveBeenCalledWith('bot-a')
     } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('retires the dream staging of an agent that loads with dreaming already off', async () => {
+    const root = scaffold()
+    const agentFile = join(root, 'agents', 'bot-a', 'agent.json')
+    writeFileSync(
+      agentFile,
+      JSON.stringify({ ...JSON.parse(readFileSync(agentFile, 'utf8')), memory: { provider: 'none' } })
+    )
+    const retire = vi.spyOn(DreamRunner.prototype, 'retireStaging').mockResolvedValue(undefined)
+    const daemon = new Daemon({ root, hostFactory: () => stubDreamHost(() => {}), dreamOperationPolicy: 'test-only' })
+    try {
+      await daemon.start()
+      await vi.waitFor(() => expect(retire).toHaveBeenCalledWith('bot-a'))
+    } finally {
+      retire.mockRestore()
       await daemon.stop()
     }
   })

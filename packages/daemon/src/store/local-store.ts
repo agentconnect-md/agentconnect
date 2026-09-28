@@ -4713,6 +4713,15 @@ export class LocalStore {
     ).map((row) => this.dreamFromRow(row))
   }
 
+  /** Every terminal dream of the agent that can still hold store staging, uncapped. */
+  async retirableDreams(agentId: string): Promise<DreamInfo[]> {
+    return (
+      (await this.db
+        .prepare("SELECT * FROM dreams WHERE agentId = ? AND status IN ('completed', 'failed', 'canceled')")
+        .all(agentId)) as Record<string, unknown>[]
+    ).map((row) => this.dreamFromRow(row))
+  }
+
   /** Every dream id of the agent, whatever its status: each names a host that no session row does. */
   async dreamIdsForAgent(agentId: string): Promise<string[]> {
     const rows = (await this.db.prepare('SELECT dreamId FROM dreams WHERE agentId = ?').all(agentId)) as Array<{

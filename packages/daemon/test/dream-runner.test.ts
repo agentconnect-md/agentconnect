@@ -145,6 +145,11 @@ class FakeStore implements DreamStorePort {
   async completedDreams(agentId: string): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter((d) => d.agentId === agentId && d.status === 'completed')
   }
+  async retirableDreams(agentId: string): Promise<DreamInfo[]> {
+    return [...this.dreams.values()].filter(
+      (d) => d.agentId === agentId && (d.status === 'completed' || d.status === 'failed' || d.status === 'canceled')
+    )
+  }
   async supersededDreams(): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter((d) => d.status === 'superseded')
   }
@@ -422,7 +427,29 @@ describe('DreamRunner pipeline', () => {
 
     expect(store.dreams.get(completed.dreamId)?.status).toBe('discarded')
     await expect(readdir(join(dir, 'memory-dreams', completed.dreamId))).rejects.toThrow()
+    // A failed row is retired too, so a later pass has nothing left to visit.
+    expect(store.dreams.get(failed)?.status).toBe('discarded')
     expect(await readdir(join(dir, 'memory-dreams', failed))).toEqual(['skills'])
+  })
+
+  it('does not wake the memory home when no dream is left to retire', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    let woken = 0
+    const runner = new DreamRunner({
+      agentDirByAgent: () => dir,
+      memoryHomePortsFor: () => home(local(dir)),
+      dreamingPolicyFor: () => undefined,
+      operationPolicy: 'test-only',
+      store: new FakeStore(),
+      extract: async () => ({ output: PROPOSAL }),
+      withMemoryHome: async (_agentId, work) => {
+        woken++
+        return work()
+      },
+      log: silent
+    })
+    await runner.retireStaging('a1')
+    expect(woken).toBe(0)
   })
 
   it('stages what the model wrote through the shared write path, indexed by its own headers', async () => {
