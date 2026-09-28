@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   ClusterProbeSchedule,
   DEFAULT_RUNTIME_PROBE_INTERVAL_MS,
+  RUNTIME_PROBE_RETRY_BASE_MS,
   configuredRuntimeProbeIntervalMs,
   configuredRuntimeProbeOnDemand
 } from '../src/runtimes/cluster-probe-schedule.js'
@@ -14,16 +15,16 @@ const HOUR = 60 * 60_000
 /** A run that stays in flight until the test settles it, recording the freshness each call asked for. */
 function controlledRun() {
   const calls: number[] = []
-  const settles: Array<() => void> = []
+  const settles: Array<(adopted: boolean) => void> = []
   const run = vi.fn(
     (freshAfter: number) =>
-      new Promise<void>((resolve) => {
+      new Promise<boolean>((resolve) => {
         calls.push(freshAfter)
         settles.push(resolve)
       })
   )
-  const settle = async () => {
-    settles.shift()?.()
+  const settle = async (adopted = true) => {
+    settles.shift()?.(adopted)
     // The run's catch/finally chain settles on microtasks; one macrotask turn drains them.
     await new Promise((resolve) => setImmediate(resolve))
   }
@@ -114,16 +115,64 @@ describe('cluster runtime probe schedule', () => {
     expect(calls).toHaveLength(2)
   })
 
-  it('keeps its timer through a failed probe', async () => {
+  it('retries a probe that adopted nothing on a doubling backoff, asking the same question', async () => {
     const clock = new FakeClock(0)
+    const { run, calls, settle } = controlledRun()
+    new ClusterProbeSchedule({ clock, intervalMs: HOUR, run, log }).start()
+    await settle(false)
+    clock.advance(RUNTIME_PROBE_RETRY_BASE_MS - 1)
+    expect(calls).toHaveLength(1)
+    clock.advance(1)
+    expect(calls).toEqual([-HOUR, -HOUR])
+    await settle(false)
+    clock.advance(2 * RUNTIME_PROBE_RETRY_BASE_MS - 1)
+    expect(calls).toHaveLength(2)
+    clock.advance(1)
+    expect(calls).toHaveLength(3)
+  })
+
+  it('retries a thrown probe too, and returns to the interval once one answers', async () => {
+    const clock = new FakeClock(0)
+    let fail = true
     const run = vi.fn(async () => {
-      throw new Error('probe sandbox bound no session')
+      if (fail) throw new Error('probe sandbox bound no session')
+      return true
     })
     const schedule = new ClusterProbeSchedule({ clock, intervalMs: HOUR, run, log })
     schedule.start()
     await schedule.idle()
-    clock.advance(HOUR)
+    fail = false
+    clock.advance(RUNTIME_PROBE_RETRY_BASE_MS)
+    await schedule.idle()
     expect(run).toHaveBeenCalledTimes(2)
+    clock.advance(HOUR - 1)
+    expect(run).toHaveBeenCalledTimes(2)
+    clock.advance(1)
+    expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it('caps the retry backoff at the interval', async () => {
+    const clock = new FakeClock(0)
+    const run = vi.fn(async () => false)
+    const schedule = new ClusterProbeSchedule({ clock, intervalMs: 2 * RUNTIME_PROBE_RETRY_BASE_MS, run, log })
+    schedule.start()
+    await schedule.idle()
+    for (const delay of [1, 2, 2, 2]) {
+      clock.advance(delay * RUNTIME_PROBE_RETRY_BASE_MS)
+      await schedule.idle()
+    }
+    expect(run).toHaveBeenCalledTimes(5)
+  })
+
+  it('retries a failed start-up probe even when the timer is off', async () => {
+    const clock = new FakeClock(0)
+    const { run, settle } = controlledRun()
+    new ClusterProbeSchedule({ clock, intervalMs: 0, run, log }).start()
+    await settle(false)
+    clock.advance(RUNTIME_PROBE_RETRY_BASE_MS)
+    expect(run).toHaveBeenCalledTimes(2)
+    await settle()
+    expect(clock.pending).toBe(0)
   })
 
   it('runs nothing after stop, including a request queued behind the probe in flight', async () => {

@@ -23374,33 +23374,22 @@ export class Daemon {
     return this.projectDeclaredRuntimes(resolved, table)
   }
 
-  /**
-   * Ask a sandbox which runtimes the image provides, and advertise THAT.
-   *
-   * The alternative shapes are both worse in the same way. Compiling the list into the daemon
-   * couples a runtime version bump to a daemon release and states something about an image the
-   * daemon never opened. Projecting it from a ConfigMap is a copy, and a copy left behind when the
-   * image tag moves is silent: the daemon advertises a version nobody can run and looks healthy.
-   *
-   * Runs in the background because it needs a pod: the daemon must register and advertise
-   * something first, and `facts/daemon-runtimes` has replace semantics, so the probed set simply
-   * supersedes whatever was advertised at boot.
-   */
-  private async probeK8sRuntimes(freshAfter: number): Promise<void> {
+  /** Ask a sandbox which runtimes the image provides and advertise that; false when no table was adopted, so the schedule retries soon. */
+  private async probeK8sRuntimes(freshAfter: number): Promise<boolean> {
     const plane = this.k8sPlane
     const resolved = this.k8sResolvedCatalog
-    if (!plane || !resolved) return
+    if (!plane || !resolved) return true
     let claimed: string | undefined
     try {
       // Who probes: one member per runtime image, not one per replica — and per the declarations
       // this daemon hands that image, which a rollout can change without moving the tag.
       const imageRef = this.poolProbeKeyFor(await this.poolRuntimeImageRef(plane))
-      if (imageRef && (await this.adoptPublishedK8sProbe(imageRef, resolved, freshAfter))) return
+      if (imageRef && (await this.adoptPublishedK8sProbe(imageRef, resolved, freshAfter))) return true
       if (imageRef) {
         if (await this.claimK8sProbe(imageRef, plane.memberId)) claimed = imageRef
         else {
           this.log.info(`runtimes: another member is probing ${imageRef} — waiting for its answer`)
-          if (await this.awaitPublishedK8sProbe(imageRef, resolved, freshAfter)) return
+          if (await this.awaitPublishedK8sProbe(imageRef, resolved, freshAfter)) return true
           // The wait ends exactly when that claim becomes retakeable, so this take-over is the
           // crash path: a holder that died must not leave the whole pool advertising nothing.
           this.log.warn('runtimes: the probing member published nothing in time — probing this member instead')
@@ -23424,6 +23413,7 @@ export class Daemon {
       // sandbox that failed quietly leaves an answer behind, and holding the claim through either
       // is what would make the pool wait out the whole stale window for nothing.
       if (published) claimed = undefined
+      return true
     } catch (err) {
       // Advertising nothing is the honest outcome: the Control Plane then assigns no agent, which
       // is better than assigning one to a daemon that cannot launch it.
@@ -23437,6 +23427,7 @@ export class Daemon {
           ? `runtimes: the runtime image does not serve the probe capability — pin one built with it (${message})`
           : `runtimes: sandbox probe failed — advertising none (${message})`
       )
+      return false
     } finally {
       // A failed probe hands the claim back rather than making the pool wait out its whole stale
       // window: the next member to try is a better bet than this one's next restart.
