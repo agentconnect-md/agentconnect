@@ -263,12 +263,16 @@ export function serviceAccountRoutes(deps: HttpDeps) {
         if (agentIds && !(await agentsVisible(account, target.orgId, agentIds))) {
           return notFound(reply, 'agent not found')
         }
-        const updated = await deps.apiKeys.update(target.id, {
-          ...(req.body.name !== undefined ? { name: req.body.name } : {}),
-          ...(req.body.expiresInDays !== undefined ? { expiresInDays: req.body.expiresInDays } : {}),
-          ...(req.body.permission !== undefined ? { permission: req.body.permission } : {}),
-          ...(req.body.agents !== undefined ? { agents: agentIds ?? 'all' } : {})
-        })
+        const updated = await deps.apiKeys.update(
+          target.id,
+          {
+            ...(req.body.name !== undefined ? { name: req.body.name } : {}),
+            ...(req.body.expiresInDays !== undefined ? { expiresInDays: req.body.expiresInDays } : {}),
+            ...(req.body.permission !== undefined ? { permission: req.body.permission } : {}),
+            ...(req.body.agents !== undefined ? { agents: agentIds ?? 'all' } : {})
+          },
+          { actorUserId: req.orgCtx!.userId }
+        )
         return toKeyDto({ ...target, ...updated })
       }
     )
@@ -294,7 +298,7 @@ export function serviceAccountRoutes(deps: HttpDeps) {
           : undefined
         if (!target) return notFound(reply, 'key not found')
         if (target.revokedAt) return revokedConflict(reply)
-        const minted = await deps.apiKeys.regenerate(target.id)
+        const minted = await deps.apiKeys.regenerate(target.id, { actorUserId: req.orgCtx!.userId })
         return {
           apiKeyId: minted.apiKeyId,
           apiKey: minted.token,
@@ -326,7 +330,7 @@ export function serviceAccountRoutes(deps: HttpDeps) {
           : undefined
         if (!target) return notFound(reply, 'key not found')
         if (target.revokedAt) return toKeyDto(target)
-        const revoked = await deps.apiKeys.revoke(target.id, 'revoked by owner')
+        const revoked = await deps.apiKeys.revoke(target.id, 'revoked by owner', { actorUserId: req.orgCtx!.userId })
         return toKeyDto({ ...target, revokedAt: revoked.revokedAt })
       }
     )

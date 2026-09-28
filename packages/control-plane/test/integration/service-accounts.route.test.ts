@@ -1,6 +1,6 @@
 // `/service-accounts` — service-account members (daemon-api-key-auth.md §6); devAuth acts as the default org's owner.
 import { randomUUID } from 'node:crypto'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { seedAgent } from '../fixtures/seed.js'
@@ -118,6 +118,30 @@ describe('service accounts', () => {
         headers: bearer(key)
       })
       expect(leave.statusCode).toBe(404)
+    } finally {
+      await close()
+    }
+  })
+
+  it('audits the owner, not the account, as the actor on every key change', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const account = await createAccount(app)
+      await mintKey(app, account.userId)
+      const { id } = await prisma.apiKey.findFirstOrThrow({ where: { userId: account.userId } })
+      const base = `${ORG}/service-accounts/${account.userId}/keys/${id}`
+      expect((await app.inject({ method: 'PATCH', url: base, payload: { name: 'renamed' } })).statusCode).toBe(200)
+      expect((await app.inject({ method: 'POST', url: `${base}/regenerate`, payload: {} })).statusCode).toBe(200)
+      expect((await app.inject({ method: 'DELETE', url: base })).statusCode).toBe(200)
+      // Audit writes are fire-and-forget: filter to this key and wait for the set, never for an order or a count.
+      await vi.waitFor(async () => {
+        const rows = await prisma.auditEvent.findMany({ where: { details: { path: ['apiKeyId'], equals: id } } })
+        expect(rows.map((r) => `${r.kind}:${r.actorUserId}`).sort()).toEqual(
+          ['api_key_create', 'api_key_revoke', 'api_key_rotate', 'api_key_update'].map(
+            (k) => `${k}:${DEFAULT_OWNER_ID}`
+          )
+        )
+      })
     } finally {
       await close()
     }

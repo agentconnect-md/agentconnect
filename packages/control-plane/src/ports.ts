@@ -163,7 +163,7 @@ export interface ApiKeyAdmin {
    *  this list structural rather than conventional. */
   listForDaemon(orgId: OrgId, daemonId: DaemonId): Promise<ApiKeyView[]>
   /** Revoke a key by id (kill switch). */
-  revoke(apiKeyId: string, reason: string): Promise<ApiKeyView>
+  revoke(apiKeyId: string, reason: string, opts?: { actorUserId?: string }): Promise<ApiKeyView>
   /** Edit settings in place with the secret unchanged (§6); a non-agent-level `permission` clears the selection. Callers own and validate first. */
   update(
     apiKeyId: string,
@@ -172,10 +172,11 @@ export interface ApiKeyAdmin {
       expiresInDays?: number | null
       permission?: ApiKeyPermission
       agents?: 'all' | readonly string[]
-    }
+    },
+    opts?: { actorUserId?: string }
   ): Promise<ApiKeyView>
   /** New secret on the same row and settings; the old value dies at once, the plaintext returns once. Callers own first. */
-  regenerate(apiKeyId: string): Promise<MintedKeyView>
+  regenerate(apiKeyId: string, opts?: { actorUserId?: string }): Promise<MintedKeyView>
   /** Mint a personal key for `userId`, scoped to `orgId` (default 90-day expiry;
    *  `expiresInDays: null` mints a non-expiring key).
    *  Plaintext is returned exactly once. Callers verify the user's membership in `orgId` first. */
