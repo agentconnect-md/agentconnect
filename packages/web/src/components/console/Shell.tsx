@@ -886,7 +886,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                         >
                           <Icon name="gift" size={15} color="var(--text-tertiary)" />
                           {t('help.whatsNew')}
-                          {help.version && <span className="kbd ml-auto">{help.version}</span>}
+                          {help.version && <span className="kbd">{help.version}</span>}
                         </a>
                         <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
                           <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
