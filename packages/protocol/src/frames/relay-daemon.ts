@@ -613,11 +613,12 @@ export const WireFeishuCardActionResponse = z.object({
 })
 export type WireFeishuCardActionResponse = z.infer<typeof WireFeishuCardActionResponse>
 
-/** A verified Google Chat card click on an elicitation card, as the relay forwards it in a `platform_action` payload. */
+/** A verified Google Chat click on an elicitation card, as the relay forwards it in a `platform_action` payload. */
 export const WireGoogleChatCardAction = z.object({
+  /** The action the button's `agentconnect.action` parameter named. */
   function: z.string().min(1),
   parameters: z.record(z.string(), z.string()),
-  /** Every input widget on the card, by its `name`, as `common.formInputs` carried it. */
+  /** Every input widget on the card, by its `name`, as `commonEventObject.formInputs` carried it. */
   formInputs: z.record(z.string(), z.array(z.string())),
   /** The card message's `spaces/…/messages/…` name, when the event carried it. */
   message: z.string().min(1).optional()

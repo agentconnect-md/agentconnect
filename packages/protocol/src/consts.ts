@@ -47,10 +47,10 @@ export const CP_SUBPROTOCOL = 'agentconnect.v1'
 /** The CP mount path the daemon↔CP WebSocket connects to. */
 export const CP_WS_PATH = '/daemon/ws'
 
-/** The relay route Google Chat posts interaction events to (google-chat-integration.md §2); the Setup Server publishes the same path as the app's HTTPS endpoint. */
+/** The relay route Google Chat posts a Workspace add-on's events to (google-chat-integration.md §2); the Setup Server publishes the same path as the app's HTTP endpoint URL. */
 export const GOOGLE_CHAT_EVENTS_PATH = '/googlechat/events'
 
-/** The events URL under a relay's public origin: a Workspace add-on's token audience and its card buttons' `function` (§11). */
+/** The events URL under a relay's public origin: every request token's audience and every card button's `function` (§11). */
 export function googleChatEventsUrl(publicRelayUrl: string): string {
   return `${publicRelayUrl.replace(/\/+$/, '')}${GOOGLE_CHAT_EVENTS_PATH}`
 }
@@ -58,7 +58,7 @@ export function googleChatEventsUrl(publicRelayUrl: string): string {
 /** The action an elicitation card's buttons invoke; the relay forwards its click to the owning daemon. */
 export const GOOGLE_CHAT_ELICIT_FUNCTION = 'agentconnect.elicit'
 
-/** The card-action parameter naming the action, since an add-on's `function` is the events URL (§11). */
+/** The card-action parameter naming the action, since a button's `function` is the events URL (§11.5). */
 export const GOOGLE_CHAT_ACTION_PARAMETER = 'agentconnect.action'
 
 /** CP accepts metadata-only transcript activity invalidations from current daemons. */

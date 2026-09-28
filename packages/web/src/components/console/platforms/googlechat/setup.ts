@@ -5,10 +5,7 @@ import { ApiError } from '@/lib/api'
 // The protocol's GOOGLE_CHAT_EVENTS_PATH, restated because the console may value-import only leaf protocol modules; setup.test.ts keeps them equal.
 export const GOOGLE_CHAT_EVENTS_PATH = '/googlechat/events'
 
-/** The Authentication Audience a Chat app that is not a Workspace add-on selects (google-chat-integration.md §2, §11). */
-export const GOOGLE_CHAT_AUDIENCE = 'Project Number'
-
-/** Google Cloud Console's Chat API configuration page, where the app's endpoint and audience are entered. */
+/** Google Cloud Console's Chat API configuration page, where the Workspace add-on's endpoint is entered (google-chat-integration.md §11.6). */
 export const GOOGLE_CHAT_CONFIG_URL = 'https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat'
 
 /** The HTTPS endpoint to copy into the Chat app: the relay's public origin plus the module route. */

@@ -2184,7 +2184,7 @@ export function buildContainer(
     fetch: (input, init) => fetch(input, init),
     ...(logtoIdentity ? { identity: logtoIdentity } : {})
   }
-  // The relay pool's public origin: the relays learn it from their snapshot and Google Chat add-ons are addressed under it (§11).
+  // The relay pool's public origin: the relays learn it from their snapshot and Google Chat apps are addressed under it (§11).
   const relayPublicBase = relayHttpBase(config.PUBLIC_RELAY_URL) ?? undefined
   // The relay's anchor points every unclaimed Workspace customer of the deployment app at the console's claim page (§10.4).
   const googleChatAnchor = googleChatClaimAnchor(googleChatPlatformApp, webAppUrl)

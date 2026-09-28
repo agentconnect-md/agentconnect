@@ -5467,7 +5467,10 @@
       "configure": {
         "title": "配置 Chat 应用",
         "endpoint": "HTTP 端点 URL",
-        "audience": "身份验证受众（Workspace 插件无需设置）",
+        "appType": "应用类型",
+        "appTypeValue": "Google Workspace 插件；已有的 Chat 应用请先转换",
+        "connection": "连接设置",
+        "connectionValue": "HTTP 端点 URL，所有触发器使用同一个 URL",
         "functionality": "功能",
         "receiveDms": "接收 1:1 消息",
         "joinSpaces": "加入空间和群组对话",
@@ -5481,6 +5484,7 @@
         "projectId": "项目 ID",
         "projectIdPlaceholder": "example-project",
         "projectNumber": "项目编号",
+        "projectNumberPlaceholder": "见项目信息中心",
         "optional": "可选",
         "key": "服务账号密钥（JSON）",
         "keyPlaceholder": "粘贴下载的密钥文件"

@@ -186,7 +186,7 @@ the relay host (relay.host, else apiHost, else the website host):
   /slack/interactions           → relay pool (Slack interactivity + block_suggestion)
   /feishu/events                → relay pool (Feishu/Lark HTTP event callback)
   /linear/events                → relay pool (Linear app webhook)
-  /googlechat/events            → relay pool (Google Chat interaction events; Google-signed bearer JWT)
+  /googlechat/events            → relay pool (Google Chat add-on events; Google-signed ID token)
   /ai-sdk/chat/:conversationId  → relay pool (agent chat API; bearer webchat token)
   /relays/<ordinal>/rd/ws       → that exact relay pod, rewritten to /rd/ws
 When the relay host == apiHost / the website host, Gateway API merges these rules with

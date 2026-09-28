@@ -7,34 +7,34 @@ import {
   type GoogleChatIngressPlugin
 } from './ingress-plugin.js'
 import type { GoogleChatHttpIngest } from './http-ingest.js'
-import { GOOGLE_CHAT_CERTIFICATE_REFETCH_MS, GOOGLE_CHAT_CERTIFICATE_URL, GOOGLE_OIDC_JWKS_URL } from './token.js'
+import { GOOGLE_CHAT_KEYS_REFETCH_MS, GOOGLE_OIDC_JWKS_URL } from './token.js'
 import type { RelayAdmission, RelayIngressHost } from '../contract.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
 import {
-  CERTIFICATE,
   JWK,
-  KID,
   NOW,
   OTHER_KEYS,
-  addOnToken,
-  fakeCertificates,
-  token
+  addOnServiceAccount,
+  bearer,
+  fakeJwks
 } from '../../../test/fixtures/google-chat-token.js'
 import {
   APP,
-  AUDIENCE,
   CUSTOMER,
   DM,
   DOMAIN,
   OTHER_APP,
   PERSON,
+  PROJECT_NUMBER,
   PUBLIC_RELAY_URL,
+  REDIRECT,
   SPACE,
-  addOn,
+  buttonClicked,
   cardClicked,
   dmAdded,
   dmMessage,
-  spaceAddedByMention,
+  spaceAdded,
+  spaceAddingMention,
   spaceMention,
   spaceRemoved
 } from '../../../test/fixtures/google-chat-events.js'
@@ -42,6 +42,10 @@ import {
 const BOT_ID = '11111111-1111-4111-8111-111111111111'
 const OTHER_CUSTOMER = 'customers/C0000000002'
 const CLAIM_URL = 'https://console.example.test/googlechat/claim'
+const TARGET = {
+  agentId: '22222222-2222-4222-8222-222222222222',
+  integrationId: '33333333-3333-4333-8333-333333333333'
+}
 
 const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   forward: vi.fn(async () => 'accepted' as const),
@@ -76,12 +80,12 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   ...over
 })
 
-// The shape `toBotAssignment` produces for a Google Chat bot: no secret, the project number as the audience.
+// The shape `toBotAssignment` produces for a Google Chat bot: no secret, the project number as the app id.
 const assignment = (over: Partial<BotAssignment> = {}): BotAssignment => ({
   botId: BOT_ID,
   platform: 'googlechat',
   secrets: {},
-  apiAppId: AUDIENCE,
+  apiAppId: PROJECT_NUMBER,
   credentialRevision: 3,
   members: [],
   agents: [],
@@ -89,134 +93,176 @@ const assignment = (over: Partial<BotAssignment> = {}): BotAssignment => ({
   ...over
 })
 
-function setup(over: Partial<BotAssignment> = {}, certificates = fakeCertificates()) {
-  const plugin = createGoogleChatIngressPlugin({ fetch: certificates.fetchImpl })
-  const h = host()
-  const ingest = plugin.buildIngest(assignment(over), h)!
-  return { plugin, h, ingest, certificates }
+interface Setup {
+  plugin: GoogleChatIngressPlugin
+  h: RelayIngressHost
+  ingest: GoogleChatHttpIngest
+  jwks: ReturnType<typeof fakeJwks>
 }
 
-async function deliver(
-  plugin: GoogleChatIngressPlugin,
-  ingest: GoogleChatHttpIngest,
-  h: RelayIngressHost,
-  event: unknown,
-  authorization: string | undefined,
-  now = NOW
-) {
+function setup(
+  over: Partial<BotAssignment> = {},
+  opts: { jwks?: ReturnType<typeof fakeJwks>; host?: Partial<RelayIngressHost> } = {}
+): Setup {
+  const jwks = opts.jwks ?? fakeJwks()
+  const plugin = createGoogleChatIngressPlugin({ fetch: jwks.fetchImpl })
+  const h = host(opts.host)
+  const ingest = plugin.buildIngest(assignment(over), h)!
+  return { plugin, h, ingest, jwks }
+}
+
+/** Verify, then handle, one request as the route does; the header defaults to a valid token, and `null` sends none. */
+async function deliver(s: Setup, event: unknown, over: { authorization?: string | null; now?: number } = {}) {
+  const authorization = over.authorization === undefined ? await bearer() : over.authorization
   const raw = Buffer.from(JSON.stringify(event))
-  const headers = authorization === undefined ? {} : { authorization }
-  const verified = await plugin.verify(ingest, raw, event, headers, now)
+  const headers = authorization === null ? {} : { authorization }
+  const verified = await s.plugin.verify(s.ingest, raw, event, headers, over.now ?? NOW)
   if (!verified) return { verified, handled: undefined }
-  return { verified, handled: await plugin.handle(ingest, verified, h) }
+  return { verified, handled: await s.plugin.handle(s.ingest, verified, s.h) }
+}
+
+/** A deep copy of a fixture with one change, so each case states only what it changes. */
+function edit(event: unknown, mutate: (e: any) => void): unknown {
+  const e = JSON.parse(JSON.stringify(event))
+  mutate(e)
+  return e
 }
 
 const forwarded = (h: RelayIngressHost): WireNormalizedMessage | undefined =>
   vi.mocked(h.forwardStrict).mock.calls[0]?.[1]
 
 // A Space message naming two apps: Google's data cannot say which one is this app.
-const twoAppMention = {
-  ...spaceMention,
-  message: {
-    ...spaceMention.message,
-    text: '@AgentConnect Probe @Other 第二条',
-    annotations: [
-      ...(spaceMention.message?.annotations ?? []),
-      {
-        type: 'USER_MENTION',
-        startIndex: 20,
-        length: 6,
-        userMention: { user: { name: OTHER_APP, displayName: 'Other', type: 'BOT' }, type: 'MENTION' }
-      }
-    ]
-  }
-}
+const twoAppMention = edit(spaceMention, (e) => {
+  const message = e.chat.messagePayload.message
+  message.text = '@AgentConnect Probe @Other 第二条'
+  message.annotations.push({
+    type: 'USER_MENTION',
+    startIndex: 20,
+    length: 6,
+    userMention: { user: { name: OTHER_APP, displayName: 'Other', type: 'BOT' }, type: 'MENTION' }
+  })
+})
+const personal = edit(dmMessage, (e) => delete e.chat.user.domainId)
+const noCustomer = edit(spaceMention, (e) => delete e.chat.messagePayload.space.customer)
+const otherCustomerMention = edit(spaceMention, (e) => (e.chat.messagePayload.space.customer = OTHER_CUSTOMER))
+// A click on a button whose action is not an elicitation's.
+const otherClick = buttonClicked({ 'agentconnect.action': 'agentconnect.other' })
 
-describe('googlechat ingress plugin — bearer-token verification (§2)', () => {
-  it('accepts a token Google signed for this project number and forwards the message', async () => {
-    const { plugin, h, ingest, certificates } = setup()
-    const { verified, handled } = await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)
-    expect(verified).toMatchObject({ event: { type: 'MESSAGE' } })
+describe('googlechat ingress plugin — bearer-token verification (§11.2)', () => {
+  it('accepts a Google ID token for the events URL from the add-on’s service account and forwards the message', async () => {
+    const s = setup()
+    const { verified, handled } = await deliver(s, dmMessage)
+    expect(verified?.event).toBe(dmMessage)
     expect(handled).toEqual({ admission: { disposition: 'admitted' } })
-    expect(forwarded(h)).toMatchObject({
+    expect(forwarded(s.h)).toMatchObject({
       platform: 'googlechat',
       msgId: `googlechat:${DM}:${DM}/messages/EXAMPLE_THREAD_1.EXAMPLE_MSG_ROOT`,
       channel: DM,
       isDm: true,
       text: 'hi'
     })
-    expect(certificates.calls).toEqual([GOOGLE_CHAT_CERTIFICATE_URL])
+    expect(forwarded(s.h)).not.toHaveProperty('adapterExt')
+    expect(s.jwks.calls).toEqual([GOOGLE_OIDC_JWKS_URL])
+    // Either issuer spelling Google uses passes.
+    const shortIssuer = await bearer({ iss: 'accounts.google.com' })
+    expect((await deliver(s, dmMessage, { authorization: shortIssuer })).verified).toBeDefined()
   })
 
-  it('refuses another audience, another issuer, an expired token, a non-RS256 token, and an unpublished key', async () => {
-    const { plugin, h, ingest } = setup()
+  it('refuses another audience, service account, or issuer, an unverified email, an expired token, a non-RS256 token, and a forged signature', async () => {
+    const s = setup()
     const nowSec = Math.floor(NOW / 1000)
-    const forged = [
-      token({ aud: '200000000000' }),
-      token({ iss: 'someone-else@example.test' }),
-      token({ iat: nowSec - 7200, exp: nowSec - 120 }),
-      token({ alg: 'RS512' }),
-      token({ key: OTHER_KEYS.privateKey })
+    const refused: Parameters<typeof bearer>[0][] = [
+      { aud: PROJECT_NUMBER },
+      { aud: `${PUBLIC_RELAY_URL}/googlechat/events/` },
+      { aud: 'https://relay-2.example.test/googlechat/events' },
+      { email: addOnServiceAccount('200000000000') },
+      { email: `${addOnServiceAccount(PROJECT_NUMBER)}.example.test` },
+      { email: `${PROJECT_NUMBER}-compute@developer.gserviceaccount.com` },
+      { email: `service-${PROJECT_NUMBER}@example.test` },
+      { email: undefined },
+      { emailVerified: false },
+      { emailVerified: 'true' },
+      { emailVerified: undefined },
+      { iss: 'https://issuer.example.test' },
+      { iat: nowSec - 7200, exp: nowSec - 120 },
+      { alg: 'RS512' },
+      { key: OTHER_KEYS.privateKey }
     ]
-    for (const t of forged) {
-      expect((await deliver(plugin, ingest, h, dmMessage, `Bearer ${await t}`)).verified).toBeUndefined()
+    for (const over of refused) {
+      const result = await deliver(s, dmMessage, { authorization: await bearer(over) })
+      expect(result.verified, JSON.stringify(over)).toBeUndefined()
     }
-    expect(h.forwardStrict).not.toHaveBeenCalled()
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
   })
 
   it('verifies nothing without a bearer token, and lets a minute of skew pass', async () => {
-    const { plugin, h, ingest } = setup()
-    expect((await deliver(plugin, ingest, h, dmMessage, undefined)).verified).toBeUndefined()
-    expect((await deliver(plugin, ingest, h, dmMessage, 'Basic abc')).verified).toBeUndefined()
-    expect((await deliver(plugin, ingest, h, dmMessage, 'Bearer not.a.jwt')).verified).toBeUndefined()
+    const s = setup()
+    for (const authorization of [null, 'Basic abc', 'Bearer not.a.jwt']) {
+      expect((await deliver(s, dmMessage, { authorization })).verified).toBeUndefined()
+    }
     const nowSec = Math.floor(NOW / 1000)
-    const justExpired = await token({ iat: nowSec - 3630, exp: nowSec - 30 })
-    expect((await deliver(plugin, ingest, h, dmMessage, `Bearer ${justExpired}`)).verified).toBeDefined()
+    const justExpired = await bearer({ iat: nowSec - 3630, exp: nowSec - 30 })
+    expect((await deliver(s, dmMessage, { authorization: justExpired })).verified).toBeDefined()
   })
 
-  it('refetches the certificate map once for an unknown kid, and not again within the spacing', async () => {
-    const { plugin, h, ingest, certificates } = setup()
-    expect((await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)).verified).toBeDefined()
-    expect(certificates.calls).toHaveLength(1)
+  it('refuses every token, fetching nothing, while the CP has not named the relay’s public origin', async () => {
+    const s = setup({}, { host: { publicRelayUrl: () => undefined } })
+    expect((await deliver(s, dmMessage)).verified).toBeUndefined()
+    expect(s.jwks.calls).toEqual([])
+  })
+
+  it('refetches the JWKS once for an unknown kid, and not again within the spacing', async () => {
+    const s = setup()
+    expect((await deliver(s, dmMessage)).verified).toBeDefined()
+    expect(s.jwks.calls).toHaveLength(1)
 
     // Google rotated: the new kid is served after exactly one refetch.
-    certificates.rotate({ 'kid-next': CERTIFICATE })
-    const rotated = await token({ kid: 'kid-next' })
-    expect((await deliver(plugin, ingest, h, dmMessage, `Bearer ${rotated}`)).verified).toBeDefined()
-    expect(certificates.calls).toHaveLength(2)
+    s.jwks.rotate({ keys: [{ ...JWK, kid: 'kid-next' }] })
+    const rotated = await bearer({ kid: 'kid-next' })
+    expect((await deliver(s, dmMessage, { authorization: rotated })).verified).toBeDefined()
+    expect(s.jwks.calls).toHaveLength(2)
 
     // A forged kid inside the spacing cannot make the relay fetch again.
-    const forged = await token({ kid: 'kid-forged' })
-    expect((await deliver(plugin, ingest, h, dmMessage, `Bearer ${forged}`)).verified).toBeUndefined()
-    expect(certificates.calls).toHaveLength(2)
-    const later = NOW + GOOGLE_CHAT_CERTIFICATE_REFETCH_MS
-    expect((await deliver(plugin, ingest, h, dmMessage, `Bearer ${forged}`, later)).verified).toBeUndefined()
-    expect(certificates.calls).toHaveLength(3)
+    const forged = await bearer({ kid: 'kid-forged' })
+    expect((await deliver(s, dmMessage, { authorization: forged })).verified).toBeUndefined()
+    expect(s.jwks.calls).toHaveLength(2)
+    const later = NOW + GOOGLE_CHAT_KEYS_REFETCH_MS
+    expect((await deliver(s, dmMessage, { authorization: forged, now: later })).verified).toBeUndefined()
+    expect(s.jwks.calls).toHaveLength(3)
+  })
+
+  it('imports only RSA signing keys', async () => {
+    const s = setup({}, { jwks: fakeJwks({ keys: [{ ...JWK, use: 'enc' }] }) })
+    expect((await deliver(s, dmMessage)).verified).toBeUndefined()
   })
 
   it("honors the response's max-age and falls back to the fixed TTL without one", async () => {
-    const capped = setup({}, fakeCertificates({ [KID]: CERTIFICATE }, { 'cache-control': 'public, max-age=120' }))
-    await deliver(capped.plugin, capped.ingest, capped.h, dmMessage, `Bearer ${await token()}`)
-    const t = await token({ iat: Math.floor(NOW / 1000) + 100 })
-    await deliver(capped.plugin, capped.ingest, capped.h, dmMessage, `Bearer ${t}`, NOW + 121_000)
-    expect(capped.certificates.calls).toHaveLength(2)
+    const capped = setup({}, { jwks: fakeJwks(undefined, { 'cache-control': 'public, max-age=120' }) })
+    await deliver(capped, dmMessage)
+    const later = await bearer({ iat: Math.floor(NOW / 1000) + 100 })
+    await deliver(capped, dmMessage, { authorization: later, now: NOW + 121_000 })
+    expect(capped.jwks.calls).toHaveLength(2)
 
     const fixed = setup()
-    await deliver(fixed.plugin, fixed.ingest, fixed.h, dmMessage, `Bearer ${await token()}`)
-    await deliver(fixed.plugin, fixed.ingest, fixed.h, dmMessage, `Bearer ${t}`, NOW + 121_000)
-    expect(fixed.certificates.calls).toHaveLength(1)
+    await deliver(fixed, dmMessage)
+    await deliver(fixed, dmMessage, { authorization: later, now: NOW + 121_000 })
+    expect(fixed.jwks.calls).toHaveLength(1)
   })
 
-  it('demuxes on the unverified audience; a body naming no tenant adds no second hint', async () => {
-    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+  it('demuxes on the project number of the token’s service account; a body naming no tenant adds no second hint', async () => {
+    const { plugin } = setup()
     const raw = Buffer.from('{}')
-    expect(plugin.extractDemuxHints(raw, {}, { authorization: `Bearer ${await token()}` })).toEqual({ appId: AUDIENCE })
-    expect(plugin.extractDemuxHints(raw, {}, {})).toEqual({})
-    expect(plugin.extractDemuxHints(raw, {}, { authorization: 'Bearer not.a.jwt' })).toEqual({})
+    const hints = async (authorization?: string) =>
+      plugin.extractDemuxHints(raw, {}, authorization === undefined ? {} : { authorization })
+    expect(await hints(await bearer())).toEqual({ appId: PROJECT_NUMBER })
+    expect(await hints()).toEqual({})
+    expect(await hints('Bearer not.a.jwt')).toEqual({})
+    expect(await hints(await bearer({ email: 'someone@example.test' }))).toEqual({})
+    expect(await hints(await bearer({ iss: 'https://issuer.example.test' }))).toEqual({})
   })
 
   it('refuses an assignment without the project number, or one that carries a secret', () => {
-    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    const { plugin } = setup()
     const h = host()
     expect(plugin.buildIngest(assignment({ apiAppId: undefined }), h)).toBeUndefined()
     expect(plugin.buildIngest(assignment({ secrets: { signingSecret: 'x' } }), h)).toBeUndefined()
@@ -235,156 +281,157 @@ describe('googlechat ingress plugin — dispositions and dedup (§4)', () => {
       { disposition: 'rejected', reason: 'muted' },
       { disposition: 'retry', reason: 'draining' }
     ] as RelayAdmission[]) {
-      const { plugin, h, ingest } = setup()
-      vi.mocked(h.forwardStrict).mockResolvedValue(admission)
-      const { handled } = await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)
-      expect(handled).toEqual({ admission })
-      if (admission.disposition === 'retry') expect(h.dedupMark).not.toHaveBeenCalled()
-      else expect(h.dedupMark).toHaveBeenCalledWith(DEDUP_KEY)
-      expect(h.dedupSeen).not.toHaveBeenCalled()
+      const s = setup()
+      vi.mocked(s.h.forwardStrict).mockResolvedValue(admission)
+      expect((await deliver(s, dmMessage)).handled).toEqual({ admission })
+      if (admission.disposition === 'retry') expect(s.h.dedupMark).not.toHaveBeenCalled()
+      else expect(s.h.dedupMark).toHaveBeenCalledWith(DEDUP_KEY)
+      expect(s.h.dedupSeen).not.toHaveBeenCalled()
     }
   })
 
   it('answers a settled repeat without forwarding it', async () => {
-    const { plugin, h, ingest } = setup()
-    vi.mocked(h.dedupPeek).mockReturnValue(true)
-    const { handled } = await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)
-    expect(handled).toEqual({})
-    expect(h.dedupPeek).toHaveBeenCalledWith(DEDUP_KEY)
-    expect(h.forwardStrict).not.toHaveBeenCalled()
-    expect(h.dedupMark).not.toHaveBeenCalled()
+    const s = setup()
+    vi.mocked(s.h.dedupPeek).mockReturnValue(true)
+    expect((await deliver(s, dmMessage)).handled).toEqual({})
+    expect(s.h.dedupPeek).toHaveBeenCalledWith(DEDUP_KEY)
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+    expect(s.h.dedupMark).not.toHaveBeenCalled()
   })
 
   it('settles an ignored or unsupported event with a mark and no forward', async () => {
-    const { plugin, h, ingest } = setup()
-    const appAuthored = {
-      ...dmMessage,
-      message: { ...dmMessage.message, sender: { name: APP, displayName: 'Probe', type: 'BOT' } }
-    }
-    expect((await deliver(plugin, ingest, h, appAuthored, `Bearer ${await token()}`)).handled).toEqual({})
-    expect(h.dedupMark).toHaveBeenCalledWith(DEDUP_KEY)
-    const groupDm = { ...dmMessage, space: { ...dmMessage.space, spaceType: 'GROUP_CHAT' } }
-    expect((await deliver(plugin, ingest, h, groupDm, `Bearer ${await token()}`)).handled).toEqual({})
-    expect(h.forwardStrict).not.toHaveBeenCalled()
+    const s = setup()
+    const appAuthored = edit(
+      dmMessage,
+      (e) => (e.chat.messagePayload.message.sender = { name: APP, displayName: 'Probe', type: 'BOT' })
+    )
+    expect((await deliver(s, appAuthored)).handled).toEqual({})
+    expect(s.h.dedupMark).toHaveBeenCalledWith(DEDUP_KEY)
+    const groupDm = edit(dmMessage, (e) => (e.chat.messagePayload.space.spaceType = 'GROUP_CHAT'))
+    expect((await deliver(s, groupDm)).handled).toEqual({})
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
   })
 
   it('forwards a message to each of two apps it mentions, since the shared table is keyed by bot', async () => {
-    // One Space message mentioning two installed apps reaches the relay once per app, each with its own audience.
+    // One Space message mentioning two installed apps reaches the relay once per app, each signed for its own project.
     const OTHER_BOT = '22222222-2222-4222-8222-222222222222'
     const settled = new Set<string>()
-    const h = host({
-      dedupPeek: vi.fn((id?: string) => id !== undefined && settled.has(id)),
-      dedupMark: vi.fn((id?: string) => {
-        if (id !== undefined) settled.add(id)
-      })
-    })
-    const certificates = fakeCertificates()
-    const plugin = createGoogleChatIngressPlugin({ fetch: certificates.fetchImpl })
-    const first = plugin.buildIngest(assignment(), h)!
-    const second = plugin.buildIngest(assignment({ botId: OTHER_BOT, apiAppId: '200000000002' }), h)!
-    expect((await deliver(plugin, first, h, dmMessage, `Bearer ${await token()}`)).handled).toEqual({
+    const first = setup(
+      {},
+      {
+        host: {
+          dedupPeek: vi.fn((id?: string) => id !== undefined && settled.has(id)),
+          dedupMark: vi.fn((id?: string) => {
+            if (id !== undefined) settled.add(id)
+          })
+        }
+      }
+    )
+    const second = {
+      ...first,
+      ingest: first.plugin.buildIngest(assignment({ botId: OTHER_BOT, apiAppId: '200000000002' }), first.h)!
+    }
+    expect((await deliver(first, dmMessage)).handled).toEqual({ admission: { disposition: 'admitted' } })
+    const secondToken = await bearer({ email: addOnServiceAccount('200000000002') })
+    expect((await deliver(second, dmMessage, { authorization: secondToken })).handled).toEqual({
       admission: { disposition: 'admitted' }
     })
-    expect(
-      (await deliver(plugin, second, h, dmMessage, `Bearer ${await token({ aud: '200000000002' })}`)).handled
-    ).toEqual({
-      admission: { disposition: 'admitted' }
-    })
-    expect(h.forwardStrict).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(h.forwardStrict).mock.calls.map(([botId, msg]) => [botId, msg.msgId])).toEqual([
+    expect(vi.mocked(first.h.forwardStrict).mock.calls.map(([botId, msg]) => [botId, msg.msgId])).toEqual([
       [BOT_ID, MSG_ID],
       [OTHER_BOT, MSG_ID]
     ])
     expect([...settled]).toEqual([DEDUP_KEY, `${OTHER_BOT}\0${MSG_ID}`])
     // The same app's repeat is still settled.
-    expect((await deliver(plugin, first, h, dmMessage, `Bearer ${await token()}`)).handled).toEqual({})
-    expect(h.forwardStrict).toHaveBeenCalledTimes(2)
+    expect((await deliver(first, dmMessage)).handled).toEqual({})
+    expect(first.h.forwardStrict).toHaveBeenCalledTimes(2)
   })
 
   it('drops a permanently malformed event with a 200 and a log line, forwarding and marking nothing', async () => {
-    const { plugin, h, ingest } = setup()
-    const crossSpace = {
-      ...dmMessage,
-      message: { ...dmMessage.message, name: `${SPACE}/messages/EXAMPLE_ELSEWHERE` }
-    }
-    expect((await deliver(plugin, ingest, h, crossSpace, `Bearer ${await token()}`)).handled).toEqual({})
-    expect(h.forwardStrict).not.toHaveBeenCalled()
-    expect(h.dedupMark).not.toHaveBeenCalled()
-    expect(h.log.warn).toHaveBeenCalledWith(expect.stringContaining('cross_space'))
+    const s = setup()
+    const crossSpace = edit(
+      dmMessage,
+      (e) => (e.chat.messagePayload.message.name = `${SPACE}/messages/EXAMPLE_ELSEWHERE`)
+    )
+    expect((await deliver(s, crossSpace)).handled).toEqual({})
+    // A body without exactly one payload is malformed the same way.
+    expect((await deliver(s, { chat: { user: { name: PERSON, type: 'HUMAN' } } })).handled).toEqual({})
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+    expect(s.h.dedupMark).not.toHaveBeenCalled()
+    expect(s.h.log.warn).toHaveBeenCalledWith(expect.stringContaining('cross_space'))
+    expect(s.h.log.warn).toHaveBeenCalledWith(expect.stringContaining('malformed'))
   })
 })
 
 describe('googlechat ingress plugin — observed membership (§4)', () => {
   it('reports a DM add as an im row and starts no turn', async () => {
-    const { plugin, h, ingest } = setup()
-    expect((await deliver(plugin, ingest, h, dmAdded, `Bearer ${await token()}`)).handled).toEqual({})
-    expect(h.reportChannels).toHaveBeenCalledWith({ botId: BOT_ID, channels: [{ id: DM, kind: 'im' }] })
-    expect(h.forwardStrict).not.toHaveBeenCalled()
+    const s = setup()
+    expect((await deliver(s, dmAdded)).handled).toEqual({})
+    expect(s.h.reportChannels).toHaveBeenCalledWith({ botId: BOT_ID, channels: [{ id: DM, kind: 'im' }] })
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
   })
 
-  it('reports a Space add with its display name, forwards the message that added the app, then drops the row on removal', async () => {
-    const { plugin, h, ingest } = setup()
-    const { handled } = await deliver(plugin, ingest, h, spaceAddedByMention, `Bearer ${await token()}`)
-    expect(handled).toEqual({ admission: { disposition: 'admitted' } })
-    expect(h.reportChannels).toHaveBeenLastCalledWith({
+  it('reports a Space add with its display name, forwards the adding message from its own request, and drops the row on removal', async () => {
+    const s = setup()
+    expect((await deliver(s, spaceAdded)).handled).toEqual({})
+    expect(s.h.reportChannels).toHaveBeenLastCalledWith({
       botId: BOT_ID,
       channels: [{ id: SPACE, name: 'Example Space', kind: 'channel' }]
     })
-    expect(forwarded(h)).toMatchObject({ channel: SPACE, thread: `${SPACE}/threads/EXAMPLE_THREAD_2`, text: 'hello' })
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+    expect((await deliver(s, spaceAddingMention)).handled).toEqual({ admission: { disposition: 'admitted' } })
+    expect(forwarded(s.h)).toMatchObject({ channel: SPACE, thread: `${SPACE}/threads/EXAMPLE_THREAD_2`, text: 'hello' })
 
-    expect((await deliver(plugin, ingest, h, spaceRemoved, `Bearer ${await token()}`)).handled).toEqual({})
-    expect(h.reportChannels).toHaveBeenLastCalledWith({ botId: BOT_ID, channels: [] })
-    expect(h.forwardStrict).toHaveBeenCalledTimes(1)
+    expect((await deliver(s, spaceRemoved)).handled).toEqual({})
+    expect(s.h.reportChannels).toHaveBeenLastCalledWith({ botId: BOT_ID, channels: [] })
+    expect(s.h.forwardStrict).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('googlechat ingress plugin — the app identity (§3)', () => {
-  it('learns the identity from the ADD annotation and keeps using it', async () => {
-    const { plugin, h, ingest } = setup()
-    await deliver(plugin, ingest, h, spaceAddedByMention, `Bearer ${await token()}`)
-    expect(h.reportBotUserId).toHaveBeenCalledWith(BOT_ID, APP)
-    expect(forwarded(h)).toMatchObject({ text: 'hello', mentionedBots: [APP] })
+  it('learns the identity from the message that added the app, not from the add, and keeps using it', async () => {
+    const s = setup()
+    await deliver(s, spaceAdded)
+    expect(s.h.reportBotUserId).not.toHaveBeenCalled()
+    await deliver(s, spaceAddingMention)
+    expect(s.h.reportBotUserId).toHaveBeenCalledWith(BOT_ID, APP)
+    expect(forwarded(s.h)).toMatchObject({ text: 'hello', mentionedBots: [APP] })
 
-    await deliver(plugin, ingest, h, spaceMention, `Bearer ${await token()}`)
-    expect(vi.mocked(h.forwardStrict).mock.calls[1]?.[1]).toMatchObject({ text: '第二条', mentionedBots: [APP] })
-    expect(h.reportBotUserId).toHaveBeenCalledTimes(1)
-    expect(h.log.warn).not.toHaveBeenCalled()
+    await deliver(s, spaceMention)
+    expect(vi.mocked(s.h.forwardStrict).mock.calls[1]?.[1]).toMatchObject({ text: '第二条', mentionedBots: [APP] })
+    expect(s.h.reportBotUserId).toHaveBeenCalledTimes(1)
+    expect(s.h.log.warn).not.toHaveBeenCalled()
   })
 
   it('learns the identity from a Space message that mentions exactly one app', async () => {
-    const { plugin, h, ingest } = setup()
-    await deliver(plugin, ingest, h, spaceMention, `Bearer ${await token()}`)
-    expect(h.reportBotUserId).toHaveBeenCalledWith(BOT_ID, APP)
-    expect(forwarded(h)).toMatchObject({ text: '第二条', mentionedBots: [APP] })
+    const s = setup()
+    await deliver(s, spaceMention)
+    expect(s.h.reportBotUserId).toHaveBeenCalledWith(BOT_ID, APP)
+    expect(forwarded(s.h)).toMatchObject({ text: '第二条', mentionedBots: [APP] })
   })
 
   it("prefers the assignment's identity over what an annotation names", async () => {
-    const { plugin, h, ingest } = setup({ botUserId: OTHER_APP })
-    await deliver(plugin, ingest, h, spaceMention, `Bearer ${await token()}`)
-    expect(h.reportBotUserId).not.toHaveBeenCalled()
-    expect(forwarded(h)).toMatchObject({ text: '@AgentConnect Probe  第二条', mentionedBots: [] })
+    const s = setup({ botUserId: OTHER_APP })
+    await deliver(s, spaceMention)
+    expect(s.h.reportBotUserId).not.toHaveBeenCalled()
+    expect(forwarded(s.h)).toMatchObject({ text: '@AgentConnect Probe  第二条', mentionedBots: [] })
   })
 
   it('forwards unstripped, warning once, while the identity cannot be known', async () => {
-    const { plugin, h, ingest } = setup()
-    await deliver(plugin, ingest, h, twoAppMention, `Bearer ${await token()}`)
-    await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)
-    expect(h.reportBotUserId).not.toHaveBeenCalled()
-    expect(forwarded(h)).toMatchObject({ text: '@AgentConnect Probe @Other 第二条', mentionedBots: [] })
-    expect(vi.mocked(h.forwardStrict).mock.calls[1]?.[1]).toMatchObject({ text: 'hi', isDm: true })
-    expect(vi.mocked(h.log.warn).mock.calls.filter(([m]) => m.includes('identity'))).toHaveLength(1)
+    const s = setup()
+    await deliver(s, twoAppMention)
+    await deliver(s, dmMessage)
+    expect(s.h.reportBotUserId).not.toHaveBeenCalled()
+    expect(forwarded(s.h)).toMatchObject({ text: '@AgentConnect Probe @Other 第二条', mentionedBots: [] })
+    expect(vi.mocked(s.h.forwardStrict).mock.calls[1]?.[1]).toMatchObject({ text: 'hi', isDm: true })
+    expect(vi.mocked(s.h.log.warn).mock.calls.filter(([m]) => m.includes('identity'))).toHaveLength(1)
   })
 })
 
 describe('googlechat ingress plugin — the trusted activation cause', () => {
   it('stamps a DM as a DM and every Space delivery as a mention, before and after the identity is known', async () => {
-    const { plugin, h, ingest } = setup()
-    const bearer = `Bearer ${await token()}`
-    await deliver(plugin, ingest, h, dmMessage, bearer)
-    await deliver(plugin, ingest, h, twoAppMention, bearer)
-    await deliver(plugin, ingest, h, spaceAddedByMention, bearer)
-    await deliver(plugin, ingest, h, spaceMention, bearer)
-    const forwardedMessages = vi.mocked(h.forwardStrict).mock.calls.map(([, message]) => message)
+    const s = setup()
+    for (const event of [dmMessage, twoAppMention, spaceAddingMention, spaceMention]) await deliver(s, event)
+    const forwardedMessages = vi.mocked(s.h.forwardStrict).mock.calls.map(([, message]) => message)
     expect(forwardedMessages.map((message) => message.trigger)).toEqual(['dm', 'mention', 'mention', 'mention'])
     // The second Space delivery was stamped although nothing named this app yet.
     expect(forwardedMessages[1]).toMatchObject({ isDm: false, mentionedBots: [] })
@@ -392,238 +439,195 @@ describe('googlechat ingress plugin — the trusted activation cause', () => {
 })
 
 describe('googlechat ingress plugin — the deployment app’s anchor and customer rows (§10.4)', () => {
-  const CLAIM_URL = 'https://console.example.test/googlechat/claim'
-  const REDIRECT = 'https://chat.example.test/config-complete?token=REDACTED'
-  const prompt = (syncResponse: unknown) => {
-    const body = syncResponse as { actionResponse?: { type?: string; url?: string } } | undefined
-    expect(body?.actionResponse?.type).toBe('REQUEST_CONFIG')
-    const url = new URL(body!.actionResponse!.url!)
+  const claimLink = (link: string) => {
+    const url = new URL(link)
     return {
       base: `${url.origin}${url.pathname}`,
       state: JSON.parse(Buffer.from(url.searchParams.get('state')!, 'base64url').toString('utf8')) as unknown
     }
   }
+  // The authorization prompt, the only member of its body.
+  const prompt = (syncResponse: unknown) => {
+    const body = syncResponse as { basic_authorization_prompt: { authorization_url: string; resource: string } }
+    expect(Object.keys(body)).toEqual(['basic_authorization_prompt'])
+    expect(body.basic_authorization_prompt.resource).toBe('AgentConnect')
+    return claimLink(body.basic_authorization_prompt.authorization_url)
+  }
+  // The welcome card as a created message, whose one button opens the claim page.
   const welcome = (syncResponse: unknown) => {
-    const body = syncResponse as {
-      cardsV2?: { card?: { sections?: { widgets?: { buttonList?: { buttons?: { onClick?: unknown }[] } }[] }[] } }[]
-    }
-    const button = body.cardsV2?.[0]?.card?.sections?.[0]?.widgets?.[1]?.buttonList?.buttons?.[0]
-    const url = new URL((button?.onClick as { openLink: { url: string } }).openLink.url)
-    return {
-      base: `${url.origin}${url.pathname}`,
-      state: JSON.parse(Buffer.from(url.searchParams.get('state')!, 'base64url').toString('utf8')) as unknown
-    }
+    const body = syncResponse as { hostAppDataAction: { chatDataAction: { createMessageAction: { message: any } } } }
+    const card = body.hostAppDataAction.chatDataAction.createMessageAction.message.cardsV2[0].card
+    return claimLink(card.sections[0].widgets[1].buttonList.buttons[0].onClick.openLink.url)
   }
   const anchor = () => setup({ claimUrl: CLAIM_URL })
 
   it('answers an unclaimed tenant in the body and forwards, reports, peeks, and marks nothing', async () => {
-    const { plugin, h, ingest } = anchor()
-    const bearer = `Bearer ${await token()}`
-    // An add, with or without its triggering message, gets the welcome card, whose button opens the claim page naming nobody.
-    const dmWelcome = welcome((await deliver(plugin, ingest, h, dmAdded, bearer)).handled?.syncResponse)
+    const s = anchor()
+    const iat = Math.floor(NOW / 1000)
+    // An add gets the welcome card, whose button opens the claim page naming nobody.
+    const dmWelcome = welcome((await deliver(s, dmAdded)).handled?.syncResponse)
     expect(dmWelcome.base).toBe(CLAIM_URL)
-    expect(dmWelcome.state).toEqual({
-      v: 1,
-      app: AUDIENCE,
-      space: DM,
-      kind: 'dm',
-      tenant: DOMAIN,
-      iat: Math.floor(NOW / 1000)
-    })
-    const spaceWelcome = welcome((await deliver(plugin, ingest, h, spaceAddedByMention, bearer)).handled?.syncResponse)
+    expect(dmWelcome.state).toEqual({ v: 1, app: PROJECT_NUMBER, space: DM, kind: 'dm', tenant: DOMAIN, iat })
+    const spaceWelcome = welcome((await deliver(s, spaceAdded)).handled?.syncResponse)
     expect(spaceWelcome.state).toEqual({
       v: 1,
-      app: AUDIENCE,
+      app: PROJECT_NUMBER,
       space: SPACE,
       kind: 'space',
       tenant: CUSTOMER,
-      iat: Math.floor(NOW / 1000)
+      iat
     })
-    // A message gets the claim prompt, whose state carries the contract's fields and nothing else.
-    const dm = await deliver(plugin, ingest, h, dmMessage, bearer)
+    // A message gets the authorization prompt, whose state carries the contract's fields and nothing else.
+    const dm = await deliver(s, dmMessage)
     expect(dm.handled?.admission).toBeUndefined()
     const decoded = prompt(dm.handled?.syncResponse)
     expect(decoded.base).toBe(CLAIM_URL)
     expect(decoded.state).toEqual({
       v: 1,
-      app: AUDIENCE,
+      app: PROJECT_NUMBER,
       space: DM,
       user: PERSON,
       kind: 'dm',
       tenant: DOMAIN,
       redirect: REDIRECT,
-      iat: Math.floor(NOW / 1000)
+      iat
     })
-    const space = prompt((await deliver(plugin, ingest, h, spaceMention, bearer)).handled?.syncResponse)
+    const space = prompt((await deliver(s, spaceMention)).handled?.syncResponse)
     expect(space.state).toMatchObject({ space: SPACE, user: PERSON, kind: 'space', tenant: CUSTOMER })
-    // Chat refuses `REQUEST_CONFIG` for a card click, so a click is nothing to answer.
-    expect((await deliver(plugin, ingest, h, cardClicked, bearer)).handled).toEqual({})
-    // A removal is nothing to answer; an event without a return URL omits `redirect`.
-    expect((await deliver(plugin, ingest, h, spaceRemoved, bearer)).handled).toEqual({})
-    const noRedirect = { ...dmMessage, configCompleteRedirectUrl: undefined }
-    expect(
-      prompt((await deliver(plugin, ingest, h, noRedirect, bearer)).handled?.syncResponse).state
-    ).not.toHaveProperty('redirect')
+    // Chat refuses a prompt for a click, so a click is nothing to answer; nor is a removal.
+    expect((await deliver(s, cardClicked)).handled).toEqual({})
+    expect((await deliver(s, spaceRemoved)).handled).toEqual({})
+    // A payload without a return URL omits `redirect`.
+    const noRedirect = edit(dmMessage, (e) => delete e.chat.messagePayload.configCompleteRedirectUri)
+    expect(prompt((await deliver(s, noRedirect)).handled?.syncResponse).state).not.toHaveProperty('redirect')
     // Nothing left the relay and nothing was settled: no forward, no membership report, no dedup read or mark.
-    expect(h.forwardStrict).not.toHaveBeenCalled()
-    expect(h.forward).not.toHaveBeenCalled()
-    expect(h.reportChannels).not.toHaveBeenCalled()
-    expect(h.dedupPeek).not.toHaveBeenCalled()
-    expect(h.dedupMark).not.toHaveBeenCalled()
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+    expect(s.h.forward).not.toHaveBeenCalled()
+    expect(s.h.forwardAction).not.toHaveBeenCalled()
+    expect(s.h.reportChannels).not.toHaveBeenCalled()
+    expect(s.h.dedupPeek).not.toHaveBeenCalled()
+    expect(s.h.dedupMark).not.toHaveBeenCalled()
   })
 
   it('answers nothing for an unclaimed event without a Workspace tenant, and still drops what it cannot classify', async () => {
-    const { plugin, h, ingest } = anchor()
-    const bearer = `Bearer ${await token()}`
-    const personal = { ...dmMessage, user: { ...dmMessage.user, domainId: undefined } }
-    expect((await deliver(plugin, ingest, h, personal, bearer)).handled).toEqual({})
-    const noCustomer = { ...spaceMention, space: { ...spaceMention.space, customer: undefined } }
-    expect((await deliver(plugin, ingest, h, noCustomer, bearer)).handled).toEqual({})
-    const appAuthored = { ...dmMessage, message: { ...dmMessage.message, sender: { name: APP, type: 'BOT' } } }
-    expect((await deliver(plugin, ingest, h, appAuthored, bearer)).handled).toEqual({})
-    const crossSpace = { ...dmMessage, message: { ...dmMessage.message, name: `${SPACE}/messages/ELSEWHERE` } }
-    expect((await deliver(plugin, ingest, h, crossSpace, bearer)).handled).toEqual({})
-    expect(h.log.warn).toHaveBeenCalledWith(expect.stringContaining('cross_space'))
-    expect(h.forwardStrict).not.toHaveBeenCalled()
-    expect(h.dedupMark).not.toHaveBeenCalled()
-    expect(h.log.info).not.toHaveBeenCalled()
+    const s = anchor()
+    expect((await deliver(s, personal)).handled).toEqual({})
+    expect((await deliver(s, noCustomer)).handled).toEqual({})
+    const appAuthored = edit(dmMessage, (e) => (e.chat.messagePayload.message.sender = { name: APP, type: 'BOT' }))
+    expect((await deliver(s, appAuthored)).handled).toEqual({})
+    const crossSpace = edit(dmMessage, (e) => (e.chat.messagePayload.message.name = `${SPACE}/messages/ELSEWHERE`))
+    expect((await deliver(s, crossSpace)).handled).toEqual({})
+    expect(s.h.log.warn).toHaveBeenCalledWith(expect.stringContaining('cross_space'))
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+    expect(s.h.dedupMark).not.toHaveBeenCalled()
+    expect(s.h.log.info).not.toHaveBeenCalled()
   })
 
   it('notes an unclaimed tenant once a minute however chatty it is, and always answers the prompt', async () => {
     let now = NOW
-    const certificates = fakeCertificates()
-    const plugin = createGoogleChatIngressPlugin({ fetch: certificates.fetchImpl })
-    const h = host({ clock: { now: () => now } })
-    const ingest = plugin.buildIngest(assignment({ claimUrl: CLAIM_URL }), h)!
-    const bearer = `Bearer ${await token()}`
-    const noted = () => vi.mocked(h.log.info).mock.calls.filter(([m]) => m.includes('unclaimed')).length
+    const s = setup({ claimUrl: CLAIM_URL }, { host: { clock: { now: () => now } } })
+    const noted = () => vi.mocked(s.h.log.info).mock.calls.filter(([m]) => m.includes('unclaimed')).length
     for (let i = 0; i < 3; i++) {
-      expect((await deliver(plugin, ingest, h, dmMessage, bearer)).handled?.syncResponse).toBeDefined()
+      expect((await deliver(s, dmMessage)).handled?.syncResponse).toBeDefined()
     }
     expect(noted()).toBe(1)
     // Another tenant is its own line; the first one is noted again once the window has passed.
-    await deliver(plugin, ingest, h, spaceMention, bearer)
+    await deliver(s, spaceMention)
     expect(noted()).toBe(2)
     now = NOW + 59_000
-    await deliver(plugin, ingest, h, dmMessage, bearer, now)
+    await deliver(s, dmMessage, { now })
     expect(noted()).toBe(2)
     now = NOW + 60_000
-    const later = await deliver(plugin, ingest, h, dmMessage, bearer, now)
+    const later = await deliver(s, dmMessage, { now })
     expect(noted()).toBe(3)
     expect(prompt(later.handled?.syncResponse).state).toMatchObject({ iat: Math.floor(now / 1000) })
   })
 
-  it('routes a customer row exactly as a single-tenant row, where a card click that is not an elicitation does nothing', async () => {
-    const { plugin, h, ingest } = setup({ tenantIds: [DOMAIN, CUSTOMER] })
-    const bearer = `Bearer ${await token()}`
-    expect((await deliver(plugin, ingest, h, dmMessage, bearer)).handled).toEqual({
-      admission: { disposition: 'admitted' }
-    })
-    expect(forwarded(h)).toMatchObject({ channel: DM, text: 'hi', trigger: 'dm' })
-    expect(h.dedupMark).toHaveBeenCalledWith(
+  it('routes a customer row exactly as a single-tenant row, where a click that is not an elicitation does nothing', async () => {
+    const s = setup({ tenantIds: [DOMAIN, CUSTOMER] })
+    expect((await deliver(s, dmMessage)).handled).toEqual({ admission: { disposition: 'admitted' } })
+    expect(forwarded(s.h)).toMatchObject({ channel: DM, text: 'hi', trigger: 'dm' })
+    expect(s.h.dedupMark).toHaveBeenCalledWith(
       `${BOT_ID}\0googlechat:${DM}:${DM}/messages/EXAMPLE_THREAD_1.EXAMPLE_MSG_ROOT`
     )
-    expect((await deliver(plugin, ingest, h, cardClicked, bearer)).handled).toEqual({})
-    expect(h.forwardStrict).toHaveBeenCalledTimes(1)
-    expect(h.dedupMark).toHaveBeenCalledTimes(1)
+    expect((await deliver(s, otherClick)).handled).toEqual({})
+    expect(s.h.forwardStrict).toHaveBeenCalledTimes(1)
+    expect(s.h.forwardAction).not.toHaveBeenCalled()
+    expect(s.h.dedupMark).toHaveBeenCalledTimes(1)
     // The row keeps what it was assigned, for core's composite index and fence.
-    expect(ingest.tenantIds).toEqual([DOMAIN, CUSTOMER])
-    expect(ingest.claimUrl).toBeUndefined()
+    expect(s.ingest.tenantIds).toEqual([DOMAIN, CUSTOMER])
+    expect(s.ingest.claimUrl).toBeUndefined()
   })
 
   it('an own app’s row, with no claim page, still routes every event, including one naming no tenant', async () => {
-    const { plugin, h, ingest } = setup()
-    const bearer = `Bearer ${await token()}`
-    const personal = { ...dmMessage, user: { ...dmMessage.user, domainId: undefined } }
-    expect((await deliver(plugin, ingest, h, personal, bearer)).handled).toEqual({
-      admission: { disposition: 'admitted' }
-    })
-    expect((await deliver(plugin, ingest, h, spaceMention, bearer)).handled).toEqual({
-      admission: { disposition: 'admitted' }
-    })
-    expect(h.forwardStrict).toHaveBeenCalledTimes(2)
-    expect((await deliver(plugin, ingest, h, cardClicked, bearer)).handled).toEqual({})
+    const s = setup()
+    expect((await deliver(s, personal)).handled).toEqual({ admission: { disposition: 'admitted' } })
+    expect((await deliver(s, spaceMention)).handled).toEqual({ admission: { disposition: 'admitted' } })
+    expect(s.h.forwardStrict).toHaveBeenCalledTimes(2)
+    expect((await deliver(s, otherClick)).handled).toEqual({})
   })
 
   it('forwards an elicitation-card click to the sole integration and answers Google with an empty body', async () => {
-    const target = {
-      agentId: '22222222-2222-4222-8222-222222222222',
-      integrationId: '33333333-3333-4333-8333-333333333333'
-    }
-    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
-    const h = host({ directory: { ...host().directory, soleTarget: () => target as never } })
-    const ingest = plugin.buildIngest(assignment(), h)!
-    const bearer = `Bearer ${await token()}`
-    const click = {
-      ...cardClicked,
-      action: {
-        actionMethodName: 'agentconnect.elicit',
-        parameters: [
-          { key: 'request', value: 'req-1' },
-          { key: 'token', value: 'ok' }
-        ]
-      },
-      common: { invokedFunction: 'agentconnect.elicit', formInputs: { f0: { stringInputs: { value: ['typed'] } } } }
-    }
-    expect((await deliver(plugin, ingest, h, click, bearer)).handled).toEqual({})
-    expect(h.forwardAction).toHaveBeenCalledTimes(1)
-    const [rd, route] = vi.mocked(h.forwardAction).mock.calls[0]!
-    expect(route).toBe(target)
+    const s = setup({}, { host: { directory: { ...host().directory, soleTarget: () => TARGET as never } } })
+    const parameters = { 'agentconnect.action': 'agentconnect.elicit', request: 'req-1', token: 'ok' }
+    const click = buttonClicked(parameters, { f0: { stringInputs: { value: ['typed'] } } })
+    expect((await deliver(s, click)).handled).toEqual({})
+    expect(s.h.forwardAction).toHaveBeenCalledTimes(1)
+    const [rd, route] = vi.mocked(s.h.forwardAction).mock.calls[0]!
+    expect(route).toBe(TARGET)
     expect(rd).toMatchObject({
       source: 'platform_action',
       platformId: 'googlechat',
-      ...target,
+      ...TARGET,
       botId: BOT_ID,
       userId: PERSON,
       sessionKey: `googlechat-action:${SPACE}/messages/EXAMPLE_CARD.EXAMPLE_CARD`,
       payload: {
         function: 'agentconnect.elicit',
-        parameters: { request: 'req-1', token: 'ok' },
+        parameters,
         formInputs: { f0: ['typed'] },
         message: `${SPACE}/messages/EXAMPLE_CARD.EXAMPLE_CARD`
       }
     })
     // A redelivered click mints the same id, so the daemon replays its first ack.
-    await deliver(plugin, ingest, h, click, bearer)
-    expect(vi.mocked(h.forwardAction).mock.calls[1]![0].msgId).toBe(rd.msgId)
-    // A card click that is not an elicitation is never forwarded.
-    await deliver(plugin, ingest, h, cardClicked, bearer)
-    expect(h.forwardAction).toHaveBeenCalledTimes(2)
-    expect(h.forwardStrict).not.toHaveBeenCalled()
+    await deliver(s, click)
+    expect(vi.mocked(s.h.forwardAction).mock.calls[1]![0].msgId).toBe(rd.msgId)
+    // A click that is not an elicitation is never forwarded.
+    await deliver(s, otherClick)
+    expect(s.h.forwardAction).toHaveBeenCalledTimes(2)
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
   })
 
   it('answers an elicitation click with no current target without forwarding it', async () => {
-    const { plugin, h, ingest } = setup()
-    const click = { ...cardClicked, common: { invokedFunction: 'agentconnect.elicit' }, action: undefined }
-    expect((await deliver(plugin, ingest, h, click, `Bearer ${await token()}`)).handled).toEqual({})
-    expect(h.forwardAction).not.toHaveBeenCalled()
-    expect(h.log.warn).toHaveBeenCalledWith(expect.stringContaining('no current integration target'))
+    const s = setup()
+    expect((await deliver(s, cardClicked)).handled).toEqual({})
+    expect(s.h.forwardAction).not.toHaveBeenCalled()
+    expect(s.h.log.warn).toHaveBeenCalledWith(expect.stringContaining('no current integration target'))
   })
 
   it("supplies the event's tenant key as the demux hint: the Space's customer, the DM sender's domain, never a Space sender's domain", async () => {
-    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
-    const headers = { authorization: `Bearer ${await token()}` }
+    const { plugin } = setup()
+    const headers = { authorization: await bearer() }
     const raw = Buffer.from('{}')
-    expect(plugin.extractDemuxHints(raw, dmMessage, headers)).toEqual({ appId: AUDIENCE, tenantId: DOMAIN })
-    expect(plugin.extractDemuxHints(raw, spaceMention, headers)).toEqual({ appId: AUDIENCE, tenantId: CUSTOMER })
-    expect(plugin.extractDemuxHints(raw, cardClicked, headers)).toEqual({ appId: AUDIENCE, tenantId: CUSTOMER })
-    const noCustomer = { ...spaceMention, space: { ...spaceMention.space, customer: undefined } }
-    expect(plugin.extractDemuxHints(raw, noCustomer, headers)).toEqual({ appId: AUDIENCE })
+    expect(plugin.extractDemuxHints(raw, dmMessage, headers)).toEqual({ appId: PROJECT_NUMBER, tenantId: DOMAIN })
+    expect(plugin.extractDemuxHints(raw, spaceMention, headers)).toEqual({ appId: PROJECT_NUMBER, tenantId: CUSTOMER })
+    expect(plugin.extractDemuxHints(raw, cardClicked, headers)).toEqual({ appId: PROJECT_NUMBER, tenantId: CUSTOMER })
+    expect(plugin.extractDemuxHints(raw, noCustomer, headers)).toEqual({ appId: PROJECT_NUMBER })
     expect(plugin.extractDemuxHints(raw, dmMessage, {})).toEqual({ tenantId: DOMAIN })
   })
 
-  it('derives the anchor from the CP’s snapshot alone: the audience and the claim page, no secret, no member', () => {
-    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+  it('derives the anchor from the CP’s snapshot alone: the project number and the claim page, no secret, no member', () => {
+    const { plugin } = setup()
     expect(plugin.deploymentAssignments).toBe(googleChatAnchorAssignment)
     const [anchored] = googleChatAnchorAssignment({
       revision: 4,
-      googleChatAnchor: { projectNumber: AUDIENCE, claimUrl: CLAIM_URL }
+      googleChatAnchor: { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL }
     })
     expect(anchored).toEqual({
       botId: GOOGLE_CHAT_ANCHOR_BOT_ID,
       platform: 'googlechat',
       secrets: {},
-      apiAppId: AUDIENCE,
+      apiAppId: PROJECT_NUMBER,
       claimUrl: CLAIM_URL,
       members: [],
       agents: [],
@@ -635,7 +639,7 @@ describe('googlechat ingress plugin — the deployment app’s anchor and custom
   })
 
   it('refuses a row that is both a customer and the anchor', () => {
-    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    const { plugin } = setup()
     const h = host()
     expect(plugin.buildIngest(assignment({ tenantIds: [CUSTOMER], claimUrl: CLAIM_URL }), h)).toBeUndefined()
     expect(h.log.warn).toHaveBeenCalledTimes(1)
@@ -645,41 +649,34 @@ describe('googlechat ingress plugin — the deployment app’s anchor and custom
 })
 
 describe('googlechat ingress plugin — the own-tenant fence of a single-tenant row (§10.3)', () => {
-  const bearer = async () => `Bearer ${await token()}`
-  const otherCustomerMention = { ...spaceMention, space: { ...spaceMention.space, customer: OTHER_CUSTOMER } }
-  const otherDomainMessage = { ...dmMessage, user: { ...dmMessage.user, domainId: '0000000009' } }
+  const otherDomainMessage = edit(dmMessage, (e) => (e.chat.user.domainId = '0000000009'))
   const refusals = (h: RelayIngressHost) =>
     vi.mocked(h.log.warn).mock.calls.filter(([line]) => String(line).includes('another Workspace customer')).length
 
   it('learns its customer from the first Space, reports it once, and refuses another customer’s Spaces', async () => {
-    const { plugin, h, ingest } = setup()
-    const auth = await bearer()
-    const first = await deliver(plugin, ingest, h, spaceMention, auth)
-    expect(first.handled).toEqual({ admission: { disposition: 'admitted' } })
-    expect(h.reportTenant).toHaveBeenCalledWith(BOT_ID, CUSTOMER)
-    await deliver(plugin, ingest, h, spaceMention, auth)
-    expect(h.reportTenant).toHaveBeenCalledTimes(1)
-    expect(h.forwardStrict).toHaveBeenCalledTimes(2)
-    const marks = vi.mocked(h.dedupMark).mock.calls.length
+    const s = setup()
+    expect((await deliver(s, spaceMention)).handled).toEqual({ admission: { disposition: 'admitted' } })
+    expect(s.h.reportTenant).toHaveBeenCalledWith(BOT_ID, CUSTOMER)
+    await deliver(s, spaceMention)
+    expect(s.h.reportTenant).toHaveBeenCalledTimes(1)
+    expect(s.h.forwardStrict).toHaveBeenCalledTimes(2)
+    const marks = vi.mocked(s.h.dedupMark).mock.calls.length
     // Another customer's Space: nothing forwarded, reported, or marked, a 200 Google never retries, one log line a minute.
-    expect((await deliver(plugin, ingest, h, otherCustomerMention, auth)).handled).toEqual({})
-    expect((await deliver(plugin, ingest, h, otherCustomerMention, auth)).handled).toEqual({})
-    expect(h.forwardStrict).toHaveBeenCalledTimes(2)
-    expect(h.reportTenant).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(h.dedupMark).mock.calls.length).toBe(marks)
-    expect(refusals(h)).toBe(1)
+    expect((await deliver(s, otherCustomerMention)).handled).toEqual({})
+    expect((await deliver(s, otherCustomerMention)).handled).toEqual({})
+    expect(s.h.forwardStrict).toHaveBeenCalledTimes(2)
+    expect(s.h.reportTenant).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(s.h.dedupMark).mock.calls.length).toBe(marks)
+    expect(refusals(s.h)).toBe(1)
   })
 
   it('passes every DM and records each domain once, whether or not the customer is known yet', async () => {
-    const { plugin, h, ingest } = setup()
-    const auth = await bearer()
+    const s = setup()
     for (const event of [dmMessage, dmMessage, spaceMention, otherDomainMessage, otherDomainMessage]) {
-      expect((await deliver(plugin, ingest, h, event, auth)).handled).toEqual({
-        admission: { disposition: 'admitted' }
-      })
+      expect((await deliver(s, event)).handled).toEqual({ admission: { disposition: 'admitted' } })
     }
-    expect(h.forwardStrict).toHaveBeenCalledTimes(5)
-    expect(vi.mocked(h.reportTenant).mock.calls).toEqual([
+    expect(s.h.forwardStrict).toHaveBeenCalledTimes(5)
+    expect(vi.mocked(s.h.reportTenant).mock.calls).toEqual([
       [BOT_ID, DOMAIN],
       [BOT_ID, CUSTOMER],
       [BOT_ID, 'domains/0000000009']
@@ -687,184 +684,38 @@ describe('googlechat ingress plugin — the own-tenant fence of a single-tenant 
   })
 
   it('is seeded from the assignment’s recorded keys, so the fence survives a rebuild and reports nothing it knows', async () => {
-    const { plugin, h, ingest } = setup({ ownTenantIds: [OTHER_CUSTOMER, DOMAIN] })
-    const auth = await bearer()
-    expect((await deliver(plugin, ingest, h, spaceMention, auth)).handled).toEqual({})
-    expect(h.forwardStrict).not.toHaveBeenCalled()
-    expect((await deliver(plugin, ingest, h, dmMessage, auth)).handled).toEqual({
-      admission: { disposition: 'admitted' }
-    })
-    expect(h.reportTenant).not.toHaveBeenCalled()
+    const s = setup({ ownTenantIds: [OTHER_CUSTOMER, DOMAIN] })
+    expect((await deliver(s, spaceMention)).handled).toEqual({})
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+    expect((await deliver(s, dmMessage)).handled).toEqual({ admission: { disposition: 'admitted' } })
+    expect(s.h.reportTenant).not.toHaveBeenCalled()
   })
 
   it('refuses a foreign customer’s add event before any membership is reported', async () => {
-    const { plugin, h, ingest } = setup({ ownTenantIds: [CUSTOMER] })
-    const foreignAdd = { ...spaceAddedByMention, space: { ...spaceAddedByMention.space, customer: OTHER_CUSTOMER } }
-    expect((await deliver(plugin, ingest, h, foreignAdd, await bearer())).handled).toEqual({})
-    expect(h.reportChannels).not.toHaveBeenCalled()
-    expect(h.forwardStrict).not.toHaveBeenCalled()
-    expect(refusals(h)).toBe(1)
+    const s = setup({ ownTenantIds: [CUSTOMER] })
+    const foreignAdd = edit(spaceAdded, (e) => (e.chat.addedToSpacePayload.space.customer = OTHER_CUSTOMER))
+    expect((await deliver(s, foreignAdd)).handled).toEqual({})
+    expect(s.h.reportChannels).not.toHaveBeenCalled()
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+    expect(refusals(s.h)).toBe(1)
   })
 
   it('never reports for a customer row or the anchor: core fences the one and the claim serves the other', async () => {
     const customer = setup({ tenantIds: [CUSTOMER, DOMAIN] })
-    await deliver(customer.plugin, customer.ingest, customer.h, spaceMention, await bearer())
+    await deliver(customer, spaceMention)
     expect(customer.h.forwardStrict).toHaveBeenCalledTimes(1)
     expect(customer.h.reportTenant).not.toHaveBeenCalled()
-    const anchor = setup({ claimUrl: CLAIM_URL })
-    await deliver(anchor.plugin, anchor.ingest, anchor.h, spaceMention, await bearer())
-    expect(anchor.h.reportTenant).not.toHaveBeenCalled()
+    const anchored = setup({ claimUrl: CLAIM_URL })
+    await deliver(anchored, spaceMention)
+    expect(anchored.h.reportTenant).not.toHaveBeenCalled()
   })
 
   it('refuses an assignment that records own keys on a customer row or the anchor', () => {
-    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    const { plugin } = setup()
     const h = host()
     expect(plugin.buildIngest(assignment({ ownTenantIds: [CUSTOMER], tenantIds: [CUSTOMER] }), h)).toBeUndefined()
     expect(plugin.buildIngest(assignment({ ownTenantIds: [CUSTOMER], claimUrl: CLAIM_URL }), h)).toBeUndefined()
     expect(plugin.buildIngest(assignment({ ownTenantIds: [CUSTOMER] }), h)?.singleTenant).toBe(true)
     expect(plugin.buildIngest(assignment({ tenantIds: [CUSTOMER] }), h)?.singleTenant).toBe(false)
-  })
-})
-
-describe('googlechat ingress plugin — Workspace add-on requests (§11)', () => {
-  const addOnBearer = async (over: Parameters<typeof addOnToken>[0] = {}) => `Bearer ${await addOnToken(over)}`
-  const bodyOf = (handled: { syncResponse?: unknown } | undefined) => handled?.syncResponse as Record<string, any>
-  const stateOf = (link: string) => {
-    const url = new URL(link)
-    return {
-      base: `${url.origin}${url.pathname}`,
-      state: JSON.parse(Buffer.from(url.searchParams.get('state')!, 'base64url').toString('utf8')) as unknown
-    }
-  }
-
-  it('accepts a Google ID token for the events URL from the add-on’s service account, and forwards what the Chat form would', async () => {
-    const { plugin, h, ingest, certificates } = setup()
-    const { verified, handled } = await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer())
-    expect(verified).toMatchObject({ form: 'addon', event: { type: 'MESSAGE' } })
-    expect(handled).toEqual({ admission: { disposition: 'admitted' } })
-    const chatForm = setup()
-    await deliver(chatForm.plugin, chatForm.ingest, chatForm.h, dmMessage, `Bearer ${await token()}`)
-    const { traceId: _a, adapterExt, ...viaAddOn } = forwarded(h)!
-    const { traceId: _b, ...viaChat } = forwarded(chatForm.h)!
-    expect(viaAddOn).toEqual(viaChat)
-    // The daemon renders this conversation's card actions for an add-on.
-    expect(adapterExt).toEqual({ googlechat: { addOn: true } })
-    expect(viaChat).not.toHaveProperty('adapterExt')
-    expect(certificates.calls).toEqual([GOOGLE_OIDC_JWKS_URL])
-  })
-
-  it('refuses another audience, another service account, an unverified email, an expired token, and a forged signature', async () => {
-    const { plugin, h, ingest } = setup()
-    const nowSec = Math.floor(NOW / 1000)
-    const refused: Parameters<typeof addOnToken>[0][] = [
-      { aud: AUDIENCE },
-      { aud: `${PUBLIC_RELAY_URL}/googlechat/events/` },
-      { aud: 'https://relay-2.example.test/googlechat/events' },
-      { email: 'service-200000000000@gcp-sa-gsuiteaddons.iam.gserviceaccount.com' },
-      { email: `service-${AUDIENCE}@gcp-sa-gsuiteaddons.iam.gserviceaccount.com.example.test` },
-      { email: `${AUDIENCE}-compute@developer.gserviceaccount.com` },
-      { email: `service-${AUDIENCE}@example.test` },
-      { email: undefined },
-      { emailVerified: false },
-      { emailVerified: 'true' },
-      { emailVerified: undefined },
-      { iat: nowSec - 7200, exp: nowSec - 120 },
-      { key: OTHER_KEYS.privateKey },
-      { iss: 'https://issuer.example.test' },
-      { alg: 'RS512' }
-    ]
-    for (const over of refused) {
-      expect((await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer(over))).verified).toBeUndefined()
-    }
-    // Either issuer spelling Google uses passes.
-    expect(
-      (await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer({ iss: 'accounts.google.com' }))).verified
-    ).toBeDefined()
-    expect(h.forwardStrict).toHaveBeenCalledTimes(1)
-  })
-
-  it('refuses every add-on token while the CP has not named the relay’s public origin', async () => {
-    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
-    const h = host({ publicRelayUrl: () => undefined })
-    const ingest = plugin.buildIngest(assignment(), h)!
-    expect((await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer())).verified).toBeUndefined()
-    // The Chat form does not depend on it.
-    expect((await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)).verified).toBeDefined()
-  })
-
-  it('reads the project number from the token’s service account and the tenant from the payload as demux hints', async () => {
-    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
-    const headers = { authorization: await addOnBearer() }
-    const raw = Buffer.from('{}')
-    expect(plugin.extractDemuxHints(raw, addOn(dmMessage), headers)).toEqual({ appId: AUDIENCE, tenantId: DOMAIN })
-    expect(plugin.extractDemuxHints(raw, addOn(spaceMention), headers)).toEqual({ appId: AUDIENCE, tenantId: CUSTOMER })
-    expect(plugin.extractDemuxHints(raw, addOn(cardClicked), headers)).toEqual({ appId: AUDIENCE, tenantId: CUSTOMER })
-    const otherAccount = { authorization: await addOnBearer({ email: 'someone@example.test' }) }
-    expect(plugin.extractDemuxHints(raw, addOn(dmMessage), otherAccount)).toEqual({ tenantId: DOMAIN })
-  })
-
-  it('refetches the JWKS once for an unknown kid and keeps it apart from the Chat certificates', async () => {
-    const { plugin, h, ingest, certificates } = setup()
-    await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer())
-    certificates.rotateJwks({ keys: [{ ...JWK, kid: 'oidc-next' }] })
-    expect(
-      (await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer({ kid: 'oidc-next' }))).verified
-    ).toBeDefined()
-    expect((await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)).verified).toBeDefined()
-    expect(certificates.calls).toEqual([GOOGLE_OIDC_JWKS_URL, GOOGLE_OIDC_JWKS_URL, GOOGLE_CHAT_CERTIFICATE_URL])
-    // A key that is not an RSA signing key is never imported.
-    const odd = setup({}, fakeCertificates(undefined, {}, { keys: [{ ...JWK, use: 'enc' }] }))
-    expect(
-      (await deliver(odd.plugin, odd.ingest, odd.h, addOn(dmMessage), await addOnBearer())).verified
-    ).toBeUndefined()
-  })
-
-  it('answers an unclaimed tenant in the add-on form: the welcome card as a created message, the claim link as the authorization prompt', async () => {
-    const { plugin, h, ingest } = setup({ claimUrl: CLAIM_URL })
-    const chat = setup({ claimUrl: CLAIM_URL })
-    const bearer = await addOnBearer()
-    const added = bodyOf((await deliver(plugin, ingest, h, addOn(dmAdded), bearer)).handled)
-    const chatAdded = bodyOf(
-      (await deliver(chat.plugin, chat.ingest, chat.h, dmAdded, `Bearer ${await token()}`)).handled
-    )
-    expect(added).toEqual({ hostAppDataAction: { chatDataAction: { createMessageAction: { message: chatAdded } } } })
-    const prompt = bodyOf((await deliver(plugin, ingest, h, addOn(dmMessage), bearer)).handled)
-    expect(Object.keys(prompt)).toEqual(['basic_authorization_prompt'])
-    expect(prompt.basic_authorization_prompt.resource).toBe('AgentConnect')
-    const chatPrompt = bodyOf(
-      (await deliver(chat.plugin, chat.ingest, chat.h, dmMessage, `Bearer ${await token()}`)).handled
-    )
-    // The same claim link, whose state carries the add-on's completion URL like the Chat form's.
-    expect(stateOf(prompt.basic_authorization_prompt.authorization_url)).toEqual(stateOf(chatPrompt.actionResponse.url))
-    expect(stateOf(prompt.basic_authorization_prompt.authorization_url).base).toBe(CLAIM_URL)
-    // Anything else stays an empty answer.
-    expect((await deliver(plugin, ingest, h, addOn(cardClicked), bearer)).handled).toEqual({})
-    expect((await deliver(plugin, ingest, h, addOn(spaceRemoved), bearer)).handled).toEqual({})
-    expect(h.forwardStrict).not.toHaveBeenCalled()
-  })
-
-  it('forwards an add-on elicitation click whose action rides our own parameter', async () => {
-    const target = {
-      agentId: '22222222-2222-4222-8222-222222222222',
-      integrationId: '33333333-3333-4333-8333-333333333333'
-    }
-    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
-    const h = host({ directory: { ...host().directory, soleTarget: () => target as never } })
-    const ingest = plugin.buildIngest(assignment(), h)!
-    const click = addOn({
-      ...cardClicked,
-      action: undefined,
-      common: {
-        parameters: { 'agentconnect.action': 'agentconnect.elicit', request: 'req-1', token: 'o1' },
-        formInputs: {}
-      }
-    })
-    expect((await deliver(plugin, ingest, h, click, await addOnBearer())).handled).toEqual({})
-    const [rd] = vi.mocked(h.forwardAction).mock.calls[0]!
-    expect(rd.payload).toMatchObject({
-      function: 'agentconnect.elicit',
-      parameters: { request: 'req-1', token: 'o1' },
-      message: `${SPACE}/messages/EXAMPLE_CARD.EXAMPLE_CARD`
-    })
   })
 })

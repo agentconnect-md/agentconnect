@@ -189,7 +189,7 @@ describe('consolidation and identity', () => {
     expect(googleChatConnKey({ ...shared, tenantIds: [] })).not.toBe(googleChatConnKey(shared))
   })
 
-  it('carries the events URL an add-on’s cards name, and opens a new client when it moves (§11)', () => {
+  it('carries the events URL every card names, and opens a new client when it moves (§11.5)', () => {
     const shared = { projectId: 'example-project', projectNumber: PROJECT_NUMBER, serviceAccountKey: KEY_JSON }
     const eventsUrl = 'https://relay.example.test/googlechat/events'
     const [group] = consolidateGoogleChat([agent('a', { ...shared, eventsUrl })]).values()

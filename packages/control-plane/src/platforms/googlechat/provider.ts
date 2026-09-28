@@ -178,7 +178,7 @@ export function googleChatRowTenantKeys(bot: Pick<BotRecord, 'externalTenantId' 
   return keys
 }
 
-/** The deployment app's anchor for the relay snapshot (§10.4): its audience and the console's claim page; none unless the page is https. */
+/** The deployment app's anchor for the relay snapshot (§10.4): its project number and the console's claim page; none unless the page is https. */
 export function googleChatClaimAnchor(
   app: Pick<GoogleChatPlatformAppConfig, 'projectNumber'> | undefined,
   webAppUrl: string | undefined
@@ -224,7 +224,7 @@ function googleChatRowTenantFields(bot: GoogleChatRowIdentity): { tenantIds?: st
   return own.length > 0 ? { ownTenantIds: own } : {}
 }
 
-/** The daemon spec payload, with the relay's events URL for an add-on's card actions (§11); undefined when the row lacks its app identity or key. */
+/** The daemon spec payload, with the relay's events URL its card buttons name (§11.5); undefined when the row lacks its app identity or key. */
 export function googleChatIntegrationConfig(
   bot: GoogleChatRowIdentity,
   secrets: Pick<BotSecretMaterial, 'botToken'>,
@@ -241,7 +241,7 @@ export function googleChatIntegrationConfig(
   }
 }
 
-/** The relay assignment: no secret, the project number as audience (§2), the app's identity, a customer row's tenant keys, and a single-tenant row's own keys. */
+/** The relay assignment: no secret, the project number its tokens must be signed for (§11.2), the app's identity, a customer row's tenant keys, and a single-tenant row's own keys. */
 export function googleChatBotAssignBags(bot: GoogleChatRowIdentity & Pick<BotRecord, 'botUserId'>): {
   secrets: Record<string, unknown>
   ingress: Record<string, unknown>
@@ -282,7 +282,7 @@ export interface GoogleChatCpProviderDeps {
   readonly app?: Pick<GoogleChatPlatformAppConfig, 'projectNumber'>
   /** The boot pass that re-stamps a rotated deployment key on the customer rows (§10.3). */
   credentialReconciler?: { start(): void; stop(): void }
-  /** The relay pool's public http(s) origin, under which the daemon names the events URL in an add-on's card actions (§11). */
+  /** The relay pool's public http(s) origin, under which the daemon names the events URL in its card buttons (§11.5). */
   publicRelayUrl?: string
 }
 
@@ -358,7 +358,7 @@ export function createGoogleChatCpProvider(
     // A freed customer row is deleted so the customer can be claimed anew, by any organization (§10.5).
     releasesFreedBot: (bot) => googleChatRowKind(bot) === 'customer',
 
-    // The relay's anchor owns the deployment audience app-only; a tenantless row of that project must not shadow it (§10.4).
+    // The relay's anchor owns the deployment project app-only; a tenantless row of that project must not shadow it (§10.4).
     relayAssignable: (bot) => !googleChatRowShadowsAnchor(bot, deps.app?.projectNumber),
 
     async projectIntegrationConfig(_integration, bot, _core, secrets) {

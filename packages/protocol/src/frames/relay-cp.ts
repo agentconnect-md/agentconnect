@@ -56,7 +56,7 @@ export const RcAuth = z.object({
 })
 export type RcAuth = z.infer<typeof RcAuth>
 
-// The deployment Google Chat app's anchor (google-chat-integration.md §10.4): its audience and the console's claim page.
+// The deployment Google Chat app's anchor (google-chat-integration.md §10.4): its project number and the console's claim page.
 export const RcGoogleChatAnchor = z.object({
   projectNumber: z.string().regex(/^[1-9]\d{0,19}$/),
   claimUrl: z.string().url({ protocol: /^https$/ })

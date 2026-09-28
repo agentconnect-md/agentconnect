@@ -193,7 +193,7 @@ const GoogleChatAppSchema = z.preprocess(
       .string()
       .trim()
       .regex(/^(?:[a-z0-9.-]+:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$/, 'must be a Google Cloud project ID'),
-    // The numeric project number, kept as a string; it is the Chat token audience.
+    // The numeric project number, kept as a string; it is the app's identity.
     projectNumber: z
       .string()
       .trim()

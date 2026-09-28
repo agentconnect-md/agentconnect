@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { NormalizedPlatformMessageSchema, type NormalizedPlatformMessage } from '@agentconnect.md/protocol'
 import {
-  googleChatEventForm,
-  googleChatEventFromAddOn,
-  googleChatEventOf,
+  googleChatPayloadOf,
   googleChatTenantKey,
   normalizeGoogleChatEvent,
   type GoogleChatEventResult
@@ -19,15 +17,10 @@ import {
   OTHER_APP,
   PERSON,
   SPACE,
-  addOnAddedToSpace,
-  addOnButtonClicked,
-  addOnDmMessage,
-  addOnRemovedFromSpace,
-  addOnSpaceMention,
   addedToDm,
+  addedToSpace,
   addedToWorkspaceDm,
-  addedWithMessage,
-  cardClicked,
+  buttonClicked,
   dmMessage,
   dmMessageFromWorkspace,
   removedFromSpace,
@@ -48,6 +41,10 @@ function copy<T>(value: T): any {
   return JSON.parse(JSON.stringify(value))
 }
 
+// The message a copied message request carries, and the payload a copied click carries.
+const messageIn = (event: any) => event.chat.messagePayload.message
+const clickIn = (event: any) => event.chat.buttonClickedPayload
+
 describe('Google Chat event normalization', () => {
   it("removes only the receiving app's own mention, keeping the mentions argumentText would erase", () => {
     const msg = messageOf(normalize(spaceMention))
@@ -59,16 +56,20 @@ describe('Google Chat event normalization', () => {
     expect(other.mentionedBots).toEqual([OTHER_APP])
     // No mention of the app at all: it is not addressed, and the text stays verbatim.
     const unaddressed = copy(spaceMention)
-    unaddressed.message.annotations = unaddressed.message.annotations.slice(1)
-    expect(messageOf(normalize(unaddressed))).toMatchObject({ text: spaceMention.message.text, mentionedBots: [] })
+    messageIn(unaddressed).annotations = messageIn(unaddressed).annotations.slice(1)
+    expect(messageOf(normalize(unaddressed))).toMatchObject({ text: messageIn(spaceMention).text, mentionedBots: [] })
+    // The @mention that added the app is still an explicit address, and is stripped the same way.
+    const adding = copy(spaceMention)
+    messageIn(adding).annotations[0].userMention.type = 'ADD'
+    expect(messageOf(normalize(adding))).toMatchObject({ mentionedBots: [APP] })
   })
 
   it('never strips text an annotation does not point at, and reads an omitted startIndex as zero', () => {
     const misaligned = copy(spaceMention)
-    misaligned.message.annotations[0].startIndex = 1
-    expect(messageOf(normalize(misaligned))).toMatchObject({ text: spaceMention.message.text, mentionedBots: [APP] })
+    messageIn(misaligned).annotations[0].startIndex = 1
+    expect(messageOf(normalize(misaligned))).toMatchObject({ text: messageIn(spaceMention).text, mentionedBots: [APP] })
     const zeroOmitted = copy(spaceMention)
-    delete zeroOmitted.message.annotations[0].startIndex
+    delete messageIn(zeroOmitted).annotations[0].startIndex
     expect(messageOf(normalize(zeroOmitted)).text).toBe('ask @OtherApp and @Example Person to review this')
   })
 
@@ -76,7 +77,7 @@ describe('Google Chat event normalization', () => {
     const msg = messageOf(normalize(spaceMention))
     expect(NormalizedPlatformMessageSchema.parse(msg)).toEqual(msg)
     expect(msg).toMatchObject({ platform: 'googlechat', channel: SPACE, thread: `${SPACE}/threads/EXAMPLE_THREAD` })
-    expect(nativeMessageCoordinates(msg)).toEqual({ channel: SPACE, messageId: spaceMention.message.name })
+    expect(nativeMessageCoordinates(msg)).toEqual({ channel: SPACE, messageId: messageIn(spaceMention).name })
     expect(msg.sender).toEqual({ id: PERSON, isBot: false, name: 'Example Person' })
   })
 
@@ -85,7 +86,12 @@ describe('Google Chat event normalization', () => {
     // A 1:1 DM is one continuous conversation, whatever thread Google files the message under.
     expect(dm).toMatchObject({ channel: DM, thread: DM, isDm: true, mentionedBots: [] })
     expect(dm.isGroupDm).toBeUndefined()
-    const withSpace = (space: Record<string, unknown>, event: unknown = dmMessage) => ({ ...copy(event), space })
+    const withSpace = (space: Record<string, unknown>, event: unknown = dmMessage) => {
+      const e = copy(event)
+      const payload: any = Object.values(e.chat).find((p: any) => p?.space)
+      payload.space = space
+      return e
+    }
     expect(normalize(withSpace({ name: DM, spaceType: 'GROUP_CHAT' }))).toEqual({
       kind: 'unsupported',
       reason: 'group_dm'
@@ -102,26 +108,17 @@ describe('Google Chat event normalization', () => {
     }
   })
 
-  it('passes the message an add event carries through the same path as MESSAGE', () => {
-    const added = normalize(addedWithMessage)
-    const membership = {
-      change: 'added',
-      channel: SPACE,
-      isDm: false,
-      actor: PERSON,
-      eventTimeMs: Date.UTC(2026, 0, 2, 3, 6)
-    }
-    expect(added).toEqual({
-      kind: 'message',
-      message: messageOf(normalize({ ...addedWithMessage, type: 'MESSAGE' })),
-      membership
+  it('reads an add as membership alone, since the @mention that adds the app arrives as its own message', () => {
+    expect(normalize(addedToSpace)).toEqual({
+      kind: 'membership',
+      membership: {
+        change: 'added',
+        channel: SPACE,
+        isDm: false,
+        actor: PERSON,
+        eventTimeMs: Date.UTC(2026, 0, 2, 3, 6)
+      }
     })
-    // The mention that added the app is still an explicit address, and is stripped the same way.
-    expect(messageOf(added)).toMatchObject({ text: 'set up the release checklist', mentionedBots: [APP] })
-    // An ignorable embedded message leaves the membership alone; a message-less add is membership only.
-    const byApp = copy(addedWithMessage)
-    byApp.message.sender = { name: OTHER_APP, type: 'BOT' }
-    expect(normalize(byApp)).toEqual({ kind: 'membership', membership })
     expect(normalize(addedToDm)).toEqual({
       kind: 'membership',
       membership: { change: 'added', channel: DM, isDm: true, actor: PERSON, eventTimeMs: Date.UTC(2026, 0, 2, 3) }
@@ -139,48 +136,28 @@ describe('Google Chat event normalization', () => {
   })
 
   it("rejects message and thread names outside the event's Space", () => {
-    const cases: [string, (event: any) => void, string][] = [
-      [
-        'message in another Space',
-        (e) => (e.message.name = 'spaces/OTHER_SPACE/messages/EXAMPLE_MESSAGE'),
-        'cross_space'
-      ],
-      [
-        'thread in another Space',
-        (e) => (e.message.thread.name = 'spaces/OTHER_SPACE/threads/EXAMPLE_THREAD'),
-        'cross_space'
-      ],
-      [
-        'event thread in another Space',
-        (e) => (e.thread = { name: 'spaces/OTHER_SPACE/threads/EXAMPLE_THREAD' }),
-        'cross_space'
-      ],
-      ['message claiming another Space', (e) => (e.message.space = { name: 'spaces/OTHER_SPACE' }), 'cross_space'],
-      [
-        'event and message threads disagree',
-        (e) => (e.thread = { name: `${SPACE}/threads/OTHER_THREAD` }),
-        'thread_mismatch'
-      ],
-      ['a colon in a resource name', (e) => (e.message.name = `${SPACE}/messages/EXAMPLE:MESSAGE`), 'malformed']
+    const cases: [string, (message: any) => void, string][] = [
+      ['message in another Space', (m) => (m.name = 'spaces/OTHER_SPACE/messages/EXAMPLE_MESSAGE'), 'cross_space'],
+      ['thread in another Space', (m) => (m.thread.name = 'spaces/OTHER_SPACE/threads/EXAMPLE_THREAD'), 'cross_space'],
+      ['message claiming another Space', (m) => (m.space = { name: 'spaces/OTHER_SPACE' }), 'cross_space'],
+      ['a colon in a resource name', (m) => (m.name = `${SPACE}/messages/EXAMPLE:MESSAGE`), 'malformed']
     ]
     for (const [label, mutate, reason] of cases) {
-      for (const fixture of [spaceMention, addedWithMessage]) {
-        const event = copy(fixture)
-        mutate(event)
-        expect(normalize(event), `${label} (${fixture.type})`).toEqual({ kind: 'invalid', reason })
-      }
+      const event = copy(spaceMention)
+      mutate(messageIn(event))
+      expect(normalize(event), label).toEqual({ kind: 'invalid', reason })
     }
   })
 
   it('ignores app-authored messages and refuses senders it cannot classify', () => {
     const fromOtherApp = copy(spaceMention)
-    fromOtherApp.message.sender = { name: OTHER_APP, displayName: 'OtherApp', type: 'BOT' }
+    messageIn(fromOtherApp).sender = { name: OTHER_APP, displayName: 'OtherApp', type: 'BOT' }
     expect(normalize(fromOtherApp)).toEqual({ kind: 'ignored', reason: 'app_authored' })
     const fromSelf = copy(dmMessage)
-    fromSelf.message.sender = { name: APP, type: 'HUMAN' }
+    messageIn(fromSelf).sender = { name: APP, type: 'HUMAN' }
     expect(normalize(fromSelf)).toEqual({ kind: 'ignored', reason: 'app_authored' })
     const untyped = copy(dmMessage)
-    delete untyped.message.sender.type
+    delete messageIn(untyped).sender.type
     expect(normalize(untyped)).toEqual({ kind: 'unsupported', reason: 'sender_type' })
   })
 
@@ -188,51 +165,100 @@ describe('Google Chat event normalization', () => {
     expect(messageOf(normalize(spaceMention)).platformTimeMs).toBe(Date.UTC(2026, 0, 2, 3, 4, 59, 123))
     const timed = (createTime: unknown, eventTime: unknown) => {
       const event = copy(dmMessage)
-      event.message.createTime = createTime
-      event.eventTime = eventTime
+      messageIn(event).createTime = createTime
+      event.chat.eventTime = eventTime
       return messageOf(normalize(event)).platformTimeMs
     }
     expect(timed('2026-01-02T05:04:05.678+02:00', undefined)).toBe(Date.UTC(2026, 0, 2, 3, 4, 5, 678))
     const fallback = Date.UTC(2026, 0, 2, 3, 4, 6)
     for (const invalid of ['not a time', '2026-02-30T00:00:00Z', '2026-01-02T03:04:05', 1767323045000, undefined]) {
-      expect(timed(invalid, dmMessage.eventTime), String(invalid)).toBe(fallback)
+      expect(timed(invalid, dmMessage.chat.eventTime), String(invalid)).toBe(fallback)
     }
     expect(timed('2026-13-01T00:00:00Z', '2026-01-02T24:00:00Z')).toBeUndefined()
   })
 
-  it('starts nothing for other event types, dialogs, commands, or thread-less Space messages', () => {
-    for (const type of ['WIDGET_UPDATED', 'APP_COMMAND', 'APP_HOME', 'SUBMIT_FORM', 'UNSPECIFIED']) {
-      expect(normalize({ ...copy(spaceMention), type }), type).toEqual({ kind: 'unsupported', reason: 'event_type' })
+  it('starts nothing for commands, widget updates, dialogs, slash commands, or thread-less Space messages', () => {
+    const command = copy(spaceMention)
+    command.chat.appCommandPayload = command.chat.messagePayload
+    delete command.chat.messagePayload
+    expect(normalize(command)).toEqual({ kind: 'unsupported', reason: 'event_type' })
+    const widget = {
+      chat: { user: dmMessage.chat.user, widgetUpdatedPayload: { space: dmMessage.chat.messagePayload.space } }
     }
-    for (const event of [
+    expect(normalize(widget)).toEqual({ kind: 'unsupported', reason: 'event_type' })
+    const dialog = copy(spaceMention)
+    dialog.chat.messagePayload.isDialogEvent = true
+    expect(normalize(dialog)).toEqual({ kind: 'unsupported', reason: 'dialog' })
+    const slash = copy(spaceMention)
+    messageIn(slash).slashCommand = { commandId: '1' }
+    expect(normalize(slash)).toEqual({ kind: 'unsupported', reason: 'slash_command' })
+    const threadless = copy(spaceMention)
+    delete messageIn(threadless).thread
+    expect(normalize(threadless)).toEqual({ kind: 'unsupported', reason: 'thread_missing' })
+  })
+
+  it('reads a body without exactly one payload, without a Space, or with a contradicting top-level Space as malformed', () => {
+    const none = { chat: { user: dmMessage.chat.user } }
+    const two = { chat: { ...spaceMention.chat, removedFromSpacePayload: { space: { name: SPACE } } } }
+    const noSpace = copy(spaceMention)
+    noSpace.chat.messagePayload.space = {}
+    const contradicting = copy(spaceMention)
+    contradicting.chat.space = { name: DM, spaceType: 'DIRECT_MESSAGE' }
+    const messageless = copy(dmMessage)
+    delete messageless.chat.messagePayload.message
+    for (const body of [
       null,
       [],
       'MESSAGE',
       {},
-      { ...copy(spaceMention), type: 7 },
-      { ...copy(spaceMention), space: {} }
+      { chat: 'x' },
+      { type: 'MESSAGE' },
+      none,
+      two,
+      noSpace,
+      contradicting,
+      messageless
     ]) {
-      expect(normalize(event), JSON.stringify(event)).toEqual({ kind: 'invalid', reason: 'malformed' })
+      expect(normalize(body), JSON.stringify(body)).toEqual({ kind: 'invalid', reason: 'malformed' })
     }
-    expect(normalize({ ...copy(spaceMention), isDialogEvent: true })).toEqual({ kind: 'unsupported', reason: 'dialog' })
-    const command = copy(spaceMention)
-    command.message.slashCommand = { commandId: '1' }
-    expect(normalize(command)).toEqual({ kind: 'unsupported', reason: 'slash_command' })
-    const threadless = copy(spaceMention)
-    delete threadless.message.thread
-    expect(normalize(threadless)).toEqual({ kind: 'unsupported', reason: 'thread_missing' })
+    // A payload without its own Space takes the top-level one; the two agreeing is no contradiction.
+    const topLevel = copy(removedFromSpace)
+    topLevel.chat.space = topLevel.chat.removedFromSpacePayload.space
+    expect(normalize(topLevel)).toMatchObject({ kind: 'membership', membership: { channel: SPACE } })
+    delete topLevel.chat.removedFromSpacePayload.space
+    expect(normalize(topLevel)).toMatchObject({ kind: 'membership', membership: { channel: SPACE } })
+  })
+
+  it('names the one payload and its Space, and nothing for a body it cannot read', () => {
+    expect(googleChatPayloadOf(spaceMention)).toEqual({
+      key: 'messagePayload',
+      payload: spaceMention.chat.messagePayload,
+      space: spaceMention.chat.messagePayload.space
+    })
+    expect(googleChatPayloadOf(addedToDm)?.key).toBe('addedToSpacePayload')
+    expect(googleChatPayloadOf({ chat: { user: dmMessage.chat.user } })).toBeUndefined()
+    expect(googleChatPayloadOf(null)).toBeUndefined()
   })
 
   it('says an attachment was not read rather than dropping or claiming it', () => {
     const withFile = copy(dmMessage)
-    withFile.message.attachment = [{ name: `${DM}/messages/EXAMPLE_DM_MESSAGE/attachments/EXAMPLE_FILE` }]
+    messageIn(withFile).attachment = [{ name: `${DM}/messages/EXAMPLE_DM_MESSAGE/attachments/EXAMPLE_FILE` }]
     expect(messageOf(normalize(withFile)).text).toBe(
       'Summarize the open incidents\n[Attachment not read: Google Chat attachments are not supported.]'
     )
-    withFile.message.text = ''
+    messageIn(withFile).text = ''
     expect(messageOf(normalize(withFile)).text).toBe(
       '[Attachment not read: Google Chat attachments are not supported.]'
     )
+  })
+
+  it('never carries the authorization tokens into a result', () => {
+    for (const body of [dmMessage, spaceMention, addedToSpace, buttonClicked]) {
+      const result = JSON.stringify(normalize(body))
+      expect(result).not.toContain('EXAMPLE_USER_OAUTH_TOKEN')
+      expect(result).not.toContain('EXAMPLE_USER_ID_TOKEN')
+      expect(result).not.toContain('EXAMPLE_SYSTEM_ID_TOKEN')
+    }
   })
 
   it('requires the caller to supply the app identity as a user resource name', () => {
@@ -242,7 +268,7 @@ describe('Google Chat event normalization', () => {
   })
 })
 
-describe('Google Chat tenant keys and card clicks (design §10)', () => {
+describe('Google Chat tenant keys and button clicks (design §10)', () => {
   const DOMAIN = `domains/${DOMAIN_ID}`
 
   it("keys a Space event by its customer and a DM by its sender's domain, never by a Space sender's domain", () => {
@@ -250,31 +276,32 @@ describe('Google Chat tenant keys and card clicks (design §10)', () => {
     expect(normalize(spaceMentionByExternalMember)).toMatchObject({
       kind: 'message',
       tenant: CUSTOMER,
-      configCompleteRedirectUrl: CONFIG_COMPLETE_URL
+      configCompleteRedirectUri: CONFIG_COMPLETE_URL
     })
     // Without a customer the external sender's own domain does not stand in: a Space may admit external members.
     const noCustomer = copy(spaceMentionByExternalMember)
-    delete noCustomer.space.customer
+    delete noCustomer.chat.messagePayload.space.customer
     expect(googleChatTenantKey(noCustomer)).toBeUndefined()
     expect(normalize(noCustomer)).not.toHaveProperty('tenant')
     expect(googleChatTenantKey(dmMessageFromWorkspace)).toBe(DOMAIN)
     expect(normalize(dmMessageFromWorkspace)).toMatchObject({ kind: 'message', tenant: DOMAIN })
     // A DM keys by its sender even if the payload put a customer on the Space.
     const dmWithCustomer = copy(dmMessageFromWorkspace)
-    dmWithCustomer.space.customer = CUSTOMER
+    dmWithCustomer.chat.messagePayload.space.customer = CUSTOMER
     expect(googleChatTenantKey(dmWithCustomer)).toBe(DOMAIN)
     // A personal account has no domain, and a malformed id keys nothing.
     expect(googleChatTenantKey(dmMessage)).toBeUndefined()
     expect(normalize(dmMessage)).not.toHaveProperty('tenant')
     for (const customer of ['C0000000000', 'customers/', 'customers/a:b', 'domains/0000000000', 7]) {
       const event = copy(spaceMentionByExternalMember)
-      event.space.customer = customer
+      event.chat.messagePayload.space.customer = customer
       expect(googleChatTenantKey(event), String(customer)).toBeUndefined()
     }
     const oddDomain = copy(dmMessageFromWorkspace)
-    oddDomain.user.domainId = 'a:b'
+    oddDomain.chat.user.domainId = 'a:b'
     expect(googleChatTenantKey(oddDomain)).toBeUndefined()
     expect(googleChatTenantKey(null)).toBeUndefined()
+    expect(googleChatTenantKey({ chat: { user: dmMessageFromWorkspace.chat.user } })).toBeUndefined()
   })
 
   it('carries the tenant and the return URL on membership results too', () => {
@@ -282,55 +309,41 @@ describe('Google Chat tenant keys and card clicks (design §10)', () => {
       kind: 'membership',
       membership: { change: 'added', channel: DM, isDm: true, actor: PERSON, eventTimeMs: Date.UTC(2026, 0, 2, 3) },
       tenant: DOMAIN,
-      configCompleteRedirectUrl: CONFIG_COMPLETE_URL
+      configCompleteRedirectUri: CONFIG_COMPLETE_URL
     })
-    const removed = { ...copy(removedFromSpace), space: { name: SPACE, spaceType: 'SPACE', customer: CUSTOMER } }
+    const removed = copy(removedFromSpace)
+    removed.chat.removedFromSpacePayload.space.customer = CUSTOMER
     expect(normalize(removed)).toMatchObject({ kind: 'membership', tenant: CUSTOMER })
-    expect(normalize(removed)).not.toHaveProperty('configCompleteRedirectUrl')
-    // An add that carries the triggering message keeps the context beside the message.
-    const addedInCustomer = { ...copy(addedWithMessage), space: spaceMentionByExternalMember.space }
-    expect(normalize(addedInCustomer)).toMatchObject({
-      kind: 'message',
-      membership: { change: 'added' },
-      tenant: CUSTOMER
-    })
+    expect(normalize(removed)).not.toHaveProperty('configCompleteRedirectUri')
     // A non-string return URL is dropped, never surfaced.
     const oddRedirect = copy(dmMessageFromWorkspace)
-    oddRedirect.configCompleteRedirectUrl = 42
-    expect(normalize(oddRedirect)).not.toHaveProperty('configCompleteRedirectUrl')
+    oddRedirect.chat.messagePayload.configCompleteRedirectUri = 42
+    expect(normalize(oddRedirect)).not.toHaveProperty('configCompleteRedirectUri')
   })
 
-  it('normalizes a card click into an interaction with the same Space and sender checks as a message', () => {
-    expect(normalize(cardClicked)).toEqual({
+  it('normalizes a button click into an interaction named by our own parameter, with the same Space and sender checks as a message', () => {
+    expect(normalize(buttonClicked)).toEqual({
       kind: 'interaction',
       interaction: {
-        function: 'agentconnect.claim',
-        parameters: { source: 'welcome' },
-        formInputs: {},
+        function: 'agentconnect.elicit',
+        parameters: { 'agentconnect.action': 'agentconnect.elicit', request: 'req-1', token: 'ok' },
+        formInputs: { f0: ['typed'] },
         message: `${SPACE}/messages/EXAMPLE_CARD_MESSAGE`,
         user: PERSON,
         space: SPACE,
-        thread: `${SPACE}/threads/EXAMPLE_ADD_THREAD`,
+        thread: `${SPACE}/threads/EXAMPLE_CARD_THREAD`,
         isDm: false
       },
       tenant: CUSTOMER,
-      configCompleteRedirectUrl: CONFIG_COMPLETE_URL
+      configCompleteRedirectUri: CONFIG_COMPLETE_URL
     })
-    // Either shape of the invoked function suffices, and the Chat-app list wins over the add-on map.
-    const commonOnly = copy(cardClicked)
-    delete commonOnly.action
-    expect(normalize(commonOnly)).toMatchObject({ interaction: { function: 'agentconnect.claim' } })
-    const actionOnly = copy(cardClicked)
-    delete actionOnly.common
-    expect(normalize(actionOnly)).toMatchObject({ interaction: { parameters: { source: 'welcome' } } })
-    const disagreeing = copy(cardClicked)
-    disagreeing.common = { invokedFunction: 'other.function', parameters: { source: 'stale', extra: 'kept' } }
-    disagreeing.action.parameters.push({ key: 'bad', value: 7 }, { value: 'no key' }, 'not an object')
-    expect(normalize(disagreeing)).toMatchObject({
-      interaction: { function: 'agentconnect.claim', parameters: { source: 'welcome', extra: 'kept' } }
-    })
+    // Non-string parameters are dropped.
+    const odd = copy(buttonClicked)
+    odd.commonEventObject.parameters.bad = 7
+    expect(normalize(odd)).not.toHaveProperty(['interaction', 'parameters', 'bad'])
     // A click in a DM, with no card message at all, still classifies.
-    const inDm = { ...copy(cardClicked), space: dmMessageFromWorkspace.space, message: undefined, thread: undefined }
+    const inDm = copy(buttonClicked)
+    inDm.chat.buttonClickedPayload = { space: dmMessageFromWorkspace.chat.messagePayload.space }
     expect(normalize(inDm)).toMatchObject({
       kind: 'interaction',
       interaction: { space: DM, isDm: true },
@@ -340,9 +353,9 @@ describe('Google Chat tenant keys and card clicks (design §10)', () => {
     expect(normalize(inDm)).not.toHaveProperty(['interaction', 'message'])
   })
 
-  it("reads a card click's input widgets as string lists and drops any other shape", () => {
-    const submitted = copy(cardClicked) as any
-    submitted.common.formInputs = {
+  it("reads a button click's input widgets as string lists and drops any other shape", () => {
+    const submitted = copy(buttonClicked)
+    submitted.commonEventObject.formInputs = {
       text: { stringInputs: { value: ['typed'] } },
       picks: { stringInputs: { value: ['o0', 7, 'o2'] } },
       date: { dateInput: { msSinceEpoch: '1' } },
@@ -354,174 +367,58 @@ describe('Google Chat tenant keys and card clicks (design §10)', () => {
     expect(normalize(submitted)).not.toHaveProperty(['interaction', 'formInputs', 'date'])
   })
 
-  it('refuses a card click the way it refuses a message: Space checks, sender checks, dialogs, group DMs', () => {
+  it('refuses a button click the way it refuses a message: Space checks, sender checks, dialogs, group DMs', () => {
     const refused: [string, (e: any) => void, GoogleChatEventResult][] = [
       [
         'card in another Space',
-        (e) => (e.message.name = 'spaces/OTHER/messages/M'),
+        (e) => (clickIn(e).message.name = 'spaces/OTHER/messages/M'),
         { kind: 'invalid', reason: 'cross_space' }
       ],
       [
         'card thread elsewhere',
-        (e) => (e.message.thread.name = 'spaces/OTHER/threads/T'),
+        (e) => (clickIn(e).message.thread.name = 'spaces/OTHER/threads/T'),
         { kind: 'invalid', reason: 'cross_space' }
       ],
       [
         'card claiming another Space',
-        (e) => (e.message.space = { name: 'spaces/OTHER' }),
+        (e) => (clickIn(e).message.space = { name: 'spaces/OTHER' }),
         { kind: 'invalid', reason: 'cross_space' }
       ],
+      ['no clicker', (e) => delete e.chat.user, { kind: 'invalid', reason: 'malformed' }],
+      ['clicker with an odd name', (e) => (e.chat.user.name = 'people/1'), { kind: 'invalid', reason: 'malformed' }],
       [
-        'event thread disagrees',
-        (e) => (e.thread = { name: `${SPACE}/threads/OTHER_THREAD` }),
-        { kind: 'invalid', reason: 'thread_mismatch' }
-      ],
-      ['no clicker', (e) => delete e.user, { kind: 'invalid', reason: 'malformed' }],
-      ['clicker with an odd name', (e) => (e.user.name = 'people/1'), { kind: 'invalid', reason: 'malformed' }],
-      [
-        'no function named',
-        (e) => {
-          delete e.action
-          delete e.common
-        },
+        'no action parameter',
+        (e) => delete e.commonEventObject.parameters['agentconnect.action'],
         { kind: 'invalid', reason: 'malformed' }
       ],
-      ['a bot clicking', (e) => (e.user.type = 'BOT'), { kind: 'ignored', reason: 'app_authored' }],
+      [
+        'an empty action parameter',
+        (e) => (e.commonEventObject.parameters['agentconnect.action'] = ''),
+        { kind: 'invalid', reason: 'malformed' }
+      ],
+      ['no parameters at all', (e) => delete e.commonEventObject, { kind: 'invalid', reason: 'malformed' }],
+      ['a bot clicking', (e) => (e.chat.user.type = 'BOT'), { kind: 'ignored', reason: 'app_authored' }],
       [
         'the app itself clicking',
-        (e) => (e.user = { name: APP, type: 'HUMAN' }),
+        (e) => (e.chat.user = { name: APP, type: 'HUMAN' }),
         { kind: 'ignored', reason: 'app_authored' }
       ],
-      ['an untyped clicker', (e) => delete e.user.type, { kind: 'unsupported', reason: 'sender_type' }],
-      ['a dialog submission', (e) => (e.isDialogEvent = true), { kind: 'unsupported', reason: 'dialog' }],
+      ['an untyped clicker', (e) => delete e.chat.user.type, { kind: 'unsupported', reason: 'sender_type' }],
+      ['a dialog submission', (e) => (clickIn(e).isDialogEvent = true), { kind: 'unsupported', reason: 'dialog' }],
       [
         'a group DM',
-        (e) => (e.space = { name: DM, spaceType: 'GROUP_CHAT' }),
+        (e) => (clickIn(e).space = { name: DM, spaceType: 'GROUP_CHAT' }),
         { kind: 'unsupported', reason: 'group_dm' }
       ]
     ]
     for (const [label, mutate, expected] of refused) {
-      const event = copy(cardClicked)
+      const event = copy(buttonClicked)
       mutate(event)
       expect(normalize(event), label).toEqual(expected)
     }
     // The external member's click keys the Space's customer, like their message would.
-    const byExternal = copy(cardClicked)
-    byExternal.user = { ...spaceMentionByExternalMember.user }
+    const byExternal = copy(buttonClicked)
+    byExternal.chat.user = { ...spaceMentionByExternalMember.chat.user }
     expect(normalize(byExternal)).toMatchObject({ interaction: { user: EXTERNAL_PERSON }, tenant: CUSTOMER })
-  })
-})
-
-describe('Google Chat add-on requests (design §11)', () => {
-  const DOMAIN = `domains/${DOMAIN_ID}`
-  const adapted = (body: unknown) => normalize(googleChatEventFromAddOn(body))
-
-  it('tells the two request forms apart and refuses a body that is neither', () => {
-    expect(googleChatEventForm(dmMessage)).toBe('chat')
-    expect(googleChatEventForm(addOnDmMessage)).toBe('addon')
-    for (const body of [null, [], {}, 'MESSAGE', { type: 7 }, { chat: 'x' }, { commonEventObject: {} }]) {
-      expect(googleChatEventForm(body), JSON.stringify(body)).toBeUndefined()
-    }
-    expect(googleChatEventOf(addOnDmMessage)).toEqual({
-      form: 'addon',
-      event: googleChatEventFromAddOn(addOnDmMessage)
-    })
-    expect(googleChatEventOf(dmMessage)).toEqual({ form: 'chat', event: dmMessage })
-    expect(googleChatEventOf({})).toBeUndefined()
-  })
-
-  it('classifies an add-on message exactly as its Chat API twin, tenant and return URL included', () => {
-    expect(adapted(addOnDmMessage)).toEqual(normalize(dmMessageFromWorkspace))
-    expect(adapted(addOnDmMessage)).toMatchObject({ kind: 'message', tenant: DOMAIN })
-    expect(adapted(addOnSpaceMention)).toEqual(normalize(spaceMentionByExternalMember))
-    expect(googleChatTenantKey(googleChatEventFromAddOn(addOnSpaceMention))).toBe(CUSTOMER)
-    expect(googleChatTenantKey(googleChatEventFromAddOn(addOnDmMessage))).toBe(DOMAIN)
-  })
-
-  it('reads an add as membership alone, since an add-on receives the adding message separately, and a removal the same way', () => {
-    expect(adapted(addOnAddedToSpace)).toEqual({
-      kind: 'membership',
-      membership: {
-        change: 'added',
-        channel: SPACE,
-        isDm: false,
-        actor: PERSON,
-        eventTimeMs: Date.UTC(2026, 0, 2, 3, 6)
-      },
-      tenant: CUSTOMER,
-      configCompleteRedirectUrl: CONFIG_COMPLETE_URL
-    })
-    expect(adapted(addOnRemovedFromSpace)).toMatchObject({
-      kind: 'membership',
-      membership: { change: 'removed', channel: SPACE },
-      tenant: CUSTOMER
-    })
-  })
-
-  it('reads a button click’s action from our own parameter, with the card’s widgets', () => {
-    expect(adapted(addOnButtonClicked)).toEqual({
-      kind: 'interaction',
-      interaction: {
-        function: 'agentconnect.elicit',
-        parameters: { 'agentconnect.action': 'agentconnect.elicit', request: 'req-1', token: 'ok' },
-        formInputs: { f0: ['typed'] },
-        message: `${SPACE}/messages/EXAMPLE_CARD_MESSAGE`,
-        user: PERSON,
-        space: SPACE,
-        thread: `${SPACE}/threads/EXAMPLE_ADD_THREAD`,
-        isDm: false
-      },
-      tenant: CUSTOMER
-    })
-    const dialog = copy(addOnButtonClicked)
-    dialog.chat.buttonClickedPayload.isDialogEvent = true
-    expect(adapted(dialog)).toEqual({ kind: 'unsupported', reason: 'dialog' })
-  })
-
-  it('never carries the authorization tokens into the event', () => {
-    for (const body of [addOnDmMessage, addOnSpaceMention, addOnAddedToSpace, addOnButtonClicked]) {
-      const event = JSON.stringify(googleChatEventFromAddOn(body))
-      expect(event).not.toContain('EXAMPLE_USER_OAUTH_TOKEN')
-      expect(event).not.toContain('EXAMPLE_USER_ID_TOKEN')
-      expect(event).not.toContain('EXAMPLE_SYSTEM_ID_TOKEN')
-    }
-  })
-
-  it('starts nothing for commands and widget updates, and reads a body without exactly one payload as malformed', () => {
-    const command = copy(addOnSpaceMention)
-    command.chat = { ...command.chat, appCommandPayload: command.chat.messagePayload, messagePayload: undefined }
-    expect(adapted(command)).toEqual({ kind: 'unsupported', reason: 'event_type' })
-    const widget = { chat: { user: addOnDmMessage.chat.user, widgetUpdatedPayload: { space: dmMessage.space } } }
-    expect(adapted(widget)).toEqual({ kind: 'unsupported', reason: 'event_type' })
-    const none = { chat: { user: addOnDmMessage.chat.user } }
-    const two = { chat: { ...addOnSpaceMention.chat, removedFromSpacePayload: { space: { name: SPACE } } } }
-    for (const body of [none, two, {}, null]) {
-      expect(adapted(body), JSON.stringify(body)).toEqual({ kind: 'invalid', reason: 'malformed' })
-    }
-  })
-
-  it('takes the top-level Space when the payload names none, and refuses one that contradicts the payload', () => {
-    const topLevel = copy(addOnRemovedFromSpace)
-    topLevel.chat.space = topLevel.chat.removedFromSpacePayload.space
-    delete topLevel.chat.removedFromSpacePayload.space
-    expect(adapted(topLevel)).toMatchObject({ kind: 'membership', membership: { channel: SPACE } })
-    const contradicting = copy(addOnSpaceMention)
-    contradicting.chat.space = { name: DM, spaceType: 'DIRECT_MESSAGE' }
-    expect(adapted(contradicting)).toEqual({ kind: 'invalid', reason: 'malformed' })
-  })
-
-  it('prefers our own action parameter, then a pre-conversion card’s function, then Chat’s own fields', () => {
-    const ours = copy(cardClicked)
-    ours.action.parameters.push({ key: 'agentconnect.action', value: 'agentconnect.elicit' })
-    expect(normalize(ours)).toMatchObject({ interaction: { function: 'agentconnect.elicit' } })
-    const converted = copy(addOnButtonClicked)
-    converted.commonEventObject.parameters = { __action_method_name__: 'agentconnect.elicit', request: 'req-1' }
-    expect(adapted(converted)).toMatchObject({ interaction: { function: 'agentconnect.elicit' } })
-    const emptyOwn = copy(cardClicked)
-    emptyOwn.common.parameters['agentconnect.action'] = ''
-    expect(normalize(emptyOwn)).toMatchObject({ interaction: { function: 'agentconnect.claim' } })
-    const nameless = copy(addOnButtonClicked)
-    nameless.commonEventObject.parameters = { request: 'req-1' }
-    expect(adapted(nameless)).toEqual({ kind: 'invalid', reason: 'malformed' })
   })
 })

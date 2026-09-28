@@ -40,8 +40,8 @@ export interface BotAssignment {
   platform: string
   // The third shape is the signing-secret-ONLY bag: a relay-verified platform whose every write
   // lives on the daemon has no provider token to hand the relay, only the webhook signing secret.
-  // The fourth is EMPTY: the provider signs each callback itself and `apiAppId` is the expected
-  // token audience, so the relay holds no secret at all (Google Chat).
+  // The fourth is EMPTY: the provider signs each callback itself for the app `apiAppId` names,
+  // so the relay holds no secret at all (Google Chat).
   secrets:
     | { botToken: string; signingSecret: string }
     | { verificationToken: string; encryptKey?: string }

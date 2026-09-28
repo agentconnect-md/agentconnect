@@ -13,7 +13,6 @@ import { googleChatApi } from './api'
 import { CopyField } from './fields'
 import { GoogleChatMark } from './mark'
 import {
-  GOOGLE_CHAT_AUDIENCE,
   GOOGLE_CHAT_CONFIG_URL,
   googleChatCallbackUrl,
   googleChatErrorMessage,
@@ -210,8 +209,19 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
         </a>
         <div className="flex flex-col gap-[10px]">
           {callbackUrl && <CopyField label={t('configure.endpoint')} value={callbackUrl} />}
-          <CopyField label={t('configure.audience')} value={GOOGLE_CHAT_AUDIENCE} />
           <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
+            <div className="fld">
+              <span className="fldlbl">{t('configure.appType')}</span>
+              <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                {t('configure.appTypeValue')}
+              </span>
+            </div>
+            <div className="fld">
+              <span className="fldlbl">{t('configure.connection')}</span>
+              <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                {t('configure.connectionValue')}
+              </span>
+            </div>
             <div className="fld">
               <span className="fldlbl">{t('configure.functionality')}</span>
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
@@ -248,7 +258,7 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
             </span>
             <input
               className={`inp mn ${numberOk ? '' : 'border-(--status-error)'}`}
-              placeholder="123456789012"
+              placeholder={t('credentials.projectNumberPlaceholder')}
               inputMode="numeric"
               value={projectNumber}
               onChange={(e) => setProjectNumber(e.target.value)}

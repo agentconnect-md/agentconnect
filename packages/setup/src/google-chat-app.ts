@@ -1,16 +1,13 @@
 import { googleChatEventsUrl } from '@agentconnect.md/protocol'
 import type { ProviderAppConfig } from './provider-app.js'
 
-/** The authentication audience a Chat app that is not a Workspace add-on selects (§2); an add-on's audience is the endpoint URL itself (§11). */
-export const GOOGLE_CHAT_AUDIENCE_SETTING = 'Project Number'
-
 /** The generic Chat API configuration page; a project-specific URL would not resolve for another operator. */
 export const GOOGLE_CHAT_CONFIGURATION_URL =
   'https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat'
 
 export interface GoogleChatConfiguredUrls {
+  /** The Workspace add-on's HTTP endpoint URL, which is also every request token's audience (§11.2). */
   callbackUrl: string
-  audienceSetting: typeof GOOGLE_CHAT_AUDIENCE_SETTING
   configurationUrl: string
 }
 
@@ -22,7 +19,6 @@ export function googleChatConfiguredUrls(config: ProviderAppConfig): GoogleChatC
   }
   return {
     callbackUrl: googleChatEventsUrl(relay),
-    audienceSetting: GOOGLE_CHAT_AUDIENCE_SETTING,
     configurationUrl: GOOGLE_CHAT_CONFIGURATION_URL
   }
 }

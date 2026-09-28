@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GOOGLE_CHAT_EVENTS_PATH } from '@agentconnect.md/protocol'
 import { GOOGLE_CHAT_ADMISSION_DEADLINE_MS, registerGoogleChatHttpIngress } from './http-ingress.js'
 import type { HandledDelivery, RelayInboundSeam } from '../contract.js'
-import { addOn, dmMessage } from '../../../test/fixtures/google-chat-events.js'
+import { dmMessage } from '../../../test/fixtures/google-chat-events.js'
 
 const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 
@@ -37,25 +37,23 @@ describe('Google Chat HTTP ingress route', () => {
     app = undefined
   })
 
-  it('answers 400 for a body that is neither a Chat API event nor an add-on request', async () => {
+  it('answers 400 for a body that is not an add-on request', async () => {
     const handleInbound = vi.fn(answering({}))
     app = makeApp(handleInbound)
-    for (const payload of ['not json', '[]', '{}', '{"type":7}', 'null', '{"chat":"x"}', '{"commonEventObject":{}}']) {
+    const payloads = [
+      'not json',
+      '[]',
+      '{}',
+      '{"type":"MESSAGE"}',
+      'null',
+      '{"chat":"x"}',
+      '{"chat":[]}',
+      '{"commonEventObject":{}}'
+    ]
+    for (const payload of payloads) {
       expect((await post(app, payload)).statusCode, payload).toBe(400)
     }
     expect(handleInbound).not.toHaveBeenCalled()
-  })
-
-  it('hands an add-on request to the seam like a Chat API event, and sends its answer', async () => {
-    const answer = {
-      basic_authorization_prompt: { authorization_url: 'https://console.example.test/c', resource: 'AgentConnect' }
-    }
-    const handleInbound = vi.fn(answering({ syncResponse: answer }))
-    app = makeApp(handleInbound)
-    const response = await post(app, JSON.stringify(addOn(dmMessage)))
-    expect(response.statusCode).toBe(200)
-    expect(response.json()).toEqual(answer)
-    expect(handleInbound).toHaveBeenCalledTimes(1)
   })
 
   it('answers 401 when no assigned bot owns the delivery, and before the manager exists', async () => {
@@ -81,15 +79,20 @@ describe('Google Chat HTTP ingress route', () => {
     }
   })
 
-  it('sends the handled delivery’s synchronous body on the 200: the welcome card or the claim prompt (§10.4)', async () => {
+  it('sends the handled delivery’s synchronous body on the 200: the welcome card or the authorization prompt (§10.4)', async () => {
     const prompt = {
-      actionResponse: { type: 'REQUEST_CONFIG', url: 'https://console.example.test/googlechat/claim?state=e30' }
+      basic_authorization_prompt: {
+        authorization_url: 'https://console.example.test/googlechat/claim?state=e30',
+        resource: 'AgentConnect'
+      }
     }
-    app = makeApp(answering({ syncResponse: prompt }))
+    const handleInbound = vi.fn(answering({ syncResponse: prompt }))
+    app = makeApp(handleInbound)
     const response = await post(app, JSON.stringify(dmMessage))
     expect(response.statusCode).toBe(200)
     expect(response.headers['content-type']).toMatch(/application\/json/)
     expect(response.json()).toEqual(prompt)
+    expect(handleInbound).toHaveBeenCalledTimes(1)
   })
 
   it('answers 503 for a retry verdict so Google may redeliver', async () => {

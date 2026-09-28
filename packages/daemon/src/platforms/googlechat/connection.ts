@@ -78,7 +78,7 @@ export interface ConsolidatedGoogleChatGroup {
   integrations: { agentId: string; integrationId: string }[]
 }
 
-/** §7.5 opaque identity: the app, its key, the row's tenant, and the events URL its cards name, so any change opens a new client (§10.8, §11). */
+/** §7.5 opaque identity: the app, its key, the row's tenant, and the events URL its cards name, so any change opens a new client (§10.8, §11.5). */
 export function googleChatConnKey(
   c: Pick<
     IntegrationGoogleChatConfig,
@@ -265,11 +265,11 @@ export class GoogleChatConnection implements PlatformConnection {
   readonly key: string
   readonly integrationId: string
   readonly agentId: string
-  /** The Chat app's Google Cloud project number: its durable identity and token audience. */
+  /** The Chat app's Google Cloud project number: its durable identity. */
   readonly projectNumber: string
   /** No permalink base: Chat deep links come from the message's own `spaceUri`, so the console URL is the fallback. */
   readonly workspaceUrl = ''
-  /** The relay's public events URL, which an add-on's card buttons name as their function (§11). */
+  /** The relay's public events URL, which every card button names as its function (§11.5). */
   readonly eventsUrl: string | undefined
   private readonly parsedKey: ParsedKey | GoogleChatApiError
   private readonly fetchImpl: typeof fetch

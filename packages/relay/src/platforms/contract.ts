@@ -354,7 +354,7 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
    * this per candidate; the plugin owns the cryptography (HMAC window, AES
    * decrypt, token compare) — and hands back the DECRYPTED result exactly once,
    * so handling never re-derives it. A platform whose proof is a provider-signed
-   * token checked against fetched certificates (Google Chat) answers with a
+   * token checked against fetched signing keys (Google Chat) answers with a
    * promise; core awaits either form.
    */
   verify(

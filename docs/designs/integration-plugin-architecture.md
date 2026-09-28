@@ -593,8 +593,8 @@ interface RelayPlatformIngressPlugin<TIngest, TVerified> {
   // verify decrypts, and the decrypted payload has to reach handle() —
   // deriving it a second time there is both wasteful and a place for the two
   // derivations to disagree. `undefined` means reject. Google Chat's proof is
-  // a token checked against fetched certificates, so verify may also return a
-  // promise; core awaits either form.
+  // a Google ID token checked against fetched signing keys, so verify may also
+  // return a promise; core awaits either form.
   verify(ingest, rawBody, body, headers, now):
     TVerified | undefined | Promise<TVerified | undefined>
   // Two platforms require SYNCHRONOUS bodies on the HTTP 200 (Slack
@@ -682,9 +682,9 @@ and core owns the TTL table, offered two ways: `dedupSeen` marks on first sight
 answers from an admission disposition check first and mark only once the
 disposition is settled. The registry (`platforms/registry.ts`) lists Slack,
 Feishu, Linear, and Google Chat; Google Chat is the first plugin that answers
-from the admission disposition, holds no secret (Google signs each callback for
-the bot's project number, which the assignment carries as the expected
-audience), and verifies asynchronously. Four platform reads that would
+from the admission disposition, holds no secret (Google signs each callback as
+the app's Workspace add-on service account, whose project number the assignment
+carries, for the relay's own events URL), and verifies asynchronously. Four platform reads that would
 otherwise sit in core are capability reads per D2: Slack-only bot-mention
 admission (`botSenderRouting`), thread-root detection (adapter `isThreadRoot`
 or the threading capability), the Feishu egress-ownership fork

@@ -482,7 +482,7 @@ describe('wire projections', () => {
     })
   })
 
-  it('names the relay’s events URL for an add-on’s card actions when the relay pool has a public origin (§11)', async () => {
+  it('names the relay’s events URL for its card buttons when the relay pool has a public origin (§11.5)', async () => {
     const served = createGoogleChatCpProvider({ publicRelayUrl: 'https://relay.example.test' })
     const config = await served.projectIntegrationConfig(integration(), bot(), CORE, secrets)
     expect(IntegrationGoogleChatConfig.parse(config)).toMatchObject({

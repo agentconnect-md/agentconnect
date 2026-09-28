@@ -1054,7 +1054,6 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         revision: saved.revision,
         restartRequired: true as const,
         callbackUrl: urls.callbackUrl,
-        audience: { setting: urls.audienceSetting, value: checked.projectNumber },
         probe: { status: checked.status, message: checked.message }
       }
     })

@@ -9,7 +9,7 @@ import type { WebBotSettingsFragments } from '../contract'
 import { useDeploymentConfig } from '../deployment-config'
 import { googleChatApi } from './api'
 import { CopyField } from './fields'
-import { GOOGLE_CHAT_AUDIENCE, googleChatCallbackUrl, googleChatErrorMessage, parseServiceAccountKey } from './setup'
+import { googleChatCallbackUrl, googleChatErrorMessage, parseServiceAccountKey } from './setup'
 
 /** A Google Chat app's expanded row: its identity, the endpoint Google must call, its key's state and rotation, and its scope. */
 export function GoogleChatBotSettings({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) {
@@ -60,7 +60,6 @@ export function GoogleChatBotSettings({ bot, canWrite }: { bot: BotDto; canWrite
           {bot.externalAppId ?? '—'}
         </Value>
         {callbackUrl && <CopyField label={t('configure.endpoint')} value={callbackUrl} />}
-        <CopyField label={t('configure.audience')} value={GOOGLE_CHAT_AUDIENCE} />
         <Value label={t('settings.key')}>
           {bot.prebuilt ? `${keyState} · ${t('settings.deploymentKey')}` : keyState}
         </Value>

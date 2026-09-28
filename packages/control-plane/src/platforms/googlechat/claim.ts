@@ -29,7 +29,7 @@ import {
 /** Base64url JSON is short; anything longer is not a state the relay minted. */
 const MAX_STATE_LENGTH = 4_096
 
-/** Chat's `configCompleteRedirectUrl` is always on Chat's own origin; anything else is refused. */
+/** A payload's `configCompleteRedirectUri` is always on Chat's own origin; anything else is refused. */
 export function isGoogleChatRedirect(value: string): boolean {
   let url: URL
   try {

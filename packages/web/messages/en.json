@@ -5467,7 +5467,10 @@
       "configure": {
         "title": "Configure the Chat app",
         "endpoint": "HTTP endpoint URL",
-        "audience": "Authentication audience (not asked for a Workspace add-on)",
+        "appType": "App type",
+        "appTypeValue": "Google Workspace add-on; convert an existing Chat app first",
+        "connection": "Connection settings",
+        "connectionValue": "HTTP endpoint URL, the same URL for all triggers",
         "functionality": "Functionality",
         "receiveDms": "Receive 1:1 messages",
         "joinSpaces": "Join spaces and group conversations",
@@ -5481,6 +5484,7 @@
         "projectId": "Project ID",
         "projectIdPlaceholder": "example-project",
         "projectNumber": "Project number",
+        "projectNumberPlaceholder": "On the project dashboard",
         "optional": "optional",
         "key": "Service account key (JSON)",
         "keyPlaceholder": "Paste the downloaded key file"
