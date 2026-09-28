@@ -350,10 +350,12 @@ never have to exclude it.
   `kind = service_account`, no `oidcSubject`, the display name its owner gives
   it, and the email `<id>@service-account.invalid`. It has exactly one
   membership, created with it. An invited member's row also has no
-  `oidcSubject`, and a first sign-in claims such a row by verified email. That
-  claim, and `POST /members`, which adds a member by email, skip or refuse a
-  `service_account` row, so no one can sign in as a service account or add it
-  to a second organization.
+  `oidcSubject`, and two paths claim such a row by verified email: a first
+  sign-in, and a later sign-in that upgrades a synthetic email and merges the
+  row into the signed-in user (`upgradeSyntheticEmail`). Both claims, in their
+  initial lookup and their locked recheck, and `POST /members`, which adds a
+  member by email, skip or refuse a `service_account` row, so no one can sign
+  in as a service account, absorb it, or add it to a second organization.
 - **Routes.** `GET` and `POST /orgs/:orgId/service-accounts`, and `PATCH` and
   `DELETE /orgs/:orgId/service-accounts/:id`, take and change `name` and
   `role`. Its keys live under `/orgs/:orgId/service-accounts/:id/keys`: list,
@@ -385,8 +387,9 @@ Tests should cover:
 
 - a service account's `full` key admitted on an org route, and refused on
   `POST /orgs`, `/me/keys`, and every service-account route;
-- a first sign-in whose verified email equals a service account's not claiming
-  it, and `POST /members` refusing that email;
+- a first sign-in, and a synthetic-email upgrade, whose verified email equals a
+  service account's not claiming or merging it, and `POST /members` refusing
+  that email;
 - `owner` refused as a service account's role, and the member routes answering
   404 for it;
 - a webchat conversation owned by a service account classifying as `org`;
