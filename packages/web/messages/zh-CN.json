@@ -252,7 +252,9 @@
       "regenerateTitle": "重新生成 API 密钥",
       "regenerateBody": "将换成新的值。当前值立即失效；名称、权限、Agent 和过期时间保持不变。",
       "regenerating": "生成中…",
-      "regeneratedTitle": "API 密钥已重新生成"
+      "regeneratedTitle": "API 密钥已重新生成",
+      "owner": "所有者",
+      "serviceAccount": "服务账号"
     },
     "social": {
       "title": "登录方式",
@@ -1917,41 +1919,45 @@
           "create": "在 Google Cloud 中配置一个 Chat 应用",
           "existing": "一个未使用的 Google Chat 应用"
         }
+      },
+      "api": {
+        "protocol": "协议",
+        "aiSdkUiDescription": "通过 AI SDK UI 消息流对话，配合 useChat hook 使用。",
+        "acp2Description": "Agent Client Protocol v2，面向编辑器和 Agent 客户端。",
+        "soon": "即将推出",
+        "added": "已添加",
+        "docs": "文档",
+        "add": "添加 API",
+        "adding": "添加中…"
       }
+    },
+    "api": {
+      "title": "API",
+      "remove": "移除",
+      "quickstart": "快速开始",
+      "removeTitle": "移除 API",
+      "removeConfirm": "移除",
+      "removing": "移除中…",
+      "removeBody": "{agent} 将不再接受 API 调用。覆盖它的密钥对其他 Agent 仍然有效。",
+      "docs": "文档",
+      "close": "关闭",
+      "mintEndpoint": "Token",
+      "chatEndpoint": "对话",
+      "copy": "复制",
+      "copySnippet": "复制代码",
+      "keys": "Agent 对话密钥",
+      "createKey": "创建密钥",
+      "keysLoading": "正在加载密钥…",
+      "noKeys": "还没有能调用这个 Agent 的 Agent 对话密钥。",
+      "me": "我",
+      "allAgents": "全部 Agent",
+      "done": "完成"
     }
   },
   "Agents": {
     "description": "运行在 Daemon 上的 AI Agent。点击任意 Agent 查看其会话。",
     "addAgent": "添加 Agent",
     "add": "添加",
-    "apiPanel": {
-      "organizationLoadError": "无法加载 API 访问所需的组织信息。",
-      "loading": "正在加载 API 配置…",
-      "relayNotConfigured": "尚未配置 Relay 端点",
-      "buildDescription": "基于 <agent>{agent}</agent> 构建：生成短期凭据，然后通过 Relay 流式运行。",
-      "authentication": "身份验证",
-      "apiKeyDescription": "为 {organization} 使用个人 API 密钥。它会以你的身份访问此组织，创建后只显示一次。",
-      "connectionEndpoints": "连接端点",
-      "post": "POST",
-      "webSocketMethod": "WSS",
-      "streaming": "流式",
-      "copied": "已复制",
-      "copyMintEndpoint": "复制 Mint 端点",
-      "mintEndpointCopied": "Mint 端点已复制",
-      "copyWebSocketEndpoint": "复制 WebSocket 端点",
-      "webSocketEndpointCopied": "WebSocket 端点已复制",
-      "connect": "连接",
-      "copy": "复制",
-      "streamEvents": "流式事件",
-      "serverToClient": "服务器 → 客户端",
-      "events": {
-        "ready": "Socket 已接受，携带控制平面分配的 conversationId。",
-        "ack": "消息已送达 Agent，携带 turnId。",
-        "output": "回复分块：output.event 可以是 message、thinking、tool_call 或 tool_update。",
-        "done": "回合已完成，包含 done.stopReason 和 done.usage（Tokens / 费用）。",
-        "error": "传递失败，例如 Agent 没有在线 Daemon。"
-      }
-    },
     "workspaceScope": {
       "defaultBranch": "HEAD",
       "workspaceCheckout": "工作区检出：{name}",

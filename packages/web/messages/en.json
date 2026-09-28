@@ -252,7 +252,9 @@
       "regenerateTitle": "Regenerate API key",
       "regenerateBody": "will get a new value. The current value stops working immediately; the name, permission, agents and expiry stay.",
       "regenerating": "Regenerating…",
-      "regeneratedTitle": "API key regenerated"
+      "regeneratedTitle": "API key regenerated",
+      "owner": "Owner",
+      "serviceAccount": "Service account"
     },
     "social": {
       "title": "Sign-in methods",
@@ -1917,41 +1919,45 @@
           "create": "Configure a Chat app in Google Cloud",
           "existing": "An unused Google Chat app"
         }
+      },
+      "api": {
+        "protocol": "Protocol",
+        "aiSdkUiDescription": "Chat over the AI SDK UI message stream, for the useChat hook.",
+        "acp2Description": "Agent Client Protocol v2, for editors and agent clients.",
+        "soon": "Soon",
+        "added": "Added",
+        "docs": "Docs",
+        "add": "Add API",
+        "adding": "Adding…"
       }
+    },
+    "api": {
+      "title": "API",
+      "remove": "Remove",
+      "quickstart": "Quickstart",
+      "removeTitle": "Remove API",
+      "removeConfirm": "Remove",
+      "removing": "Removing…",
+      "removeBody": "{agent} stops accepting API calls. Keys that cover it stay valid for other agents.",
+      "docs": "Docs",
+      "close": "Close",
+      "mintEndpoint": "Token",
+      "chatEndpoint": "Chat",
+      "copy": "Copy",
+      "copySnippet": "Copy code",
+      "keys": "Agent chat keys",
+      "createKey": "Create key",
+      "keysLoading": "Loading keys…",
+      "noKeys": "No Agent chat key reaches this agent yet.",
+      "me": "Me",
+      "allAgents": "All agents",
+      "done": "Done"
     }
   },
   "Agents": {
     "description": "AI agents running across your daemons. Click one to inspect its sessions.",
     "addAgent": "Add agent",
     "add": "Add",
-    "apiPanel": {
-      "organizationLoadError": "Couldn’t load the organization required for API access.",
-      "loading": "Loading API configuration…",
-      "relayNotConfigured": "Relay endpoint not configured",
-      "buildDescription": "Build on <agent>{agent}</agent>: mint short-lived credentials, then stream a run through the relay.",
-      "authentication": "Authentication",
-      "apiKeyDescription": "Use a personal API key for {organization}. It acts as you in this organization and is shown only once when created.",
-      "connectionEndpoints": "Connection endpoints",
-      "post": "POST",
-      "webSocketMethod": "WSS",
-      "streaming": "streaming",
-      "copied": "Copied",
-      "copyMintEndpoint": "Copy mint endpoint",
-      "mintEndpointCopied": "Mint endpoint copied",
-      "copyWebSocketEndpoint": "Copy WebSocket endpoint",
-      "webSocketEndpointCopied": "WebSocket endpoint copied",
-      "connect": "Connect",
-      "copy": "Copy",
-      "streamEvents": "Stream events",
-      "serverToClient": "server → client",
-      "events": {
-        "ready": "Socket accepted — carries the conversationId the CP allocated.",
-        "ack": "Your message was delivered to the agent — carries a turnId.",
-        "output": "A reply chunk: output.event is message / thinking / tool_call / tool_update.",
-        "done": "Turn finished — done.stopReason and done.usage (tokens / cost).",
-        "error": "Delivery failed — e.g. the agent has no live daemon."
-      }
-    },
     "workspaceScope": {
       "defaultBranch": "HEAD",
       "workspaceCheckout": "Workspace checkout: {name}",

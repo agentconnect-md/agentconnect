@@ -125,6 +125,11 @@ export const consoleKeys = {
   cronRuns: (orgId: string | null | undefined, cronId: string) => consoleKey(orgId, 'cron-runs', cronId),
   agentHooks: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-hooks', agentId) : null,
+  agentApi: (orgId: string | null | undefined, agentId: string | null | undefined) =>
+    agentId ? consoleKey(orgId, 'agent-api', agentId) : null,
+  // Every Agent chat key the caller can see: their own, plus each service account's for an owner.
+  agentChatKeys: (orgId: string | null | undefined, owner: boolean) =>
+    consoleKey(orgId, 'agent-chat-keys', owner ? 'owner' : 'member'),
   // Per-repository list reached through one hook row (the settings dialog's).
   hookTrustedActors: (orgId: string | null | undefined, hookId: string | null | undefined) =>
     hookId ? consoleKey(orgId, 'hook-trusted-actors', hookId) : null,

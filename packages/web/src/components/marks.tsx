@@ -295,6 +295,14 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   if (x.includes('hook')) {
     return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />
   }
+  // The agent's chat API tile, a protocol rather than a platform.
+  if (x === 'api') {
+    return (
+      <span style={{ width: s.width, height: s.height }} className="flex items-center justify-center" aria-hidden>
+        <Icon name="code-xml" className="h-full w-full" color="var(--text-secondary)" />
+      </span>
+    )
+  }
   // Headless schedule fires — no real platform channel behind them.
   if (x.includes('sched')) {
     return (

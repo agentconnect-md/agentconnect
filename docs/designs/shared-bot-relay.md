@@ -537,8 +537,8 @@ route, the UI message stream encoder, turn admission, the per-token verdict
 cache, and `expiresAt` on the token routes; then key permissions and agent
 selection, the token route's `agent:chat` declaration and claim stamping, the
 browser socket's claim check, and the personal key dialog's two new choices.
-The per-agent API entry and its enforcement are implemented in the Control
-Plane and relay; its Console card is proposed. The rest is proposed.
+The per-agent API entry, its enforcement, and its Console card are
+implemented. The rest is proposed.
 
 Chat frontends built on the AI SDK's `useChat`, such as a documentation site's
 Ask AI panel, speak the AI SDK UI message stream protocol: one HTTP POST per
@@ -569,6 +569,16 @@ which `/ai-sdk/chat` requires to name `ai-sdk-ui` for every token, a console
 mint included, answering 403 `api_disabled` otherwise. Removing the entry
 therefore stops a live token within its five-minute lifetime, like revoking
 the key.
+
+In the Console, API sits in the Add integration dialog's Workflow group, where
+the owner picks a protocol; ACP 2, the remote ACP endpoint under Relation to
+ACP below, is listed as coming and cannot be picked yet. The
+agent's Integrations tab then shows one API card with a row per protocol and a
+single remove action. Each row's Quickstart shows this deployment's token and
+chat endpoints, a server-side proxy snippet for `useChat`, and the Agent chat
+keys that reach the agent: the caller's own, and for an owner each service
+account's. Its Create key opens the key dialog preset to Agent chat on that
+agent, with an Owner choice of the caller or, for an owner, a service account.
 
 The proxy mints a token per conversation, not per turn:
 
@@ -717,7 +727,8 @@ relay's output with the `ai` package's own client, not by string assertions.
 
 **Relation to ACP:** this path is a lossy projection for chat UIs. A remote ACP
 endpoint for agent clients such as editors would carry full fidelity, and the
-two can coexist.
+two can coexist. It is proposed as the next protocol an agent can add, ACP 2,
+as its own `AgentApiProtocol` entry.
 
 **Milestones:**
 
@@ -729,8 +740,9 @@ two can coexist.
    the token route's `agent:chat` declaration and claim stamping, the browser
    socket's claim check, and the personal key dialog's two new choices.
 3. **Relay:** the stream-resume route.
-4. **Web:** the agent detail page's API tab, hidden since it shipped
-   unfinished, returns with the two endpoints and a proxy example.
+4. **CP, relay, and Web:** the per-agent API entry and its Integrations card,
+   whose Quickstart carries the two endpoints and a proxy example; it replaces
+   the agent detail page's unfinished API tab.
 
 Later, separately: the
 [service-account member](daemon-api-key-auth.md#service-account-members).

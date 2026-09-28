@@ -7,7 +7,13 @@ import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 export interface FieldSelectOption<T extends string> {
   value: T
   label: string
+  /** A short tag after the label, such as the kind of an entry. */
+  tag?: string
 }
+
+const OptionTag = ({ tag }: { tag: string }) => (
+  <span className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">{tag}</span>
+)
 
 /** A form-field dropdown with the `.inp` trigger of `DaemonSelect`/`RuntimeSelect`, portaled so a modal body never clips it. */
 export function FieldSelect<T extends string>({
@@ -55,7 +61,10 @@ export function FieldSelect<T extends string>({
                 : 'cursor-pointer hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
           }`}
         >
-          <span className="min-w-0 truncate">{current?.label ?? value}</span>
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            <span className="min-w-0 truncate">{current?.label ?? value}</span>
+            {current?.tag && <OptionTag tag={current.tag} />}
+          </span>
           <Icon
             name="chevron-down"
             size={15}
@@ -138,6 +147,7 @@ function FieldSelectMenu<T extends string>({
           onClick={() => onPick(o.value)}
         >
           <span className="min-w-0 flex-1 truncate">{o.label}</span>
+          {o.tag && <OptionTag tag={o.tag} />}
           <span className="flex w-4 flex-none items-center justify-center">
             {o.value === value && <Icon name="check" size={15} color="var(--brand)" />}
           </span>

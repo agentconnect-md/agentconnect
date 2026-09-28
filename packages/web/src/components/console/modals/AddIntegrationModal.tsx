@@ -58,7 +58,9 @@ import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
+  addAgentApi,
   creatorLabel,
+  fetchAgentApiEntries,
   fetchAgentHooks,
   fetchAgentInstallations,
   fetchAgentRepos,
@@ -71,11 +73,13 @@ import {
   syncGithubInstallations,
   updateAgentInstallation,
   updateAgentRepo,
+  type AgentApiProtocol,
   type CreatedHookDto,
   type GithubInstallationDto,
   type GithubRepoDto,
   type RepoAccess
 } from '@/lib/api'
+import { API_PROTOCOLS, apiProtocolLabel } from '@/lib/agent-api'
 import EditWorkspaceModal from './EditWorkspaceModal'
 import { LabelFilterField } from '@/components/console/LabelFilterField'
 import {
@@ -558,6 +562,13 @@ export default function AddIntegrationModal({
   const { data: agentHooksData, mutate: mutateAgentHooks } = useSWR(agentHooksKey, ([, orgId, , agentId]) =>
     fetchAgentHooks(agentId, orgId)
   )
+  // API path: the protocol picked, and the ones this agent already has.
+  const [apiProtocol, setApiProtocol] = useState<AgentApiProtocol>('ai-sdk-ui')
+  const { data: apiEntries, mutate: mutateApiEntries } = useSWR(
+    platform === 'api' ? consoleKeys.agentApi(activeOrg?.id, agent.id) : null,
+    ([, orgId, , agentId]) => fetchAgentApiEntries(agentId, orgId)
+  )
+  const apiAdded = new Set((apiEntries ?? []).map((e) => e.protocol))
   const watchedGhFamilies = useMemo(() => {
     const byRepo = new Map<string, Set<GhFamily>>()
     for (const h of agentHooksData ?? []) {
@@ -905,6 +916,25 @@ export default function AddIntegrationModal({
       })
       setCreatedHook(created)
       onCompleted?.(`Created webhook integration for ${agent.name}.`)
+    } catch (e) {
+      failSubmit(e)
+    } finally {
+      setSaving(false)
+      busyRef.current = false
+    }
+  }
+
+  // API path: one entry per protocol; adding one the agent already has is refused before the call.
+  const submitApi = async () => {
+    if (busyRef.current || apiAdded.has(apiProtocol)) return
+    busyRef.current = true
+    setSaving(true)
+    setErr(null)
+    try {
+      await addAgentApi(agent.id, apiProtocol)
+      await mutateApiEntries()
+      onCompleted?.(`Added the ${apiProtocolLabel(apiProtocol)} API to ${agent.name}.`)
+      onClose()
     } catch (e) {
       failSubmit(e)
     } finally {
@@ -1453,21 +1483,28 @@ export default function AddIntegrationModal({
       ? createdHook
         ? { label: 'Done', act: onClose, enabled: true, hidden: false }
         : { label: 'Create webhook', act: () => void submitHook(), enabled: true, hidden: false }
-      : isCodeHostProvider(platform)
-        ? codeHostFooter[platform]
-        : mode === 'existing'
-          ? {
-              label: 'Connect & authorize',
-              act: () => void submitReuse(),
-              enabled: selectedBotId !== null,
-              hidden: false
-            }
-          : {
-              label: footerView?.label ?? 'Connect & authorize',
-              act: () => footerRef.current?.onSubmit(),
-              enabled: footerView?.enabled === true,
-              hidden: footerView?.hidden === true
-            }
+      : platform === 'api'
+        ? {
+            label: t('api.add'),
+            act: () => void submitApi(),
+            enabled: apiEntries !== undefined && !apiAdded.has(apiProtocol),
+            hidden: false
+          }
+        : isCodeHostProvider(platform)
+          ? codeHostFooter[platform]
+          : mode === 'existing'
+            ? {
+                label: 'Connect & authorize',
+                act: () => void submitReuse(),
+                enabled: selectedBotId !== null,
+                hidden: false
+              }
+            : {
+                label: footerView?.label ?? 'Connect & authorize',
+                act: () => footerRef.current?.onSubmit(),
+                enabled: footerView?.enabled === true,
+                hidden: footerView?.hidden === true
+              }
 
   // Rendered inside the Lark tile on desktop and below the grid on mobile, where tiles are icon-only.
   const feishuSwitcher = (
@@ -1693,6 +1730,61 @@ export default function AddIntegrationModal({
                 </div>
               </div>
             )}
+          </div>
+        )}
+        {platform === 'api' && (
+          <div className="mb-4">
+            <div className="fldlbl mb-2">{t('api.protocol')}</div>
+            <div className="flex flex-col gap-2" role="radiogroup" aria-label={t('api.protocol')}>
+              {API_PROTOCOLS.map((p) => {
+                const added = p.available && apiAdded.has(p.id as AgentApiProtocol)
+                const selectable = p.available && !added
+                const on = selectable && apiProtocol === p.id
+                return (
+                  <div
+                    key={p.id}
+                    role="radio"
+                    aria-checked={on}
+                    aria-disabled={!selectable}
+                    tabIndex={selectable ? 0 : -1}
+                    onClick={selectable ? () => setApiProtocol(p.id as AgentApiProtocol) : undefined}
+                    className={`flex items-start gap-[11px] rounded-md border px-[13px] py-[11px] ${
+                      on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
+                    } ${selectable ? 'cursor-pointer' : 'cursor-default opacity-55'}`}
+                  >
+                    <span
+                      className={`mt-[2px] h-[14px] w-[14px] flex-none rounded-full bg-(--surface-card) ${
+                        on ? 'border-4 border-(--brand)' : 'border-[1.5px] border-(--border-strong)'
+                      }`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-[7px]">
+                        <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
+                        {!p.available && (
+                          <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('api.soon')}</span>
+                        )}
+                        {added && (
+                          <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('api.added')}</span>
+                        )}
+                      </div>
+                      <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
+                        {p.id === 'ai-sdk-ui' ? t('api.aiSdkUiDescription') : t('api.acp2Description')}
+                      </div>
+                    </div>
+                    <a
+                      className="lnk flex-none text-[12px]"
+                      href={p.docsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {t('api.docs')}
+                      <Icon name="arrow-up-right" size={12} />
+                    </a>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
         {platform === 'github' && (
@@ -2535,7 +2627,9 @@ export default function AddIntegrationModal({
         {/* The active platform's fragment. Keyed by platform so its whole
             sub-form resets by construction on a platform switch. */}
         {wizard && <wizard.Body key={platform} agent={agent} host={host} />}
-        <div className="flex items-start gap-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+        <div
+          className={`flex items-start gap-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary) ${platform === 'api' ? 'hidden' : ''}`}
+        >
           <Icon name="hash" size={14} className="mt-[1px] flex-none" />
           <span>
             {platform === 'webhook'
@@ -2579,8 +2673,11 @@ export default function AddIntegrationModal({
             built-in pane, the Feishu deeplink) publishes the primary away. */}
         {!identityHidden && !footer.hidden && (
           <Button onClick={footer.act} className={footer.enabled && !saving ? undefined : 'cursor-default opacity-50'}>
-            <Icon name={platform === 'webhook' && createdHook ? 'check' : 'plug'} size={15} />
-            {saving ? 'Connecting…' : footer.label}
+            <Icon
+              name={platform === 'webhook' && createdHook ? 'check' : platform === 'api' ? 'plus' : 'plug'}
+              size={15}
+            />
+            {saving ? (platform === 'api' ? t('api.adding') : 'Connecting…') : footer.label}
           </Button>
         )}
       </div>
