@@ -199,10 +199,9 @@ rather than a one-liner. The chart source lives in
 
 **Setup Server** runs in the base stack at `http://localhost:8091`, always on
 loopback. It configures browser authentication through Logto, the deployment's
-GitHub, Slack, Google, Google Chat, and Lark / Feishu apps, the sign-in methods
-you show, and preset-agent behavior. Deployment topology — images, ports,
-public URLs, database and bootstrap secrets — stays in `compose.env` or your
-Helm values.
+GitHub, Slack, Google, and Lark / Feishu apps, the sign-in methods you show, and
+preset-agent behavior. Deployment topology — images, ports, public URLs,
+database and bootstrap secrets — stays in `compose.env` or your Helm values.
 
 Prefer to be walked through it? This repository ships a **setup skill** at
 `.claude/skills/agentconnect-setup`, also exposed at `.agents/skills`, so Claude
