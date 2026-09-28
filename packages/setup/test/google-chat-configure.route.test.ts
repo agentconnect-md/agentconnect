@@ -310,6 +310,7 @@ describe('POST /api/v1/configure/google-chat (§3)', () => {
     expect(page.statusCode).toBe(200)
     expect(page.body).toContain('Each Google Workspace organization connects itself from Google Chat.')
     expect(page.body).toContain('Configure Google sign-in above')
+    expect(page.body).toContain('add a slash command named /help')
   })
 
   it('requires a key for a different project', async () => {

@@ -189,3 +189,56 @@ export const buttonClicked = {
     }
   }
 } satisfies GoogleChatEventObject
+
+/** `/help` typed in a customer's Space: an `appCommandPayload` whose message names the command in a `SLASH_COMMAND` annotation. */
+export const helpInSpace = {
+  commonEventObject: common,
+  authorizationEventObject: authorization,
+  chat: {
+    user: workspacePerson,
+    eventTime: '2026-01-02T03:08:00.000000Z',
+    appCommandPayload: {
+      appCommandMetadata: { appCommandId: '1', appCommandType: 'SLASH_COMMAND' },
+      space: customerSpace,
+      message: {
+        name: `${SPACE}/messages/EXAMPLE_HELP_MESSAGE`,
+        sender: workspacePerson,
+        createTime: '2026-01-02T03:08:00.000000Z',
+        text: '/help',
+        thread: { name: `${SPACE}/threads/EXAMPLE_HELP_THREAD` },
+        slashCommand: { commandId: '1' },
+        annotations: [
+          {
+            type: 'SLASH_COMMAND',
+            startIndex: 0,
+            length: 5,
+            slashCommand: {
+              bot: { name: APP, displayName: 'ExampleApp', type: 'BOT' },
+              type: 'INVOKE',
+              commandName: '/help',
+              commandId: '1'
+            }
+          }
+        ]
+      },
+      configCompleteRedirectUri: CONFIG_COMPLETE_URL
+    }
+  }
+} satisfies GoogleChatEventObject
+
+/** `/help` typed in a Workspace account's DM. */
+export const helpInDm = {
+  ...helpInSpace,
+  chat: {
+    ...helpInSpace.chat,
+    appCommandPayload: {
+      ...helpInSpace.chat.appCommandPayload,
+      space: dmSpace,
+      message: {
+        ...helpInSpace.chat.appCommandPayload.message,
+        name: `${DM}/messages/EXAMPLE_HELP_MESSAGE`,
+        thread: { name: `${DM}/threads/EXAMPLE_HELP_THREAD` }
+      }
+    }
+  }
+} satisfies GoogleChatEventObject

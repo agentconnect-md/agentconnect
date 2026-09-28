@@ -7,6 +7,7 @@ import {
   type GoogleChatIngressPlugin
 } from './ingress-plugin.js'
 import type { GoogleChatHttpIngest } from './http-ingest.js'
+import { googleChatHelpText, googleChatWelcomeText } from './help.js'
 import { GOOGLE_CHAT_KEYS_REFETCH_MS, GOOGLE_OIDC_JWKS_URL } from './token.js'
 import type { RelayAdmission, RelayIngressHost } from '../contract.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
@@ -32,9 +33,12 @@ import {
   buttonClicked,
   cardClicked,
   dmAdded,
+  dmHelp,
   dmMessage,
+  slashCommand,
   spaceAdded,
   spaceAddingMention,
+  spaceHelp,
   spaceMention,
   spaceRemoved
 } from '../../../test/fixtures/google-chat-events.js'
@@ -130,6 +134,15 @@ function edit(event: unknown, mutate: (e: any) => void): unknown {
 
 const forwarded = (h: RelayIngressHost): WireNormalizedMessage | undefined =>
   vi.mocked(h.forwardStrict).mock.calls[0]?.[1]
+
+// The text of a plain created-message answer (§11.4), the only member of its body.
+function createdText(syncResponse: unknown): string {
+  const body = syncResponse as { hostAppDataAction: { chatDataAction: { createMessageAction: { message: any } } } }
+  expect(Object.keys(body)).toEqual(['hostAppDataAction'])
+  const message = body.hostAppDataAction.chatDataAction.createMessageAction.message
+  expect(Object.keys(message)).toEqual(['text'])
+  return message.text as string
+}
 
 // A Space message naming two apps: Google's data cannot say which one is this app.
 const twoAppMention = edit(spaceMention, (e) => {
@@ -363,16 +376,16 @@ describe('googlechat ingress plugin — dispositions and dedup (§4)', () => {
 })
 
 describe('googlechat ingress plugin — observed membership (§4)', () => {
-  it('reports a DM add as an im row and starts no turn', async () => {
+  it('reports a DM add as an im row, welcomes the person, and starts no turn', async () => {
     const s = setup()
-    expect((await deliver(s, dmAdded)).handled).toEqual({})
+    expect(createdText((await deliver(s, dmAdded)).handled?.syncResponse)).toBe(googleChatWelcomeText(true))
     expect(s.h.reportChannels).toHaveBeenCalledWith({ botId: BOT_ID, channels: [{ id: DM, kind: 'im' }] })
     expect(s.h.forwardStrict).not.toHaveBeenCalled()
   })
 
   it('reports a Space add with its display name, forwards the adding message from its own request, and drops the row on removal', async () => {
     const s = setup()
-    expect((await deliver(s, spaceAdded)).handled).toEqual({})
+    expect(createdText((await deliver(s, spaceAdded)).handled?.syncResponse)).toBe(googleChatWelcomeText(false))
     expect(s.h.reportChannels).toHaveBeenLastCalledWith({
       botId: BOT_ID,
       channels: [{ id: SPACE, name: 'Example Space', kind: 'channel' }]
@@ -384,6 +397,63 @@ describe('googlechat ingress plugin — observed membership (§4)', () => {
     expect((await deliver(s, spaceRemoved)).handled).toEqual({})
     expect(s.h.reportChannels).toHaveBeenLastCalledWith({ botId: BOT_ID, channels: [] })
     expect(s.h.forwardStrict).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('googlechat ingress plugin — the welcome and /help answers (§10.7, §11.4)', () => {
+  it('answers /help in the body for an own app’s row and a customer row, forwarding, reporting, and marking nothing', async () => {
+    for (const s of [setup(), setup({ tenantIds: [CUSTOMER, DOMAIN] })]) {
+      expect(createdText((await deliver(s, spaceHelp)).handled?.syncResponse)).toBe(googleChatHelpText())
+      expect(createdText((await deliver(s, dmHelp)).handled?.syncResponse)).toBe(googleChatHelpText())
+      expect(s.h.forwardStrict).not.toHaveBeenCalled()
+      expect(s.h.forwardAction).not.toHaveBeenCalled()
+      expect(s.h.reportChannels).not.toHaveBeenCalled()
+      expect(s.h.dedupMark).not.toHaveBeenCalled()
+    }
+  })
+
+  it('welcomes an add on a customer row in the DM or the space it happened in, and answers a removal with nothing', async () => {
+    const s = setup({ tenantIds: [CUSTOMER, DOMAIN] })
+    expect(createdText((await deliver(s, dmAdded)).handled?.syncResponse)).toBe(googleChatWelcomeText(true))
+    expect(createdText((await deliver(s, spaceAdded)).handled?.syncResponse)).toBe(googleChatWelcomeText(false))
+    expect((await deliver(s, spaceRemoved)).handled).toEqual({})
+    expect(s.h.reportChannels).toHaveBeenCalledTimes(3)
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+  })
+
+  it('settles another slash command like any unsupported event, answering nothing', async () => {
+    const s = setup()
+    expect((await deliver(s, slashCommand('/status'))).handled).toEqual({})
+    expect(s.h.dedupMark).toHaveBeenCalledTimes(1)
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+  })
+
+  it('tells an unclaimed tenant’s /help to connect the app first, and answers nothing without a tenant', async () => {
+    const s = setup({ claimUrl: CLAIM_URL })
+    const text = createdText((await deliver(s, dmHelp)).handled?.syncResponse)
+    expect(text).toBe(googleChatHelpText({ unclaimed: true }))
+    expect(text).toContain('your organization needs to connect this app')
+    expect(createdText((await deliver(s, spaceHelp)).handled?.syncResponse)).toBe(text)
+    expect(
+      (
+        await deliver(
+          s,
+          edit(dmHelp, (e) => delete e.chat.user.domainId)
+        )
+      ).handled
+    ).toEqual({})
+    expect((await deliver(s, slashCommand('/status', true))).handled).toEqual({})
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+    expect(s.h.dedupMark).not.toHaveBeenCalled()
+  })
+
+  it('refuses a foreign customer’s /help and add on a single-tenant row', async () => {
+    const s = setup({ ownTenantIds: [CUSTOMER] })
+    const foreignHelp = edit(spaceHelp, (e) => (e.chat.appCommandPayload.space.customer = OTHER_CUSTOMER))
+    expect((await deliver(s, foreignHelp)).handled).toEqual({})
+    const foreignAdd = edit(spaceAdded, (e) => (e.chat.addedToSpacePayload.space.customer = OTHER_CUSTOMER))
+    expect((await deliver(s, foreignAdd)).handled).toEqual({})
+    expect(createdText((await deliver(s, spaceHelp)).handled?.syncResponse)).toBe(googleChatHelpText())
   })
 })
 

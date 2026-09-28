@@ -521,6 +521,14 @@ posts), `tenantScope(integration, conn)` / `transportScopeIdentity(...)`
 a real thread and re-dispatches), command chrome renderers (the four-way
 `/status` formatting), and DM inference.
 
+The command-chrome surface (`platforms/command-chrome.ts`) also carries an
+optional `notice` member for core's notices outside a command or a turn's
+output: a gated conversation's one-time notice and a cut turn's notice. A
+platform with a shared reply connection keeps posting them through it; one
+whose connection is outside that set (Google Chat) posts them through
+`notice`, so core never branches on the platform. A surface without the member
+posts nothing, as before.
+
 The relay-ingress strategy is a member of the daemon platform contract rather
 than a core table keyed by platform name: `DaemonPlatformModule.relayIngress?`
 (`platforms/contract.ts`), which core reads through `PlatformModuleRegistry`

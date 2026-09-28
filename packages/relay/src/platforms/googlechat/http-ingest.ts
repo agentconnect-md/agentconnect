@@ -54,13 +54,17 @@ export function googleChatClaimPrompt(claimUrl: string, state: GoogleChatClaimSt
   return { basic_authorization_prompt: { authorization_url: url, resource: GOOGLE_CHAT_PROMPT_RESOURCE } }
 }
 
+/** A synchronous answer that posts `message` in the conversation: the add-on's `createMessageAction` envelope (§11.4). */
+export function googleChatCreatedMessage(message: Record<string, unknown>): unknown {
+  return { hostAppDataAction: { chatDataAction: { createMessageAction: { message } } } }
+}
+
 /** The welcome card an unclaimed tenant sees on an add (design §10.7), as a created message; its button opens the claim page, since Chat refuses a prompt for a click. */
 export function googleChatWelcomeCard(claimUrl: string, state: GoogleChatClaimState): unknown {
   const text = 'Connect this Google Chat app to your AgentConnect organization to start.'
   const buttons = [{ text: 'Connect', onClick: { openLink: { url: googleChatClaimLink(claimUrl, state) } } }]
   const widgets = [{ textParagraph: { text } }, { buttonList: { buttons } }]
-  const cardsV2 = [{ cardId: 'agentconnect-claim', card: { sections: [{ widgets }] } }]
-  return { hostAppDataAction: { chatDataAction: { createMessageAction: { message: { cardsV2 } } } } }
+  return googleChatCreatedMessage({ cardsV2: [{ cardId: 'agentconnect-claim', card: { sections: [{ widgets }] } }] })
 }
 
 /** How a single-tenant row's fence answers one event's tenant key (design §10.3). */

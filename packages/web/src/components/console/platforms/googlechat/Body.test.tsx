@@ -150,6 +150,7 @@ describe('GoogleChatWizardBody', () => {
     expect(text()).not.toContain('audience')
     expect(text()).toContain('Receive 1:1 messages')
     expect(text()).toContain('Join spaces and group conversations')
+    expect(text()).toContain('A slash command named /help')
     expect(field('Service account key').type).toBe('password')
     expect(footer).toMatchObject({ label: 'Connect', enabled: false, hidden: false })
   })

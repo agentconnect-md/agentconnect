@@ -5500,6 +5500,8 @@
         "joinSpaces": "加入空间和群组对话",
         "visibility": "可见性",
         "visibilityValue": "可以使用该应用的人员和群组",
+        "commands": "命令",
+        "commandsValue": "一个名为 /help 的斜杠命令，说明填写“Show how to use this app”，命令 ID 填 1；任何未占用的 ID 都可以",
         "copy": "复制",
         "copied": "已复制"
       },
