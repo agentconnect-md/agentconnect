@@ -18,6 +18,7 @@ export default {
       '@semantic-release/release-notes-generator',
       {
         preset: 'conventionalcommits',
+        writerOpts: { headerPartial: '' },
         presetConfig: {
           types: [
             { type: 'feat', section: 'Features' },
@@ -28,7 +29,7 @@ export default {
         }
       }
     ],
-    // Append the compare footer readers recognize; the generated heading's own link renders as a bare version.
+    // Keep the full compare link after the release notes.
     './scripts/semantic-release-full-changelog.js',
     [
       // Publish ONLY the daemon to npm, as the self-contained build bundle.

@@ -13,7 +13,7 @@ const [, releaseNotesConfig] = releaseConfig.plugins.find(
   (plugin) => Array.isArray(plugin) && plugin[0] === '@semantic-release/release-notes-generator'
 )
 
-test('release notes retain configured commit sections', async () => {
+test('release notes omit the version heading and retain configured commit sections', async () => {
   const notes = await generateNotes(releaseNotesConfig, {
     cwd: process.cwd(),
     commits: [
@@ -34,7 +34,8 @@ test('release notes retain configured commit sections', async () => {
     }
   })
 
-  assert.match(notes, /### Features/)
+  assert.doesNotMatch(notes, /^#{1,2} /m)
+  assert.match(notes.trimStart(), /^### Features/)
   assert.match(notes, /add dependency audit/)
   assert.match(notes, /### Internal/)
   assert.match(notes, /refresh lockfile/)
