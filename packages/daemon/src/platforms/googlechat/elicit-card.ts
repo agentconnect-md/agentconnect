@@ -167,7 +167,7 @@ export function buildGoogleChatElicitForm(
       selectionInput: {
         name,
         label,
-        type: target.kind === 'multi-enum' ? 'CHECKBOX' : 'DROPDOWN',
+        type: target.kind === 'multi-enum' ? 'CHECK_BOX' : 'DROPDOWN',
         items: target.options.map((o, n) => ({
           text: clampTo(o.label, GOOGLE_CHAT_LABEL_CAP),
           value: elicitOptionToken(n),

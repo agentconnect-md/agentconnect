@@ -171,7 +171,7 @@ describe('a Google Chat turn collects an elicitation answer from a card click', 
     const { requestId, result } = await raise(h, req)
     const card = JSON.stringify(h.creates[0].cardsV2)
     expect(card).toContain(`"textInput":{"name":"${elicitFormBlockId(0)}"`)
-    expect(card).toContain('"type":"CHECKBOX"')
+    expect(card).toContain('"type":"CHECK_BOX"')
     await h.click(
       elicitClick(requestId, 'ok', {
         [elicitFormBlockId(0)]: ['ship it'],
