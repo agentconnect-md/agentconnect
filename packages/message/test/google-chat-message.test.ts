@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { NormalizedPlatformMessageSchema, type NormalizedPlatformMessage } from '@agentconnect.md/protocol'
 import {
+  googleChatEventForm,
+  googleChatEventFromAddOn,
+  googleChatEventOf,
   googleChatTenantKey,
   normalizeGoogleChatEvent,
   type GoogleChatEventResult
@@ -16,6 +19,11 @@ import {
   OTHER_APP,
   PERSON,
   SPACE,
+  addOnAddedToSpace,
+  addOnButtonClicked,
+  addOnDmMessage,
+  addOnRemovedFromSpace,
+  addOnSpaceMention,
   addedToDm,
   addedToWorkspaceDm,
   addedWithMessage,
@@ -401,5 +409,119 @@ describe('Google Chat tenant keys and card clicks (design §10)', () => {
     const byExternal = copy(cardClicked)
     byExternal.user = { ...spaceMentionByExternalMember.user }
     expect(normalize(byExternal)).toMatchObject({ interaction: { user: EXTERNAL_PERSON }, tenant: CUSTOMER })
+  })
+})
+
+describe('Google Chat add-on requests (design §11)', () => {
+  const DOMAIN = `domains/${DOMAIN_ID}`
+  const adapted = (body: unknown) => normalize(googleChatEventFromAddOn(body))
+
+  it('tells the two request forms apart and refuses a body that is neither', () => {
+    expect(googleChatEventForm(dmMessage)).toBe('chat')
+    expect(googleChatEventForm(addOnDmMessage)).toBe('addon')
+    for (const body of [null, [], {}, 'MESSAGE', { type: 7 }, { chat: 'x' }, { commonEventObject: {} }]) {
+      expect(googleChatEventForm(body), JSON.stringify(body)).toBeUndefined()
+    }
+    expect(googleChatEventOf(addOnDmMessage)).toEqual({
+      form: 'addon',
+      event: googleChatEventFromAddOn(addOnDmMessage)
+    })
+    expect(googleChatEventOf(dmMessage)).toEqual({ form: 'chat', event: dmMessage })
+    expect(googleChatEventOf({})).toBeUndefined()
+  })
+
+  it('classifies an add-on message exactly as its Chat API twin, tenant and return URL included', () => {
+    expect(adapted(addOnDmMessage)).toEqual(normalize(dmMessageFromWorkspace))
+    expect(adapted(addOnDmMessage)).toMatchObject({ kind: 'message', tenant: DOMAIN })
+    expect(adapted(addOnSpaceMention)).toEqual(normalize(spaceMentionByExternalMember))
+    expect(googleChatTenantKey(googleChatEventFromAddOn(addOnSpaceMention))).toBe(CUSTOMER)
+    expect(googleChatTenantKey(googleChatEventFromAddOn(addOnDmMessage))).toBe(DOMAIN)
+  })
+
+  it('reads an add as membership alone, since an add-on receives the adding message separately, and a removal the same way', () => {
+    expect(adapted(addOnAddedToSpace)).toEqual({
+      kind: 'membership',
+      membership: {
+        change: 'added',
+        channel: SPACE,
+        isDm: false,
+        actor: PERSON,
+        eventTimeMs: Date.UTC(2026, 0, 2, 3, 6)
+      },
+      tenant: CUSTOMER,
+      configCompleteRedirectUrl: CONFIG_COMPLETE_URL
+    })
+    expect(adapted(addOnRemovedFromSpace)).toMatchObject({
+      kind: 'membership',
+      membership: { change: 'removed', channel: SPACE },
+      tenant: CUSTOMER
+    })
+  })
+
+  it('reads a button click’s action from our own parameter, with the card’s widgets', () => {
+    expect(adapted(addOnButtonClicked)).toEqual({
+      kind: 'interaction',
+      interaction: {
+        function: 'agentconnect.elicit',
+        parameters: { 'agentconnect.action': 'agentconnect.elicit', request: 'req-1', token: 'ok' },
+        formInputs: { f0: ['typed'] },
+        message: `${SPACE}/messages/EXAMPLE_CARD_MESSAGE`,
+        user: PERSON,
+        space: SPACE,
+        thread: `${SPACE}/threads/EXAMPLE_ADD_THREAD`,
+        isDm: false
+      },
+      tenant: CUSTOMER
+    })
+    const dialog = copy(addOnButtonClicked)
+    dialog.chat.buttonClickedPayload.isDialogEvent = true
+    expect(adapted(dialog)).toEqual({ kind: 'unsupported', reason: 'dialog' })
+  })
+
+  it('never carries the authorization tokens into the event', () => {
+    for (const body of [addOnDmMessage, addOnSpaceMention, addOnAddedToSpace, addOnButtonClicked]) {
+      const event = JSON.stringify(googleChatEventFromAddOn(body))
+      expect(event).not.toContain('EXAMPLE_USER_OAUTH_TOKEN')
+      expect(event).not.toContain('EXAMPLE_USER_ID_TOKEN')
+      expect(event).not.toContain('EXAMPLE_SYSTEM_ID_TOKEN')
+    }
+  })
+
+  it('starts nothing for commands and widget updates, and reads a body without exactly one payload as malformed', () => {
+    const command = copy(addOnSpaceMention)
+    command.chat = { ...command.chat, appCommandPayload: command.chat.messagePayload, messagePayload: undefined }
+    expect(adapted(command)).toEqual({ kind: 'unsupported', reason: 'event_type' })
+    const widget = { chat: { user: addOnDmMessage.chat.user, widgetUpdatedPayload: { space: dmMessage.space } } }
+    expect(adapted(widget)).toEqual({ kind: 'unsupported', reason: 'event_type' })
+    const none = { chat: { user: addOnDmMessage.chat.user } }
+    const two = { chat: { ...addOnSpaceMention.chat, removedFromSpacePayload: { space: { name: SPACE } } } }
+    for (const body of [none, two, {}, null]) {
+      expect(adapted(body), JSON.stringify(body)).toEqual({ kind: 'invalid', reason: 'malformed' })
+    }
+  })
+
+  it('takes the top-level Space when the payload names none, and refuses one that contradicts the payload', () => {
+    const topLevel = copy(addOnRemovedFromSpace)
+    topLevel.chat.space = topLevel.chat.removedFromSpacePayload.space
+    delete topLevel.chat.removedFromSpacePayload.space
+    expect(adapted(topLevel)).toMatchObject({ kind: 'membership', membership: { channel: SPACE } })
+    const contradicting = copy(addOnSpaceMention)
+    contradicting.chat.space = { name: DM, spaceType: 'DIRECT_MESSAGE' }
+    expect(adapted(contradicting)).toEqual({ kind: 'invalid', reason: 'malformed' })
+  })
+
+  it('prefers our own action parameter, then a pre-conversion card’s function, then Chat’s own fields', () => {
+    const ours = copy(cardClicked)
+    ours.action.parameters.push({ key: 'agentconnect.action', value: 'agentconnect.elicit' })
+    expect(normalize(ours)).toMatchObject({ interaction: { function: 'agentconnect.elicit' } })
+    const converted = copy(addOnButtonClicked)
+    converted.commonEventObject.parameters = { __action_method_name__: 'agentconnect.elicit', request: 'req-1' }
+    expect(adapted(converted)).toMatchObject({ interaction: { function: 'agentconnect.elicit' } })
+    const emptyOwn = copy(cardClicked)
+    emptyOwn.common.parameters['agentconnect.action'] = ''
+    expect(normalize(emptyOwn)).toMatchObject({ interaction: { function: 'agentconnect.claim' } })
+    const nameless = copy(addOnButtonClicked)
+    nameless.commonEventObject.parameters = { request: 'req-1' }
+    expect(adapted(nameless)).toEqual({ kind: 'invalid', reason: 'malformed' })
   })
 })

@@ -3,6 +3,9 @@ import type { GoogleChatEvent } from '@agentconnect.md/message'
 
 /** The Cloud project number: the `aud` of every token Google sent the probe app. */
 export const AUDIENCE = '100000000000'
+/** The relay's public origin and the events URL under it: an add-on token's audience (§11). */
+export const PUBLIC_RELAY_URL = 'https://relay.example.test'
+export const EVENTS_URL = `${PUBLIC_RELAY_URL}/googlechat/events`
 export const APP = 'users/100000000000000000009'
 export const OTHER_APP = 'users/100000000000000000008'
 export const PERSON = 'users/100000000000000000001'
@@ -168,3 +171,38 @@ export const cardClicked = {
   isDialogEvent: false,
   thread: { name: `${SPACE}/threads/EXAMPLE_CARD` }
 } as GoogleChatEvent
+
+/** A Chat API event as a Workspace add-on sends it (§11), per Google's request mapping; an add's message arrives separately. */
+export function addOn(event: GoogleChatEvent): Record<string, unknown> {
+  const payloadKey = {
+    MESSAGE: 'messagePayload',
+    ADDED_TO_SPACE: 'addedToSpacePayload',
+    REMOVED_FROM_SPACE: 'removedFromSpacePayload',
+    CARD_CLICKED: 'buttonClickedPayload'
+  }[event.type ?? '']
+  if (!payloadKey) throw new Error(`no add-on payload for ${event.type}`)
+  const carriesMessage = event.type === 'MESSAGE' || event.type === 'CARD_CLICKED'
+  const actionParameters = Object.fromEntries((event.action?.parameters ?? []).map((p) => [p.key, p.value]))
+  return {
+    commonEventObject: {
+      hostApp: 'CHAT',
+      userLocale: 'en',
+      parameters: { ...event.common?.parameters, ...actionParameters },
+      ...(event.common?.formInputs ? { formInputs: event.common.formInputs } : {})
+    },
+    authorizationEventObject: { systemIdToken: 'EXAMPLE_SYSTEM_ID_TOKEN' },
+    chat: {
+      user: event.user,
+      eventTime: event.eventTime,
+      [payloadKey]: {
+        space: event.space,
+        ...(carriesMessage && event.message ? { message: event.message } : {}),
+        ...(event.type === 'ADDED_TO_SPACE' && event.message ? { interactionAdd: true } : {}),
+        ...(event.type === 'CARD_CLICKED' ? { isDialogEvent: event.isDialogEvent ?? false } : {}),
+        ...(event.configCompleteRedirectUrl && event.type !== 'CARD_CLICKED'
+          ? { configCompleteRedirectUri: event.configCompleteRedirectUrl }
+          : {})
+      }
+    }
+  }
+}

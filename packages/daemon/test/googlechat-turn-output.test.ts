@@ -364,5 +364,27 @@ describe('applyGoogleChatAction', () => {
     })
     expect(space.thread).toBe(THREAD)
     expect(space.conn).toBeUndefined()
+    expect(space).not.toHaveProperty('addOn')
+  })
+
+  it('remembers that the delivery came from a Workspace add-on, as the relay stamped it (§11)', () => {
+    const message = {
+      msgId: `googlechat:${SPACE}:${SPACE}/messages/T.M`,
+      traceId: 't',
+      platform: 'googlechat',
+      channel: SPACE,
+      thread: THREAD,
+      sender: { id: 'users/1', isBot: false },
+      text: 'hi',
+      mentionedBots: [],
+      isDm: false,
+      source: 'user' as const,
+      adapterExt: { googlechat: { addOn: true } }
+    } as NormalizedMessage
+    const turn = (m: NormalizedMessage) =>
+      initialGoogleChatTurnState({ mode: 'low', isDm: false, showFooter: false, message: m })
+    expect(turn(message).addOn).toBe(true)
+    expect(turn({ ...message, adapterExt: { googlechat: { addOn: 'yes' } } })).not.toHaveProperty('addOn')
+    expect(turn({ ...message, adapterExt: { linear: { addOn: true } } })).not.toHaveProperty('addOn')
   })
 })

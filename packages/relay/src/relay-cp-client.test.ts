@@ -274,6 +274,16 @@ describe('RelayCpClient', () => {
     expect(onDeploymentConfig).toHaveBeenCalledWith(snapshot)
   })
 
+  it('leaves the startup environment in place when the CP stores no document', async () => {
+    const onDeploymentConfig = vi.fn()
+    const onDeploymentSnapshot = vi.fn()
+    const { client, transport } = makeClient({ onDeploymentConfig, onDeploymentSnapshot })
+    const snapshot = { revision: 0, publicRelayUrl: 'https://relay.example.test' }
+    await handshakeToReady(client, transport, 15, snapshot)
+    expect(onDeploymentConfig).not.toHaveBeenCalled()
+    expect(onDeploymentSnapshot).toHaveBeenCalledWith(snapshot)
+  })
+
   it('freezes an absent startup snapshot until the relay process restarts', async () => {
     const clock = new FakeClock()
     const transports: FakeTransport[] = []

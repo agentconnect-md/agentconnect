@@ -207,6 +207,16 @@ describe('relayDeploymentSnapshot', () => {
     }
   })
 
+  it('carries the relay pool’s public origin whenever it is configured, with or without a stored document', () => {
+    const origin = 'https://relay.example.test'
+    expect(relayDeploymentSnapshot(undefined, undefined, origin)).toEqual({ revision: 0, publicRelayUrl: origin })
+    expect(relayDeploymentSnapshot(runtime({ revision: 7 }), undefined, origin)).toEqual({
+      revision: 7,
+      publicRelayUrl: origin
+    })
+    expect(relayDeploymentSnapshot(undefined, undefined, undefined)).toBeUndefined()
+  })
+
   it('keeps the GitHub webhook secret only while the GitHub App is configured', () => {
     const secrets = { 'github.webhookSecret': 'ghw_secret' }
     const github = { appId: 123, slug: 'agentconnect-example', clientId: 'Iv1.example' }

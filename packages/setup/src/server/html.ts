@@ -389,11 +389,11 @@ export const SETUP_HTML = String.raw`<!doctype html>
         <p id="googlechat-status" class="muted"></p>
         <div id="googlechat-drift" class="notice" hidden></div>
         <p>HTTP endpoint URL:</p><ul id="googlechat-callbacks" class="uris"></ul>
-        <p>Authentication audience:</p><ul id="googlechat-audience" class="uris"></ul>
+        <p>Authentication audience (not asked for a Google Workspace add-on):</p><ul id="googlechat-audience" class="uris"></ul>
         <ol class="muted">
           <li>Use a Google Workspace account that may create a Cloud project and service-account keys. An organization policy can block key creation.</li>
           <li>Create a Google Cloud project for this app and enable the Google Chat API in it.</li>
-          <li>On the Chat API Configuration page, set the HTTP endpoint URL and the Project Number audience above, allow 1:1 messages and joining spaces, and choose who can use the app.</li>
+          <li>On the Chat API Configuration page, set the HTTP endpoint URL above, and the Project Number audience unless the page shows the app as a Google Workspace add-on; either form works. Allow 1:1 messages and joining spaces, and choose who can use the app.</li>
           <li>In the same project, create a service account and a JSON key for it, grant it the Browser role on the project, and enable the Cloud Resource Manager API; AgentConnect reads the project number with that key.</li>
           <li>Save the project ID and key here. The project number is optional: when entered, it must match the number read from the key's project.</li>
           <li>Configure Google sign-in above, then add the app in Google Chat and send it a message. Each Google Workspace organization connects itself from Google Chat by signing in to the console with Google; publish the app on the Google Workspace Marketplace to reach other organizations.</li>

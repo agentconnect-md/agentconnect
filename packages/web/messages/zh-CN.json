@@ -5465,7 +5465,7 @@
       "configure": {
         "title": "配置 Chat 应用",
         "endpoint": "HTTP 端点 URL",
-        "audience": "身份验证受众",
+        "audience": "身份验证受众（Workspace 插件无需设置）",
         "functionality": "功能",
         "receiveDms": "接收 1:1 消息",
         "joinSpaces": "加入空间和群组对话",

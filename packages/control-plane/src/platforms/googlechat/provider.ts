@@ -2,7 +2,12 @@
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
-import { GOOGLE_CHAT_PLATFORM, RcGoogleChatAnchor, type IntegrationGoogleChatConfig } from '@agentconnect.md/protocol'
+import {
+  GOOGLE_CHAT_PLATFORM,
+  RcGoogleChatAnchor,
+  googleChatEventsUrl,
+  type IntegrationGoogleChatConfig
+} from '@agentconnect.md/protocol'
 import type { GoogleChatPlatformAppConfig } from '../../config/google-chat-platform.js'
 import {
   TENANTLESS_SENTINEL,
@@ -219,10 +224,11 @@ function googleChatRowTenantFields(bot: GoogleChatRowIdentity): { tenantIds?: st
   return own.length > 0 ? { ownTenantIds: own } : {}
 }
 
-/** The daemon spec payload; undefined when the row lacks its app identity or key, which withholds the integration. */
+/** The daemon spec payload, with the relay's events URL for an add-on's card actions (§11); undefined when the row lacks its app identity or key. */
 export function googleChatIntegrationConfig(
   bot: GoogleChatRowIdentity,
-  secrets: Pick<BotSecretMaterial, 'botToken'>
+  secrets: Pick<BotSecretMaterial, 'botToken'>,
+  publicRelayUrl?: string
 ): IntegrationGoogleChatConfig | undefined {
   const projectId = bot.platformConfig?.projectId
   if (!bot.externalAppId || typeof projectId !== 'string' || !secrets.botToken) return undefined
@@ -230,7 +236,8 @@ export function googleChatIntegrationConfig(
     projectId,
     projectNumber: bot.externalAppId,
     serviceAccountKey: secrets.botToken,
-    ...googleChatRowTenantFields(bot)
+    ...googleChatRowTenantFields(bot),
+    ...(publicRelayUrl ? { eventsUrl: googleChatEventsUrl(publicRelayUrl) } : {})
   }
 }
 
@@ -275,6 +282,8 @@ export interface GoogleChatCpProviderDeps {
   readonly app?: Pick<GoogleChatPlatformAppConfig, 'projectNumber'>
   /** The boot pass that re-stamps a rotated deployment key on the customer rows (§10.3). */
   credentialReconciler?: { start(): void; stop(): void }
+  /** The relay pool's public http(s) origin, under which the daemon names the events URL in an add-on's card actions (§11). */
+  publicRelayUrl?: string
 }
 
 export function createGoogleChatCpProvider(
@@ -355,7 +364,7 @@ export function createGoogleChatCpProvider(
     async projectIntegrationConfig(_integration, bot, _core, secrets) {
       return googleChatRowShadowsAnchor(bot, deps.app?.projectNumber)
         ? undefined
-        : googleChatIntegrationConfig(bot, secrets)
+        : googleChatIntegrationConfig(bot, secrets, deps.publicRelayUrl)
     },
 
     async projectBotAssign(bot) {

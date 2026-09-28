@@ -254,6 +254,7 @@ import { createRelayWsServer } from './ws/relay-gateway.js'
 import type { RelayWsServerDeps } from './ws/relay-gateway.js'
 
 import { buildHttpServer } from './http/server.js'
+import { relayHttpBase } from './http/relay-ingress.js'
 import type { HttpDeps } from './http/deps.js'
 import { createReadiness, type Readiness } from './http/readiness.js'
 import { retirePoolMember } from './http/daemon-removal.js'
@@ -2183,6 +2184,8 @@ export function buildContainer(
     fetch: (input, init) => fetch(input, init),
     ...(logtoIdentity ? { identity: logtoIdentity } : {})
   }
+  // The relay pool's public origin: the relays learn it from their snapshot and Google Chat add-ons are addressed under it (§11).
+  const relayPublicBase = relayHttpBase(config.PUBLIC_RELAY_URL) ?? undefined
   // The relay's anchor points every unclaimed Workspace customer of the deployment app at the console's claim page (§10.4).
   const googleChatAnchor = googleChatClaimAnchor(googleChatPlatformApp, webAppUrl)
   if (googleChatPlatformApp && !googleChatAnchor) {
@@ -2294,7 +2297,8 @@ export function buildContainer(
         publicCallback: []
       },
       ...(googleChatPlatformApp ? { app: googleChatPlatformApp } : {}),
-      credentialReconciler: googleChatCredentialReconciler
+      credentialReconciler: googleChatCredentialReconciler,
+      ...(relayPublicBase ? { publicRelayUrl: relayPublicBase } : {})
     })
   ])
 
@@ -2452,7 +2456,7 @@ export function buildContainer(
     )
   }
 
-  const relayDeploymentConfig = relayDeploymentSnapshot(opts.deploymentConfig, googleChatAnchor)
+  const relayDeploymentConfig = relayDeploymentSnapshot(opts.deploymentConfig, googleChatAnchor, relayPublicBase)
   const relayWsDeps: RelayWsServerDeps = {
     auth: relayAuth,
     relays: repos.relay,

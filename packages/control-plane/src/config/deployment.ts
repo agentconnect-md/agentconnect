@@ -121,17 +121,19 @@ export function applyDeploymentEnvironment(
   return env
 }
 
-/** The snapshot every relay receives on authentication; undefined when there is nothing to send. */
+/** The snapshot every relay receives on authentication, with the relay pool's public http(s) origin; undefined when there is nothing to send. */
 export function relayDeploymentSnapshot(
   deployment: Pick<DeploymentConfigRuntime, 'revision' | 'values' | 'secrets'> | undefined,
-  googleChatAnchor: RcGoogleChatAnchor | undefined
+  googleChatAnchor: RcGoogleChatAnchor | undefined,
+  publicRelayUrl?: string
 ): RcDeploymentConfig | undefined {
-  if (!deployment && !googleChatAnchor) return undefined
+  if (!deployment && !googleChatAnchor && !publicRelayUrl) return undefined
   const githubWebhookSecret = deployment?.values.github ? deployment.secrets['github.webhookSecret'] : undefined
   return {
-    // Zero when the Google Chat app came from the startup environment rather than a stored document.
+    // Zero when nothing came from a stored document.
     revision: deployment?.revision ?? 0,
     ...(githubWebhookSecret ? { githubWebhookSecret } : {}),
-    ...(googleChatAnchor ? { googleChatAnchor } : {})
+    ...(googleChatAnchor ? { googleChatAnchor } : {}),
+    ...(publicRelayUrl ? { publicRelayUrl } : {})
   }
 }

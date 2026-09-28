@@ -155,7 +155,12 @@ export const IntegrationGoogleChatConfig = z.object({
   // A claimed customer row's tenant keys (§10.3): the daemon lists and writes only inside them; empty for the anchor, which serves none.
   tenantIds: z.array(z.string().min(1)).optional(),
   // A single-tenant row's own keys, recorded from its traffic: Spaces are fenced by its customer, DMs are its own organization's.
-  ownTenantIds: z.array(z.string().min(1)).optional()
+  ownTenantIds: z.array(z.string().min(1)).optional(),
+  // The relay's public events URL, which a Workspace add-on's card buttons must name as their function (§11).
+  eventsUrl: z
+    .string()
+    .url({ protocol: /^https?$/ })
+    .optional()
 })
 export type IntegrationGoogleChatConfig = z.infer<typeof IntegrationGoogleChatConfig>
 

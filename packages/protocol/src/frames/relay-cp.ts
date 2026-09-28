@@ -68,7 +68,12 @@ export type RcGoogleChatAnchor = z.infer<typeof RcGoogleChatAnchor>
 export const RcDeploymentConfig = z.object({
   revision: z.number().int().nonnegative(),
   githubWebhookSecret: z.string().min(1).optional(),
-  googleChatAnchor: RcGoogleChatAnchor.optional()
+  googleChatAnchor: RcGoogleChatAnchor.optional(),
+  // The relay pool's public origin (the CP's PUBLIC_RELAY_URL): a provider that signs for its callback URL is checked against it.
+  publicRelayUrl: z
+    .string()
+    .url({ protocol: /^https?$/ })
+    .optional()
 })
 export type RcDeploymentConfig = z.infer<typeof RcDeploymentConfig>
 

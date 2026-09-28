@@ -4,11 +4,13 @@ import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
 import { Daemon } from '../src/daemon.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'
-import { elicitFormBlockId } from '@agentconnect.md/protocol'
+import { elicitFormBlockId, type WireGoogleChatCardAction } from '@agentconnect.md/protocol'
+import { googleChatEventOf, normalizeGoogleChatEvent } from '@agentconnect.md/message'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { elicitOptionToken } from '../src/slack/render.js'
 import {
   buildGoogleChatElicitButtons,
+  googleChatCardFunction,
   googleChatElicitCards,
   googleChatElicitClientId,
   parseGoogleChatElicitClick
@@ -20,6 +22,7 @@ const BOT = '11111111-1111-4111-8111-111111111111'
 const SPACE = 'spaces/EXAMPLE_SPACE'
 const THREAD = `${SPACE}/threads/EXAMPLE_THREAD`
 const PERSON = 'users/100000000000000000001'
+const EVENTS_URL = 'https://relay.example.test/googlechat/events'
 
 function form(properties: Record<string, unknown>, required: string[] = []): CreateElicitationRequest {
   return {
@@ -32,7 +35,7 @@ function form(properties: Record<string, unknown>, required: string[] = []): Cre
 
 const BRANCH = { branch: { type: 'string', enum: ['main', 'develop'], title: 'Base branch' } }
 
-function googleChatTurn() {
+function googleChatTurn(app: { addOn?: boolean; eventsUrl?: string } = {}) {
   const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
   daemon.store = {
     getSessionByAcpIdForAgent: () => ({ triggeredBy: PERSON }),
@@ -44,6 +47,7 @@ function googleChatTurn() {
   const creates: any[] = []
   const patches: { name: string; cardsV2: any }[] = []
   const egress = {
+    ...(app.eventsUrl ? { eventsUrl: app.eventsUrl } : {}),
     createMessage: async (input: any) => {
       creates.push(input)
       return { name: `${SPACE}/messages/card-${creates.length}`, clientId: input.clientId }
@@ -67,7 +71,14 @@ function googleChatTurn() {
     hostKey: AGENT,
     outwardSessionId: 'sess-1',
     egress,
-    turnState: { conn: egress, space: SPACE, thread: THREAD, deliveryId: 'd1', block: 0 },
+    turnState: {
+      conn: egress,
+      ...(app.addOn ? { addOn: true } : {}),
+      space: SPACE,
+      thread: THREAD,
+      deliveryId: 'd1',
+      block: 0
+    },
     chrome: {},
     reply: { text: '', attemptText: '', attemptAnswerUpdates: [] },
     signals: { applyChain: Promise.resolve() },
@@ -206,5 +217,78 @@ describe('a Google Chat turn collects an elicitation answer from a card click', 
     })
     await expect(h.click({ nope: true })).resolves.toMatchObject({ accepted: false, reason: 'unsupported_action' })
     expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+  })
+})
+
+// Every button's `onClick.action` on a posted card.
+const actionsOf = (cardsV2: any): { function: string; parameters: { key: string; value: string }[] }[] =>
+  cardsV2[0].card.sections[0].widgets.flatMap((w: any) => w.buttonList?.buttons.map((b: any) => b.onClick.action) ?? [])
+
+describe('the Google Chat elicitation card in either app form (§11)', () => {
+  it('names the action in a parameter and the function by the form of the app the turn’s message came from', async () => {
+    const chat = googleChatTurn({ eventsUrl: EVENTS_URL })
+    await raise(chat, form(BRANCH, ['branch']))
+    const addOn = googleChatTurn({ addOn: true, eventsUrl: EVENTS_URL })
+    await raise(addOn, form(BRANCH, ['branch']))
+    for (const [h, fn] of [
+      [chat, 'agentconnect.elicit'],
+      [addOn, EVENTS_URL]
+    ] as const) {
+      const actions = actionsOf(h.creates[0].cardsV2)
+      expect(actions).toHaveLength(3)
+      for (const action of actions) {
+        expect(action.function).toBe(fn)
+        expect(action.parameters[0]).toEqual({ key: 'agentconnect.action', value: 'agentconnect.elicit' })
+      }
+    }
+  })
+
+  it('declines an add-on’s card while the events URL is unknown, since its buttons could never answer', () => {
+    expect(googleChatCardFunction(false, undefined)).toBe('agentconnect.elicit')
+    expect(googleChatCardFunction(true, EVENTS_URL)).toBe(EVENTS_URL)
+    expect(googleChatCardFunction(true, undefined)).toBeNull()
+    const ask = { requestId: 'r', params: form(BRANCH), message: 'm', fallback: 'm', form: [] as never[] }
+    const host = (state: unknown) => ({ turnState: () => state }) as never
+    const withForm = { ...ask, form: [{ kind: 'enum', key: 'branch', options: [{ label: 'main', value: 'main' }] }] }
+    expect(googleChatElicitCards.build(host({ addOn: true, conn: {} }), {} as never, withForm as never)).toBeNull()
+    expect(googleChatElicitCards.build(host({ conn: {} }), {} as never, withForm as never)).not.toBeNull()
+  })
+
+  it('reads a click back from either request form as the answer the button carried', () => {
+    for (const fn of ['agentconnect.elicit', EVENTS_URL]) {
+      const [action] = actionsOf(buildGoogleChatElicitButtons('req-1', 'Pick one', [{ label: 'main' }], fn))
+      const parameters = Object.fromEntries(action!.parameters.map((p) => [p.key, p.value]))
+      const space = { name: SPACE, spaceType: 'SPACE' }
+      const message = { name: `${SPACE}/messages/card-1`, thread: { name: THREAD } }
+      const user = { name: PERSON, type: 'HUMAN' }
+      const chatForm = {
+        type: 'CARD_CLICKED',
+        space,
+        message,
+        user,
+        action: { actionMethodName: action!.function, parameters: action!.parameters },
+        common: { invokedFunction: action!.function, parameters }
+      }
+      const addOnForm = { commonEventObject: { parameters }, chat: { user, buttonClickedPayload: { space, message } } }
+      for (const body of [chatForm, addOnForm]) {
+        const result = normalizeGoogleChatEvent(googleChatEventOf(body)!.event, {
+          appUserName: 'users/100000000000000000009',
+          traceId: 't'
+        })
+        if (result.kind !== 'interaction') throw new Error(`expected an interaction, got ${result.kind}`)
+        const { interaction } = result
+        const payload: WireGoogleChatCardAction = {
+          function: interaction.function,
+          parameters: interaction.parameters,
+          formInputs: interaction.formInputs,
+          ...(interaction.message ? { message: interaction.message } : {})
+        }
+        expect(parseGoogleChatElicitClick(payload)).toEqual({
+          kind: 'choice',
+          requestId: 'req-1',
+          token: elicitOptionToken(0)
+        })
+      }
+    }
   })
 })

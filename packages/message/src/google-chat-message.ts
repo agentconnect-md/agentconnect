@@ -1,4 +1,8 @@
-import { GOOGLE_CHAT_PLATFORM, type NormalizedPlatformMessage } from '@agentconnect.md/protocol'
+import {
+  GOOGLE_CHAT_ACTION_PARAMETER,
+  GOOGLE_CHAT_PLATFORM,
+  type NormalizedPlatformMessage
+} from '@agentconnect.md/protocol'
 
 // Plain-object views of the Chat interaction `Event` JSON; every field is optional because the body is only structurally trusted.
 export interface GoogleChatUser {
@@ -25,7 +29,7 @@ export interface GoogleChatFormAction {
   parameters?: { key?: string; value?: string }[]
 }
 
-/** The add-on shaped twin of {@link GoogleChatFormAction} that Chat fills beside it. */
+/** The add-on shaped twin of {@link GoogleChatFormAction} that Chat fills beside it, and an add-on request's `commonEventObject`. */
 export interface GoogleChatCommonEventObject {
   invokedFunction?: string
   parameters?: Record<string, string>
@@ -70,6 +74,35 @@ export interface GoogleChatEvent {
   /** Where a configuration flow started by `REQUEST_CONFIG` must send the browser back to. */
   configCompleteRedirectUrl?: string
 }
+
+/** One `chat.*Payload` of a Workspace add-on request (design §11); each carries only some of these. */
+export interface GoogleChatAddOnPayload {
+  space?: GoogleChatSpace
+  message?: GoogleChatMessage
+  configCompleteRedirectUri?: string
+  isDialogEvent?: boolean
+  dialogEventType?: string
+}
+
+/** A Workspace add-on request (`EventObject`, design §11); its `authorizationEventObject` holds user tokens and is never read. */
+export interface GoogleChatAddOnEvent {
+  commonEventObject?: GoogleChatCommonEventObject
+  authorizationEventObject?: unknown
+  chat?: {
+    user?: GoogleChatUser
+    space?: GoogleChatSpace
+    eventTime?: string
+    messagePayload?: GoogleChatAddOnPayload
+    addedToSpacePayload?: GoogleChatAddOnPayload & { interactionAdd?: boolean }
+    removedFromSpacePayload?: GoogleChatAddOnPayload
+    buttonClickedPayload?: GoogleChatAddOnPayload
+    appCommandPayload?: GoogleChatAddOnPayload
+    widgetUpdatedPayload?: GoogleChatAddOnPayload
+  }
+}
+
+/** Which of Google's two request forms a body is: a Chat API interaction `Event`, or a Workspace add-on `EventObject` (design §11). */
+export type GoogleChatEventForm = 'chat' | 'addon'
 
 /** The caller's verified installation facts; the app identity is never derived from the payload. */
 export interface GoogleChatNormalizeContext {
@@ -150,6 +183,17 @@ const CHILD_NAME = {
 const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/i
 const MENTION_TYPES = new Set(['MENTION', 'ADD'])
 const ATTACHMENT_NOTE = '[Attachment not read: Google Chat attachments are not supported.]'
+// Where a converted add-on names the function of a card posted before its conversion.
+const ACTION_METHOD_PARAMETER = '__action_method_name__'
+// Each add-on payload and the Chat API event type it stands for; commands and widget updates keep types nothing serves.
+const ADD_ON_PAYLOAD_TYPES = {
+  messagePayload: 'MESSAGE',
+  addedToSpacePayload: 'ADDED_TO_SPACE',
+  removedFromSpacePayload: 'REMOVED_FROM_SPACE',
+  buttonClickedPayload: 'CARD_CLICKED',
+  appCommandPayload: 'APP_COMMAND',
+  widgetUpdatedPayload: 'WIDGET_UPDATED'
+} as const
 
 function obj(value: unknown): Obj | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Obj) : undefined
@@ -184,6 +228,49 @@ function childOf(space: string, collection: keyof typeof CHILD_NAME, value: unkn
   const m = name ? CHILD_NAME[collection].exec(name) : null
   if (!name || !m) return { invalid: 'malformed' }
   return `spaces/${m[1]}` === space ? name : { invalid: 'cross_space' }
+}
+
+/** The form a request body takes: a string `type` is a Chat API event, a `chat` object an add-on's; anything else is neither. */
+export function googleChatEventForm(body: unknown): GoogleChatEventForm | undefined {
+  const b = obj(body)
+  if (typeof b?.type === 'string') return 'chat'
+  return obj(b?.chat) ? 'addon' : undefined
+}
+
+/** An add-on request as the Chat API `Event` the normalizer reads (design §11); without exactly one payload it has no type, which is malformed. */
+export function googleChatEventFromAddOn(body: unknown): GoogleChatEvent {
+  const b = obj(body)
+  const chat = obj(b?.chat)
+  const present = chat ? Object.entries(ADD_ON_PAYLOAD_TYPES).filter(([key]) => obj(chat[key])) : []
+  if (!chat || present.length !== 1) return {}
+  const [key, type] = present[0]!
+  const payload = obj(chat[key])!
+  const payloadSpace = obj(payload.space)
+  const chatSpace = obj(chat.space)
+  // The payload names the event's Space; a top-level Space naming another one is a contradiction, not a fallback.
+  if (payloadSpace && chatSpace && payloadSpace.name !== chatSpace.name) return {}
+  const space = payloadSpace ?? chatSpace
+  const common = obj(b?.commonEventObject)
+  const event: Obj = {
+    type,
+    ...(chat.eventTime !== undefined ? { eventTime: chat.eventTime } : {}),
+    ...(space ? { space } : {}),
+    ...(payload.message !== undefined ? { message: payload.message } : {}),
+    ...(chat.user !== undefined ? { user: chat.user } : {}),
+    ...(payload.isDialogEvent !== undefined ? { isDialogEvent: payload.isDialogEvent } : {}),
+    ...(common ? { common } : {}),
+    ...(payload.configCompleteRedirectUri !== undefined
+      ? { configCompleteRedirectUrl: payload.configCompleteRedirectUri }
+      : {})
+  }
+  return event as GoogleChatEvent
+}
+
+/** The Chat API `Event` a request body carries in either form, with its form; undefined for a body that is neither. */
+export function googleChatEventOf(body: unknown): { form: GoogleChatEventForm; event: GoogleChatEvent } | undefined {
+  const form = googleChatEventForm(body)
+  if (!form) return undefined
+  return { form, event: form === 'addon' ? googleChatEventFromAddOn(body) : (body as GoogleChatEvent) }
 }
 
 /** The event's tenant key (design §10.4): a Space's `space.customer`, a DM sender's `user.domainId` as `domains/…`, never a Space sender's domain. */
@@ -258,13 +345,19 @@ function normalizeInteraction(
   if (user.type === 'BOT' || userName === context.appUserName)
     return { skip: { kind: 'ignored', reason: 'app_authored' } }
   if (user.type !== 'HUMAN') return { skip: { kind: 'unsupported', reason: 'sender_type' } }
-  const fn = str(obj(event.action)?.actionMethodName) ?? str(obj(event.common)?.invokedFunction)
+  const parameters = interactionParameters(event)
+  // Our own parameter first, since an add-on's function is a URL (§11); then a pre-conversion card's name, then Chat's.
+  const fn =
+    str(parameters[GOOGLE_CHAT_ACTION_PARAMETER]) ??
+    str(parameters[ACTION_METHOD_PARAMETER]) ??
+    str(obj(event.action)?.actionMethodName) ??
+    str(obj(event.common)?.invokedFunction)
   if (!fn) return { invalid: 'malformed' }
   const thread = messageThread ?? eventThread
   return {
     interaction: {
       function: fn,
-      parameters: interactionParameters(event),
+      parameters,
       formInputs: interactionFormInputs(event),
       ...(messageName ? { message: messageName } : {}),
       user: userName,

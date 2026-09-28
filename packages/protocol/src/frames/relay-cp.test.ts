@@ -120,6 +120,23 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(authOk({ ...anchor, claimUrl: 'http://console.example.test/googlechat/claim' }).ok).toBe(false)
   })
 
+  it('carries the relay pool’s public origin as an http(s) URL only', () => {
+    const authOk = (publicRelayUrl: unknown) =>
+      decodeRelayCpFrame(
+        envelope('rc/auth/ok', {
+          heartbeatSec: 15,
+          serverTime: '2026-08-05T00:00:00.000Z',
+          deploymentConfig: { revision: 0, publicRelayUrl }
+        })
+      )
+    const decoded = authOk('https://relay.example.test')
+    if (!decoded.ok || decoded.frame.type !== 'rc/auth/ok') throw new Error('expected rc/auth/ok')
+    expect(decoded.frame.payload.deploymentConfig?.publicRelayUrl).toBe('https://relay.example.test')
+    expect(authOk('http://localhost:8090').ok).toBe(true)
+    expect(authOk('wss://relay.example.test').ok).toBe(false)
+    expect(authOk('not a url').ok).toBe(false)
+  })
+
   it('decodes rc/heartbeat (empty payload)', () => {
     const r = decodeRelayCpFrame(envelope('rc/heartbeat', {}))
     expect(r.ok).toBe(true)

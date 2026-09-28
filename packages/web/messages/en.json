@@ -5465,7 +5465,7 @@
       "configure": {
         "title": "Configure the Chat app",
         "endpoint": "HTTP endpoint URL",
-        "audience": "Authentication audience",
+        "audience": "Authentication audience (not asked for a Workspace add-on)",
         "functionality": "Functionality",
         "receiveDms": "Receive 1:1 messages",
         "joinSpaces": "Join spaces and group conversations",

@@ -1,6 +1,7 @@
 // Google Chat's Layer-2 turn output (google-chat-integration.md §5): one Markdown message per text block, edited in place while it streams.
 import { createHash } from 'node:crypto'
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import { GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
 import { flattenUnsafeLinks, referenceBufferStart } from '../../messages/agent-links.js'
 import { AgentMessageRun, WorkBoundary } from '../../messages/message-boundary.js'
 import { stableMessageId, type NormalizedMessage } from '../../messages/normalized.js'
@@ -297,6 +298,8 @@ export interface GoogleChatTurnHost<TTurn> {
 export interface GoogleChatTurnState {
   /** The egress transport captured at turn start and held by the turn's lease. */
   conn?: GoogleChatEgressPort
+  /** The turn's message came from a Workspace add-on, so its cards name the events URL as their function (§11). */
+  addOn?: boolean
   space: string
   /** The named Space's thread; absent in a DM, whose create carries no thread option (§5). */
   thread?: string
@@ -308,8 +311,10 @@ export interface GoogleChatTurnState {
 }
 
 export function initialGoogleChatTurnState(ctx: TurnOutputContext<NormalizedMessage>): GoogleChatTurnState {
+  const ext = ctx.message.adapterExt?.[GOOGLE_CHAT_PLATFORM] as { addOn?: unknown } | undefined
   return {
     ...(ctx.egress ? { conn: ctx.egress as GoogleChatEgressPort } : {}),
+    ...(ext?.addOn === true ? { addOn: true } : {}),
     space: ctx.message.channel,
     ...(ctx.isDm || ctx.message.thread === undefined ? {} : { thread: ctx.message.thread }),
     deliveryId: stableMessageId(ctx.message),

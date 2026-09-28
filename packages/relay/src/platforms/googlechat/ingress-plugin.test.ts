@@ -7,10 +7,19 @@ import {
   type GoogleChatIngressPlugin
 } from './ingress-plugin.js'
 import type { GoogleChatHttpIngest } from './http-ingest.js'
-import { GOOGLE_CHAT_CERTIFICATE_REFETCH_MS, GOOGLE_CHAT_CERTIFICATE_URL } from './token.js'
+import { GOOGLE_CHAT_CERTIFICATE_REFETCH_MS, GOOGLE_CHAT_CERTIFICATE_URL, GOOGLE_OIDC_JWKS_URL } from './token.js'
 import type { RelayAdmission, RelayIngressHost } from '../contract.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
-import { CERTIFICATE, KID, NOW, OTHER_KEYS, fakeCertificates, token } from '../../../test/fixtures/google-chat-token.js'
+import {
+  CERTIFICATE,
+  JWK,
+  KID,
+  NOW,
+  OTHER_KEYS,
+  addOnToken,
+  fakeCertificates,
+  token
+} from '../../../test/fixtures/google-chat-token.js'
 import {
   APP,
   AUDIENCE,
@@ -19,7 +28,9 @@ import {
   DOMAIN,
   OTHER_APP,
   PERSON,
+  PUBLIC_RELAY_URL,
   SPACE,
+  addOn,
   cardClicked,
   dmAdded,
   dmMessage,
@@ -59,6 +70,7 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   setChannelAgent: () => {},
   selectThreadAgent: () => {},
   reportBotUserId: vi.fn(),
+  publicRelayUrl: () => PUBLIC_RELAY_URL,
   clock: { now: () => NOW },
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   ...over
@@ -711,5 +723,148 @@ describe('googlechat ingress plugin — the own-tenant fence of a single-tenant 
     expect(plugin.buildIngest(assignment({ ownTenantIds: [CUSTOMER], claimUrl: CLAIM_URL }), h)).toBeUndefined()
     expect(plugin.buildIngest(assignment({ ownTenantIds: [CUSTOMER] }), h)?.singleTenant).toBe(true)
     expect(plugin.buildIngest(assignment({ tenantIds: [CUSTOMER] }), h)?.singleTenant).toBe(false)
+  })
+})
+
+describe('googlechat ingress plugin — Workspace add-on requests (§11)', () => {
+  const addOnBearer = async (over: Parameters<typeof addOnToken>[0] = {}) => `Bearer ${await addOnToken(over)}`
+  const bodyOf = (handled: { syncResponse?: unknown } | undefined) => handled?.syncResponse as Record<string, any>
+  const stateOf = (link: string) => {
+    const url = new URL(link)
+    return {
+      base: `${url.origin}${url.pathname}`,
+      state: JSON.parse(Buffer.from(url.searchParams.get('state')!, 'base64url').toString('utf8')) as unknown
+    }
+  }
+
+  it('accepts a Google ID token for the events URL from the add-on’s service account, and forwards what the Chat form would', async () => {
+    const { plugin, h, ingest, certificates } = setup()
+    const { verified, handled } = await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer())
+    expect(verified).toMatchObject({ form: 'addon', event: { type: 'MESSAGE' } })
+    expect(handled).toEqual({ admission: { disposition: 'admitted' } })
+    const chatForm = setup()
+    await deliver(chatForm.plugin, chatForm.ingest, chatForm.h, dmMessage, `Bearer ${await token()}`)
+    const { traceId: _a, adapterExt, ...viaAddOn } = forwarded(h)!
+    const { traceId: _b, ...viaChat } = forwarded(chatForm.h)!
+    expect(viaAddOn).toEqual(viaChat)
+    // The daemon renders this conversation's card actions for an add-on.
+    expect(adapterExt).toEqual({ googlechat: { addOn: true } })
+    expect(viaChat).not.toHaveProperty('adapterExt')
+    expect(certificates.calls).toEqual([GOOGLE_OIDC_JWKS_URL])
+  })
+
+  it('refuses another audience, another service account, an unverified email, an expired token, and a forged signature', async () => {
+    const { plugin, h, ingest } = setup()
+    const nowSec = Math.floor(NOW / 1000)
+    const refused: Parameters<typeof addOnToken>[0][] = [
+      { aud: AUDIENCE },
+      { aud: `${PUBLIC_RELAY_URL}/googlechat/events/` },
+      { aud: 'https://relay-2.example.test/googlechat/events' },
+      { email: 'service-200000000000@gcp-sa-gsuiteaddons.iam.gserviceaccount.com' },
+      { email: `service-${AUDIENCE}@gcp-sa-gsuiteaddons.iam.gserviceaccount.com.example.test` },
+      { email: `${AUDIENCE}-compute@developer.gserviceaccount.com` },
+      { email: `service-${AUDIENCE}@example.test` },
+      { email: undefined },
+      { emailVerified: false },
+      { emailVerified: 'true' },
+      { emailVerified: undefined },
+      { iat: nowSec - 7200, exp: nowSec - 120 },
+      { key: OTHER_KEYS.privateKey },
+      { iss: 'https://issuer.example.test' },
+      { alg: 'RS512' }
+    ]
+    for (const over of refused) {
+      expect((await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer(over))).verified).toBeUndefined()
+    }
+    // Either issuer spelling Google uses passes.
+    expect(
+      (await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer({ iss: 'accounts.google.com' }))).verified
+    ).toBeDefined()
+    expect(h.forwardStrict).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses every add-on token while the CP has not named the relay’s public origin', async () => {
+    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    const h = host({ publicRelayUrl: () => undefined })
+    const ingest = plugin.buildIngest(assignment(), h)!
+    expect((await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer())).verified).toBeUndefined()
+    // The Chat form does not depend on it.
+    expect((await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)).verified).toBeDefined()
+  })
+
+  it('reads the project number from the token’s service account and the tenant from the payload as demux hints', async () => {
+    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    const headers = { authorization: await addOnBearer() }
+    const raw = Buffer.from('{}')
+    expect(plugin.extractDemuxHints(raw, addOn(dmMessage), headers)).toEqual({ appId: AUDIENCE, tenantId: DOMAIN })
+    expect(plugin.extractDemuxHints(raw, addOn(spaceMention), headers)).toEqual({ appId: AUDIENCE, tenantId: CUSTOMER })
+    expect(plugin.extractDemuxHints(raw, addOn(cardClicked), headers)).toEqual({ appId: AUDIENCE, tenantId: CUSTOMER })
+    const otherAccount = { authorization: await addOnBearer({ email: 'someone@example.test' }) }
+    expect(plugin.extractDemuxHints(raw, addOn(dmMessage), otherAccount)).toEqual({ tenantId: DOMAIN })
+  })
+
+  it('refetches the JWKS once for an unknown kid and keeps it apart from the Chat certificates', async () => {
+    const { plugin, h, ingest, certificates } = setup()
+    await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer())
+    certificates.rotateJwks({ keys: [{ ...JWK, kid: 'oidc-next' }] })
+    expect(
+      (await deliver(plugin, ingest, h, addOn(dmMessage), await addOnBearer({ kid: 'oidc-next' }))).verified
+    ).toBeDefined()
+    expect((await deliver(plugin, ingest, h, dmMessage, `Bearer ${await token()}`)).verified).toBeDefined()
+    expect(certificates.calls).toEqual([GOOGLE_OIDC_JWKS_URL, GOOGLE_OIDC_JWKS_URL, GOOGLE_CHAT_CERTIFICATE_URL])
+    // A key that is not an RSA signing key is never imported.
+    const odd = setup({}, fakeCertificates(undefined, {}, { keys: [{ ...JWK, use: 'enc' }] }))
+    expect(
+      (await deliver(odd.plugin, odd.ingest, odd.h, addOn(dmMessage), await addOnBearer())).verified
+    ).toBeUndefined()
+  })
+
+  it('answers an unclaimed tenant in the add-on form: the welcome card as a created message, the claim link as the authorization prompt', async () => {
+    const { plugin, h, ingest } = setup({ claimUrl: CLAIM_URL })
+    const chat = setup({ claimUrl: CLAIM_URL })
+    const bearer = await addOnBearer()
+    const added = bodyOf((await deliver(plugin, ingest, h, addOn(dmAdded), bearer)).handled)
+    const chatAdded = bodyOf(
+      (await deliver(chat.plugin, chat.ingest, chat.h, dmAdded, `Bearer ${await token()}`)).handled
+    )
+    expect(added).toEqual({ hostAppDataAction: { chatDataAction: { createMessageAction: { message: chatAdded } } } })
+    const prompt = bodyOf((await deliver(plugin, ingest, h, addOn(dmMessage), bearer)).handled)
+    expect(Object.keys(prompt)).toEqual(['basic_authorization_prompt'])
+    expect(prompt.basic_authorization_prompt.resource).toBe('AgentConnect')
+    const chatPrompt = bodyOf(
+      (await deliver(chat.plugin, chat.ingest, chat.h, dmMessage, `Bearer ${await token()}`)).handled
+    )
+    // The same claim link, whose state carries the add-on's completion URL like the Chat form's.
+    expect(stateOf(prompt.basic_authorization_prompt.authorization_url)).toEqual(stateOf(chatPrompt.actionResponse.url))
+    expect(stateOf(prompt.basic_authorization_prompt.authorization_url).base).toBe(CLAIM_URL)
+    // Anything else stays an empty answer.
+    expect((await deliver(plugin, ingest, h, addOn(cardClicked), bearer)).handled).toEqual({})
+    expect((await deliver(plugin, ingest, h, addOn(spaceRemoved), bearer)).handled).toEqual({})
+    expect(h.forwardStrict).not.toHaveBeenCalled()
+  })
+
+  it('forwards an add-on elicitation click whose action rides our own parameter', async () => {
+    const target = {
+      agentId: '22222222-2222-4222-8222-222222222222',
+      integrationId: '33333333-3333-4333-8333-333333333333'
+    }
+    const plugin = createGoogleChatIngressPlugin({ fetch: fakeCertificates().fetchImpl })
+    const h = host({ directory: { ...host().directory, soleTarget: () => target as never } })
+    const ingest = plugin.buildIngest(assignment(), h)!
+    const click = addOn({
+      ...cardClicked,
+      action: undefined,
+      common: {
+        parameters: { 'agentconnect.action': 'agentconnect.elicit', request: 'req-1', token: 'o1' },
+        formInputs: {}
+      }
+    })
+    expect((await deliver(plugin, ingest, h, click, await addOnBearer())).handled).toEqual({})
+    const [rd] = vi.mocked(h.forwardAction).mock.calls[0]!
+    expect(rd.payload).toMatchObject({
+      function: 'agentconnect.elicit',
+      parameters: { request: 'req-1', token: 'o1' },
+      message: `${SPACE}/messages/EXAMPLE_CARD.EXAMPLE_CARD`
+    })
   })
 })

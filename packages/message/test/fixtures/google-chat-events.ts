@@ -1,4 +1,4 @@
-import type { GoogleChatEvent } from '../../src/google-chat-message.js'
+import type { GoogleChatAddOnEvent, GoogleChatEvent } from '../../src/google-chat-message.js'
 
 // Documentation-derived (Chat `Event`, `Message`, `Space` references); replace with anonymized live-probe fixtures.
 
@@ -156,3 +156,76 @@ export const cardClicked = {
   configCompleteRedirectUrl: CONFIG_COMPLETE_URL,
   isDialogEvent: false
 } satisfies GoogleChatEvent
+
+// Workspace add-on requests (design §11), shaped by Google's add-on event-object reference; every token is a placeholder.
+const addOnCommon = { hostApp: 'CHAT', userLocale: 'en', timeZone: { id: 'Etc/UTC', offset: 0 } }
+const addOnAuthorization = {
+  userOAuthToken: 'EXAMPLE_USER_OAUTH_TOKEN',
+  userIdToken: 'EXAMPLE_USER_ID_TOKEN',
+  systemIdToken: 'EXAMPLE_SYSTEM_ID_TOKEN'
+}
+
+/** {@link dmMessageFromWorkspace} as an add-on sends it. */
+export const addOnDmMessage = {
+  commonEventObject: addOnCommon,
+  authorizationEventObject: addOnAuthorization,
+  chat: {
+    user: workspacePerson,
+    eventTime: dmMessage.eventTime,
+    messagePayload: {
+      message: dmMessageFromWorkspace.message,
+      space: dmMessage.space,
+      configCompleteRedirectUri: CONFIG_COMPLETE_URL
+    }
+  }
+} satisfies GoogleChatAddOnEvent
+
+/** {@link spaceMentionByExternalMember} as an add-on sends it. */
+export const addOnSpaceMention = {
+  commonEventObject: addOnCommon,
+  authorizationEventObject: addOnAuthorization,
+  chat: {
+    user: spaceMentionByExternalMember.user,
+    eventTime: spaceMention.eventTime,
+    messagePayload: {
+      message: spaceMentionByExternalMember.message,
+      space: customerSpace,
+      configCompleteRedirectUri: CONFIG_COMPLETE_URL
+    }
+  }
+} satisfies GoogleChatAddOnEvent
+
+/** An @mention adding the app, whose message an add-on receives separately afterwards. */
+export const addOnAddedToSpace = {
+  commonEventObject: addOnCommon,
+  authorizationEventObject: addOnAuthorization,
+  chat: {
+    user: workspacePerson,
+    eventTime: addedWithMessage.eventTime,
+    addedToSpacePayload: { space: customerSpace, interactionAdd: true, configCompleteRedirectUri: CONFIG_COMPLETE_URL }
+  }
+} satisfies GoogleChatAddOnEvent
+
+export const addOnRemovedFromSpace = {
+  commonEventObject: addOnCommon,
+  chat: {
+    user: workspacePerson,
+    eventTime: removedFromSpace.eventTime,
+    removedFromSpacePayload: { space: customerSpace }
+  }
+} satisfies GoogleChatAddOnEvent
+
+/** An elicitation button an add-on posted: the function was the events URL, so the action rides our own parameter. */
+export const addOnButtonClicked = {
+  commonEventObject: {
+    ...addOnCommon,
+    parameters: { 'agentconnect.action': 'agentconnect.elicit', request: 'req-1', token: 'ok' },
+    formInputs: { f0: { stringInputs: { value: ['typed'] } } }
+  },
+  authorizationEventObject: addOnAuthorization,
+  chat: {
+    user: workspacePerson,
+    eventTime: cardClicked.eventTime,
+    buttonClickedPayload: { message: cardClicked.message, space: customerSpace, isDialogEvent: false }
+  }
+} satisfies GoogleChatAddOnEvent

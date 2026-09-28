@@ -1,6 +1,6 @@
-// Google Chat's per-bot relay ingest (google-chat-integration.md §4): a pure decoder holding the expected audience and the app's identity.
+// Google Chat's per-bot relay ingest (google-chat-integration.md §4): a pure decoder holding the app's project number and identity.
 import { GOOGLE_CHAT_PLATFORM, type IntegrationChannel } from '@agentconnect.md/protocol'
-import type { GoogleChatEvent, GoogleChatMembershipChange } from '@agentconnect.md/message'
+import type { GoogleChatEvent, GoogleChatEventForm, GoogleChatMembershipChange } from '@agentconnect.md/message'
 import type { GoogleChatCertificateStore } from './token.js'
 
 /** Hard cap on one delivery's raw body; interaction events are small JSON documents. */
@@ -11,13 +11,14 @@ export const UNKNOWN_APP_USER_NAME = 'users/unknown-app'
 
 const USER_NAME = /^users\/[A-Za-z0-9._-]+$/
 
-/** The plugin's typed verified product: the event whose bearer token proved Google sent it to this bot. */
+/** The plugin's typed verified product: the event, as a Chat API `Event`, whose bearer token proved Google sent it to this bot. */
 export interface VerifiedGoogleChatDelivery {
   event: GoogleChatEvent
+  /** The form the request came in, which is the form it is answered in (§11). */
+  form: GoogleChatEventForm
   traceId: string
 }
 
-/** The function the welcome card's button invokes; its `CARD_CLICKED` is answered with the claim prompt (design §10.7). */
 /** What the claim page decodes from `state` (design §10.5): unsigned, since the page re-derives every fact it acts on. */
 export interface GoogleChatClaimState {
   v: 1
@@ -42,37 +43,42 @@ export function googleChatClaimLink(claimUrl: string, state: GoogleChatClaimStat
   return url.toString()
 }
 
-/** The private `REQUEST_CONFIG` answer to a message that sends its sender to the claim page (design §10.4). */
-export function googleChatClaimPrompt(
-  claimUrl: string,
-  state: GoogleChatClaimState
-): { actionResponse: { type: 'REQUEST_CONFIG'; url: string } } {
-  return { actionResponse: { type: 'REQUEST_CONFIG', url: googleChatClaimLink(claimUrl, state) } }
+/** What the relay answers an unclaimed tenant with (design §10.4), before a writer puts it in the request's form. */
+export type GoogleChatAnswer = { kind: 'card'; cardsV2: unknown[] } | { kind: 'prompt'; url: string }
+
+/** The name an add-on's authorization prompt shows for what the claim connects (§11). */
+export const GOOGLE_CHAT_PROMPT_RESOURCE = 'AgentConnect'
+
+/** The private prompt a message gets that sends its sender to the claim page (design §10.4). */
+export function googleChatClaimPrompt(claimUrl: string, state: GoogleChatClaimState): GoogleChatAnswer {
+  return { kind: 'prompt', url: googleChatClaimLink(claimUrl, state) }
 }
 
-/** The welcome card an unclaimed tenant sees on `ADDED_TO_SPACE` (design §10.7); its button opens the claim page, since Chat refuses `REQUEST_CONFIG` for a card click. */
-export function googleChatWelcomeCard(claimUrl: string, state: GoogleChatClaimState): unknown {
-  return {
-    cardsV2: [
-      {
-        cardId: 'agentconnect-claim',
-        card: {
-          sections: [
-            {
-              widgets: [
-                { textParagraph: { text: 'Connect this Google Chat app to your AgentConnect organization to start.' } },
-                {
-                  buttonList: {
-                    buttons: [{ text: 'Connect', onClick: { openLink: { url: googleChatClaimLink(claimUrl, state) } } }]
-                  }
-                }
-              ]
-            }
-          ]
-        }
-      }
-    ]
-  }
+/** The welcome card an unclaimed tenant sees on an add (design §10.7); its button opens the claim page, since Chat refuses a prompt for a card click. */
+export function googleChatWelcomeCard(claimUrl: string, state: GoogleChatClaimState): GoogleChatAnswer {
+  const text = 'Connect this Google Chat app to your AgentConnect organization to start.'
+  const buttons = [{ text: 'Connect', onClick: { openLink: { url: googleChatClaimLink(claimUrl, state) } } }]
+  const widgets = [{ textParagraph: { text } }, { buttonList: { buttons } }]
+  return { kind: 'card', cardsV2: [{ cardId: 'agentconnect-claim', card: { sections: [{ widgets }] } }] }
+}
+
+/** An answer as a Chat app writes it: the card as the synchronous message, the prompt as `REQUEST_CONFIG`. */
+export function chatAppAnswer(answer: GoogleChatAnswer): unknown {
+  return answer.kind === 'card'
+    ? { cardsV2: answer.cardsV2 }
+    : { actionResponse: { type: 'REQUEST_CONFIG', url: answer.url } }
+}
+
+/** An answer as a Workspace add-on writes it (§11): the card as a create-message action, the prompt as the basic authorization prompt. */
+export function addOnAnswer(answer: GoogleChatAnswer): unknown {
+  return answer.kind === 'card'
+    ? { hostAppDataAction: { chatDataAction: { createMessageAction: { message: { cardsV2: answer.cardsV2 } } } } }
+    : { basic_authorization_prompt: { authorization_url: answer.url, resource: GOOGLE_CHAT_PROMPT_RESOURCE } }
+}
+
+/** The body answering a request in the form it came in. */
+export function googleChatAnswerBody(form: GoogleChatEventForm, answer: GoogleChatAnswer): unknown {
+  return form === 'addon' ? addOnAnswer(answer) : chatAppAnswer(answer)
 }
 
 /** How a single-tenant row's fence answers one event's tenant key (design §10.3). */
@@ -146,11 +152,13 @@ export class GoogleChatHttpIngest {
 
   constructor(
     readonly botId: string,
-    /** The Cloud project number: the audience every token must carry. */
-    readonly audience: string,
+    /** The Cloud project number: a Chat app token's audience, and the number in an add-on token's service account (§11). */
+    readonly projectNumber: string,
     private readonly assignedAppUserName: string | undefined,
-    /** Shared across the platform's ingests; the certificates are Google's, not the bot's. */
+    /** Shared across the platform's ingests; the keys are Google's, not the bot's. */
     readonly certificates: GoogleChatCertificateStore,
+    /** The relay's public events URL, read per request: an add-on token's audience (§11); absent until the CP's snapshot names it. */
+    readonly eventsUrl: () => string | undefined,
     /** The generation THIS ingest was built from. */
     readonly credentialRevision?: number,
     /** The tenant keys this row is known by: a customer row of a multi-tenant app (design §10.3), else absent. */

@@ -10,11 +10,13 @@ import {
 } from './ingress-plugin.js'
 import type { DemuxIndex } from '../registry.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
-import { NOW, fakeCertificates, token } from '../../../test/fixtures/google-chat-token.js'
+import { NOW, addOnToken, fakeCertificates, token } from '../../../test/fixtures/google-chat-token.js'
 import {
   AUDIENCE,
   CUSTOMER,
   DOMAIN,
+  PUBLIC_RELAY_URL,
+  addOn,
   cardClicked,
   dmAdded,
   dmMessage,
@@ -97,7 +99,17 @@ function setup() {
     })
     return { handled, by: handledBy[0] }
   }
-  return { manager, demux, deliver, deps: d }
+  // The same event as a Workspace add-on sends it, signed for `project`'s add-on service account (§11).
+  const deliverAddOn = async (event: Parameters<typeof addOn>[0], project = AUDIENCE) => {
+    const raw = Buffer.from(JSON.stringify(addOn(event)))
+    handledBy.length = 0
+    const email = `service-${project}@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`
+    const handled = await manager.handleInbound('googlechat', raw, JSON.parse(raw.toString('utf8')), {
+      authorization: `Bearer ${await addOnToken({ email })}`
+    })
+    return { handled, by: handledBy[0] }
+  }
+  return { manager, demux, deliver, deliverAddOn, deps: d }
 }
 
 const unknownDomainAdd = { ...dmAdded, user: { ...dmAdded.user, domainId: '0000000009' } }
@@ -220,6 +232,43 @@ describe('googlechat multi-tenant demux (§10.4)', () => {
     for (const event of [dmMessage, spaceMention, otherCustomerMention, unknownDomainAdd]) {
       expect((await deliver(event)).by).toBe(SINGLE)
     }
+  })
+
+  it('demuxes an add-on request by the project number of its service account: a customer row, the anchor, a single-tenant row', async () => {
+    const { manager, deliverAddOn } = setup()
+    await manager.applyDeploymentSnapshot({ ...snapshot(), publicRelayUrl: PUBLIC_RELAY_URL })
+    await manager.assign(row(ROW_A, { tenantIds: [CUSTOMER] }))
+    await manager.assign(row(ROW_B, { tenantIds: [DOMAIN] }))
+    await manager.assign(row(SINGLE, { apiAppId: OTHER_AUDIENCE }))
+    expect((await deliverAddOn(spaceMention)).by).toBe(ROW_A)
+    expect((await deliverAddOn(cardClicked)).by).toBe(ROW_A)
+    expect((await deliverAddOn(dmMessage)).by).toBe(ROW_B)
+    const unclaimed = await deliverAddOn(otherCustomerMention)
+    expect(unclaimed.by).toBe(ANCHOR)
+    expect(unclaimed.handled).toMatchObject({
+      syncResponse: { basic_authorization_prompt: { resource: 'AgentConnect' } }
+    })
+    expect((await deliverAddOn(unknownDomainAdd)).handled).toMatchObject({
+      syncResponse: { hostAppDataAction: { chatDataAction: { createMessageAction: {} } } }
+    })
+    // Another app's project reaches its own single-tenant row, whatever the tenant.
+    for (const event of [dmMessage, spaceMention, otherCustomerMention]) {
+      expect((await deliverAddOn(event, OTHER_AUDIENCE)).by).toBe(SINGLE)
+    }
+    // A project nobody serves is nobody's.
+    expect((await deliverAddOn(dmMessage, '300000000000')).handled).toBeUndefined()
+  })
+
+  it('refuses every add-on request until a snapshot names the relay’s public origin', async () => {
+    const { manager, deliverAddOn, deliver } = setup()
+    await manager.applyDeploymentSnapshot(snapshot())
+    await manager.assign(row(SINGLE, { apiAppId: OTHER_AUDIENCE }))
+    expect((await deliverAddOn(dmMessage, OTHER_AUDIENCE)).handled).toBeUndefined()
+    expect((await deliverAddOn(otherCustomerMention)).handled).toBeUndefined()
+    expect((await deliver(otherCustomerMention)).by).toBe(ANCHOR)
+    await manager.applyDeploymentSnapshot({ ...snapshot(), publicRelayUrl: `${PUBLIC_RELAY_URL}/` })
+    expect((await deliverAddOn(dmMessage, OTHER_AUDIENCE)).by).toBe(SINGLE)
+    expect((await deliverAddOn(otherCustomerMention)).by).toBe(ANCHOR)
   })
 
   it('an own app’s one row keeps serving every tenant, including one naming none', async () => {

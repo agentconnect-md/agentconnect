@@ -150,8 +150,7 @@ export interface RelayCpClientDeps {
   onMemoryConnectionUnassign?: (a: RcMemoryConnectionUnassign) => void
   /** Called once the relay reaches READY on each (re)connect. */
   onReady?: () => void
-  /** First authenticated deployment snapshot in this process. Later reconnects
-   *  deliberately do not hot-reload it; an operator restart applies changes. */
+  /** First authenticated snapshot of a stored deployment document in this process; later reconnects never hot-reload it. */
   onDeploymentConfig?: (config: RcDeploymentConfig) => void
   /** Every connection's deployment snapshot, undefined when the CP sent none, for state that must follow the CP's current configuration. */
   onDeploymentSnapshot?: (config: RcDeploymentConfig | undefined) => void
@@ -611,7 +610,8 @@ export class RelayCpClient {
     const ok = authOk.payload as RcAuthOk
     if (!this.deploymentConfigDecided) {
       this.deploymentConfigDecided = true
-      if (ok.deploymentConfig) this.deps.onDeploymentConfig?.(ok.deploymentConfig)
+      // Revision 0 means the CP stores no document, so the startup environment keeps what it set.
+      if (ok.deploymentConfig && ok.deploymentConfig.revision > 0) this.deps.onDeploymentConfig?.(ok.deploymentConfig)
     }
     this.deps.onDeploymentSnapshot?.(ok.deploymentConfig)
 

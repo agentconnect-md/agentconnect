@@ -52,6 +52,7 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
   setChannelAgent: () => {},
   selectThreadAgent: () => {},
   reportBotUserId: () => {},
+  publicRelayUrl: () => undefined,
   clock: { now: () => NOW },
   log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
   ...over
