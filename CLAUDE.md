@@ -142,7 +142,37 @@ does not fit on one line, tighten it until it does. When code you are touching
 carries a verbose comment, including a pre-existing one, condense it to a single
 line instead of leaving it as is.
 
-## Pull requests
+## Pull requests and issues
+
+Keep fix-related issues open until the fix ships in a stable release. In PR titles,
+descriptions, and commit messages, use `Refs #123` or `Related to #123`. Do not pair
+issue references with GitHub's closing keywords (`close`, `fix`, `resolve`, or
+their variants), or add Development links that close issues on merge. Conventional
+commit types such as `fix(scope): ...` are unchanged. Merging a PR or publishing an
+RC/prerelease does not complete the issue workflow.
+
+For work split across PRs, each PR states which acceptance items it covers and
+what remains. Keep the issue's acceptance checklist and required PR references
+current; a partial implementation must not be presented as the complete fix.
+
+When watching releases, the agent owns the release follow-up:
+
+1. Handle published, non-draft, non-prerelease releases. Verify the release's exact
+   tag/commit and wait for all required artifact and image publication jobs to
+   succeed. A tag, merged PR, or pending/failed release job is insufficient.
+2. Find candidate issues from the included PRs' non-closing references and issue
+   discussions. Read each issue's acceptance checklist and all required PRs,
+   including work from earlier releases. Close only when every required change
+   is present in the release tag and the acceptance criteria are met. All PRs
+   being merged is insufficient. Leave partial fixes, reverted changes, missing
+   release work, and uncertain cases open.
+3. Comment `Fixed and released in version vX.Y.Z.` with links to the release and
+   relevant PRs. Verify the comment was posted, then close the issue as completed.
+   Re-read issue state and comments before writing; retries must not duplicate
+   comments or re-close an issue reopened after that release's comment.
+4. Track issue follow-up separately from the release summary: an existing summary
+   must not skip unfinished issue work. Release publication alone does not prove
+   deployment to an environment.
 
 When creating a pull request, report the actual coding harness and model at
 the end of its description. Keep any attribution footer the harness provides
