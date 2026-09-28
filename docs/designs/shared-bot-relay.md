@@ -574,7 +574,8 @@ the owner picks a protocol; ACP 2, the remote ACP endpoint under Relation to
 ACP below, is listed as coming and cannot be picked yet. The
 agent's Integrations tab then shows one API card with a row per protocol and a
 single remove action. Each row's Quickstart shows the chat endpoint, examples
-for curl, a script, and a web app, and the Agent chat keys that reach the
+for curl, Node, and the browser (`useChat` behind a same-origin route that adds
+the key), and the Agent chat keys that reach the
 agent: the caller's own, and for an owner each service account's. Its Create
 key opens the key dialog preset to Agent chat on that agent, with an Owner
 choice of the caller or, for an owner, a service account.
