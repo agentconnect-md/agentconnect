@@ -6,6 +6,11 @@ September 27, 2026 (DM and Space mention, threaded replies, streamed edits, the
 Markdown subset, and the console views). Open follow-ups: several agents sharing one
 app, and a Marketplace listing for more than one Workspace customer.
 
+The console offers Google Chat only where the deployment turns on the `google-chat`
+feature flag (the chart's `features.googleChat`, off by default); an existing Google
+Chat bot keeps its Bots tab, and the Control Plane, relay, and daemon serve it either
+way.
+
 Related: [issue #2262](https://github.com/agentconnect-md/agentconnect/issues/2262),
 [platform modules](integration-plugin-architecture.md),
 [architecture](architecture.md), and [product conventions](../product-conventions.md).

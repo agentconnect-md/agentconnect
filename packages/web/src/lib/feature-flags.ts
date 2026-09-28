@@ -11,6 +11,8 @@ export type FeatureFlagId =
   | 'git-url'
   // The QQ integration's install entry points; existing QQ bots keep their Bots tab.
   | 'qq'
+  // The Google Chat integration's install entry points; existing Google Chat bots keep their Bots tab.
+  | 'google-chat'
   // The By decision checkout for additional repositories; a row already By decision keeps it, and a set selector stays shown.
   | 'repository-decision'
 
