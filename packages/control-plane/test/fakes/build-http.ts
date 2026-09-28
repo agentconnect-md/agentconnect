@@ -130,7 +130,7 @@ import { LinearTokenService } from '../../src/platforms/linear/token-service.js'
 import { LinearOrphanTokenSweeper } from '../../src/platforms/linear/orphan-token-sweeper.js'
 import { linearConnectRoutes, linearOauthCallbackRoutes } from '../../src/platforms/linear/routes.js'
 import { createGoogleChatCpProvider } from '../../src/platforms/googlechat/provider.js'
-import { googleChatKeyRoutes } from '../../src/platforms/googlechat/routes.js'
+import { googleChatAppRoutes, googleChatKeyRoutes } from '../../src/platforms/googlechat/routes.js'
 import { googleChatClaimRoutes } from '../../src/platforms/googlechat/claim.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from '../../src/http/routes/slack-install.js'
 import {
@@ -846,7 +846,11 @@ export function buildHttpApp(
     createGoogleChatCpProvider({
       fetch: googleChatSeams.fetch,
       installRoutes: {
-        org: [googleChatKeyRoutes(deps, googleChatSeams), googleChatClaimRoutes(deps, googleChatSeams)],
+        org: [
+          googleChatAppRoutes(googleChatSeams),
+          googleChatKeyRoutes(deps, googleChatSeams),
+          googleChatClaimRoutes(deps, googleChatSeams)
+        ],
         publicCallback: []
       },
       get app() {

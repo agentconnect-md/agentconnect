@@ -2,21 +2,24 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { IntegrationDto, SlackConfigDto } from '@/lib/api'
+import type { GoogleChatDeploymentAppDto, IntegrationDto, SlackConfigDto } from '@/lib/api'
 import type { Agent, IntegrationRow } from '@/lib/data'
 import type { WizardFooterState, WizardHost, WizardIdentityChromeState } from '../contract'
 
 const mocks = vi.hoisted(() => ({
   probeConfig: null as SlackConfigDto | null,
   integrations: [] as IntegrationRow[],
-  create: vi.fn()
+  create: vi.fn(),
+  deploymentApp: vi.fn<(orgId?: string) => Promise<GoogleChatDeploymentAppDto>>()
 }))
 
 vi.mock('../deployment-config', () => ({
   useDeploymentConfig: () => ({ config: mocks.probeConfig, failed: false, apply: vi.fn() })
 }))
-vi.mock('./api', () => ({ googleChatApi: { create: mocks.create } }))
+vi.mock('./api', () => ({ googleChatApi: { create: mocks.create, deploymentApp: mocks.deploymentApp } }))
+vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-a' } }) }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({ integrations: mocks.integrations, getAgent: () => undefined })
 }))
@@ -25,6 +28,9 @@ import { ApiError } from '@/lib/api'
 import { GoogleChatWizardBody, googleChatPane } from './Body'
 
 const agent = { id: 'agent-a', name: 'deploy-bot', status: 'online' } as unknown as Agent
+// The organization's preset agent, which the deployment app's claims land on.
+const preset = { id: 'agent-p', name: 'agentconnect', status: 'online', builtin: true } as unknown as Agent
+const LISTING = 'https://workspace.google.com/marketplace/app/agentconnect/100000000000'
 const KEY = JSON.stringify({
   type: 'service_account',
   project_id: 'example-project',
@@ -89,11 +95,22 @@ async function type(input: HTMLInputElement, value: string): Promise<void> {
   })
 }
 
-async function render(over: Partial<WizardHost> = {}): Promise<WizardHost> {
+async function render(over: Partial<WizardHost> = {}, forAgent: Agent = agent): Promise<WizardHost> {
   const state = wizardHost(over)
-  await act(async () => root.render(<GoogleChatWizardBody agent={agent} host={state} />))
+  // A fresh cache per render, so one case's deployment-app read never answers another's.
+  await act(async () =>
+    root.render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <GoogleChatWizardBody agent={forAgent} host={state} />
+      </SWRConfig>
+    )
+  )
+  // Let the deployment-app read settle.
+  for (let i = 0; i < 5; i += 1) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)))
   return state
 }
+
+const listingLink = () => host.querySelector<HTMLAnchorElement>('a[href^="https://workspace.google.com/marketplace/"]')
 
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -102,6 +119,8 @@ beforeEach(() => {
   mocks.probeConfig = answered
   mocks.integrations = []
   mocks.create.mockReset()
+  mocks.deploymentApp.mockReset()
+  mocks.deploymentApp.mockResolvedValue({ projectNumber: '100000000000' })
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -113,11 +132,21 @@ afterEach(async () => {
 })
 
 describe('googleChatPane', () => {
+  const facts = { relayAvailable: true, marketplace: false, ownApp: false, created: false }
+
   it('waits for the relay read, then needs a relay, then shows the own-app steps', () => {
-    expect(googleChatPane({ relayAvailable: null, created: false })).toBe('checking')
-    expect(googleChatPane({ relayAvailable: false, created: false })).toBe('relay_required')
-    expect(googleChatPane({ relayAvailable: true, created: false })).toBe('own')
-    expect(googleChatPane({ relayAvailable: null, created: true })).toBe('test')
+    expect(googleChatPane({ ...facts, relayAvailable: null })).toBe('checking')
+    expect(googleChatPane({ ...facts, relayAvailable: false })).toBe('relay_required')
+    expect(googleChatPane(facts)).toBe('own')
+    expect(googleChatPane({ ...facts, relayAvailable: null, created: true })).toBe('test')
+  })
+
+  it('leads with the Marketplace listing when offered, unless the own app was chosen', () => {
+    expect(googleChatPane({ ...facts, marketplace: null })).toBe('checking')
+    expect(googleChatPane({ ...facts, marketplace: true })).toBe('marketplace')
+    expect(googleChatPane({ ...facts, marketplace: true, ownApp: true })).toBe('own')
+    expect(googleChatPane({ ...facts, marketplace: true, relayAvailable: false })).toBe('relay_required')
+    expect(googleChatPane({ ...facts, marketplace: true, created: true })).toBe('test')
   })
 })
 
@@ -229,6 +258,64 @@ describe('GoogleChatWizardBody', () => {
       'This Chat app belongs to this deployment; connect it by sending the app a message in Google Chat.'
     )
     expect(field('Service account key').value).toBe('')
+  })
+
+  it('leads the preset agent with the deployment app’s Marketplace listing, with the own app as the alternative', async () => {
+    await render({}, preset)
+    expect(mocks.deploymentApp).toHaveBeenCalledWith('org-a')
+    const link = listingLink()
+    expect(link?.href).toBe(LISTING)
+    expect(link?.target).toBe('_blank')
+    expect(link?.textContent).toContain('Install from Google Workspace Marketplace')
+    expect(text()).toContain('After installing, message the app in Google Chat to connect this organization.')
+    expect(host.querySelector('input')).toBeNull()
+    expect(identity?.hidden).toBe(true)
+    expect(footer?.hidden).toBe(true)
+
+    await act(async () => buttonWith('Use your own Google Chat app instead')?.click())
+    expect(listingLink()).toBeNull()
+    expect(field('Service account key').type).toBe('password')
+    expect(identity).toMatchObject({
+      hidden: false,
+      headerAction: { label: 'Install from Google Workspace Marketplace' }
+    })
+    expect(footer).toMatchObject({ label: 'Connect', hidden: false })
+
+    await act(async () => identity?.headerAction?.onSelect())
+    expect(listingLink()?.href).toBe(LISTING)
+  })
+
+  it('offers any other agent only its own app', async () => {
+    await render()
+    expect(mocks.deploymentApp).not.toHaveBeenCalled()
+    expect(listingLink()).toBeNull()
+    expect(identity?.headerAction).toBeUndefined()
+    expect(field('Service account key')).toBeDefined()
+  })
+
+  it('offers the preset agent only its own app when the deployment has none', async () => {
+    mocks.deploymentApp.mockResolvedValue({ projectNumber: null })
+    await render({}, preset)
+    expect(mocks.deploymentApp).toHaveBeenCalled()
+    expect(listingLink()).toBeNull()
+    expect(identity?.headerAction).toBeUndefined()
+    expect(field('Service account key')).toBeDefined()
+  })
+
+  it('offers the preset agent its own app when the deployment app cannot be read', async () => {
+    mocks.deploymentApp.mockRejectedValue(new ApiError('not found', 404))
+    await render({}, preset)
+    expect(mocks.deploymentApp).toHaveBeenCalled()
+    expect(listingLink()).toBeNull()
+    expect(field('Service account key')).toBeDefined()
+  })
+
+  it('waits for the deployment app before choosing the preset agent’s pane', async () => {
+    mocks.deploymentApp.mockReturnValue(new Promise(() => {}))
+    await render({}, preset)
+    expect(text()).toContain('Checking this deployment')
+    expect(host.querySelector('input')).toBeNull()
+    expect(identity?.hidden).toBe(true)
   })
 
   it('renders nothing of its own when reusing a freed app', async () => {

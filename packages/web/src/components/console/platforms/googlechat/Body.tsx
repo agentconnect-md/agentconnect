@@ -10,6 +10,7 @@ import type { WizardHost } from '../contract'
 import { useDeploymentConfig } from '../deployment-config'
 import { usePublishedFooter, usePublishedIdentityChrome } from '../publish'
 import { googleChatApi } from './api'
+import { useGoogleChatMarketplaceUrl } from './deployment-app'
 import { CopyField } from './fields'
 import { GoogleChatMark } from './mark'
 import {
@@ -25,24 +26,37 @@ import {
 const PRIMARY =
   'flex h-[46px] w-full items-center justify-center gap-[10px] rounded-[10px] border-0 bg-(--surface-inverse) font-sans text-[14px] font-semibold leading-normal text-white'
 
-/** Which pane shows: a probe in flight, no relay to receive events, the own-app steps, or the test. */
-export type GoogleChatPane = 'checking' | 'relay_required' | 'own' | 'test'
+/** Which pane shows: a probe in flight, no relay to receive events, the deployment app's Marketplace listing, the own-app steps, or the test. */
+export type GoogleChatPane = 'checking' | 'relay_required' | 'marketplace' | 'own' | 'test'
 
 /** The pane for the wizard's current facts; pure so the step flow is testable without rendering. */
-export function googleChatPane(input: { relayAvailable: boolean | null; created: boolean }): GoogleChatPane {
+export function googleChatPane(input: {
+  relayAvailable: boolean | null
+  /** Whether this agent is offered the deployment app's listing; null while that is read. */
+  marketplace: boolean | null
+  ownApp: boolean
+  created: boolean
+}): GoogleChatPane {
   if (input.created) return 'test'
   if (input.relayAvailable === null) return 'checking'
-  return input.relayAvailable ? 'own' : 'relay_required'
+  if (!input.relayAvailable) return 'relay_required'
+  if (input.ownApp) return 'own'
+  if (input.marketplace === null) return 'checking'
+  return input.marketplace ? 'marketplace' : 'own'
 }
 
-/** Google Chat's pane (§3): an organization's own app, then a test where saved, connected and tested differ; the deployment app is claimed from Google Chat instead. */
+/** Google Chat's pane (§3): the deployment app's Marketplace listing on the preset agent, an organization's own app, then a test where saved, connected and tested differ. */
 export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
   const t = useTranslations('Platforms.googlechat')
   const translate = (key: Parameters<typeof t>[0]) => t(key)
   // The chassis reads this same probe for its relay capability; only "has it answered" is read here.
   const probe = useDeploymentConfig(true)
   const { integrations, getAgent } = useConsoleData()
+  // The deployment app serves the organization's preset agent alone: a claim lands there (§10.5).
+  const marketplaceUrl = useGoogleChatMarketplaceUrl(agent.builtin === true, host.mockMode)
 
+  // The person chose their own app over the deployment app's listing.
+  const [ownApp, setOwnApp] = useState(false)
   const [projectId, setProjectId] = useState('')
   const [projectNumber, setProjectNumber] = useState('')
   const [serviceAccountKey, setServiceAccountKey] = useState('')
@@ -53,7 +67,12 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
 
   // An answer wins over a later error, as in the other relay-only panes.
   const relayAvailable: boolean | null = probe.config ? host.relayCapability.available : probe.failed ? false : null
-  const pane = googleChatPane({ relayAvailable, created: !!created })
+  const pane = googleChatPane({
+    relayAvailable,
+    marketplace: marketplaceUrl === undefined ? null : marketplaceUrl !== null,
+    ownApp,
+    created: !!created
+  })
   const callbackUrl = googleChatCallbackUrl(host.relayCapability.publicUrl)
 
   const keyTrim = serviceAccountKey.trim()
@@ -99,7 +118,12 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
 
   // Only the own-app steps use the host's identity chassis and footer; every other pane carries its own action.
   const own = pane === 'own'
-  usePublishedIdentityChrome(host, { hidden: !own })
+  usePublishedIdentityChrome(host, {
+    hidden: !own,
+    ...(own && marketplaceUrl
+      ? { headerAction: { label: t('marketplace.install'), onSelect: () => setOwnApp(false) } }
+      : {})
+  })
   usePublishedFooter(host, {
     label: saving ? t('footer.connecting') : t('footer.connect'),
     enabled: own && valid && !saving,
@@ -173,6 +197,38 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
           {t('test.done')}
         </button>
       </Frame>
+    )
+  }
+
+  if (pane === 'marketplace' && marketplaceUrl) {
+    return (
+      <>
+        <div className="mb-3 rounded-[9px] border border-(--border-subtle) bg-(--surface-card) p-4">
+          <a
+            href={marketplaceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`${PRIMARY} px-3 text-center no-underline`}
+          >
+            <span className="imark h-[18px] w-[18px] flex-none border-0 bg-transparent">
+              <GoogleChatMark fillPct={100} />
+            </span>
+            {t('marketplace.install')}
+            <Icon name="external-link" size={14} className="flex-none" />
+          </a>
+          <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
+            {t('marketplace.next')}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setOwnApp(true)}
+          className="mb-4 flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)"
+        >
+          <Icon name="chevron-right" size={14} color="var(--text-tertiary)" />
+          {t('marketplace.useOwn')}
+        </button>
+      </>
     )
   }
 

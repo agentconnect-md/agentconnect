@@ -211,8 +211,12 @@ Google documents organization-level [key-creation constraints](https://docs.clou
 Account and credential readiness therefore belong at the start of setup.
 
 The console module (`packages/web/src/components/console/platforms/googlechat/`)
-builds these steps as its one pane, for an organization's own app; the
-deployment app is claimed from Google Chat, not from the console. Without a
+builds these steps for an organization's own app. On the organization's preset
+agent, where a claim lands (§10.5), it first links the deployment app's Google
+Workspace Marketplace listing, `https://workspace.google.com/marketplace/app/<slug>/<project number>`
+from the number `GET /integrations/googlechat/app` reports (a Chat app's
+Marketplace ID is its project number, and Google redirects any slug to the
+listing's own); the organization then connects itself from Google Chat. Without a
 public relay the pane says so and offers nothing, because Google Chat has no
 other transport. The pane lists the prerequisites (steps 1 and 2 and the
 service account of step 4), links to the

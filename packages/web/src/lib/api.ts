@@ -4511,6 +4511,13 @@ export async function replaceSlackBotToken(id: string, botToken: string): Promis
 }
 
 // ── Google Chat (google-chat-integration.md §3) ──
+/** `GET /integrations/googlechat/app`: the deployment app's project number, null when the deployment has none. */
+export interface GoogleChatDeploymentAppDto {
+  projectNumber: string | null
+}
+export async function fetchGoogleChatDeploymentApp(orgId?: string): Promise<GoogleChatDeploymentAppDto> {
+  return apiGet<GoogleChatDeploymentAppDto>(`${orgBase(orgId)}/integrations/googlechat/app`)
+}
 /** Replace a per-agent Chat app's service-account key under the create path's validation; the key is write-only. */
 export async function replaceGoogleChatKey(botId: string, serviceAccountKey: string): Promise<BotDto> {
   return apiPut<BotDto>(`${orgBase()}/bots/${encodeURIComponent(botId)}/googlechat/key`, { serviceAccountKey })

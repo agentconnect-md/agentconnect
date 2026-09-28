@@ -5480,6 +5480,11 @@
     "googlechat": {
       "checking": "正在检查这个部署…",
       "relayRequired": "Google Chat 只通过 HTTPS 回调投递，因此需要一个公开的回调地址。请管理员配置后再在这里连接应用。",
+      "marketplace": {
+        "install": "从 Google Workspace Marketplace 安装",
+        "next": "安装后，在 Google Chat 中给该应用发消息，即可连接这个组织。",
+        "useOwn": "改用你自己的 Google Chat 应用"
+      },
       "prerequisites": {
         "title": "开始之前",
         "account": "一个能配置 Chat 应用的 Google Workspace 账号",

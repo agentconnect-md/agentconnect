@@ -5480,6 +5480,11 @@
     "googlechat": {
       "checking": "Checking this deployment…",
       "relayRequired": "Google Chat delivers over HTTPS callbacks only, so it needs a public callback endpoint. Ask an administrator to configure one, then connect an app here.",
+      "marketplace": {
+        "install": "Install from Google Workspace Marketplace",
+        "next": "After installing, message the app in Google Chat to connect this organization.",
+        "useOwn": "Use your own Google Chat app instead"
+      },
       "prerequisites": {
         "title": "Before you start",
         "account": "A Google Workspace account that can configure Chat apps",
