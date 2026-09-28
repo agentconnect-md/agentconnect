@@ -123,7 +123,7 @@ import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   effectiveRepoAccess,
-  findRepoAuthorization,
+  findGithubRepoAuthorization,
   hasChecksWritePermission,
   hasPullRequestsReadPermission,
   hasPullRequestsWritePermission,
@@ -621,7 +621,7 @@ export default function AddIntegrationModal({
     null
   )
   const ghSelectedRepo = ghRepos?.find((repo) => repo.fullName.toLowerCase() === ghRepoPick?.toLowerCase())
-  const ghSelectedAuthorization = findRepoAuthorization(authorizedRepos, ghSelectedRepo?.repoId, ghRepoPick)
+  const ghSelectedAuthorization = findGithubRepoAuthorization(authorizedRepos, ghSelectedRepo?.repoId, ghRepoPick)
   const ghSelectedIsWorkspace = isWorkspaceRepo({
     repoId: ghSelectedRepo?.repoId,
     repoFullName: ghRepoPick,
@@ -1753,7 +1753,7 @@ export default function AddIntegrationModal({
                   const wsLc = wsRepo?.toLowerCase() ?? null
                   const tierOf = (fullName: string, repoId?: string) => {
                     const tier =
-                      findRepoAuthorization(authorizedRepos, repoId, fullName)?.access ??
+                      findGithubRepoAuthorization(authorizedRepos, repoId, fullName)?.access ??
                       installationGrantAccess(fullName, installationGrants)
                     return tier === 'none' ? undefined : tier
                   }

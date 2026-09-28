@@ -3,7 +3,7 @@ import {
   REPORTING_MODE_OPTIONS,
   REVIEW_POLICY_OPTIONS,
   effectiveRepoAccess,
-  findRepoAuthorization,
+  findGithubRepoAuthorization,
   githubReviewCapabilities,
   githubReviewSettingsFromCapabilities,
   hasChecksWritePermission,
@@ -133,10 +133,26 @@ describe('R1/R2a GitHub review settings', () => {
   it("never hands a renamed repository's row to a new repository that reuses its name", () => {
     const stale = { id: 'old', repoId: '11', repoFullName: 'acme/docs', access: 'write' as const }
     const legacy = { id: 'legacy', repoFullName: 'acme/legacy', access: 'read' as const }
-    expect(findRepoAuthorization([stale, legacy], '22', 'acme/docs')).toBeUndefined()
-    expect(findRepoAuthorization([stale, legacy], '11', 'acme/docs-old')).toBe(stale)
-    expect(findRepoAuthorization([stale, legacy], '33', 'acme/legacy')).toBe(legacy)
-    expect(findRepoAuthorization([stale, legacy], undefined, 'acme/docs')).toBe(stale)
+    expect(findGithubRepoAuthorization([stale, legacy], '22', 'acme/docs')).toBeUndefined()
+    expect(findGithubRepoAuthorization([stale, legacy], '11', 'acme/docs-old')).toBe(stale)
+    expect(findGithubRepoAuthorization([stale, legacy], '33', 'acme/legacy')).toBe(legacy)
+    expect(findGithubRepoAuthorization([stale, legacy], undefined, 'acme/docs')).toBe(stale)
+  })
+
+  it('scopes numeric ids to GitHub rows', () => {
+    const gitlab = { provider: 'gitlab' as const, repoId: '42', repoFullName: 'acme/project', access: 'write' as const }
+    const github = { provider: 'github' as const, repoId: '42', repoFullName: 'acme/repo', access: 'read' as const }
+    expect(findGithubRepoAuthorization([gitlab], '42', 'acme/repo')).toBeUndefined()
+    expect(findGithubRepoAuthorization([gitlab, github], '42', 'acme/repo')).toBe(github)
+    expect(findGithubRepoAuthorization([gitlab], undefined, 'acme/project')).toBeUndefined()
+    expect(
+      effectiveRepoAccess({
+        repoId: '42',
+        repoFullName: 'acme/repo',
+        workspace: { mode: 'scratch' },
+        authorizations: [gitlab]
+      })
+    ).toBe('none')
   })
 
   it('uses numeric repo provenance before names and falls back only for legacy rows', () => {

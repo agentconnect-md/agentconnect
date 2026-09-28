@@ -125,6 +125,7 @@ export function effectiveRepoAccess(input: {
     gitAccess?: 'read' | 'write'
   }
   authorizations: ReadonlyArray<{
+    provider?: CodeHostProvider
     repoId?: string
     repoFullName: string
     access: 'read' | 'comment' | 'write'
@@ -142,18 +143,17 @@ export function effectiveRepoAccess(input: {
     // write on the CP, so preserve that safe compatibility interpretation.
     return input.workspace.gitAccess ?? 'write'
   }
-  const explicit = findRepoAuthorization(input.authorizations, input.repoId, input.repoFullName)
+  const explicit = findGithubRepoAuthorization(input.authorizations, input.repoId, input.repoFullName)
   return explicit?.access ?? installationGrantAccess(input.repoFullName, input.installationGrants)
 }
 
-/** The explicit grant row for a repository; a name matches only when one side has no numeric id, so a renamed repo's row never claims its reused name. */
-export function findRepoAuthorization<T extends { repoId?: string; repoFullName: string }>(
-  authorizations: readonly T[],
-  repoId: string | null | undefined,
-  repoFullName: string | null | undefined
-): T | undefined {
+/** A GitHub repository's explicit grant row (ids are per host; no provider means legacy GitHub); a name matches only when one side has no id. */
+export function findGithubRepoAuthorization<
+  T extends { provider?: CodeHostProvider; repoId?: string; repoFullName: string }
+>(rows: readonly T[], repoId: string | null | undefined, repoFullName: string | null | undefined): T | undefined {
   const wantedId = repoId?.trim()
   const wanted = repoFullName?.trim().toLowerCase()
+  const authorizations = rows.filter((row) => (row.provider ?? 'github') === 'github')
   return wantedId
     ? (authorizations.find((row) => row.repoId?.trim() === wantedId) ??
         authorizations.find((row) => !row.repoId && !!wanted && row.repoFullName.toLowerCase() === wanted))
