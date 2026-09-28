@@ -2419,7 +2419,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Decide an agent approval request',
           description:
-            'Allow or deny one pending runtime request on the owning daemon. Only callers who can edit the agent may decide it.',
+            'Allow or deny one pending runtime request on the owning daemon, optionally by one of the options it offers. Only callers who can edit the agent may decide it.',
           operationId: 'decideAgentPermissionRequest',
           params: z.object({ id: z.string().uuid(), requestId: z.string().uuid() }),
           body: AgentPermissionDecisionBody,
@@ -2453,6 +2453,7 @@ export function agentRoutes(deps: HttpDeps) {
             agentId: agent.id,
             requestId: req.params.requestId,
             decision: req.body.decision,
+            ...(req.body.optionId ? { optionId: req.body.optionId } : {}),
             decidedBy: `user:${me.userId}`,
             ...(decidedByName ? { decidedByName } : {})
           })

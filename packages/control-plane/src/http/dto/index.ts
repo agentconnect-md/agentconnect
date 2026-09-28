@@ -15,6 +15,7 @@ import {
   ChannelDecisionBinding,
   ChannelDecisionGate,
   DaemonLifecyclePhase,
+  AgentPermissionDecision,
   AgentPermissionRequestRecord,
   ExternalMemoryBinding,
   ManagedMemoryBinding,
@@ -933,7 +934,9 @@ export const AgentListDto = z.array(AgentDto)
 /** Live, daemon-owned approval queue exposed only to editors of the Agent. */
 export const AgentPermissionRequestDto = AgentPermissionRequestRecord
 export const AgentPermissionRequestPageDto = z.object({ requests: z.array(AgentPermissionRequestDto) })
-export const AgentPermissionDecisionBody = z.object({ decision: z.enum(['allow', 'deny']) }).strict()
+export const AgentPermissionDecisionBody = z
+  .object({ decision: z.enum(['allow', 'deny']), optionId: AgentPermissionDecision.shape.optionId })
+  .strict()
 
 /** Agent-create response; includes a daemon `connect` block when `?connect=true`. */
 export const AgentCreatedDto = AgentDto.extend({

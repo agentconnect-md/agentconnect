@@ -14,6 +14,7 @@ import type {
   AgentApprovalRoute,
   AgentApprovalRouted,
   AgentPermissionDecision,
+  AgentPermissionOption,
   ApprovalRouteTarget,
   ElicitCard,
   ElicitOutcome
@@ -68,6 +69,7 @@ import {
   WEBCHAT_ELICIT_SURFACE
 } from '../slack/render.js'
 import type { ElicitKind, ElicitSurface, ElicitTarget } from '../slack/render.js'
+import { consolePermissionOptions, editorDecisionOption } from './editor-options.js'
 import { slackThreadUrl } from '../platforms/slack/permalink.js'
 import { slackAgentIdentityOptions } from '../platforms/slack/turn-output.js'
 import { turnChromeFor } from '../platforms/turn-chrome.js'
@@ -722,12 +724,7 @@ export class PermissionCoordinator {
     return await this.trackHumanApprovalWait(p, result)
   }
 
-  /** Say in the channel that a permission request offered more options than the card can show, so
-   *  it was declined. The reader just lost a decision they could otherwise have made, and a
-   *  silently cancelled tool call would read as the agent stalling. Deliberately points at NO
-   *  other surface: they all top out in the same place, and the console never sees the options at
-   *  all (#1969) — sending them there would trade a truncated menu for an invisible one. Best
-   *  effort: the decline never depends on the notice landing. */
+  /** Say in the channel that a too-long option list was declined; every surface, the console included, shares the cap (#1969). */
   private noticePermissionOptionsUnrenderable(p: Pending, params: RequestPermissionRequest): void {
     const text =
       `:lock: The agent asked for permission to run ${permToolLabel(params)} with more options ` +
@@ -1036,6 +1033,14 @@ export class PermissionCoordinator {
     rec.resolve(res)
   }
 
+  /** The options a live permission request offers the console; undefined once it is settled or for an elicitation (#1969). */
+  pendingPermissionOptions(agentId: string, requestId: string): AgentPermissionOption[] | undefined {
+    const editor = this.pendingEditorPermissions.get(requestId)
+    if (editor?.kind === 'permission' && editor.agentId === agentId) return consolePermissionOptions(editor.params)
+    const chat = this.pendingChatPermissions.get(requestId)
+    return chat?.agentId === agentId ? consolePermissionOptions(chat.params) : undefined
+  }
+
   async decideEditorPermission(req: AgentPermissionDecision): Promise<Ack> {
     const decidedBy = { resolvedBy: req.decidedBy ?? null, resolvedByName: req.decidedByName ?? null }
     const decidedAllow = req.decision === 'allow'
@@ -1047,6 +1052,7 @@ export class PermissionCoordinator {
         if (!elicitation?.approval || elicitation.agentId !== req.agentId) {
           return { ok: false, reason: 'permission request is no longer pending' }
         }
+        if (req.optionId !== undefined) return { ok: false, reason: 'request offers no options' }
         if (
           !(await this.resolveStoredPermissionRequest(
             req.agentId,
@@ -1076,13 +1082,9 @@ export class PermissionCoordinator {
         elicitation.resolve(req.decision === 'allow' ? { action: 'accept' } : { action: 'cancel' })
         return { ok: true }
       }
-      const option =
-        req.decision === 'allow'
-          ? (chat.params.options.find((candidate) => candidate.kind === 'allow_once') ??
-            chat.params.options.find((candidate) => candidate.kind === 'allow_always'))
-          : (chat.params.options.find((candidate) => candidate.kind === 'reject_once') ??
-            chat.params.options.find((candidate) => candidate.kind === 'reject_always'))
-      if (req.decision === 'allow' && !option) return { ok: false, reason: 'runtime did not offer an allow option' }
+      const chosen = editorDecisionOption(chat.params.options, req)
+      if (!chosen.ok) return chosen
+      const option = chosen.option
       if (
         !(await this.resolveStoredPermissionRequest(
           req.agentId,
@@ -1120,18 +1122,15 @@ export class PermissionCoordinator {
     let permissionResponse: RequestPermissionResponse | undefined
     let elicitationResponse: CreateElicitationResponse | undefined
     if (pending.kind === 'permission') {
-      const option =
-        req.decision === 'allow'
-          ? (pending.params.options.find((o) => o.kind === 'allow_once') ??
-            pending.params.options.find((o) => o.kind === 'allow_always'))
-          : (pending.params.options.find((o) => o.kind === 'reject_once') ??
-            pending.params.options.find((o) => o.kind === 'reject_always'))
-      if (req.decision === 'allow' && !option) return { ok: false, reason: 'runtime did not offer an allow option' }
+      const chosen = editorDecisionOption(pending.params.options, req)
+      if (!chosen.ok) return chosen
+      const option = chosen.option
       this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'agent_editor' })
       permissionResponse = option
         ? { outcome: { outcome: 'selected', optionId: option.optionId } }
         : { outcome: { outcome: 'cancelled' } }
     } else {
+      if (req.optionId !== undefined) return { ok: false, reason: 'request offers no options' }
       elicitationResponse = req.decision === 'allow' ? { action: 'accept' } : { action: 'cancel' }
     }
 
@@ -1427,14 +1426,7 @@ export class PermissionCoordinator {
       })
       return { outcome: { outcome: 'cancelled' } }
     }
-    // A list NO surface here can offer whole is not answered anywhere, and that is the honest end
-    // of it (#1811). This sits above the chat/editor split because every surface tops out in the
-    // same place: the in-channel card and the approval DM share one builder and one block, and the
-    // console never sees the options at all — its record carries none and its Allow resolves to
-    // the FIRST `allow_once` (#1969). Truncating reported a pick from a menu the reader could not
-    // see the end of as their decision on the full request; routing to a surface that shows fewer
-    // options still would only move the misreport. So nothing is decided, the agent is told, and
-    // the turn's own surface says why.
+    // A list no surface can offer whole is declined, never truncated: the cards and the console share this cap (#1811, #1969).
     if (params.options.length > SLACK_PERMISSION_MAX_OPTIONS) {
       this.permissionEvaluationDetails.set(evaluationParams, { reason: 'permission_options_unrenderable' })
       this.noticePermissionOptionsUnrenderable(p, params)

@@ -32,6 +32,7 @@ import type {
   AgentPermissionRequestList,
   AgentPermissionRequestPage,
   AgentPermissionDecision,
+  AgentPermissionOption,
   SessionVisibilityPush,
   DutyGrantEntry,
   DutyRevoke,
@@ -173,6 +174,7 @@ export interface ConfigApplyControlHost {
   applyDutyGrant(grants: DutyGrantEntry[]): void
   applyDutyRevoke(revocations: DutyRevoke['revocations']): void
   decideEditorPermission(req: AgentPermissionDecision): Promise<Ack>
+  pendingPermissionOptions(agentId: string, requestId: string): AgentPermissionOption[] | undefined
   leaveConversation(leave: IntegrationLeave): Promise<IntegrationLeaveOk>
   retractChannels(integrationId: string, channelIds: readonly string[]): Promise<void>
   runCronNow(cronId: string): Ack
@@ -772,27 +774,32 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
 }
 
 export async function listAgentPermissionRequests(
-  host: ConfigApplyCoreHost,
+  host: ConfigApplyCoreHost & Pick<ConfigApplyControlHost, 'pendingPermissionOptions'>,
   { agentId, limit }: AgentPermissionRequestList
 ): Promise<AgentPermissionRequestPage> {
   return {
     agentId,
     requests: await Promise.all(
-      (await host.store().listPermissionRequests(agentId, limit)).map(async (request) => ({
-        id: request.id,
-        agentId: request.agentId,
-        // The console scopes approvals to the session it is showing, by the id it routed on —
-        // the outward one (§1.1). The row is keyed by the runtime's, so it translates here.
-        sessionId: await outwardSessionId(host, request.agentId, request.sessionId),
-        createdAt: new Date(request.createdAt).toISOString(),
-        requesterId: request.requesterId,
-        requesterName: request.requesterName,
-        command: request.command,
-        status: request.status,
-        resolvedAt: request.resolvedAt === null ? null : new Date(request.resolvedAt).toISOString(),
-        resolvedBy: request.resolvedBy ?? null,
-        resolvedByName: request.resolvedByName ?? null
-      }))
+      (await host.store().listPermissionRequests(agentId, limit)).map(async (request) => {
+        const options =
+          request.status === 'pending' ? host.pendingPermissionOptions(request.agentId, request.id) : undefined
+        return {
+          id: request.id,
+          agentId: request.agentId,
+          // The console scopes approvals to the session it is showing, by the id it routed on —
+          // the outward one (§1.1). The row is keyed by the runtime's, so it translates here.
+          sessionId: await outwardSessionId(host, request.agentId, request.sessionId),
+          createdAt: new Date(request.createdAt).toISOString(),
+          requesterId: request.requesterId,
+          requesterName: request.requesterName,
+          command: request.command,
+          status: request.status,
+          resolvedAt: request.resolvedAt === null ? null : new Date(request.resolvedAt).toISOString(),
+          resolvedBy: request.resolvedBy ?? null,
+          resolvedByName: request.resolvedByName ?? null,
+          ...(options ? { options } : {})
+        }
+      })
     )
   }
 }

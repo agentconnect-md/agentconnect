@@ -3,7 +3,12 @@
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
-import { decideAgentPermissionRequest, fetchAgentPermissionRequests, type AgentPermissionRequestDto } from '@/lib/api'
+import {
+  decideAgentPermissionRequest,
+  fetchAgentPermissionRequests,
+  type AgentPermissionOptionDto,
+  type AgentPermissionRequestDto
+} from '@/lib/api'
 import { MOCK_MODE } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -60,12 +65,12 @@ export function ApprovalRequestsCard({
 
   if (pendingOnly && pendingCount === 0) return null
 
-  const decide = async (request: AgentPermissionRequestDto, decision: 'allow' | 'deny') => {
+  const decide = async (request: AgentPermissionRequestDto, decision: 'allow' | 'deny', optionId?: string) => {
     if (busy || request.status !== 'pending') return
-    setBusy(`${request.id}:${decision}`)
+    setBusy(`${request.id}:${optionId ?? decision}`)
     setDecisionError(null)
     try {
-      await decideAgentPermissionRequest(agentId, request.id, decision)
+      await decideAgentPermissionRequest(agentId, request.id, decision, optionId)
       // A decision made here needs no bell item to say so (slack-approval-dm.md §7).
       if (request.sessionId) notifications?.markSourceRead(approvalSourceKey(request.sessionId))
       void mutate(
@@ -132,7 +137,27 @@ export function ApprovalRequestsCard({
                     {request.command}
                   </div>
                 </div>
-                {request.status === 'pending' && (
+                {request.status === 'pending' && request.options?.length ? (
+                  // One control per option the runtime offered, in its order, as the chat card does (#1969).
+                  <div className="flex flex-wrap items-center gap-2 desktop:max-w-[60%] desktop:justify-end">
+                    {request.options.map((option) => {
+                      const decision = optionDecision(option)
+                      return (
+                        <Button
+                          key={option.optionId}
+                          variant={decision === 'allow' ? 'primary' : 'secondary'}
+                          size="xs"
+                          disabled={busy !== null}
+                          onClick={() => void decide(request, decision, option.optionId)}
+                        >
+                          {busy === `${request.id}:${option.optionId}`
+                            ? t(decision === 'allow' ? 'allowing' : 'denying')
+                            : option.name}
+                        </Button>
+                      )
+                    })}
+                  </div>
+                ) : request.status === 'pending' ? (
                   <div className="flex flex-none items-center gap-2">
                     <Button
                       variant="secondary"
@@ -146,7 +171,7 @@ export function ApprovalRequestsCard({
                       {allowBusy ? t('allowing') : t('allow')}
                     </Button>
                   </div>
-                )}
+                ) : null}
               </div>
             )
           })}
@@ -189,6 +214,10 @@ export function ApprovalRequestsCard({
       {collapsed ? null : body}
     </div>
   )
+}
+
+function optionDecision(option: AgentPermissionOptionDto): 'allow' | 'deny' {
+  return option.kind === 'allow_once' || option.kind === 'allow_always' ? 'allow' : 'deny'
 }
 
 function formatApprovalTime(iso: string): string {

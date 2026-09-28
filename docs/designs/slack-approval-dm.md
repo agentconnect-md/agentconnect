@@ -303,6 +303,20 @@ today the decision frame carries no actor at all). CP DTO and web client
 types follow. `protocol` is consumed by both daemon and CP — both sides
 rebuild and both sides get checked, per the standing rule.
 
+A live permission request's record also carries its own ACP options
+(`optionId`, `name`, `kind`), so the console offers one control per option
+as the chat card does, including `allow_always` (#1969). The daemon reads
+them from the parked request, not from SQLite, so a settled row carries
+none; an elicitation carries none either, and a list the record cannot hold
+whole carries none rather than a partial one. `AgentPermissionDecision`
+gains an optional `optionId`, re-derived against the request's own options:
+an option the request never offered, or one whose kind contradicts
+`decision`, is refused and the request stays pending. `decision` stays
+required and agrees with the option, so a daemon that predates the field
+still applies its binary mapping, and a console that sends no `optionId`
+keeps it too: Allow picks the first `allow_once` (else `allow_always`), and
+Deny the first `reject_once` (else `reject_always`, else cancels).
+
 ### 6.3 Actor verification on the DM card
 
 `handlePermissionChoice` currently refuses when

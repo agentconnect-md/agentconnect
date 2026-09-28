@@ -10,10 +10,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalStore } from '../src/store/local-store.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
+import { consolePermissionOptions } from '../src/permissions/editor-options.js'
+import { AGENT_PERMISSION_MAX_OPTIONS } from '@agentconnect.md/protocol'
 import { SlackConnection } from '../src/slack/connection.js'
 import { pendingTurnKey } from '../src/daemon/turn-types.js'
 import { agentHostKey } from '../src/acp/host-key.js'
 import {
+  SLACK_PERMISSION_MAX_OPTIONS,
   ELICIT_CONFIRM_ACTION,
   elicitForm,
   elicitFormBlockId,
@@ -548,7 +551,11 @@ describe('the approval list names its session the way the console asked for it',
       resolvedAt: null
     })
 
-    const host = { store: () => store, clock: () => ({ now: () => 1_000 }) } as never
+    const host = {
+      store: () => store,
+      clock: () => ({ now: () => 1_000 }),
+      pendingPermissionOptions: () => undefined
+    } as never
     const page = await listAgentPermissionRequests(host, { agentId: 'bot-a', limit: 10 })
     // The console routes on the outward id, so filtering by it must find this request.
     expect(page.requests.map((r) => r.sessionId)).toEqual([outward])
@@ -1013,9 +1020,7 @@ describe('a permission card offers every option or sends the request where they 
     await expect((daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(26))).resolves.toEqual({
       outcome: { outcome: 'cancelled' }
     })
-    // No card, and NO editor stand-in either: that surface's record carries no options and its
-    // Allow resolves to the first `allow_once`, so routing there would take away a choice the
-    // truncated card at least offered.
+    // No card, and no editor stand-in either: the console record shares the same cap (#1969).
     expect(posted).toEqual([])
     expect((daemon as any).permissions.pendingChatPermissions.size).toBe(0)
     expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
@@ -2149,5 +2154,187 @@ describe('memory extraction turns grant only the daemon’s own bound bridge too
     await expect(
       (daemon as any).permissions.onAcpPermission('agent-1', 's1', req({ toolCallId: 'late-write' }))
     ).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  })
+})
+
+describe('the console decides by the options the request offers (#1969)', () => {
+  const standard = [
+    { optionId: 'once', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'always', name: 'Always  Allow', kind: 'allow_always' },
+    { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+    { optionId: 'never', name: 'Never', kind: 'reject_always' }
+  ]
+  const fourOptionReq = () =>
+    ({
+      sessionId: 's1',
+      options: standard,
+      toolCall: { toolCallId: 'tc-1', title: 'Bash', rawInput: { command: 'git push' } }
+    }) as unknown as RequestPermissionRequest
+
+  async function queued(daemon: Daemon): Promise<{ requestId: string; result: Promise<unknown> }> {
+    const result = (daemon as any).permissions.onAcpPermission('agent-1', 's1', fourOptionReq())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    return { requestId, result }
+  }
+
+  it('lists a live request with its whole option list, and grants the persistent option by id', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installPending(daemon)
+    const { requestId, result } = await queued(daemon)
+
+    expect((daemon as any).permissions.pendingPermissionOptions('agent-1', requestId)).toEqual([
+      { optionId: 'once', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'always', name: 'Always Allow', kind: 'allow_always' },
+      { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+      { optionId: 'never', name: 'Never', kind: 'reject_always' }
+    ])
+    // Another agent's id never reads this request's options.
+    expect((daemon as any).permissions.pendingPermissionOptions('agent-2', requestId)).toBeUndefined()
+
+    await expect(
+      (daemon as any).permissions.decideEditorPermission({
+        agentId: 'agent-1',
+        requestId,
+        decision: 'allow',
+        optionId: 'always'
+      })
+    ).resolves.toEqual({ ok: true })
+    await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'always' } })
+    expect((daemon as any).store.resolvePermissionRequest).toHaveBeenCalledWith(
+      'agent-1',
+      requestId,
+      'allowed',
+      expect.any(Number),
+      expect.anything()
+    )
+    expect((daemon as any).permissions.pendingPermissionOptions('agent-1', requestId)).toBeUndefined()
+  })
+
+  it('refuses an option the request never offered, or one that contradicts the decision, and stays pending', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installPending(daemon)
+    const { requestId, result } = await queued(daemon)
+    const decide = (decision: 'allow' | 'deny', optionId?: string) =>
+      (daemon as any).permissions.decideEditorPermission({
+        agentId: 'agent-1',
+        requestId,
+        decision,
+        ...(optionId ? { optionId } : {})
+      })
+
+    expect(await decide('allow', 'forever')).toEqual({ ok: false, reason: 'runtime did not offer that option' })
+    expect(await decide('allow', 'never')).toEqual({ ok: false, reason: 'decision does not match the chosen option' })
+    expect(await decide('deny', 'always')).toEqual({ ok: false, reason: 'decision does not match the chosen option' })
+    expect((daemon as any).store.resolvePermissionRequest).not.toHaveBeenCalled()
+    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1)
+
+    expect(await decide('deny', 'never')).toEqual({ ok: true })
+    await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'never' } })
+  })
+
+  it('keeps an older console’s binary Allow on the narrowest grant', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installPending(daemon)
+    const { requestId, result } = await queued(daemon)
+    await (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'allow' })
+    await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
+  })
+
+  it('refuses an option id for an approval elicitation, which offers none', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installPending(daemon)
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    expect((daemon as any).permissions.pendingPermissionOptions('agent-1', requestId)).toBeUndefined()
+    expect(
+      await (daemon as any).permissions.decideEditorPermission({
+        agentId: 'agent-1',
+        requestId,
+        decision: 'allow',
+        optionId: 'once'
+      })
+    ).toEqual({ ok: false, reason: 'request offers no options' })
+    await (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'deny' })
+    await expect(result).resolves.toEqual({ action: 'cancel' })
+  })
+
+  it('resolves a chat-card request decided from the console by the same option id', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted, updated } = slackPending(daemon)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    const result = (daemon as any).permissions.onAcpPermission('agent-1', 's1', fourOptionReq())
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    const [requestId] = (daemon as any).permissions.pendingChatPermissions.keys()
+    expect((daemon as any).permissions.pendingPermissionOptions('agent-1', requestId)).toHaveLength(4)
+
+    expect(
+      await (daemon as any).permissions.decideEditorPermission({
+        agentId: 'agent-1',
+        requestId,
+        decision: 'deny',
+        optionId: 'once'
+      })
+    ).toEqual({ ok: false, reason: 'decision does not match the chosen option' })
+    expect(
+      await (daemon as any).permissions.decideEditorPermission({
+        agentId: 'agent-1',
+        requestId,
+        decision: 'allow',
+        optionId: 'always'
+      })
+    ).toEqual({ ok: true })
+    await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'always' } })
+    await vi.waitFor(() => expect(JSON.stringify(updated)).toContain('Always  Allow'))
+  })
+
+  it('carries the options only on a pending row of the listed page', async () => {
+    const store = await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-approvals-')), 'local.sqlite'))
+    for (const [id, status] of [
+      ['live', 'pending'],
+      ['done', 'allowed']
+    ] as const) {
+      await store.createPermissionRequest({
+        id,
+        agentId: 'bot-a',
+        sessionId: 'acp-1',
+        createdAt: 100,
+        requesterId: null,
+        requesterName: null,
+        command: 'git push',
+        status,
+        resolvedAt: null
+      })
+    }
+    const options = consolePermissionOptions(fourOptionReq())
+    const host = {
+      store: () => store,
+      clock: () => ({ now: () => 1_000 }),
+      pendingPermissionOptions: () => options
+    } as never
+    const page = await listAgentPermissionRequests(host, { agentId: 'bot-a', limit: 10 })
+    const byId = new Map(page.requests.map((r) => [r.id, r]))
+    expect(byId.get('live')?.options).toEqual(options)
+    expect(byId.get('done')).not.toHaveProperty('options')
+    await store.close()
+  })
+
+  it('offers no partial list: an unknown kind or a list past the shared cap carries none', () => {
+    expect(AGENT_PERMISSION_MAX_OPTIONS).toBe(SLACK_PERMISSION_MAX_OPTIONS)
+    const withOptions = (options: unknown[]) =>
+      consolePermissionOptions({ sessionId: 's1', options, toolCall: { toolCallId: 't' } } as never)
+    expect(withOptions([])).toBeUndefined()
+    expect(withOptions([...standard, { optionId: 'x', name: 'Maybe', kind: 'allow_sometimes' }])).toBeUndefined()
+    const many = Array.from({ length: AGENT_PERMISSION_MAX_OPTIONS + 1 }, (_, i) => ({
+      optionId: `o${i}`,
+      name: `Opt ${i}`,
+      kind: 'allow_once'
+    }))
+    expect(withOptions(many)).toBeUndefined()
+    expect(withOptions(many.slice(1))).toHaveLength(AGENT_PERMISSION_MAX_OPTIONS)
+    expect(withOptions([{ optionId: 'blank', name: '  ', kind: 'allow_once' }])).toEqual([
+      { optionId: 'blank', name: 'blank', kind: 'allow_once' }
+    ])
   })
 })

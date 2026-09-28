@@ -1201,7 +1201,11 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
           requesterName: 'Ada',
           command: 'Bash: pnpm test',
           status: 'pending' as const,
-          resolvedAt: null
+          resolvedAt: null,
+          options: [
+            { optionId: 'once', name: 'Allow', kind: 'allow_once' as const },
+            { optionId: 'always', name: 'Always Allow', kind: 'allow_always' as const }
+          ]
         }
       ]
     }))
@@ -1221,7 +1225,11 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
           sessionId: 'session-1',
           requesterName: 'Ada',
           command: 'Bash: pnpm test',
-          status: 'pending'
+          status: 'pending',
+          options: [
+            { optionId: 'once', name: 'Allow', kind: 'allow_once' },
+            { optionId: 'always', name: 'Always Allow', kind: 'allow_always' }
+          ]
         })
       ]
     })
@@ -1241,6 +1249,18 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       decidedBy: expect.stringMatching(/^user:/),
       decidedByName: expect.any(String)
     })
+
+    // The chosen option rides through to the daemon, which re-derives it against the request (#1969).
+    const chosen = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${agentId}/permission-requests/${requestId}/decision`,
+      payload: { decision: 'allow', optionId: 'always' }
+    })
+    expect(chosen.statusCode).toBe(200)
+    expect(agentPermissionDecision).toHaveBeenLastCalledWith(
+      daemonId,
+      expect.objectContaining({ decision: 'allow', optionId: 'always' })
+    )
   })
 
   it('POST + PATCH /agents carries mcpServers in the runtimeOverrides JSON; null clears to []', async () => {

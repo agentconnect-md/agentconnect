@@ -22683,6 +22683,7 @@ export class Daemon {
       applyDutyGrant: (grants) => this.dutyCoordinator.applyDutyGrant(grants),
       applyDutyRevoke: (revocations) => this.dutyCoordinator.applyDutyRevoke(revocations),
       decideEditorPermission: (req) => this.permissions.decideEditorPermission(req),
+      pendingPermissionOptions: (agentId, requestId) => this.permissions.pendingPermissionOptions(agentId, requestId),
       leaveConversation: (leave) => this.connections.leaveConversation(leave),
       retractChannels: (integrationId, channelIds) =>
         this.observedChannelsSync.retractChannels(integrationId, channelIds),

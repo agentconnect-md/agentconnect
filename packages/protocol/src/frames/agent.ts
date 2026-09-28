@@ -656,6 +656,18 @@ export const AgentScopeDenied = z.object({
 })
 export type AgentScopeDenied = z.infer<typeof AgentScopeDenied>
 
+// Bounds on the options a console approval row carries: the chat cards' cap, and an id no runtime nears.
+export const AGENT_PERMISSION_MAX_OPTIONS = 25
+export const AGENT_PERMISSION_OPTION_ID_MAX = 256
+
+// One ACP permission option as the console renders it (#1969).
+export const AgentPermissionOption = z.object({
+  optionId: z.string().min(1).max(AGENT_PERMISSION_OPTION_ID_MAX),
+  name: z.string().max(240),
+  kind: z.enum(['allow_once', 'allow_always', 'reject_once', 'reject_always'])
+})
+export type AgentPermissionOption = z.infer<typeof AgentPermissionOption>
+
 /** Editor approval queue. The daemon owns the live resolver and durable local
  * history; the Control Plane only proxies this bounded, secret-masked summary. */
 export const AgentPermissionRequestRecord = z.object({
@@ -674,7 +686,9 @@ export const AgentPermissionRequestRecord = z.object({
   // Who decided (slack-approval-dm.md §6.1): `user:<id>` for console decisions,
   // `slack:<teamId>:<userId>` for card decisions. Optional for rolling compatibility.
   resolvedBy: z.string().nullable().optional(),
-  resolvedByName: z.string().nullable().optional()
+  resolvedByName: z.string().nullable().optional(),
+  // The live request's own options; absent once it is settled, for an elicitation, or from an older daemon.
+  options: z.array(AgentPermissionOption).max(AGENT_PERMISSION_MAX_OPTIONS).optional()
 })
 export type AgentPermissionRequestRecord = z.infer<typeof AgentPermissionRequestRecord>
 
@@ -694,6 +708,8 @@ export const AgentPermissionDecision = z.object({
   agentId: z.string().uuid(),
   requestId: z.string().uuid(),
   decision: z.enum(['allow', 'deny']),
+  // The option chosen, which must agree with `decision`; without it an older daemon's binary mapping applies.
+  optionId: z.string().min(1).max(AGENT_PERMISSION_OPTION_ID_MAX).optional(),
   // CP-stamped decider (slack-approval-dm.md §6.2) — never client-supplied.
   decidedBy: z.string().min(1).optional(),
   decidedByName: z.string().min(1).optional()

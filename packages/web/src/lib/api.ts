@@ -3733,6 +3733,14 @@ export interface AgentPermissionRequestDto {
   resolvedAt: string | null
   resolvedBy?: string | null
   resolvedByName?: string | null
+  /** The live request's own options; absent for an elicitation, a settled request, or an older daemon. */
+  options?: AgentPermissionOptionDto[]
+}
+
+export interface AgentPermissionOptionDto {
+  optionId: string
+  name: string
+  kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always'
 }
 
 /** Live daemon-owned approval queue. The CP proxies it and never persists the rows. */
@@ -3746,11 +3754,12 @@ export async function fetchAgentPermissionRequests(agentId: string): Promise<Age
 export async function decideAgentPermissionRequest(
   agentId: string,
   requestId: string,
-  decision: 'allow' | 'deny'
+  decision: 'allow' | 'deny',
+  optionId?: string
 ): Promise<void> {
   await apiPost<{ ok: true }>(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/permission-requests/${encodeURIComponent(requestId)}/decision`,
-    { decision }
+    optionId ? { decision, optionId } : { decision }
   )
 }
 
