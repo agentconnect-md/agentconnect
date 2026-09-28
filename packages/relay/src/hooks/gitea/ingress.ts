@@ -23,6 +23,7 @@ import {
   buildGiteaContext,
   buildTrustedGiteaMetadata,
   giteaMentionCandidates,
+  giteaRuleFamilies,
   giteaRuleIsSummoned,
   giteaRuleVerdict,
   giteaSessionKey,
@@ -120,8 +121,9 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
       if (cleanup) {
         // Maintenance cleanup (§8): relay-authored, never a turn, and past the actor gate so no worktree leaks.
         const { event: cleanupEvent, kind, index: cleanupIndex } = cleanup
+        const family = kind === 'issue' ? 'issues' : 'merge_request'
         for (const rule of rules) {
-          if (rule.kind !== 'gitea' || !rule.gitea) continue
+          if (rule.kind !== 'gitea' || !rule.gitea || !giteaRuleFamilies(rule).has(family)) continue
           const gitea: GiteaHookMetadata = {
             repoId: rule.gitea.repoId,
             ...(rule.gitea.host !== undefined ? { host: rule.gitea.host } : {}),
@@ -141,7 +143,7 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
             gitea,
             context: buildGiteaContext(payload, {
               eventAction: cleanupEvent,
-              family: kind === 'issue' ? 'issues' : 'merge_request',
+              family,
               labels: [],
               mentionText: undefined,
               index: cleanupIndex
