@@ -120,7 +120,7 @@ export function agentApiRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: "Set a chat API's Decision gate",
           description:
-            'Admits a turn over `protocol` only when the Decision chain matches; a negative answer refuses it with 422 `declined`, and a turn whose evaluation is unavailable is admitted. `gate: null` admits every turn. Every daemon serving the agent must support it (409 otherwise).',
+            'Admits a turn over `protocol` only when the Decision chain matches; a negative answer refuses it with 422 `declined`, and a turn whose evaluation is unavailable is admitted. `gate: null` admits every turn. Refusals carry `code` DECISION_NOT_FOUND (404) or, when a connected daemon serving the agent cannot run the gate, DECISION_UNSUPPORTED_CONSUMER (409).',
           operationId: 'setAgentApiGate',
           params: EntryParams,
           body: GateBody,
@@ -141,7 +141,10 @@ export function agentApiRoutes(deps: HttpDeps) {
           // Validated like a channel's By decision (decisions.md §6.3): 404 when invisible, 400 on the condition.
           const chain = await visibleDecisionChain(deps, req, gate)
           const root = chain?.get(gate.decisionId)
-          if (!chain || !root) return notFound(reply, 'decision not found')
+          if (!chain || !root)
+            return reply
+              .code(404)
+              .send({ error: 'Not Found', statusCode: 404, message: 'decision not found', code: 'DECISION_NOT_FOUND' })
           const issues = decisionGateIssues(root.question, gate, new Map([...chain].map(([id, d]) => [id, d.question])))
           if (issues.length > 0)
             return reply.code(400).send({
@@ -150,11 +153,15 @@ export function agentApiRoutes(deps: HttpDeps) {
               message: 'The condition does not match the Decision question',
               issues
             })
+          // An offline daemon takes the gate from its reconnect roster; only a connected one that cannot run it refuses.
           const readiness = await apiGateReadiness(deps, agent, (gate.steps?.length ?? 0) > 0)
-          if (readiness.status !== 'ready')
-            return reply
-              .code(409)
-              .send({ error: 'Conflict', statusCode: 409, message: readiness.reason ?? 'the gate cannot run yet' })
+          if (readiness.status === 'unsupported')
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: readiness.reason ?? 'A daemon serving this agent cannot run the gate',
+              code: 'DECISION_UNSUPPORTED_CONSUMER'
+            })
         }
         const next: AgentApiGates = { ...agent.apiGates }
         if (gate) next[protocol] = gate

@@ -147,7 +147,11 @@ describe('agent chat API Decision gate', () => {
     expect(wrong.statusCode).toBe(400)
     const unsupported = await setGate(a, gateOf(decisionId))
     expect(unsupported.statusCode).toBe(409)
+    expect(unsupported.json()).toMatchObject({ code: 'DECISION_UNSUPPORTED_CONSUMER' })
     expect((unsupported.json() as { message: string }).message).toContain('Upgrade the daemon')
+    const hidden = await setGate(a, gateOf('44444444-4444-4444-8444-444444444444'))
+    expect(hidden.statusCode).toBe(404)
+    expect(hidden.json()).toMatchObject({ code: 'DECISION_NOT_FOUND' })
   })
 
   it('keeps the Decision in use while the gate holds it, and releases it with the API', async () => {

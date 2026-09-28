@@ -648,9 +648,10 @@ the chain on the turn's text before recording anything. An answered no refuses
 the turn as `declined`; a match admits it; and, as with every chat gate
 ([decisions.md §5](decisions.md#5-provider-execution-and-failure-behavior)), an evaluation that is unavailable, over
 capacity, or past its five-second deadline admits it. The daemon advertises
-`api-decision-gate-v1`, and the CP refuses to save a gate (409) while any
-daemon serving the agent lacks it. Removing the API removes its gate, and a
-Decision a gate names cannot be deleted.
+`api-decision-gate-v1`, and the CP refuses to save a gate (409
+`DECISION_UNSUPPORTED_CONSUMER`) while a connected daemon serving the agent
+lacks it; an offline one takes the gate from its reconnect roster. Removing the
+API removes its gate, and a Decision a gate names cannot be deleted.
 
 Tool activity arrives as `data-tool` parts rather than AI SDK tool parts,
 because webchat carries a tool's title and status but not its name or
