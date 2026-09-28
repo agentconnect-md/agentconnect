@@ -300,6 +300,14 @@ const PROVIDER_AUTH_MESSAGES = [
   /\bapi key not valid\b/i
 ]
 
+// Claude Code's own wording when another process holds, or died holding, its OAuth refresh lock.
+const OAUTH_REFRESH_CONTENTION = /\banother claude code process is refreshing it\b/i
+
+/** Whether a turn failed only because Claude Code's OAuth refresh lock was contended — transient, unlike a dead login. */
+export function isOAuthRefreshContention(err: unknown): boolean {
+  return OAUTH_REFRESH_CONTENTION.test(failureSignals(err).join('\n'))
+}
+
 /** Collect the small family of fields ACP adapters and provider SDKs use to
  * wrap an upstream error. The depth/seen guards tolerate nested `error.data`
  * and `cause` shapes without recursively inspecting an arbitrary request body.

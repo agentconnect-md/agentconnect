@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import {
   AcpHost,
   claudeSessionMeta,
+  isOAuthRefreshContention,
   shouldForwardUpdateDuringLoad,
   turnFailureCode,
   turnFailureReason
@@ -742,6 +743,20 @@ describe('turnFailureCode (normalized non-actionable provider failures)', () => 
       { code: -32603 }
     )
     expect(turnFailureCode(error)).toBe('provider_auth_required')
+  })
+
+  it('recognizes Claude Code refresh-lock contention as transient, not a dead login', () => {
+    const error = Object.assign(
+      new Error(
+        'Internal error: Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again'
+      ),
+      { code: -32603, data: { errorKind: 'authentication_failed' } }
+    )
+    expect(isOAuthRefreshContention(error)).toBe(true)
+    expect(turnFailureCode(error)).toBe('turn_failed')
+    expect(
+      isOAuthRefreshContention(new Error('Failed to authenticate: OAuth session expired and could not be refreshed'))
+    ).toBe(false)
   })
 
   it('classifies a revoked refresh token as provider_auth_required', () => {

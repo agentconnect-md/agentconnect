@@ -167,6 +167,7 @@ import {
 } from './store/local-store.js'
 import {
   AcpHost,
+  isOAuthRefreshContention,
   turnFailureCode,
   turnFailureReason,
   isRuntimeSessionGone,
@@ -1000,6 +1001,9 @@ type HostRetirement = {
 /** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
  *  try is logged with the stage it sat in, so a silent stall names its step. */
 const RELAY_ACK_SLOW_MS = 4000
+
+/** Claude Code asks for a retry "in a minute" when its OAuth refresh lock is contended. */
+const OAUTH_REFRESH_CONTENTION_RETRY_MS = 60_000
 
 /** The step a relay delivery is in, read by the slow-ack watchdog when it fires. */
 type RelayAckTrace = { stage: string }
@@ -15270,6 +15274,33 @@ export class Daemon {
     })
   }
 
+  /** One `session/prompt`, resent once after a pause when Claude's OAuth refresh lock was contended before the turn ran a tool. */
+  private async promptTurn(
+    p: Pending,
+    host: AcpHost,
+    sessionId: string,
+    promptBlocks: import('@agentclientprotocol/sdk').ContentBlock[]
+  ): ReturnType<AcpHost['prompt']> {
+    for (let attempt = 0; ; attempt++) {
+      p.promptRanTool = false
+      p.promptInFlight = true
+      // The stall watchdog's clock starts with the request, not with the turn's admission.
+      p.runtimeActivityAt = this.clock.now()
+      let failure: unknown
+      try {
+        return await host.prompt(sessionId, promptBlocks)
+      } catch (err) {
+        failure = err
+      } finally {
+        p.promptInFlight = false
+      }
+      if (attempt > 0 || p.promptRanTool || p.outputSuppressed || !isOAuthRefreshContention(failure)) throw failure
+      this.log.warn(`session ${sessionId}: Claude OAuth refresh contended; resending the prompt once`)
+      await new Promise<void>((resolve) => this.clock.setTimeout(resolve, OAUTH_REFRESH_CONTENTION_RETRY_MS))
+      if (p.outputSuppressed) throw failure
+    }
+  }
+
   /** Prompt the runtime, then decide whether the answer may be committed: a turn whose context
    *  changed underneath it regenerates against the new observations until the retry budget runs
    *  out. Returns 'cancelled' for every path that ends the turn without a committed answer —
@@ -15311,15 +15342,7 @@ export class Daemon {
       )
       // Start-fence linearization: no await occurs between queue coalescing above
       // (or the prior regeneration decision) and initiating this ACP request.
-      p.promptInFlight = true
-      // The stall watchdog's clock starts with the request, not with the turn's admission.
-      p.runtimeActivityAt = this.clock.now()
-      let result: PromptResult
-      try {
-        result = await host.prompt(sessionId, promptBlocks)
-      } finally {
-        p.promptInFlight = false
-      }
+      const result = await this.promptTurn(p, host, sessionId, promptBlocks)
       // The runtime's notifications are handled off the prompt call, so drain this
       // session's update chain before the turn reads what they wrote.
       await this.acpUpdateChains.get(acpUpdateChainKey(p.hostKey, sessionId))
@@ -18241,6 +18264,7 @@ export class Daemon {
     const p = this.pending.get(pendingTurnKey(owner, sessionId))
     // Any update — text, thought, tool call, usage — is proof the runtime is alive on this turn.
     if (p) p.runtimeActivityAt = this.clock.now()
+    if (p && update?.sessionUpdate === 'tool_call') p.promptRanTool = true
     this.evalHooks.emit({
       type: 'acp.update',
       agentId,

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { FakeClock } from './cp/fake-clock.js'
 
 /**
  * Live-turn auth signal (issue: claude-agent-acp initializes, opens sessions,
@@ -186,6 +187,97 @@ describe('live-turn runtime auth signal', () => {
       // The successful turn still completes and clears the mark.
       await (daemon as any).dispatch('bot-a', dm('200', 'q2'), 'int-a')
       expect((daemon as any).runtimeFacts.profileFor('claude').authRequired).toBeUndefined()
+    } finally {
+      await daemon.stop()
+    }
+  })
+})
+
+describe('Claude OAuth refresh-lock contention', () => {
+  const contended = () =>
+    Object.assign(
+      new Error(
+        'Internal error: Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again'
+      ),
+      { code: -32603 }
+    )
+
+  async function start(prompt: (sessionId: string) => Promise<{ stopReason: string }>) {
+    const clock = new FakeClock()
+    let sessions = 0
+    const fakeHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => `acp-${++sessions}`),
+      prompt: vi.fn(prompt),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      clock,
+      hostFactory: () => fakeHost as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    return { daemon, clock, fakeHost }
+  }
+
+  // The daemon arms its own 60 s timers too, so wait for the retry's timer on top of those.
+  async function advanceWhenArmed(clock: FakeClock, ms: number, before: number): Promise<void> {
+    await vi.waitFor(() => expect(clock.pending().filter((t) => t === ms).length).toBeGreaterThan(before))
+    clock.advance(ms)
+  }
+
+  const armed = (clock: FakeClock) => clock.pending().filter((t) => t === 60_000).length
+
+  it('resends the prompt once after a minute when nothing ran yet', async () => {
+    const outcomes = [contended, () => ({ stopReason: 'end_turn' })]
+    const { daemon, clock, fakeHost } = await start(async () => {
+      const next = outcomes.shift()!()
+      if (next instanceof Error) throw next
+      return next
+    })
+    try {
+      const before = armed(clock)
+      const turn = (daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')
+      await advanceWhenArmed(clock, 60_000, before)
+      await turn
+      expect(fakeHost.prompt).toHaveBeenCalledTimes(2)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('surfaces the failure when the retry is contended again', async () => {
+    const { daemon, clock, fakeHost } = await start(async () => {
+      throw contended()
+    })
+    try {
+      const before = armed(clock)
+      const turn = (daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')
+      const settled = expect(turn).rejects.toThrow(/another Claude Code process/)
+      await advanceWhenArmed(clock, 60_000, before)
+      await settled
+      expect(fakeHost.prompt).toHaveBeenCalledTimes(2)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('does not resend a prompt that already started a tool call', async () => {
+    const ref: { daemon?: any } = {}
+    const { daemon, fakeHost } = await start(async (sessionId) => {
+      const turn = [...ref.daemon.pending.values()].find((p: any) => p.acpSessionId === sessionId)
+      turn.promptRanTool = true
+      throw contended()
+    })
+    ref.daemon = daemon
+    try {
+      await expect((daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')).rejects.toThrow(
+        /another Claude Code process/
+      )
+      expect(fakeHost.prompt).toHaveBeenCalledTimes(1)
     } finally {
       await daemon.stop()
     }
