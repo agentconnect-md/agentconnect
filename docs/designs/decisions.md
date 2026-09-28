@@ -1313,7 +1313,7 @@ Use the existing Console surface, with the following reading and tab order:
 | Channels   | Searchable multiselect of this bot's eligible group channels; Off rows disabled with an enable-settings link          |
 | Rules      | Numbered When / Then rows, Add rule, Remove; Choice shows all matches, Score rows sort by lower bound                 |
 | Otherwise  | Fixed final row: Use default agent or Do not activate                                                                 |
-| Footer     | Test routing, Cancel, Save; dirty, saving, success and retry states                                                   |
+| Footer     | Cancel, Save; dirty, saving, success and retry states                                                                 |
 
 One scope applies to the whole rule list. Selecting channels explicitly applies
 By decision to those enabled conversations on Save. Show the affected channel names
@@ -1341,7 +1341,7 @@ Mentions and thread replies are also evaluated and may be skipped.
 If activated, mentions keep their targets and threads keep their current participants.
 Recent conversation history is included automatically.
 
-[Test routing]                                      [Cancel] [Save]
+                                                    [Cancel] [Save]
 ```
 
 When opens controls derived from the Decision: per-key probability thresholds,
@@ -1648,7 +1648,7 @@ Stage 2-specific evidence is not a release gate for Stage 1.
 The current Console uses live organization-scoped CRUD and preview APIs whenever
 `NEXT_PUBLIC_MOCK` is off. Decisions have no install switch: every console offers
 Decision management, standalone preview, fixed-target By decision bindings, and
-shared-bot Routing with its configuration, Test routing, and Recent evaluations. Saving
+shared-bot Routing with its configuration and Recent evaluations. Saving
 a definition needs no online daemon. The adapter catalog currently contains TypeSafe
 Jev's pinned model and aliases documented in [Models](https://docs.typesafe.ai/models);
 it is shipped with the adapter, not discovered using a secret or paid probe. Other
