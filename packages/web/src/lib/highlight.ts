@@ -242,3 +242,32 @@ export function linkifyHtml(html: string): string {
   }
   return out
 }
+
+// Split code HTML into one self-contained fragment per source line, closing and reopening any tag (a multi-line hljs comment span) across each newline.
+export function splitHtmlLines(html: string): string[] {
+  const lines: string[] = []
+  const open: { tag: string; name: string }[] = []
+  let line = ''
+  for (const [token] of html.matchAll(/<\/?([a-z][a-z0-9]*)[^>]*>|\n|[^<\n]+|</gi)) {
+    if (token === '\n') {
+      lines.push(
+        line +
+          open
+            .map((o) => `</${o.name}>`)
+            .reverse()
+            .join('')
+      )
+      line = open.map((o) => o.tag).join('')
+    } else if (token.startsWith('</')) {
+      open.pop()
+      line += token
+    } else if (token.length > 1 && token.startsWith('<')) {
+      open.push({ tag: token, name: /^<([a-z][a-z0-9]*)/i.exec(token)![1]! })
+      line += token
+    } else {
+      line += token
+    }
+  }
+  lines.push(line)
+  return lines
+}

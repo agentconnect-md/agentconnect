@@ -458,7 +458,9 @@
       "loadMore": "Load more",
       "diffTooLarge": "This diff is too large to send whole — only its first part is shown. Open the file to read the rest.",
       "diffTruncated": "This diff has more lines than the viewer draws — only its first part is shown.",
-      "malformedDiff": "Part of this diff is shown raw — its hunks are not two-way (a merge conflict, usually). Counts cover only the readable parts."
+      "malformedDiff": "Part of this diff is shown raw — its hunks are not two-way (a merge conflict, usually). Counts cover only the readable parts.",
+      "preview": "Preview",
+      "code": "Code"
     },
     "list": {
       "allAgents": "All agents",

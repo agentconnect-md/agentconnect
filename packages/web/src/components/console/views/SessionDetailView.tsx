@@ -5201,6 +5201,7 @@ export default function SessionDetailView() {
                 onModeChange={(mode) => setViewerFile(viewerPath, filesAgentId, mode, viewerRepo)}
                 diffRefreshTick={viewerDiffTick}
                 {...(canWriteWorkspace ? { onIndexChanged: onViewerIndexChanged } : {})}
+                onOpenPath={(next) => setViewerFile(next, filesAgentId, 'file', viewerRepo)}
                 onClose={() => {
                   // Keep the reader ON the workspace they were reading before dropping `agent=`. The
                   // param outranks the stored selection, so clearing it alone snaps focus back to the
