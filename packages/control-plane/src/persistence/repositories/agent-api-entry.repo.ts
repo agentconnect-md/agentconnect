@@ -10,12 +10,16 @@ const toDb = (protocol: AgentApiProtocol): DbAgentApiProtocol => {
   switch (protocol) {
     case 'ai-sdk-ui':
       return 'ai_sdk_ui'
+    case 'ag-ui':
+      return 'ag_ui'
   }
 }
 const fromDb = (protocol: DbAgentApiProtocol): AgentApiProtocol => {
   switch (protocol) {
     case 'ai_sdk_ui':
       return 'ai-sdk-ui'
+    case 'ag_ui':
+      return 'ag-ui'
   }
 }
 

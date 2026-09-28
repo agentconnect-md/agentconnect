@@ -532,10 +532,11 @@ block at the daemon, and is never persisted by the relay or Control Plane.
 
 ### 10.4 Agent chat API
 
-**Status:** The relay's `/ai-sdk/agents/:agentId/chat` route, the UI message
-stream encoder, turn admission, key verification with its verdict cache, key
-permissions and agent selection, and the per-agent API entry with its Console
-card are implemented. The rest is proposed.
+**Status:** The relay's `/ai-sdk/agents/:agentId/chat` and
+`/ag-ui/agents/:agentId/chat` routes, the UI message stream and AG-UI encoders,
+turn admission, key verification with its verdict cache, key permissions and
+agent selection, and the per-agent API entry with its Console card are
+implemented. The rest is proposed.
 
 Chat frontends built on the AI SDK's `useChat`, such as a documentation site's
 Ask AI panel, speak the AI SDK UI message stream protocol: one HTTP POST per
@@ -550,6 +551,14 @@ that adds the key and forwards the request unchanged.
     Authorization: Bearer <API key>
     body: the useChat request, { id, messages, ... }
 
+AG-UI clients, such as `@ag-ui/client`'s `HttpAgent` and the frontends built on
+it, are served the same way over the AG-UI protocol: one POST per run, answered
+with AG-UI events as SSE.
+
+    POST <PUBLIC_RELAY_URL>/ag-ui/agents/:agentId/chat
+    Authorization: Bearer <API key>
+    body: an AG-UI RunAgentInput, { threadId, runId, messages, ... }
+
 The key is an ordinary API key admitted for `agent:chat` whose selection
 includes the agent, or a `full` key; a `read` key and a read-only OAuth token
 are refused
@@ -561,24 +570,25 @@ the same permission and selection, and its sessions are org-visible by
 identity. Nothing on this path forks on which of the two holds the key.
 
 The agent must also accept the API. An agent's owner adds it under the agent's
-Integrations, one entry per protocol (`ai-sdk-ui` today), stored as an
+Integrations, one entry per protocol (`ai-sdk-ui`, `ag-ui`), stored as an
 `agent_api_entry` row and managed through `GET /agents/:agentId/api` and
 `PUT`/`DELETE /agents/:agentId/api/:protocol`. A key's selection says which
 agents its holder may reach; the entry says the agent is reachable over this
 API at all, so a key selecting every agent still reaches only the agents that
-added it. `rc/verify` returns the agent's entries as `apiProtocols`, and the
-route answers 403 `api_disabled` when they do not name `ai-sdk-ui`.
+added it. `rc/verify` returns the agent's entries as `apiProtocols`, and each
+route answers 403 `api_disabled` when they do not name its protocol.
 
 In the Console, API sits in the Add integration dialog's Workflow group, where
-the owner picks a protocol; ACP 2, the remote ACP endpoint under Relation to
-ACP below, is listed as coming and cannot be picked yet. The
-agent's Integrations tab then shows one API card with a row per protocol and a
-single remove action. Each row's Quickstart shows the chat endpoint, examples
-for curl, Node, and the browser (`useChat` behind a same-origin route that adds
-the key), and the Agent chat keys that reach the
-agent: the caller's own, and for an owner each service account's. Its Create
-key opens the key dialog preset to Agent chat on that agent, with an Owner
-choice of the caller or, for an owner, a service account.
+the owner picks AI SDK UI or AG-UI, preselecting the first one the agent has not
+added; ACP 2, the remote ACP endpoint under Relation to ACP below, is listed as
+coming and cannot be picked yet. The agent's Integrations tab then shows one API
+card with a row per protocol and a single remove action. Each row's Quickstart
+shows that protocol's chat endpoint, examples for curl, Node, and the browser
+(`useChat` or `HttpAgent` behind a same-origin route that adds the key), and the
+Agent chat keys that reach the agent: the caller's own, and for an owner each
+service account's. Its Create key opens the key dialog preset to Agent chat on
+that agent, with an Owner choice of the caller or, for an owner, a service
+account.
 
 **Verification:** the relay holds no database, so it asks the CP.
 
@@ -604,41 +614,46 @@ keeps working for up to 60 seconds only where it was already verified; new
 conversations wait for the CP.
 
 **Conversation:** the body's `id`, the chat id `useChat` generates, names the
-conversation; it is 1 to 128 characters. The CP maps it to the webchat
-conversation `uuidv5(org, key owner, agent, chat id)`. The first turn creates it,
-owned by the key's user, converging when two first turns race; a later turn
-resumes it under the existing rules, including the 409 fence for an agent whose
-next turn would reach a machine that does not hold its session. Because the
-owner is part of the id, the same chat id sent with another member's key is a
-different conversation, and a chat id can never reach a conversation someone
-else owns. A same-origin route may therefore forward the `useChat` body as is: a
-visitor reaches only the conversations its own random chat ids name. A new chat
-is a new id.
+conversation; it is 1 to 128 characters. On the AG-UI route the `threadId` plays
+that part, and the `runId` is only echoed on the run's events. The CP maps it to
+the webchat conversation `uuidv5(org, key owner, agent, chat id)`. The first
+turn creates it, owned by the key's user, converging when two first turns race;
+a later turn resumes it under the existing rules, including the 409 fence for an
+agent whose next turn would reach a machine that does not hold its session.
+Because the owner is part of the id, the same chat id sent with another member's
+key is a different conversation, and a chat id can never reach a conversation
+someone else owns. A same-origin route may therefore forward the `useChat` body
+as is: a visitor reaches only the conversations its own random chat ids name. A
+new chat is a new id. The protocol is not part of the id, so one key sending one
+id over both routes reaches one conversation, and turn admission below spans
+both.
 
 The relay turns the last user message's text into a webchat turn. It ignores
-the earlier messages, because the daemon session already holds the history. The
-turn carries no delegated MCP entitlement, and the relay streams the turn's
-`rd/chat` output back as UI message parts.
+the earlier messages, because the daemon session already holds the history, and
+on AG-UI also the request's `tools`, `state`, `context`, and `forwardedProps`.
+The turn carries no delegated MCP entitlement, and the relay streams the turn's
+`rd/chat` output back in the route's protocol.
 
-**Scope:** the route exposes one operation, a text turn to the path's agent; a
-`useChat` request has no representation for anything else. The webchat token
-route is the console's alone: a key admitted only for `agent:chat` cannot mint a
-token, so the browser socket's other operations, runtime and permission
-changes, per-turn overrides, `targets`, `mentions`, elicitation, and MCP App
-calls, are out of the key holder's reach. The daemon's
-`allowRuntimeChangesInChat` gate is unaffected.
+**Scope:** each route exposes one operation, a text turn to the path's agent; a
+`useChat` request has no representation for anything else, and the AG-UI route
+reads nothing else from its request. The webchat token route is the console's
+alone: a key admitted only for `agent:chat` cannot mint a token, so the browser
+socket's other operations, runtime and permission changes, per-turn overrides,
+`targets`, `mentions`, elicitation, and MCP App calls, are out of the key
+holder's reach. The daemon's `allowRuntimeChangesInChat` gate is unaffected.
 
-| `rd/chat` output                         | UI message stream                                       |
-| ---------------------------------------- | ------------------------------------------------------- |
-| `message`                                | `text-start` / `text-delta` / `text-end`                |
-| `thinking`                               | `reasoning-start` / `reasoning-delta` / `reasoning-end` |
-| `tool_call`, `tool_update`               | `data-tool`, keyed by `toolCallId`                      |
-| `plan`                                   | `data-plan`                                             |
-| `session_info`                           | `message-metadata` with the title                       |
-| `notice`                                 | `data-notice`                                           |
-| `done`                                   | `finish`                                                |
-| `done` with `error`                      | `error`, with the reason                                |
-| elicitation, MCP App, `superseded` kinds | dropped                                                 |
+| `rd/chat` output                         | UI message stream                                       | AG-UI                                                     |
+| ---------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------- |
+| turn admitted                            | `start`, `start-step`                                   | `RUN_STARTED`                                             |
+| `message`                                | `text-start` / `text-delta` / `text-end`                | `TEXT_MESSAGE_START` / `_CONTENT` / `_END`                |
+| `thinking`                               | `reasoning-start` / `reasoning-delta` / `reasoning-end` | `REASONING_START`, `REASONING_MESSAGE_*`, `REASONING_END` |
+| `tool_call`, `tool_update`               | `data-tool`, keyed by `toolCallId`                      | `ACTIVITY_SNAPSHOT` `tool`, one per `toolCallId`          |
+| `plan`                                   | `data-plan`                                             | `ACTIVITY_SNAPSHOT` `plan`                                |
+| `session_info`                           | `message-metadata` with the title                       | `CUSTOM` `session_info` with the title                    |
+| `notice`                                 | `data-notice`                                           | `ACTIVITY_SNAPSHOT` `notice`                              |
+| `done`                                   | `finish`                                                | `RUN_FINISHED`, `cancelled` outcome for a cancelled turn  |
+| `done` with `error`                      | `error`, with the reason                                | `RUN_ERROR`, with the reason                              |
+| elicitation, MCP App, `superseded` kinds | dropped                                                 | dropped                                                   |
 
 A rejected ack arrives before any output, so the relay answers it with an HTTP
 status instead of a stream: 409 for `busy`, 422 for `declined`, 503 when the
@@ -652,12 +667,13 @@ ends the stream with `error`.
 keyed by protocol. The AgentSpec ships each gate with the Decisions its chain
 names, the way a code-host routing rides its host's spec, so admission reads
 nothing from the CP: editing one of those Decisions bumps and re-pushes the
-agent, and a gate whose condition no longer fits its Decision is left out of
-the spec until it is saved again. The relay marks each agent chat API turn with
-`origin: 'ai-sdk-ui'`, and the daemon evaluates the chain on the turn's text
-where the op enters it, before a plain turn and a session-targeted continuation
-diverge and before anything is recorded. An answered no refuses the turn as
-`declined`; a match admits it; and, as with every chat gate
+agent, and a gate whose condition no longer fits its Decision is left out of the
+spec until it is saved again. The relay marks each agent chat API turn with its
+route's protocol as `origin`, and the daemon evaluates that protocol's chain on
+the turn's text where the op enters it, before a plain turn and a
+session-targeted continuation diverge and before anything is recorded. An
+answered no refuses the turn as `declined`; a match admits it; and, as with
+every chat gate
 ([decisions.md §5](decisions.md#5-provider-execution-and-failure-behavior)), an
 evaluation that is unavailable, over capacity, or past its deadline, inside the
 relay's five-second acknowledgement, admits it. The daemon advertises
@@ -680,13 +696,27 @@ edit the agent, since the rows are callers' messages; nothing is persisted on th
 The rules modal on an API row opens them in the Recent evaluations drawer. Bodies
 expire after 24 hours or 20 newer verdicts per API, summaries after seven days.
 
-Tool activity arrives as `data-tool` parts rather than AI SDK tool parts,
-because webchat carries a tool's title and status but not its name or
-arguments. A client that ignores data parts shows text only. The encoder sits
-behind one interface over the `rd/chat` stream, so another protocol such as
-AG-UI could later reuse it under its own prefix (`/ag-ui/…`). The stream's framing, `start`, the step parts, the
-terminator, and the response headers, is pinned by tests that parse the
-relay's output with the `ai` package's own client, not by string assertions.
+Tool activity arrives as `data-tool` parts rather than AI SDK tool parts, and
+as AG-UI activity snapshots rather than `TOOL_CALL_*` events, because webchat
+carries a tool's title and status but not its name or arguments. A client that
+ignores data parts or activities shows text only. Each protocol is one encoder
+behind a shared interface over the `rd/chat` stream. AG-UI message ids are
+prefixed by the turn, because an AG-UI client keeps ids unique across the
+thread and a later run would otherwise replace an earlier run's plan. Each
+stream's framing, the run or message boundaries, the terminator, and the
+response headers, is pinned by tests that parse the relay's output with that
+protocol's own client, `ai` and `@ag-ui/client`, not by string assertions.
+
+**Protocol support across versions:** a protocol after the first names a daemon
+feature, `api-ag-ui-v1` for AG-UI, which the daemon advertises to the CP and on
+`rd/hello`. The relay refuses an AG-UI turn with 503 `unsupported` rather than
+send it to a daemon without the feature, following a `not_holder` re-route the
+same way. The CP refuses to add the API, and to save its gate, with 409 while a
+connected daemon serving the agent lacks it; one offline then takes both from
+its reconnect roster. The protocol fields a daemon decodes, a turn's `origin`,
+`AgentSpec.apiGates` keys, and the gate evaluation requests, are plain strings
+on the wire, so a later protocol never fails an older daemon's decode, and the
+daemon refuses a turn whose `origin` it does not know as `unsupported`.
 
 **Turn admission:**
 
@@ -756,6 +786,8 @@ as its own `AgentApiProtocol` entry.
    replaces the first design's token step, in which a proxy minted a webchat
    token with the key and sent turns under the token.
 5. **Relay:** the stream-resume route.
+6. **Protocol, CP, daemon, relay, and Web:** AG-UI as a second protocol, with
+   its feature gate across versions.
 
 Later, separately: the
 [service-account member](daemon-api-key-auth.md#service-account-members).

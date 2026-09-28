@@ -20,7 +20,7 @@ import { ProtocolError } from '../../domain/errors.js'
 import { AgentId } from '../../domain/ids.js'
 import { canEdit, canView } from '../../authorization/policy.js'
 import { ctxOf, denyViewerWrite, orgOf } from '../rbac.js'
-import { apiGateReadiness, visibleDecisionChain } from '../decision-access.js'
+import { apiGateReadiness, apiProtocolUnsupported, visibleDecisionChain } from '../decision-access.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 
@@ -96,18 +96,28 @@ export function agentApiRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Add a chat API to an agent',
           description:
-            'Lets API keys that select this agent call it over `protocol`. Idempotent: adding an API the agent already accepts returns the existing entry.',
+            'Lets API keys that select this agent call it over `protocol`. Idempotent: adding an API the agent already accepts returns the existing entry. Refused with 409 `DAEMON_UPGRADE_REQUIRED` while a connected daemon serving the agent cannot take the protocol.',
           operationId: 'addAgentApiEntry',
           params: EntryParams,
-          response: { 200: AgentApiEntryDto, 403: ErrorDto, 404: ErrorDto }
+          response: { 200: AgentApiEntryDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
         const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.params.agentId))
         if (!agent || !canView(agent, ctxOf(req))) return notFound(reply, 'agent not found')
+        const protocol = req.params.protocol
+        const added = (await deps.repos.agentApiEntry.listForAgent(agent.id)).some((e) => e.protocol === protocol)
+        // An older daemon cannot decode this protocol's turns or gates; one offline now catches up from its reconnect roster.
+        if (!added && (await apiProtocolUnsupported(deps, agent, protocol)))
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'Upgrade the daemon serving this agent to accept this API.',
+            code: 'DAEMON_UPGRADE_REQUIRED'
+          })
         const actorUserId = req.principal?.userId ?? null
-        const { entry, created } = await deps.repos.agentApiEntry.enable(agent.id, req.params.protocol, actorUserId)
+        const { entry, created } = await deps.repos.agentApiEntry.enable(agent.id, protocol, actorUserId)
         if (created) {
           void deps.repos.audit
             .append({
@@ -165,7 +175,7 @@ export function agentApiRoutes(deps: HttpDeps) {
               issues
             })
           // An offline daemon takes the gate from its reconnect roster; only a connected one that cannot run it refuses.
-          const readiness = await apiGateReadiness(deps, agent, (gate.steps?.length ?? 0) > 0)
+          const readiness = await apiGateReadiness(deps, agent, protocol, (gate.steps?.length ?? 0) > 0)
           if (readiness.status === 'unsupported')
             return reply.code(409).send({
               error: 'Conflict',

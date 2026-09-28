@@ -1,8 +1,9 @@
-// `POST /ai-sdk/agents/:agentId/chat` (shared-bot-relay.md §10.4): one text turn per request under an API key, over the webchat conversation and `rd/*` bridge, streamed back as the AI SDK UI message stream.
+// The agent chat API (shared-bot-relay.md §10.4): one text turn per request under an API key, over the webchat conversation and `rd/*` bridge, streamed back in the route's protocol.
 import { randomUUID } from 'node:crypto'
 import type { ServerResponse } from 'node:http'
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import {
+  AGENT_API_PROTOCOL_FEATURE,
   AGENT_CHAT_ID_MAX_CHARS,
   AGENT_CHAT_KEY_REFUSAL,
   type RdChat,
@@ -12,7 +13,8 @@ import type { WebchatVerdict } from './webchat-verdict-cache.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { ChatSink, WebchatRouter } from './webchat-router.js'
-import { UiMessageStreamEncoder, type ChatStreamEncoder, type ChatStreamEncoderFactory } from './chat-stream-encoder.js'
+import { UiMessageStreamEncoder, type ChatProtocol, type ChatStreamEncoder } from './chat-stream-encoder.js'
+import { AG_UI_CHAT_PROTOCOL } from './ag-ui-encoder.js'
 import {
   deliverWebchatMsg,
   deliveryFailureDiagnostic,
@@ -63,7 +65,6 @@ export interface ChatRouteDeps {
   daemons: () => Pick<RelayDaemonServer, 'get' | 'rendezvousCandidate'> | undefined
   router: Pick<WebchatRouter, 'register' | 'unregister' | 'rememberRoster'>
   admission?: ChatTurnAdmission
-  encoder?: ChatStreamEncoderFactory
   keepaliveMs?: number
   turnIdleTimeoutMs?: number
   log: Logger
@@ -98,6 +99,19 @@ export function chatIdOf(body: unknown): string | undefined {
   return body.id.length > 0 && body.id.length <= AGENT_CHAT_ID_MAX_CHARS ? body.id : undefined
 }
 
+/** AI SDK UI: the `useChat` chat id names the conversation, and the last user message's text parts are the turn. */
+export const AI_SDK_UI_CHAT_PROTOCOL: ChatProtocol = {
+  id: 'ai-sdk-ui',
+  path: RELAY_AI_SDK_CHAT_PATH,
+  chatIdName: 'chat id',
+  chatId: chatIdOf,
+  text: chatTurnText,
+  encoder: (turnId) => new UiMessageStreamEncoder(turnId)
+}
+
+// Every protocol the relay serves; one admission table spans them, since a key's chat id names the same conversation on each.
+export const AGENT_CHAT_PROTOCOLS: readonly ChatProtocol[] = [AI_SDK_UI_CHAT_PROTOCOL, AG_UI_CHAT_PROTOCOL]
+
 /** How a refused key reads: the status, its message, and a machine reason where a caller acts on it. */
 function keyRefusal(reason: string | undefined): [status: number, message: string, reason?: string] {
   switch (reason) {
@@ -128,6 +142,7 @@ export function chatRefusalStatus(reason: string | undefined): number {
     case 'draining':
     case 'integration_offline':
     case 'not_holder':
+    case 'unsupported':
       return 503
     case 'not_found':
     case 'not_participant':
@@ -168,7 +183,7 @@ interface ChatTurnOptions {
   conversationId: string
   router: ChatRouteDeps['router']
   release: () => void
-  encoder: ChatStreamEncoderFactory
+  encoder: (turnId: string) => ChatStreamEncoder
   keepaliveMs: number
   idleTimeoutMs: number
   log: Logger
@@ -281,147 +296,160 @@ class ChatTurn implements ChatSink {
   }
 }
 
-export function registerAiSdkChatRoute(app: FastifyInstance, deps: ChatRouteDeps): ChatRoute {
+/** Mount each protocol's chat route over one admission table and one set of live turns. */
+export function registerAgentChatRoutes(
+  app: FastifyInstance,
+  deps: ChatRouteDeps,
+  protocols: readonly ChatProtocol[] = AGENT_CHAT_PROTOCOLS
+): ChatRoute {
   const admission = deps.admission ?? new ChatTurnAdmission()
-  const encoder = deps.encoder ?? ((turnId: string) => new UiMessageStreamEncoder(turnId))
   const live = new Set<ChatTurn>()
   const log = deps.log
 
-  app.post<{ Params: { agentId: string } }>(
-    RELAY_AI_SDK_CHAT_PATH,
-    { bodyLimit: CHAT_BODY_LIMIT_BYTES },
-    async (req, reply) => {
-      const apiKey = bearerCredential(req.headers.authorization)
-      if (!apiKey) return refuse(reply, 401, 'missing API key')
-      const pathAgentId = req.params.agentId.toLowerCase()
-      if (!UUID_RE.test(pathAgentId)) return refuse(reply, 404, 'agent not found')
-      const chatId = chatIdOf(req.body)
-      if (chatId === undefined) {
-        return refuse(reply, 400, `the request needs a chat id of 1 to ${AGENT_CHAT_ID_MAX_CHARS} characters`)
-      }
-      let verdict: WebchatVerdict
-      try {
-        verdict = await deps.verify(apiKey, pathAgentId, chatId)
-      } catch {
-        return refuse(reply, 503, 'key verification unavailable')
-      }
-      if (!verdict.ok) {
-        const [status, message, reason] = keyRefusal(verdict.reason)
-        log.warn(`chat: refused request ${status} — ${verdict.reason ?? 'unverified'}`)
-        return refuse(reply, status, message, reason)
-      }
-      const agentId = verdict.agentId
-      const rawConversationId = verdict.conversationId
-      if (agentId !== pathAgentId || !rawConversationId || !UUID_RE.test(rawConversationId)) {
-        log.warn('chat: refused request 503 — incomplete verification')
-        return refuse(reply, 503, 'key verification unavailable')
-      }
-      if (!verdict.apiProtocols?.includes('ai-sdk-ui')) {
-        return refuse(reply, 403, 'this agent does not accept API calls', 'api_disabled')
-      }
-      const conversationId = rawConversationId.toLowerCase()
-      const text = chatTurnText(req.body)
-      if (text === undefined) return refuse(reply, 400, 'the request has no user message with text')
-      if (Buffer.byteLength(text, 'utf8') > CHAT_TEXT_MAX_BYTES) {
-        return refuse(reply, 413, `a turn's text is limited to ${CHAT_TEXT_MAX_BYTES} bytes`)
-      }
-      const release = admission.tryAcquire(conversationId)
-      if (!release) return refuse(reply, 409, 'a turn is already in flight for this conversation', 'busy')
+  for (const protocol of protocols) {
+    // The daemon feature this protocol's turns need, checked on each daemon the delivery tries.
+    const capability = AGENT_API_PROTOCOL_FEATURE[protocol.id]
+    app.post<{ Params: { agentId: string } }>(
+      protocol.path,
+      { bodyLimit: CHAT_BODY_LIMIT_BYTES },
+      async (req, reply) => {
+        const apiKey = bearerCredential(req.headers.authorization)
+        if (!apiKey) return refuse(reply, 401, 'missing API key')
+        const pathAgentId = req.params.agentId.toLowerCase()
+        if (!UUID_RE.test(pathAgentId)) return refuse(reply, 404, 'agent not found')
+        const chatId = protocol.chatId(req.body)
+        if (chatId === undefined) {
+          return refuse(
+            reply,
+            400,
+            `the request needs a ${protocol.chatIdName} of 1 to ${AGENT_CHAT_ID_MAX_CHARS} characters`
+          )
+        }
+        let verdict: WebchatVerdict
+        try {
+          verdict = await deps.verify(apiKey, pathAgentId, chatId)
+        } catch {
+          return refuse(reply, 503, 'key verification unavailable')
+        }
+        if (!verdict.ok) {
+          const [status, message, reason] = keyRefusal(verdict.reason)
+          log.warn(`chat: refused request ${status} — ${verdict.reason ?? 'unverified'}`)
+          return refuse(reply, status, message, reason)
+        }
+        const agentId = verdict.agentId
+        const rawConversationId = verdict.conversationId
+        if (agentId !== pathAgentId || !rawConversationId || !UUID_RE.test(rawConversationId)) {
+          log.warn('chat: refused request 503 — incomplete verification')
+          return refuse(reply, 503, 'key verification unavailable')
+        }
+        if (!verdict.apiProtocols?.includes(protocol.id)) {
+          return refuse(reply, 403, 'this agent does not accept API calls', 'api_disabled')
+        }
+        const conversationId = rawConversationId.toLowerCase()
+        const text = protocol.text(req.body)
+        if (text === undefined) return refuse(reply, 400, 'the request has no user message with text')
+        if (Buffer.byteLength(text, 'utf8') > CHAT_TEXT_MAX_BYTES) {
+          return refuse(reply, 413, `a turn's text is limited to ${CHAT_TEXT_MAX_BYTES} bytes`)
+        }
+        const release = admission.tryAcquire(conversationId)
+        if (!release) return refuse(reply, 409, 'a turn is already in flight for this conversation', 'busy')
 
-      const roster = verdict.participants?.length
-        ? verdict.participants
-        : [{ agentId, ...(verdict.daemonId ? { daemonId: verdict.daemonId } : {}), primary: true }]
-      // Dated by its verification, so a reused token's cached verdict cannot replace a roster verified since (a join).
-      deps.router.rememberRoster(
-        conversationId,
-        roster.map((p) => ({
-          agentId: p.agentId,
-          ...(p.daemonId ? { daemonId: p.daemonId } : {}),
-          ...(p.recordedDaemonId ? { recordedDaemonId: p.recordedDaemonId } : {})
-        })),
-        verdict.verifiedAtMs
-      )
-      // A copy: a placement healed by this delivery must not leak into the cached verdict.
-      const verified = roster.find((p) => p.agentId === agentId)
-      const participant: WebchatParticipant = verified
-        ? { ...verified }
-        : { agentId, ...(verdict.daemonId ? { daemonId: verdict.daemonId } : {}) }
-      const daemons = deps.daemons()
-      const bridge: WebchatDaemonDeps = {
-        daemonConnFor: (id) => daemons?.get(id),
-        rendezvousDaemonConn: () => daemons?.rendezvousCandidate(),
-        log
-      }
-      const target = resolveWebchatDaemon(bridge, participant, agentId)
-      if (!target) {
-        release()
-        log.info(`chat: no live daemon for ${agentId} in ${conversationId}`)
-        return refuse(reply, 503, 'the agent daemon is offline', 'no_agent')
-      }
+        const roster = verdict.participants?.length
+          ? verdict.participants
+          : [{ agentId, ...(verdict.daemonId ? { daemonId: verdict.daemonId } : {}), primary: true }]
+        // Dated by its verification, so a reused token's cached verdict cannot replace a roster verified since (a join).
+        deps.router.rememberRoster(
+          conversationId,
+          roster.map((p) => ({
+            agentId: p.agentId,
+            ...(p.daemonId ? { daemonId: p.daemonId } : {}),
+            ...(p.recordedDaemonId ? { recordedDaemonId: p.recordedDaemonId } : {})
+          })),
+          verdict.verifiedAtMs
+        )
+        // A copy: a placement healed by this delivery must not leak into the cached verdict.
+        const verified = roster.find((p) => p.agentId === agentId)
+        const participant: WebchatParticipant = verified
+          ? { ...verified }
+          : { agentId, ...(verdict.daemonId ? { daemonId: verdict.daemonId } : {}) }
+        const daemons = deps.daemons()
+        const bridge: WebchatDaemonDeps = {
+          daemonConnFor: (id) => daemons?.get(id),
+          rendezvousDaemonConn: () => daemons?.rendezvousCandidate(),
+          log
+        }
+        const target = resolveWebchatDaemon(bridge, participant, agentId)
+        if (!target) {
+          release()
+          log.info(`chat: no live daemon for ${agentId} in ${conversationId}`)
+          return refuse(reply, 503, 'the agent daemon is offline', 'no_agent')
+        }
 
-      const turn = new ChatTurn({
-        conversationId,
-        router: deps.router,
-        release,
-        encoder,
-        keepaliveMs: deps.keepaliveMs ?? DEFAULT_KEEPALIVE_MS,
-        idleTimeoutMs: deps.turnIdleTimeoutMs ?? DEFAULT_TURN_IDLE_TIMEOUT_MS,
-        log,
-        onSettled: (t) => live.delete(t)
-      })
-      live.add(turn)
-      // Subscribed before the send, so output that races the ack is not lost.
-      deps.router.register(conversationId, turn)
+        const turn = new ChatTurn({
+          conversationId,
+          router: deps.router,
+          release,
+          encoder: (turnId) => protocol.encoder(turnId, req.body),
+          keepaliveMs: deps.keepaliveMs ?? DEFAULT_KEEPALIVE_MS,
+          idleTimeoutMs: deps.turnIdleTimeoutMs ?? DEFAULT_TURN_IDLE_TIMEOUT_MS,
+          log,
+          onSettled: (t) => live.delete(t)
+        })
+        live.add(turn)
+        // Subscribed before the send, so output that races the ack is not lost.
+        deps.router.register(conversationId, turn)
 
-      // A text turn only: no targets, mentions, runtime overrides, attachments, or delegated MCP entitlement.
-      const turnId = randomUUID()
-      const op: RelayWebchatOp = {
-        op: 'turn',
-        text,
-        user: verdict.user ?? 'webchat',
-        ...(verdict.userId ? { userId: verdict.userId } : {}),
-        ...(verdict.userPicture ? { userPicture: verdict.userPicture } : {}),
-        turnId,
-        // The daemon evaluates this API's Decision gate before admitting the turn.
-        origin: 'ai-sdk-ui'
+        // A text turn only: no targets, mentions, runtime overrides, attachments, or delegated MCP entitlement.
+        const turnId = randomUUID()
+        const op: RelayWebchatOp = {
+          op: 'turn',
+          text,
+          user: verdict.user ?? 'webchat',
+          ...(verdict.userId ? { userId: verdict.userId } : {}),
+          ...(verdict.userPicture ? { userPicture: verdict.userPicture } : {}),
+          turnId,
+          // The daemon evaluates this API's Decision gate before admitting the turn.
+          origin: protocol.id
+        }
+        const binding = {
+          chatId: conversationId,
+          ...(verdict.targetSessionId ? { targetSessionId: verdict.targetSessionId } : {})
+        }
+        let delivered: Awaited<ReturnType<typeof deliverWebchatMsg>>
+        try {
+          delivered = await deliverWebchatMsg(
+            bridge,
+            target,
+            webchatRdMsg(binding, agentId, participant, op),
+            participant,
+            capability
+          )
+        } catch (error) {
+          turn.abandon()
+          log.warn(`chat: turn delivery failed ${deliveryFailureDiagnostic(error)}`)
+          return refuse(reply, 503, 'the turn could not be delivered to the agent', 'no_agent')
+        }
+        const { ack } = delivered
+        if (!ack.accepted) {
+          turn.abandon()
+          log.info(
+            `chat: turn ${turnId} in ${conversationId} refused by ${delivered.daemonId}: ${ack.reason ?? 'unspecified'}`
+          )
+          const reason = ack.reason ?? 'refused'
+          return refuse(
+            reply,
+            chatRefusalStatus(ack.reason),
+            ack.detail ?? `the agent refused the turn: ${reason}`,
+            reason
+          )
+        }
+        log.info(`chat: turn ${ack.turnId ?? turnId} admitted in ${conversationId} by ${delivered.daemonId}`)
+        reply.hijack()
+        turn.stream(ack.turnId ?? turnId, reply.raw, delivered.conn)
+        return reply
       }
-      const binding = {
-        chatId: conversationId,
-        ...(verdict.targetSessionId ? { targetSessionId: verdict.targetSessionId } : {})
-      }
-      let delivered: Awaited<ReturnType<typeof deliverWebchatMsg>>
-      try {
-        delivered = await deliverWebchatMsg(
-          bridge,
-          target,
-          webchatRdMsg(binding, agentId, participant, op),
-          participant
-        )
-      } catch (error) {
-        turn.abandon()
-        log.warn(`chat: turn delivery failed ${deliveryFailureDiagnostic(error)}`)
-        return refuse(reply, 503, 'the turn could not be delivered to the agent', 'no_agent')
-      }
-      const { ack } = delivered
-      if (!ack.accepted) {
-        turn.abandon()
-        log.info(
-          `chat: turn ${turnId} in ${conversationId} refused by ${delivered.daemonId}: ${ack.reason ?? 'unspecified'}`
-        )
-        const reason = ack.reason ?? 'refused'
-        return refuse(
-          reply,
-          chatRefusalStatus(ack.reason),
-          ack.detail ?? `the agent refused the turn: ${reason}`,
-          reason
-        )
-      }
-      log.info(`chat: turn ${ack.turnId ?? turnId} admitted in ${conversationId} by ${delivered.daemonId}`)
-      reply.hijack()
-      turn.stream(ack.turnId ?? turnId, reply.raw, delivered.conn)
-      return reply
-    }
-  )
+    )
+  }
 
   return {
     closeAll(reason: string): void {

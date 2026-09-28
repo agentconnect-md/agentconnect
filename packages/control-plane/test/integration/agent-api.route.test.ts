@@ -1,6 +1,7 @@
 // `/agents/:agentId/api` — the chat APIs an agent accepts calls on (shared-bot-relay.md §10.4).
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import {
+  API_AG_UI_V1_FEATURE,
   API_DECISION_GATE_V1_FEATURE,
   API_GATE_EVALUATIONS_V1_FEATURE,
   type DecisionEvaluationRecord
@@ -94,6 +95,42 @@ describe('agent chat APIs', () => {
   })
 })
 
+describe('AG-UI chat API', () => {
+  const DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
+
+  it('is added only while every connected daemon serving the agent can take it', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    let features: string[] = []
+    const a = open(undefined)
+    const live = buildHttpApp(prisma, undefined, {
+      get: () => ({ state: 'READY', capabilities: { features } })
+    } as never)
+    opened.push(live)
+
+    const refused = await add(live, 'ag-ui')
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'DAEMON_UPGRADE_REQUIRED' })
+    // AI SDK UI needs no feature beyond the chat API itself.
+    expect((await add(live)).statusCode).toBe(200)
+
+    features = [API_AG_UI_V1_FEATURE]
+    expect((await add(live, 'ag-ui')).json()).toMatchObject({ protocol: 'ag-ui' })
+    // Re-adding stays idempotent even after the daemon changes.
+    features = []
+    expect((await add(live, 'ag-ui')).statusCode).toBe(200)
+    expect(
+      ((await list(a)).json() as { entries: Array<{ protocol: string }> }).entries.map((e) => e.protocol).sort()
+    ).toEqual(['ag-ui', 'ai-sdk-ui'])
+  })
+
+  it('is added while the serving daemon is offline, which catches up on reconnect', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    expect((await add(open(), 'ag-ui')).statusCode).toBe(200)
+  })
+})
+
 describe('agent chat API Decision gate', () => {
   const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
   const draft = {
@@ -161,6 +198,30 @@ describe('agent chat API Decision gate', () => {
     const hidden = await setGate(a, gateOf('44444444-4444-4444-8444-444444444444'))
     expect(hidden.statusCode).toBe(404)
     expect(hidden.json()).toMatchObject({ code: 'DECISION_NOT_FOUND' })
+  })
+
+  it('refuses an AG-UI gate while a connected daemon cannot take AG-UI', async () => {
+    let features = [API_DECISION_GATE_V1_FEATURE, API_AG_UI_V1_FEATURE]
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const a = buildHttpApp(prisma, undefined, { get: () => ({ state: 'READY', capabilities: { features } }) } as never)
+    opened.push(a)
+    const decision = (await a.app.inject({ method: 'POST', url: `${ORG}/decisions`, payload: draft })).json() as {
+      id: string
+    }
+    expect((await add(a, 'ag-ui')).statusCode).toBe(200)
+    const setAgUiGate = () =>
+      a.app.inject({
+        method: 'PUT',
+        url: `${ORG}/agents/${AGENT}/api/ag-ui/gate`,
+        payload: { gate: gateOf(decision.id) }
+      })
+    features = [API_DECISION_GATE_V1_FEATURE]
+    const refused = await setAgUiGate()
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'DECISION_UNSUPPORTED_CONSUMER' })
+    features = [API_DECISION_GATE_V1_FEATURE, API_AG_UI_V1_FEATURE]
+    expect((await setAgUiGate()).json()).toMatchObject({ protocol: 'ag-ui', gate: gateOf(decision.id) })
   })
 
   it('re-ships a gate when its Decision changes, and leaves out one whose condition no longer fits', async () => {

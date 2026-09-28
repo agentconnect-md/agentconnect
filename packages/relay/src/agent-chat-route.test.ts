@@ -1,9 +1,11 @@
-// `POST /ai-sdk/agents/:agentId/chat` over real HTTP, read with the `ai` package's own client; the daemon and the CP verdict are faked.
+// The agent chat routes over real HTTP, each read with its protocol's own client (`ai`, `@ag-ui/client`); the daemon and the CP verdict are faked.
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { AddressInfo } from 'node:net'
 import { DefaultChatTransport, readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai'
+import { HttpAgent } from '@ag-ui/client'
 import {
+  API_AG_UI_V1_FEATURE,
   AGENT_CHAT_ID_MAX_CHARS,
   AGENT_CHAT_KEY_REFUSAL,
   type RcVerifyResult,
@@ -12,12 +14,13 @@ import {
   type WebchatEvent
 } from '@agentconnect.md/protocol'
 import {
-  registerAiSdkChatRoute,
+  registerAgentChatRoutes,
   chatTurnText,
   chatRefusalStatus,
   RELAY_AI_SDK_CHAT_PATH,
   type ChatRoute
-} from './ai-sdk-chat-route.js'
+} from './agent-chat-route.js'
+import { RELAY_AG_UI_CHAT_PATH } from './ag-ui-encoder.js'
 import { WebchatRouter } from './webchat-router.js'
 import { WebchatVerdictCache } from './webchat-verdict-cache.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -42,7 +45,7 @@ const VERDICT: RcVerifyResult = {
   userId: 'user-1',
   user: 'Ada',
   participants: [{ agentId: AGENT, daemonId: DAEMON, primary: true }],
-  apiProtocols: ['ai-sdk-ui'],
+  apiProtocols: ['ai-sdk-ui', 'ag-ui'],
   remoteMcp: {
     authorityId: '66666666-6666-4666-8666-666666666666',
     authorityGeneration: 1,
@@ -58,7 +61,12 @@ class FakeDaemon {
     ...(m.payload.op === 'turn' && m.payload.turnId ? { turnId: m.payload.turnId } : {})
   })
   beforeAck?: (m: RdMsgWebchat) => void
+  readonly capabilities = new Set<string>([API_AG_UI_V1_FEATURE])
   private readonly closeListeners = new Set<() => void>()
+
+  supports(capability: string): boolean {
+    return this.capabilities.has(capability)
+  }
 
   async sendMsg(m: RdMsgWebchat): Promise<RdAck> {
     this.sent.push(m)
@@ -116,7 +124,7 @@ async function start(opts: { verdict?: Verify; online?: boolean } = {}): Promise
   const info = vi.fn<(m: string) => void>()
   const log: Logger = { debug: () => {}, info, warn: () => {}, error: () => {} }
   app = Fastify({ logger: false, forceCloseConnections: true })
-  route = registerAiSdkChatRoute(app, {
+  route = registerAgentChatRoutes(app, {
     verify: (apiKey, agentId, chatId) => cache.verify(apiKey, agentId, chatId),
     daemons: () => ({
       get: (id: string) =>
@@ -517,6 +525,132 @@ describe('POST /ai-sdk/agents/:agentId/chat', () => {
   })
 })
 
+describe('POST /ag-ui/agents/:agentId/chat', () => {
+  const agUiUrl = (h: Harness, agentId = AGENT): string =>
+    `${h.base}${RELAY_AG_UI_CHAT_PATH.replace(':agentId', agentId)}`
+
+  /** One run through `@ag-ui/client`'s own HttpAgent; `done` settles when the run ends either way. */
+  function agUiRun(h: Harness, text = 'hello') {
+    const agent = new HttpAgent({ url: agUiUrl(h), headers: { Authorization: `Bearer ${KEY}` }, threadId: CHAT_ID })
+    agent.addMessage({ id: 'u1', role: 'user', content: text })
+    const started: Array<{ threadId: string; runId: string }> = []
+    const errors: string[] = []
+    const done = agent
+      .runAgent(
+        { runId: 'run-1' },
+        {
+          onRunStartedEvent: ({ event }) => void started.push({ threadId: event.threadId, runId: event.runId }),
+          onRunErrorEvent: ({ event }) => void errors.push(event.message)
+        }
+      )
+      .then(
+        () => undefined,
+        (e: unknown) => void errors.push(e instanceof Error ? e.message : String(e))
+      )
+    return { agent, started, errors, done }
+  }
+
+  const agUiBody = (threadId?: string) => ({
+    ...(threadId !== undefined ? { threadId } : {}),
+    runId: 'run-1',
+    messages: [{ id: 'u1', role: 'user', content: 'hello' }],
+    tools: [],
+    context: []
+  })
+  const postAgUi = (h: Harness, body: unknown): Promise<Response> =>
+    fetch(agUiUrl(h), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'text/event-stream', authorization: `Bearer ${KEY}` },
+      body: JSON.stringify(body)
+    })
+
+  it('streams one turn as a run, its threadId naming the conversation and its runId echoed', async () => {
+    const h = await start()
+    const run = agUiRun(h, 'hello there')
+    await vi.waitFor(() => expect(h.daemon.turns()).toHaveLength(1))
+    const turnId = h.daemon.turns()[0]!
+    expect(h.verify.mock.calls).toEqual([[KEY, AGENT, CHAT_ID]])
+    expect(h.daemon.sent[0]!.payload).toEqual({
+      op: 'turn',
+      text: 'hello there',
+      user: 'Ada',
+      userId: 'user-1',
+      turnId,
+      origin: 'ag-ui'
+    })
+
+    emit(h, turnId, { kind: 'thinking', text: 'looking' })
+    emit(h, turnId, { kind: 'message', text: 'Here it is.' })
+    emit(h, turnId, { kind: 'tool_call', toolCallId: 'call-1', title: 'Search docs', status: 'completed' })
+    finish(h, turnId, { stopReason: 'end_turn' })
+    await run.done
+
+    expect(run.errors).toEqual([])
+    expect(run.started).toEqual([{ threadId: CHAT_ID, runId: 'run-1' }])
+    expect(run.agent.messages.filter((m) => m.role !== 'user')).toMatchObject([
+      { role: 'reasoning', content: 'looking' },
+      { role: 'assistant', content: 'Here it is.' },
+      { role: 'activity', activityType: 'tool', content: { title: 'Search docs', status: 'completed' } }
+    ])
+  })
+
+  it('refuses a body without a usable threadId with 400, before verifying', async () => {
+    const h = await start()
+    const res = await postAgUi(h, agUiBody())
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { message: string }).message).toContain('threadId')
+    expect((await postAgUi(h, agUiBody('x'.repeat(AGENT_CHAT_ID_MAX_CHARS + 1)))).status).toBe(400)
+    expect(h.verify).not.toHaveBeenCalled()
+  })
+
+  it('refuses with 403 an agent that has added only the AI SDK UI API', async () => {
+    const h = await start({ verdict: async () => ({ ...VERDICT, apiProtocols: ['ai-sdk-ui'] }) })
+    const res = await postAgUi(h, agUiBody(CHAT_ID))
+    expect(res.status).toBe(403)
+    expect(((await res.json()) as { reason?: string }).reason).toBe('api_disabled')
+    expect(h.daemon.sent).toHaveLength(0)
+  })
+
+  it('answers 503 without sending when the agent daemon cannot take AG-UI, and frees the slot', async () => {
+    const h = await start()
+    h.daemon.capabilities.clear()
+    const res = await postAgUi(h, agUiBody(CHAT_ID))
+    expect(res.status).toBe(503)
+    expect(await res.json()).toMatchObject({ reason: 'unsupported', message: expect.stringContaining('upgraded') })
+    expect(h.daemon.sent).toHaveLength(0)
+
+    h.daemon.capabilities.add(API_AG_UI_V1_FEATURE)
+    const run = agUiRun(h)
+    await vi.waitFor(() => expect(h.daemon.turns()).toHaveLength(1))
+    finish(h, h.daemon.turns()[0]!)
+    await run.done
+    expect(run.errors).toEqual([])
+  })
+
+  it('shares one turn per conversation with the AI SDK route', async () => {
+    const h = await start()
+    const first = await chat(h)
+    const res = await postAgUi(h, agUiBody(CHAT_ID))
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ reason: 'busy' })
+    expect(h.daemon.sent).toHaveLength(1)
+    finish(h, h.daemon.turns()[0]!)
+    await read(first.stream)
+  })
+
+  it('ends the run with RUN_ERROR when the daemon link drops', async () => {
+    const h = await start()
+    const run = agUiRun(h)
+    await vi.waitFor(() => expect(h.daemon.turns()).toHaveLength(1))
+    emit(h, h.daemon.turns()[0]!, { kind: 'message', text: 'partial' })
+    await vi.waitFor(() => expect(run.agent.messages.some((m) => m.role === 'assistant')).toBe(true))
+    h.daemon.drop()
+    await run.done
+    expect(run.errors[0]).toBe('the agent daemon disconnected')
+    expect(run.agent.messages.filter((m) => m.role === 'assistant')).toMatchObject([{ content: 'partial' }])
+  })
+})
+
 describe('chatTurnText', () => {
   it('reads the last user message, joining its text parts', () => {
     expect(
@@ -541,6 +675,7 @@ describe('chatRefusalStatus', () => {
     expect(chatRefusalStatus('declined')).toBe(422)
     expect(chatRefusalStatus('paused')).toBe(503)
     expect(chatRefusalStatus('no_agent')).toBe(503)
+    expect(chatRefusalStatus('unsupported')).toBe(503)
     expect(chatRefusalStatus('start_failed')).toBe(502)
     expect(chatRefusalStatus(undefined)).toBe(502)
   })

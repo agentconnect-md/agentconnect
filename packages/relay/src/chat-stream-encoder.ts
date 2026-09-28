@@ -1,5 +1,5 @@
 // Encoders from one turn's `rd/chat` output to a chat wire protocol; the AI SDK UI message stream is the first (shared-bot-relay.md §10.4).
-import type { WebchatDone, WebchatOutput } from '@agentconnect.md/protocol'
+import type { AgentApiProtocol, WebchatDone, WebchatOutput } from '@agentconnect.md/protocol'
 
 /** One turn's encoder: each call returns the wire text to write, possibly empty. */
 export interface ChatStreamEncoder {
@@ -16,7 +16,18 @@ export interface ChatStreamEncoder {
   keepalive(): string
 }
 
-export type ChatStreamEncoderFactory = (turnId: string) => ChatStreamEncoder
+/** One chat wire protocol the agent chat API serves: its route, how its request names the conversation and the turn, and its stream. */
+export interface ChatProtocol {
+  /** The API entry an agent adds, and the turn's `origin`. */
+  readonly id: AgentApiProtocol
+  readonly path: string
+  /** How a 400 names the conversation id this protocol's request must carry. */
+  readonly chatIdName: string
+  chatId(body: unknown): string | undefined
+  /** The turn's text, or undefined when the request has no user message with text. */
+  text(body: unknown): string | undefined
+  encoder(turnId: string, body: unknown): ChatStreamEncoder
+}
 
 /** The subset of the `ai` package's `UIMessageChunk` this encoder emits; the tests pin it to that type. */
 export type UiMessageChunk =

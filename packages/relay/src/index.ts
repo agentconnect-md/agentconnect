@@ -26,7 +26,7 @@ import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { WebchatRouter, bindWebchatPostAuthor } from './webchat-router.js'
 import { WebchatVerdictCache } from './webchat-verdict-cache.js'
-import { registerAiSdkChatRoute } from './ai-sdk-chat-route.js'
+import { registerAgentChatRoutes } from './agent-chat-route.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
 import { relayIngressPlugins } from './platforms/registry.js'
 import { CollaborationRouter } from './collaboration-router.js'
@@ -338,8 +338,8 @@ async function main(): Promise<void> {
     (_args, verifiedAtMs) => verifiedAtMs + AGENT_CHAT_VERDICT_TTL_MS
   )
 
-  // Agent chat API (POST /ai-sdk/agents/:agentId/chat, §10.4); registered before listen, the rd/* server is late-bound.
-  const chatRoute = registerAiSdkChatRoute(server, {
+  // Agent chat API (POST /ai-sdk/… and /ag-ui/agents/:agentId/chat, §10.4); registered before listen, the rd/* server is late-bound.
+  const chatRoute = registerAgentChatRoutes(server, {
     verify: (apiKey, agentId, chatId) => agentChatVerdicts.verify(apiKey, agentId, chatId),
     daemons: () => held.rdServer,
     router,

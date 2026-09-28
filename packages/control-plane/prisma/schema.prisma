@@ -664,6 +664,7 @@ model ApiKeyAgent {
 /// A chat API the agent accepts calls on (shared-bot-relay.md §10.4); without a row the relay refuses that API for the agent.
 enum AgentApiProtocol {
   ai_sdk_ui @map("ai-sdk-ui")
+  ag_ui     @map("ag-ui")
 }
 
 model AgentApiEntry {

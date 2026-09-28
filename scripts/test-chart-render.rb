@@ -547,7 +547,7 @@ relay_route = public_documents.find { |doc| doc['kind'] == 'HTTPRoute' && doc.di
 relay_paths = relay_route.dig('spec', 'rules').flat_map { |rule| rule['matches'].to_a }.map { |match| match.dig('path', 'value') }
 # Every HTTP ingress path the relay registry mounts; a path the route omits falls through to
 # the web catch-all (or the gateway 404) and that platform's ingress silently receives nothing.
-%w[/mcp /memory /webchat /webhooks/in /webhooks/github /webhooks/gitlab /webhooks/gitea /slack/events /slack/interactions /feishu/events /linear/events /googlechat/events /ai-sdk/agents].each do |path|
+%w[/mcp /memory /webchat /webhooks/in /webhooks/github /webhooks/gitlab /webhooks/gitea /slack/events /slack/interactions /feishu/events /linear/events /googlechat/events /ai-sdk/agents /ag-ui/agents].each do |path|
   abort("relay route must forward #{path}") unless relay_paths.include?(path)
 end
 

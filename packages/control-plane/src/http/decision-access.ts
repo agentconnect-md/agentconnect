@@ -1,11 +1,13 @@
 import type { FastifyRequest } from 'fastify'
 import {
+  AGENT_API_PROTOCOL_FEATURE,
   API_DECISION_GATE_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   OWNER_DEFAULT_DECISION_V1_FEATURE,
   manifestFor,
   DECISION_CHAIN_V1_FEATURE,
   decisionChainIds,
+  type AgentApiProtocol,
   type DecisionChainStep,
   type DecisionDefinition
 } from '@agentconnect.md/protocol'
@@ -105,22 +107,43 @@ export async function decisionGateReadiness(
   return { status: 'ready' }
 }
 
+/** The features each connected daemon serving this agent advertises; an offline one catches up from its reconnect roster. */
+async function servingDaemonFeatures(
+  deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns'>,
+  agent: AgentRecord
+): Promise<ReadonlyArray<readonly string[]>> {
+  return (await deps.placementResolver.routableDaemons(agent))
+    .map((daemonId) => deps.daemonConns.get(daemonId))
+    .filter((conn) => conn?.state === 'READY')
+    .map((conn) => conn?.capabilities?.features ?? [])
+}
+
+/** Whether a connected daemon serving this agent lacks the feature `protocol` needs (shared-bot-relay.md §10.4). */
+export async function apiProtocolUnsupported(
+  deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns'>,
+  agent: AgentRecord,
+  protocol: AgentApiProtocol
+): Promise<boolean> {
+  const feature = AGENT_API_PROTOCOL_FEATURE[protocol]
+  return feature !== undefined && (await servingDaemonFeatures(deps, agent)).some((f) => !f.includes(feature))
+}
+
 /** Whether every daemon serving this agent evaluates a chat API's Decision gate (shared-bot-relay.md §10.4). */
 export async function apiGateReadiness(
   deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns'>,
   agent: AgentRecord,
+  protocol: AgentApiProtocol,
   chained: boolean
 ): Promise<DecisionGateReadiness> {
-  const ready = (await deps.placementResolver.routableDaemons(agent))
-    .map((daemonId) => deps.daemonConns.get(daemonId))
-    .filter((conn) => conn?.state === 'READY')
+  const ready = await servingDaemonFeatures(deps, agent)
   if (ready.length === 0) return { status: 'daemon_offline', reason: 'No daemon serving this agent is connected.' }
-  const features = (conn: (typeof ready)[number]) => conn?.capabilities?.features ?? []
+  const protocolFeature = AGENT_API_PROTOCOL_FEATURE[protocol]
   if (
     ready.some(
-      (conn) =>
-        !features(conn).includes(API_DECISION_GATE_V1_FEATURE) ||
-        (chained && !features(conn).includes(DECISION_CHAIN_V1_FEATURE))
+      (features) =>
+        !features.includes(API_DECISION_GATE_V1_FEATURE) ||
+        (chained && !features.includes(DECISION_CHAIN_V1_FEATURE)) ||
+        (protocolFeature !== undefined && !features.includes(protocolFeature))
     )
   )
     return { status: 'unsupported', reason: 'Upgrade the daemon to gate API calls by decision.' }
