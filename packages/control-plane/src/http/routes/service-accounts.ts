@@ -111,7 +111,7 @@ export function serviceAccountRoutes(deps: HttpDeps) {
           tags: [Tag.Members],
           summary: 'Create a service account',
           description:
-            'Owner-only. Creates a member that never signs in, with the role `collaborator` or `viewer`. Its address is `<name>-<id>@sa.agentconnect.md` and never changes.',
+            'Owner-only. Creates a member that never signs in, with the role `collaborator` or `viewer`. Its address is `<name>-<6 random characters>@sa.agentconnect.md` and never changes.',
           operationId: 'createServiceAccount',
           body: CreateServiceAccountBody,
           response: { 201: ServiceAccountDto, 400: ErrorDto, 403: ErrorDto }

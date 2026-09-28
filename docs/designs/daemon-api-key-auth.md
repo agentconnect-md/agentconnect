@@ -348,11 +348,13 @@ never have to exclude it.
 
 - **Identity.** A service account is an `app_user` row with
   `kind = service_account`, no `oidcSubject`, and the email
-  `<name>-<id>@sa.agentconnect.md`, where `name` is what its owner calls it at
-  creation, and `id` is its random `app_user` id, which makes the address unique
-  without any naming rule beyond lowercase letters, digits, and hyphens. As
-  with Google's service accounts, the address never changes, so `name` is fixed
-  once created. The display name starts as `name` and can be edited. The
+  `<name>-<suffix>@sa.agentconnect.md`, where `name` is what its owner calls it
+  at creation, up to 23 lowercase letters, digits, and hyphens, and `suffix` is
+  six random lowercase letters and digits that make the address unique; a
+  collision draws a new suffix. The local part is therefore at most 30
+  characters, the limit of a Google service account id. As with Google's
+  service accounts, the address never changes, so `name` is fixed once
+  created. The display name starts as `name` and can be edited. The
   project serves no mail on that domain, so no identity provider can verify
   the address, but the claims below still check `kind`. It has exactly one
   membership, created with it. An invited member's row also has no

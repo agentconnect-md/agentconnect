@@ -193,7 +193,7 @@ function ServiceAccountFormModal({
                 className="inp placeholder:text-(--text-tertiary)"
                 placeholder={editing ? undefined : t('namePlaceholder')}
                 value={name}
-                maxLength={editing ? 120 : 30}
+                maxLength={editing ? 120 : 23}
                 onChange={(e) => setName(e.target.value)}
               />
               {editing && <span className="mono text-[11px] text-(--text-tertiary)">{editing.email}</span>}

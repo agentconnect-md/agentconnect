@@ -2647,13 +2647,13 @@ export const ServiceAccountDto = z.object({
 })
 export const ServiceAccountListDto = z.array(ServiceAccountDto)
 
-/** `POST /service-accounts` — `name` becomes the fixed address `<name>-<id>@sa.agentconnect.md`. */
+/** `POST /service-accounts` — `name` becomes the fixed address `<name>-<6 random>@sa.agentconnect.md`. */
 export const CreateServiceAccountBody = z.object({
   name: z
     .string()
     .trim()
     .min(1)
-    .max(30)
+    .max(23)
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'lowercase letters, digits, and single hyphens'),
   role: ServiceAccountRole.default('collaborator')
 })

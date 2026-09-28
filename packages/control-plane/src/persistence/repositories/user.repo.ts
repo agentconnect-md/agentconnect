@@ -14,7 +14,7 @@
  * placeholder, or be stored as the user's address. Emails are normalized to
  * lowercase everywhere so invites and sign-ins can't miss on case.
  */
-import { randomUUID } from 'node:crypto'
+import { randomInt } from 'node:crypto'
 import { Prisma, withAmbientTx, type PrismaLike } from '../prisma.js'
 import {
   type UserRepo,
@@ -293,9 +293,15 @@ async function removeMembershipTx(
 
 const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === 'P2002'
 
-const serviceAccountEmail = (name: string, userId: string) => `${name}-${userId}@${SERVICE_ACCOUNT_EMAIL_DOMAIN}`
+// Six random base-36 characters keep the local part within Google's 30-character account id alongside a 23-character name.
+const SUFFIX_LENGTH = 6
+const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
+const serviceAccountEmail = (name: string) => {
+  const suffix = Array.from({ length: SUFFIX_LENGTH }, () => ALPHABET[randomInt(ALPHABET.length)]).join('')
+  return `${name}-${suffix}@${SERVICE_ACCOUNT_EMAIL_DOMAIN}`
+}
 
-// The name is the address's local part minus the `-<id>` suffix, so it needs no column of its own.
+// The name is the address's local part minus the `-<suffix>`, so it needs no column of its own.
 function toServiceAccountRecord(m: {
   userId: string
   role: string
@@ -303,7 +309,7 @@ function toServiceAccountRecord(m: {
   user: { email: string; displayName: string | null }
 }): ServiceAccountRecord {
   const local = m.user.email.slice(0, m.user.email.indexOf('@'))
-  const name = local.slice(0, local.length - m.userId.length - 1)
+  const name = local.slice(0, local.length - SUFFIX_LENGTH - 1)
   return {
     userId: m.userId,
     name,
@@ -701,19 +707,24 @@ export class PgUserRepo implements UserRepo {
     orgId: string,
     input: { name: string; role: ServiceAccountRole }
   ): Promise<ServiceAccountRecord> {
-    return withAmbientTx(this.db, async (tx) => {
-      // The address embeds the row's own id, so the row is created under a unique placeholder first.
-      const placeholder = `${randomUUID()}@${SERVICE_ACCOUNT_EMAIL_DOMAIN}`
-      const user = await tx.user.create({
-        data: { kind: 'service_account', email: placeholder, displayName: input.name }
-      })
-      await tx.user.update({ where: { id: user.id }, data: { email: serviceAccountEmail(input.name, user.id) } })
-      const row = await tx.membership.create({
-        data: { orgId, userId: user.id, role: input.role },
-        include: { user: true }
-      })
-      return toServiceAccountRecord(row)
-    })
+    // A suffix collision fails the unique email; draw a new one rather than surface it.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const row = await this.db.membership.create({
+          data: {
+            role: input.role,
+            org: { connect: { id: orgId } },
+            user: {
+              create: { kind: 'service_account', email: serviceAccountEmail(input.name), displayName: input.name }
+            }
+          },
+          include: { user: true }
+        })
+        return toServiceAccountRecord(row)
+      } catch (err) {
+        if (!isP2002(err) || attempt >= 2) throw err
+      }
+    }
   }
 
   async updateServiceAccount(

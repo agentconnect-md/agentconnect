@@ -38,7 +38,7 @@ describe('service accounts', () => {
     const { app, close } = buildHttpApp(prisma)
     try {
       const account = await createAccount(app, { name: 'docs-bot', role: 'viewer' })
-      expect(account.email).toBe(`docs-bot-${account.userId}@sa.agentconnect.md`)
+      expect(account.email).toMatch(/^docs-bot-[a-z0-9]{6}@sa\.agentconnect\.md$/)
       expect(account).toMatchObject({ name: 'docs-bot', displayName: 'docs-bot', role: 'viewer' })
 
       const members = (await app.inject({ method: 'GET', url: `${ORG}/members` })).json() as { userId: string }[]
@@ -61,7 +61,7 @@ describe('service accounts', () => {
   it('refuses the owner role and a name outside the address alphabet', async () => {
     const { app, close } = buildHttpApp(prisma)
     try {
-      for (const payload of [{ name: 'bot', role: 'owner' }, { name: 'Docs Bot' }]) {
+      for (const payload of [{ name: 'bot', role: 'owner' }, { name: 'Docs Bot' }, { name: 'a'.repeat(24) }]) {
         const res = await app.inject({ method: 'POST', url: `${ORG}/service-accounts`, payload })
         expect(res.statusCode).toBe(400)
       }

@@ -5939,7 +5939,7 @@ export interface UserRepo {
   /** One of the org's service accounts; null for any other user id. */
   getServiceAccount(orgId: string, userId: string): Promise<ServiceAccountRecord | null>
 
-  /** Create a service account and its one membership; its address is `<name>-<id>@sa.agentconnect.md`. */
+  /** Create a service account and its one membership; its address is `<name>-<6 random>@sa.agentconnect.md`. */
   createServiceAccount(orgId: string, input: { name: string; role: ServiceAccountRole }): Promise<ServiceAccountRecord>
 
   /** Edit a service account's display name or role; throws `OrgMembershipMissing` for any other user id. */
