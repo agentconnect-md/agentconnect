@@ -31,8 +31,9 @@ public callback endpoint is required; the CP only orchestrates. Concretely:
   and agent execution over **ACP the Control Plane never sees** (local IPC self-hosted;
   one in-cluster dial to the sandbox pod in the pool).
   It also accepts pre-addressed public ingress from the relay. It is a self-contained
-  "message + agent execution unit" and keeps running established sessions even if the
-  CP is down (graceful degradation).
+  "message + agent execution unit" and keeps running established sessions during CP
+  outages within their authority lifetimes. Pool members self-fence when duty
+  renewal stops; see [high-availability.md](docs/designs/high-availability.md).
 - The optional **relay** terminates Slack HTTP callbacks, GitHub and GitLab webhooks,
   generic webhooks, and webchat, then forwards content directly to the owning
   daemon. It does not persist message content.

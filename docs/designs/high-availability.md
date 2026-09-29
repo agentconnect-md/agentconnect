@@ -129,6 +129,11 @@ secret dependencies, sufficient replacement capacity, and compatible adjacent
 versions. CP replication does not change daemon or relay restart semantics,
 platform delivery guarantees, or database failover.
 
+PostgreSQL is the only shared coordination layer in this design, including its
+durable metadata delivery log. Do not add a second broker. Each CP needs a
+dedicated direct or session-pooled connection for `LISTEN`; transaction pooling
+does not preserve the listener ([pooling compatibility](https://www.pgbouncer.org/features.html)).
+
 The current implementation already has surge-first rolling updates, readiness,
 `preStop`, `1012` control-socket closure, reconnect snapshots, and an acknowledged
 session-metadata outbox. It still has process-local daemon/relay registries,
@@ -173,7 +178,10 @@ flowchart LR
   them and stamps the wire fence. Forwarding never recursively forwards; an
   ownership change returns to the origin for a bounded re-resolution.
 - Internal endpoints come from authenticated CP registration, never request
-  input. They use workload authentication and transport encryption. Bounded
+  input. Both Helm and Compose use HTTPS with a dedicated, rotatable CP peer
+  bearer credential supplied through secret configuration, separate from daemon/relay
+  credentials and never accepted for public API authentication. This also
+  applies to one-replica deployments because rolling updates overlap. Bounded
   transcript/tool/file reads may pass transiently through the forwarding CP;
   their bodies never enter the directory, a delivery table, or notifications.
 - Online checks, deletion guards, capability reads, and routing decisions use
@@ -204,9 +212,10 @@ Delivery is at least once. Peers acknowledge applied revisions and reject stale
 updates, including removal tombstones. Authority-changing controls that lack
 this contract must acquire it before replication is enabled; transient hints
 may remain best-effort. Coalescing configuration updates is allowed only when
-the latest snapshot fully replaces them. Revocations remain outstanding until the intended peers acknowledge or
-their relevant authorization expires; loss of a CP ownership lease alone does
-not expire a cached data-plane grant. Expose pending propagation rather than
+the latest snapshot fully replaces them. Revocations remain outstanding until
+the intended peers acknowledge or their relevant authorization expires; loss
+of a CP ownership lease alone does not expire a cached data-plane grant.
+Expose pending propagation rather than
 claiming it has completed. Retain tombstones and delivery state through that
 boundary, then compact them.
 
@@ -232,6 +241,12 @@ locks may remain optimizations. Inventory every background loop and
 authorization/configuration cache: its writes must be independently safe and
 its invalidations must reach other replicas. Database CAS does not by itself
 make a post-commit local-only push safe.
+
+Include plaintext secret caches in that audit. Organization deletion must deny
+subsequent access on every replica and invalidate its cached entries. Destroying
+a Vault key alone does not clear process memory; preserve the separate
+[at-rest shredding boundary](per-org-secret-encryption.md#4-secretcipher-contract)
+and do not claim that already-delivered plaintext has been erased.
 
 ### Planned rollout and reconnect budget
 
@@ -287,10 +302,12 @@ Implement in three bounded steps, keeping steady-state replication disabled
 until all three pass:
 
 1. Shared connection ownership, fencing, forwarding, and cluster-wide liveness.
+   Gate replica counts above one in the chart until all three steps pass.
 2. Recoverable broadcasts, cross-CP SSE, mutation gates, and background/cache
    audit. Preserve existing durable implementations instead of replacing them.
 3. Request drain, bounded reconnect waiting, mixed-version rollout checks, and
-   the end-to-end continuity drill.
+   the end-to-end continuity drill. Size the chart's termination grace and drain
+   settings against the measured rollout budget.
 
 Use two **independent CP processes** sharing PostgreSQL, not two application
 objects that accidentally share module-global locks. The release gate covers:

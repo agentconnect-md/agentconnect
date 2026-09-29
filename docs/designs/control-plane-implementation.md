@@ -995,7 +995,12 @@ on the daemon's ingress path.
 
 ### 4.9 Watchdog: missed heartbeats → freeze → reassignGrace → rebalance
 
-Two-phase exactly per §2.2/§7. **Freeze** on `3×HEARTBEAT_SEC` of missed pongs+heartbeats (surface in dashboard, no reassignment), then **rebalance** only after `REASSIGN_GRACE_SEC`. Combined with `sessionEpoch` fencing this guarantees no two daemons serve one session across the gap. All timing is `Clock`-driven → fully testable by advancing the fake clock.
+The class below exists, but the current production container constructs it
+without wiring its timers. Its local grace period is not an operational HA
+guarantee; the proposed [shared-liveness contract](high-availability.md#connection-ownership-and-forwarding)
+must preserve placement and duty fences before authorizing reassignment.
+
+This model freezes on `3×HEARTBEAT_SEC` of missed pongs and heartbeats, then considers rebalance after `REASSIGN_GRACE_SEC`. The grace alone cannot prove that a former holder has stopped serving; resource fencing remains necessary. Its `Clock`-driven timers are testable by advancing the fake clock.
 
 ```ts
 // src/orchestrator/watchdog.ts

@@ -87,7 +87,7 @@ sequenceDiagram
 
 - WS-level `ping`/`pong` (library keepalive) **plus** app-level `heartbeat` EVT carrying a load snapshot.
 - CP sends `heartbeatSec` in `auth/ok` (default **15s**). Daemon emits `heartbeat` every `heartbeatSec`.
-- **Watchdog:** if CP misses **3×heartbeatSec** of both pongs and heartbeats, it marks the daemon `unreachable`, freezes its routing assignments (does **not** reassign yet — see §7 split-brain), and surfaces it in the dashboard. Reassignment only after a `reassignGraceSec` (default 60s) to avoid double-serving.
+- **Watchdog model:** `Watchdog` describes missed-heartbeat freeze followed by `REASSIGN_GRACE_SEC` before rebalance. The current production container constructs it without wiring its timers, so this grace is not an operational HA guarantee. Shared liveness must respect the placement, duty, and launch fences in §7.5; a local timeout alone cannot authorize reassignment.
 
 ---
 
@@ -576,7 +576,7 @@ const AgentActivity = z.object({
 
 On WS drop the daemon enters **DEGRADED** (local autonomy, D1):
 
-- **Keeps serving** existing assignments from the D11 routing cache within their authority lifetime; in-memory secret leases are used until TTL. Duty-governed members stop serving expired duties at `T_fence`, including their platform connections and turns (k8s-daemon-pool.md §5/§13).
+- **Keeps serving** existing assignments from the D11 routing cache and firing local crons within their authority lifetime; in-memory secret leases are used until TTL. Duty-governed members stop serving expired duties at `T_fence`, including their platform connections and turns (k8s-daemon-pool.md §5/§13).
 - **Pauses** consuming new orchestration: no new `route/assign` (none arrive anyway), no rebalance.
 - **Persists** session-metadata milestones in the acknowledged outbox (§7.2); facts are restated from local state on reconnect. Transient live invalidations are best-effort.
 - **Reconnect:** `auth{resume:{lastEpoch}}` → the CP answers `resume.accepted:false` and a full `register` reconcile (§3.3) re-aligns everything. `sessionEpoch` fences the control transport; placement, duty terms, and launch IDs fence resource ownership. Reconnection alone must not reassign unchanged work.
