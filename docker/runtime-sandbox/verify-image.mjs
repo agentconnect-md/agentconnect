@@ -52,7 +52,7 @@ const GH_WRAPPER_PATH = '/opt/agentconnect/pathbin/gh'
 const MCP_BRIDGE_PATH = '/opt/agentconnect/shim/mcp-bridge.js'
 const SKILLS_CLI_PATH = '/opt/agentconnect/shim/skills/dist/cli.js'
 const SKILL_MUTATION_PATH = '/opt/agentconnect/shim/skills/workspace-mutation.js'
-// Must match SANDBOX_DSH_PRESET_DIR in sandbox-paths.ts: the shim copies this directory into a pod's $DSH_HOME.
+// Must match SANDBOX_DSH_PRESET_DIR in sandbox-paths.ts: the shim passes this bundle to dsh-acp.
 const DSH_PRESET_DIR = '/opt/agentconnect/dsh/agent-presets/standard-no-search'
 // Must match SANDBOX_BROWSER_EXECUTABLE_ENV in sandbox-paths.ts: the shim forwards this path into the runtime's env.
 const BROWSER_ENV = 'AGENT_BROWSER_EXECUTABLE_PATH'
@@ -196,15 +196,21 @@ check('carries no service-account token of its own', () => {
   return 'none'
 })
 
-// Generated from whatever adapter the build installed, so a bake that silently found no preset ships a broken web_search.
-check('bakes the no-search DeepSeek preset the shim seeds', () => {
-  const composition = `${DSH_PRESET_DIR}/agent.cordis.yml`
+// Generated from the pinned adapter's standard declaration, then passed to dsh-acp as a bundle.
+check('bakes the no-search DeepSeek bundle the shim selects', () => {
+  const composition = `${DSH_PRESET_DIR}/cordis.patch.yml`
   const listing = sh(`ls ${DSH_PRESET_DIR} 2>/dev/null | tr "\\n" " "`)
-  if (!listing.includes('agent.cordis.yml')) throw new Error(`no preset composition under ${DSH_PRESET_DIR}`)
-  const rows = sh(`grep -c "^- id: " ${composition}`)
-  if (Number(rows) < 2) throw new Error(`${composition} carries ${rows} plugin rows, so it is not a copied preset`)
-  const disabled = sh(`grep -A6 "^- id: tool-web" ${composition} | grep -c "search: false" || true`)
+  if (!listing.includes('cordis.patch.yml') || !listing.includes('package.json'))
+    throw new Error(`no bundle under ${DSH_PRESET_DIR}`)
+  const rows = sh(`grep -c "id: " ${composition}`)
+  if (Number(rows) < 10) throw new Error(`${composition} carries ${rows} plugin rows, so it is not a copied preset`)
+  const registry = sh(`grep -c 'id: agent-preset-registry' ${composition}`)
+  if (registry !== '1') throw new Error(`${composition} does not declare the preset registry`)
+  const disabled = sh(`grep -A6 "id: tool-web" ${composition} | grep -c "search: false" || true`)
   if (disabled !== '1') throw new Error(`tool-web in ${composition} does not deregister web_search`)
+  if (sh(`test -d ${DSH_PRESET_DIR}/node_modules/@deepseek-ai/dsh && echo y || echo n`) !== 'y') {
+    throw new Error(`${DSH_PRESET_DIR} cannot resolve the unpacked harness`)
+  }
   const writable = sh(`test -w ${composition} && echo y || echo n`)
   if (writable === 'y') throw new Error('the runtime user can rewrite the preset it is seeded with')
   return `${listing.trim()} (${rows.trim()} rows, read-only)`

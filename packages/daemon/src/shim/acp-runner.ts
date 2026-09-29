@@ -254,17 +254,19 @@ export class AcpRunner {
         }
       }
     }
+    let spawnPayload = payload
     if (sandboxProfile(payload.command) === 'deepseek') {
-      // After the env is final: the seed writes under whatever `$DSH_HOME` this launch resolves to.
-      seedDshPreset({
+      // Select the image bundle after the env is final; older images seed it under $DSH_HOME.
+      const bundle = seedDshPreset({
         env,
         podEnv,
         source: this.deps.dshPresetSource,
         log: { info: (m) => this.deps.log?.info(m), warn: (m) => this.deps.log?.warn(m) }
       })
+      if (bundle) spawnPayload = { ...payload, args: [...payload.args, '--bundle', bundle] }
     }
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
-    return this.spawnChild(command, payload, env)
+    return this.spawnChild(command, spawnPayload, env)
   }
 
   private fillHints(payload: AcpOpen, env: Record<string, string>): void {
