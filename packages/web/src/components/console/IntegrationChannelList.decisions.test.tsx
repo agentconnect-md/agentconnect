@@ -409,6 +409,18 @@ describe('IntegrationChannelList By decision', () => {
     vi.unstubAllGlobals()
   })
 
+  it('offers no Apply to all from a group DM, whose rules stay its own', async () => {
+    await render([
+      group({ channelId: 'G1', kind: 'mpim', name: 'alice, bob' }),
+      group({ channelId: 'C2', name: 'random' })
+    ])
+    // Direct rows render after the channels, so the group DM's entry is the last one.
+    await click(all('button[aria-label="Add decision"]').at(-1))
+    await act(async () => {})
+    expect(document.body.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toContain('alice, bob')
+    expect(byText('Apply to all channels')).toBeUndefined()
+  })
+
   it('offers no Apply to all when the bot has no other channel', async () => {
     await render([group(), group({ channelId: 'D1', kind: 'im', name: '@Alice' })])
     await addDecision()

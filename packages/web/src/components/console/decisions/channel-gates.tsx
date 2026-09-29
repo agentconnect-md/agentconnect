@@ -144,8 +144,11 @@ export function useChannelGates() {
         offers(siblings!.platform, target.row) &&
         all.findIndex((other) => other.row.channelId === target.row.channelId) === at
     )
+    // A DM's rules stay its own, so the bulk action starts only from a channel.
     const applyAll =
-      integrationId && targets.some((target) => target.row.channelId !== row.channelId)
+      integrationId &&
+      !isDirectConversation(row.kind) &&
+      targets.some((target) => target.row.channelId !== row.channelId)
         ? {
             count: targets.length + (targets.some((target) => target.row.channelId === row.channelId) ? 0 : 1),
             onApply: async (next: ChannelDecisionGate) => {

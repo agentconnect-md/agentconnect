@@ -4549,7 +4549,7 @@
       "rulesSubtitleApi": "决定 <name>{agent}</name> 何时回应通过此 API 的调用",
       "applyAll": "应用到所有频道",
       "applyAllConfirm": "把这些规则应用到该 Bot 的全部 {count} 个频道？这些频道已有的规则会被替换。",
-      "applyAllFailed": "{count} 个频道保存失败（{names}）：{message}",
+      "applyAllFailed": "{count, plural, other {# 个频道}}保存失败（{names}）：{message}",
       "close": "关闭",
       "noDecisions": "还没有决策。新建一个来评估这里的消息。",
       "hiddenDecision": "你无权查看的决策",
