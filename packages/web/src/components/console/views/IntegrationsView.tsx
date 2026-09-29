@@ -736,7 +736,14 @@ function BotsCard({
                                   integrationId: canWrite ? (c.integrationId ?? undefined) : undefined,
                                   row: c.row,
                                   agentName: owner(ownerId)?.label ?? '',
-                                  padX: 12
+                                  padX: 12,
+                                  siblings: {
+                                    platform: b.platform,
+                                    rows: channels.map((other) => ({
+                                      integrationId: canWrite ? (other.integrationId ?? undefined) : undefined,
+                                      row: other.row
+                                    }))
+                                  }
                                 })}
                             </Fragment>
                           )

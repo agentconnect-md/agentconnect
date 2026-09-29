@@ -16,7 +16,13 @@ import {
   useDecisionsPrototype,
   type DecisionBindingDraft
 } from '@/lib/decisions/provider'
-import { bindingSaveError, type BindingSaveError, type GateStatus, type SavedGate } from '@/lib/decisions/binding'
+import {
+  bindingSaveError,
+  errorParts,
+  type BindingSaveError,
+  type GateStatus,
+  type SavedGate
+} from '@/lib/decisions/binding'
 import {
   decisionGateIssues,
   type ChannelDecisionGate,
@@ -171,6 +177,7 @@ export function DecisionBindingStrip({
   status,
   surface = 'channel',
   evaluations,
+  applyAll,
   onSave
 }: {
   /** The gate's identity: organization, owning bot, and conversation (see `gateKey`). */
@@ -195,6 +202,12 @@ export function DecisionBindingStrip({
   evaluations?: DecisionEvaluationSource
   /** Persist the gate; a rejection keeps the draft for Retry. */
   onSave: (gate: ChannelDecisionGate) => Promise<void>
+  /** Write the same gate to every By decision conversation of this bot; absent where there is no other one. */
+  applyAll?: {
+    count: number
+    /** Resolves with the conversations that failed and the first refusal, so the rest still land. */
+    onApply: (gate: ChannelDecisionGate) => Promise<{ failed: string[]; cause: unknown }>
+  }
 }) {
   const t = useTranslations('Decisions')
   const { orgPath, myRole } = useOrgs()
@@ -205,6 +218,8 @@ export function DecisionBindingStrip({
   const { decisions, loading, reload, bindingDrafts, setBindingDraft, beginInlineCreate } = useDecisionsPrototype()
   const draft = bindingDrafts[bindingKey] ?? null
   const saving = useRef(false)
+  // Retry repeats the last write, so a failed Apply to all retries every conversation rather than just this one.
+  const lastWrite = useRef<typeof onSave | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const [tryOpen, setTryOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -357,12 +372,13 @@ export function DecisionBindingStrip({
     })
   }
 
-  const save = async () => {
+  const save = async (write: (gate: ChannelDecisionGate) => Promise<void> = onSave) => {
     if (saving.current || busy || !decision || !when || !gate || invalidText) return
     saving.current = true
+    lastWrite.current = write
     setBindingDraft(bindingKey, { ...activeDraft, decisionId: decision.id, when, phase: 'saving' })
     try {
-      await onSave(gate)
+      await write(gate)
       collapse()
     } catch (cause) {
       const error = bindingSaveError(cause)
@@ -371,6 +387,13 @@ export function DecisionBindingStrip({
     } finally {
       saving.current = false
     }
+  }
+
+  const applyToAll = async (next: ChannelDecisionGate) => {
+    const { failed, cause } = await applyAll!.onApply(next)
+    if (!failed.length) return
+    const message = errorParts(cause)?.message ?? (cause instanceof Error ? cause.message : String(cause))
+    throw new Error(t('binding.applyAllFailed', { count: failed.length, names: failed.join(', '), message }))
   }
 
   const retryable = activeDraft.error?.kind === 'unsupported' || activeDraft.error?.kind === 'failed'
@@ -579,7 +602,12 @@ export function DecisionBindingStrip({
                     {busy ? t('binding.saving') : t('save')}
                   </Button>
                   {retryable && (
-                    <Button variant="secondary" size="sm" className="max-desktop:flex-1" onClick={() => void save()}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="max-desktop:flex-1"
+                      onClick={() => void save(lastWrite.current ?? onSave)}
+                    >
                       {t('binding.retry')}
                     </Button>
                   )}
@@ -589,6 +617,23 @@ export function DecisionBindingStrip({
                 {canWrite ? t('cancel') : t('binding.close')}
               </Button>
               {historyLink}
+              {canWrite && applyAll && (
+                <>
+                  <span className="flex-1" />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="max-desktop:w-full"
+                    disabled={!!invalidText || busy || !decision}
+                    onClick={() => {
+                      if (window.confirm(t('binding.applyAllConfirm', { count: applyAll.count }))) void save(applyToAll)
+                    }}
+                  >
+                    <Icon name="copy-check" size={13} />
+                    {t('binding.applyAll')}
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         </div>

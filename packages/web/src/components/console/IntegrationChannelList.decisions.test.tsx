@@ -16,7 +16,7 @@ const env = vi.hoisted(() => ({ mock: false, role: 'owner' }))
 const evals = vi.hoisted(() => ({ listEvaluations: vi.fn() }))
 const data = vi.hoisted(() => ({
   setChannelTrigger: vi.fn(async () => undefined),
-  setChannelDecision: vi.fn(async () => undefined)
+  setChannelDecision: vi.fn(async (..._args: unknown[]) => undefined)
 }))
 
 vi.mock('@/lib/data', async (original) => ({
@@ -368,6 +368,51 @@ describe('IntegrationChannelList By decision', () => {
     })
     await act(async () => finish())
     expect(byText('Trigger when')).toBeUndefined()
+  })
+
+  it('applies the rules to every channel of the bot but its DMs, after a confirm', async () => {
+    const confirm = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirm)
+    await render([
+      group(),
+      group({ channelId: 'C2', name: 'random' }),
+      group({ channelId: 'D1', kind: 'im', name: '@Alice' })
+    ])
+    await addDecision()
+    await click(byText('Apply to all channels'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('all 2 channels'))
+    const gate = { type: 'gate', decisionId: 'support-category', when: CHOICE_WHEN }
+    expect(data.setChannelDecision.mock.calls).toEqual([
+      ['int-1', 'C1', gate],
+      ['int-1', 'C2', gate]
+    ])
+    expect(byText('Trigger when')).toBeUndefined()
+    vi.unstubAllGlobals()
+  })
+
+  it('names the channels an Apply to all could not save and retries them all', async () => {
+    const confirm = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirm)
+    data.setChannelDecision.mockImplementation(async (...args: unknown[]) => {
+      if (args[1] === 'C2') throw new Error('network down')
+      return undefined
+    })
+    await render([group(), group({ channelId: 'C2', name: 'random' })])
+    await addDecision()
+    await click(byText('Apply to all channels'))
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(
+      '1 channel could not be saved (random)'
+    )
+    data.setChannelDecision.mockReset().mockResolvedValue(undefined)
+    await click(byText('Retry'))
+    expect(data.setChannelDecision.mock.calls.map((call) => call[1])).toEqual(['C1', 'C2'])
+    vi.unstubAllGlobals()
+  })
+
+  it('offers no Apply to all when the bot has no other channel', async () => {
+    await render([group(), group({ channelId: 'D1', kind: 'im', name: '@Alice' })])
+    await addDecision()
+    expect(byText('Apply to all channels')).toBeUndefined()
   })
 
   it('keeps the draft and shows the server field issue when the condition is refused', async () => {

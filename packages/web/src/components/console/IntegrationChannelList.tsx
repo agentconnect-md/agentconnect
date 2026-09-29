@@ -901,7 +901,8 @@ export function IntegrationChannelList({
           row: c,
           // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
           agentName: (defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? '',
-          padX
+          padX,
+          siblings: { platform, rows: channelRows.map((row) => ({ integrationId, row })) }
         })
   const row = (c: IntegrationChannelRow) => {
     // One member is no choice, so the row drops the picker unless the bot's routing owns the row.

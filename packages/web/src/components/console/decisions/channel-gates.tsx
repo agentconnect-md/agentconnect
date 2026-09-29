@@ -4,9 +4,10 @@
 
 import type { ReactNode } from 'react'
 import { useConsoleData } from '@/lib/data-context'
-import type { IntegrationChannelRow } from '@/lib/data'
+import { isDirectConversation, type IntegrationChannelRow } from '@/lib/data'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { gateStatus, savedGateOf, type SavedGate } from '@/lib/decisions/binding'
+import type { ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 import { channelListSemantics } from '@/components/console/platforms/registry'
 import { DecisionBindingStrip, DecisionGateEntry } from './DecisionBindingStrip'
 
@@ -103,19 +104,70 @@ export function useChannelGates() {
     integrationId,
     row,
     agentName,
-    padX
+    padX,
+    siblings
   }: {
     botId: string | undefined
     integrationId: string | undefined
     row: IntegrationChannelRow
     agentName: string
     padX: number
+    /** Every conversation of the same bot, for Apply to all; each writes through its own integration. */
+    siblings?: {
+      platform: string | undefined
+      rows: { integrationId: string | undefined; row: IntegrationChannelRow }[]
+    }
   }): ReactNode => {
     if (!decisions) return null
     const key = bindingKey(botId, row)
     const saved = savedGate(botId, row)
     if (!drafts[key] && !saved) return null
     const gate = mockGate(botId, row)
+    const write = (
+      target: { integrationId: string | undefined; row: IntegrationChannelRow },
+      next: ChannelDecisionGate
+    ) =>
+      mode === 'mock'
+        ? Promise.resolve(
+            decisions.setGate(bindingKey(botId, target.row), {
+              ...next,
+              channelName: labelOf(target.row),
+              needsReview: false
+            })
+          )
+        : setChannelDecision(target.integrationId!, target.row.channelId, next)
+    // Every channel (not a DM) the platform offers By decision in and the viewer can write, each once.
+    const targets = (siblings?.rows ?? []).filter(
+      (target, at, all) =>
+        !!target.integrationId &&
+        !isDirectConversation(target.row.kind) &&
+        offers(siblings!.platform, target.row) &&
+        all.findIndex((other) => other.row.channelId === target.row.channelId) === at
+    )
+    const applyAll =
+      integrationId && targets.some((target) => target.row.channelId !== row.channelId)
+        ? {
+            count: targets.length + (targets.some((target) => target.row.channelId === row.channelId) ? 0 : 1),
+            onApply: async (next: ChannelDecisionGate) => {
+              const all = [
+                { integrationId, row },
+                ...targets.filter((target) => target.row.channelId !== row.channelId)
+              ]
+              // One at a time, so a refusal names what failed and the rest still land.
+              const failed: string[] = []
+              let cause: unknown = null
+              for (const target of all) {
+                try {
+                  await write(target, next)
+                } catch (error) {
+                  failed.push(labelOf(target.row))
+                  cause ??= error
+                }
+              }
+              return { failed, cause }
+            }
+          }
+        : undefined
     return (
       <DecisionBindingStrip
         bindingKey={key}
@@ -129,17 +181,8 @@ export function useChannelGates() {
         status={
           !saved ? null : mode === 'live' ? gateStatus(row.decision) : gate?.needsReview ? 'needs_review' : 'ready'
         }
-        onSave={(next) =>
-          mode === 'mock'
-            ? Promise.resolve(
-                decisions.setGate(key, {
-                  ...next,
-                  channelName: labelOf(row),
-                  needsReview: false
-                })
-              )
-            : setChannelDecision(integrationId!, row.channelId, next)
-        }
+        {...(applyAll ? { applyAll } : {})}
+        onSave={(next) => write({ integrationId, row }, next)}
       />
     )
   }
