@@ -576,10 +576,16 @@ const AgentActivity = z.object({
 
 On WS drop the daemon enters **DEGRADED** (local autonomy, D1):
 
-- **Keeps serving** existing assignments from the D11 routing cache; cron keeps firing; in-memory secret leases used until TTL.
+- **Keeps serving** existing assignments from the D11 routing cache within their authority lifetime; in-memory secret leases are used until TTL. Duty-governed members stop serving expired duties at `T_fence`, including their platform connections and turns (k8s-daemon-pool.md §5/§13).
 - **Pauses** consuming new orchestration: no new `route/assign` (none arrive anyway), no rebalance.
-- **Buffers** outbound telemetry (`event/session`, `facts/*`, acks) in D11; flushes on reconnect.
-- **Reconnect:** `auth{resume:{lastEpoch}}` → the CP answers `resume.accepted:false` and a full `register` reconcile (§3.3) re-aligns everything. **Split-brain guard:** the CP withholds reassignment of this daemon's sessions for `reassignGraceSec` after it goes unreachable, and `sessionEpoch` fencing rejects any control that crossed the gap.
+- **Persists** session-metadata milestones in the acknowledged outbox (§7.2); facts are restated from local state on reconnect. Transient live invalidations are best-effort.
+- **Reconnect:** `auth{resume:{lastEpoch}}` → the CP answers `resume.accepted:false` and a full `register` reconcile (§3.3) re-aligns everything. `sessionEpoch` fences the control transport; placement, duty terms, and launch IDs fence resource ownership. Reconnection alone must not reassign unchanged work.
+
+A planned CP restart closes only the control transport; it is not a
+`daemon/drain` command. The proposed [CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget)
+requires generation-fenced reconnection, bounded request recovery, and confirmed
+duty renewal before self-fence. It does not promise indefinite pool operation
+without the CP.
 
 ### 7.6 `session/list` + `session/history` (C→D, REQ → REP) — console session views
 

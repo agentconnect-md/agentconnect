@@ -791,6 +791,13 @@ export class InMemoryDaemonStub implements Transport {
 
 `ConnectionRegistry` is the index the orchestrator queries to place sessions and the watchdog walks to find stale daemons. It is **derived state** — authoritative routing lives in C6 — but it is what every hot lookup hits. Map key everywhere is `sessionKeyStr = ${platform}:${channel}:${thread ?? "-"}` (`domain/sessionKey.ts`).
 
+This index is process-local in the current implementation. The proposed
+[active-active CP contract](high-availability.md#connection-ownership-and-forwarding)
+keeps local socket ownership behind these ports and adds a shared connection
+directory plus authenticated forwarding. Local absence must no longer determine
+cluster-wide liveness, deletion safety, or control delivery. The same boundary
+applies to relay connections and the session-event sink.
+
 ```ts
 // src/ws/registry.ts
 export interface DaemonConnState {

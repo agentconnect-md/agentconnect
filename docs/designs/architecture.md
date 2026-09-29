@@ -42,11 +42,11 @@ below that hold in only one mode are marked; everything unmarked holds in both.
   browser endpoint.
 - Allow daemons to scale horizontally and independently, so one daemon failure does not affect other daemons.
 - Run multiple agents on one daemon, with a separate ACP adapter for each agent type.
-- Allow established sessions to continue sending, receiving, and executing on their daemons while the Control Plane is temporarily unavailable (degraded availability).
+- Allow established sessions to continue sending, receiving, and executing while the Control Plane is temporarily unavailable, within existing authority lifetimes; pool members self-fence when duty renewal stops (§3.1).
 
 ### Non-Goals
 
-- This design does not introduce a message queue or event bus. Either may be an evolution path for future high-throughput scenarios.
+- This design does not introduce a message-body queue. The proposed [CP replication design](high-availability.md#active-active-control-plane) coordinates control metadata through PostgreSQL; live messages and ACP streams retain their data-plane paths.
 - This design does not change the protocol between agents and models; all agents use ACP.
 - This design does not solve strongly consistent coordination across daemons. See the open questions in §13.
 
@@ -129,7 +129,7 @@ Its responsibilities are deliberately narrow:
 - **Registry/Auth**: daemon registration and health, routing policies, and authentication policies.
 - **Web UI**: configuration, editing, and runtime monitoring.
 
-**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. Even when the Control Plane is temporarily unavailable, **established sessions continue sending, receiving, and executing on their daemons** (degraded availability).
+**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. When the Control Plane is temporarily unavailable, **established sessions continue within their authority lifetimes**. Duty-governed members self-fence without confirmed renewal; see [CP availability](high-availability.md#planned-rollout-and-reconnect-budget) and the pool failure model.
 
 ### 4.2 daemon
 

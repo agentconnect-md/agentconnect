@@ -28,7 +28,7 @@ the picture it draws.
 - [cli-daemon-split.md](designs/cli-daemon-split.md) — Why `agentconnect` and `agentconnect-daemon` are separate bins, and the contract between them.
 - [daemon-cp-ws-protocol.md](designs/daemon-cp-ws-protocol.md) — The daemon ↔ CP WebSocket wire specification.
 - [api-versioning.md](designs/api-versioning.md) — The REST `/api/v1` versioning policy.
-- [high-availability.md](designs/high-availability.md) — HA design principles and the graceful-degradation contract.
+- [high-availability.md](designs/high-availability.md) — availability contract and proposed active-active CP replication for uninterrupted business traffic during upgrades.
 
 ### Chat platforms and ingress
 

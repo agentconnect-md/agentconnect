@@ -921,6 +921,12 @@ delivery.
 
 ## 13. Architectural Degradation Semantics
 
+The table describes current outage behavior. The proposed
+[CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget)
+adds bounded waiting for control-link recovery, including uncached Webchat
+verification. A CP handoff preserves existing relay data-plane connections and
+routes; it does not expand this document's delivery or replay guarantees.
+
 | Failure                             | HTTP bot ingress                                                                                               | Hook ingress                                                     | Webchat                                                            | Agent API egress                              |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------- |
 | CP unavailable                      | Cached assignments and existing daemon sockets continue; affinity misses and new authentication fail closed    | Cached rules continue; metadata reports may wait or fail visibly | Established sessions continue; new verification is unavailable     | Continues directly from online daemons        |
