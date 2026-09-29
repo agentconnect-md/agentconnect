@@ -102,6 +102,8 @@ interface BatchSpec {
 
 // Mirrors MAX_MUTATION_BATCH_STEPS in skill-workspace-mutator.ts.
 const MAX_BATCH_STEPS = 64
+/** Paths a batch works on at once. Each step is mostly waiting on fsync, which overlaps across paths. */
+const BATCH_PATH_CONCURRENCY = 8
 
 const SAFE_SEGMENT = /^\.?[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/
 const SAFE_BUNDLE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$/
@@ -851,19 +853,41 @@ async function main(): Promise<void> {
   if (!Array.isArray(spec.steps) || spec.steps.length === 0 || spec.steps.length > MAX_BATCH_STEPS) {
     fail('invalid mutation batch')
   }
-  const results: unknown[] = []
-  for (const step of spec.steps) {
+  // Steps for one path keep their order (finalize before cleanup, say) as one chain; different paths
+  // touch different directories and run side by side. After a failure no further chain starts, the
+  // ones already running finish, and the batch fails: every path is then either done or untouched
+  // for this batch, which is what recovery settles path by path.
+  const chains = new Map<string, number[]>()
+  for (const [index, step] of spec.steps.entries()) {
     // Every step names the batch's workspace; each action still checks that workspace's identity itself.
     if (
       !step ||
       typeof step !== 'object' ||
       (step as { action?: unknown }).action === 'batch' ||
-      step.cwd !== spec.cwd
+      step.cwd !== spec.cwd ||
+      typeof step.relativeRoot !== 'string'
     ) {
       fail('invalid mutation batch step')
     }
-    results.push((await runOne(step)) ?? {})
+    chains.set(step.relativeRoot, [...(chains.get(step.relativeRoot) ?? []), index])
   }
+  const results: unknown[] = new Array(spec.steps.length)
+  const queue = [...chains.values()]
+  let failure: unknown
+  const worker = async (): Promise<void> => {
+    for (let chain = queue.shift(); chain && failure === undefined; chain = queue.shift()) {
+      for (const index of chain) {
+        try {
+          results[index] = (await runOne(spec.steps[index]!)) ?? {}
+        } catch (error) {
+          failure ??= error
+          return
+        }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(BATCH_PATH_CONCURRENCY, queue.length) }, worker))
+  if (failure !== undefined) throw failure
   process.stdout.write(`${JSON.stringify({ results })}\n`)
 }
 

@@ -96,11 +96,13 @@ export async function runSkillWorkspaceMutation<T extends object>(
 }
 
 /**
- * Run several mutations of ONE workspace in a single confined helper, in order, stopping at the
- * first that fails. Each step is exactly what {@link runSkillWorkspaceMutation} would have run on
- * its own — same normalization, same checks in the helper — so a batch changes how many processes
- * are started, not what any step may do. A failure mid-batch leaves the steps before it done and
- * the rest not started, which is the state a crash between two single mutations leaves.
+ * Run several mutations of ONE workspace in a single confined helper. Steps for the same path run
+ * in their given order; different paths run side by side. Each step is exactly what
+ * {@link runSkillWorkspaceMutation} would have run on its own — same normalization, same checks in
+ * the helper — so a batch changes how many processes are started and how much waiting overlaps, not
+ * what any step may do. After a failure no further path starts and the batch fails, leaving each
+ * path done or untouched for this batch: states a crash between single mutations leaves too, and
+ * which recovery settles path by path.
  */
 export async function runSkillWorkspaceMutations<T extends object>(
   specs: Array<T & { cwd: string }>,
