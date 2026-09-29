@@ -921,11 +921,19 @@ delivery.
 
 ## 13. Architectural Degradation Semantics
 
-The table describes current outage behavior. The proposed
-[CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget)
-adds bounded waiting for control-link recovery, including uncached Webchat
-verification. A CP handoff preserves existing relay data-plane connections and
-routes; it does not expand this document's delivery or replay guarantees.
+The table describes degradation paths within the current control-loss limits.
+Relay readiness follows the CP link; with the chart's probes, roughly 20–30
+seconds without READY removes the relay from Service endpoints. CP roster
+expiry is currently 45 seconds, after which daemons can lose that relay route.
+Reconnect also clears memory bindings before asynchronous replay, while MCP
+and hook replay is additive. Existing connections alone do not establish
+uninterrupted service through those transitions.
+
+The proposed [CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget)
+requires bounded waiting for all control-dependent verification/lookups,
+bounded data-plane readiness through handoff, and atomic replacement snapshots.
+Those changes are prerequisites, not existing guarantees. Relay crash-delivery
+and replay guarantees remain unchanged.
 
 | Failure                             | HTTP bot ingress                                                                                               | Hook ingress                                                     | Webchat                                                            | Agent API egress                              |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------- |
@@ -973,11 +981,11 @@ strict log redaction.
 
 - Slack and Lark / Feishu HTTP apps use the stable public relay origin for their
   callback request URLs.
-- Relay readiness must cover the public listener, CP projection state, and the
-  daemon-facing listener. A process should become unready before draining
-  sockets.
-- Registration and reconnect trigger authoritative replay. Incremental frames
-  are an optimization, not the only reconstruction mechanism.
+- Current readiness covers listeners and CP-link READY. The proposed CP handoff
+  separates a previously converged data plane from transient link loss within
+  its bounded grace; initial startup still requires a complete projection.
+- Registration and reconnect trigger replay; complete atomic replacement is
+  an HA requirement that the current MCP/hook and memory paths do not yet meet.
 - `daemonUrl` must be independently routable to its registered relay identity.
 - The pool must expose delivery-drop counters, control connection state,
   connected-daemon counts, signature failures, and assignment counts without

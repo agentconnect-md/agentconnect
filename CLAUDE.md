@@ -32,8 +32,9 @@ public callback endpoint is required; the CP only orchestrates. Concretely:
   one in-cluster dial to the sandbox pod in the pool).
   It also accepts pre-addressed public ingress from the relay. It is a self-contained
   "message + agent execution unit" and keeps running established sessions during CP
-  outages within their authority lifetimes. Pool members self-fence when duty
-  renewal stops; see [high-availability.md](docs/designs/high-availability.md).
+  outages within their [authority lifetimes](docs/designs/high-availability.md#authority-lifetimes).
+  All member-set daemons self-fence duties at `T_fence` after the last confirmed
+  renewal; see [the duty lease contract](docs/designs/k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7).
 - The optional **relay** terminates Slack HTTP callbacks, GitHub and GitLab webhooks,
   generic webhooks, and webchat, then forwards content directly to the owning
   daemon. It does not persist message content.
@@ -41,11 +42,11 @@ public callback endpoint is required; the CP only orchestrates. Concretely:
   stores **only control-plane metadata** — never message bodies, ACP `session/update`
   streams, or attachment bytes. Managed agent memory with `home: control-plane` is
   the one curated-content exception, like organization knowledge. Authorized BFF
-  reads may proxy bounded transcript, tool-body, memory, or workspace content from
-  the owning daemon without persisting it.
+  operations may proxy bounded transcript, tool-body, memory, or workspace reads
+  and workspace writes to the owning daemon without persisting their content.
 - daemon ↔ CP is a single **WebSocket** used primarily for control signaling
   (register, heartbeat, orchestration commands, telemetry). It also carries the
-  scoped request/reply frames for those on-demand BFF reads; live platform
+  scoped request/reply frames for those on-demand BFF operations; live platform
   messages and ACP update streams never use it.
 
 ## Monorepo (pnpm workspace, `packages/*`)

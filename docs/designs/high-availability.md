@@ -5,14 +5,16 @@
 > Related:
 > [architecture.md](architecture.md),
 > [daemon-cp-ws-protocol.md](daemon-cp-ws-protocol.md),
+> [k8s-daemon-pool.md](k8s-daemon-pool.md),
 > [shared-bot-relay.md](shared-bot-relay.md), and
 > [control-plane-implementation.md](control-plane-implementation.md)
 
-This document owns the application contract for one or two peer Control Plane
-replicas and CP upgrades without interrupting business traffic. Control
-WebSockets may reconnect; accepted turns, established platform connections, and
-Webchat output must survive a planned CP rollout. Infrastructure recovery and
-capacity planning remain deployment concerns.
+This document records availability requirements and proposes a Control Plane
+design targeting one or two peer replicas. Its target is a CP-only rolling
+upgrade without interrupting business traffic: control WebSockets may reconnect
+while accepted turns, platform connections, and Webchat continue. This is not a
+guarantee of today's implementation. Infrastructure recovery and capacity
+planning remain deployment concerns.
 
 ## Architecture Invariants
 
@@ -21,8 +23,8 @@ capacity planning remain deployment concerns.
 An established daemon remains the unit that receives messages, runs the agent,
 and sends replies. Control Plane unavailability may delay configuration and
 observability, but live platform message bodies and ACP update streams must stay
-on the daemon/relay data plane. Authorized, bounded BFF reads may proxy
-daemon-local content through the Control Plane without persistence.
+on the daemon/relay data plane. Authorized, bounded BFF reads and workspace
+writes may proxy daemon-local content through the CP without persistence.
 
 ### Daemons fail independently
 
@@ -48,17 +50,31 @@ Credentials may cross authenticated, encrypted control channels only where the
 protocol explicitly requires them. Logs, metrics, traces, errors, and
 operator-facing diagnostics must not contain secret values.
 
+## Authority Lifetimes
+
+Existing work may continue only while its own authority remains valid. This
+does not mean that every authority has a CP-controlled expiry:
+
+- All member-set daemons, including self-hosted daemon groups, self-fence duties
+  at `T_fence` after the last confirmed renewal. Reassignment waits until
+  `T_reassign > T_fence`; see [the duty lease contract](k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7).
+- Secret leases, where used, have their own TTL. Cached relay grants without a
+  TTL do not expire merely because the CP connection or ownership lease ends.
+- Standalone daemons outside a member set have no duty self-fence. Their local
+  execution may continue, but CP-dependent operations can still fail.
+
 ## Failure Domains and Required Behavior
 
-| Failure domain                        | Required externally visible behavior                                                                                            |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Control Plane process or network path | Existing work continues within its authority lifetime; duty holders self-fence if confirmed renewal stops; reconnect reconciles |
-| Daemon process or host                | Impact is limited to work owned by that daemon; loss is detectable and represented explicitly                                   |
-| Relay process or route                | Other independent routes continue; accepted work is not silently reported as delivered                                          |
-| Database or control-state store       | The system fails closed for authority changes and avoids reconnect amplification                                                |
-| Identity or secrets provider          | Existing in-memory sessions degrade predictably; new operations return typed failures without leaking credentials               |
-| External channel or Git provider      | Retries are bounded and idempotent where supported; permanent failure remains observable                                        |
-| Slow or disconnected consumer         | Buffers are bounded, backpressure is enforced, and overflow has an explicit outcome                                             |
+| Failure domain                   | Required externally visible behavior                                                                              |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| One CP lost, another healthy     | The proposed design reconnects to the healthy peer before existing authority or relay liveness expires            |
+| All CPs unavailable              | Existing work is limited by the authority lifetimes above; no new CP authority is granted                         |
+| Daemon process or host           | Impact is limited to work owned by that daemon; loss is detectable and represented explicitly                     |
+| Relay process or route           | Other independent routes continue; accepted work is not silently reported as delivered                            |
+| Database or control-state store  | The system fails closed for authority changes and avoids reconnect amplification                                  |
+| Identity or secrets provider     | Existing in-memory sessions degrade predictably; new operations return typed failures without leaking credentials |
+| External channel or Git provider | Retries are bounded and idempotent where supported; permanent failure remains observable                          |
+| Slow or disconnected consumer    | Buffers are bounded, backpressure is enforced, and overflow has an explicit outcome                               |
 
 ## Reliability Requirements
 
@@ -104,8 +120,8 @@ operator-facing diagnostics must not contain secret values.
 Running multiple instances must not depend on an in-process connection registry
 or event bus for correctness. Cross-instance control delivery, revocation,
 online-state reads, and live-event publication require shared coordination and
-fencing. This applies to the overlap in a one-replica rolling update as well as
-steady-state replication. The proposed implementation is specified below.
+fencing. Today's one-replica rolling overlap does not meet this target either;
+the proposed implementation below covers both overlap and steady replication.
 
 ### Credential rotation
 
@@ -124,30 +140,45 @@ same code path. A rollout may temporarily add one replica; two is the intended
 steady-state scale, not a protocol limit. A single replica cannot provide
 continuous control service after an unexpected process loss.
 
-The rollout guarantee assumes healthy shared PostgreSQL, reachable identity and
-secret dependencies, sufficient replacement capacity, and compatible adjacent
-versions. CP replication does not change daemon or relay restart semantics,
-platform delivery guarantees, or database failover.
+The target applies to CP-only rollouts with healthy shared PostgreSQL, reachable
+identity and secret dependencies, sufficient replacement capacity, a shared
+endpoint, and compatible overlapping versions. Hold relay and daemon versions
+fixed during this drill; a chart upgrade that also rolls those components has
+separate continuity requirements. CP replication does not change their crash
+semantics, platform delivery guarantees, or database failover.
+
+The Helm chart can overlap old and new CPs. The supplied Compose service is one
+container on a fixed host port and cannot; its stop/start upgrade is outside
+this promise until it gains an overlapping rollout topology. One steady-state
+replica still needs peer support when its deployment overlaps versions.
 
 PostgreSQL is the only shared coordination layer in this design, including its
 durable metadata delivery log. Do not add a second broker. Each CP needs a
 dedicated direct or session-pooled connection for `LISTEN`; transaction pooling
 does not preserve the listener ([pooling compatibility](https://www.pgbouncer.org/features.html)).
 
-The current implementation already has surge-first rolling updates, readiness,
+The current Helm deployment already has surge-first rolling updates, readiness,
 `preStop`, `1012` control-socket closure, reconnect snapshots, and an acknowledged
 session-metadata outbox. It still has process-local daemon/relay registries,
 control broadcasts, SSE fan-out, and some mutation gates. Those mechanisms do
 not yet satisfy this section; increasing `replicas` alone is insufficient.
+Relay reconnect replay is also incomplete: MCP and hook replay is additive,
+while memory bindings are cleared before asynchronous replay. Neither is the
+atomic replacement snapshot required below. Relay readiness follows its CP
+link, and several turn-time control requests still fail immediately on a drop.
 
 ### Connection ownership and forwarding
 
 Keep one CP control connection per daemon or relay. Its socket remains local to
 the accepting CP, behind the existing channel ports. Add a PostgreSQL connection
 directory keyed by `(peer kind, peer id)`, recording the owner process
-incarnation, internal endpoint, connection generation, phase, lease expiry, and
-the capabilities required by routing. Daemons retain `sessionEpoch`; relay
-connections need equivalent generation fencing.
+incarnation, internal endpoint, connection epoch, phase, and lease expiry. CP
+registration also records its version and supported internal operations. For
+daemons the connection epoch is exactly `sessionEpoch`, claimed in the auth
+transaction that increments it, before any connection-derived writes. It is
+not the daemon's existing `generation` field, which identifies a pod template.
+Relays gain a CP-issued epoch; their current client-local generation is not a
+cross-CP fence. Both peer kinds use REGISTERING, READY, and DRAINING phases.
 
 ```mermaid
 flowchart LR
@@ -162,51 +193,103 @@ flowchart LR
   R <-->|Message data plane| D
 ```
 
-- Registration atomically claims a new generation and publishes READY only
-  after its snapshot is established. Every ownership renewal, cleanup, and
-  connection-derived database mutation is fenced by that owner and generation
-  in the same transaction as the mutation. An old close cannot clear a new
-  connection's liveness, approval state, or authority.
-- A CP that cannot renew ownership stops issuing authoritative controls before
-  its lease expires. Lease comparisons use database time; local expiry uses a
-  conservative monotonic deadline. A displaced owner closes the old socket;
-  the receiving peer rejects stale-generation controls, including delayed relay
-  projections.
+- Publish READY only after registration and snapshot convergence. Auth follow-up,
+  heartbeat, runtime-snapshot sequence resets/updates, approval replay/cleanup,
+  and lifecycle writes require the owner incarnation and connection epoch.
+  Use a conditional write or lock the ownership row through the mutation;
+  an unlocked read followed by a write in the same transaction is insufficient.
+  An old close cannot clear a successor's state. A claim notifies the displaced
+  incarnation; polling and renewal predicates cover lost notifications.
 - HTTP and orchestration callers resolve the directory. Local owners dispatch
   directly; remote owners receive one authenticated internal RPC carrying the
-  peer generation, caller scope, request ID, and deadline. The owner validates
-  them and stamps the wire fence. Forwarding never recursively forwards; an
+  target owner incarnation, peer epoch, caller scope, request ID, and deadline.
+  The owner rejects a stale incarnation, validates resource scope, and stamps
+  the wire fence. Forwarding never recursively forwards; an
   ownership change returns to the origin for a bounded re-resolution.
 - Internal endpoints come from authenticated CP registration, never request
-  input. Both Helm and Compose use HTTPS with a dedicated, rotatable CP peer
-  bearer credential supplied through secret configuration, separate from daemon/relay
-  credentials and never accepted for public API authentication. This also
-  applies to one-replica deployments because rolling updates overlap. Bounded
-  transcript/tool/file reads may pass transiently through the forwarding CP;
-  their bodies never enter the directory, a delivery table, or notifications.
+  input. Use a dedicated, rotatable peer credential, separate from daemon/relay
+  and public API authentication. It establishes installation trust, not an
+  independent proof of user identity: ingress authenticates/authorizes the user,
+  and the owner rechecks current resource scope. CPs share a privileged trust
+  boundary. HTTPS uses deployment-issued certificates with a configured CA and
+  verified server name. This is the proposed peer transport requirement, not
+  a claim that existing internal HTTP links already provide it.
+- Bounded transcript/tool/file reads and authorized `workspace/write` content
+  may pass transiently through the forwarding CP. Bodies never enter the
+  directory, delivery records, or notifications. Preserve write preconditions
+  such as `ifMatchMtime` and the mutation retry rules below.
 - Online checks, deletion guards, capability reads, and routing decisions use
   the shared view. A local registry miss or planned CP handoff is not daemon
   failure and must not remove a healthy data-plane route or reassign its duty.
 
-Connection ownership only identifies the control transport. Existing placement,
-duty terms, launch IDs, and resource revisions remain their respective authority
-fences; a CP handoff does not advance those resource generations by itself.
+An unexpired READY owner can serve controls. REGISTERING waits within a deadline;
+DRAINING serves admitted requests and renewals but takes no new placement.
+Expired/missing ownership without a proven stop is unknown: reads re-resolve,
+mutations fail closed, and existing data routes retain their own authority.
+Deletion requires a fenced retirement decision, never just directory absence.
+Compute HTTP-bot notice authority from the shared relay roster, and re-resolve
+CP-relayed daemon requests such as `executor/prepare` across owner changes.
+
+Connection epochs identify transports, not daemon boots. Placement, duty terms,
+launch IDs, and resource revisions retain their own fences. In particular,
+restart completion must use a reported daemon boot identity, not a higher
+`sessionEpoch`; the current lifecycle settlement needs that correction.
+
+### Owner failure and database loss
+
+Use an initial 15-second ownership lease, renewed every 5 seconds, with database
+time for all CP-shared lease decisions, including duty and OAuth claims. Local
+deadlines are conservative monotonic deadlines derived from confirmed renewal.
+After renewal failure, remove public readiness and stop new authority changes.
+No later than 10 seconds after the last confirmed ownership renewal, stop all
+authoritative controls and close owned control sockets once with `1012` so peers
+can move. Close earlier if a peer's actual remaining `T_fence` margin requires
+it. Expiry or displacement never leaves a socket serving under stale authority.
+
+An authenticated peer probe reporting fresh database-backed readiness identifies
+a healthy failover target. Without one, treat the cause as unknown or a shared
+database outage; do not infer global health from a cached directory row. The
+self-release deadline still applies. Reject new control handshakes while the CP
+cannot renew, and use bounded, jittered client backoff, reset only after a full
+successful handshake. Each ownership generation is detached once, preventing a
+global DB outage from creating an accept/close loop. Recovery must re-auth and
+reconcile before restoring authority. Peer keepalive must also bound redial
+from an unresponsive owner by the detection budget; an open TCP socket alone
+cannot keep a peer pinned indefinitely.
+
+The release plus handoff budget must fit below relay roster expiry (currently
+45 seconds) and each remaining duty deadline. Relay service readiness currently
+fails after roughly 20–30 seconds of CP-link loss with the chart's probes.
+Step 3 must preserve a bounded, previously converged relay data plane during a
+healthy handoff instead of coupling it directly to the instantaneous CP socket;
+initial startup and expired/revoked authority still fail closed.
 
 ### Control changes and live events
 
-Commit configuration changes and a durable metadata-only delivery obligation in
-the same database transaction. Each obligation identifies the resource, its
-revision, and removal state. Every CP independently delivers relevant changes
-to its local peers; one worker consuming a global queue cannot satisfy a
-broadcast. Track outstanding delivery explicitly rather than advancing a bare
-sequence cursor past transactions that have not committed yet.
+Any committed change to an input of a pushed projection records a durable,
+metadata-only obligation in the same transaction. This includes duty-holder
+changes, relay registration/retirement, boot reconcilers, and OAuth rotation,
+not only configuration edits. State projections use this journal; forwarding
+serves request/reply operations and imperative commands, avoiding two competing
+delivery paths for a configuration PATCH.
+
+Use independent per-CP pending progress, resolving local recipients at delivery
+time, plus applied-revision acknowledgements at peers. A peer moving to another
+CP is reconciled there; a complete snapshot satisfies its older obligations.
+Track unfinished rows explicitly, never a bare sequence watermark that skips
+uncommitted transactions. Compaction waits for every live incarnation to finish
+or reset from a complete snapshot; retired incarnations cannot resume old
+progress. This is per-CP journal progress, not one durable row per event per peer.
 
 Use PostgreSQL `LISTEN/NOTIFY` to wake these workers, with periodic scans as the
 recovery path. Notifications contain only identifiers and revisions. A fresh CP
-and every reconnecting peer receive an authoritative snapshot, followed by
-changes committed during snapshot construction. This subscription boundary
-must leave no gap. A process returning after delivery-history retention expires
-rebuilds from a snapshot instead of resuming an old cursor.
+and every reconnecting peer register as recipients before snapshot construction,
+then consume changes committed while it was built. Snapshot begin/end frames
+carry a projection kind and revision: stage the new set, atomically replace and
+prune only on a successful end, then apply queued higher revisions. Failed items
+retry; they are not silently omitted. Keep the prior valid projection while a
+replacement is incomplete. After delivery-history retention expires, rebuild
+from a snapshot instead of resuming old progress.
 
 Delivery is at least once. Peers acknowledge applied revisions and reject stale
 updates, including removal tombstones. Authority-changing controls that lack
@@ -215,14 +298,22 @@ may remain best-effort. Coalescing configuration updates is allowed only when
 the latest snapshot fully replaces them. Revocations remain outstanding until
 the intended peers acknowledge or their relevant authorization expires; loss
 of a CP ownership lease alone does not expire a cached data-plane grant.
+Terminal conditions are applied ACK, the grant's own expiry, or verified peer
+retirement that also fences its data-plane authority. Deleting a directory row
+is not that proof. Unexpiring offline grants can keep revocation pending; no
+bounded revocation SLA is claimed until the grant-lifetime decision is settled.
 Expose pending propagation rather than claiming it has completed. Retain
 tombstones and delivery state through that boundary, then compact them.
 
-SSE uses cross-CP metadata invalidations, with the existing per-user visibility
-checks at each subscriber. Opening or re-establishing a stream, or recovering a
-lost notification subscription, triggers an authoritative refresh. Transient
-live events may coalesce; persisted state and daemon content are re-read. No
-transcript or ACP stream is replicated through this mechanism.
+SSE uses per-user visibility checks and batched, rate-bounded metadata
+invalidations. Persisted changes use journal wakeups; high-rate transient
+`session-activity` uses best-effort peer forwarding, not database writes or
+`NOTIFY` per activity frame. Missing activity cannot be reconstructed from
+PostgreSQL. A resync signal and jittered browser reconnect refresh persisted
+state and resume live observation without pretending to replay lost activity.
+Authorization-cache invalidation uses the durable path; a lost subscription
+flushes affected authorization caches before serving another cached verdict.
+No transcript or ACP stream is replicated through this mechanism.
 
 ### Concurrent writers and background work
 
@@ -235,65 +326,127 @@ transactions.
 
 Reuse existing durable claims, including duty allocation, OAuth refresh, and
 review publication. Replace the remaining correctness-sensitive local gates,
-including MCP provider binding mutations and agent move coordination. In-memory
-locks may remain optimizations. Inventory every background loop and
+including MCP provider binding mutations, agent moves, HTTP-bot conversation
+mutation chains, and approval cleanup/replay ordering. In-memory locks may
+remain optimizations. Inventory every background loop and
 authorization/configuration cache: its writes must be independently safe and
 its invalidations must reach other replicas. Database CAS does not by itself
 make a post-commit local-only push safe.
 
-Include plaintext secret caches in that audit. Organization deletion must deny
-subsequent access on every replica and invalidate its cached entries. Destroying
-a Vault key alone does not clear process memory; preserve the separate
-[at-rest shredding boundary](per-org-secret-encryption.md#4-secretcipher-contract)
-and do not claim that already-delivered plaintext has been erased.
+Duty recovery grace must reflect an install-wide recovery gap, not restart a
+120-second vacancy pause on every new CP process. Skip the full recovery wait
+only when shared incarnation history proves uninterrupted authority; otherwise
+retain `T_reassign`. Audit shared rate budgets (MCP and GitHub credential minting)
+and Logto identity-cache invalidation rather than multiplying them per process.
+
+Keep the existing [at-rest shredding boundary](per-org-secret-encryption.md#4-secretcipher-contract):
+Vault key deletion does not clear a warm plaintext cache, which currently has
+bounded capacity but no per-org eviction API or time-based expiry guarantee.
+Cross-CP authorization invalidation must not claim to erase that plaintext.
+Per-org plaintext eviction is a separate step-2 decision, not a new guarantee
+introduced by this document.
 
 ### Planned rollout and reconnect budget
 
 1. Apply only migrations that both versions can read and write. Start the new
    CP, establish its directory and change subscriptions, then report ready when
    HTTP, control forwarding, and snapshot recovery work. Keep the existing
-   `maxUnavailable: 0`, `maxSurge: 1`, and endpoint propagation allowance.
+   `maxUnavailable: 0`, `maxSurge: 1`, and `minReadySeconds` propagation allowance
+   (currently 15 seconds).
 2. Mark the retiring CP draining, remove it from public traffic, and stop
    claiming new background work. Keep its internal forwarding and sockets
    available while admitted requests and database operations finish within a
-   bounded drain window. Finish or release worker claims safely.
+   bounded drain window. Continue heartbeats, confirmed duty renewal, releases,
+   verification/lookup RPCs, and metadata outbox ACKs; suppress only new vacancy
+   claims and new worker claims. Refuse new control upgrades with a retryable
+   unavailable response. Finish or release existing worker claims safely.
 3. Close remaining control sockets with `1012` and end SSE streams explicitly.
    This is a CP transport handoff, never `daemon/drain`: do not stop runtimes,
    clear relay routes, or interrupt accepted turns. Ownership cleanup is
    generation-conditional. Clients reconnect through the shared endpoint,
    reconcile, and immediately renew held duties.
-4. Verify handoff completion and convergence before continuing the rollout.
-   The grace period must cover endpoint propagation, request drain, connection
-   handoff, and cleanup; an exceeded budget is a failed rollout, not proof of
-   graceful completion.
+4. A deployment-side rollout gate must verify handoff before retiring another
+   CP, and halt on timeout. A plain Deployment availability check does not
+   enforce this; the serial retirement mechanism is a required step-3 design
+   item. Do not claim the guarantee for today's unmodified rollout controller.
 
-Use **10 seconds as the initial acceptance budget for transport handoff**, from
-socket closure through READY and confirmed duty renewal, measured at supported
-fleet load. This is a proposed validation target, not a current guarantee. Every
-held duty must renew before its actual remaining self-fence deadline, with at
-least one heartbeat interval of margin. The current 120-second duty lease gives
-a 90-second self-fence horizon from the last confirmed renewal, not 90 seconds
-from disconnect. Do not lengthen that horizon to hide a slow rollout.
+Keep HTTP/internal listeners alive during admission drain; close control/SSE
+sockets before awaiting Fastify `http.close()`. Derive `preStop`, admission
+drain, the process failsafe, and `terminationGracePeriodSeconds` from one total
+budget. Today's 10-second process failsafe, 2-second socket terminate, and
+30-second pod grace are not automatically sufficient for the new phases.
 
-During handoff, reconnect-safe control reads and authentication checks wait and
-retry within the caller's total deadline, including relay Webchat verification.
-An uncached valid token must not become an immediate 503 solely because the
-relay's CP link is reconnecting. Authentication rejection remains distinct from
-transport failure. Mutations retain a stable operation ID and consult durable
-outcome state before retry; an ambiguous non-idempotent operation is not blindly
-resent. Bound all waiting queues and return typed outcomes on deadline or
-overload, without acknowledging unaccepted work.
+Use **10 seconds as the initial worst-case budget for the last peer of a
+retiring CP**, including any connection-close batching. The drill measures from
+the first control close to every daemon's reconciled READY and confirmed held
+duty renewal, and every relay's READY with complete projections. Use one test
+observer's monotonic clock; report per-peer durations as well. Publish the
+tested peer count and configuration/snapshot load with the result; no unmeasured
+fleet size is covered. This is a proposed target, not a current guarantee.
 
-The daemon's existing session-metadata outbox remains the reporting mechanism.
+The initial allocation is 1 second for jitter/redial admission, 2 for dial/auth,
+5 for snapshot build and unchanged-state convergence, and 2 for renewal and
+completion observation. Step 3 adds a `1012`-aware fast reconnect, bounded
+registration concurrency, and convergence that does not wait for an unchanged
+agent's active turn to finish. Repeated failures use normal bounded backoff.
+The full budget must fit below relay readiness/roster horizons above and every
+held duty's actual remaining `T_fence`, with a heartbeat interval of margin.
+Use the configured [duty lease bounds](k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7),
+not an assumed 90 seconds from disconnect; never extend a fence to hide delay.
+
+During handoff, control operations on either side wait and retry within a total
+deadline that covers this budget. This includes daemon `gitcred/request`,
+`provider-credentials/request`, `linearcred/request`, CP-homed memory reads and
+writes, and CP-relayed `executor/prepare`; also relay Webchat/agent-chat
+verification, `rd/hello`, and `rc/thread-lookup`. Reuse the relay's bounded
+`waitReady` pattern and add its equivalent on the daemon. An uncached valid
+token or already-acknowledged platform follow-up cannot fail solely because the
+link is reconnecting. Authorization rejection stays distinct from transport
+failure, and waiting does not bypass revocation.
+
+Mutations need a stable operation ID and durable outcome lookup before resend,
+specifically CP-side deduplication for non-idempotent `memory/store` appends and
+the corresponding transaction operations. Forwarded workspace writes retain
+their original preconditions. Without this capability, an ambiguous write is
+not retried and that peer/version cannot pass the continuity gate. Queues and
+deadlines are bounded; overload has a typed outcome, never a false acceptance.
+
+The acknowledged `event/session-sync` outbox remains the session-metadata
+mechanism. `cron/report` completion and `usage/report` are currently best-effort:
+reconnect restates cron fire stamps, not completion, and usage has no guaranteed
+reconnect replay. Step 3 must preserve terminal cron outcomes across handoff
+through acknowledged, deduplicated reporting; usage gaps remain observable
+telemetry gaps rather than a claim that all reports are durable.
 Reconnection must converge unchanged configuration without restarting agents or
-platform connections. Pool duties retain their existing self-fence on a real
-prolonged outage; independent daemons retain their local-autonomy behavior.
+platform connections. All member-set duties retain self-fence on a prolonged
+outage; standalone daemons retain their local-autonomy behavior.
 
-Schema changes use expand/migrate/contract across releases. Wire changes must
-cover the supported daemon/relay versions and both overlapping CP versions;
-new required behavior is capability-gated. These compatibility checks apply to
-one-replica upgrades too. Runtime credential rotation is a separate operation
-with its own overlap contract.
+### Compatibility and first activation
+
+Expand/migrate/contract applies to coordination itself. First ship a bridge
+release with directory writes, fenced close handling, peer RPC and shared-mode
+read support behind an install-wide mode gate. Its initial rollout still has
+the old implementation's limitations; do not advertise HA while a pre-bridge
+CP may exist. Only activate shared reads after every serving CP and required
+daemon/relay capability is compatible and all participants acknowledge the
+activation revision. Missing rows during bootstrap mean unknown legacy
+ownership, never proof that deletion or reassignment is safe.
+
+Subsequent releases and rollbacks must understand the active mode and retained
+schema. Roll back to the compatible bridge while shared mode is active; a
+pre-bridge downgrade requires disabling the mode and a separately planned
+maintenance transition. Do not silently fall back to local reads during an HA
+rollout. Required wire behavior is capability-gated on both overlapping CPs
+and all supported peers.
+
+Compatibility also includes minted artifacts and process configuration:
+deploy verifiers for the next token format/key before minting it, retaining
+only previous formats that satisfy the same authorization constraints. A
+security-incompatible token cutover is outside the uninterrupted-rollout
+contract. CPs must reload or become unready when behind the authoritative
+deployment-document revision; relay projections reject lower revisions.
+Equal `configRevision` must render the same digest on both CP versions; any
+semantic rendering change advances the revision. Test reverse rollout too.
 
 ### Daemon status during handoff
 
@@ -330,7 +483,8 @@ Implement in three bounded steps, keeping steady-state replication disabled
 until all three pass:
 
 1. Shared connection ownership, fencing, forwarding, and cluster-wide liveness.
-   Gate replica counts above one in the chart until all three steps pass.
+   Gate replica counts above one in the chart until all three steps pass; that
+   protective guard can ship before the shared directory.
 2. Recoverable broadcasts, cross-CP SSE, mutation gates, and background/cache
    audit. Preserve existing durable implementations instead of replacing them.
 3. Request drain, bounded reconnect waiting, truthful daemon status,
@@ -338,8 +492,33 @@ until all three pass:
    chart's termination grace and drain settings against the measured rollout
    budget.
 
+The following details remain implementation decisions, required before enabling
+replication rather than guarantees already supplied by the current code:
+
+- Step 1: directory schema, isolation predicates for every connection-derived
+  write, peer certificate provisioning, and daemon boot identity negotiation.
+- Step 2: inventory every authority control and hint with revision source,
+  tombstone, ACK and old-peer behavior, including aggregate `rc/routes`,
+  collaboration routes, relay roster, MCP/hook removal and daemon revocation.
+  Specify pending-progress storage/compaction, invalidation batching limits,
+  shared rate budgets, and the policy for unexpiring offline grants. Decide
+  separately whether to add per-org plaintext cache eviction.
+- Step 3: select and implement the deployment-side serial retirement gate,
+  its halt/rollback behavior, supported fleet load, and measured timing knobs.
+  PDB/spreading protect the chosen two-replica disruption profile; they do not
+  replace the CP-only handoff gate or cover a simultaneous relay/daemon rollout.
+
 Use two **independent CP processes** sharing PostgreSQL, not two application
-objects that accidentally share module-global locks. The release gate covers:
+objects that accidentally share module-global locks.
+
+"Accepted" means the existing ingress has acknowledged the work: include
+platform callbacks already answered successfully even if a CP-dependent lookup
+is pending, daemon-admitted direct/cron work, and acknowledged Webchat/agent-chat
+submissions. Do not change their crash-delivery semantics. Use tagged inputs and
+daemon/platform observations to establish completion and missing/duplicate
+effects; a green connection icon is not evidence of continuity.
+
+The release gate covers:
 
 - Connect a daemon to A and a relay to B; direct HTTP to either. Reads, controls,
   revocations, deletion guards, and SSE have the same result on both replicas.
@@ -348,17 +527,28 @@ objects that accidentally share module-global locks. The release gate covers:
 - Lose notifications and restart a delivery worker between commit and ACK.
   Independent consumers, snapshots, tombstones, and retries converge without
   missing a recipient or duplicating a non-idempotent effect.
+- Delete an MCP provider and hook during relay reconnect; neither remains
+  callable after the complete snapshot. Interrupt a snapshot and verify that
+  it cannot clear valid memory bindings or publish a partial replacement.
 - Roll one and then two replicas through old/new versions under ongoing direct
   IM, relay ingress, Webchat streaming/new verification, and long-running turns.
   CP upgrade causes no lost accepted messages, restarted runtimes, interrupted
   turns, missing Webchat output, or duty self-fence; handoff meets its budget.
+- Include a turn fetching credentials, pushing to git, writing CP-homed memory,
+  and editing a workspace; a cron spanning handoff; new-agent placement; and
+  admitted HTTP/forwarded requests, SSE subscribers and claimed worker jobs.
+- Exercise new-CP token mint versus old-CP verification, a deployment-document
+  save followed by one replica restart, first mode activation, and rollback to
+  the compatible bridge. Reject a pre-bridge rollback while shared mode is on.
 - Verify Reconnecting during a healthy handoff, accurate stale state when CP
   reads fail, and visible failure after grace expires. A recovery beyond the
   handoff budget must fail rollout acceptance even if work continues; neither
   retries nor replica changes may keep a dead daemon indefinitely Reconnecting.
 - Separately kill an owner process or partition it from PostgreSQL. Verify
-  bounded recovery and stale-owner rejection without weakening the existing
-  prolonged-outage self-fence. This is distinct from the planned-rollout promise.
+  self-release by its deadline and recovery within the following handoff budget
+  while another CP is healthy. With global DB loss, verify bounded retry load,
+  no stale-owner writes, and the existing prolonged-outage self-fence. These
+  fault drills are distinct from the planned-rollout promise.
 
 ## Validation
 
@@ -372,9 +562,9 @@ smallest useful evidence for the changed invariant:
 - failure-injection tests that assert typed outcomes rather than silent loss;
 - compatibility checks for mixed-version clients when wire behavior changes.
 
-Infrastructure-specific drills, thresholds, replica placement, provider
-failover, backup restoration, and incident-response steps are outside
-application-level validation.
+The CP handoff and fault drills above are application acceptance, with the
+deployment supplying the tested topology/load. Provider failover, backup
+restoration, and environment-specific incident procedures remain outside it.
 
 ## Review Checklist
 
@@ -387,3 +577,6 @@ Before merging an availability-affecting change, verify:
 5. Can overload or drain produce a false-success acknowledgement?
 6. Are all secret-bearing values excluded from logs and diagnostics?
 7. Is the behavior observable without coupling it to environment-specific details?
+8. Do cross-CP reads, fencing, snapshot replacement and delivery survive owner loss?
+9. Do activation, mixed-version rollout and rollback preserve control and resource authority?
+10. Do measured handoff and business-continuity results pass independently of UI color?

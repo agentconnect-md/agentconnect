@@ -42,7 +42,7 @@ below that hold in only one mode are marked; everything unmarked holds in both.
   browser endpoint.
 - Allow daemons to scale horizontally and independently, so one daemon failure does not affect other daemons.
 - Run multiple agents on one daemon, with a separate ACP adapter for each agent type.
-- Allow established sessions to continue sending, receiving, and executing while the Control Plane is temporarily unavailable, within existing authority lifetimes; pool members self-fence when duty renewal stops (§3.1).
+- Allow established sessions to continue within their [authority lifetimes](high-availability.md#authority-lifetimes) during CP outages; all member-set daemons self-fence at `T_fence` after the last confirmed renewal ([duty leases](k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7)).
 
 ### Non-Goals
 
@@ -109,7 +109,8 @@ AgentConnect Cloud runs the second mode; the first is what an OSS or
 bring-your-own-machine deployment runs. Both dial out to the same Control Plane
 over the same control WebSocket, and in neither does live message content or an
 ACP update stream cross the Control Plane. Everything in §5 through §8 and §10
-through §11 is about that shared data plane and holds in both.
+through §11 describes that shared data plane; duty-governed members additionally
+have the renewal/self-fence boundary described in the availability contract.
 
 The mode-specific designs are
 [k8s-daemon-pool.md](k8s-daemon-pool.md) (duty ledger, membership, placement),
@@ -129,7 +130,7 @@ Its responsibilities are deliberately narrow:
 - **Registry/Auth**: daemon registration and health, routing policies, and authentication policies.
 - **Web UI**: configuration, editing, and runtime monitoring.
 
-**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. When the Control Plane is temporarily unavailable, **established sessions continue within their authority lifetimes**. Duty-governed members self-fence without confirmed renewal; see [CP availability](high-availability.md#planned-rollout-and-reconnect-budget) and the pool failure model.
+**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. During CP outages, established work is limited by its [authority lifetimes](high-availability.md#authority-lifetimes) and CP-dependent operations. See the [member-set failure model](k8s-daemon-pool.md#13-failure-model-d13) and the proposed [CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget).
 
 ### 4.2 daemon
 
@@ -226,7 +227,8 @@ daemon ←→ Control Plane (WebSocket)
   - daemon reports: runtime status, usage, health
 ```
 
-Orchestration happens on the control plane and **never blocks or enters** the path of a user message.
+Orchestration does not carry live user messages. Execution may still await CP
+control operations, such as a credential fetch or CP-homed memory write.
 
 ---
 
@@ -237,7 +239,7 @@ The Control Plane achieves "orchestration without touching messages" over the co
 - **Session ownership**: decide which daemon is responsible for a workspace or session. The daemon then takes over that session's platform traffic itself.
 - **Agent lifecycle**: instruct a daemon to start or stop a particular type of agent (Claude or Codex).
 - **Scaling and placement**: make agent- and session-level placement and scaling decisions from the load and health reported by daemons. It does not start or stop daemon processes.
-- **Degraded semantics**: if the Control Plane is unavailable, daemons keep existing sessions running. New-session assignment and scaling pause, then catch up after recovery.
+- **Degraded semantics**: during CP outages, local work continues within its authority lifetime; CP-dependent requests can fail. New placement and scaling pause. The proposed HA rollout adds bounded request recovery without extending duty fences.
 
 ---
 
@@ -335,12 +337,12 @@ host to run sandboxed.
 
 ## 11. Failures and Recovery
 
-| Failure                | Impact                                      | Behavior                                                                                                                                                                                                                                                                                      |
-| ---------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Control Plane outage   | Orchestration pauses                        | **Existing sessions continue on their daemons**; new assignments and scaling pause, then catch up after recovery                                                                                                                                                                              |
-| One daemon fails       | Sessions owned by that daemon are disrupted | The failure domain is isolated; the Control Plane detects the failure and reassigns sessions to another daemon                                                                                                                                                                                |
-| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries itself and reports an alert                                                                                                                                                                                                                                  |
-| Agent runtime crashes  | One agent task fails                        | The daemon reclaims the exited host and the next message re-spawns the runtime: a new child process self-hosted, a new process inside the agent's existing sandbox in the pool. A fresh sandbox generation happens only when the pod or its channel was lost, not on an ordinary runtime exit |
+| Failure                | Impact                                            | Behavior                                                                                                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Control Plane outage   | Orchestration and CP-dependent calls are affected | Existing local work is limited by authority lifetimes; duty-governed work stops at `T_fence` without confirmed renewal                                                                                                                                                                        |
+| One daemon fails       | Work owned by that daemon is disrupted            | Other daemons continue; member-set duties may be reassigned under their fences. Existing sessions are not transparently migrated by the unwired watchdog                                                                                                                                      |
+| Platform adapter fails | Traffic for that platform is affected             | The daemon reconnects or retries itself and reports an alert                                                                                                                                                                                                                                  |
+| Agent runtime crashes  | One agent task fails                              | The daemon reclaims the exited host and the next message re-spawns the runtime: a new child process self-hosted, a new process inside the agent's existing sandbox in the pool. A fresh sandbox generation happens only when the pod or its channel was lost, not on an ordinary runtime exit |
 
 ---
 
@@ -352,7 +354,7 @@ host to run sandboxed.
 - **Low latency**: the message loop stays inside the daemon and its ACP call is local or one in-cluster hop, never a round trip through a center.
 - **Strong failure isolation**: one daemon failure affects only its sessions, producing a small blast radius.
 - **Near-linear scaling**: adding daemons adds throughput without a central bottleneck.
-- **Degradable control plane**: established sessions keep running while the Control Plane is unavailable.
+- **Degradable control plane**: local work can continue through CP outages within the authority and dependency bounds above.
 - **Proximity deployment**: daemons can run near their users or platforms to reduce cross-region latency.
 
 ### Drawbacks
@@ -368,4 +370,4 @@ host to run sandboxed.
 ## 13. Open Questions and Future Work
 
 1. **Session affinity and routing tables**: how should the Control Plane routing table coordinate with local daemon routing? How can session migration (rebalancing) avoid disruption?
-2. **High-throughput evolution**: introduce a Gateway + Message Bus between daemons and the Control Plane, fully separating the control and data planes, as an upgrade path for higher-throughput and multi-tenant scenarios.
+2. **CP replication**: implement the [active-active design](high-availability.md#active-active-control-plane) using PostgreSQL for shared control coordination while preserving the existing message data plane.

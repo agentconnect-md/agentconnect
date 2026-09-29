@@ -59,7 +59,7 @@ This chapter summarizes the daemon's **modules and their responsibilities**. Eve
    |   |- ACP Host (local ACP client) --stdio--> ACP Adapter child -> model harness    |
    |   |- MCP Tool Server (inject sendPlatformMessage, etc.) --MCP/stdio--> adapter    |
    |   |- Workspace Manager (git-repo / from-scratch / skills)                         |
-   |   |- Local Store (SQLite: sessions/routes/crons/transcript/telemetry buffer)       |
+   |   |- Local Store (SQLite: sessions/routes/crons/transcript/session outbox)        |
    |   `- Telemetry (metrics/logs/traces)                                               |
    +----------------------------+------------------------------------------------------+
                   Slack/Telegram bot API (direct edge data plane)
@@ -76,12 +76,12 @@ This chapter summarizes the daemon's **modules and their responsibilities**. Eve
 | **Reconciler**                            | In process                      | Idempotently converges disk desired state against runtime actual state by opening/closing connections, starting/stopping agents, and adding/removing crons        | section 5           |
 | **ConnectionManager + Platform Adapters** | In process; daemon-owned        | Consolidates platform connections by credential; platform send/receive; rich-text and attachment normalization; owns platform tokens                              | sections 6/9        |
 | **Local Router / Normalizer**             | In process                      | Converts inbound events to `NormalizedMessage`; selects `(agent, session)` from the route table; trigger rules and multi-agent arbitration                        | sections 6.3/8      |
-| **Scheduler**                             | In process                      | Fires cron/loop **locally**, including while CP is offline, and injects synthetic messages into Router                                                            | sections 4.2/7.4    |
+| **Scheduler**                             | In process                      | Fires cron/loop **locally** while its authority remains valid, and injects synthetic messages into Router                                                         | sections 4.2/7.4    |
 | **ACP Host**                              | In process; local ACP client    | Starts and drives adapters through ACP; manages session lifecycles; **converges** streaming agent output                                                          | section 7           |
 | **ACP Adapters**                          | **Third-party child processes** | `claude-agent-acp` / `codex`: implement the ACP agent side and launch the local model harness                                                                     | sections 7.1/3.3    |
 | **MCP Tool Server**                       | In process; local MCP server    | Injects tools such as `sendMessage`, `listAgents` (org-scoped peer discovery), and `messageAgent`, filling ACP gaps                                               | section 9.4         |
 | **Workspace Manager**                     | In process                      | Manages `git-repo` and `from-scratch` workspaces, installs skills, and returns `cwd` from `prepareWorkspace`                                                      | section 4.3         |
-| **Local Store**                           | Embedded SQLite                 | Session state, route/cron cache for degradation, thread transcript, and pending telemetry buffer                                                                  | section 3.2         |
+| **Local Store**                           | Embedded SQLite                 | Session state, route/cron cache for degradation, thread transcript, and pending session-metadata outbox                                                           | section 3.2         |
 | **Telemetry**                             | In process                      | Metrics/traces use direct OTLP side path (`startDaemonOpenTelemetry`, configured through `OTEL_*`); usage/facts use `usage/report` and `facts/*`; injects traceId | section 10.2        |
 | **Secrets Agent** (future)                | In process                      | Credential lease delivery/rotation; the current version stores tokens directly in configuration                                                                   | future; section 3.3 |
 
@@ -258,7 +258,7 @@ The daemon persists only a secret-free `.cp-agent-id` marker in a dedicated chil
 |     |- agent.json
 |     `- workspace/
 |- state/
-|  `- local.sqlite            # Sessions/routes/cron last-run/telemetry buffer.
+|  `- local.sqlite            # Sessions/routes/cron last-run/session-metadata outbox.
 `- logs/
    `- daemon.log
 ```
@@ -691,12 +691,15 @@ After connecting, CP-Client sends `register` with capabilities and `localState` 
 
 ### 5.4 Offline / Degraded Semantics
 
-| Scenario                                 | Behavior                                                                                                                               |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| CP temporarily unreachable               | CP-Client reconnects with exponential backoff. Platform connections, active sessions, and crons continue from last disk desired state. |
-| New agent placement / scaling            | **Paused**, because CP orchestration is required; catches up after reconnect.                                                          |
-| `--no-cp` / `controlPlane.enabled=false` | Pure local mode from disk, suitable for single-machine self-hosted / BYO.                                                              |
-| Telemetry                                | Buffer in `state/local.sqlite` and upload after recovery.                                                                              |
+| Scenario                                 | Behavior                                                                                                               |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| CP temporarily unreachable               | CP-Client reconnects with backoff. Local work continues within its authority lifetime; CP-dependent requests can fail. |
+| New agent placement / scaling            | **Paused**, because CP orchestration is required; catches up after reconnect.                                          |
+| `--no-cp` / `controlPlane.enabled=false` | Pure local mode from disk, suitable for single-machine self-hosted / BYO.                                              |
+| Telemetry                                | Session metadata uses the acknowledged outbox; usage and cron completion reports remain best-effort today.             |
+
+See [authority lifetimes](high-availability.md#authority-lifetimes) and the
+[reporting contract](daemon-cp-ws-protocol.md#75-local-autonomy-and-degraded-operation).
 
 ---
 
