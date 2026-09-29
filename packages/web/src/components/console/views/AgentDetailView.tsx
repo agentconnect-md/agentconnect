@@ -180,6 +180,7 @@ import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { CODE_HOST_PROJECTION, codeHostRecord } from '@/lib/code-hosts'
 import { githubHookScope, githubHookScopeKey } from '@/lib/github-hook-scope'
+import { EscapeLayer } from '@/components/console/Scrim'
 
 type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'tools'
 const HOOK_REFRESH_MS = 30_000
@@ -2930,6 +2931,7 @@ function AgentDetail() {
           onClick={closeReviewSettings}
           className="fixed inset-0 z-50 flex items-end bg-[rgba(17,22,29,.5)] backdrop-blur-[2px] desktop:items-center desktop:justify-center desktop:p-6"
         >
+          <EscapeLayer onEscape={closeReviewSettings} />
           <div
             role="dialog"
             aria-modal="true"

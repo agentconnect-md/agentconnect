@@ -20,6 +20,7 @@ import { InstallRegistrySkillModal } from '@/components/console/InstallRegistryS
 import { CreateSkillSourceModal } from '@/components/console/SkillSourcesCard'
 import { SkillMark, SkillSourceLine } from '@/components/console/ToolTile'
 import { Icon, Toggle } from '@/components/ui'
+import { Scrim } from '@/components/console/Scrim'
 
 /**
  * The agent's shared-skills enable-list (docs/designs/shared-skills.md), rendered
@@ -390,7 +391,7 @@ export function AgentSkillsCard({
       )}
 
       {browsing && (
-        <div className="scrim">
+        <Scrim onEscape={() => setBrowsing(false)}>
           <div className="modal">
             <InstallRegistrySkillModal
               existing={skillSources}
@@ -398,14 +399,14 @@ export function AgentSkillsCard({
               onCreated={enableCreated}
             />
           </div>
-        </div>
+        </Scrim>
       )}
       {creating && (
-        <div className="scrim">
+        <Scrim onEscape={() => setCreating(false)}>
           <div className="modal">
             <CreateSkillSourceModal onClose={() => setCreating(false)} onCreated={enableCreated} />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

@@ -42,6 +42,7 @@ import type { Agent } from '@/lib/data'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { LoadingState } from '@/components/marks'
+import { Scrim } from '@/components/console/Scrim'
 
 /** Same rule as the CP's ENV_VAR_NAME, so a bad name fails inline, not as a 400. */
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -373,7 +374,7 @@ function EntrySheet({
   }
 
   return (
-    <div className="scrim">
+    <Scrim onEscape={busy ? undefined : onClose}>
       <div
         className="modal max-w-[560px]"
         role="dialog"
@@ -568,6 +569,6 @@ function EntrySheet({
           <RunningProcessNote />
         </ConfirmationDialog>
       )}
-    </div>
+    </Scrim>
   )
 }

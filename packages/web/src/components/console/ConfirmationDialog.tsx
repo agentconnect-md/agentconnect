@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useId, type ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
+import { Scrim } from '@/components/console/Scrim'
 
 export function ConfirmationDialog({
   title,
@@ -29,16 +30,8 @@ export function ConfirmationDialog({
   const t = useTranslations('Common.actions')
   const titleId = useId()
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [busy, onClose])
-
   return (
-    <div className="scrim">
+    <Scrim onEscape={busy ? undefined : onClose}>
       <div className="modal max-w-[480px]" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <div className="modalhead">
           {destructive ? (
@@ -78,6 +71,6 @@ export function ConfirmationDialog({
           </Button>
         </div>
       </div>
-    </div>
+    </Scrim>
   )
 }

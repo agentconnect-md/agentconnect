@@ -209,6 +209,20 @@ describe('AgentApiCard', () => {
     expect(mocks.createMyApiKey).not.toHaveBeenCalled()
   })
 
+  it('steps back from key creation to the Quickstart on Escape, then closes it', async () => {
+    const escape = () =>
+      act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+      })
+    await render()
+    await click('Quickstart')
+    await click('Create key')
+    await escape()
+    expect(document.querySelector('[role="dialog"][aria-label="Quickstart"]')).toBeTruthy()
+    await escape()
+    expect(document.querySelector('.scrim')).toBeNull()
+  })
+
   it('removes every protocol after a confirmation', async () => {
     await render()
     await click('Remove')

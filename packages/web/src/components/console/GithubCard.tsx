@@ -11,6 +11,7 @@ import {
   type GithubInstallationDto
 } from '@/lib/api'
 import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
+import { Scrim } from '@/components/console/Scrim'
 
 // No 'use client' here: rendered only inside a client boundary — the Integrations page, or the
 // native code-host dialog an admin MCP tool opens in webchat.
@@ -180,7 +181,7 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
         <div className="px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>
       )}
       {uninstalling && (
-        <div className="scrim" onClick={() => setUninstalling(null)}>
+        <Scrim onEscape={() => setUninstalling(null)} onClick={() => setUninstalling(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <UninstallGithubInstallationModal
               installation={uninstalling}
@@ -191,7 +192,7 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
               }}
             />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

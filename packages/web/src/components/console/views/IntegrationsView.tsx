@@ -50,6 +50,7 @@ import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import GithubCard from '@/components/console/GithubCard'
 import GiteaCard from '@/components/console/GiteaCard'
 import GitlabCard from '@/components/console/GitlabCard'
+import { Scrim } from '@/components/console/Scrim'
 
 // The free-bot sub-line shows where the bot came from without repeating
 // historical usage metadata in the list row.
@@ -234,11 +235,11 @@ export default function IntegrationsView() {
       </Section>
 
       {deletingBot && (
-        <div className="scrim" onClick={() => setDeletingBot(null)}>
+        <Scrim onEscape={() => setDeletingBot(null)} onClick={() => setDeletingBot(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <DeleteBotModal bot={deletingBot} onClose={() => setDeletingBot(null)} />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

@@ -25,6 +25,7 @@ import {
   type OrgDto
 } from '@/lib/api'
 import { consoleKeys, profileKeys } from '@/lib/swr-keys'
+import { Scrim } from '@/components/console/Scrim'
 
 /** Where the card reads and writes keys; the default is the caller's own `/me/keys`. */
 export interface ApiKeySource {
@@ -240,7 +241,7 @@ export default function ApiKeysCard({
   const dialogs = (
     <>
       {creating && (
-        <div className="scrim">
+        <Scrim onEscape={() => setCreating(false)}>
           <div className="modal">
             <ApiKeyFormModal
               source={source}
@@ -251,10 +252,10 @@ export default function ApiKeysCard({
               onSaved={reload}
             />
           </div>
-        </div>
+        </Scrim>
       )}
       {editing && (
-        <div className="scrim">
+        <Scrim onEscape={() => setEditing(null)}>
           <div className="modal">
             <ApiKeyFormModal
               source={source}
@@ -264,10 +265,10 @@ export default function ApiKeysCard({
               onSaved={reload}
             />
           </div>
-        </div>
+        </Scrim>
       )}
       {regenerating && (
-        <div className="scrim">
+        <Scrim onEscape={() => setRegenerating(null)}>
           <div className="modal">
             <RegenerateApiKeyModal
               source={source}
@@ -276,14 +277,14 @@ export default function ApiKeysCard({
               onRegenerated={reload}
             />
           </div>
-        </div>
+        </Scrim>
       )}
       {revoking && (
-        <div className="scrim">
+        <Scrim onEscape={() => setRevoking(null)}>
           <div className="modal">
             <RevokeApiKeyModal source={source} apiKey={revoking} onClose={() => setRevoking(null)} onRevoked={reload} />
           </div>
-        </div>
+        </Scrim>
       )}
     </>
   )

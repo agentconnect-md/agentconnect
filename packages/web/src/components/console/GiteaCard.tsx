@@ -44,6 +44,7 @@ import {
   type GiteaRepositoryBindingDto,
   type GiteaRepositoryDto
 } from '@/lib/api'
+import { Scrim } from '@/components/console/Scrim'
 
 /** Machine-readable CP refusals the card says better itself; everything else is surfaced verbatim. */
 const REFUSAL: Record<string, string> = {
@@ -618,7 +619,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
       )}
 
       {picking && connection !== null && (
-        <div className="scrim" onClick={() => setPicking(false)}>
+        <Scrim onEscape={() => setPicking(false)} onClick={() => setPicking(false)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <div className="modalhead">
               <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--surface-active)">
@@ -692,11 +693,11 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
               )}
             </div>
           </div>
-        </div>
+        </Scrim>
       )}
 
       {disconnecting && (
-        <div className="scrim" onClick={() => setDisconnecting(null)}>
+        <Scrim onEscape={() => setDisconnecting(null)} onClick={() => setDisconnecting(null)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <ConfirmGitea
               title={ct('disconnectGitea')}
@@ -708,11 +709,11 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => void disconnect(disconnecting)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
 
       {pending && (
-        <div className="scrim" onClick={() => setPending(null)}>
+        <Scrim onEscape={() => setPending(null)} onClick={() => setPending(null)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <ConfirmGitea
               title={ct('removeRepositoryTitle')}
@@ -724,7 +725,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => void remove(pending)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

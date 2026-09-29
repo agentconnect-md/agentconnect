@@ -22,6 +22,7 @@ import {
   type ServiceAccountRole
 } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
+import { Scrim } from '@/components/console/Scrim'
 
 const ROLES: ServiceAccountRole[] = ['collaborator', 'viewer']
 const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -87,14 +88,14 @@ export function ServiceAccountsCard({ org }: { org: OrgDto }) {
       )}
 
       {creating && (
-        <div className="scrim">
+        <Scrim onEscape={() => setCreating(false)}>
           <div className="modal">
             <ServiceAccountFormModal orgId={org.id} onClose={() => setCreating(false)} onSaved={reload} />
           </div>
-        </div>
+        </Scrim>
       )}
       {editing && (
-        <div className="scrim">
+        <Scrim onEscape={() => setEditing(null)}>
           <div className="modal">
             <ServiceAccountFormModal
               orgId={org.id}
@@ -103,7 +104,7 @@ export function ServiceAccountsCard({ org }: { org: OrgDto }) {
               onSaved={reload}
             />
           </div>
-        </div>
+        </Scrim>
       )}
       {keysFor && <ServiceAccountKeysModal org={org} account={keysFor} onClose={() => setKeysFor(null)} />}
     </div>
@@ -272,7 +273,7 @@ function ServiceAccountKeysModal({
   const api = serviceAccountKeysApi(org.id, account.userId)
   const source = { swrKey: consoleKeys.serviceAccountKeys(org.id, account.userId), ...api, serviceAccount: true }
   return (
-    <div className="scrim">
+    <Scrim onEscape={onClose}>
       <div className="modal">
         <div className="modalhead">
           <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
@@ -295,6 +296,6 @@ function ServiceAccountKeysModal({
           />
         </div>
       </div>
-    </div>
+    </Scrim>
   )
 }

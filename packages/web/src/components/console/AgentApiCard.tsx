@@ -39,6 +39,7 @@ import {
   type ServiceAccountDto,
   type UserApiKeyDto
 } from '@/lib/api'
+import { Scrim } from '@/components/console/Scrim'
 
 const MOCK_RELAY_URL = 'https://relay.example.test'
 
@@ -319,7 +320,7 @@ function QuickstartDialog({
 
   if (creating) {
     return (
-      <div className="scrim">
+      <Scrim onEscape={() => setCreating(false)}>
         <div className="modal">
           <ApiKeyFormModal
             source={MY_KEYS}
@@ -332,7 +333,7 @@ function QuickstartDialog({
             onSaved={() => void mutate()}
           />
         </div>
-      </div>
+      </Scrim>
     )
   }
 
@@ -351,7 +352,7 @@ function QuickstartDialog({
   )
 
   return (
-    <div className="scrim">
+    <Scrim onEscape={onClose}>
       <div className="modal max-w-[920px]" role="dialog" aria-modal="true" aria-label={t('quickstart')}>
         <div className="modalhead">
           <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
@@ -450,6 +451,6 @@ function QuickstartDialog({
           </Button>
         </div>
       </div>
-    </div>
+    </Scrim>
   )
 }

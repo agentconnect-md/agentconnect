@@ -39,6 +39,7 @@ import { SkillMark, SkillSourceLine, ToolTile, ToolTileGrid } from '@/components
 import { GithubMark, LoadingState } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { useTranslations } from 'next-intl'
+import { Scrim } from '@/components/console/Scrim'
 
 /** Split a comma/whitespace-separated skill filter into a clean string[]. */
 function parseSkills(raw: string): string[] {
@@ -195,32 +196,32 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
       )}
 
       {browsing && (
-        <div className="scrim">
+        <Scrim onEscape={() => setBrowsing(false)}>
           <div className="modal">
             <InstallRegistrySkillModal existing={skillSources} onClose={() => setBrowsing(false)} />
           </div>
-        </div>
+        </Scrim>
       )}
       {creating && (
-        <div className="scrim">
+        <Scrim onEscape={() => setCreating(false)}>
           <div className="modal">
             <CreateSkillSourceModal onClose={() => setCreating(false)} />
           </div>
-        </div>
+        </Scrim>
       )}
       {editing && (
-        <div className="scrim">
+        <Scrim onEscape={() => setEditing(null)}>
           <div className="modal">
             <EditSkillSourceModal source={editing} onClose={() => setEditing(null)} />
           </div>
-        </div>
+        </Scrim>
       )}
       {deleting && (
-        <div className="scrim">
+        <Scrim onEscape={() => setDeleting(null)}>
           <div className="modal">
             <DeleteSkillSourceModal source={deleting} onClose={() => setDeleting(null)} />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

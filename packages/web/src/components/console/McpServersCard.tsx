@@ -37,6 +37,7 @@ import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useTranslations } from 'next-intl'
+import { Scrim } from '@/components/console/Scrim'
 
 export function McpServersCard({ canWrite }: { canWrite: boolean }) {
   const t = useTranslations('Tools')
@@ -155,14 +156,14 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
       )}
 
       {creating && (
-        <div className="scrim">
+        <Scrim onEscape={() => setCreating(false)}>
           <div className="modal">
             <CreateMcpProviderModal onClose={() => setCreating(false)} />
           </div>
-        </div>
+        </Scrim>
       )}
       {editing && (
-        <div className="scrim">
+        <Scrim onEscape={() => setEditing(null)}>
           <div className="modal">
             {editing.kind === 'open_connector' ? (
               <EditConnectorModal provider={editing} onClose={() => setEditing(null)} />
@@ -170,21 +171,21 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
               <EditMcpProviderModal provider={editing} onClose={() => setEditing(null)} />
             )}
           </div>
-        </div>
+        </Scrim>
       )}
       {deleting && (
-        <div className="scrim">
+        <Scrim onEscape={() => setDeleting(null)}>
           <div className="modal">
             <DeleteMcpProviderModal provider={deleting} onClose={() => setDeleting(null)} />
           </div>
-        </div>
+        </Scrim>
       )}
       {addingConnectors && (
-        <div className="scrim">
+        <Scrim onEscape={() => setAddingConnectors(false)}>
           <div className="modal max-w-[920px]">
             <ConnectorsModal onClose={() => setAddingConnectors(false)} />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

@@ -6,7 +6,7 @@
 // via openModal's 2nd arg — a DaemonRow (reconnect / delete daemon) or an Agent
 // (add integration / delete / edit agent); the kind selects which the render casts it to.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Agent, DaemonRow, IntegrationRow, MemberSetRow } from '@/lib/data'
 import type { CronDto, HookDto } from '@/lib/api'
 import { AGENT_SETUP_URI, AGENT_TOOLS_URI, nativeUiTitle, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
@@ -34,6 +34,7 @@ import EditOrgModal from './modals/EditOrgModal'
 import GroupModal from './modals/GroupModal'
 import RuntimeLoginModal, { type RuntimeLoginTarget } from './modals/RuntimeLoginModal'
 import DeleteGroupModal from './modals/DeleteGroupModal'
+import { Scrim } from './Scrim'
 
 export type ModalKind =
   | 'nativeIntegration'
@@ -133,23 +134,12 @@ export function ModalProvider({ children }: { children: ReactNode }) {
     [openModal, openNativeIntegration, closeNativeIntegration]
   )
 
-  // Dialogs hold in-progress form state, so a stray click on the scrim must not
-  // discard it. Esc asks the active dialog to dismiss first, so dialogs that own
-  // cleanup can share the same path as their explicit Cancel button.
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') requestClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, requestClose])
-
   return (
     <Ctx.Provider value={value}>
       {children}
+      {/* No close on a scrim click (it would discard form state); Esc asks the active dialog to dismiss first. */}
       {open && (
-        <div className="scrim">
+        <Scrim onEscape={requestClose}>
           <div
             role={open.kind === 'nativeIntegration' ? 'dialog' : undefined}
             aria-modal={open.kind === 'nativeIntegration' ? true : undefined}
@@ -257,7 +247,7 @@ export function ModalProvider({ children }: { children: ReactNode }) {
             {open.kind === 'editProfile' && <EditProfileModal onClose={close} />}
             {open.kind === 'editOrg' && <EditOrgModal onClose={close} />}
           </div>
-        </div>
+        </Scrim>
       )}
     </Ctx.Provider>
   )

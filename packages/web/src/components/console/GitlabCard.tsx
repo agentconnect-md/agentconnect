@@ -44,6 +44,7 @@ import {
   type GitlabOrgAccountDto,
   type GitlabProjectBindingDto
 } from '@/lib/api'
+import { Scrim } from '@/components/console/Scrim'
 
 /** Machine-readable CP refusals the card says better itself (all takeover, today). */
 const REFUSAL: Record<string, string> = {
@@ -773,7 +774,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
       )}
 
       {pending && (
-        <div className="scrim" onClick={() => setPending(null)}>
+        <Scrim onEscape={() => setPending(null)} onClick={() => setPending(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
               title={pending.remove ? ct('removeConnection') : ct('disconnectGitlab')}
@@ -789,11 +790,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => release(pending.target)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
 
       {taking && (
-        <div className="scrim" onClick={() => setTaking(null)}>
+        <Scrim onEscape={() => setTaking(null)} onClick={() => setTaking(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
               title={ct('takeOverProject')}
@@ -806,11 +807,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => takeOver(taking)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
 
       {takingBot && (
-        <div className="scrim" onClick={() => setTakingBot(null)}>
+        <Scrim onEscape={() => setTakingBot(null)} onClick={() => setTakingBot(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
               title={ct('takeOverProjectAdministration')}
@@ -823,11 +824,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => takeOverBot(takingBot.bindingIds)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
 
       {blocked && (
-        <div className="scrim" onClick={() => setBlocked(null)}>
+        <Scrim onEscape={() => setBlocked(null)} onClick={() => setBlocked(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
               title={ct('removeProject')}
@@ -836,11 +837,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               onClose={() => setBlocked(null)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
 
       {removing && (
-        <div className="scrim" onClick={() => setRemoving(null)}>
+        <Scrim onEscape={() => setRemoving(null)} onClick={() => setRemoving(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
               title={ct('removeProject')}
@@ -852,7 +853,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => remove(removing)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

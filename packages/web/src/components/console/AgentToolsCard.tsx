@@ -10,6 +10,7 @@ import { AttachedEmpty, AttachedNote, AttachedRow, AttachMenu } from '@/componen
 import { ConnectorsModal } from '@/components/console/ConnectorsModal'
 import { CreateMcpProviderModal } from '@/components/console/McpServersCard'
 import { ProviderMark, useConnectorIcons } from '@/components/console/ToolTile'
+import { Scrim } from '@/components/console/Scrim'
 
 /**
  * Leads the agent's Tools & Skills tab: the MCP servers this agent has attached,
@@ -232,18 +233,18 @@ export function AgentToolsCard({
       )}
 
       {creating && (
-        <div className="scrim">
+        <Scrim onEscape={() => setCreating(false)}>
           <div className="modal">
             <CreateMcpProviderModal onClose={() => setCreating(false)} onCreated={attachCreated} />
           </div>
-        </div>
+        </Scrim>
       )}
       {browsing && (
-        <div className="scrim">
+        <Scrim onEscape={() => setBrowsing(false)}>
           <div className="modal max-w-[920px]">
             <ConnectorsModal onClose={() => setBrowsing(false)} onCreated={attachCreated} />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )
