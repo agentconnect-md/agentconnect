@@ -740,7 +740,7 @@ consumer kind without restricting the reusable resource to gates and routers.
 | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `GET /decisions/providers?daemonId=:id`                                | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness       |
 | `GET /decisions`                                                       | Visible definitions, model/type, visible consumer counts                                    |
-| `GET /decisions/:id`                                                   | Definition and visible consumer usages                                                      |
+| `GET /decisions/:id`                                                   | Definition and visible consumer usages, each with this Decision's rules at that place       |
 | `POST /decisions`                                                      | DecisionDraft                                                                               |
 | `PATCH /decisions/:id`                                                 | Complete DecisionDraft, atomically saved                                                    |
 | `DELETE /decisions/:id`                                                | Refuse while used                                                                           |
@@ -1466,22 +1466,28 @@ Follow-ups use that pinned target and create no new evaluation. Detail bodies ex
 after 24 hours or 20 newer choices for the same Agent; summaries expire after seven
 days. The CP proxies these reads without persisting their content.
 
-Decision detail shows its places of use and their recent evaluations in one card:
-a tab per place (conversation gates, Shared Bot Routing, repository routing, Agent
-model selection, chat API gates, and agent tools, which record none) after an **All** tab that merges
-every recorded place's latest page by time. Each place shows its integration's, bot's,
-code host's, or agent's mark; a place whose conversation the viewer cannot read is
-shown as hidden rather than failed, and a row whose bodies have expired says so.
-Hovering a tab names the place's kind and,
-for a gate, whether its condition needs review; a selected place offers its settings
-and its full list in a drawer, and places the viewer cannot see are counted below.
-Each source retains its own list, retention, detail drawer, and access checks;
-sibling installs of one bot have separate gate sources. The optional
+Decision detail lists its places of use in one card, a row per place (conversation
+gates, Shared Bot Routing, repository routing, Agent model selection, chat API gates,
+and agent tools, which record none). Each row shows the place's integration, bot, code
+host, or agent mark; this Decision's rules there as a chip; its evaluations in the last
+24 hours, counted from the newest page of 50 (`50+` beyond it); and buttons to the
+place's settings and to its full list in a drawer. `GET /decisions/:id` returns each
+usage's rules for this Decision's step, so the card reads no per-place configuration.
+A place whose conversation the viewer cannot read counts as hidden rather than failed,
+a gate whose condition needs review turns its chip amber, and places the viewer cannot
+see are counted below. Each source retains its own list, retention, detail drawer, and
+access checks; sibling installs of one bot have separate gate sources. The optional
 Decision ID filter runs on the daemon before paging;
 older daemons report upgrade required for filtered reads. These histories identify
 the root Decision of a recorded evaluation. A child Decision page reads its root
-chain's history and labels that scope; a retained detail shows which child steps
-were reached. Agent tool calls have no evaluation history here.
+chain's history; a retained detail shows which child steps were reached. Agent tool
+calls have no evaluation history here.
+
+Every placed Decision chip shares one hover card: a conversation gate's pill, a shared
+bot's or repository's routing, a runtime picked by Decision, and the rule chip on the
+Decision page each list their rules as condition → target with the Otherwise or
+Fallback. Outside the Decision page the card leads with the Decision, linked for
+viewers who can open it.
 
 A chat API gate keeps its own Agent-scoped history per protocol, read like a gate's
 and opened from the API row's rules modal or the Decision page, where its usage names
