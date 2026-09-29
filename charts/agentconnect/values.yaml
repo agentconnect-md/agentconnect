@@ -148,8 +148,8 @@ features:
   gitUrl: true
   # The QQ integration's console entry points; off hides them (an existing QQ bot keeps its Bots tab).
   qq: true
-  # The Google Chat integration's console entry points; off hides them (an existing Google Chat bot keeps its Bots tab).
-  googleChat: false
+  # The built-in agent's Marketplace install of the deployment's Google Chat app; turn it on once the app's listing is live.
+  googleChatMarketplace: false
   # The By decision checkout for additional repositories; off hides it for new choices, existing ones stay shown.
   repositoryDecision: false
 

@@ -26,7 +26,6 @@ export const GOOGLE_CHAT_CHANNEL_LIST: WebChannelListSemantics = {
 
 export const googleChatModule: WebPlatformModule<GoogleChatApi> = {
   platformId: 'googlechat',
-  requires: 'google-chat',
   Mark: GoogleChatMark,
   wizard: {
     Body: GoogleChatWizardBody,

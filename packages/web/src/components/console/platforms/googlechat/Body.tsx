@@ -6,6 +6,7 @@ import { Icon } from '@/components/ui'
 import type { IntegrationDto } from '@/lib/api'
 import { credentialAttention, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import type { WizardHost } from '../contract'
 import { useDeploymentConfig } from '../deployment-config'
 import { usePublishedFooter, usePublishedIdentityChrome } from '../publish'
@@ -52,8 +53,11 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
   // The chassis reads this same probe for its relay capability; only "has it answered" is read here.
   const probe = useDeploymentConfig(true)
   const { integrations, getAgent } = useConsoleData()
-  // The deployment app serves the organization's preset agent alone: a claim lands there (§10.5).
-  const marketplaceUrl = useGoogleChatMarketplaceUrl(agent.builtin === true, host.mockMode)
+  // The deployment app serves the preset agent alone (§10.5), and is offered only once its listing is live.
+  const marketplaceUrl = useGoogleChatMarketplaceUrl(
+    agent.builtin === true && featureFlagEnabled('google-chat-marketplace'),
+    host.mockMode
+  )
 
   // The person chose their own app over the deployment app's listing.
   const [ownApp, setOwnApp] = useState(false)
