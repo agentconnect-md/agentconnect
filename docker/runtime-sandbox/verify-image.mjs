@@ -226,7 +226,7 @@ check('dsh-acp launches the installed harness instead of unpacking its own', () 
 
 // Git runs INSIDE the sandbox over the shim's exec channel, so a missing git is every workspace operation failing.
 check('provides the executables the shim must resolve', () => {
-  const required = ['git', 'gh', 'node', 'claude-agent-acp', 'codex-acp', 'dsh-acp', 'dsh', 'opencode']
+  const required = ['git', 'gh', 'node', 'claude-agent-acp', 'codex-acp', 'dsh-acp', 'dsh']
   const missing = required.filter((bin) => sh(`command -v ${bin} >/dev/null && echo y || echo n`) === 'n')
   if (missing.length > 0) throw new Error(`missing: ${missing.join(', ')}`)
   return required.join(' ')

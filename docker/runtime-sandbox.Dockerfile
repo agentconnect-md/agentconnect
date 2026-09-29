@@ -7,7 +7,6 @@ ARG AGENT_BROWSER_VERSION=0.38.1
 ARG CLAUDE_ACP_VERSION=0.81.2
 ARG CODEX_ACP_VERSION=1.13.1-agentconnect.1
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.33
-ARG OPENCODE_VERSION=1.18.32
 
 # Release builds install applications over stable system bases, then add daemon-versioned helpers.
 
@@ -117,7 +116,6 @@ RUN --mount=type=bind,source=docker/runtime-sandbox/install-agent-browser.sh,tar
 ARG CLAUDE_ACP_VERSION
 ARG CODEX_ACP_VERSION
 ARG DEEPSEEK_HARNESS_ACP_VERSION
-ARG OPENCODE_VERSION
 RUN --mount=type=bind,source=docker/runtime-sandbox/install-core-harnesses.sh,target=/tmp/install-core-harnesses.sh \
   --mount=type=bind,source=docker/runtime-sandbox/bake-dsh-preset.mjs,target=/tmp/bake-dsh-preset.mjs \
   HOME=/root sh /tmp/install-core-harnesses.sh
@@ -125,6 +123,7 @@ RUN --mount=type=bind,source=docker/runtime-sandbox/install-core-harnesses.sh,ta
 ARG CLINE_VERSION=3.0.65
 ARG PI_ACP_VERSION=0.0.34
 ARG PI_VERSION=0.87.1
+ARG OPENCODE_VERSION=1.18.32
 ARG QWEN_CODE_VERSION=0.24.5
 ARG COPILOT_VERSION=1.0.88
 ARG GROK_VERSION=1.0.41
@@ -135,6 +134,7 @@ RUN export HOME=/root \
   && npm install --global --no-fund --no-audit \
     "cline@${CLINE_VERSION}" \
     "pi-acp@${PI_ACP_VERSION}" "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    "opencode-ai@${OPENCODE_VERSION}" \
     "@qwen-code/qwen-code@${QWEN_CODE_VERSION}" \
     "@github/copilot@${COPILOT_VERSION}" \
     "@xai-official/grok@${GROK_VERSION}" \
@@ -164,7 +164,6 @@ RUN --mount=type=bind,source=docker/runtime-sandbox/install-agent-browser.sh,tar
 ARG CLAUDE_ACP_VERSION
 ARG CODEX_ACP_VERSION
 ARG DEEPSEEK_HARNESS_ACP_VERSION
-ARG OPENCODE_VERSION
 RUN --mount=type=bind,source=docker/runtime-sandbox/install-core-harnesses.sh,target=/tmp/install-core-harnesses.sh \
   --mount=type=bind,source=docker/runtime-sandbox/bake-dsh-preset.mjs,target=/tmp/bake-dsh-preset.mjs \
   HOME=/root sh /tmp/install-core-harnesses.sh
