@@ -66,21 +66,6 @@ export async function loadCodeHostDecisionContext(input: {
       // An unavailable supplement leaves the webhook and recorded conversation usable.
     }
     if (!pullRequest) reasons.push('pull_request_unavailable')
-    const member = codeHostHookMetadataOf(msg)
-    const expected = member && codeHostHookRevisionOf(member)
-    if (
-      pullRequest &&
-      expected &&
-      (pullRequest.headSha !== expected.headSha || (expected.baseSha && pullRequest.baseSha !== expected.baseSha))
-    ) {
-      pullRequest = {
-        ...pullRequest,
-        commitMessages: [],
-        files: [],
-        filesTruncated: true,
-        reasons: [...pullRequest.reasons, 'revision_mismatch']
-      }
-    }
   }
   input.signal.throwIfAborted()
   return { msg, current, history: window?.history ?? [], full: window?.full ?? false, reasons, pullRequest }

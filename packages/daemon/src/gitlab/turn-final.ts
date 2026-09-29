@@ -13,7 +13,7 @@ import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import { gitlabApiBaseUrl } from './api-base.js'
 import { GITLAB_HOST_MISMATCH_REASON } from './host-fence.js'
 import { GitlabFinalPoster } from './poster.js'
-import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext } from '../codehost/pull-context.js'
+import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext, webhookPullRevision } from '../codehost/pull-context.js'
 import { diffLineCounts, PULL_CONTEXT_FILE_LIMIT } from '../codehost/pull-files.js'
 
 /** What GitLab's members read back on the daemon: the §14.1 effect lease, and the instance its spec names. */
@@ -132,7 +132,8 @@ export const gitlabTurnFinal: CodeHostTurnFinal<'gitlab'> = {
             diffTruncated: truncated,
             ...(diff === undefined || (truncated && !diff) ? { diffUnavailable: true as const } : {})
           }
-        }
+        },
+        revision: webhookPullRevision(source)
       },
       signal
     )

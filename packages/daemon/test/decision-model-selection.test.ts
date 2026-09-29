@@ -243,7 +243,7 @@ describe('session model evaluation', () => {
     ).rejects.toThrow()
   })
 
-  it('checks the revision around bounded commits and files under one GitHub repository grant', async () => {
+  it('reads metadata, then files, then commits under one GitHub repository grant', async () => {
     const fetcher = vi.fn<typeof fetch>(async (url) => {
       if (String(url).includes('/commits?')) return Response.json([{ commit: { message: 'Fix login' } }])
       if (String(url).includes('/files?')) return Response.json([fileRow])
@@ -274,10 +274,11 @@ describe('session model evaluation', () => {
       timings: expect.any(Object)
     })
     expect(getPostToken).toHaveBeenCalledOnce()
-    expect(fetcher).toHaveBeenCalledTimes(4)
-    expect(fetcher.mock.calls.map(([url]) => String(url))).toContain(
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      'https://api.github.com/repos/example-org/example-repo/pulls/42',
+      'https://api.github.com/repos/example-org/example-repo/pulls/42/files?per_page=100&page=1',
       'https://api.github.com/repos/example-org/example-repo/pulls/42/commits?per_page=10&page=1'
-    )
+    ])
     expect(getPostToken).toHaveBeenCalledWith('example-agent', 'example-org/example-repo', 'hook-1')
     expect(fetcher).toHaveBeenCalledWith(
       'https://api.github.com/repos/example-org/example-repo/pulls/42',
@@ -286,6 +287,23 @@ describe('session model evaluation', () => {
         headers: { authorization: 'Bearer fixture-token', accept: 'application/json' }
       })
     )
+    fetcher.mockClear()
+    const withRevision = { ...source, github: { ...source.github, headSha: 'webhook-head', baseSha: 'webhook-base' } }
+    expect(await codeHostPullRequestContext(withRevision, 'example-agent', host, new AbortController().signal)).toEqual(
+      {
+        baseSha: 'webhook-base',
+        headSha: 'webhook-head',
+        commitMessages: ['Fix login'],
+        files: [file],
+        filesTruncated: false,
+        reasons: [],
+        timings: expect.any(Object)
+      }
+    )
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      'https://api.github.com/repos/example-org/example-repo/pulls/42/files?per_page=100&page=1',
+      'https://api.github.com/repos/example-org/example-repo/pulls/42/commits?per_page=10&page=1'
+    ])
     fetcher.mockClear()
     expect(
       await codeHostPullRequestContext({ hookId: 'hook-1' }, 'example-agent', host, new AbortController().signal)
@@ -350,16 +368,14 @@ describe('session model evaluation', () => {
         provider === 'gitlab'
           ? [
               'https://code.example.test/api/v4/projects/100/merge_requests/42',
-              'https://code.example.test/api/v4/projects/100/merge_requests/42/commits?per_page=10&page=1',
               'https://code.example.test/api/v4/projects/100/merge_requests/42/diffs?per_page=100&page=1',
-              'https://code.example.test/api/v4/projects/100/merge_requests/42'
+              'https://code.example.test/api/v4/projects/100/merge_requests/42/commits?per_page=10&page=1'
             ]
           : [
               'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42',
-              'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42/commits?limit=10&page=1&verification=false&files=false',
               'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42/files?limit=100&page=1',
               'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42.diff',
-              'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42'
+              'https://code.example.test/api/v1/repos/example-org/example-repo/pulls/42/commits?limit=10&page=1&verification=false&files=false'
             ]
       )
       for (const [, init] of fetcher.mock.calls)
@@ -423,39 +439,46 @@ describe('session model evaluation', () => {
     expect(result!.files.reduce((sum, file) => sum + Buffer.byteLength(file.diff), 0)).toBeLessThanOrEqual(12 * 1024)
   })
 
-  it.each(['commits', 'files'] as const)(
-    'abandons slow %s at the shared deadline and discards unverified supplements',
-    async (slow) => {
-      vi.useFakeTimers()
-      const cancelled = vi.fn()
-      const fetcher = vi.fn<typeof fetch>(async (url) => {
-        if (String(url).endsWith(paths[slow])) return new Response(new ReadableStream({ cancel: cancelled }))
-        if (String(url).endsWith(paths.commits)) return Response.json([{ commit: { message: 'Fix login' } }])
-        if (String(url).endsWith(paths.files)) return Response.json([fileRow])
-        return Response.json({ ...revision, body: 'Description' })
-      })
-      const { result, pending } = ownTimers(() =>
-        readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
-      )
-      const settled = vi.fn()
-      void result.then(settled)
-      await vi.advanceTimersByTimeAsync(PULL_CONTEXT_TIMEOUT_MS - 1)
-      expect(fetcher).toHaveBeenCalledTimes(3)
-      expect(settled).not.toHaveBeenCalled()
-      await vi.advanceTimersByTimeAsync(1)
-      expect(await result).toEqual({
-        description: 'Description',
-        ...revisionState,
-        commitMessages: [],
-        files: [],
-        filesTruncated: true,
-        reasons: ['revision_unverified'],
-        timings: { tokenMs: 0, metadataMs: 0, listsMs: PULL_CONTEXT_TIMEOUT_MS }
-      })
-      expect(cancelled).toHaveBeenCalledOnce()
-      expect(pending.size).toBe(0)
+  it.each([
+    {
+      slow: 'files' as const,
+      requests: 2,
+      files: [],
+      filesTruncated: true,
+      reasons: ['files_unavailable', 'commits_unavailable'],
+      timings: { tokenMs: 0, metadataMs: 0 }
+    },
+    {
+      slow: 'commits' as const,
+      requests: 3,
+      files: [file],
+      filesTruncated: false,
+      reasons: ['commits_unavailable'],
+      timings: { tokenMs: 0, metadataMs: 0, filesMs: 0 }
     }
-  )
+  ])('keeps what arrived when slow $slow reach the shared deadline', async ({ slow, requests, ...expected }) => {
+    vi.useFakeTimers()
+    const cancelled = vi.fn()
+    const fetcher = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith(paths[slow])) return new Response(new ReadableStream({ cancel: cancelled }))
+      if (String(url).endsWith(paths.commits)) return Response.json([{ commit: { message: 'Fix login' } }])
+      if (String(url).endsWith(paths.files)) return Response.json([fileRow])
+      return Response.json({ ...revision, body: 'Description' })
+    })
+    const { result, pending } = ownTimers(() =>
+      readPullRequestContext(lease, paths, new AbortController().signal, fetcher)
+    )
+    const settled = vi.fn()
+    void result.then(settled)
+    await vi.advanceTimersByTimeAsync(PULL_CONTEXT_TIMEOUT_MS - 1)
+    expect(fetcher).toHaveBeenCalledTimes(requests)
+    expect(settled).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await result).toEqual({ description: 'Description', ...revisionState, commitMessages: [], ...expected })
+    expect(fetcher).toHaveBeenCalledTimes(requests)
+    expect(cancelled).toHaveBeenCalledOnce()
+    expect(pending.size).toBe(0)
+  })
 
   it('bounds raw diff reads while retaining a separately paginated file inventory', async () => {
     const cancel = vi.fn()
@@ -485,7 +508,7 @@ describe('session model evaluation', () => {
     const result = await readPullRequestContext(lease, { ...paths, rawDiff }, new AbortController().signal, fetcher)
     expect(result).toMatchObject({
       filesTruncated: true,
-      reasons: ['commit_limit', 'files_truncated', 'diff_truncated', 'diff_unavailable']
+      reasons: ['files_truncated', 'diff_truncated', 'diff_unavailable', 'commit_limit']
     })
     expect(result!.files.map(({ path }) => path)).toEqual(['app.ts', 'later.ts'])
     expect(Buffer.byteLength(result!.files[0]!.diff)).toBeLessThanOrEqual(12 * 1024)
@@ -532,23 +555,5 @@ describe('session model evaluation', () => {
     release('fixture-token')
     await Promise.resolve()
     expect(fetcher).not.toHaveBeenCalled()
-  })
-
-  it('omits commits and files if the PR moves during the read', async () => {
-    let reads = 0
-    const fetcher = vi.fn<typeof fetch>(async (url) => {
-      if (String(url).endsWith(paths.commits)) return Response.json([{ commit: { message: 'Fix login' } }])
-      if (String(url).endsWith(paths.files)) return Response.json([fileRow])
-      return Response.json({ ...revision, head: { sha: ++reads === 1 ? 'head' : 'new-head' }, body: 'Description' })
-    })
-    expect(await readPullRequestContext(lease, paths, new AbortController().signal, fetcher)).toEqual({
-      ...revisionState,
-      description: 'Description',
-      commitMessages: [],
-      files: [],
-      filesTruncated: true,
-      reasons: ['revision_changed'],
-      timings: expect.any(Object)
-    })
   })
 })

@@ -238,16 +238,18 @@ PR/MR states add `pullRequest: { baseSha?, headSha?, commitMessages, files, file
 }
 ```
 
-The optional API read has one 1.5-second budget including credentials. It reads metadata, then
-one page of at most 10 commits and one page of at most 100 changed files concurrently, then
-metadata again. GitHub's files endpoint and GitLab's diffs endpoint provide per-file patches;
-Gitea's metadata-only files endpoint is paired with one bounded raw diff read, matched by path.
-File responses and the raw diff are each capped at 1 MiB. Both revision reads must agree;
-a known webhook head/base must agree too. GitLab's current MR head must also match its generated
-diff head. A changed or unverifiable revision omits the commits and file inventory with
-`revision_changed`, `revision_mismatch`, or `revision_unverified`. A failed read retains
-the webhook and observed history with `pull_request_unavailable`. The webhook description takes
-precedence over the API description. No checkout, retries or pagination are involved.
+The optional API read has one 1.5-second budget including credentials and sends one request at a
+time. A webhook that names the head skips the metadata read; otherwise metadata comes first and
+supplies the revision, and GitLab's current MR head must match its generated diff head. Then one page
+of at most 100 changed files, and, in the budget left, one page of at most 10 commits. GitHub's files
+endpoint and GitLab's diffs endpoint provide per-file patches; Gitea's metadata-only files endpoint
+is followed by one bounded raw diff read, matched by path. File responses and the raw diff are each
+capped at 1 MiB. A read the budget cuts off keeps what arrived: the files without the commits
+(`commits_unavailable`), or neither (`files_unavailable`). Metadata without a usable revision omits
+both with `revision_unverified`; a failed metadata read retains the webhook and observed history
+with `pull_request_unavailable`. The lists are not pinned to a revision, so a push during the read
+can make them describe a newer head than the event. The webhook description takes precedence over
+the API description. No checkout, retries or pagination are involved.
 
 File paths, change status and full addition/deletion counts survive patch trimming. GitLab counts
 come from complete provider hunks; counts unavailable from the provider are omitted. A missing

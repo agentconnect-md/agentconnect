@@ -17,7 +17,7 @@ import { GITEA_ISSUE_CLOSED_EVENT, GITEA_PULL_MERGED_EVENT } from './events.js'
 import { GITEA_HOST_MISMATCH_REASON } from './host-fence.js'
 import { GiteaFinalPoster } from './poster.js'
 import { correlateGiteaReview, giteaReviewEventState } from './review-correlation.js'
-import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext } from '../codehost/pull-context.js'
+import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext, webhookPullRevision } from '../codehost/pull-context.js'
 import { PULL_CONTEXT_FILE_LIMIT, restPullRequestFile } from '../codehost/pull-files.js'
 import { giteaRepoPath } from './api.js'
 
@@ -159,7 +159,8 @@ export const giteaTurnFinal: CodeHostTurnFinal<'gitea'> = {
         fileCountPath: ['changed_files'],
         file: restPullRequestFile,
         rawDiff: `${path}.diff`,
-        authorization: 'token'
+        authorization: 'token',
+        revision: webhookPullRevision(source)
       },
       signal
     )

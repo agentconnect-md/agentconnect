@@ -469,7 +469,7 @@ describe('code-host decision state', () => {
     expect(context.pullRequest.files[0]!.diff).toHaveLength(12 * 1024)
   })
 
-  it('retains the event on enrichment failure and omits supplements for another revision', async () => {
+  it('retains the event on enrichment failure', async () => {
     const store = await openTestStore()
     try {
       const msg = fire({
@@ -490,25 +490,6 @@ describe('code-host decision state', () => {
           subject: { body: 'It crashes.' },
           pullRequest: { headSha: 'expected', files: [], filesTruncated: true },
           context: { partial: true, reasons: ['observed_history', 'history_unavailable', 'pull_request_unavailable'] }
-        }
-      })
-      const changed = await loadCodeHostDecisionContext({
-        ...input,
-        pullRequest: async () => ({
-          description: 'Later description',
-          headSha: 'other',
-          commitMessages: ['Later commit'],
-          files: [{ path: 'src/app.ts', status: 'modified', diff: '+later', diffTruncated: false }],
-          filesTruncated: false,
-          reasons: []
-        })
-      })
-      expect(buildCodeHostDecisionState(changed!, decision)).toMatchObject({
-        state: {
-          currentMessage: { text: 'Review this' },
-          subject: { body: 'It crashes.' },
-          pullRequest: { headSha: 'expected', commitMessages: '', files: [], filesTruncated: true },
-          context: { reasons: expect.arrayContaining(['revision_mismatch']) }
         }
       })
       const pullRequest = vi.fn(async () => undefined)

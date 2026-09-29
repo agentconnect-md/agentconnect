@@ -439,7 +439,7 @@ function hookRouteTimingLine(
 ): string {
   const p = timing.pull
   const pull = p
-    ? ` (token=${p.tokenMs ?? '-'} metadata=${p.metadataMs ?? '-'} lists=${p.listsMs ?? '-'} verify=${p.verifyMs ?? '-'})`
+    ? ` (token=${p.tokenMs ?? '-'} metadata=${p.metadataMs ?? '-'} files=${p.filesMs ?? '-'} commits=${p.commitsMs ?? '-'})`
     : ''
   return (
     `${row.subject} seq=${row.seq} ${disposition}${reason ? `/${reason}` : ''}` +

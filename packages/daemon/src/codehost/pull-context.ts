@@ -1,3 +1,4 @@
+import { codeHostHookMetadataOf, codeHostHookRevisionOf, type CodeHostHookMembers } from '@agentconnect.md/protocol'
 import type { CodeHostEffectLease } from './turn-final.js'
 import {
   attachRawFileDiffs,
@@ -12,7 +13,7 @@ export const PULL_CONTEXT_COMMIT_LIMIT = 10
 const RESPONSE_MAX_BYTES = 1024 * 1024
 
 export interface PullRequestContext {
-  description: string
+  description?: string
   baseSha?: string
   headSha?: string
   commitMessages: string[]
@@ -26,8 +27,19 @@ export interface PullRequestContext {
 export interface PullContextTimings {
   tokenMs?: number
   metadataMs?: number
-  listsMs?: number
-  verifyMs?: number
+  filesMs?: number
+  commitsMs?: number
+}
+
+export interface PullRevision {
+  headSha: string
+  baseSha?: string
+}
+
+/** The revision a delivery's trusted metadata names; undefined for an issue or a head-less event. */
+export function webhookPullRevision(source: CodeHostHookMembers): PullRevision | undefined {
+  const member = codeHostHookMetadataOf(source)
+  return member && codeHostHookRevisionOf(member)
 }
 
 interface PullContextPaths {
@@ -42,6 +54,8 @@ interface PullContextPaths {
   file(row: Record<string, unknown>): PullRequestFile | undefined
   rawDiff?: string
   authorization?: string
+  /** The webhook's revision; when present the metadata read is skipped. */
+  revision?: PullRevision
 }
 
 // The lease mint is not abortable, so stop waiting without starting a late provider request.
@@ -62,7 +76,7 @@ function field(value: unknown, path: readonly string[]): unknown {
   return value
 }
 
-// Bracket one commit page and one file page with revision reads; no checkout, pagination or retries.
+// One request at a time: metadata only without a webhook revision, then files, then commits; a read cut off by the budget keeps what arrived.
 export async function readPullRequestContext(
   lease: CodeHostEffectLease,
   paths: PullContextPaths,
@@ -113,9 +127,14 @@ export async function readPullRequestContext(
       reader.releaseLock()
     }
   }
-  const metadata = async () => {
-    const body = await read(paths.description, RESPONSE_MAX_BYTES, extraSignal)
-    return body && !body.truncated ? (JSON.parse(body.text) as unknown) : undefined
+  const json = async (path: string, limit: number) => {
+    const body = await read(path, limit, extraSignal).catch(() => undefined)
+    if (!body || body.truncated) return undefined
+    try {
+      return { value: JSON.parse(body.text) as unknown, headers: body.headers }
+    } catch {
+      return undefined
+    }
   }
   const revision = (value: unknown) => {
     const baseSha = field(value, paths.baseShaPath)
@@ -131,39 +150,65 @@ export async function readPullRequestContext(
   try {
     token = await abortable(lease.token(), extraSignal)
     mark('tokenMs')
-    const before = await metadata()
-    mark('metadataMs')
-    const text = field(before, [paths.descriptionField])
-    if (text !== null && typeof text !== 'string') return undefined
-    const start = revision(before)
+    let known = paths.revision
+    let description: string | undefined
+    let fileCount: unknown
+    if (!known) {
+      const body = await read(paths.description, RESPONSE_MAX_BYTES, extraSignal)
+      const metadata = body && !body.truncated ? (JSON.parse(body.text) as unknown) : undefined
+      mark('metadataMs')
+      const text = field(metadata, [paths.descriptionField])
+      if (text !== null && typeof text !== 'string') return undefined
+      description = text ?? ''
+      fileCount = field(metadata, paths.fileCountPath)
+      known = revision(metadata)
+    }
     const context: PullRequestContext = {
-      description: text ?? '',
-      ...start,
+      ...(description !== undefined ? { description } : {}),
+      ...known,
       commitMessages: [],
       files: [],
       filesTruncated: true,
       reasons: [],
       timings
     }
-    if (!start) return { ...context, reasons: ['revision_unverified'] }
-    const [commits, changedFiles, rawDiff] = await Promise.allSettled([
-      read(paths.commits, 128 * 1024, extraSignal).then((body) =>
-        body && !body.truncated ? (JSON.parse(body.text) as unknown) : undefined
-      ),
-      read(paths.files, RESPONSE_MAX_BYTES, extraSignal).then((body) =>
-        body && !body.truncated ? { rows: JSON.parse(body.text) as unknown, headers: body.headers } : undefined
-      ),
-      paths.rawDiff ? read(paths.rawDiff, RESPONSE_MAX_BYTES, extraSignal, 'text/plain') : undefined
-    ])
-    mark('listsMs')
-    const after = await metadata().catch(() => undefined)
-    if (after) mark('verifyMs')
-    const end = revision(after)
-    if (!end) return { ...context, reasons: ['revision_unverified'] }
-    if (start.headSha !== end.headSha || start.baseSha !== end.baseSha)
-      return { ...context, reasons: ['revision_changed'] }
+    if (!known) return { ...context, reasons: ['revision_unverified'] }
     const { reasons, commitMessages } = context
-    const rows = commits.status === 'fulfilled' && Array.isArray(commits.value) ? commits.value : undefined
+    const page = await json(paths.files, RESPONSE_MAX_BYTES)
+    const rawDiff =
+      page && paths.rawDiff
+        ? await read(paths.rawDiff, RESPONSE_MAX_BYTES, extraSignal, 'text/plain').catch(() => undefined)
+        : undefined
+    if (page) mark('filesMs')
+    if (!page || !Array.isArray(page.value)) reasons.push('files_unavailable')
+    else {
+      for (const row of page.value.slice(0, PULL_CONTEXT_FILE_LIMIT)) {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) continue
+        const file = paths.file(row as Record<string, unknown>)
+        if (file) context.files.push(file)
+      }
+      const count =
+        typeof fileCount === 'number'
+          ? fileCount
+          : typeof fileCount === 'string' && /^\d+\+?$/.test(fileCount)
+            ? Number.parseInt(fileCount, 10)
+            : undefined
+      context.filesTruncated =
+        context.files.length !== page.value.length ||
+        (count === undefined ? page.value.length >= PULL_CONTEXT_FILE_LIMIT : count > context.files.length) ||
+        /rel="?next"?/.test(page.headers.get('link') ?? '') ||
+        Number(page.headers.get('x-next-page')) > 1 ||
+        page.headers.get('x-hasmore') === 'true'
+      if (context.filesTruncated) reasons.push('files_truncated')
+      if (rawDiff) attachRawFileDiffs(context.files, rawDiff)
+      const trimmed = trimFileDiffs(context.files, PULL_CONTEXT_DIFF_MAX_BYTES)
+      if (trimmed || rawDiff?.truncated || context.files.some((file) => file.diffTruncated))
+        reasons.push('diff_truncated')
+      if (context.files.some((file) => file.diffUnavailable)) reasons.push('diff_unavailable')
+    }
+    const commits = extraSignal.aborted ? undefined : await json(paths.commits, 128 * 1024)
+    if (commits) mark('commitsMs')
+    const rows = Array.isArray(commits?.value) ? commits.value : undefined
     if (!rows) reasons.push('commits_unavailable')
     else {
       if (rows.length >= PULL_CONTEXT_COMMIT_LIMIT) reasons.push('commit_limit')
@@ -172,35 +217,6 @@ export async function readPullRequestContext(
         if (typeof message === 'string') commitMessages.push(message)
         else if (!reasons.includes('commits_unavailable')) reasons.push('commits_unavailable')
       }
-    }
-    const page = changedFiles.status === 'fulfilled' ? changedFiles.value : undefined
-    if (!page || !Array.isArray(page.rows)) reasons.push('files_unavailable')
-    else {
-      for (const row of page.rows.slice(0, PULL_CONTEXT_FILE_LIMIT)) {
-        if (!row || typeof row !== 'object' || Array.isArray(row)) continue
-        const file = paths.file(row as Record<string, unknown>)
-        if (file) context.files.push(file)
-      }
-      const total = field(after, paths.fileCountPath)
-      const count =
-        typeof total === 'number'
-          ? total
-          : typeof total === 'string' && /^\d+\+?$/.test(total)
-            ? Number.parseInt(total, 10)
-            : undefined
-      context.filesTruncated =
-        context.files.length !== page.rows.length ||
-        (count === undefined ? page.rows.length >= PULL_CONTEXT_FILE_LIMIT : count > context.files.length) ||
-        /rel="?next"?/.test(page.headers.get('link') ?? '') ||
-        Number(page.headers.get('x-next-page')) > 1 ||
-        page.headers.get('x-hasmore') === 'true'
-      if (context.filesTruncated) reasons.push('files_truncated')
-      const patch = rawDiff.status === 'fulfilled' ? rawDiff.value : undefined
-      if (patch) attachRawFileDiffs(context.files, patch)
-      const trimmed = trimFileDiffs(context.files, PULL_CONTEXT_DIFF_MAX_BYTES)
-      if (trimmed || patch?.truncated || context.files.some((file) => file.diffTruncated))
-        reasons.push('diff_truncated')
-      if (context.files.some((file) => file.diffUnavailable)) reasons.push('diff_unavailable')
     }
     return context
   } finally {
