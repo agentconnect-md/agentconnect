@@ -5,6 +5,7 @@ import {
   GiteaApiClient,
   GiteaApiError,
   giteaCurrentUser,
+  giteaFeedbackPulls,
   giteaPagedGet,
   giteaPageSize,
   giteaPermissionAdmits,
@@ -128,5 +129,27 @@ describe('GiteaApiClient', () => {
     expect(splitGiteaRepoPath('example-org/example-repo')).toEqual({ owner: 'example-org', repo: 'example-repo' })
     expect(splitGiteaRepoPath('group/sub/repo')).toBeNull()
     expect(splitGiteaRepoPath('bare')).toBeNull()
+  })
+})
+
+describe('giteaFeedbackPulls', () => {
+  it('reads native PR heads on every page and omits closed or deleted-source PRs', async () => {
+    const pull = {
+      number: 12,
+      state: 'open',
+      merged: false,
+      head: { ref: 'feature', sha: 'a'.repeat(40), repo: { id: 123 } }
+    }
+    const { api, calls } = client((url) => {
+      if (new URL(url).pathname.endsWith('/pulls/12')) return Response.json({ ...pull, state: 'closed' })
+      const page = Number(new URL(url).searchParams.get('page'))
+      return Response.json(page === 1 ? [{ ...pull, head: { ...pull.head, repo: null } }] : [pull], {
+        headers: { 'x-total-count': '2' }
+      })
+    })
+    expect(await giteaFeedbackPulls('token', 'example-org/example-repo', undefined, api)).toEqual([pull])
+    expect(calls).toHaveLength(2)
+    expect(new URL(calls[1]!.url).searchParams.get('state')).toBe('open')
+    expect(await giteaFeedbackPulls('token', 'example-org/example-repo', 12, api)).toEqual([])
   })
 })

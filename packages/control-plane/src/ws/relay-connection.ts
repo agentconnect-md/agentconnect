@@ -15,6 +15,8 @@
  * Secret material (the `rc/auth` / `rc/verify` credential) is NEVER logged.
  */
 import type {
+  RcCodeHostFeedback,
+  RcCodeHostFeedbackResult,
   RcAuth,
   RcDeploymentConfig,
   RcCodeHostMembershipAuthz,
@@ -48,6 +50,7 @@ import {
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   decodeRelayCpFrame,
+  CODEHOST_FEEDBACK_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   RELAY_CP_SCHEMAS
 } from '@agentconnect.md/protocol'
@@ -111,7 +114,8 @@ export interface RelayConnDeps {
   /** Apply a relay `rc/github-installation` doorbell poke (webhook-triggers
    *  decision 11). Fire-and-forget; store/GitHub errors must not close the link. */
   onGithubInstallation: (m: RcGithubInstallation) => Promise<void>
-  /** Persist a signature-verified, body-free PR feedback signal before GitHub is acknowledged. */
+  /** Persist verified feedback coordinates before the provider delivery is acknowledged. */
+  onCodeHostFeedback?: (m: RcCodeHostFeedback) => Promise<RcCodeHostFeedbackResult>
   onPullRequestFeedback?: (m: RcPullRequestFeedback) => Promise<boolean>
   /** Apply a relay `rc/codehost-delivery` observation (gitea-integration.md §6, §7). Fire-and-forget. */
   onCodeHostDelivery?: (m: RcCodeHostDelivery) => Promise<void>
@@ -227,6 +231,9 @@ export class RelayConnection implements RelayChannel {
         case 'rc/github-installation':
           await this.handleGithubInstallation(frame.payload)
           return
+        case 'rc/codehost-feedback':
+          await this.handleCodeHostFeedback(frame, frame.payload)
+          return
         case 'rc/pull-request-feedback':
           await this.handlePullRequestFeedback(frame, frame.payload)
           return
@@ -267,6 +274,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/thread-lookup' ||
           type === 'rc/github-installation' ||
           type === 'rc/codehost-delivery' ||
+          (type === 'rc/codehost-feedback' && this.features.includes(CODEHOST_FEEDBACK_FEATURE)) ||
           (type === 'rc/pull-request-feedback' && this.features.includes(PULL_REQUEST_FEEDBACK_FEATURE))
         )
       default:
@@ -311,7 +319,12 @@ export class RelayConnection implements RelayChannel {
     this.state = 'READY'
     this.reply(frame, 'rc/registered', {
       relayId: row.id,
-      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE, BOT_CREDENTIAL_CHECK_FEATURE, BOT_TENANT_FEATURE]
+      serverFeatures: [
+        CODEHOST_FEEDBACK_FEATURE,
+        PULL_REQUEST_FEEDBACK_FEATURE,
+        BOT_CREDENTIAL_CHECK_FEATURE,
+        BOT_TENANT_FEATURE
+      ]
     })
     // A relay just appeared (or reclaimed its id) — refresh the daemons' roster
     // and replay this relay's pool config (hook rules).
@@ -343,6 +356,15 @@ export class RelayConnection implements RelayChannel {
       await this.deps.onCodeHostDelivery?.(observed)
     } catch {
       // swallowed — a dropped observation leaves the binding unverified until the next delivery
+    }
+  }
+
+  private async handleCodeHostFeedback(frame: RelayCpFrame, signal: RcCodeHostFeedback): Promise<void> {
+    try {
+      const result = (await this.deps.onCodeHostFeedback?.(signal)) ?? { accepted: false, authorAgentIds: [] }
+      this.reply(frame, 'rc/codehost-feedback/ok', result)
+    } catch {
+      this.sendError(frame.id, 'INTERNAL', 'code host feedback persistence failed', true)
     }
   }
 

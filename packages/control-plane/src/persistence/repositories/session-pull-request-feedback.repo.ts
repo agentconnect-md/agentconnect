@@ -1,4 +1,5 @@
 import { Prisma, type SessionPullRequest } from '../../generated/prisma/client.js'
+import type { CodeHostProvider } from '@agentconnect.md/protocol'
 import { AgentId, OrgId, SessionId } from '../../domain/ids.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type { PullRequestCaptureRecord, PullRequestWakeRecord, SessionPullRequestFeedbackRepo } from '../ports.js'
@@ -10,6 +11,12 @@ function toRecord(row: SessionPullRequest): PullRequestWakeRecord {
     deliveryKey: row.deliveryKey,
     orgId: OrgId(row.orgId),
     installationId: row.installationId,
+    provider: row.provider as CodeHostProvider,
+    bindingId: row.bindingId,
+    ...(row.host ? { host: row.host } : {}),
+    ...(row.headSha ? { headSha: row.headSha } : {}),
+    ...(row.sourceAgentId ? { sourceAgentId: row.sourceAgentId } : {}),
+    ...(row.sourceSessionId ? { sourceSessionId: row.sourceSessionId } : {}),
     repoId: row.repoId,
     repoFullName: row.repoFullName,
     pullNumber: row.pullNumber,
@@ -17,8 +24,14 @@ function toRecord(row: SessionPullRequest): PullRequestWakeRecord {
   }
 }
 
-function identity(item: Pick<PullRequestWakeRecord, 'orgId' | 'repoId' | 'pullNumber'>) {
-  return { orgId: item.orgId, repoId: item.repoId, pullNumber: item.pullNumber }
+function identity(item: Pick<PullRequestWakeRecord, 'orgId' | 'repoId' | 'pullNumber' | 'provider' | 'bindingId'>) {
+  return {
+    orgId: item.orgId,
+    provider: item.provider ?? 'github',
+    bindingId: item.bindingId ?? '',
+    repoId: item.repoId,
+    pullNumber: item.pullNumber
+  }
 }
 
 export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedbackRepo {
@@ -89,15 +102,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
     })
   }
 
-  async linkSession(input: {
-    sessionId: SessionId
-    agentId: AgentId
-    orgId: OrgId
-    repoId: bigint
-    repoFullName: string
-    installationId: bigint
-    pullNumber: number
-  }): Promise<boolean> {
+  async linkSession(input: Parameters<SessionPullRequestFeedbackRepo['linkSession']>[0]): Promise<boolean> {
     try {
       return await this.transaction(async (tx) => {
         const session = await tx.sessionMeta.findUnique({
@@ -115,11 +120,11 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
           return false
         }
 
-        const key = { orgId: input.orgId, repoId: input.repoId, pullNumber: input.pullNumber }
+        const key = identity(input)
         await tx.sessionPullRequest.upsert({
-          where: { orgId_repoId_pullNumber: key },
-          create: { ...key, installationId: input.installationId, repoFullName: input.repoFullName },
-          update: { installationId: input.installationId, repoFullName: input.repoFullName }
+          where: { orgId_provider_bindingId_repoId_pullNumber: key },
+          create: { ...key, installationId: input.installationId, repoFullName: input.repoFullName, host: input.host },
+          update: { installationId: input.installationId, repoFullName: input.repoFullName, host: input.host }
         })
         const linked = await tx.sessionPullRequest.updateMany({
           where: { ...key, OR: [{ sessionId: null }, { sessionId: input.sessionId }] },
@@ -142,21 +147,38 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
     signalAt: Date,
     nextAttemptAt: Date
   ): Promise<void> {
-    const key = { orgId, repoId: BigInt(signal.repoId), pullNumber: signal.pullNumber }
-    const installationId = BigInt(signal.installationId)
+    const key = identity({ ...signal, orgId, repoId: BigInt(signal.repoId) })
+    const installationId = signal.installationId ? BigInt(signal.installationId) : null
     await this.transaction(async (tx) => {
-      // A redelivery reuses the GitHub GUID, so a key already received is the same event and must not wake again.
+      // Preserve receipts written before provider-scoped, multi-PR delivery keys.
+      if (
+        await tx.sessionPullRequestDelivery.findFirst({
+          where: {
+            orgId,
+            provider: key.provider,
+            bindingId: key.bindingId,
+            repoId: 0n,
+            pullNumber: 0,
+            deliveryKey: signal.deliveryKey
+          }
+        })
+      )
+        return
       const received = await tx.sessionPullRequestDelivery.createMany({
-        data: [{ orgId, deliveryKey: signal.deliveryKey, receivedAt: signalAt }],
+        data: [{ ...key, deliveryKey: signal.deliveryKey, receivedAt: signalAt }],
         skipDuplicates: true
       })
       if (received.count === 0) return
       const row = await tx.sessionPullRequest.upsert({
-        where: { orgId_repoId_pullNumber: key },
+        where: { orgId_provider_bindingId_repoId_pullNumber: key },
         create: {
           ...key,
           installationId,
           repoFullName: signal.repoFullName,
+          host: signal.host,
+          headSha: signal.headSha ?? null,
+          sourceAgentId: signal.sourceAgentId ?? null,
+          sourceSessionId: signal.sourceSessionId ?? null,
           deliveryKey: signal.deliveryKey,
           signalAt,
           nextAttemptAt
@@ -169,12 +191,30 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
         data: {
           installationId,
           repoFullName: signal.repoFullName,
+          host: signal.host,
+          headSha: signal.headSha ?? null,
+          sourceAgentId: signal.sourceAgentId ?? null,
+          sourceSessionId: signal.sourceSessionId ?? null,
           deliveryKey: signal.deliveryKey,
           signalAt,
           nextAttemptAt
         }
       })
     })
+  }
+
+  async owner(
+    orgId: OrgId,
+    provider: CodeHostProvider,
+    bindingId: string,
+    repoId: bigint,
+    pullNumber: number
+  ): Promise<{ agentId: AgentId; sessionId: SessionId } | null> {
+    const row = await this.db.sessionPullRequest.findUnique({
+      where: { orgId_provider_bindingId_repoId_pullNumber: { orgId, provider, bindingId, repoId, pullNumber } },
+      select: { session: { select: { id: true, agentId: true } } }
+    })
+    return row?.session ? { agentId: AgentId(row.session.agentId), sessionId: SessionId(row.session.id) } : null
   }
 
   async claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null> {
@@ -192,9 +232,11 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
       if (!candidate.deliveryKey) continue
       const claimed = await this.db.sessionPullRequest.updateMany({
         where: {
-          orgId: candidate.orgId,
-          repoId: candidate.repoId,
-          pullNumber: candidate.pullNumber,
+          ...identity({
+            ...candidate,
+            orgId: OrgId(candidate.orgId),
+            provider: candidate.provider as CodeHostProvider
+          }),
           sessionId: { not: null },
           deliveryKey: candidate.deliveryKey,
           nextAttemptAt: { lte: now },

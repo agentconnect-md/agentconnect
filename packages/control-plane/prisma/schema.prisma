@@ -1431,32 +1431,42 @@ model SessionExecutorHint {
 
 // Durable PR ownership plus an optional level-triggered wake; no feedback bodies or CI logs.
 model SessionPullRequest {
-  orgId          String
-  repoId         BigInt    @db.BigInt
-  pullNumber     Int
-  installationId BigInt    @db.BigInt
-  repoFullName   String
-  sessionId      String?   @unique(map: "session_pull_request_session_key")
-  deliveryKey    String?
-  nextAttemptAt  DateTime? @db.Timestamptz(6)
-  claimOwner     String?   @db.Uuid
-  claimUntil     DateTime? @db.Timestamptz(6)
-  signalAt       DateTime? @db.Timestamptz(6)
+  orgId           String
+  repoId          BigInt    @db.BigInt
+  pullNumber      Int
+  installationId  BigInt?   @db.BigInt
+  provider        String    @default("github")
+  bindingId       String    @default("")
+  host            String?
+  headSha         String?
+  sourceAgentId   String?   @db.Uuid
+  sourceSessionId String?
+  repoFullName    String
+  sessionId       String?   @unique(map: "session_pull_request_session_key")
+  deliveryKey     String?
+  nextAttemptAt   DateTime? @db.Timestamptz(6)
+  claimOwner      String?   @db.Uuid
+  claimUntil      DateTime? @db.Timestamptz(6)
+  signalAt        DateTime? @db.Timestamptz(6)
 
   session SessionMeta? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-  @@id([orgId, repoId, pullNumber], map: "session_pull_request_pkey")
+  @@id([orgId, provider, bindingId, repoId, pullNumber], map: "session_pull_request_pkey")
   @@index([nextAttemptAt, claimUntil], map: "session_pull_request_pending_idx")
   @@map("session_pull_request")
 }
 
-// One row per PR feedback delivery key ever received, so a GitHub redelivery of the same event never wakes twice.
+// Provider-scoped delivery receipts suppress retries while permitting one event to notify several PRs.
 model SessionPullRequestDelivery {
   orgId       String
   deliveryKey String
+  provider    String   @default("github")
+  bindingId   String   @default("")
+  repoId      BigInt   @default(0)
+  pullNumber  Int      @default(0)
   receivedAt  DateTime @db.Timestamptz(6)
 
-  @@id([orgId, deliveryKey], map: "session_pull_request_delivery_pkey")
+  @@id([orgId, provider, bindingId, repoId, pullNumber, deliveryKey], map: "session_pull_request_delivery_pkey")
   @@index([receivedAt], map: "session_pull_request_delivery_received_idx")
   @@map("session_pull_request_delivery")
 }

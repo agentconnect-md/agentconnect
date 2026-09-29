@@ -124,7 +124,9 @@ const KNOWN_EVENTS = new Set([
   'pull_request_sync',
   'release',
   'repository',
-  'wiki'
+  'wiki',
+  'status',
+  'workflow_run'
 ])
 
 /** The umbrella expansion the probe recorded for `issues`. */

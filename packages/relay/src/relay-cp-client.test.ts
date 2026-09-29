@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
+  CODEHOST_FEEDBACK_FEATURE,
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
@@ -203,6 +204,7 @@ describe('RelayCpClient', () => {
         GITLAB_COM_V1_FEATURE,
         GITLAB_INSTANCE_V1_FEATURE,
         PULL_REQUEST_FEEDBACK_FEATURE,
+        CODEHOST_FEEDBACK_FEATURE,
         GITEA_V1_FEATURE,
         DECISION_TRIGGER_V1_FEATURE,
         DECISION_ROUTING_V1_FEATURE,

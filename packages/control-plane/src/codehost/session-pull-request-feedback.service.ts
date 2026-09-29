@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import {
   PULL_REQUEST_FEEDBACK_FEATURE,
+  CODEHOST_FEEDBACK_FEATURE,
   type PullRequestFeedbackSignal,
   type SessionPullRequestFeedback,
   type SessionPullRequestFeedbackResult
@@ -10,7 +11,7 @@ import type { Clock, TimerHandle } from '../domain/clock.js'
 import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type {
   AgentRepo,
-  GithubInstallationRepo,
+  AgentRecord,
   MemberSetRepo,
   PullRequestCaptureRecord,
   PullRequestWakeRecord,
@@ -18,7 +19,12 @@ import type {
   SessionPullRequestFeedbackRepo,
   SessionRepo
 } from '../persistence/ports.js'
-import type { SessionPullRequestLinkService } from './session-pull-request-link.service.js'
+import type { OrgId } from '../domain/ids.js'
+import type { SessionPullRequestLink } from '../github/session-pull-request-link.service.js'
+
+export type FeedbackLink = Omit<SessionPullRequestLink, 'installationId'> &
+  Pick<PullRequestWakeRecord, 'provider' | 'bindingId' | 'host' | 'installationId'>
+export type FeedbackCapture = { status: 'resolved'; link: FeedbackLink } | { status: 'absent' } | { status: 'retry' }
 
 const RETRY_MS = 10_000
 const CAPTURE_RETRY_MS = 60_000
@@ -47,10 +53,11 @@ export interface SessionPullRequestFeedbackServiceDeps {
   feedback: SessionPullRequestFeedbackRepo
   sessions: SessionRepo
   agents: AgentRepo
-  installations: GithubInstallationRepo
+  sourceOf: (signal: PullRequestFeedbackSignal) => Promise<OrgId | null>
+  validate: (item: PullRequestWakeRecord, agent: AgentRecord) => Promise<boolean>
   memberSets: Pick<MemberSetRepo, 'sharedStoreMemberIdsOf'>
   placement: Pick<PlacementResolver, 'dispatchDaemon'>
-  links: SessionPullRequestLinkService
+  links: { capture(agent: AgentRecord, session: SessionMetaRecord): Promise<FeedbackCapture> }
   daemon: (daemonId: string) => { state: string; capabilities?: { features?: readonly string[] } } | undefined
   send: (
     daemonId: string,
@@ -104,12 +111,32 @@ export class SessionPullRequestFeedbackService {
   }
 
   async enqueue(signal: PullRequestFeedbackSignal): Promise<boolean> {
-    const installation = await this.deps.installations.getByInstallationId(BigInt(signal.installationId))
-    if (!installation || installation.revokedAt || installation.suspendedAt) return false
-    const now = this.deps.clock.now()
-    await this.deps.feedback.enqueue(installation.orgId, signal, new Date(now), new Date(now + FEEDBACK_DEBOUNCE_MS))
-    this.kick()
+    const orgId = await this.deps.sourceOf(signal)
+    if (!orgId) return false
+    await this.enqueueForOrg(orgId, signal)
     return true
+  }
+
+  async enqueueForOrg(
+    orgId: OrgId,
+    signal: Parameters<SessionPullRequestFeedbackRepo['enqueue']>[1]
+  ): Promise<string | null> {
+    const owner = await this.deps.feedback.owner(
+      orgId,
+      signal.provider ?? 'github',
+      signal.bindingId ?? '',
+      BigInt(signal.repoId),
+      signal.pullNumber
+    )
+    if (
+      owner &&
+      (signal.sourceSessionId ? owner.sessionId === signal.sourceSessionId : owner.agentId === signal.sourceAgentId)
+    )
+      return null
+    const now = this.deps.clock.now()
+    await this.deps.feedback.enqueue(orgId, signal, new Date(now), new Date(now + FEEDBACK_DEBOUNCE_MS))
+    this.kick()
+    return owner?.agentId ?? null
   }
 
   private async tick(): Promise<void> {
@@ -176,7 +203,7 @@ export class SessionPullRequestFeedbackService {
     if (!agent || agent.orgId !== session.orgId) return true
     const result = await this.deps.links.capture(agent, session)
     if (result.status === 'retry') return false
-    if (result.status === 'absent' || result.link.scope !== 'session') return true
+    if (result.status === 'absent' || result.link.scope !== 'session' || result.link.ambiguous) return true
     const linked = await this.deps.feedback.linkSession({
       sessionId: session.id,
       agentId: agent.id,
@@ -184,6 +211,9 @@ export class SessionPullRequestFeedbackService {
       repoId: result.link.repoId,
       repoFullName: result.link.repoFullName,
       installationId: result.link.installationId,
+      ...(result.link.provider ? { provider: result.link.provider } : {}),
+      ...(result.link.bindingId ? { bindingId: result.link.bindingId } : {}),
+      ...(result.link.host ? { host: result.link.host } : {}),
       pullNumber: result.link.pullNumber
     })
     if (linked) this.kick()
@@ -195,10 +225,8 @@ export class SessionPullRequestFeedbackService {
     if (!session || session.contentPurgedAt) return true
     const agent = await this.deps.agents.getUnscoped(session.agentId)
     if (!agent || agent.orgId !== item.orgId) return true
-    const installation = await this.deps.installations.getByInstallationId(item.installationId)
-    if (!installation || installation.orgId !== item.orgId || installation.revokedAt || installation.suspendedAt) {
-      return true
-    }
+    if (item.sourceSessionId ? item.sourceSessionId === session.id : item.sourceAgentId === agent.id) return true
+    if (!(await this.deps.validate(item, agent))) return true
     const daemonId = await this.deps.placement.dispatchDaemon(agent)
     if (!daemonId) return false
     const sharedStoreMembers = session.contentSetId
@@ -206,8 +234,9 @@ export class SessionPullRequestFeedbackService {
       : []
     if (!servesSessionContent({ recordedDaemonId: session.daemonId, sharedStoreMembers }, daemonId)) return false
     const daemon = this.deps.daemon(daemonId)
-    if (daemon?.state !== 'READY' || !daemon.capabilities?.features?.includes(PULL_REQUEST_FEEDBACK_FEATURE))
-      return false
+    const feature =
+      item.provider && item.provider !== 'github' ? CODEHOST_FEEDBACK_FEATURE : PULL_REQUEST_FEEDBACK_FEATURE
+    if (daemon?.state !== 'READY' || !daemon.capabilities?.features?.includes(feature)) return false
     const result = await this.deps.send(
       daemonId,
       {
@@ -216,7 +245,8 @@ export class SessionPullRequestFeedbackService {
         deliveryKey: item.deliveryKey,
         repoId: item.repoId.toString(),
         repoFullName: item.repoFullName,
-        pullNumber: item.pullNumber
+        pullNumber: item.pullNumber,
+        ...(item.provider && item.provider !== 'github' ? { provider: item.provider, host: item.host } : {})
       },
       item.orgId
     )

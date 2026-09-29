@@ -427,6 +427,10 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     return rows.map(toBindingRecord)
   }
 
+  async listAll(): Promise<GitlabProjectBindingRecord[]> {
+    return (await this.prisma.gitlabProjectBinding.findMany()).map(toBindingRecord)
+  }
+
   async countByInstaller(orgId: string): Promise<Record<string, number>> {
     const groups = await this.prisma.gitlabProjectBinding.groupBy({
       by: ['installerConnectionId'],

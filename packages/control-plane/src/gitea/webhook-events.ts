@@ -1,10 +1,6 @@
-/**
- * The managed webhook's subscription union (gitea-integration.md §7): every enabled gitea hook on
- * one repository, mapped from the product families to Gitea's subscription names. Comment events
- * are over-subscribed deliberately — a per-thread session opened by an issue or pull-request
- * trigger continues through comments — and the relay filters what a rule did not ask for.
- */
+// Union trigger and author-feedback subscriptions; the relay filters each consumer's events.
 import type { HookRecord } from '../persistence/ports.js'
+import type { GiteaInstanceVersion } from './version.js'
 
 /** Every subscription name the product ever asks for; anything else Gitea silently drops (§16). */
 export const GITEA_WEBHOOK_EVENTS = [
@@ -17,7 +13,9 @@ export const GITEA_WEBHOOK_EVENTS = [
   'pull_request_comment',
   'pull_request_review',
   'push',
-  'release'
+  'release',
+  'status',
+  'workflow_run'
 ] as const
 export type GiteaWebhookEvent = (typeof GITEA_WEBHOOK_EVENTS)[number]
 
@@ -38,14 +36,28 @@ const PULL_REQUEST_COMMENT_EVENTS: readonly GiteaWebhookEvent[] = [
   'pull_request_review'
 ]
 
-/** The desired-events input of the saga; null means no enabled hook wants ingress, so no webhook. */
+/** Null means neither triggers nor writable workspaces need ingress. */
 export function unionGiteaWebhookEvents(
   hooks: Pick<HookRecord, 'enabled' | 'kind' | 'repoId' | 'events' | 'commentFamilies'>[],
-  repoId: bigint
+  repoId: bigint,
+  feedback = false,
+  version?: GiteaInstanceVersion
 ): GiteaWebhookEvent[] | null {
   const relevant = hooks.filter((hook) => hook.enabled && hook.kind === 'gitea' && hook.repoId === repoId)
-  if (relevant.length === 0) return null
+  if (relevant.length === 0 && !feedback) return null
   const events = new Set<GiteaWebhookEvent>()
+  if (feedback) {
+    for (const event of PULL_REQUEST_COMMENT_EVENTS) events.add(event)
+    if (
+      version?.product === 'gitea' &&
+      version.major !== null &&
+      version.minor !== null &&
+      (version.major > 1 || (version.major === 1 && version.minor >= 25))
+    ) {
+      events.add('status')
+      events.add('workflow_run')
+    }
+  }
   for (const hook of relevant) {
     for (const pattern of hook.events) {
       if (pattern.startsWith('issues:')) for (const event of ISSUE_EVENTS) events.add(event)

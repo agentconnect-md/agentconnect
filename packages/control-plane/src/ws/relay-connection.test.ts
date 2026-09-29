@@ -6,6 +6,7 @@ import {
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   PULL_REQUEST_FEEDBACK_FEATURE,
+  CODEHOST_FEEDBACK_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
@@ -100,6 +101,7 @@ function build(
     verifyAgentChatKey?: (req: { credential: string; agentId: string; chatId: string }) => Promise<RcVerifyResult>
     authorizeGithubComment?: (req: RcGithubCommentAuthz) => Promise<boolean>
     authorizeGithubRerequest?: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
+    onCodeHostFeedback?: ConstructorParameters<typeof RelayConnection>[1]['onCodeHostFeedback']
     onPullRequestFeedback?: ConstructorParameters<typeof RelayConnection>[1]['onPullRequestFeedback']
     deploymentConfig?: ConstructorParameters<typeof RelayConnection>[1]['deploymentConfig']
     onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
@@ -164,6 +166,7 @@ function build(
     threadLookup: vi.fn(async (m) => ({ ...m, target: null, participants: [] })),
     onGithubInstallation: vi.fn(async () => {}),
     onPullRequestFeedback,
+    onCodeHostFeedback: over.onCodeHostFeedback,
     relayReg,
     verifyWebchatToken,
     verifyAgentChatKey,
@@ -404,7 +407,12 @@ describe('RelayConnection FSM', () => {
     expect(upsertByName).toHaveBeenCalledWith('pod-0', 'wss://pod-0.example.test', new Date(NOW), [])
     expect(transport.lastRep('rc/registered')!.payload).toEqual({
       relayId: RELAY_ID,
-      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE, BOT_CREDENTIAL_CHECK_FEATURE, BOT_TENANT_FEATURE]
+      serverFeatures: [
+        CODEHOST_FEEDBACK_FEATURE,
+        PULL_REQUEST_FEEDBACK_FEATURE,
+        BOT_CREDENTIAL_CHECK_FEATURE,
+        BOT_TENANT_FEATURE
+      ]
     })
     expect(conn.state).toBe('READY')
     expect(conn.relayId).toBe(RELAY_ID)
@@ -951,6 +959,32 @@ describe('RelayConnection FSM', () => {
     expect(transport.lastRep('error')).toMatchObject({ corr: req.id, payload: { code: 'INTERNAL', retryable: true } })
     expect(transport.lastRep('rc/github-rerequest/ok')).toBeUndefined()
     expect(conn.state).toBe('READY')
+  })
+
+  it('returns the linked author only after durable code-host feedback admission', async () => {
+    const onCodeHostFeedback = vi.fn(async () => ({ accepted: true, authorAgentIds: [WEBCHAT_AGENT_ID] }))
+    const { transport } = build({ onCodeHostFeedback })
+    await toReady(transport, [CODEHOST_FEEDBACK_FEATURE])
+    const signal = {
+      provider: 'gitea',
+      orgId: 'example-org',
+      bindingId: RELAY_ID,
+      host: 'https://gitea.example.test',
+      deliveryKey: 'delivery-feedback',
+      repoId: '123',
+      pullNumber: 12,
+      kind: 'comment',
+      actorId: '7'
+    } as const
+    const request = buildRelayCpFrame('rc/codehost-feedback', signal)
+    transport.feedFrame(request)
+    await vi.waitFor(() =>
+      expect(transport.lastRep('rc/codehost-feedback/ok')).toMatchObject({
+        corr: request.id,
+        payload: { accepted: true, authorAgentIds: [WEBCHAT_AGENT_ID] }
+      })
+    )
+    expect(onCodeHostFeedback).toHaveBeenCalledWith(signal)
   })
 
   it('persists PR feedback and acknowledges the correlated relay request', async () => {

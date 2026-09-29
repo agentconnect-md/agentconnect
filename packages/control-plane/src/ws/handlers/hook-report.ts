@@ -100,6 +100,15 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
     await deps.githubRunCoordinator?.afterReport(HookId(p.hookId), p.deliveryKey)
     // The run projection's terminal edge (§16, gitea §10.4) is recorded before the ACK so a retried report cannot outrun the ledger.
     if (host && hook.kind === host.provider) {
+      if (p.publishedOutput?.provider === host.provider) {
+        await deps.codeHostFeedback?.outputPublished(
+          orgId,
+          p.agentId,
+          host,
+          `${p.publishedOutput.kind}:${p.publishedOutput.externalId}`,
+          p.sessionId
+        )
+      }
       const edge = {
         hookId: p.hookId,
         agentId: p.agentId,

@@ -1335,6 +1335,13 @@ workspace replacement. Its displayed repository and existing checkout origin con
 to the canonical new name while the branch, working subdirectory, and local files stay
 in place.
 
+For an isolated session with one open PR in its managed writable primary
+repository, GitLab and Gitea feedback resumes that author session. No review
+Trigger is required. The agent inspects current review and CI state and keeps
+fixes on the existing branch. This association never guesses a session from a
+shared checkout, a fork, or an additional workspace root. Provider event support
+and delivery rules are documented in [Pull-request feedback continuation](designs/codehost-pr-feedback.md).
+
 ## Agent secret environment variables
 
 A write-only secret (the console's Secrets card, `AgentSpec.secrets`) is not an

@@ -12,6 +12,7 @@
  * (its close removes it from the registry).
  */
 import type {
+  RcCodeHostFeedbackWatch,
   RcHookAssign,
   RcCollabRoutes,
   RcMcpAssign,
@@ -20,6 +21,7 @@ import type {
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
 import {
+  CODEHOST_FEEDBACK_FEATURE,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_GITHUB_INSTALLATION_V1_FEATURE,
   codeHostHookRuleOf
@@ -45,6 +47,12 @@ export function hookRuleSupported(
 
 export class RelayControlSender {
   constructor(private readonly relays: RelayRegistry) {}
+
+  feedbackWatch(watch: RcCodeHostFeedbackWatch): void {
+    this.broadcast((ch) => {
+      if (ch.features?.includes(CODEHOST_FEEDBACK_FEATURE)) ch.send('rc/codehost-feedback-watch', watch)
+    })
+  }
 
   /**
    * Tell every connected relay to immediately drop `daemonId`'s connection and

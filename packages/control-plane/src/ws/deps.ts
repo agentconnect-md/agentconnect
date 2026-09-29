@@ -61,7 +61,8 @@ import type { AgentId, BotId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
 import type { SlackSessionAccessService } from '../http/slack-session-access.js'
 import type { SessionAccessWarmer } from '../http/session-access-warmer.js'
-import type { SessionPullRequestFeedbackService } from '../github/session-pull-request-feedback.service.js'
+import type { SessionPullRequestFeedbackService } from '../codehost/session-pull-request-feedback.service.js'
+import type { CodeHostFeedbackService } from '../codehost/feedback.service.js'
 
 /** The two CP facts an `integration/revoked` report needs beyond the repositories. */
 export interface SocketBotRevocation {
@@ -114,6 +115,7 @@ export interface DaemonWsDeps {
   httpBotDaemonOffline?: (daemonId: string) => Promise<void>
   /** Persists exact-session PR capture obligations and drains durable PR feedback after daemon readiness. */
   pullRequestFeedback?: Pick<SessionPullRequestFeedbackService, 'trackSession' | 'kick'>
+  codeHostFeedback?: Pick<CodeHostFeedbackService, 'outputPublished'>
   /** Publishes persisted session milestones to the WebUI SSE feed. */
   events: SessionEventSink
   /** Ownership check for the `integration/channels` EVT (integration → daemon scope). */

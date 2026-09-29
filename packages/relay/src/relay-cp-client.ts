@@ -13,6 +13,10 @@
  * daemon-facing `rd/hello` handler calls to delegate credential checks to the CP.
  */
 import {
+  CODEHOST_FEEDBACK_FEATURE,
+  type RcCodeHostFeedback,
+  type RcCodeHostFeedbackResult,
+  type RcCodeHostFeedbackWatch,
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
@@ -132,8 +136,8 @@ export interface RelayCpClientDeps {
   onRoutes?: (r: RcRoutes) => void
   onAssign?: (a: RcAssign) => void
   onParticipantAssign?: (a: RcParticipantAssign) => void
-  /** Called on a CP `rc/hook-assign` EVT — upsert one compiled hook rule
-   *  (webhook-triggers doc). The rule carries `hmacSecret` — NEVER log it. */
+  /** Feedback subscriptions and hook rules carry signing keys; never log their payloads. */
+  onFeedbackWatch?: (watch: RcCodeHostFeedbackWatch) => void
   onHookAssign?: (rule: RcHookAssign) => void
   /** Called on a CP `rc/hook-remove` EVT — drop one hook rule. */
   onHookRemove?: (hookId: string) => void
@@ -417,7 +421,18 @@ export class RelayCpClient {
     this.transport.send(JSON.stringify(buildRelayCpFrame('rc/github-installation', poke)))
   }
 
-  /** Persist body-free PR feedback before the webhook response lets GitHub retire the delivery. */
+  /** Persist feedback coordinates before acknowledging the provider webhook. */
+  async reportCodeHostFeedback(signal: RcCodeHostFeedback): Promise<RcCodeHostFeedbackResult> {
+    if (this.state !== 'READY' || !this.serverFeatures.has(CODEHOST_FEEDBACK_FEATURE))
+      throw new WireError('INTERNAL', 'code host feedback is unavailable', true)
+    const rep = await this.sendRequest(buildRelayCpFrame('rc/codehost-feedback', signal), {
+      maxTries: 1,
+      ackTimeoutMs: 30_000
+    })
+    if (rep.type !== 'rc/codehost-feedback/ok') throw new WireError('INTERNAL', 'unexpected feedback response', true)
+    return rep.payload
+  }
+
   async reportPullRequestFeedback(signal: RcPullRequestFeedback): Promise<boolean> {
     if (this.state !== 'READY' || !this.transport) {
       throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
@@ -653,6 +668,7 @@ export class RelayCpClient {
           GITLAB_COM_V1_FEATURE,
           GITLAB_INSTANCE_V1_FEATURE,
           PULL_REQUEST_FEEDBACK_FEATURE,
+          CODEHOST_FEEDBACK_FEATURE,
           GITEA_V1_FEATURE,
           // This relay arbitrates `decision` routes as human-only candidates and forwards their decisionId.
           DECISION_TRIGGER_V1_FEATURE,
@@ -755,6 +771,10 @@ export class RelayCpClient {
       }
       case 'rc/participant-assign': {
         this.deps.onParticipantAssign?.(frame.payload as RcParticipantAssign)
+        return
+      }
+      case 'rc/codehost-feedback-watch': {
+        this.deps.onFeedbackWatch?.(frame.payload as RcCodeHostFeedbackWatch)
         return
       }
       case 'rc/hook-assign': {

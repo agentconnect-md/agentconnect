@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import type { CodeHostReviewAuthorize, CodeHostReviewResultReport, HookStart } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, HookId, OrgId } from '../domain/ids.js'
@@ -596,8 +596,8 @@ describe('code-host review authorization (gitlab-com-integration.md §15)', () =
 })
 
 describe('operation-record ledger', () => {
-  async function withLease() {
-    const built = build()
+  async function withLease(overrides: Partial<CodeHostReviewBrokerDeps> = {}) {
+    const built = build(overrides)
     const input = authorizeInput()
     const granted = await built.service.authorize(input, DAEMON, ORG)
     if (!granted.authorized) throw new Error('expected a lease')
@@ -725,13 +725,24 @@ describe('operation-record ledger', () => {
 })
 
 describe('review result recording (§15.2)', () => {
-  async function withLease() {
-    const built = build()
+  async function withLease(overrides: Partial<CodeHostReviewBrokerDeps> = {}) {
+    const built = build(overrides)
     const input = authorizeInput()
     const granted = await built.service.authorize(input, DAEMON, ORG)
     if (!granted.authorized) throw new Error('expected a lease')
     return { ...built, attemptId: input.attemptId, fence: granted.lease.fence }
   }
+
+  it('retries author feedback after a persisted result when enqueue fails before the ACK', async () => {
+    const onPublished = vi.fn().mockRejectedValueOnce(new Error('queue unavailable')).mockResolvedValue(undefined)
+    const { service, attemptId, leases } = await withLease({ onPublished })
+    const input = resultInput(attemptId)
+    await expect(service.recordResult(input, DAEMON, ORG)).rejects.toThrow('queue unavailable')
+    expect(leases.outcomes.get(attemptId)?.state).toBe('submitted')
+    await expect(service.recordResult(input, DAEMON, ORG)).resolves.toMatchObject({ accepted: true })
+    expect(onPublished).toHaveBeenCalledTimes(2)
+    expect(onPublished).toHaveBeenLastCalledWith(ORG, AGENT, input, undefined)
+  })
 
   it('stores the normalized outcome and its external ids, and nothing else', async () => {
     const { service, attemptId, leases } = await withLease()

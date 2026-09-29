@@ -1,3 +1,7 @@
+import { CodeHostFeedbackService } from './codehost/feedback.service.js'
+import { GitlabFeedbackProvider } from './gitlab/feedback-provider.js'
+import { GiteaFeedbackProvider } from './gitea/feedback-provider.js'
+import { parseGiteaVersion } from './gitea/version.js'
 import { PgDecisionRepo } from './persistence/repositories/decision.repo.js'
 import { PgBotDecisionRoutingRepo } from './persistence/repositories/bot-decision-routing.repo.js'
 import { PgCodeHostDecisionRoutingRepo } from './persistence/repositories/code-host-decision-routing.repo.js'
@@ -67,7 +71,7 @@ import { GithubRerequestService } from './github/rerequest.service.js'
 import { GithubReviewBrokerService } from './github/review-broker.service.js'
 import { PullRequestViewService } from './github/pull-request-view.service.js'
 import { SessionPullRequestLinkService } from './github/session-pull-request-link.service.js'
-import { SessionPullRequestFeedbackService } from './github/session-pull-request-feedback.service.js'
+import { SessionPullRequestFeedbackService } from './codehost/session-pull-request-feedback.service.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
 import { CodeHostNoteProjectionService } from './codehost/note-projection.service.js'
 import { githubHookRunSubject } from './github/hook-run-subject.js'
@@ -318,7 +322,7 @@ import { GithubSessionAccessService } from './http/github-session-access.js'
 import { FeishuSessionAccessService } from './http/feishu-session-access.js'
 import { GoogleChatSessionAccessService } from './http/googlechat-session-access.js'
 import { SessionAccessWarmer } from './http/session-access-warmer.js'
-import type { ExternalScopeRecord } from './persistence/ports.js'
+import type { AgentRecord, SessionMetaRecord, ExternalScopeRecord } from './persistence/ports.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -1210,7 +1214,11 @@ export function buildContainer(
           ...(config.PUBLIC_RELAY_URL ? { publicRelayUrl: config.PUBLIC_RELAY_URL } : {}),
           // §11.1: the union every enabled gitlab hook on the project wants.
           desiredWebhookEvents: async (orgId, projectId) =>
-            unionGitlabWebhookEvents(await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
+            unionGitlabWebhookEvents(
+              await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab'),
+              projectId,
+              await codeHostFeedback.wants('gitlab', orgId, projectId)
+            ),
           // Awaited under the run lease (§17.3 round 3): the durable clone-URL
           // convergence rides the saga; only the daemon fan-out stays async.
           syncWorkspacePaths: async (orgId, projectId, projectPath, cloneUrl) => {
@@ -1231,15 +1239,12 @@ export function buildContainer(
                 .catch((err) => http.log.warn({ err, agentId }, 'gitlab rename: agent refresh fan-out failed'))
             }
           },
-          // Rules embed binding/webhook facts — recompile the project's hooks
-          // after every run that may have changed them (assign or remove).
-          onConverged: (orgId, projectId) => {
-            void (async () => {
-              // Rules embed binding/webhook facts — recompile the project's hooks.
-              for (const row of await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab')) {
-                if (row.repoId === projectId) await hookService.broadcast(row)
-              }
-            })().catch((err) => http.log.warn({ err }, 'gitlab converge fan-out failed'))
+          // Refresh both feedback subscriptions and trigger rules before testing the webhook.
+          onConverged: async (orgId, projectId) => {
+            await codeHostFeedback.sync('gitlab', orgId, projectId)
+            for (const row of await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab')) {
+              if (row.repoId === projectId) await hookService.broadcast(row)
+            }
           },
           api: gitlabApi!,
           log: { warn: (obj, msg) => http.log.warn(obj, msg) }
@@ -1295,6 +1300,7 @@ export function buildContainer(
   // Gitea (gitea-integration.md §4, §6): one bot connection per organization, the repository
   // saga over the deployment-global claim, and the rules rebroadcast after every converge.
   const rebroadcastGiteaRules = async (orgId: string, repoId: bigint): Promise<void> => {
+    await codeHostFeedback.sync('gitea', orgId, repoId)
     for (const row of await repos.hook.listForOrgKind(OrgId(orgId), 'gitea')) {
       if (row.repoId === repoId) await hookService.broadcast(row)
     }
@@ -1339,9 +1345,17 @@ export function buildContainer(
     catalog: repos.codeHostRepository,
     clock,
     ...(config.PUBLIC_RELAY_URL ? { publicRelayUrl: config.PUBLIC_RELAY_URL } : {}),
-    // §7: the union every enabled gitea hook on the repository wants.
-    desiredWebhookEvents: async (orgId, repoId) =>
-      unionGiteaWebhookEvents(await repos.hook.listForOrgKind(OrgId(orgId), 'gitea'), repoId),
+    // Native CI subscriptions are enabled only on a verified supported instance version.
+    desiredWebhookEvents: async (orgId, repoId) => {
+      const binding = await repos.giteaRepositoryBinding.byRepo(orgId, repoId)
+      const connection = binding ? await repos.giteaConnection.get(orgId, binding.connectionId) : null
+      return unionGiteaWebhookEvents(
+        await repos.hook.listForOrgKind(OrgId(orgId), 'gitea'),
+        repoId,
+        await codeHostFeedback.wants('gitea', orgId, repoId),
+        parseGiteaVersion(connection?.instanceVersion)
+      )
+    },
     syncWorkspacePaths: async (orgId, repoId, repoPath, cloneUrl) => {
       const agentIds = await repos.agent.refreshCodeHostRepositoryPath(
         OrgId(orgId),
@@ -1455,6 +1469,26 @@ export function buildContainer(
   })
   giteaStatusReporterRef.current = giteaStatusReporter
 
+  const readSessionBranch = async (
+    agent: AgentRecord,
+    session: SessionMetaRecord,
+    scope: 'session' | 'shared'
+  ): Promise<string | null> => {
+    // Resolve placement first because pool agents need not have a daemonId.
+    const daemonId = (await placementResolver.servingDaemon(agent)) ?? agent.daemonId
+    if (!daemonId) throw new Error('no daemon currently serves the session workspace')
+    const daemon = await registry.getAvailable(agent.orgId, daemonId)
+    if (!daemon) throw new Error('session workspace daemon is unavailable')
+    // Isolated worktree reads require the daemon's session-workspace capability.
+    if (scope === 'session' && !daemon.capabilities.features.includes(WORKSPACE_SESSION_READ_FEATURE)) {
+      throw new Error('session workspace daemon cannot read isolated worktrees yet')
+    }
+    const status = await sender.workspaceGitStatus(daemonId, {
+      agentId: agent.id,
+      ...(scope === 'session' ? { sessionId: session.id } : {})
+    })
+    return status.isRepo ? (status.branch ?? null) : null
+  }
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
   // §12.6's second identity source for that panel: the PR a session's own head branch has, for the
@@ -1465,50 +1499,72 @@ export function buildContainer(
           clock,
           github,
           tokens: github.tokens,
-          readSessionBranch: async (agent, session, scope) => {
-            // Through the PLACEMENT, like every workspace route (`getServingAgent`): a pool- or
-            // cluster-placed agent has no `agent.daemonId` at all, so reading that column instead
-            // resolved no branch for exactly the deployments where every agent is placed that way.
-            const daemonId = (await placementResolver.servingDaemon(agent)) ?? agent.daemonId
-            if (!daemonId) throw new Error('no daemon currently serves the session workspace')
-            const daemon = await registry.getAvailable(agent.orgId, daemonId)
-            if (!daemon) throw new Error('session workspace daemon is unavailable')
-            // An older daemon drops an unknown frame silently, so the REQ would burn its retransmit
-            // budget and then read as an offline daemon — refuse first, exactly as the workspace
-            // routes do. Only the session-worktree read needs it; the primary checkout is the read
-            // every daemon has always answered.
-            if (scope === 'session' && !daemon.capabilities.features.includes(WORKSPACE_SESSION_READ_FEATURE)) {
-              throw new Error('session workspace daemon cannot read isolated worktrees yet')
-            }
-            const status = await sender.workspaceGitStatus(daemonId, {
-              agentId: agent.id,
-              ...(scope === 'session' ? { sessionId: session.id } : {})
-            })
-            return status.isRepo ? (status.branch ?? null) : null
-          },
+          readSessionBranch,
           latestSessionIdOfAgent: (agent) => repos.session.latestSessionIdForAgent(agent.orgId, agent.id),
           log: { warn: (obj, message) => http.log.warn(obj, message) },
           ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
         })
       : undefined
-  const sessionPullRequestFeedback = sessionPullRequestLink
-    ? new SessionPullRequestFeedbackService({
-        clock,
-        feedback: repos.sessionPullRequestFeedback,
-        sessions: repos.session,
-        agents: repos.agent,
-        installations: repos.githubInstallation,
-        memberSets: repos.memberSet,
-        placement: placementResolver,
-        links: sessionPullRequestLink,
-        daemon: (daemonId) => connReg.get(daemonId),
-        send: (daemonId, request, orgId) => sender.sessionPullRequestFeedback(daemonId, orgId, request),
-        log: {
-          debug: (obj, message) => http.log.debug(obj, message),
-          warn: (obj, message) => http.log.warn(obj, message)
-        }
+  const sessionPullRequestFeedback = new SessionPullRequestFeedbackService({
+    clock,
+    feedback: repos.sessionPullRequestFeedback,
+    sessions: repos.session,
+    agents: repos.agent,
+    sourceOf: async (signal) => {
+      const installation = await repos.githubInstallation.getByInstallationId(BigInt(signal.installationId))
+      return installation && !installation.revokedAt && !installation.suspendedAt ? installation.orgId : null
+    },
+    validate: async (item, agent) => {
+      if (item.provider && item.provider !== 'github') return codeHostFeedback.validate(item, agent)
+      if (!item.installationId) return false
+      const installation = await repos.githubInstallation.getByInstallationId(item.installationId)
+      return !!installation && installation.orgId === item.orgId && !installation.revokedAt && !installation.suspendedAt
+    },
+    memberSets: repos.memberSet,
+    placement: placementResolver,
+    links: {
+      capture: (agent, session) =>
+        agent.workspace.mode === 'git' && agent.workspace.credential?.provider === 'github'
+          ? (sessionPullRequestLink?.capture(agent, session) ?? Promise.resolve({ status: 'absent' as const }))
+          : codeHostFeedback.capture(agent, session)
+    },
+    daemon: (daemonId) => connReg.get(daemonId),
+    send: (daemonId, request, orgId) => sender.sessionPullRequestFeedback(daemonId, orgId, request),
+    log: {
+      debug: (obj, message) => http.log.debug(obj, message),
+      warn: (obj, message) => http.log.warn(obj, message)
+    }
+  })
+  const codeHostFeedback: CodeHostFeedbackService = new CodeHostFeedbackService({
+    providers: [
+      ...(gitlab && gitlabMembershipAuthz
+        ? [
+            new GitlabFeedbackProvider({
+              api: gitlabApi!,
+              clock,
+              bindings: repos.gitlabProjectBinding,
+              accounts: repos.gitlabAgentAccount,
+              credentials: new PgGitlabProjectCredentialRepo(prisma),
+              credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+              secrets: gitlabWebhookSecretStore!,
+              membership: gitlabMembershipAuthz
+            })
+          ]
+        : []),
+      new GiteaFeedbackProvider({
+        api: giteaApi,
+        bindings: repos.giteaRepositoryBinding,
+        connections: repos.giteaConnection,
+        tokens: giteaConnectionService,
+        secrets: giteaWebhookSecretStore,
+        membership: giteaMembershipAuthz
       })
-    : undefined
+    ],
+    agents: repos.agent,
+    readBranch: (agent, session) => readSessionBranch(agent, session, 'session'),
+    queue: sessionPullRequestFeedback,
+    broadcast: (watch) => relayControl.feedbackWatch(watch)
+  })
   const githubReviewBroker = github
     ? new GithubReviewBrokerService({
         hook: repos.hook,
@@ -1520,6 +1576,8 @@ export function buildContainer(
     : undefined
   // Formal reviews (§15.1/§15.2): the publisher is GitLab's per-agent service account or the Gitea connection's bot user (§5).
   const codeHostReviewBroker = new CodeHostReviewBrokerService({
+    onPublished: (orgId, agentId, result, sessionId) =>
+      codeHostFeedback.reviewPublished(orgId, agentId, result, sessionId),
     leases: new PgCodeHostReviewLeaseRepo(prisma),
     hook: repos.hook,
     agent: repos.agent,
@@ -2364,7 +2422,8 @@ export function buildContainer(
       ])
     },
     httpBotDaemonOffline: (daemonId) => httpBot.daemonOffline(daemonId),
-    ...(sessionPullRequestFeedback ? { pullRequestFeedback: sessionPullRequestFeedback } : {}),
+    pullRequestFeedback: sessionPullRequestFeedback,
+    codeHostFeedback,
     events,
     usageWriter,
     integration: repos.integration,
@@ -2530,6 +2589,7 @@ export function buildContainer(
         ...(observed.verifiedWith !== undefined ? { verifiedWith: observed.verifiedWith } : {})
       })
     },
+    onCodeHostFeedback: (signal) => codeHostFeedback.receive(signal),
     onPullRequestFeedback: async (signal) => (await sessionPullRequestFeedback?.enqueue(signal)) ?? false,
     // A relay just (re)registered — refresh every daemon's roster, (re)assign every
     // HTTP bots' ingress + routes (§5, idempotent), AND replay the compiled hook
@@ -2538,6 +2598,11 @@ export function buildContainer(
     // throw-on-unhandled-rejection): swallow + log, mirroring the sweeper's guarded
     // `relaySweeper.tick` path.
     onRegistered: (ch) => {
+      trackRelayRegistrationTask(
+        codeHostFeedback
+          .replayTo(ch)
+          .catch((err) => http.log.error({ err }, 'relay: feedback subscription replay failed'))
+      )
       trackRelayRegistrationTask(
         relayRoster.broadcast().catch((err) => http.log.error({ err }, 'relay: roster sync on register failed'))
       )

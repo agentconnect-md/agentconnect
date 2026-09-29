@@ -95,6 +95,12 @@ export type CodeHostReviewPublisherResolver = (
 ) => Promise<CodeHostReviewPublisher | null>
 
 export interface CodeHostReviewBrokerDeps {
+  onPublished?: (
+    orgId: string,
+    agentId: string,
+    result: CodeHostReviewResultReport,
+    sessionId?: string
+  ) => Promise<void>
   leases: CodeHostReviewLeaseRepo
   hook: Pick<HookRepo, 'getUnscoped' | 'getRun' | 'recordStart'>
   agent: Pick<AgentRepo, 'getUnscoped'>
@@ -444,6 +450,7 @@ export class CodeHostReviewBrokerService {
     })
     if (recorded.outcome === 'not_owner') denied('this attempt does not own the publication lease', 'CONFLICT')
     if (recorded.outcome === 'conflict') denied('review result does not match the reserved attempt', 'CONFLICT')
+    if (run.agentId) await this.deps.onPublished?.(run.orgId, run.agentId, input, run.sessionId ?? undefined)
     return { accepted: true, phase: recorded.phase }
   }
 

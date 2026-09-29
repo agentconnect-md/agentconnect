@@ -293,6 +293,10 @@ export class PgGiteaRepositoryBindingRepo implements GiteaRepositoryBindingRepo 
     return rows.map(toBindingRecord)
   }
 
+  async listAll(): Promise<GiteaRepositoryBindingRecord[]> {
+    return (await this.prisma.giteaRepositoryBinding.findMany()).map(toBindingRecord)
+  }
+
   async listForConnection(orgId: string, connectionId: string): Promise<GiteaRepositoryBindingRecord[]> {
     const rows = await this.prisma.giteaRepositoryBinding.findMany({
       where: { orgId, connectionId },

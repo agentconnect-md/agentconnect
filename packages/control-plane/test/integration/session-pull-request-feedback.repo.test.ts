@@ -61,14 +61,30 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     await repo.enqueue(ORG_ID, signal('delivery-early', 77), NOW, NOW)
     expect(
       await prisma.sessionPullRequest.findUnique({
-        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
+        where: {
+          orgId_provider_bindingId_repoId_pullNumber: {
+            provider: 'github',
+            bindingId: '',
+            orgId: ORG_ID,
+            repoId: REPO_ID,
+            pullNumber: 77
+          }
+        }
       })
     ).toMatchObject({ sessionId: null })
     await expect(repo.claimNext(randomUUID(), NOW, new Date(NOW.getTime() + 60_000))).resolves.toBeNull()
     await expect(link(repo, earlySessionId, 77)).resolves.toBe(true)
     expect(
       await prisma.sessionPullRequest.findUnique({
-        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
+        where: {
+          orgId_provider_bindingId_repoId_pullNumber: {
+            provider: 'github',
+            bindingId: '',
+            orgId: ORG_ID,
+            repoId: REPO_ID,
+            pullNumber: 77
+          }
+        }
       })
     ).toMatchObject({ sessionId: earlySessionId })
 
@@ -76,7 +92,15 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     await repo.enqueue(ORG_ID, signal('delivery-linked', 78), NOW, NOW)
     expect(
       await prisma.sessionPullRequest.findUnique({
-        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 78 } }
+        where: {
+          orgId_provider_bindingId_repoId_pullNumber: {
+            provider: 'github',
+            bindingId: '',
+            orgId: ORG_ID,
+            repoId: REPO_ID,
+            pullNumber: 78
+          }
+        }
       })
     ).toMatchObject({ sessionId: linkedSessionId })
   })
@@ -147,7 +171,15 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
 
     expect(
       await prisma.sessionPullRequest.findUnique({
-        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
+        where: {
+          orgId_provider_bindingId_repoId_pullNumber: {
+            provider: 'github',
+            bindingId: '',
+            orgId: ORG_ID,
+            repoId: REPO_ID,
+            pullNumber: 77
+          }
+        }
       })
     ).toMatchObject({
       deliveryKey: 'delivery-2',
@@ -160,7 +192,15 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     await repo.complete(newer!, owner)
     expect(
       await prisma.sessionPullRequest.findUnique({
-        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 77 } }
+        where: {
+          orgId_provider_bindingId_repoId_pullNumber: {
+            provider: 'github',
+            bindingId: '',
+            orgId: ORG_ID,
+            repoId: REPO_ID,
+            pullNumber: 77
+          }
+        }
       })
     ).toMatchObject({ sessionId, deliveryKey: null, nextAttemptAt: null })
   })
@@ -228,11 +268,62 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     await expect(repo.deleteExpired(new Date(NOW.getTime() + 1))).resolves.toBe(0)
     expect(
       await prisma.sessionPullRequest.findUniqueOrThrow({
-        where: { orgId_repoId_pullNumber: { orgId: ORG_ID, repoId: REPO_ID, pullNumber: 79 } }
+        where: {
+          orgId_provider_bindingId_repoId_pullNumber: {
+            provider: 'github',
+            bindingId: '',
+            orgId: ORG_ID,
+            repoId: REPO_ID,
+            pullNumber: 79
+          }
+        }
       })
     ).toMatchObject({ deliveryKey: 'delivery-2', signalAt: freshSignalAt })
 
     await expect(repo.deleteExpired(new Date(freshSignalAt.getTime() + 1))).resolves.toBe(1)
     await expect(prisma.sessionPullRequest.count()).resolves.toBe(0)
+  })
+  it('isolates provider and binding identities and retains every PR in a CI delivery', async () => {
+    const repo = new PgSessionPullRequestFeedbackRepo(prisma)
+    const owner = randomUUID()
+    const bindingId = randomUUID()
+    for (const provider of ['gitlab', 'gitea'] as const) {
+      for (const pullNumber of [77, 78]) {
+        const sessionId = randomUUID()
+        await seedEligibleSession(sessionId)
+        await repo.linkSession({
+          sessionId: SessionId(sessionId),
+          agentId: AgentId(AGENT_ID),
+          orgId: ORG_ID,
+          repoId: REPO_ID,
+          repoFullName: 'example-org/example-repo',
+          provider,
+          bindingId,
+          installationId: null,
+          pullNumber
+        })
+        const event = {
+          provider,
+          bindingId,
+          repoId: String(REPO_ID),
+          repoFullName: 'example-org/example-repo',
+          deliveryKey: 'same-delivery',
+          pullNumber
+        }
+        await repo.enqueue(ORG_ID, event, NOW, NOW)
+        await repo.enqueue(ORG_ID, event, NOW, NOW)
+        await repo.enqueue(ORG_ID, { ...event, bindingId: randomUUID() }, NOW, NOW)
+      }
+    }
+    const delivered: string[] = []
+    const restarted = new PgSessionPullRequestFeedbackRepo(prisma)
+    for (let index = 0; index < 4; index++) {
+      const item = await restarted.claimNext(owner, NOW, new Date(NOW.getTime() + 60_000))
+      expect(item).not.toBeNull()
+      delivered.push(`${item!.provider}:${item!.pullNumber}`)
+      await restarted.complete(item!, owner)
+    }
+    expect(delivered.sort()).toEqual(['gitea:77', 'gitea:78', 'gitlab:77', 'gitlab:78'])
+    expect(await restarted.claimNext(owner, NOW, new Date(NOW.getTime() + 60_000))).toBeNull()
   })
 })

@@ -14,6 +14,7 @@ import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
 import { OrgId } from '../../src/domain/ids.js'
+import { ownsFeedbackWorkspace } from '../../src/codehost/feedback.service.js'
 import { unionGitlabWebhookEvents } from '../../src/gitlab/webhook-events.js'
 import {
   PgGitlabAgentAccountRepo,
@@ -86,9 +87,15 @@ function gitlabApp(
     instanceState: new PgGitlabInstanceStateStore(prisma),
     clock,
     publicRelayUrl: deployment.publicRelayUrl ?? 'https://relay.example.test',
-    // The same authority container.ts wires: an enabled gitlab hook on the project wants ingress.
+    // Mirror the production union of triggers and writable primary workspaces.
     desiredWebhookEvents: async (orgId, projectId) =>
-      unionGitlabWebhookEvents(await new PgHookRepo(prisma).listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
+      unionGitlabWebhookEvents(
+        await new PgHookRepo(prisma).listForOrgKind(OrgId(orgId), 'gitlab'),
+        projectId,
+        (await new PgAgentRepo(prisma).list(OrgId(orgId))).some((agent) =>
+          ownsFeedbackWorkspace(agent, 'gitlab', projectId)
+        )
+      ),
     api: fake.api
   })
   running = buildHttpApp(
@@ -707,13 +714,24 @@ describe('gitlab organization bot roster (§7.2, §18.1)', () => {
     expect((await running.app.inject({ method: 'GET', url: rosterUrl() })).statusCode).toBe(404)
   })
 
+  it('installs review and pipeline feedback for a writable workspace without a trigger', async () => {
+    const a = gitlabApp()
+    const { connectionId } = await connect(a)
+    await seedAgent(prisma, randomUUID(), { name: 'author', gitlabProjectId: 4455667n })
+    await bind(a, connectionId, '4455667')
+    const listed = await a.app.inject({ method: 'GET', url: `${ORG}/gitlab/projects` })
+    expect(listed.json()).toMatchObject({ bindings: [{ webhookState: 'installed' }] })
+    expect(await prisma.hookDef.count()).toBe(0)
+    expect([...a.fake.webhooks.values()][0]?.events).toMatchObject({ pipeline_events: true, note_events: true })
+  })
+
   it('reports a wanted webhook as installed, and an unwanted one as not needed', async () => {
     // The two are the same absence of trouble, but only one of them is an absence of a webhook —
     // reporting a project with no trigger as lacking one turns a resting state into an alarm.
     const a = gitlabApp()
     const { connectionId } = await connect(a)
     const agentId = randomUUID()
-    await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n })
+    await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n, gitAccess: 'read' })
     await bind(a, connectionId, '4455667')
 
     const listed = await a.app.inject({ method: 'GET', url: `${ORG}/gitlab/projects` })
@@ -773,7 +791,7 @@ describe('gitlab organization bot roster (§7.2, §18.1)', () => {
       const a = gitlabApp()
       const { connectionId } = await connect(a)
       const agentId = randomUUID()
-      await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n })
+      await seedAgent(prisma, agentId, { name: 'reviewer', gitlabProjectId: 4455667n, gitAccess: 'read' })
       await bind(a, connectionId, '4455667')
       expect((await onlyBinding(a)).webhookState).toBe('not_needed')
 

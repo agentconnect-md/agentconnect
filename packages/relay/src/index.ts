@@ -14,6 +14,7 @@ import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
   RELAY_CP_SUBPROTOCOL,
+  type RcCodeHostFeedback,
   type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
   type RcRunReport
@@ -185,6 +186,7 @@ async function main(): Promise<void> {
         daemonId: a.daemonId,
         integrationId: ''
       }),
+    onFeedbackWatch: (watch) => hookTable.feedbackWatch(watch),
     onHookAssign: (rule) => hookTable.upsert(rule),
     onHookRemove: (hookId) => hookTable.remove(hookId),
     // Bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2) —
@@ -273,6 +275,7 @@ async function main(): Promise<void> {
   // signing tokens, live membership through the CP, same shared run limiter.
   const gitlabAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
   const gitlabIngressDeps = {
+    reportFeedback: (signal: RcCodeHostFeedback) => client.reportCodeHostFeedback(signal),
     table: hookTable,
     daemons: () => held.rdServer,
     report: (r: RcRunReport) => client.emitRunReport(r),
@@ -288,6 +291,7 @@ async function main(): Promise<void> {
   // keys, bare-hex signature, no replay window, live membership through the CP.
   const giteaAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
   const giteaIngressDeps = {
+    reportFeedback: (signal: RcCodeHostFeedback) => client.reportCodeHostFeedback(signal),
     table: hookTable,
     daemons: () => held.rdServer,
     report: (r: RcRunReport) => client.emitRunReport(r),

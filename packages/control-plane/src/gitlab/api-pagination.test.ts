@@ -11,6 +11,7 @@ import {
   GitlabApiClient,
   GitlabApiError,
   gitlabListServiceAccountTokens,
+  gitlabFeedbackPulls,
   gitlabListServiceAccounts,
   gitlabListWebhooks
 } from './api.js'
@@ -163,5 +164,27 @@ describe('gitlabListWebhooks', () => {
     expect(hooks.map((h) => h.id)).toEqual([8, 9])
     expect(urls[0]).toBe('https://gitlab.com/api/v4/projects/4455667/hooks?per_page=100&page=1')
     expect(urls[1]).toContain('page=2')
+  })
+})
+
+describe('gitlabFeedbackPulls', () => {
+  it('keeps the source-branch filter across pages and rejects a closed MR by iid', async () => {
+    const pull = {
+      iid: 12,
+      state: 'opened',
+      source_branch: 'feature/a+b',
+      source_project_id: 123,
+      target_project_id: 123,
+      sha: 'a'.repeat(40)
+    }
+    const { fetch, urls } = pagedFetch([[{ ...pull, target_project_id: 999 }], [pull]])
+    expect(await gitlabFeedbackPulls(TOKEN, 123n, { branch: pull.source_branch }, dotCom(fetch))).toEqual([pull])
+    expect(urls).toHaveLength(2)
+    expect(new URL(urls[1]!).searchParams.get('source_branch')).toBe(pull.source_branch)
+    const api = dotCom(async (url) => {
+      expect(new URL(url).pathname).toBe('/api/v4/projects/123/merge_requests/12')
+      return Response.json({ ...pull, state: 'merged' })
+    })
+    expect(await gitlabFeedbackPulls(TOKEN, 123n, { number: 12 }, api)).toEqual([])
   })
 })

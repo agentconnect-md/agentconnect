@@ -1465,23 +1465,24 @@ export function agentRoutes(deps: HttpDeps) {
         app.log.debug({ agentId: agent.id, daemonId: target }, 'agent/remove skipped: daemon offline')
       })
 
-    // A gitlab workspace write changes who consumes the project, so the §7.2
-    // accounts and memberships must reconverge — the same kick a gitlab hook
-    // write does. Retargeting converges BOTH projects, IN THE ORDER GIVEN: the
-    // agent joins one and leaves the other, and joining must land first.
-    // Fire-and-forget, like every post-write convergence here.
-    const convergeGitlabProjects = (orgId: OrgId, projectIds: Iterable<bigint | undefined>): void => {
-      const gitlab = deps.gitlab
-      if (!gitlab) return
-      const projects = [...new Set([...projectIds].filter((id): id is bigint => id !== undefined))]
-      // SEQUENTIAL: two projects under one top-level group share the agent's
-      // single account, so converging them in parallel would have them contend
-      // for its mutation lease and back off against each other.
+    // Converge the destination before the source so shared provider accounts retain a live membership.
+    const convergeWorkspaceRepositories = (
+      orgId: OrgId,
+      agents: Iterable<Pick<AgentRecord, 'workspace' | 'workspaceRepoId'>>
+    ): void => {
       void (async () => {
-        for (const projectId of projects) {
-          await gitlab.provisioner
-            .convergeProject(orgId, projectId)
-            .catch((err) => app.log.warn({ err, projectId: projectId.toString() }, 'gitlab workspace converge failed'))
+        const seen = new Set<string>()
+        for (const agent of agents) {
+          if (agent.workspace.mode !== 'git' || !agent.workspace.credential || agent.workspaceRepoId === undefined)
+            continue
+          const provider = agent.workspace.credential.provider
+          const repoId = agent.workspaceRepoId
+          const key = `${provider}:${repoId}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          await codeHosts[provider].hooks.convergeManagedRepository(deps, orgId, repoId, (err) =>
+            app.log.warn({ err, provider, repoId: String(repoId) }, 'workspace webhook converge failed')
+          )
         }
       })()
     }
@@ -2164,10 +2165,7 @@ export function agentRoutes(deps: HttpDeps) {
             }
           }
           await syncMcpDefsForAgent(agent, [], agent.mcpServers)
-          // A gitlab workspace makes this agent a consumer of its project (§7.2).
-          if (agent.workspace.mode === 'git' && agent.workspace.credential?.provider === 'gitlab') {
-            convergeGitlabProjects(agent.orgId, [agent.workspaceRepoId])
-          }
+          convergeWorkspaceRepositories(agent.orgId, [agent])
           return reply.code(201).send({
             ...toDto(
               agent,
@@ -2929,7 +2927,7 @@ export function agentRoutes(deps: HttpDeps) {
             } catch (err) {
               // The edit rolled back, so the membership just bound belongs to an
               // agent that does not consume the project: converge it away.
-              convergeGitlabProjects(existing.orgId, [workspaceRepoId])
+              convergeWorkspaceRepositories(existing.orgId, [{ workspace, workspaceRepoId }])
               throw err
             }
             if (!applied.ok) return conflict(gitlabAccountUnavailableMessage(applied.reason))
@@ -2937,18 +2935,7 @@ export function agentRoutes(deps: HttpDeps) {
           } else {
             converted = await applyWorkspace()
           }
-          // Joining, leaving, or re-clamping a gitlab project moves its §7.2
-          // membership set. DESTINATION FIRST, and the order is load-bearing: an
-          // account with no membership left in its root retires, so converging
-          // the project being left first would retire the very account the
-          // destination is about to bind — deleting it at GitLab and recreating
-          // it under a new user id. Binding the destination first leaves the
-          // source unbind with a still-bound account to spare.
-          const gitlabVouched = (workspace: AgentWorkspace): boolean =>
-            workspace.mode === 'git' && workspace.credential?.provider === 'gitlab'
-          if (gitlabVouched(existing.workspace) || gitlabVouched(converted.workspace)) {
-            convergeGitlabProjects(converted.orgId, [converted.workspaceRepoId, existing.workspaceRepoId])
-          }
+          convergeWorkspaceRepositories(converted.orgId, [converted, existing])
           return toDto(
             converted,
             ctxOf(req),
@@ -3393,6 +3380,7 @@ export function agentRoutes(deps: HttpDeps) {
           if (current.daemonId && current.memory?.provider === 'external') {
             await removeExternalMemoryFromDaemonIfUnused(current.orgId, current.daemonId, current.memory.connectionId)
           }
+          convergeWorkspaceRepositories(current.orgId, [current])
           for (const h of removedHooks) deps.hooks.remove(h.id)
           // The cascade wrote no hook row, so the routed scopes these left are re-hosted and their hosts bumped here.
           void deps.hookRouting

@@ -19,6 +19,7 @@ import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
+import { ownsFeedbackWorkspace } from '../../codehost/feedback.service.js'
 import { OrgId } from '../../domain/ids.js'
 import { Tag } from '../plugins/openapi.js'
 import { GitlabOauthDenied, OAUTH_BROWSER_COOKIE } from '../../gitlab/oauth.service.js'
@@ -87,8 +88,7 @@ function toDto(
   }
 }
 
-/** The managed webhook's state (§11.1). A project no enabled trigger points at wants no ingress
- *  at all, which is normal — never the same fact as one that was wanted and is missing. */
+/** A webhook is needed by enabled triggers or a writable primary workspace. */
 function webhookStateOf(r: GitlabProjectBindingRecord, wanted: boolean): GitlabWebhookState {
   if (!wanted) return 'not_needed'
   if (r.webhookId !== null) return 'installed'
@@ -230,7 +230,13 @@ export function gitlabRoutes(deps: HttpDeps) {
     // one org-wide hook read, unioned per project, so a route never re-derives the rule.
     const webhookWanted = async (orgId: string): Promise<(projectId: bigint) => boolean> => {
       const hooks = await deps.repos.hook.listForOrgKind(OrgId(orgId), 'gitlab')
-      return (projectId) => unionGitlabWebhookEvents(hooks, projectId) !== null
+      const agents = await deps.repos.agent.list(OrgId(orgId))
+      return (projectId) =>
+        unionGitlabWebhookEvents(
+          hooks,
+          projectId,
+          agents.some((agent) => ownsFeedbackWorkspace(agent, 'gitlab', projectId))
+        ) !== null
     }
 
     r.post(

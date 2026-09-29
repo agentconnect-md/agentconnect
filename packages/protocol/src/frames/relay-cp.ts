@@ -1,3 +1,4 @@
+import { RcCodeHostFeedback, RcCodeHostFeedbackResult, RcCodeHostFeedbackWatch } from './codehost-feedback.js'
 import { z } from 'zod'
 import { frameSchema } from '../envelope.js'
 import {
@@ -1325,6 +1326,9 @@ export const RELAY_CP_SCHEMAS = {
   'rc/codehost-membership-authz/ok': RcCodeHostMembershipAuthzResult,
   'rc/github-rerequest': RcGithubRerequest,
   'rc/github-rerequest/ok': RcGithubRerequestResult,
+  'rc/codehost-feedback-watch': RcCodeHostFeedbackWatch,
+  'rc/codehost-feedback': RcCodeHostFeedback,
+  'rc/codehost-feedback/ok': RcCodeHostFeedbackResult,
   'rc/pull-request-feedback': RcPullRequestFeedback,
   'rc/pull-request-feedback/ok': RcPullRequestFeedbackResult,
   'rc/hook-assign': RcHookAssign,
@@ -1381,6 +1385,9 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/codehost-membership-authz/ok', RELAY_CP_SCHEMAS['rc/codehost-membership-authz/ok']),
   frameSchema('rc/github-rerequest', RELAY_CP_SCHEMAS['rc/github-rerequest']),
   frameSchema('rc/github-rerequest/ok', RELAY_CP_SCHEMAS['rc/github-rerequest/ok']),
+  frameSchema('rc/codehost-feedback', RELAY_CP_SCHEMAS['rc/codehost-feedback']),
+  frameSchema('rc/codehost-feedback/ok', RELAY_CP_SCHEMAS['rc/codehost-feedback/ok']),
+  frameSchema('rc/codehost-feedback-watch', RELAY_CP_SCHEMAS['rc/codehost-feedback-watch']),
   frameSchema('rc/pull-request-feedback', RELAY_CP_SCHEMAS['rc/pull-request-feedback']),
   frameSchema('rc/pull-request-feedback/ok', RELAY_CP_SCHEMAS['rc/pull-request-feedback/ok']),
   frameSchema('rc/hook-assign', RELAY_CP_SCHEMAS['rc/hook-assign']),

@@ -1,6 +1,6 @@
 import type { RcCodeHostMembershipAuthz } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
-import { HookId } from '../domain/ids.js'
+import { HookId, OrgId } from '../domain/ids.js'
 import type {
   GitlabAgentAccountRepo,
   GitlabProjectBindingRepo,
@@ -81,46 +81,10 @@ export class GitlabMembershipAuthzService {
 
     // The compiled rule's backing binding must still be live and still own the
     // project; cleanup or a missing service account invalidates the rule.
-    const binding = await this.deps.bindings.byProject(first.orgId, projectId)
-    if (!binding || binding.state === 'cleanup_pending' || binding.state === 'provisioning') return false
-    const accounts = await this.deps.accounts.listForBinding(binding.id)
-    const bound = new Set(
-      accounts
-        .map((account) => account.serviceAccountUserId)
-        .filter((userId): userId is bigint => userId !== null)
-        .map((userId) => userId.toString())
-    )
-    if (bound.size === 0) return false
-
-    // Loop/self-summon guard (§12.1 belt): every bound agent account holds a
-    // project role, but no managed identity may ever authorize a trigger.
     const actorIds = [
       ...new Set([req.actorExternalId, ...(req.subjectAuthorExternalId ? [req.subjectAuthorExternalId] : [])])
     ].map((id) => BigInt(id))
-    if (actorIds.some((id) => bound.has(id.toString()))) return false
-
-    // The read PAT of the hook agent's own account: the live membership answer
-    // does not depend on WHICH managed account asks, only that one can.
-    const hookAccount = accounts.find((account) => account.agentId === first.agentId) ?? accounts[0]
-    if (!hookAccount) return false
-    const credential = await this.deps.credentials.get(hookAccount.id, 'read')
-    if (!credential) return false
-    const token = await this.deps.credentialSecrets.get(binding.orgId, credential.id)
-    if (!token) return false
-
-    const nowMs = this.deps.clock.now()
-    const memberships = await Promise.all(
-      actorIds.map((id) => gitlabEffectiveMembership(token, projectId, id, this.deps.api))
-    )
-    // GitLab actors arrive as numeric ids, so the vouch needs no resolution: the list is read
-    // only when someone fell below the bar, and every such actor must be on it.
-    const belowBar = actorIds.filter(
-      (_id, index) => !membershipSatisfies(memberships[index]!, GITLAB_ACCESS_DEVELOPER, nowMs)
-    )
-    if (belowBar.length > 0) {
-      const trusted = await this.deps.trustedActors.actorIdsForRepo(first.orgId, 'gitlab', projectId)
-      if (!belowBar.every((id) => trusted.has(id.toString()))) return false
-    }
+    if (!(await this.actorsAllowed(first.orgId, projectId, actorIds, first.agentId ?? undefined))) return false
 
     // The GitLab calls above can take seconds. Re-read immediately before the
     // allow verdict so a concurrent disable, retarget, or reassignment cannot
@@ -137,6 +101,48 @@ export class GitlabMembershipAuthzService {
         })
       )
     })
+  }
+
+  async actorsAllowed(orgId: string, projectId: bigint, actorIds: bigint[], agentId?: string): Promise<boolean> {
+    const binding = await this.deps.bindings.byProject(orgId, projectId)
+    if (!binding || binding.state === 'cleanup_pending' || binding.state === 'provisioning') return false
+    const accounts = await this.deps.accounts.listForBinding(binding.id)
+    const bound = new Set(
+      accounts
+        .map((account) => account.serviceAccountUserId)
+        .filter((userId): userId is bigint => userId !== null)
+        .map((userId) => userId.toString())
+    )
+    if (bound.size === 0) return false
+
+    // Loop/self-summon guard (§12.1 belt): every bound agent account holds a
+    // project role, but no managed identity may ever authorize a trigger.
+    if (actorIds.some((id) => bound.has(id.toString()))) return false
+
+    // The read PAT of the hook agent's own account: the live membership answer
+    // does not depend on WHICH managed account asks, only that one can.
+    const hookAccount = accounts.find((account) => account.agentId === agentId) ?? accounts[0]
+    if (!hookAccount) return false
+    const credential = await this.deps.credentials.get(hookAccount.id, 'read')
+    if (!credential) return false
+    const token = await this.deps.credentialSecrets.get(binding.orgId, credential.id)
+    if (!token) return false
+
+    const nowMs = this.deps.clock.now()
+    const memberships = await Promise.all(
+      actorIds.map((id) => gitlabEffectiveMembership(token, projectId, id, this.deps.api))
+    )
+    // GitLab actors arrive as numeric ids, so the vouch needs no resolution: the list is read
+    // only when someone fell below the bar, and every such actor must be on it.
+    const belowBar = actorIds.filter(
+      (_id, index) => !membershipSatisfies(memberships[index]!, GITLAB_ACCESS_DEVELOPER, nowMs)
+    )
+    if (belowBar.length > 0) {
+      const trusted = await this.deps.trustedActors.actorIdsForRepo(OrgId(orgId), 'gitlab', projectId)
+      if (!belowBar.every((id) => trusted.has(id.toString()))) return false
+    }
+
+    return true
   }
 
   private matchesAuthorizedHook(

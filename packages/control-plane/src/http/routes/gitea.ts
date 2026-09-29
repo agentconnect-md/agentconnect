@@ -12,6 +12,7 @@ import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
+import { ownsFeedbackWorkspace } from '../../codehost/feedback.service.js'
 import { OrgId } from '../../domain/ids.js'
 import { Tag } from '../plugins/openapi.js'
 import { GITEA_REQUIRED_TOKEN_SCOPES, GiteaConnectDenied } from '../../gitea/connection.service.js'
@@ -59,7 +60,7 @@ const ERROR_NAMES = {
 
 type GiteaWebhookState = GiteaRepositoryBindingDtoT['webhookState']
 
-/** The managed webhook's state (§7); a repository no enabled trigger points at wants no ingress. */
+/** A webhook is needed by enabled triggers or a writable primary workspace. */
 function webhookStateOf(r: GiteaRepositoryBindingRecord, wanted: boolean): GiteaWebhookState {
   if (!wanted) return 'not_needed'
   if (r.webhookId !== null) return 'installed'
@@ -150,7 +151,13 @@ export function giteaRoutes(deps: HttpDeps) {
     // Whether a repository wants ingress, from the same authority the provisioner converges against.
     const webhookWanted = async (orgId: string): Promise<(repoId: bigint) => boolean> => {
       const hooks = await deps.repos.hook.listForOrgKind(OrgId(orgId), 'gitea')
-      return (repoId) => unionGiteaWebhookEvents(hooks, repoId) !== null
+      const agents = await deps.repos.agent.list(OrgId(orgId))
+      return (repoId) =>
+        unionGiteaWebhookEvents(
+          hooks,
+          repoId,
+          agents.some((agent) => ownsFeedbackWorkspace(agent, 'gitea', repoId))
+        ) !== null
     }
     const connectionDto = async (orgId: string, record: GiteaConnectionRecord): Promise<GiteaConnectionDtoT> =>
       connectionToDto(

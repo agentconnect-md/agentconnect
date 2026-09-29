@@ -412,10 +412,12 @@ export const PullRequestFeedbackSignal = z.object({
 })
 export type PullRequestFeedbackSignal = z.infer<typeof PullRequestFeedbackSignal>
 
-/** C→D exact-session continuation. The daemon constructs the prompt locally and reads current GitHub state. */
+/** C→D exact-session continuation. The daemon constructs the prompt locally and reads current code-host state. */
 export const SessionPullRequestFeedback = PullRequestFeedbackSignal.omit({ installationId: true }).extend({
   agentId: z.string().uuid(),
-  sessionId: z.string().min(1)
+  sessionId: z.string().min(1),
+  provider: z.enum(['gitlab', 'gitea']).optional(),
+  host: z.string().url().optional()
 })
 export type SessionPullRequestFeedback = z.infer<typeof SessionPullRequestFeedback>
 

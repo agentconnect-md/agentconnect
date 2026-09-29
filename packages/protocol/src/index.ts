@@ -230,3 +230,5 @@ export * from './memory-entries.js'
 export * from './frames/memory-entries.js'
 
 export * from './frames/memory-transaction.js'
+
+export * from './frames/codehost-feedback.js'

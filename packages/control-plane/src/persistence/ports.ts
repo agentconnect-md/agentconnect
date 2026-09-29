@@ -1639,7 +1639,13 @@ export interface SessionRepo {
 export interface PullRequestWakeRecord {
   deliveryKey: string
   orgId: OrgId
-  installationId: bigint
+  installationId: bigint | null
+  provider?: CodeHostProvider
+  bindingId?: string
+  host?: string
+  headSha?: string
+  sourceAgentId?: string
+  sourceSessionId?: string
   repoId: bigint
   repoFullName: string
   pullNumber: number
@@ -1667,11 +1673,34 @@ export interface SessionPullRequestFeedbackRepo {
     orgId: OrgId
     repoId: bigint
     repoFullName: string
-    installationId: bigint
+    installationId: bigint | null
+    provider?: CodeHostProvider
+    bindingId?: string
+    host?: string
     pullNumber: number
   }): Promise<boolean>
   /** Dirty one PR wake, at most once per delivery key: a redelivered key is a no-op. */
-  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, signalAt: Date, nextAttemptAt: Date): Promise<void>
+  enqueue(
+    orgId: OrgId,
+    signal: Omit<PullRequestFeedbackSignal, 'installationId'> & {
+      installationId?: string
+      provider?: CodeHostProvider
+      bindingId?: string
+      host?: string
+      headSha?: string
+      sourceAgentId?: string
+      sourceSessionId?: string
+    },
+    signalAt: Date,
+    nextAttemptAt: Date
+  ): Promise<void>
+  owner(
+    orgId: OrgId,
+    provider: CodeHostProvider,
+    bindingId: string,
+    repoId: bigint,
+    pullNumber: number
+  ): Promise<{ agentId: AgentId; sessionId: SessionId } | null>
   /** Cross-process lease for the next due wake that already has a proven session owner. */
   claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null>
   /** Clear only the delivery key that was accepted; a concurrent newer wake remains dirty. */
@@ -3760,6 +3789,7 @@ export interface GitlabProjectBindingRepo {
   /** Case-insensitive lookup by the CURRENT namespaced path, any lifecycle state —
    *  the §6 derivation's entry point for a URL-addressed managed project. */
   byProjectPath(orgId: string, projectPath: string): Promise<GitlabProjectBindingRecord | null>
+  listAll(): Promise<GitlabProjectBindingRecord[]>
   listForOrg(orgId: string): Promise<GitlabProjectBindingRecord[]>
   /** How many bindings each connection still administers, keyed by connection id
    *  (§7.1): a connection with any is not released and cannot be removed. */
@@ -4143,6 +4173,7 @@ export interface GiteaRepositoryBindingRepo {
   byRepo(orgId: string, repoId: bigint): Promise<GiteaRepositoryBindingRecord | null>
   /** Case-insensitive lookup by the CURRENT owner/repo path, any lifecycle state. */
   byRepoPath(orgId: string, repoPath: string): Promise<GiteaRepositoryBindingRecord | null>
+  listAll(): Promise<GiteaRepositoryBindingRecord[]>
   listForOrg(orgId: string): Promise<GiteaRepositoryBindingRecord[]>
   listForConnection(orgId: string, connectionId: string): Promise<GiteaRepositoryBindingRecord[]>
   update(
