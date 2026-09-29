@@ -14,7 +14,7 @@ import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
 import { FcGoogle } from 'react-icons/fc'
-import { SiForgejo, SiGitea, SiGithub } from 'react-icons/si'
+import { SiForgejo, SiGitea, SiGithub, SiVercel } from 'react-icons/si'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { useGiteaProduct } from '@/lib/gitea-product'
 import { LARK_MARK_SRC } from './console/platforms/feishu/mark'
@@ -256,6 +256,40 @@ function GiteaProductGlyph({ style, color }: { style: CSSProperties; color?: str
  *  thing they actually run. Cloud is the same pool as a product and keeps its own cloud glyph. */
 export function KubernetesMark({ fillPct = 100 }: { fillPct?: number }) {
   return <IconifyIcon icon={kubernetesIcon} ssr style={markBox(fillPct)} aria-hidden />
+}
+
+// AG-UI's kite and ACP's glyph, copied from each protocol's own logo SVG; both are single-color, so they take the text color.
+const AG_UI_KITE =
+  'M0,25.9335975 L16.5448881,6.52325783e-15 C40.848296,5.37332138 53,8.05998207 53,8.05998207 L43.1229639,62 L0,25.9335975 Z'
+const ACP_GLYPH =
+  'M130.75.385c5.428 0 10.297 2.81 13.011 7.511l14.214 24.618-.013-.005c2.599 4.504 2.707 9.932.28 14.513-2.618 4.944-7.862 8.015-13.679 8.015h-31.811c-.452 0-.873-.242-1.103-.637a1.268 1.268 0 0 1 0-1.274l3.919-6.78c.223-.394.65-.636 1.102-.636h28.288a5.622 5.622 0 0 0 4.925-2.849 5.615 5.615 0 0 0 0-5.69l-14.214-24.617a5.621 5.621 0 0 0-4.925-2.848 5.621 5.621 0 0 0-4.925 2.848l-14.214 24.618a6.267 6.267 0 0 0-.319.643.998.998 0 0 1-.069.14L101.724 54.4l-.823 1.313-2.529 4.39a1.27 1.27 0 0 1-1.103.636h-7.83c-.452 0-.873-.242-1.102-.637-.23-.394-.23-.879 0-1.274l2.188-3.791H66.803c-3.32 0-6.454-1.122-8.818-3.167a17.141 17.141 0 0 1-3.394-3.96 1.261 1.261 0 0 1-.091-.137L34.2 12.573a5.622 5.622 0 0 0-4.925-2.849 5.621 5.621 0 0 0-4.924 2.85L10.137 37.19a5.615 5.615 0 0 0 0 5.69 5.63 5.63 0 0 0 4.925 2.841h29.862a1.276 1.276 0 0 1 1.102 1.912l-3.912 6.778a1.27 1.27 0 0 1-1.102.638H14.495c-3.32 0-6.454-1.128-8.817-3.173-5.906-5.104-7.36-12.883-3.62-19.363L16.267 7.89C18.872 3.385 23.517.583 28.697.39c.184-.006.356-.006.534-.006 5.378 0 10.45 3.007 13.246 7.85l12.986 22.372L68.58 7.891C71.186 3.385 75.83.582 81.01.39c.185-.006.358-.006.536-.006 4.453 0 8.71 2.039 11.672 5.588.337.407.388.98.127 1.446l-3.765 6.6a1.268 1.268 0 0 1-2.205.006l-.847-1.465a5.623 5.623 0 0 0-4.926-2.848 5.622 5.622 0 0 0-4.924 2.848L62.464 37.18a5.614 5.614 0 0 0 0 5.689 5.628 5.628 0 0 0 4.925 2.842H95.91L117.76 7.87c2.714-4.683 7.575-7.486 12.99-7.486Z'
+
+/** A chat API protocol's mark in the text color: AI SDK UI under ai-sdk.dev's Vercel triangle, AG-UI and ACP from their logos. */
+export function ApiProtocolMark({ protocol }: { protocol: string }) {
+  const sq = squareMarkBox(100)
+  switch (protocol) {
+    case 'ai-sdk-ui':
+      return <SiVercel style={sq} color="currentColor" aria-hidden />
+    case 'ag-ui':
+      // A hairline at this size, so the stroke holds one screen width instead of scaling with the artwork.
+      return (
+        <svg viewBox="0 0 57 66" style={sq} fill="none" stroke="currentColor" aria-hidden>
+          <g transform="translate(2 2)" strokeWidth={1.25}>
+            <path d={AG_UI_KITE} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+            <line x1="16.5828221" y1="-1.07552856e-15" x2="43.2453988" y2="62" vectorEffect="non-scaling-stroke" />
+            <line x1="0" y1="25.9335975" x2="53" y2="8.48421053" vectorEffect="non-scaling-stroke" />
+          </g>
+        </svg>
+      )
+    case 'acp-2':
+      return (
+        <svg viewBox="0 0 160 61" style={markBox(100)} fill="currentColor" aria-hidden>
+          <path d={ACP_GLYPH} />
+        </svg>
+      )
+    default:
+      return <Icon name="code-xml" className="h-full w-full" />
+  }
 }
 
 /**

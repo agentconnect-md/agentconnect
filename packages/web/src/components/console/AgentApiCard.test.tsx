@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from 'react'
+import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -37,7 +37,11 @@ vi.mock('@/lib/data', () => ({
   MOCK_MODE: false,
   agentLabel: (a: { name: string; displayName?: string }) => a.displayName || a.name
 }))
-vi.mock('@/components/marks', () => ({ AgentIconView: () => null }))
+vi.mock('@/components/marks', () => ({
+  AgentIconView: () => null,
+  MarkSlot: ({ children }: { children: ReactNode }) => children,
+  ApiProtocolMark: ({ protocol }: { protocol: string }) => <i data-protocol-mark={protocol} />
+}))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'o1', slug: 'example', name: 'Example Org', role: 'owner' } })
 }))
@@ -136,6 +140,7 @@ describe('AgentApiCard', () => {
   it('shows each added protocol with a Quickstart that names this deployment’s chat endpoint, with an example per tab', async () => {
     await render()
     expect(host!.textContent).toContain('AI SDK UI')
+    expect(host!.querySelector('[data-protocol-mark]')?.getAttribute('data-protocol-mark')).toBe('ai-sdk-ui')
     await click('Quickstart')
     const text = document.body.textContent ?? ''
     expect(text).toContain('https://relay.example.test/ai-sdk/agents/agent-1/chat')
@@ -151,6 +156,7 @@ describe('AgentApiCard', () => {
   it('shows an AG-UI row’s own endpoint and HttpAgent examples, with nothing from the AI SDK', async () => {
     await render('ag-ui')
     expect(host!.textContent).toContain('AG-UI')
+    expect(host!.querySelector('[data-protocol-mark]')?.getAttribute('data-protocol-mark')).toBe('ag-ui')
     await click('Quickstart')
     const text = document.body.textContent ?? ''
     expect(text).toContain('https://relay.example.test/ag-ui/agents/agent-1/chat')

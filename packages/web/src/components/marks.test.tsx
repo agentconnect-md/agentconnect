@@ -5,6 +5,7 @@ import { SQUARE_MARK_FILL_PCT } from './mark-box'
 import { GiteaProductContext } from '@/lib/gitea-product'
 import {
   AgentIconView,
+  ApiProtocolMark,
   FORGEJO_BRAND_COLOR,
   GITEA_BRAND_COLOR,
   GiteaMark,
@@ -94,6 +95,28 @@ describe('icon views', () => {
     expect(uploaded).not.toContain('bg-transparent')
     expect(legacy).toContain('background:#0f7a48')
     expect(legacy).toContain('>A<')
+  })
+})
+
+describe('ApiProtocolMark', () => {
+  const render = (protocol: string) => renderToStaticMarkup(<ApiProtocolMark protocol={protocol} />)
+
+  it('draws each protocol in the text color, capped like the other brand marks', () => {
+    for (const protocol of ['ai-sdk-ui', 'ag-ui']) {
+      const markup = render(protocol)
+      expect(markup).toContain('currentColor')
+      expect(markup).toContain(`width:${SQUARE_MARK_FILL_PCT}%`)
+    }
+    // ACP's glyph is a wide wordmark, so it spans the box instead.
+    expect(render('acp-2')).toContain('viewBox="0 0 160 61"')
+    expect(render('acp-2')).toContain('fill="currentColor"')
+  })
+
+  it('keeps each protocol visually distinct and falls back to the code glyph', () => {
+    const marks = ['ai-sdk-ui', 'ag-ui', 'acp-2', 'future-protocol'].map(render)
+    expect(new Set(marks).size).toBe(4)
+    expect(marks[1]).toContain('vector-effect="non-scaling-stroke"')
+    expect(marks[3]).toContain('lucide-code-xml')
   })
 })
 

@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
+import { ApiProtocolMark, MarkSlot } from '@/components/marks'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { ApiKeyFormModal, MY_KEYS, type ApiKeyOwner } from '@/components/console/ApiKeysCard'
 import { MOCK_MODE, agentLabel, type Agent } from '@/lib/data'
@@ -176,7 +177,9 @@ function ApiRow({
       <div
         className={`flex items-center gap-[10px] border-t border-(--border-subtle) py-[9px] ${mobile ? 'px-4' : 'px-[14px]'}`}
       >
-        <Icon name="code-xml" size={14} color="var(--text-tertiary)" className="flex-none" />
+        <MarkSlot size={14}>
+          <ApiProtocolMark protocol={entry.protocol} />
+        </MarkSlot>
         <span className="mono min-w-0 flex-1 truncate text-[12px]">{apiProtocolLabel(entry.protocol)}</span>
         {decisions && (
           <DecisionGateEntry

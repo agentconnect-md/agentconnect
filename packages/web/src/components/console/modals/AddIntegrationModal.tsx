@@ -14,7 +14,7 @@ import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
-import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentIconView, ApiProtocolMark, GithubMark, LoadingState, MarkSlot, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
@@ -1757,6 +1757,9 @@ export default function AddIntegrationModal({
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-[7px]">
+                        <MarkSlot>
+                          <ApiProtocolMark protocol={p.id} />
+                        </MarkSlot>
                         <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
                         {!p.available && (
                           <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('api.soon')}</span>
