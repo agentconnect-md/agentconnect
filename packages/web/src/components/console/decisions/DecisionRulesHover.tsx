@@ -9,7 +9,6 @@ import type { DecisionQuestion, DecisionUsageRules, DecisionUsageTarget } from '
 import { Icon } from '@/components/ui'
 import { HoverCardRows } from '@/components/ui/HoverCard'
 import { conditionSummary } from './DecisionConditionFields'
-import { conditionText } from './rule-summary'
 
 export interface RuleLine {
   when: string
@@ -126,7 +125,7 @@ export function useRuleLines() {
     const otherwise = step?.otherwise
     return {
       rules: (step?.rules ?? []).map((rule) => ({
-        when: question ? conditionSummary(question, rule.when, words) : conditionText(rule.when),
+        when: conditionSummary(question, rule.when, words),
         then: target(rule.then)
       })),
       ...(otherwise

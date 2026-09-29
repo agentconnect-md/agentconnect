@@ -9,7 +9,7 @@ import { useOrgs } from '@/lib/org-context'
 import { newRule, type RoutingDraft, type RoutingDraftRule, type RoutingIssue } from '@/lib/decisions/routing-draft'
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import { DecisionChainSheet, RoutingChainContext, reachableSteps, useDecisionChainPath } from '../DecisionChainControls'
-import { conditionText } from '../rule-summary'
+import { conditionSummary } from '../DecisionConditionFields'
 import { DecisionPicker } from '../DecisionPicker'
 import { FieldIssue } from './RoutingFields'
 import { RoutingRulesTable, fitsQuestion } from './RoutingRulesTable'
@@ -42,6 +42,7 @@ export function RoutingChainFields({
 }) {
   const t = useTranslations('Decisions.routing')
   const td = useTranslations('Decisions')
+  const words = { yes: td('condition.yes'), no: td('condition.no'), none: td('condition.noAnswer') }
   const { orgPath } = useOrgs()
   const { path, enter, to, back } = useDecisionChainPath(draft, (entry) => edit(() => entry))
   const nameOf = (decisionId?: string | null) => decisions.find((d) => d.id === decisionId)?.name ?? td('chain.missing')
@@ -160,7 +161,7 @@ export function RoutingChainFields({
             depth={index + 1}
             top={index === path.length - 1}
             parent={nameOf(parent?.decisionId)}
-            condition={rule?.when ? conditionText(rule.when, parentQuestion) : undefined}
+            condition={rule?.when ? conditionSummary(parentQuestion, rule.when, words) : undefined}
             title={nameOf(draft.steps?.find((step) => step.id === id)?.decisionId)}
             canWrite={canWrite}
             onParent={() => to(index)}

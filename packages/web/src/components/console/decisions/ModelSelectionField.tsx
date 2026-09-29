@@ -25,7 +25,7 @@ import { Button, Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { reachableSteps } from '@/lib/decisions/chain'
 import { DecisionChainSheet, NextDecision, NextDecisionChip, useDecisionChainPath } from './DecisionChainControls'
-import { conditionText } from './rule-summary'
+import { conditionSummary } from './DecisionConditionFields'
 
 type Rule = AgentModelSelection['rules'][number]
 
@@ -105,6 +105,12 @@ export function ModelSelectionField({
   runInSandbox?: boolean
 }) {
   const t = useTranslations('Agents.dialog.modelSelection')
+  const tDecisions = useTranslations('Decisions')
+  const words = {
+    yes: tDecisions('condition.yes'),
+    no: tDecisions('condition.no'),
+    none: tDecisions('condition.noAnswer')
+  }
   const { orgPath } = useOrgs()
   const { api, orgId, decisions = [], loading, error } = useOptionalDecisionsPrototype() ?? {}
   const [decisionMode, setDecisionMode] = useState(!!configuration)
@@ -644,7 +650,7 @@ export function ModelSelectionField({
                 depth={index + 1}
                 top={index === stepPath.length - 1}
                 parent={nameOf(parent?.decisionId)}
-                condition={rule ? conditionText(rule.when, parentQuestion) : undefined}
+                condition={rule ? conditionSummary(parentQuestion, rule.when, words) : undefined}
                 title={nameOf(configuration?.steps?.find((step) => step.id === id)?.decisionId)}
                 canWrite
                 onParent={() => to(index)}
