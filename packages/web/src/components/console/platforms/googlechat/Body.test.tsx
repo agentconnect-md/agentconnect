@@ -121,7 +121,7 @@ beforeEach(() => {
   mocks.create.mockReset()
   mocks.deploymentApp.mockReset()
   mocks.deploymentApp.mockResolvedValue({ projectNumber: '100000000000' })
-  window.__AC_ENV = { FEATURE_FLAGS: 'google-chat-marketplace' }
+  window.__AC_ENV = { FEATURE_FLAGS: 'google-chat-deployment-app' }
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -288,7 +288,7 @@ describe('GoogleChatWizardBody', () => {
     expect(listingLink()?.href).toBe(LISTING)
   })
 
-  it('offers the preset agent only its own app until the Marketplace flag is on', async () => {
+  it('offers the preset agent only its own app until the deployment-app flag is on', async () => {
     window.__AC_ENV = { FEATURE_FLAGS: '' }
     await render({}, preset)
     expect(mocks.deploymentApp).not.toHaveBeenCalled()

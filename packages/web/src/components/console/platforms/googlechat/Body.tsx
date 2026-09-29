@@ -53,9 +53,9 @@ export function GoogleChatWizardBody({ agent, host }: { agent: Agent; host: Wiza
   // The chassis reads this same probe for its relay capability; only "has it answered" is read here.
   const probe = useDeploymentConfig(true)
   const { integrations, getAgent } = useConsoleData()
-  // The deployment app serves the preset agent alone (§10.5), and is offered only once its listing is live.
+  // The deployment app serves the preset agent alone (§10.5), and is offered only where its flag is on.
   const marketplaceUrl = useGoogleChatMarketplaceUrl(
-    agent.builtin === true && featureFlagEnabled('google-chat-marketplace'),
+    agent.builtin === true && featureFlagEnabled('google-chat-deployment-app'),
     host.mockMode
   )
 

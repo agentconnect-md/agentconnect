@@ -11,8 +11,8 @@ export type FeatureFlagId =
   | 'git-url'
   // The QQ integration's install entry points; existing QQ bots keep their Bots tab.
   | 'qq'
-  // The built-in agent's Marketplace install of the deployment's Google Chat app, once its listing is live; otherwise that agent connects its own app.
-  | 'google-chat-marketplace'
+  // The built-in agent offers the deployment's Google Chat app first, through its Marketplace listing; otherwise it connects its own app.
+  | 'google-chat-deployment-app'
   // The By decision checkout for additional repositories; a row already By decision keeps it, and a set selector stays shown.
   | 'repository-decision'
 

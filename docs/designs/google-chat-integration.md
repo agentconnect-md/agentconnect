@@ -9,10 +9,11 @@ Google Workspace add-on (§11), verified live against a converted app on Septemb
 follow-ups: several agents sharing one app, and a Marketplace listing for more than
 one Workspace customer.
 
-The console offers Google Chat everywhere. Only the preset agent's Marketplace
-install (§3) waits for the `google-chat-marketplace` feature flag (the chart's
-`features.googleChatMarketplace`, off by default), which a deployment turns on once
-its app's listing is live; until then that agent connects its own app like any other.
+The console offers Google Chat everywhere. The preset agent offers the deployment
+app first (§3) only with the `google-chat-deployment-app` feature flag (the chart's
+`features.googleChatDeploymentApp`, off by default), which a deployment turns on once
+its app's Marketplace listing is live; without it, that agent connects its own app
+like any other.
 
 Related: [issue #2262](https://github.com/agentconnect-md/agentconnect/issues/2262),
 [platform modules](integration-plugin-architecture.md),
@@ -213,7 +214,7 @@ Account and credential readiness therefore belong at the start of setup.
 
 The console module (`packages/web/src/components/console/platforms/googlechat/`)
 builds these steps for an organization's own app. On the organization's preset
-agent, where a claim lands (§10.5), and with the `google-chat-marketplace` flag on,
+agent, where a claim lands (§10.5), and with the `google-chat-deployment-app` flag on,
 it first links the deployment app's Google
 Workspace Marketplace listing, `https://workspace.google.com/marketplace/app/<slug>/<project number>`
 from the number `GET /integrations/googlechat/app` reports only where a claim
