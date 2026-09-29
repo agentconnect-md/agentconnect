@@ -25,16 +25,18 @@ import {
 } from '@/lib/decisions/binding'
 import {
   decisionGateIssues,
+  gateUsageRules,
   type ChannelDecisionGate,
   type DecisionCondition
 } from '@agentconnect.md/protocol/decision'
 import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
-import { DecisionConditionFields, conditionSummary } from './DecisionConditionFields'
+import { DecisionConditionFields } from './DecisionConditionFields'
 import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
 import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import { DecisionGateTry } from './DecisionGateTry'
 import { conversationGateTry, type GateTrySource } from '@/lib/decisions/try-source'
 import { DecisionChip } from './DecisionChip'
+import { DecisionRulesHover, decisionRow, useRuleLines } from './DecisionRulesHover'
 import { GateChainFields } from './GateChainFields'
 import { DecisionPicker } from './DecisionPicker'
 
@@ -122,16 +124,18 @@ export function DecisionGateEntry({
   onStop: () => void | Promise<void>
 }) {
   const t = useTranslations('Decisions')
-  const { myRole } = useOrgs()
+  const { myRole, orgPath } = useOrgs()
   const canWrite = writable && myRole !== 'viewer'
   const { decisions, bindingDrafts, setBindingDraft } = useDecisionsPrototype()
+  const ruleLines = useRuleLines()
   const [stopping, setStopping] = useState(false)
   const draft = bindingDrafts[bindingKey]
   if (saved) {
     const decision = decisions.find((entry) => entry.id === saved.decisionId) ?? null
     const label = decision?.name ?? savedName ?? t('binding.hiddenDecision')
-    const words = { yes: t('condition.yes'), no: t('condition.no'), none: t('condition.noAnswer') }
-    const summary = decision ? conditionSummary(decision.question, saved.when, words) : ''
+    const lines = ruleLines(gateUsageRules(saved, saved.decisionId), decision?.question, {
+      decision: (id) => decisions.find((entry) => entry.id === id)?.name
+    })
     const stop = () => {
       if (stopping) return
       setStopping(true)
@@ -141,7 +145,18 @@ export function DecisionGateEntry({
       <DecisionChip
         name={label}
         label={`${t('binding.editRules')}: ${label}`}
-        title={summary ? `${t('binding.editRules')} · ${summary}` : t('binding.editRules')}
+        hover={
+          <DecisionRulesHover
+            rows={[
+              decisionRow(
+                t('binding.decision'),
+                label,
+                decision && orgPath(`/decisions/${encodeURIComponent(decision.id)}`)
+              )
+            ]}
+            {...lines}
+          />
+        }
         disabled={disabled}
         openProps={{ 'data-gate-entry': bindingKey }}
         onOpen={() => {

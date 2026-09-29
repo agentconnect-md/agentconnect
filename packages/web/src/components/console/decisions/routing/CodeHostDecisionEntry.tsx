@@ -4,12 +4,14 @@
 
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
+import { routingUsageRules } from '@agentconnect.md/protocol/decision'
 import { useOrgs } from '@/lib/org-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import { codeHostRoutingSubject, useCodeHostRoutingActions } from '@/lib/decisions/code-host-routing'
 import type { CodeHostRoutingDto } from '@/lib/api'
 import { DecisionChip } from '../DecisionChip'
+import { DecisionRulesHover, decisionRow, useRuleLines } from '../DecisionRulesHover'
 import { CodeHostDecisionModal } from './CodeHostDecisionModal'
 
 export function CodeHostDecisionEntry({
@@ -26,9 +28,10 @@ export function CodeHostDecisionEntry({
 }) {
   const t = useTranslations('Decisions.routing.codeHost')
   const tDecisions = useTranslations('Decisions')
-  const { myRole } = useOrgs()
+  const { myRole, orgPath } = useOrgs()
   const canWrite = myRole !== 'viewer'
   const decisions = useOptionalDecisionsPrototype()
+  const ruleLines = useRuleLines()
   const { remove } = useCodeHostRoutingActions()
   const [open, setOpen] = useState(false)
   const [stopping, setStopping] = useState(false)
@@ -45,7 +48,9 @@ export function CodeHostDecisionEntry({
   )
   const saved = routing.config
   if (saved) {
-    const name = decisions.decisions.find((entry) => entry.id === saved.decisionId)?.name ?? t('hidden')
+    const decisionName = (id: string) => decisions.decisions.find((entry) => entry.id === id)?.name
+    const decision = decisions.decisions.find((entry) => entry.id === saved.decisionId)
+    const name = decision?.name ?? t('hidden')
     const status = routing.status && routing.status !== 'enabled' ? routing.status : null
     const stop = async () => {
       setStopping(true)
@@ -58,14 +63,28 @@ export function CodeHostDecisionEntry({
         setStopping(false)
       }
     }
-    const title = status
-      ? t('pillStatusTitle', { name, status: tDecisions(`binding.status.${status}`) })
-      : t('pillTitle', { name, subject })
+    const hover = (
+      <DecisionRulesHover
+        rows={[
+          decisionRow(
+            tDecisions('binding.decision'),
+            name,
+            decision && orgPath(`/decisions/${encodeURIComponent(decision.id)}`)
+          ),
+          ...(status ? [[tDecisions('binding.statusLabel'), tDecisions(`binding.status.${status}`)] as const] : [])
+        ]}
+        {...ruleLines(routingUsageRules(saved, saved.decisionId), decision?.question, {
+          agent: (id) => agents.find((agent) => agent.id === id)?.name,
+          decision: decisionName
+        })}
+      />
+    )
     return (
       <>
         <DecisionChip
           name={name}
-          title={title}
+          label={status ? t('pillStatusTitle', { name, status: tDecisions(`binding.status.${status}`) }) : undefined}
+          hover={hover}
           onOpen={() => setOpen(true)}
           warning={status ? (status === 'access_revoked' ? 'lock' : 'triangle-alert') : undefined}
           remove={

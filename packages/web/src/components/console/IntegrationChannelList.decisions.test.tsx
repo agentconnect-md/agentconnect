@@ -107,6 +107,16 @@ afterEach(async () => {
 const CHOICE_WHEN = { type: 'choice' as const, thresholds: { billing: 0.5, technical: 0.5, sales: 0.5 } }
 const CHOICE_SUMMARY = 'billing ≥ 50%, technical ≥ 50%, sales ≥ 50%'
 
+// The pill's rules moved from its native title into the shared hover card.
+async function hoverText(node: Element | null | undefined) {
+  await act(async () => node!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 300)))
+  const text = document.body.querySelector('[role="tooltip"]')?.textContent
+  await act(async () => node!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })))
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 200)))
+  return text
+}
+
 const group = (over: Partial<IntegrationChannelRow> = {}): IntegrationChannelRow => ({
   channelId: 'C1',
   name: 'general',
@@ -209,7 +219,7 @@ describe('IntegrationChannelList By decision', () => {
   it('renders a saved DTO gate as a row pill naming its decision and condition, with no banner when ready', async () => {
     await render([gated()])
     expect(pill()?.textContent).toBe('Support category')
-    expect(pill()?.title).toContain(CHOICE_SUMMARY)
+    expect(await hoverText(pill())).toContain(CHOICE_SUMMARY)
     expect(document.body.querySelector('[role="status"]')).toBeNull()
     expect(byText('Trigger when')).toBeUndefined()
   })
@@ -482,7 +492,7 @@ describe('IntegrationChannelList By decision', () => {
     await click(pill())
     expect(byText('Trigger when')).toBeTruthy()
     await click(byText('Cancel'))
-    expect(pill()?.title).toContain(CHOICE_SUMMARY)
+    expect(await hoverText(pill())).toContain(CHOICE_SUMMARY)
     expect(byText('Trigger when')).toBeUndefined()
   })
 
@@ -503,7 +513,7 @@ describe('IntegrationChannelList By decision', () => {
     await render([group()])
     await addDecision()
     await click(byText('Save'))
-    expect(pill()?.title).toContain(CHOICE_SUMMARY)
+    expect(await hoverText(pill())).toContain(CHOICE_SUMMARY)
     expect(data.setChannelDecision).not.toHaveBeenCalled()
     expect(data.setChannelTrigger).not.toHaveBeenCalled()
   })

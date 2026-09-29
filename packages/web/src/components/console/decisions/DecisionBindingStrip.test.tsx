@@ -145,6 +145,16 @@ const clickText = async (scope: HTMLElement, text: string) => {
 
 const CHOICE_SUMMARY = 'billing ≥ 50%, technical ≥ 50%, sales ≥ 50%'
 
+// The pill's rules moved from its native title into the shared hover card.
+async function hoverText(node: Element | null | undefined) {
+  await act(async () => node!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 300)))
+  const text = document.body.querySelector('[role="tooltip"]')?.textContent
+  await act(async () => node!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })))
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 200)))
+  return text
+}
+
 describe('DecisionBindingStrip', () => {
   it('opens the editor on the first decision with its answer keys enabled', async () => {
     const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
@@ -162,7 +172,7 @@ describe('DecisionBindingStrip', () => {
     await clickText(view, 'Save')
     expect(dialogs()).toHaveLength(0)
     expect(pill()?.textContent).toBe('Support category')
-    expect(pill()?.title).toContain(CHOICE_SUMMARY)
+    expect(await hoverText(pill())).toContain(CHOICE_SUMMARY)
     expect(document.body.querySelector('button[aria-label="Stop using By decision"]')).toBeTruthy()
     // The editor is gone: no minimum-probability control survives the save.
     expect(view.querySelector('input[aria-label="Minimum probability for billing"]')).toBeNull()
@@ -193,7 +203,7 @@ describe('DecisionBindingStrip', () => {
     expect(findByText(dialogs()[0]!, 'Trigger when')).toBeTruthy()
     await clickText(dialogs()[0]!, 'Cancel')
     expect(dialogs()).toHaveLength(0)
-    expect(pill()?.title).toContain(CHOICE_SUMMARY)
+    expect(await hoverText(pill())).toContain(CHOICE_SUMMARY)
     expect([...view.querySelectorAll('span')].filter((node) => node.textContent === 'reverted')).toHaveLength(1)
   })
 

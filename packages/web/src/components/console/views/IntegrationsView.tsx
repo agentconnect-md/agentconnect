@@ -17,6 +17,7 @@ import { Button, Icon, Toggle } from '@/components/ui'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { useModal } from '@/components/console/ModalProvider'
 import { DefaultDispatchPicker } from '@/components/console/DefaultDispatchPicker'
+import { BotRoutingHover } from '@/components/console/decisions/routing/BotRoutingHover'
 import {
   DecisionRoutingModal,
   clearRoutingResume,
@@ -701,6 +702,12 @@ function BotsCard({
                                             name: c.decisionName,
                                             active: c.routed,
                                             canStop: canWrite,
+                                            hover: (
+                                              <BotRoutingHover
+                                                botId={b.id}
+                                                name={c.decisionName ?? t('channelList.dispatch.routingFallback')}
+                                              />
+                                            ),
                                             onOpen: () =>
                                               setRoutingRow({ botId: b.id, channelId: c.channelId, name: c.name }),
                                             onStop: (agentId?: string) => {

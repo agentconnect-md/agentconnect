@@ -9,7 +9,9 @@ import {
   decisionConditionIssues,
   decisionGateIssues,
   decisionChainIds,
+  gateUsageRules,
   nextGateStep,
+  routingUsageRules,
   type DecisionGateStep,
   type DecisionRoutingStep,
   type DecisionChainTrace,
@@ -171,12 +173,18 @@ export function createDecisionMockApi(options: DecisionMockOptions = {}): Decisi
           id: channel.id,
           label: channel.name,
           integrationId: channel.botId,
-          channelId: channel.id
+          channelId: channel.id,
+          ...gateUsageRules(settings.decisionBinding, id)
         })
     }
     for (const routing of routings.values()) {
       if (decisionChainIds(routing.config).includes(id))
-        result.push({ kind: 'shared_bot_routing', id: routing.botId, label: get(bots, routing.botId).name })
+        result.push({
+          kind: 'shared_bot_routing',
+          id: routing.botId,
+          label: get(bots, routing.botId).name,
+          ...routingUsageRules(routing.config, id)
+        })
     }
     return result
   }

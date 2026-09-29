@@ -35,7 +35,7 @@ export function DecisionChip({
   /** A bound chip's hover card content. */
   hover?: ReactNode
 }) {
-  const card = useHoverCard()
+  const card = useHoverCard({ interactive: true })
   if (name === null) {
     return (
       <button

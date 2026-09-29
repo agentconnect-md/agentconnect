@@ -420,19 +420,12 @@ describe('DecisionEditorView', () => {
     vi.spyOn(decisionMock, 'createDecisionMockApi').mockReturnValue(api)
     await render()
     await act(async () => {})
-    // Selecting a place's tab puts its Settings link in the card header.
-    const settingsOf = async (label: string) => {
-      const tab = [...document.body.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((node) =>
-        node.textContent?.includes(label)
-      )!
-      await click(tab)
-      return [...document.body.querySelectorAll('a')]
-        .find((node) => node.textContent?.trim() === 'Settings')
-        ?.getAttribute('href')
-    }
-    expect(await settingsOf('#general · Support')).toBe('/agents/agent-1')
-    expect(await settingsOf('Reviewer')).toBe('/agents/agent-2?tab=tools')
-    expect(await settingsOf('Support bot')).toBe('/integrations?bot=support-bot')
+    // Each place's row carries its own Edit link.
+    const settingsOf = (label: string) =>
+      document.body.querySelector(`a[aria-label="Edit ${label}"]`)?.getAttribute('href')
+    expect(settingsOf('#general · Support')).toBe('/agents/agent-1')
+    expect(settingsOf('Reviewer')).toBe('/agents/agent-2?tab=tools')
+    expect(settingsOf('Support bot')).toBe('/integrations?bot=support-bot')
   })
 
   it('replaces the criteria wholesale when the question type changes', async () => {

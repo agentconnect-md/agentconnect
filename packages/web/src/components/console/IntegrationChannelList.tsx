@@ -23,6 +23,8 @@ import {
   stopRouting
 } from '@/components/console/decisions/routing/DecisionRoutingModal'
 import { RoutingEntry, type DispatchRouting } from '@/components/console/DefaultDispatchPicker'
+import { BotRoutingHover } from '@/components/console/decisions/routing/BotRoutingHover'
+import { useHoverCard } from '@/components/ui/HoverCard'
 import { SelfAgentTag } from '@/components/console/SelfAgentTag'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
@@ -631,17 +633,25 @@ function DispatchPicker({
   }
   const routed = routing?.active === true
   const routingName = routing?.name ?? translate('dispatch.routingFallback')
+  const card = useHoverCard({ interactive: true })
+  const routedHover = routed ? routing?.hover : undefined
   const heading =
     'px-[9px] pb-1 pt-[6px] font-sans text-[10px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)'
   return (
     <span className="flex-none">
       <button
         ref={btnRef}
-        onClick={toggle}
+        {...(routedHover ? card.triggerProps : {})}
+        onClick={() => {
+          card.hide()
+          toggle()
+        }}
         title={
-          routed
-            ? translate('dispatch.routedButton', { name: routingName })
-            : translate('defaultDispatch.button', { agent: current.label })
+          routedHover
+            ? undefined
+            : routed
+              ? translate('dispatch.routedButton', { name: routingName })
+              : translate('defaultDispatch.button', { agent: current.label })
         }
         aria-label={
           routed
@@ -716,6 +726,7 @@ function DispatchPicker({
                     <RoutingEntry
                       name={routed ? routingName : null}
                       canStop={routing.canStop}
+                      hover={routing.hover}
                       onOpen={() => {
                         close()
                         routing.onOpen()
@@ -732,6 +743,7 @@ function DispatchPicker({
           </>,
           document.body
         )}
+      {routedHover && card.card(routedHover)}
     </span>
   )
 }
@@ -938,6 +950,12 @@ export function IntegrationChannelList({
                         name: c.decision?.name ?? null,
                         active: managedByRouting(c),
                         canStop: !!integrationId,
+                        hover: (
+                          <BotRoutingHover
+                            botId={botId}
+                            name={c.decision?.name ?? translate('dispatch.routingFallback')}
+                          />
+                        ),
                         onOpen: () => setRoutingRow({ botId, channelId: c.channelId, name: rowLabel(c) }),
                         onStop: (agentId?: string) =>
                           void act(async () => {

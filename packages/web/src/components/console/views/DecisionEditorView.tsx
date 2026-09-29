@@ -11,13 +11,13 @@ import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-import { groupPlacementValue, poolLabel, POOL_PLACEMENT } from '@/lib/data'
+import { agentLabel, groupPlacementValue, poolLabel, POOL_PLACEMENT } from '@/lib/data'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { DecisionModelSelect } from '@/components/console/decisions/DecisionModelSelect'
 import { DecisionUsageList } from '@/components/console/decisions/DecisionUsageList'
-import { DecisionRecentEvaluations } from '@/components/console/decisions/DecisionRecentEvaluations'
+import { DecisionUsedIn } from '@/components/console/decisions/DecisionUsedIn'
 import { decisionInUse } from '@/lib/decisions/binding'
 import { decisionExample } from '@/lib/decisions/examples'
 import { decisionUsageHref } from '@/lib/decisions/usage-links'
@@ -892,7 +892,7 @@ function DecisionEditor() {
           </fieldset>
 
           {id && definition && (
-            <DecisionRecentEvaluations
+            <DecisionUsedIn
               decisionId={id}
               question={definition.question}
               usages={usages}
@@ -902,6 +902,10 @@ function DecisionEditor() {
               inUse={refusedInUse}
               hrefFor={hrefFor}
               markFor={markFor}
+              agentName={(agentId) => {
+                const agent = agents.find((row) => row.id === agentId)
+                return agent && agentLabel(agent)
+              }}
             />
           )}
         </div>

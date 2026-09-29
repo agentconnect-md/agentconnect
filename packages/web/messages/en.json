@@ -4483,23 +4483,17 @@
       "hidden": "{count, plural, one {# more you cannot see} other {# more you cannot see}}",
       "hiddenUnknown": "Used by items you cannot see"
     },
-    "recentBySource": {
-      "title": "Recent evaluations",
-      "loading": "Loading evaluations…",
-      "chainHistory": "This source records the Decision chain from its first step.",
-      "noSources": "No current source records evaluations for this Decision.",
-      "empty": "No recent evaluations from this source.",
-      "upgrade": "Upgrade this source's evaluation host to filter by Decision.",
-      "error": "Could not load evaluations from this source.",
-      "retry": "Retry",
-      "usedIn": "used in {count, plural, one {1 place} other {# places}}",
-      "all": "All",
-      "settings": "Settings",
-      "openPanel": "Open panel",
-      "notRecorded": "This place does not record evaluations.",
-      "emptyAll": "No recent evaluations yet.",
+    "usedIn": {
+      "title": "Used in",
+      "place": "Place",
+      "rule": "Rule",
+      "day": "24 h",
+      "edit": "Edit {place}",
+      "history": "Recent evaluations for {place}",
+      "hidden": "You cannot see this place's evaluations.",
+      "error": "Could not load evaluations from this place.",
       "partialError": "{count, plural, one {1 place could not be loaded.} other {# places could not be loaded.}}",
-      "hidden": "You cannot see this place's evaluations."
+      "retry": "Retry"
     },
     "errors": {
       "name": "Give the decision a name before saving.",
@@ -4526,6 +4520,7 @@
     },
     "binding": {
       "decision": "Decision",
+      "statusLabel": "Status",
       "selectDecision": "Select a decision…",
       "pickDecision": "Pick a decision.",
       "decisionRemoved": "decision removed",
@@ -5007,7 +5002,6 @@
         "otherwiseEveryAgent": "{subject, select, pull_request {Without a matching rule, every agent reviews the PR as it does without a decision.} merge_request {Without a matching rule, every agent reviews the MR as it does without a decision.} other {Without a matching rule, every agent takes the issue as it does without a decision.}}",
         "add": "Add decision",
         "addTitle": "{subject, select, pull_request {Every PR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.} merge_request {Every MR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.} other {Every issue goes to all agents. Add a decision to pick agents on every update; the rows then run on any update.}}",
-        "pillTitle": "By decision · {name}. Every update of the {subject, select, pull_request {PR} merge_request {MR} other {issue}} is judged, and the decision picks who takes it. Click to edit rules.",
         "pillStatusTitle": "By decision · {name} · {status}. Click to review the rules.",
         "statusBody": {
           "needs_review": "{decision} changed and these rules no longer fit its answers. New {subject, select, pull_request {pull requests} merge_request {merge requests} other {issues}} on this repository are held until you save the rules again.",
