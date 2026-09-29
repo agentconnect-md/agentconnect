@@ -320,9 +320,10 @@ the initial bounds require a heartbeat below 10 seconds. The code default of
 Admission latency must fit its own budget below.
 
 Relay readiness currently fails after roughly 20–30 seconds of CP-link loss.
-The proposed reconnect grace is at most 20 seconds from the last confirmed
-control exchange and must be below `RELAY_STALE_SEC - HEARTBEAT_SEC`; attempts
-and replica changes cannot reset it. A longer outage may preserve readiness
+The proposed reconnect grace runs from the last confirmed control exchange.
+For healthy-target failover, require `D + H <= grace <= 20 seconds` and
+`grace < RELAY_STALE_SEC - HEARTBEAT_SEC`; attempts and replica changes cannot
+reset it. A longer outage may preserve readiness
 only while the CP has explicitly negotiated non-authoritative mode, that
 transport remains live, and authenticated daemon data links can still serve
 the cached ingress routes. Cached grants alone never establish readiness.
@@ -649,6 +650,8 @@ replication rather than guarantees already supplied by the current code:
   Directory absence or credential revocation alone is not proof that cached
   data-plane authority has ended. Distinguish administrative deletion from
   completed grant revocation; retain required tombstones while settlement is pending.
+  Define automatic fenced retirement for gone or scaled-down relays, including
+  the required evidence and bounded roster/redial cleanup after grant settlement.
 - Step 2: inventory every authority control and hint with revision source,
   tombstone, ACK and old-peer behavior, including aggregate `rc/routes`,
   collaboration routes, relay roster, MCP/hook removal and daemon revocation.
