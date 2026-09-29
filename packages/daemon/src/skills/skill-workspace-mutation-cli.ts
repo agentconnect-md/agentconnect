@@ -93,6 +93,16 @@ interface FinalizeSpec {
 
 type MutationSpec = ReserveSpec | ApplySpec | CleanupSpec | DiscardSpec | RestoreSpec | FinalizeSpec
 
+/** Several mutations of one workspace, run in order in this process; the first failure fails the run. */
+interface BatchSpec {
+  action: 'batch'
+  cwd: string
+  steps: MutationSpec[]
+}
+
+// Mirrors MAX_MUTATION_BATCH_STEPS in skill-workspace-mutator.ts.
+const MAX_BATCH_STEPS = 64
+
 const SAFE_SEGMENT = /^\.?[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/
 const SAFE_BUNDLE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$/
 const RESERVED_FIRST = new Set(['.git', '.agentconnect'])
@@ -833,16 +843,38 @@ async function main(): Promise<void> {
   if (!specPath || !isAbsolute(specPath)) fail('expected an absolute mutation spec path')
   const stat = await fsp.lstat(specPath)
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024) fail('invalid mutation spec')
-  const spec = JSON.parse(await fsp.readFile(specPath, 'utf8')) as MutationSpec
-  let result: unknown
-  if (spec.action === 'reserve') result = await reserve(spec)
-  else if (spec.action === 'apply') result = await apply(spec)
-  else if (spec.action === 'cleanup') result = await cleanup(spec)
-  else if (spec.action === 'discard') result = await discard(spec)
-  else if (spec.action === 'restore') result = await restore(spec)
-  else if (spec.action === 'finalize') result = await finalize(spec)
-  else fail('unknown mutation action')
-  process.stdout.write(`${JSON.stringify(result ?? {})}\n`)
+  const spec = JSON.parse(await fsp.readFile(specPath, 'utf8')) as MutationSpec | BatchSpec
+  if (spec.action !== 'batch') {
+    process.stdout.write(`${JSON.stringify((await runOne(spec)) ?? {})}\n`)
+    return
+  }
+  if (!Array.isArray(spec.steps) || spec.steps.length === 0 || spec.steps.length > MAX_BATCH_STEPS) {
+    fail('invalid mutation batch')
+  }
+  const results: unknown[] = []
+  for (const step of spec.steps) {
+    // Every step names the batch's workspace; each action still checks that workspace's identity itself.
+    if (
+      !step ||
+      typeof step !== 'object' ||
+      (step as { action?: unknown }).action === 'batch' ||
+      step.cwd !== spec.cwd
+    ) {
+      fail('invalid mutation batch step')
+    }
+    results.push((await runOne(step)) ?? {})
+  }
+  process.stdout.write(`${JSON.stringify({ results })}\n`)
+}
+
+async function runOne(spec: MutationSpec): Promise<unknown> {
+  if (spec.action === 'reserve') return await reserve(spec)
+  if (spec.action === 'apply') return await apply(spec)
+  if (spec.action === 'cleanup') return await cleanup(spec)
+  if (spec.action === 'discard') return await discard(spec)
+  if (spec.action === 'restore') return await restore(spec)
+  if (spec.action === 'finalize') return await finalize(spec)
+  fail('unknown mutation action')
 }
 
 main().catch((error) => {

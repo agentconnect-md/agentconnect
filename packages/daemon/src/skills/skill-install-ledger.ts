@@ -11,7 +11,12 @@ import {
   MAX_SKILL_BUNDLE_BYTES,
   MAX_SKILL_FILE_BYTES
 } from './skill-limits.js'
-import { canonicalSkillMutationRoot, runSkillWorkspaceMutation } from './skill-workspace-mutator.js'
+import {
+  canonicalSkillMutationRoot,
+  MAX_MUTATION_BATCH_STEPS,
+  runSkillWorkspaceMutation,
+  runSkillWorkspaceMutations
+} from './skill-workspace-mutator.js'
 import { withSkillMutationHelperLease, type SkillMutationHelperLease } from './skill-workspace-lock-lease.js'
 
 // Two sets of 64 bundles × 64 files × 1 KiB paths, source keys and JSON escaping fit below this bounded journal read.
@@ -568,44 +573,55 @@ async function reconcileSkillBundlesLocked(
 
     const candidatesByPath = new Map(candidates.map((entry) => [entry.relativeRoot, entry]))
     const owned: OwnedSkillBundle[] = [...adopted, ...kept.values()]
-    for (const operation of operations) {
-      const priorEntry = priorByPath.get(operation.relativeRoot)
-      const candidate = candidatesByPath.get(operation.relativeRoot)
-      if (candidate) {
-        options.assertMutationAuthority?.()
-        const reserved = await mutate(
-          {
+    // Reserve every candidate's path in as few helper runs as the batch allows, then record every
+    // reservation in ONE journal write, then apply. The order per path is unchanged — reserve, a
+    // durable record of it, apply — so each populate still runs only after both of its inodes are
+    // durable, and a crash before the record leaves only empty/marker-only reservations.
+    const reserving = operations.filter((operation) => candidatesByPath.has(operation.relativeRoot))
+    if (reserving.length > 0) {
+      options.assertMutationAuthority?.()
+      const reserved = await mutateAll(
+        reserving.map((operation) => {
+          const priorEntry = priorByPath.get(operation.relativeRoot)
+          return {
             action: 'reserve',
             cwd: options.cwd,
-            workspaceIdentity: location.workspaceIdentity,
+            workspaceIdentity: location!.workspaceIdentity,
             relativeRoot: operation.relativeRoot,
             operationId: operation.operationId,
             reservationName: operation.reservationName,
             quarantineName: operation.quarantineName,
             ...(priorEntry ? { prior: priorEntry } : {})
-          },
-          [],
-          options.mutationSignal
-        )
-        const reservationIdentity = parseIdentity(reserved.identity)
-        const markerIdentity = parseIdentity(reserved.markerIdentity)
+          }
+        }),
+        [],
+        options.mutationSignal,
+        options.assertMutationAuthority
+      )
+      for (const [index, operation] of reserving.entries()) {
+        const reservationIdentity = parseIdentity(reserved[index]!.identity)
+        const markerIdentity = parseIdentity(reserved[index]!.markerIdentity)
         if (!reservationIdentity || !markerIdentity) {
-          throw safety(`skill publisher omitted reservation authority for ${candidate.relativeRoot}`)
+          throw safety(`skill publisher omitted reservation authority for ${operation.relativeRoot}`)
         }
         operation.reservationIdentity = reservationIdentity
         operation.markerIdentity = markerIdentity
-        // This fsynced journal update is the deletion-authority boundary. The
-        // populate helper is not invoked until both inodes are durable, so a
-        // crash without them can leave only an empty/marker-only reservation.
-        await writeSkillLedger(location.file, nextApplying, options.publicationKey)
-        recoveryLedger = nextApplying
       }
-      options.assertMutationAuthority?.()
-      const result = await mutate(
-        {
+      // This fsynced journal update is the deletion-authority boundary. The
+      // populate helper is not invoked until both inodes are durable, so a
+      // crash without them can leave only an empty/marker-only reservation.
+      await writeSkillLedger(location.file, nextApplying, options.publicationKey)
+      recoveryLedger = nextApplying
+    }
+    options.assertMutationAuthority?.()
+    const applied = await mutateAll(
+      operations.map((operation) => {
+        const priorEntry = priorByPath.get(operation.relativeRoot)
+        const candidate = candidatesByPath.get(operation.relativeRoot)
+        return {
           action: 'apply',
           cwd: options.cwd,
-          workspaceIdentity: location.workspaceIdentity,
+          workspaceIdentity: location!.workspaceIdentity,
           relativeRoot: operation.relativeRoot,
           operationId: operation.operationId,
           reservationName: operation.reservationName,
@@ -620,18 +636,21 @@ async function reconcileSkillBundlesLocked(
             : {}),
           ...(!candidate && priorEntry ? { prior: priorEntry } : {}),
           ...(candidate ? { candidate: { ...stripCandidate(candidate), sourceDir: candidate.sourceDir } } : {})
-        },
-        candidate ? [candidate.sourceDir] : [],
-        options.mutationSignal
-      )
-      if (candidate) {
-        const targetIdentity = parseIdentity(result.targetIdentity)
-        if (!targetIdentity) throw safety(`skill publisher omitted the target identity for ${candidate.relativeRoot}`)
-        if (!sameIdentity(targetIdentity, operation.reservationIdentity!)) {
-          throw safety(`skill publisher changed the reservation identity for ${candidate.relativeRoot}`)
         }
-        owned.push({ ...stripCandidate(candidate), identity: targetIdentity })
+      }),
+      candidates.map((candidate) => candidate.sourceDir),
+      options.mutationSignal,
+      options.assertMutationAuthority
+    )
+    for (const [index, operation] of operations.entries()) {
+      const candidate = candidatesByPath.get(operation.relativeRoot)
+      if (!candidate) continue
+      const targetIdentity = parseIdentity(applied[index]!.targetIdentity)
+      if (!targetIdentity) throw safety(`skill publisher omitted the target identity for ${candidate.relativeRoot}`)
+      if (!sameIdentity(targetIdentity, operation.reservationIdentity!)) {
+        throw safety(`skill publisher changed the reservation identity for ${candidate.relativeRoot}`)
       }
+      owned.push({ ...stripCandidate(candidate), identity: targetIdentity })
     }
 
     const readyWithCleanup: ReadyLedger = {
@@ -701,43 +720,36 @@ async function finishReadyCleanup(
 ): Promise<void> {
   const ownedByPath = new Map(ledger.owned.map((entry) => [entry.relativeRoot, entry]))
   const priorByPath = new Map(cleanup.prior.map((entry) => [entry.relativeRoot, entry]))
+  // The same steps in the same order as one mutation each; only the number of helper runs changes.
+  const steps: Array<{ cwd: string } & Record<string, unknown>> = []
   for (const operation of cleanup.operations) {
     const owned = ownedByPath.get(operation.relativeRoot)
     if (owned) {
       if (!operation.markerIdentity) throw safety('ready cleanup is missing reservation marker authority')
-      assertMutationAuthority?.()
-      await mutate(
-        {
-          action: 'finalize',
-          cwd,
-          workspaceIdentity: location.workspaceIdentity,
-          relativeRoot: operation.relativeRoot,
-          operationId: operation.operationId,
-          markerIdentity: operation.markerIdentity,
-          expected: owned
-        },
-        [],
-        mutationSignal
-      )
+      steps.push({
+        action: 'finalize',
+        cwd,
+        workspaceIdentity: location.workspaceIdentity,
+        relativeRoot: operation.relativeRoot,
+        operationId: operation.operationId,
+        markerIdentity: operation.markerIdentity,
+        expected: owned
+      })
     }
     const prior = priorByPath.get(operation.relativeRoot)
     if (prior) {
-      assertMutationAuthority?.()
-      await mutate(
-        {
-          action: 'cleanup',
-          cwd,
-          workspaceIdentity: location.workspaceIdentity,
-          relativeRoot: operation.relativeRoot,
-          name: operation.quarantineName,
-          tombstoneName: operation.tombstoneName,
-          expected: prior
-        },
-        [],
-        mutationSignal
-      )
+      steps.push({
+        action: 'cleanup',
+        cwd,
+        workspaceIdentity: location.workspaceIdentity,
+        relativeRoot: operation.relativeRoot,
+        name: operation.quarantineName,
+        tombstoneName: operation.tombstoneName,
+        expected: prior
+      })
     }
   }
+  await mutateAll(steps, [], mutationSignal, assertMutationAuthority)
   await assertCurrentWorkspace(cwd, location.workspaceIdentity)
 }
 
@@ -751,6 +763,45 @@ async function mutate(
   } catch (error) {
     throw safety('confined skill workspace mutation was refused', error)
   }
+}
+
+// Under the helper's own 2 MiB spec cap, with room for the batch envelope.
+const MAX_MUTATION_BATCH_BYTES = 1536 * 1024
+
+/**
+ * Run mutations of one workspace in order, as few helper runs as the batch limits allow. Authority
+ * is asserted before each run; within a run the mutation signal still stops the helper at once.
+ */
+async function mutateAll(
+  specs: Array<{ cwd: string } & Record<string, unknown>>,
+  readRoots: string[],
+  signal?: AbortSignal,
+  assertMutationAuthority?: () => void
+): Promise<Record<string, unknown>[]> {
+  const results: Record<string, unknown>[] = []
+  let batch: typeof specs = []
+  let bytes = 0
+  const flush = async (): Promise<void> => {
+    if (batch.length === 0) return
+    assertMutationAuthority?.()
+    try {
+      results.push(...(await runSkillWorkspaceMutations(batch, readRoots, signal)))
+    } catch (error) {
+      throw safety('confined skill workspace mutation was refused', error)
+    }
+    batch = []
+    bytes = 0
+  }
+  for (const spec of specs) {
+    const size = Buffer.byteLength(JSON.stringify(spec))
+    if (batch.length >= MAX_MUTATION_BATCH_STEPS || (batch.length > 0 && bytes + size > MAX_MUTATION_BATCH_BYTES)) {
+      await flush()
+    }
+    batch.push(spec)
+    bytes += size
+  }
+  await flush()
+  return results
 }
 
 async function bundleIdentity(root: string, bundle: SkillBundleReceipt): Promise<PathIdentity | null> {
