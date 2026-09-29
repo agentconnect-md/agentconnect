@@ -25,6 +25,7 @@ import {
   resolveQoderCredentialSources,
   sharedCredentialProfile
 } from './runtime-credential-sources.js'
+import { runtimeStateLocations } from './probe.js'
 export { sharedCredentialProfile, type SharedCredentialProfile } from './runtime-credential-sources.js'
 
 export interface SharedRuntimeCredentialAccess {
@@ -416,11 +417,14 @@ function migratePrivateKimiCredentials(privateDir: string, sharedDir: string): v
 /** Kimi Code rotates its OAuth refresh token, so every private HOME shares the host's credentials directory instead of a copy. */
 function prepareKimiCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredentialAccess {
   const sharedDir = ensureOwnedDirectory(resolveKimiCredentialDir(env), 'host kimi credentials directory')
-  const names = new Set(['kimi-code.json', ...readdirSync(sharedDir)])
+  const declared = runtimeStateLocations('kimi', env)
+    .filter((location) => location.destination === '.kimi-code')
+    .flatMap((location) => (location.credentialFiles ?? []).map((file) => join('.kimi-code', file.path)))
+  const hosted = readdirSync(sharedDir).map((name) => join('.kimi-code', 'credentials', name))
   return {
     env: {},
     writablePaths: [sharedDir],
-    seedExclusions: [...names].map((name) => join('.kimi-code', 'credentials', name)),
+    seedExclusions: [...new Set([...declared, ...hosted])],
     preparePrivateHome: (runtimeHome) => {
       const privateRoot = ensureOwnedDirectory(join(runtimeHome, '.kimi-code'), 'private kimi config directory')
       const privateDir = join(privateRoot, 'credentials')

@@ -7,6 +7,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -729,6 +730,40 @@ describe('Linux shared runtime login', () => {
     // A refresh inside the private HOME rotates the host's copy, so the host login stays valid.
     writeFileSync(join(privateDir, 'kimi-code-env-example.json'), kimiLogin(2))
     expect(readFileSync(join(sharedDir, 'kimi-code-env-example.json'), 'utf8')).toBe(kimiLogin(2))
+  })
+
+  it('relaunches Kimi Code against the same private HOME through its validated credentials link', () => {
+    const { root, daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const hostKimi = join(hostHome, '.kimi-code')
+    const sharedDir = join(hostKimi, 'credentials')
+    mkdirSync(sharedDir, { recursive: true })
+    // One ref resolves to a host file, the other names a login the host has not written yet.
+    writeFileSync(
+      join(hostKimi, 'config.toml'),
+      [
+        '[providers."managed:kimi-code".oauth]',
+        'storage = "file"',
+        'key = "oauth/kimi-code-env-example"',
+        '[services.search.oauth]',
+        'storage = "file"',
+        'key = "oauth/kimi-code-env-pending"'
+      ].join('\n')
+    )
+    writeFileSync(join(sharedDir, 'kimi-code-env-example.json'), kimiLogin(1))
+
+    kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)
+    kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)
+
+    const privateDir = join(scopeDir, 'home', '.kimi-code', 'credentials')
+    expect(realpathSync(privateDir)).toBe(realpathSync(sharedDir))
+    expect(readFileSync(join(privateDir, 'kimi-code-env-example.json'), 'utf8')).toBe(kimiLogin(1))
+
+    // A link redirected anywhere but the host directory is still refused on the next launch.
+    const elsewhere = join(root, 'elsewhere')
+    mkdirSync(elsewhere)
+    rmSync(privateDir)
+    symlinkSync(elsewhere, privateDir)
+    expect(() => kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)).toThrow(/points outside host credentials/)
   })
 
   it('folds a copy-seeded private Kimi login into the host, keeping the later expiry', () => {

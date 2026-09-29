@@ -307,6 +307,8 @@ export function prepareRuntimeHome(
     seedLocation(home, location.source, destination, locationExcluded, location.seedFiles, location.seedJsonKeys)
     for (const file of location.credentialFiles ?? []) {
       const credentialDestination = join(destination, file.path)
+      // An excluded login is shared through a link its credential step validates, so it is not seeded here.
+      if (excluded.has(credentialDestination)) continue
       assertNoDestinationSymlink(home, credentialDestination)
       seedLocation(home, join(location.source, file.path), credentialDestination, excluded)
     }
