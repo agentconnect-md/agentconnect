@@ -169,7 +169,7 @@ describe('a shared bot’s dispatch menu', () => {
     mocks.bots = [bot({ id: 'shared-1', agentIds: ['a1', 'a2'] })]
     mocks.integrations = installs(true)
     await expand('shared-1')
-    await click(buttons().find((b) => b.title === 'Dispatch by decision — Request type'))
+    await click(buttons().find((b) => b.getAttribute('aria-label') === 'Dispatch by decision — Request type'))
     await click(buttons().find((b) => b.getAttribute('aria-label') === 'Stop using By decision in this channel'))
     expect(mocks.stopRouting).toHaveBeenCalledWith(expect.anything(), 'shared-1', 'C1', undefined)
     expect(mocks.refresh).toHaveBeenCalled()
@@ -179,7 +179,7 @@ describe('a shared bot’s dispatch menu', () => {
     mocks.bots = [bot({ id: 'shared-1', agentIds: ['a1', 'a2'] })]
     mocks.integrations = installs(true)
     await expand('shared-1')
-    await click(buttons().find((b) => b.title === 'Dispatch by decision — Request type'))
+    await click(buttons().find((b) => b.getAttribute('aria-label') === 'Dispatch by decision — Request type'))
     expect(document.body.textContent).toContain('Send every message to')
     const checks = [...document.body.querySelectorAll('[role="menuitem"] .lucide-check')]
     expect(checks.length).toBe(2)
