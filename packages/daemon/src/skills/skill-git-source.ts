@@ -999,6 +999,42 @@ export interface AcquireGitSkillOptions {
   archiveLimits?: Partial<GitSkillArchiveLimits>
 }
 
+/**
+ * Prove that `agentId` can still read the source's repository and that the repository is still the
+ * one configured: the identity request an acquisition starts with, and nothing after it. A cached
+ * snapshot is served only after this, so revoking an agent's access, or deleting or replacing the
+ * repository, stops a cache hit exactly as it stops a fresh acquisition.
+ */
+export async function verifyGitSkillSourceAccess(
+  entry: AgentSkillEntry,
+  opts: Omit<AcquireGitSkillOptions, 'destination' | 'archiveLimits'> & { privateHome: string }
+): Promise<void> {
+  const source = resolveBoundedGitSkillSource(entry)
+  const github = githubRepository(source.cloneUrl)
+  await fsp.mkdir(join(opts.privateHome, 'tmp'), { recursive: true, mode: 0o700 })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 20_000)
+  try {
+    await verifyGithubRepositoryIdentity(
+      {
+        cloneUrl: source.cloneUrl,
+        repositoryPath: github.path,
+        agentId: opts.agentId,
+        privateHome: opts.privateHome,
+        useGitCredential: opts.useGitCredential,
+        signal: controller.signal,
+        fetchImpl: opts.fetch ?? globalThis.fetch,
+        credentialProvider: opts.credentialProvider ?? loadScopedGitSkillCredential,
+        state: { credentialAttempted: false }
+      },
+      entry.githubRepoId,
+      github.path
+    )
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** Acquire one Git source as a private, commit-pinned repository snapshot and
  * return the selected local tree. The caller snapshots that tree before the CLI
  * sees it. */

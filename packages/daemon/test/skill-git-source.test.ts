@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   DEFAULT_GIT_SKILL_ARCHIVE_LIMITS,
   acquireGitSkillSource,
+  verifyGitSkillSourceAccess,
   buildSkillGitAcquisitionEnv,
   parseGitSkillSource,
   resolveAuthorizedGitSkillCloneUrl,
@@ -313,6 +314,41 @@ describe('Git skill source policy boundary', () => {
       }
     }
   )
+
+  it('re-proves access with the identity request alone, and refuses a replaced or unreadable repository', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-access-'))
+    try {
+      const readable = offlineGitHubFetch({ archive: tarGzip([]), identities: [{}] })
+      await verifyGitSkillSourceAccess(entry('acme/skills'), {
+        agentId: 'agent-1',
+        useGitCredential: false,
+        fetch: readable.fetch,
+        privateHome: join(root, 'home-1')
+      })
+      // Nothing past the identity request: no commit resolution, no archive.
+      expect(readable.calls.map((call) => call.url)).toEqual(['https://api.github.com/repositories/42'])
+      const replaced = offlineGitHubFetch({ archive: tarGzip([]), identities: [{ fullName: 'someone/else' }] })
+      await expect(
+        verifyGitSkillSourceAccess(entry('acme/skills'), {
+          agentId: 'agent-1',
+          useGitCredential: false,
+          fetch: replaced.fetch,
+          privateHome: join(root, 'home-2')
+        })
+      ).rejects.toThrow(/does not match the configured source/)
+      const gone = offlineGitHubFetch({ archive: tarGzip([]), identities: [{ status: 404 }] })
+      await expect(
+        verifyGitSkillSourceAccess(entry('acme/skills'), {
+          agentId: 'agent-1',
+          useGitCredential: false,
+          fetch: gone.fetch,
+          privateHome: join(root, 'home-3')
+        })
+      ).rejects.toThrow(/status 404/)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 
   it('compares repository ids exactly beyond Number.MAX_SAFE_INTEGER', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-large-id-'))

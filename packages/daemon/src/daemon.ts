@@ -391,6 +391,7 @@ import {
 } from './workspace/workspace-manager.js'
 import { sessionInitiatedBy } from './workspace/session-branch.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
+import { GitSkillSourceCache } from './skills/git-skill-source-cache.js'
 import { acceptedDreamSkillSources } from './skills/dream-skills.js'
 import { acquireGitSkillSource, gitSkillRepositoryPath } from './skills/skill-git-source.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skills/skill-source-snapshot.js'
@@ -1656,6 +1657,8 @@ export class Daemon {
   private cpClient?: CpClient
   private remoteWebchatGrants?: RemoteWebchatGrantManager
   private managedSkillCache?: ManagedSkillCache
+  /** Extracted Git skill sources per (agent, repository, commit), so a new session reuses what an earlier one fetched. */
+  private gitSkillSources?: GitSkillSourceCache
   private gitSkillRefs?: GitSkillRefTracker
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
@@ -3074,6 +3077,9 @@ export class Daemon {
         if (!client) throw new Error('control plane is not connected')
         return client.readManagedSkill(request)
       },
+      warn: (message) => this.log.warn(message)
+    })
+    this.gitSkillSources = new GitSkillSourceCache(join(root, 'git-skill-sources'), {
       warn: (message) => this.log.warn(message)
     })
     // A tracking Git skill ref is re-read per new session's preparation, so the
@@ -6235,14 +6241,16 @@ export class Daemon {
         try {
           const definitionDigest = gitResolutionDigest(currentEntry)
           const plannedCommit = trackedCommits.get(definitionDigest) ?? resolutionsByDefinition.get(definitionDigest)
-          const acquired = await acquireGitSkillSource(
-            plannedCommit ? { ...currentEntry, ref: plannedCommit } : currentEntry,
-            {
-              destination: join(scratch, `git-${index}`),
-              agentId: agent.id,
-              useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
-            }
-          )
+          const acquireOptions = {
+            agentId: agent.id,
+            useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
+          }
+          const acquired = this.gitSkillSources
+            ? await this.gitSkillSources.resolve(currentEntry, plannedCommit, acquireOptions)
+            : await acquireGitSkillSource(plannedCommit ? { ...currentEntry, ref: plannedCommit } : currentEntry, {
+                ...acquireOptions,
+                destination: join(scratch, `git-${index}`)
+              })
           const resolvedCommit = acquired.resolvedCommit.toLowerCase()
           if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
             throw new Error(`Git source "${currentEntry.name}" did not resolve to its planned commit`)
