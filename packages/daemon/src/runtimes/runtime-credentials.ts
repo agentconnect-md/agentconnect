@@ -15,7 +15,7 @@ import {
   symlinkSync,
   unlinkSync
 } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { readRegularFileSync } from '../fs/regular-file.js'
 import {
@@ -381,13 +381,28 @@ function kimiCredentialExpiry(path: string): number | undefined {
   }
 }
 
+/** A real directory beneath the shared Kimi root, created if missing; the runtime can write that tree, so a link there is refused. */
+function kimiSharedSubdirectory(sharedRoot: string, path: string): string {
+  const info = lstatIfPresent(path)
+  if (info && (info.isSymbolicLink() || !info.isDirectory())) {
+    throw new Error(`kimi host credentials path is not a real directory: ${path}`)
+  }
+  if (!info) mkdirSync(path, { mode: 0o700 })
+  const real = realpathSync(path)
+  const inside = relative(sharedRoot, real)
+  if (!inside || inside.startsWith('..') || isAbsolute(inside)) {
+    throw new Error(`kimi host credentials path escapes the credentials directory: ${path}`)
+  }
+  return real
+}
+
 /** Fold a copy-seeded private Kimi credentials tree into the host's: a missing file moves, a rotated login with the later expiry wins. */
-function migratePrivateKimiCredentials(privateDir: string, sharedDir: string): void {
+function migratePrivateKimiCredentials(privateDir: string, sharedDir: string, sharedRoot: string): void {
   for (const entry of readdirSync(privateDir, { withFileTypes: true })) {
     const source = join(privateDir, entry.name)
     const destination = join(sharedDir, entry.name)
     if (entry.isDirectory()) {
-      migratePrivateKimiCredentials(source, ensureOwnedDirectory(destination, 'host kimi credentials directory'))
+      migratePrivateKimiCredentials(source, kimiSharedSubdirectory(sharedRoot, destination), sharedRoot)
       rmdirSync(source)
       continue
     }
@@ -443,7 +458,7 @@ function prepareKimiCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredential
       if (privateInfo) {
         if (!privateInfo.isDirectory())
           throw new Error(`private kimi credentials path is not a directory: ${privateDir}`)
-        migratePrivateKimiCredentials(privateDir, sharedDir)
+        migratePrivateKimiCredentials(privateDir, sharedDir, sharedDir)
         rmdirSync(privateDir)
       }
       symlinkSync(sharedDir, privateDir)

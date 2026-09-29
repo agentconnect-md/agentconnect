@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync
@@ -761,7 +762,7 @@ describe('Linux shared runtime login', () => {
     // A link redirected anywhere but the host directory is still refused on the next launch.
     const elsewhere = join(root, 'elsewhere')
     mkdirSync(elsewhere)
-    rmSync(privateDir)
+    renameSync(privateDir, `${privateDir}.moved`)
     symlinkSync(elsewhere, privateDir)
     expect(() => kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)).toThrow(/points outside host credentials/)
   })
@@ -785,6 +786,21 @@ describe('Linux shared runtime login', () => {
     expect(readFileSync(join(sharedDir, 'kimi-code-env-example.json'), 'utf8')).toBe(kimiLogin(5))
     expect(readFileSync(join(sharedDir, 'kimi-code.json'), 'utf8')).toBe(kimiLogin(9))
     expect(readFileSync(join(sharedDir, 'mcp', 'server.json'), 'utf8')).toBe('{}')
+  })
+
+  it('never follows a link the runtime planted in the shared Kimi credentials directory', () => {
+    const { root, daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const sharedDir = join(hostHome, '.kimi-code', 'credentials')
+    const privateDir = join(scopeDir, 'home', '.kimi-code', 'credentials')
+    const outside = join(root, 'outside')
+    mkdirSync(sharedDir, { recursive: true })
+    mkdirSync(outside)
+    mkdirSync(join(privateDir, 'mcp'), { recursive: true })
+    writeFileSync(join(privateDir, 'mcp', 'planted.json'), '{}')
+    symlinkSync(outside, join(sharedDir, 'mcp'))
+
+    expect(() => kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)).toThrow(/not a real directory/)
+    expect(existsSync(join(outside, 'planted.json'))).toBe(false)
   })
 
   it('refuses to pick between divergent Kimi logins it cannot order', () => {
