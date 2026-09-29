@@ -2,6 +2,7 @@
 
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
+import { answerText } from '@/lib/decisions/evaluations'
 import type { DecisionChainTrace } from '@agentconnect.md/protocol/decision'
 
 export function DecisionChainResults({
@@ -26,14 +27,12 @@ export function DecisionChainResults({
       {chain.map((step, index) => {
         const result = step.evaluation
         const answer = result.status === 'answered' ? result.answer : null
-        const value =
-          answer?.type === 'boolean'
-            ? t(answer.value ? 'condition.yes' : 'condition.no')
-            : answer
-              ? String(answer.value)
-              : result.status === 'unavailable'
-                ? t(`try.failures.${result.reason}`)
-                : ''
+        // The answer with its confidence, as the evaluation's Result row reads it.
+        const value = answer
+          ? answerText(answer, { yes: t('condition.yes'), no: t('condition.no') })
+          : result.status === 'unavailable'
+            ? t(`try.failures.${result.reason}`)
+            : ''
         const content = (
           <>
             <span className="text-(--text-tertiary)">{index + 1}</span>

@@ -269,6 +269,8 @@ describe('DecisionEvaluationsDrawer', () => {
     const view = detail()!
     const steps = [...view.querySelectorAll<HTMLButtonElement>('ol[aria-label] button')]
     expect(steps).toHaveLength(2)
+    // Each step's answer carries its confidence, as the Result row does.
+    expect(steps[1]!.textContent).toContain('other · 80%')
     expect(steps[0]!.getAttribute('aria-pressed')).toBe('true')
     expect(view.querySelector('[data-testid="model-result"]')!.textContent).toContain('86%')
 
