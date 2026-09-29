@@ -1,5 +1,6 @@
 import {
   matchDecisionRouting,
+  type CodeHostRoutingFamily,
   type CodeHostRoutingProvider,
   type CodeHostTryState,
   type DecisionAnswer,
@@ -12,7 +13,7 @@ import { PREVIEW_THREAD } from './decision-routing-preview.js'
 /** A code-host routing Try in the host state the daemon builds (code-host-decisions.md §4), with synthetic ids. */
 export function codeHostSampleState(
   sample: CodeHostTryState,
-  scope: { provider: CodeHostRoutingProvider; repoFullName: string }
+  scope: { provider: CodeHostRoutingProvider; family: CodeHostRoutingFamily; repoFullName: string }
 ): Record<string, unknown> {
   const entry = (e: CodeHostTryState['history'][number], index: number) => ({
     id: `preview-${index + 1}`,
@@ -20,8 +21,8 @@ export function codeHostSampleState(
     text: e.text,
     threadId: PREVIEW_THREAD
   })
-  // The live state always reads history from observation, and a change without its supplement says so.
-  const isPull = sample.subject.kind === 'pull_request' || sample.subject.kind === 'merge_request'
+  // The live state always reads history from observation, and a change-request scope without its supplement says so.
+  const isPull = scope.family !== 'issues'
   const missing = isPull && !sample.pullRequest
   const reasons = ['observed_history', ...(missing ? ['pull_request_unavailable'] : [])]
   return {

@@ -39,7 +39,7 @@ describe('codeHostSampleState', () => {
         currentMessage: { sender: { id: 'reporter' }, text: 'It crashes' },
         history: [{ sender: { id: 'maintainer' }, text: 'Which version?' }]
       },
-      { provider: 'github', repoFullName: 'example-org/example-repo' }
+      { provider: 'github', family: 'issues', repoFullName: 'example-org/example-repo' }
     )
     expect(state).toEqual({
       source: 'github',
@@ -52,15 +52,15 @@ describe('codeHostSampleState', () => {
     })
   })
 
-  it('marks a change whose sample carries no pull request context as the live state does', () => {
+  it('marks a change-request scope whose sample carries no pull request context, kind or not', () => {
     const state = codeHostSampleState(
       {
         event: { name: 'pull_request', action: 'opened' },
-        subject: { kind: 'pull_request', number: 7, labels: [] },
+        subject: { number: 7, labels: [] },
         currentMessage: { sender: { id: 'author' }, text: 'Please review' },
         history: []
       },
-      { provider: 'github', repoFullName: 'example-org/example-repo' }
+      { provider: 'github', family: 'pull_request', repoFullName: 'example-org/example-repo' }
     )
     expect(state).toMatchObject({
       pullRequest: { commitMessages: '', files: [], filesTruncated: true },

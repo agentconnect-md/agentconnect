@@ -498,7 +498,11 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
             model: decision.model,
             question: decision.question
           },
-          state: codeHostSampleState(state, { provider: view.scope.provider, repoFullName: view.repoFullName })
+          state: codeHostSampleState(state, {
+            provider: view.scope.provider,
+            family: view.scope.family,
+            repoFullName: view.repoFullName
+          })
         })
         if (!parsed.success) return reply.code(400).send(badRequest('The preview must fit within 32 KiB.'))
         // Fenced on both sides of the call: role, scope visibility, the Decisions, and the host still serving its member.
