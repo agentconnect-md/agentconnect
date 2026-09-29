@@ -13,6 +13,7 @@ import {
   DecisionEvaluationRecordPage,
   DecisionPreviewRequest,
   DecisionPreviewSample,
+  decisionAgentContext,
   decisionGateIssues,
   nextGateStep,
   runDecisionChain,
@@ -173,7 +174,12 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
             model: decision.model,
             question: decision.question
           },
-          state: gateSampleState(sample, { agentId: consumer.agent.id, conversationName: row.name ?? undefined })
+          // The same agent context the live gate gives its Decision, so Try answers as the gate would.
+          state: gateSampleState(sample, {
+            agentId: consumer.agent.id,
+            conversationName: row.name ?? undefined,
+            agent: decisionAgentContext(consumer.agent)
+          })
         })
         if (!parsed.success) return reply.code(400).send(badRequest('The preview must fit within 32 KiB.'))
         // Fenced on both sides of the call: role, consumer visibility, serving placement, and the Decision itself.

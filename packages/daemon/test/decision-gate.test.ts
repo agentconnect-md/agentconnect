@@ -74,6 +74,8 @@ interface Release {
   resolve: (value: DecisionReleaseResult) => void
 }
 
+const AGENT_CONTEXT = { name: 'Docs bot', description: 'Answers questions about the product docs.' }
+
 async function harness(
   opts: {
     store?: LocalStore
@@ -110,6 +112,7 @@ async function harness(
     servesAgent: () => serving.served,
     participates: async (_agentId, msg) => opts.participates?.(msg) ?? false,
     release: (request) => new Promise<DecisionReleaseResult>((resolve) => releases.push({ request, resolve })),
+    agentContext: (agentId) => (agentId === AGENT ? AGENT_CONTEXT : undefined),
     log: { debug: () => undefined, info: () => undefined, warn: () => undefined },
     metrics: {
       verdict: () => undefined,
@@ -167,6 +170,18 @@ const settle = async (): Promise<void> => {
 }
 
 describe('DecisionGate', () => {
+  it("gives the Decision the gated agent's name and description, and freezes them with the input", async () => {
+    const h = await harness()
+    const posted = await h.post()
+    await h.candidate(posted)
+    await vi.waitFor(() => expect(h.calls).toHaveLength(1), WAIT)
+    expect(h.calls[0]!.input.state.agent).toEqual(AGENT_CONTEXT)
+    h.calls[0]!.resolve(no)
+    await h.gate.idle()
+    const verdict = await h.store.getDecisionVerdict(posted.record.seq, AGENT)
+    expect(JSON.parse(verdict!.inputJson!).agent).toEqual(AGENT_CONTEXT)
+  })
+
   it('follows the matched gate branch with one frozen input and stops at the child verdict', async () => {
     const h = await harness()
     const chained = bundle()

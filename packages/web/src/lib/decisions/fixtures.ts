@@ -309,6 +309,7 @@ function withRawJson<T extends DecisionEvaluationRecordDetail | DecisionRoutingE
     const rawRequest = raw({
       model,
       state: {
+        ...(entry.input.agent ? { agent: entry.input.agent } : {}),
         currentMessage: entry.input.currentMessage,
         history: entry.input.history,
         conversation: {},
@@ -370,7 +371,10 @@ function mockEvaluations(decisions: DecisionDefinition[]): DecisionEvaluationRec
       outcome: 'triggered',
       answer: { type: 'boolean', value: true, probability: 0.86 },
       snapshot: yesGate,
-      input: input('Our invoice charged us twice this month.'),
+      input: {
+        agent: { name: 'Support bot', description: 'Answers billing and account questions for customers.' },
+        ...input('Our invoice charged us twice this month.')
+      },
       fullAnswer: { type: 'boolean', value: true, probability: 0.86 },
       evidence: { snapshotSeq: 106, suppliedBackground: 2 }
     },

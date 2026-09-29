@@ -4726,6 +4726,7 @@
         "usageValue": "{input} in · {output} out",
         "decision": "Decision as evaluated",
         "questionType": "Question type",
+        "agent": "Agent",
         "input": "Evaluated message",
         "noHistory": "No earlier messages were included.",
         "historyOmitted": "{count, plural, one {# earlier message not shown} other {# earlier messages not shown}}",

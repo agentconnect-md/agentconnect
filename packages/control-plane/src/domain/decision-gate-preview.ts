@@ -2,6 +2,7 @@ import {
   matchDecisionCondition,
   type DecisionCondition,
   type DecisionEvaluation,
+  type DecisionEvaluationAgent,
   type DecisionPreviewSample,
   type DecisionQuestion
 } from '@agentconnect.md/protocol'
@@ -12,7 +13,7 @@ export const PREVIEW_SENDER = 'preview-user'
 /** A Gate Try sample in the live state shape the daemon builds (decisions.md §8.2), with synthetic ids. */
 export function gateSampleState(
   sample: DecisionPreviewSample,
-  target: { agentId: string; conversationName?: string }
+  target: { agentId: string; conversationName?: string; agent?: DecisionEvaluationAgent }
 ): Record<string, unknown> {
   const history = sample.history.map((entry, index) => ({
     id: `preview-${index + 1}`,
@@ -21,6 +22,7 @@ export function gateSampleState(
     threadId: null
   }))
   return {
+    ...(target.agent ? { agent: target.agent } : {}),
     currentMessage: {
       id: `preview-${history.length + 1}`,
       sender: { id: sample.currentMessage.sender ?? PREVIEW_SENDER },

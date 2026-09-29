@@ -180,6 +180,9 @@ describe('DecisionEvaluationsDrawer', () => {
     await click(rows()[0])
     const view = detail()!
     expect(view.textContent).toContain('Our invoice charged us twice this month.')
+    // The agent the Decision decided for, as its state named it.
+    expect(view.textContent).toContain('Support bot')
+    expect(view.textContent).toContain('Answers billing and account questions for customers.')
     expect(view.textContent).toContain('U-customer')
     expect(view.textContent).toContain('Someone from billing will reply shortly.')
     expect(view.textContent).toContain('Does currentMessage need a response')

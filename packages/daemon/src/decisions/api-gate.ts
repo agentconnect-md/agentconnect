@@ -11,6 +11,7 @@ import {
 import type { DecisionEvaluationInput } from './evaluator.js'
 import type { SlotResult } from './limiter.js'
 import { modelSelectionState } from './model-selection.js'
+import type { DecisionAgentContext } from './state.js'
 
 // Inside the relay's five-second acknowledgement, so a verdict always arrives before the relay retries.
 export const API_GATE_DEADLINE_MS = 4_500
@@ -22,6 +23,8 @@ export interface ApiGateInput {
   agentId: string
   /** The gate and its Decisions, shipped in the agent's spec: admission reads nothing remote. */
   projection: AgentApiGateProjection
+  /** The agent the API reaches, as its Decision sees it. */
+  agent?: DecisionAgentContext
   text: string
   evaluationId: string
   now(): number
@@ -85,7 +88,7 @@ async function evaluate(
     const slot = await input.acquire(root.providerId, deadlineAt, signal)
     if (slot.kind !== 'acquired') return unavailable(slot.kind)
     release = slot.release
-    const state = modelSelectionState('chat', input.text)
+    const state = modelSelectionState('chat', input.text, input.agent)
     let matched = false
     const { evaluation, trace } = await runDecisionChain<DecisionGateStep>({
       root: gate,

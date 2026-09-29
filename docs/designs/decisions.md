@@ -344,6 +344,13 @@ retention separate from user-visible session transcript retention.
 
 Construct a structured state containing:
 
+- `agent`: the one agent the evaluation decides for, as `{ name, description }`: its
+  display name and the description its owner wrote, cut to a 2 KiB UTF-8 prefix, so a
+  question such as "is this something this agent can answer?" needs no copy of the
+  agent in its instructions. One Decision still serves many agents, since each
+  evaluation names its own. A channel gate, an API gate, and a new session's model and
+  repository selection carry it; a shared-bot router or code-host hook routing, which
+  choose among several agents, do not yet;
 - `currentMessage`: the one message being evaluated, including its sender and ID;
 - `history`: the retained prior conversation observations in chronological order;
 - `conversation`: relevant channel description or topic, when available;
@@ -1087,6 +1094,7 @@ the model compares sender IDs, not display names, when attributing repeated cond
 
 ```json
 {
+  "agent": { "name": "Community helper", "description": "Answers product questions in the community channels." },
   "currentMessage": {
     "id": "message-c",
     "sender": { "id": "member-7", "name": "Example member" },
@@ -1112,8 +1120,8 @@ No agent-generated summary is needed to collect this context. `omittedMessages`
 counts known local removals only, never an invented count of unseen platform history.
 The supplied state is conversation data; instructions come from the saved question.
 
-Build the input in this order: preserve the question and current message, add the
-conversation metadata, then include the newest history that fits and present it
+Build the input in this order: preserve the question, the agent and the current message,
+add the conversation metadata, then include the newest history that fits and present it
 oldest-first. The 8,000-token budget is the target for the whole request, including
 the question and serialization. Use a verified provider-compatible counter when
 available; otherwise report the estimate as such and additionally cap serialized
@@ -1862,7 +1870,7 @@ host and shared data-plane stores read their observation windows directly. No
 platform history request or agent turn is needed. When no recorded opening row is
 available, including a fresh Console chat, or the current message cannot fit the
 request budget, the existing opening-only state remains
-`{ source: "chat", currentMessage: { text }, history: [], truncated }`, with text
+`{ source: "chat", agent, currentMessage: { text }, history: [], truncated }`, with text
 bounded to an 8 KiB UTF-8 prefix. An empty history does not cause a later re-evaluation.
 
 Code-host hooks use the same loader, state builder and request fitter as hook routing

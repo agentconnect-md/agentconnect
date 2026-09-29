@@ -11,7 +11,7 @@ import {
   type DecisionQuestion
 } from '@agentconnect.md/protocol'
 import type { DecisionEvaluationInput } from './evaluator.js'
-import { decisionTextPrefix, largestDecisionRequest } from './state.js'
+import { decisionTextPrefix, largestDecisionRequest, type DecisionAgentContext } from './state.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { z } from 'zod'
@@ -67,9 +67,19 @@ export function agentWithRuntime(agent: LoadedAgent, target: DecisionRuntimeTarg
   return selected
 }
 
-export function modelSelectionState(source: 'chat', text: string): Record<string, unknown> {
+export function modelSelectionState(
+  source: 'chat',
+  text: string,
+  agent?: DecisionAgentContext
+): Record<string, unknown> {
   const content = decisionTextPrefix(text, 8 * 1024)
-  return { source, currentMessage: { text: content }, history: [], truncated: content !== text }
+  return {
+    source,
+    ...(agent ? { agent } : {}),
+    currentMessage: { text: content },
+    history: [],
+    truncated: content !== text
+  }
 }
 
 export interface SessionModelSelectionInput {

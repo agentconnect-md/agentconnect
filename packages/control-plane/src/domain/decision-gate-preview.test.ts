@@ -21,6 +21,13 @@ const answered = (answer: Extract<DecisionEvaluation, { status: 'answered' }>['a
 })
 
 describe('gateSampleState', () => {
+  it("names the gated agent the way the daemon's live gate does", () => {
+    const agent = { name: 'Docs bot', description: 'Answers questions about the product docs.' }
+    const state = gateSampleState({ history: [], currentMessage: { text: 'Now' } }, { agentId: 'agent-1', agent })
+    expect(state.agent).toEqual(agent)
+    expect(Object.keys(state)[0]).toBe('agent')
+  })
+
   it('builds the live state shape with synthetic ids, sender ids, and an implicit target', () => {
     const state = gateSampleState(
       { history: [{ sender: 'U1', text: 'Earlier' }], currentMessage: { text: 'Now' } },

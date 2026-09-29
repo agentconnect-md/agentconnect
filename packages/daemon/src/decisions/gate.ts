@@ -24,7 +24,12 @@ import { rawAnswerFields, type DecisionEvaluationInput } from './evaluator.js'
 import type { DecisionEvidence, DecisionUnavailableReason } from './evidence.js'
 import { DecisionLaneRuntime, laneId, verdictKey, type Lane } from './lanes.js'
 import { defaultDecisionGateMetrics, type DecisionGateMetrics } from './metrics.js'
-import { buildDecisionState, largestDecisionRequest, type DecisionStateBudget } from './state.js'
+import {
+  buildDecisionState,
+  largestDecisionRequest,
+  type DecisionAgentContext,
+  type DecisionStateBudget
+} from './state.js'
 
 export const DEFAULT_DECISION_GATE_LIMITS = {
   deadlineMs: 5_000,
@@ -81,6 +86,8 @@ export interface DecisionGateHost {
   servesAgent(agentId: string): boolean
   participates(agentId: string, msg: NormalizedMessage): Promise<boolean>
   release(request: DecisionReleaseRequest): Promise<DecisionReleaseResult>
+  /** The gated agent as its Decision sees it; absent when the agent is not loaded here. */
+  agentContext?(agentId: string): DecisionAgentContext | undefined
   log: { debug(message: string): void; info(message: string): void; warn(message: string): void }
   metrics?: DecisionGateMetrics
 }
@@ -431,6 +438,7 @@ export class DecisionGate {
         const budget = largestDecisionRequest<DecisionStateBudget>([config, ...(config.definitions ?? [])])
         built = window.current
           ? buildDecisionState({
+              ...(this.host.agentContext?.(c.agentId) ? { agent: this.host.agentContext(c.agentId)! } : {}),
               current: window.current,
               history: window.history,
               addressing: {

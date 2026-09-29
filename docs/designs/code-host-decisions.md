@@ -178,7 +178,9 @@ gets them through gap replay, and every agent can read the thread from GitHub.
 The code-host state keeps the chat field names, so a question written against `currentMessage` and
 `history` reads the same. Routing, session runtime selection and repository selection use the same
 loader and pure builder (`daemon/src/codehost/decision-state.ts`). Each provider's hook normalizer
-supplies the subject identity; its existing repository grant supplies optional PR/MR context:
+supplies the subject identity; its existing repository grant supplies optional PR/MR context. Session
+runtime and repository selection, which decide for one agent, also name it as `agent`
+([decisions.md §8](decisions.md#evaluation-state)); routing, which chooses among several, does not:
 
 ```jsonc
 {

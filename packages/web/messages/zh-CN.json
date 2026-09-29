@@ -4726,6 +4726,7 @@
         "usageValue": "输入 {input} · 输出 {output}",
         "decision": "评估时的决策",
         "questionType": "问题类型",
+        "agent": "Agent",
         "input": "被评估的消息",
         "noHistory": "未包含更早的消息。",
         "historyOmitted": "{count, plural, other {另有 # 条更早的消息未显示}}",

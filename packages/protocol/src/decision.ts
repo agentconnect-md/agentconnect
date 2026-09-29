@@ -473,8 +473,36 @@ export type DecisionEvaluationEntry = z.infer<typeof DecisionEvaluationEntry>
 export const DecisionEvaluationOutcome = z.enum(['triggered', 'skipped', 'unavailable', 'canceled', 'pending'])
 export type DecisionEvaluationOutcome = z.infer<typeof DecisionEvaluationOutcome>
 
-// The frozen input an evaluation saw: the current message, bounded history, and context trimming.
+// The agent a Decision decided for, as its state named it (decisions.md §8.2).
+export const DecisionEvaluationAgent = z.strictObject({
+  name: z.string().max(256),
+  description: z.string().max(4 * 1024)
+})
+export type DecisionEvaluationAgent = z.infer<typeof DecisionEvaluationAgent>
+
+// A description seeds the agent's system prompt and may be long; a Decision's history must not be pushed out for it.
+export const DECISION_AGENT_DESCRIPTION_MAX_BYTES = 2 * 1024
+
+/** The agent a Decision's state names: its display name, and its description cut to a UTF-8 prefix. */
+export function decisionAgentContext(agent: {
+  name: string
+  displayName?: string | null
+  description?: string | null
+}): DecisionEvaluationAgent {
+  const description = agent.description?.trim() ?? ''
+  const bytes = new TextEncoder().encode(description)
+  return {
+    name: agent.displayName?.trim() || agent.name,
+    description:
+      bytes.length <= DECISION_AGENT_DESCRIPTION_MAX_BYTES
+        ? description
+        : new TextDecoder().decode(bytes.subarray(0, DECISION_AGENT_DESCRIPTION_MAX_BYTES)).replace(/\uFFFD$/, '')
+  }
+}
+
+// The frozen input an evaluation saw: the agent, the current message, bounded history, and context trimming.
 export const DecisionEvaluationInput = z.strictObject({
+  agent: DecisionEvaluationAgent.optional(),
   currentMessage: DecisionEvaluationEntry,
   history: z.array(DecisionEvaluationEntry).max(100),
   historyOmitted: z.number().int().nonnegative(),

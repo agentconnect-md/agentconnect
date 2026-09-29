@@ -573,7 +573,7 @@ import {
   type RouterAdmitResult
 } from './decisions/router.js'
 import { routerFingerprint, resolveDecisionBundle } from './decisions/bundle.js'
-import { buildDecisionState, largestDecisionRequest } from './decisions/state.js'
+import { buildDecisionState, decisionAgentContext, largestDecisionRequest } from './decisions/state.js'
 import {
   buildCodeHostDecisionState,
   fitCodeHostDecisionState,
@@ -2392,13 +2392,15 @@ export class Daemon {
     msgId: string,
     sender: string | undefined
   ) {
-    const projection = this.agents.get(agentId)?.apiGates?.[protocol]
-    if (!projection) return true
+    const loaded = this.agents.get(agentId)
+    const projection = loaded?.apiGates?.[protocol]
+    if (!loaded || !projection) return true
     const at = this.clock.now()
     let evidence: ApiGateEvidence | undefined
     const verdict = await evaluateApiGate({
       agentId,
       projection,
+      agent: decisionAgentContext(loaded),
       text,
       evaluationId: msgId,
       now: () => this.clock.now(),
@@ -2417,6 +2419,7 @@ export class Daemon {
         evidence,
         messageId: msgId,
         sender: sender ?? 'api',
+        agent: decisionAgentContext(loaded),
         text,
         at
       })
@@ -14466,12 +14469,13 @@ export class Daemon {
         }))()
       const context = await entry.codeHostDecisionContext
       if (!context) return undefined
-      const built = buildCodeHostDecisionState(context, decision)
+      const built = buildCodeHostDecisionState({ ...context, agent: decisionAgentContext(agent) }, decision)
       return built.unsupported ? undefined : built.state
     }
     if (msg.source !== 'user') return undefined
+    const context = decisionAgentContext(agent)
     const record = await this.store.channelRecordRef(channel, transcriptCoords(msg).ts, agent.id)
-    if (!record) return modelSelectionState('chat', msg.text)
+    if (!record) return modelSelectionState('chat', msg.text, context)
     const window = await this.store.decisionWindow(
       record.orgId,
       channel,
@@ -14479,9 +14483,10 @@ export class Daemon {
       undefined,
       threadRootResolver(msg.platform, msg.isDm)
     )
-    if (!window.current) return modelSelectionState('chat', msg.text)
+    if (!window.current) return modelSelectionState('chat', msg.text, context)
     const built = buildDecisionState({
       source: 'chat',
+      agent: context,
       ...window,
       current: window.current,
       addressing: {
@@ -14492,7 +14497,7 @@ export class Daemon {
       question: decision.question,
       model: decision.model
     })
-    return built.unsupported ? modelSelectionState('chat', msg.text) : built.state
+    return built.unsupported ? modelSelectionState('chat', msg.text, context) : built.state
   }
 
   /** Choose a new session's `decision` repositories once, before placement and preparation (multi-repository-workspaces.md decisions 15–19), and prime the workspace manager with them; an existing session reuses its snapshot, and a failed precondition fails the start visibly (decision 18). */
@@ -14534,7 +14539,7 @@ export class Daemon {
       // Trimmed against the largest chunk, so the one state fits every request (decision 16).
       const [first, ...rest] = chunks.map((chunk) => ({ ...decision, question: chunk.question }))
       const largest = largestDecisionRequest([first!, ...rest]).question
-      const opening = modelSelectionState('chat', entry.msg.text)
+      const opening = modelSelectionState('chat', entry.msg.text, decisionAgentContext(agent))
       const base = await this.sessionDecisionState(entry, agent, { ...decision, question: largest })
       if (!base && entry.hookContext && hookDecisionFacts(entry.hookContext))
         throw new Error('Repository selection failed: the input is unavailable (unsupported_input).')
@@ -19409,6 +19414,10 @@ export class Daemon {
         msg.thread !== undefined &&
         (await this.sessions.threadParticipants(msg.channel, msg.thread, msg.transportScope)).includes(agentId),
       release: (request) => this.releaseDecisionDelivery(request),
+      agentContext: (agentId) => {
+        const agent = this.agents.get(agentId)
+        return agent ? decisionAgentContext(agent) : undefined
+      },
       log: {
         debug: (message) => this.log.debug(message),
         info: (message) => this.log.info(message),

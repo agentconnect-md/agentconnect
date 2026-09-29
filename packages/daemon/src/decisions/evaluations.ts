@@ -1,4 +1,5 @@
 import {
+  DecisionEvaluationAgent,
   DECISION_EVALUATION_DETAIL_MAX_BYTES,
   DECISION_RAW_JSON_MAX_CHARS,
   DECISION_LIST_MAX_BYTES,
@@ -190,7 +191,9 @@ function inputOf(row: DecisionVerdictRow): DecisionEvaluationRecordDetail['input
   const history = all.slice(-100)
   const context = record(state?.context)
   const reasons = Array.isArray(context?.reasons) ? context.reasons : []
+  const agent = DecisionEvaluationAgent.safeParse(state?.agent)
   return {
+    ...(agent.success ? { agent: agent.data } : {}),
     currentMessage,
     history,
     historyOmitted: all.length - history.length,

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DECISION_AGENT_DESCRIPTION_MAX_BYTES,
+  decisionAgentContext,
   ChannelDecisionGate,
   DecisionBundle,
   DecisionBundleDefinition,
@@ -887,5 +889,21 @@ describe('routing evaluation outcomes (decisions.md §9.5)', () => {
         constraint: [{ agentId: 'A', participant: true, via: 'mention', text: 'x' }]
       }).success
     ).toBe(false)
+  })
+})
+
+describe('decisionAgentContext', () => {
+  it('prefers the display name and cuts a long description to a whole-character UTF-8 prefix', () => {
+    expect(decisionAgentContext({ name: 'docs', displayName: ' Docs bot ', description: ' Answers docs. ' })).toEqual({
+      name: 'Docs bot',
+      description: 'Answers docs.'
+    })
+    expect(decisionAgentContext({ name: 'docs', displayName: '', description: null })).toEqual({
+      name: 'docs',
+      description: ''
+    })
+    const long = decisionAgentContext({ name: 'docs', description: '文'.repeat(1_000) })
+    expect(new TextEncoder().encode(long.description).length).toBeLessThanOrEqual(DECISION_AGENT_DESCRIPTION_MAX_BYTES)
+    expect(long.description).toBe('文'.repeat(Math.floor(DECISION_AGENT_DESCRIPTION_MAX_BYTES / 3)))
   })
 })

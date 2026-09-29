@@ -15,6 +15,7 @@ import { clampSessionTitle } from '../messages/hook-message.js'
 import type { ApiGateEvidence, ApiGateVerdict } from './api-gate.js'
 import { DecisionEvaluationScopeError, summaryOf } from './evaluations.js'
 import { modelSelectionState } from './model-selection.js'
+import type { DecisionAgentContext } from './state.js'
 
 type Summary = Omit<DecisionEvaluationRecord, 'seq' | 'title' | 'detailsExpired'>
 type Detail = Pick<
@@ -35,6 +36,8 @@ export function apiGateEvaluationRecord(input: {
   messageId: string
   /** The caller as the relay names it, shown as the judged message's sender. */
   sender: string
+  /** The agent the gate decided for, as its state named it. */
+  agent?: DecisionAgentContext
   text: string
   at: number
 }): { summary: Summary; detail: Detail } | null {
@@ -43,7 +46,10 @@ export function apiGateEvaluationRecord(input: {
   if (!root) return null
   const result = evidence.evaluation
   const answer = result?.status === 'answered' ? result.answer : null
-  const state = modelSelectionState('chat', input.text) as { currentMessage: { text: string }; truncated: boolean }
+  const state = modelSelectionState('chat', input.text, input.agent) as {
+    currentMessage: { text: string }
+    truncated: boolean
+  }
   return {
     summary: {
       at: new Date(input.at).toISOString(),
@@ -68,6 +74,7 @@ export function apiGateEvaluationRecord(input: {
         sessionMode: 'api'
       },
       input: {
+        ...(input.agent ? { agent: input.agent } : {}),
         currentMessage: {
           id: input.messageId.slice(0, 256),
           sender: { id: input.sender.slice(0, 256) },

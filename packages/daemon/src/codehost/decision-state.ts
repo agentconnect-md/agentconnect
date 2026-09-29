@@ -11,7 +11,8 @@ import {
   decisionTextTrimmer,
   fitDecisionState,
   type DecisionStateBudget,
-  type DecisionStateResult
+  type DecisionStateResult,
+  type DecisionAgentContext
 } from '../decisions/state.js'
 import { hookDecisionFacts, type HookDecisionSubject } from '../messages/hook-message.js'
 import type { ChannelRecordRef, ChannelTextRow, LocalStore } from '../store/local-store.js'
@@ -28,6 +29,8 @@ export interface CodeHostDecisionContext {
   full: boolean
   reasons?: string[]
   pullRequest?: PullRequestContext
+  /** The one agent this evaluation decides for; hook routing among several has none. */
+  agent?: DecisionAgentContext
 }
 
 // Freeze the event and observed history once; provider enrichment is bounded and optional.
@@ -178,6 +181,7 @@ export function buildCodeHostDecisionState(
   return fitCodeHostDecisionState(
     {
       source: facts.provider,
+      ...(input.agent ? { agent: input.agent } : {}),
       event: eventOf(input.msg, c),
       repository: facts.subject.repoPath ? { fullName: facts.subject.repoPath } : {},
       subject: subjectOf(c, facts.subject, body?.body),

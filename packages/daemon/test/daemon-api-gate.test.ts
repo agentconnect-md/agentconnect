@@ -121,7 +121,10 @@ describe('API turn Decision gate', () => {
     expect(await turn({ origin: 'ai-sdk-ui' })).toMatchObject({ accepted: false, reason: 'declined' })
     expect(evaluate.mock.calls[0]![0]).toMatchObject({
       decision: { id: decisionId },
-      state: { currentMessage: { text: 'Is the weather nice today?' } }
+      state: {
+        agent: { name: 'Example agent', description: '' },
+        currentMessage: { text: 'Is the weather nice today?' }
+      }
     })
     expect(internal.cpClient).toBeUndefined()
     expect(prompted).toEqual([])
@@ -170,6 +173,7 @@ describe('API turn Decision gate', () => {
     expect(evaluation).toMatchObject({
       snapshot: { decisionId, condition: { type: 'boolean', values: [true] } },
       input: {
+        agent: { name: 'Example agent', description: '' },
         currentMessage: { id: 'msg-1', sender: { id: 'Example user' }, text: 'Is the weather nice today?' },
         history: []
       },

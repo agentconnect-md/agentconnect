@@ -150,6 +150,19 @@ export function DecisionEvaluationDetail({
       )}
       {detail?.input && (
         <Section title={t('evaluations.detail.context')}>
+          {detail.input.agent && (
+            <>
+              <span className="font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
+                {t('evaluations.sheet.agent')}
+              </span>
+              <span className="font-sans text-[12.5px] font-medium leading-normal">{detail.input.agent.name}</span>
+              {detail.input.agent.description && (
+                <span className="whitespace-pre-wrap font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                  {detail.input.agent.description}
+                </span>
+              )}
+            </>
+          )}
           <span className="font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
             {t('evaluations.sheet.input')}
           </span>
