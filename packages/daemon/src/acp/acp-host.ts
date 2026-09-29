@@ -44,6 +44,7 @@ import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
 import { STEERING_METHOD, parseSteeringOutcome, steeringRequestParams, steeringSupported } from './steering.js'
 import type { SteeringIdleBehavior, SteeringOutcome } from './steering.js'
+import { RuntimeSessionFailure, SESSION_FAILURE_CAPABILITIES, sessionFailureFromMeta } from './session-failure.js'
 
 // The raw session config-option shapes (from the ACP SDK), re-exported so
 // sessionConfigOptions() consumers can type the option tree without importing
@@ -347,6 +348,10 @@ function failureSignals(value: unknown, depth = 0, seen = new Set<object>()): st
 }
 
 export function turnFailureCode(err: unknown): TurnFailureCode {
+  if (err instanceof RuntimeSessionFailure) {
+    if (err.category === 'access') return HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
+    if (err.category === 'limit' && err.actions.length === 0) return HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
+  }
   const signals = failureSignals(err)
   if (signals.some((signal) => PROVIDER_QUOTA_CODES.has(signal.toLowerCase().replace(/[^a-z0-9]/g, '')))) {
     return HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
@@ -881,6 +886,7 @@ export class AcpHost {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: {
         fs: { readTextFile: false, writeTextFile: false },
+        _meta: SESSION_FAILURE_CAPABILITIES,
         // Advertise form-based elicitation so runtimes may ask structured questions
         // (choice/boolean), and URL-based so credential/OAuth/payment flows take the seam the
         // spec reserves for them instead of a form that would carry the secret through chat.
@@ -1255,11 +1261,11 @@ export class AcpHost {
     }
   }
 
-  /** Drive one turn to completion. Returns the stop reason plus the agent's token
-   *  `usage` when the runtime reports it. Usage semantics are adapter-defined;
-   *  AgentConnect's managed Codex adapter returns one ACP-prompt delta. */
+  /** Drive one prompt; managed Codex usage is a per-prompt delta, and a typed terminal failure rejects. */
   async prompt(sessionId: string, blocks: ContentBlock[]): Promise<{ stopReason: StopReason; usage?: Usage }> {
     const res = await this.conn!.agent.request(methods.agent.session.prompt, { sessionId, prompt: blocks })
+    const failure = sessionFailureFromMeta(res._meta)
+    if (failure) throw failure
     return { stopReason: res.stopReason, usage: res.usage ?? undefined }
   }
 

@@ -637,7 +637,7 @@ export interface Pending {
   /** True only while a `session/prompt` for this turn is awaiting the runtime — the window a
    *  same-session arrival can be steered into instead of queued. */
   promptInFlight?: boolean
-  /** Whether the in-flight `session/prompt` has started a tool call — past that point a failed prompt is not safe to resend. */
+  /** Whether this admitted turn has started a tool call; later prompts must not retry past that point. */
   promptRanTool?: boolean
   /** Last proof the runtime is alive on this turn (prompt sent, any update, a human's answer) — the stall watchdog's input (#1915). */
   runtimeActivityAt?: number

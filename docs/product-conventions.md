@@ -89,6 +89,12 @@ full diagnostic stays in the daemon log.
 A runtime that failed to start because its own installation is incomplete is repaired
 and retried automatically before the agent is reported as unavailable at all.
 
+A runtime-reported terminal failure is a failed turn even when its prompt response says
+`end_turn`. When the runtime explicitly offers a retry and no tool or answer has started,
+the daemon retries once after five seconds within the same admitted task. A review keeps
+its original review authority throughout that retry. A second failure, a failure after
+work began, or a failure requiring user action is reported without another automatic attempt.
+
 ## Moving an agent from an unavailable daemon
 
 A normal agent move is the safe default and uses a hard cutover. The current daemon

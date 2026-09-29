@@ -178,6 +178,7 @@ import {
   isRuntimeSessionGone,
   undecorateRuntimeError
 } from './acp/acp-host.js'
+import { RuntimeSessionFailure } from './acp/session-failure.js'
 import { probeSandboxHost, SandboxError, type SandboxMechanism, type SandboxProbe } from './acp/sandbox.js'
 import { reclaimStaleHostTempDirs } from './acp/sandbox-temp.js'
 import {
@@ -1010,6 +1011,7 @@ const RELAY_ACK_SLOW_MS = 4000
 
 /** Claude Code asks for a retry "in a minute" when its OAuth refresh lock is contended. */
 const OAUTH_REFRESH_CONTENTION_RETRY_MS = 60_000
+const RUNTIME_FAILURE_RETRY_MS = 5_000
 
 /** The step a relay delivery is in, read by the slow-ack watchdog when it fires. */
 type RelayAckTrace = { stage: string }
@@ -15338,7 +15340,7 @@ export class Daemon {
     })
   }
 
-  /** One `session/prompt`, resent once after a pause when Claude's OAuth refresh lock was contended before the turn ran a tool. */
+  /** Retry a recoverable prompt once before work starts, inside the same admitted turn and review authority. */
   private async promptTurn(
     p: Pending,
     host: AcpHost,
@@ -15346,7 +15348,6 @@ export class Daemon {
     promptBlocks: import('@agentclientprotocol/sdk').ContentBlock[]
   ): ReturnType<AcpHost['prompt']> {
     for (let attempt = 0; ; attempt++) {
-      p.promptRanTool = false
       p.promptInFlight = true
       // The stall watchdog's clock starts with the request, not with the turn's admission.
       p.runtimeActivityAt = this.clock.now()
@@ -15360,10 +15361,15 @@ export class Daemon {
       }
       // A tool_call can still be queued behind slower updates; settle them before judging the resend safe.
       await this.acpUpdateChains.get(acpUpdateChainKey(p.hostKey, sessionId))
-      if (attempt > 0 || p.promptRanTool || p.outputSuppressed || !isOAuthRefreshContention(failure)) throw failure
-      this.log.warn(`session ${sessionId}: Claude OAuth refresh contended; resending the prompt once`)
-      await new Promise<void>((resolve) => this.clock.setTimeout(resolve, OAUTH_REFRESH_CONTENTION_RETRY_MS))
-      if (p.outputSuppressed) throw failure
+      const refreshContended = isOAuthRefreshContention(failure)
+      const retryable =
+        refreshContended ||
+        (failure instanceof RuntimeSessionFailure && failure.retryable && !p.reply.text && !p.reply.attemptText)
+      if (attempt > 0 || p.promptRanTool || p.outputSuppressed || p.entry.cancelledReason || !retryable) throw failure
+      const delay = refreshContended ? OAUTH_REFRESH_CONTENTION_RETRY_MS : RUNTIME_FAILURE_RETRY_MS
+      this.log.warn(`session ${sessionId}: runtime prompt failed before work started; retrying once in ${delay}ms`)
+      await this.sleep(delay, p.entry.initAbort.signal)
+      if (p.outputSuppressed || p.entry.cancelledReason || p.entry.initAbort.signal.aborted) throw failure
     }
   }
 
@@ -18380,7 +18386,8 @@ export class Daemon {
     const p = this.pending.get(pendingTurnKey(owner, sessionId))
     // Any update — text, thought, tool call, usage — is proof the runtime is alive on this turn.
     if (p) p.runtimeActivityAt = this.clock.now()
-    if (p && update?.sessionUpdate === 'tool_call') p.promptRanTool = true
+    if (p && (update?.sessionUpdate === 'tool_call' || update?.sessionUpdate === 'tool_call_update'))
+      p.promptRanTool = true
     this.evalHooks.emit({
       type: 'acp.update',
       agentId,
