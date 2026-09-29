@@ -6305,7 +6305,7 @@ export class LocalStore {
     summary: Omit<DecisionModelEvaluationRecord, 'seq' | 'title' | 'detailsExpired'>,
     detail: Pick<
       DecisionModelEvaluationRecordDetail,
-      'selection' | 'question' | 'input' | 'fullAnswer' | 'chain' | 'rawRequest' | 'rawResponse'
+      'selection' | 'question' | 'input' | 'fullAnswer' | 'chain' | 'steps' | 'rawRequest' | 'rawResponse'
     >,
     now: number
   ): Promise<void> {
@@ -6384,7 +6384,7 @@ export class LocalStore {
     summary: Omit<DecisionEvaluationRecord, 'seq' | 'title' | 'detailsExpired'>,
     detail: Pick<
       DecisionEvaluationRecordDetail,
-      'snapshot' | 'input' | 'fullAnswer' | 'chain' | 'rawRequest' | 'rawResponse'
+      'snapshot' | 'input' | 'fullAnswer' | 'chain' | 'steps' | 'rawRequest' | 'rawResponse'
     >,
     now: number
   ): Promise<void> {

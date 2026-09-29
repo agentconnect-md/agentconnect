@@ -204,6 +204,88 @@ describe('DecisionEvaluationsDrawer', () => {
     expect(raw[1]!.querySelector('pre')?.textContent).toContain('"noul": 0.86')
   })
 
+  it('switches the model result and instructions to the chain step picked above it', async () => {
+    const api = decisionMock.createDecisionMockApi()
+    const getEvaluation = api.getEvaluation.bind(api)
+    api.getEvaluation = async (ref, seq) => {
+      const base = await getEvaluation(ref, seq)
+      const question = {
+        type: 'choice' as const,
+        instructions: 'Is this a support request?',
+        criteria: { support: 'Needs support', other: 'Anything else' }
+      }
+      return {
+        ...base,
+        chain: [
+          {
+            stepId: '',
+            decisionId: base.decisionId,
+            evaluation: {
+              status: 'answered' as const,
+              answer: base.fullAnswer!,
+              model: 'jev-root',
+              usage: { inputTokens: 412, outputTokens: 3 }
+            }
+          },
+          {
+            stepId: 'step-2',
+            decisionId: 'decision-child',
+            evaluation: {
+              status: 'answered' as const,
+              answer: {
+                type: 'choice' as const,
+                value: 'other',
+                probabilities: { support: 0.2, other: 0.8 },
+                confidence: 0.8
+              },
+              model: 'jev-child',
+              usage: { inputTokens: 90, outputTokens: 5 }
+            }
+          }
+        ],
+        steps: [
+          {
+            stepId: '',
+            decisionId: base.decisionId,
+            providerId: 'typesafe',
+            model: 'jev-root',
+            question: base.snapshot!.question
+          },
+          {
+            stepId: 'step-2',
+            decisionId: 'decision-child',
+            providerId: 'typesafe',
+            model: 'jev-child',
+            question,
+            condition: { type: 'choice' as const, thresholds: { support: 0.5 } },
+            rawRequest: { text: '{"child":"request"}', truncated: false },
+            rawResponse: null
+          }
+        ]
+      }
+    }
+    await render(api)
+    await click(rows()[0])
+    const view = detail()!
+    const steps = [...view.querySelectorAll<HTMLButtonElement>('ol[aria-label] button')]
+    expect(steps).toHaveLength(2)
+    expect(steps[0]!.getAttribute('aria-pressed')).toBe('true')
+    expect(view.querySelector('[data-testid="model-result"]')!.textContent).toContain('86%')
+
+    await click(steps[1])
+    expect(steps[1]!.getAttribute('aria-pressed')).toBe('true')
+    const result = view.querySelector('[data-testid="model-result"]')!
+    const bars = [...result.querySelectorAll('li')]
+    expect(bars.map((bar) => bar.querySelector('div > span')?.textContent)).toEqual(['support', 'other'])
+    expect(bars[0]!.textContent).toContain('≥ 50%')
+    expect(bars[1]!.getAttribute('data-chosen')).toBe('true')
+    expect(result.textContent).not.toContain('✓ triggers')
+    expect(result.textContent).toContain('90 in · 5 out tokens')
+    expect(result.querySelector('details pre')?.textContent).toContain('"child": "request"')
+    expect(view.textContent).toContain('Is this a support request?')
+    expect(view.textContent).toContain('typesafe / jev-child')
+  })
+
   it('draws choice thresholds and marks nothing as triggering for a skipped answer', async () => {
     await render(decisionMock.createDecisionMockApi())
     await click(rows()[1])

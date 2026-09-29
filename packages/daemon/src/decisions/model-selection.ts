@@ -3,6 +3,8 @@ import {
   DecisionRuntimeTarget,
   AgentModelSelection,
   runDecisionChain,
+  DECISION_RAW_JSON_MAX_CHARS,
+  type DecisionChainDetail,
   type DecisionModelStep,
   type DecisionEvaluation,
   type DecisionGetReply,
@@ -10,6 +12,7 @@ import {
   type DecisionChainTrace,
   type DecisionQuestion
 } from '@agentconnect.md/protocol'
+import { chainStepDetails } from './chain-steps.js'
 import type { DecisionEvaluationInput } from './evaluator.js'
 import { decisionTextPrefix, largestDecisionRequest, type DecisionAgentContext } from './state.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
@@ -104,8 +107,15 @@ export interface SessionModelEvaluationEvidence {
   chain: DecisionChainTrace
   rawRequest: string | null
   rawResponse: string | null
+  /** Every reached step's Decision and a later step's provider bodies, when the chain went past its first. */
+  steps?: DecisionChainDetail
   latencyMs: number
 }
+
+const rawBody = (text: string | undefined) =>
+  text === undefined
+    ? null
+    : { text: text.slice(0, DECISION_RAW_JSON_MAX_CHARS), truncated: text.length > DECISION_RAW_JSON_MAX_CHARS }
 
 // Definition and snapshot reads share the chain deadline even when their transport cannot cancel.
 function beforeAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -137,6 +147,8 @@ export async function evaluateSessionModel(
   let chain: DecisionChainTrace = []
   let rawRequest: string | null = null
   let rawResponse: string | null = null
+  const stepRaw: Array<{ request?: string; response?: string } | undefined> = []
+  const definitions = new Map<string, DecisionToolDefinition>()
   try {
     if (!current()) return undefined
     const selection = AgentModelSelection.parse(input.selection)
@@ -144,7 +156,7 @@ export async function evaluateSessionModel(
     if (!current() || !decision || decision.id !== selection.decisionId) return undefined
     question = decision.question
     requestedModel = decision.model
-    const definitions = new Map([[decision.id, decision]])
+    definitions.set(decision.id, decision)
     const ids = new Set(selection.steps?.map((step) => step.decisionId))
     ids.delete(decision.id)
     for (const id of ids) {
@@ -177,9 +189,11 @@ export async function evaluateSessionModel(
             deadlineAt,
             onRawRequest: (text) => {
               if (index === 0) rawRequest = text
+              else stepRaw[index] = { ...stepRaw[index], request: text }
             },
             onRawResponse: (text) => {
               if (index === 0) rawResponse = text
+              else stepRaw[index] = { ...stepRaw[index], response: text }
             }
           },
           signal
@@ -207,6 +221,17 @@ export async function evaluateSessionModel(
     input.signal.throwIfAborted()
     return undefined
   } finally {
+    const steps =
+      chain.length > 1
+        ? chainStepDetails({
+            trace: chain,
+            definition: (id) => definitions.get(id),
+            raw: (index) => ({
+              rawRequest: rawBody(stepRaw[index]?.request),
+              rawResponse: rawBody(stepRaw[index]?.response)
+            })
+          })
+        : undefined
     input.onResult?.({
       selection: input.selection,
       question,
@@ -216,6 +241,7 @@ export async function evaluateSessionModel(
       chain,
       rawRequest,
       rawResponse,
+      ...(steps ? { steps } : {}),
       latencyMs: Math.max(0, Math.round(performance.now() - startedAt))
     })
     clearTimeout(timer)

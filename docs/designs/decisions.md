@@ -1525,6 +1525,14 @@ characters; a detail serves each up to 16K characters, marked truncated, and bot
 disappear with the other bodies at retention. A daemon advertises
 `decision-evaluation-raw-v1` and returns them only when the CP's detail request
 sets `includeRaw`, so neither side sends a field an older strict peer rejects.
+A chained evaluation's detail also carries `steps`, one per reached step in trace
+order: that step's frozen Decision (provider, model, question), a gate step's own
+condition, and, with `includeRaw`, a later step's provider bodies (the first step's
+stay on the detail itself). Selecting a step in the detail's chain list switches
+the Model result and Instructions used to that step. The daemon advertises
+`decision-evaluation-steps-v1` and returns them only when the request sets
+`includeSteps`; when size forces a cut, later steps' bodies go first, last step
+first.
 
 Routing reads follow the same rules on the bot's evaluation host. The host answers
 `decision/routing-evaluations` and `decision/routing-evaluation` (feature
@@ -1979,8 +1987,9 @@ and the rule that leads to it, and the parent's name returns to it with edits ke
 A sheet's Save keeps its edits and returns one level. Its Cancel, ×, or Escape
 discards them and returns one level. Only the editor underneath saves or closes.
 Gate Try and the routing preview endpoint use the same traversal as live execution.
-Recent evaluation details retain the reached steps and their answers with the
-existing transcript retention boundary. The model-selection sample remains
+Recent evaluation details retain the reached steps, their frozen Decisions and
+answers with the existing transcript retention boundary, and show any reached
+step's Model result on selection (§9.5). The model-selection sample remains
 explicitly simulated.
 
 ## 11. Future possibilities

@@ -522,6 +522,23 @@ export const DecisionRawJson = z.strictObject({
 })
 export type DecisionRawJson = z.infer<typeof DecisionRawJson>
 
+// One reached chain step as frozen, aligned with `chain`; the first step's provider bodies stay on the detail itself.
+export const DecisionChainStepDetail = z.strictObject({
+  stepId: z.string().max(128),
+  decisionId: Id,
+  providerId: Id,
+  model: Id,
+  question: DecisionQuestion,
+  // A gate step's own trigger condition; routing and model steps keep their rules in the frozen consumer.
+  condition: DecisionCondition.optional(),
+  rawRequest: DecisionRawJson.nullable().optional(),
+  rawResponse: DecisionRawJson.nullable().optional()
+})
+export type DecisionChainStepDetail = z.infer<typeof DecisionChainStepDetail>
+// Present only when the CP asked for it (decision-evaluation-steps-v1).
+export const DecisionChainDetail = z.array(DecisionChainStepDetail).max(DECISION_CHAIN_MAX_STEPS)
+export type DecisionChainDetail = z.infer<typeof DecisionChainDetail>
+
 // What an evaluation judged in one line, like a session title; null once retention strips the input.
 export const DecisionEvaluationTitle = z.string().max(256).nullable()
 
@@ -561,6 +578,7 @@ export const DecisionEvaluationRecordDetail = DecisionEvaluationRecord.extend({
   input: DecisionEvaluationInput.nullable(),
   fullAnswer: DecisionAnswer.nullable(),
   chain: DecisionChainTrace.optional(),
+  steps: DecisionChainDetail.optional(),
   // Present only when the CP asked for it (decision-evaluation-raw-v1); null once retention strips bodies.
   rawRequest: DecisionRawJson.nullable().optional(),
   rawResponse: DecisionRawJson.nullable().optional(),
@@ -607,6 +625,7 @@ export const DecisionModelEvaluationRecordDetail = DecisionModelEvaluationRecord
   input: z.record(z.string(), z.unknown()).nullable(),
   fullAnswer: DecisionAnswer.nullable(),
   chain: DecisionChainTrace.optional(),
+  steps: DecisionChainDetail.optional(),
   rawRequest: DecisionRawJson.nullable(),
   rawResponse: DecisionRawJson.nullable()
 })
@@ -701,6 +720,7 @@ export const DecisionRoutingEvaluationRecordDetail = DecisionRoutingEvaluationRe
   input: DecisionEvaluationInput.nullable(),
   fullAnswer: DecisionAnswer.nullable(),
   chain: DecisionChainTrace.optional(),
+  steps: DecisionChainDetail.optional(),
   rawRequest: DecisionRawJson.nullable().optional(),
   rawResponse: DecisionRawJson.nullable().optional()
 })

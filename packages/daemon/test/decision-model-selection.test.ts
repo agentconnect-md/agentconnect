@@ -1,7 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DecisionToolDefinition, AgentModelSelection } from '@agentconnect.md/protocol'
-import { evaluateSessionModel, modelSelectionState } from '../src/decisions/model-selection.js'
+import {
+  evaluateSessionModel,
+  modelSelectionState,
+  type SessionModelEvaluationEvidence
+} from '../src/decisions/model-selection.js'
 import { codeHostPullRequestContext, type CodeHostTurnFinalHost } from '../src/codehost/turn-final.js'
 import { PULL_CONTEXT_TIMEOUT_MS, readPullRequestContext } from '../src/codehost/pull-context.js'
 import { restPullRequestFile } from '../src/codehost/pull-files.js'
@@ -95,6 +99,7 @@ describe('session model evaluation', () => {
       usage: { inputTokens: 1, outputTokens: 0 },
       answer: { type: 'boolean' as const, value: true, probability: 0.9 }
     }))
+    let evidence: SessionModelEvaluationEvidence | undefined
     const input = {
       agentId: 'example-agent',
       selection: chain,
@@ -104,9 +109,15 @@ describe('session model evaluation', () => {
       current: () => true,
       decision: get,
       state,
-      evaluate
+      evaluate,
+      onResult: (result: SessionModelEvaluationEvidence) => (evidence = result)
     }
     expect(await evaluateSessionModel(input)).toEqual({ runtime: 'claude', model: 'model-capable' })
+    // Each reached step keeps the Decision it asked, so its Model result reads the question it answered.
+    expect(evidence?.steps?.map((step) => [step.stepId, step.decisionId, step.question.instructions])).toEqual([
+      ['', decision.id, decision.question.instructions],
+      ['urgency', next.id, 'x'.repeat(14_000)]
+    ])
     expect(get.mock.calls.map(([id]) => id)).toEqual([decision.id, next.id])
     expect(state).toHaveBeenCalledOnce()
     expect(state).toHaveBeenCalledWith(next)

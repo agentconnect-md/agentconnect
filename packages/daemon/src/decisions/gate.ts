@@ -20,7 +20,7 @@ import {
   type ResolvedDecisionBundle,
   type ResolvedDecisionGate
 } from './bundle.js'
-import { rawAnswerFields, type DecisionEvaluationInput } from './evaluator.js'
+import { ChainRawBodies, type DecisionEvaluationInput } from './evaluator.js'
 import type { DecisionEvidence, DecisionUnavailableReason } from './evidence.js'
 import { DecisionLaneRuntime, laneId, verdictKey, type Lane } from './lanes.js'
 import { defaultDecisionGateMetrics, type DecisionGateMetrics } from './metrics.js'
@@ -467,8 +467,7 @@ export class DecisionGate {
         return
       }
       if (!(await store.beginDecisionEvaluation(row.seq, row.subject, fence, JSON.stringify(built.state)))) return
-      let raw: string | undefined
-      let request: string | undefined
+      const bodies = new ChainRawBodies()
       const definitions = new Map((config.definitions ?? []).map((definition) => [definition.id, definition]))
       const definitionOf = (id: string) => (id === config.decisionId ? config : definitions.get(id)!)
       let match = { matched: false, matchedKeys: [] as string[] }
@@ -486,12 +485,7 @@ export class DecisionGate {
               decision: definitionOf(step.decisionId),
               state: built.state,
               deadlineAt: row.deadlineAt,
-              onRawRequest: (text) => {
-                if (index === 0) request = text
-              },
-              onRawResponse: (text) => {
-                if (index === 0) raw = text
-              }
+              ...bodies.hooks(index)
             },
             signal
           ),
@@ -507,7 +501,7 @@ export class DecisionGate {
         await settle('unavailable', {
           reason: evaluation.reason,
           usage: decisionChainUsage(trace),
-          answerJson: JSON.stringify({ ...chain, ...rawAnswerFields(raw, request) })
+          answerJson: JSON.stringify({ ...chain, ...bodies.fields() })
         })
         return
       }
@@ -516,7 +510,7 @@ export class DecisionGate {
           answer: evaluation.answer,
           ...chain,
           matchedKeys: match.matchedKeys,
-          ...rawAnswerFields(raw, request)
+          ...bodies.fields()
         }),
         model: evaluation.model,
         usage: decisionChainUsage(trace)

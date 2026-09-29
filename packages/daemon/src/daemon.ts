@@ -7,6 +7,7 @@ import {
   DECISION_EVALUATION_FILTER_V1_FEATURE,
   DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
   DECISION_EVALUATION_RAW_V1_FEATURE,
+  DECISION_EVALUATION_STEPS_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
@@ -7060,6 +7061,7 @@ export class Daemon {
       DECISION_EVALUATION_FILTER_V1_FEATURE,
       DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
       DECISION_EVALUATION_RAW_V1_FEATURE,
+      DECISION_EVALUATION_STEPS_V1_FEATURE,
       DECISION_TRIGGER_V1_FEATURE,
       // This daemon evaluates routed conversations it hosts and admits routed forwards without evaluating.
       DECISION_ROUTING_V1_FEATURE,
@@ -14341,6 +14343,7 @@ export class Daemon {
           input: boundedInput,
           fullAnswer: answer,
           chain: evidence?.chain,
+          ...(evidence?.steps ? { steps: evidence.steps } : {}),
           rawRequest: raw(evidence?.rawRequest ?? null),
           rawResponse: raw(evidence?.rawResponse ?? null)
         },

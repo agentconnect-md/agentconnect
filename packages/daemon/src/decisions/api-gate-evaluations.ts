@@ -13,6 +13,7 @@ import {
 import type { DecisionApiGateEvaluationRow, LocalStore } from '../store/local-store.js'
 import { clampSessionTitle } from '../messages/hook-message.js'
 import type { ApiGateEvidence, ApiGateVerdict } from './api-gate.js'
+import { chainStepDetails, dropStepRaw } from './chain-steps.js'
 import { DecisionEvaluationScopeError, summaryOf } from './evaluations.js'
 import { modelSelectionState } from './model-selection.js'
 import type { DecisionAgentContext } from './state.js'
@@ -20,7 +21,7 @@ import type { DecisionAgentContext } from './state.js'
 type Summary = Omit<DecisionEvaluationRecord, 'seq' | 'title' | 'detailsExpired'>
 type Detail = Pick<
   DecisionEvaluationRecordDetail,
-  'snapshot' | 'input' | 'fullAnswer' | 'chain' | 'rawRequest' | 'rawResponse'
+  'snapshot' | 'input' | 'fullAnswer' | 'chain' | 'steps' | 'rawRequest' | 'rawResponse'
 >
 
 const RAW_MAX_CHARS = 16 * 1024
@@ -88,10 +89,26 @@ export function apiGateEvaluationRecord(input: {
       },
       fullAnswer: answer,
       chain: evidence.chain,
+      ...stepsOf(projection, evidence),
       rawRequest: raw(evidence.rawRequest),
       rawResponse: raw(evidence.rawResponse)
     }
   }
+}
+
+// The projection a verdict ran against is the frozen config: its Decisions and each gate step's condition.
+function stepsOf(projection: AgentApiGateProjection, evidence: ApiGateEvidence): Pick<Detail, 'steps'> {
+  if (evidence.chain.length < 2) return {}
+  const steps = chainStepDetails({
+    trace: evidence.chain,
+    definition: (id) => projection.definitions.find((d) => d.id === id),
+    condition: (stepId) => (stepId ? projection.gate.steps?.find((s) => s.id === stepId)?.when : projection.gate.when),
+    raw: (index) => ({
+      rawRequest: raw(evidence.stepRaw[index]?.request ?? null),
+      rawResponse: raw(evidence.stepRaw[index]?.response ?? null)
+    })
+  })
+  return steps ? { steps } : {}
 }
 
 export class DecisionApiGateEvaluationReader {
@@ -158,16 +175,21 @@ export class DecisionApiGateEvaluationReader {
       input: stored.detail?.input ?? null,
       fullAnswer: stored.detail?.fullAnswer ?? null,
       ...(stored.detail?.chain?.length ? { chain: stored.detail.chain } : {}),
+      ...(req.includeSteps && stored.detail?.steps?.length ? { steps: stored.detail.steps } : {}),
       rawRequest: stored.detail?.rawRequest ?? null,
       rawResponse: stored.detail?.rawResponse ?? null,
       evidence: null
     })
     if (!parsed.success) return { evaluation: null }
     const detail = parsed.data
+    const fits = () => bytes({ evaluation: detail }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES
+    dropStepRaw(detail.steps, fits)
     for (const key of ['rawRequest', 'rawResponse', 'chain', 'input'] as const) {
-      if (bytes({ evaluation: detail }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES) break
-      if (key === 'chain') delete detail.chain
-      else detail[key] = null
+      if (fits()) break
+      if (key === 'chain') {
+        delete detail.steps
+        delete detail.chain
+      } else detail[key] = null
     }
     return { evaluation: bytes({ evaluation: detail }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES ? detail : null }
   }

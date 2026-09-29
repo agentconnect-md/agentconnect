@@ -17,7 +17,7 @@ import {
   type SharedBotDecisionRouting
 } from '@agentconnect.md/protocol'
 import { canonicalJson } from '../decisions/bundle.js'
-import { rawAnswerFields, type DecisionEvaluationInput } from '../decisions/evaluator.js'
+import { ChainRawBodies, type DecisionEvaluationInput } from '../decisions/evaluator.js'
 import { DEFAULT_DECISION_GATE_LIMITS } from '../decisions/gate.js'
 import { largestDecisionRequest, type DecisionStateBudget, type DecisionStateResult } from '../decisions/state.js'
 import type { ChannelRecordRef, DecisionVerdictRow, LocalStore } from '../store/local-store.js'
@@ -194,7 +194,7 @@ export class HookRouter {
     let config = frozen
     let trace: DecisionChainTrace = []
     const timing: HookRouteTiming = { startedAt: this.host.now() }
-    const unavailable = (reason: string, raw?: { raw?: string; request?: string }) =>
+    const unavailable = (reason: string, raw?: { bodies: ChainRawBodies }) =>
       this.finish(row, config, config.candidates, 'unavailable', {
         evaluated: true,
         unavailableReason: reason,
@@ -229,8 +229,7 @@ export class HookRouter {
     if (!built || built.unsupported) return await unavailable('unsupported_input')
     if (!(await store.beginDecisionEvaluation(row.seq, row.subject, fence, JSON.stringify(built.state))))
       return await this.awaitExisting((await store.getDecisionVerdict(row.seq, row.subject)) ?? row)
-    let raw: string | undefined
-    let request: string | undefined
+    const bodies = new ChainRawBodies()
     let evaluation: DecisionEvaluation
     const definitions = new Map(config.definitions?.map((d) => [d.id, d]))
     const definitionOf = (id: string) => (id === config.decisionId ? config : definitions.get(id))
@@ -252,16 +251,7 @@ export class HookRouter {
               decision: { providerId: decision.providerId, model: decision.model, question: decision.question },
               state: built.state,
               deadlineAt: row.deadlineAt,
-              ...(index === 0
-                ? {
-                    onRawRequest: (text: string) => {
-                      request = text
-                    },
-                    onRawResponse: (text: string) => {
-                      raw = text
-                    }
-                  }
-                : {})
+              ...bodies.hooks(index)
             },
             signal
           )
@@ -287,10 +277,10 @@ export class HookRouter {
     } catch (err) {
       this.host.log.warn(`hook-router: evaluation failed: ${(err as Error).message}`)
       timing.evaluateMs = this.host.now() - evaluationStartedAt
-      return await unavailable('provider', { raw, request })
+      return await unavailable('provider', { bodies })
     }
     timing.evaluateMs = this.host.now() - evaluationStartedAt
-    if (evaluation.status === 'unavailable') return await unavailable(evaluation.reason, { raw, request })
+    if (evaluation.status === 'unavailable') return await unavailable(evaluation.reason, { bodies })
     const current = this.host.currentProjection(row.agentId, config.routingId)
     const decisionChanged =
       !current ||
@@ -309,7 +299,7 @@ export class HookRouter {
     try {
       match = matchDecisionRouting(config.question, config.routing, evaluation.answer, undefined, answers)
     } catch {
-      return await unavailable('invalid_response', { raw, request })
+      return await unavailable('invalid_response', { bodies })
     }
     const answered = {
       evaluated: true,
@@ -320,8 +310,7 @@ export class HookRouter {
       model: evaluation.model,
       usage: decisionChainUsage(trace),
       ...(config.routing.steps?.length ? { chain: trace } : {}),
-      raw,
-      request,
+      bodies,
       timing
     }
     // An unmatched branch contributes every candidate only when Otherwise asks for them.
@@ -353,8 +342,7 @@ export class HookRouter {
       usedOtherwise?: boolean
       model?: string
       usage?: { inputTokens: number; outputTokens: number }
-      raw?: string
-      request?: string
+      bodies?: ChainRawBodies
       timing?: HookRouteTiming
     }
   ): Promise<HookRouteOutcome> {
@@ -362,7 +350,7 @@ export class HookRouter {
     const fence = this.host.ownerFence()
     const targets: HookRouteTarget[] = selected.map((c) => ({ hookId: c.hookId, agentId: c.agentId, reason }))
     const disposition = extra.unavailableReason !== undefined ? 'unavailable' : targets.length > 0 ? 'match' : 'skip'
-    const answerJson: HookRouteAnswer & ReturnType<typeof rawAnswerFields> = {
+    const answerJson: HookRouteAnswer & ReturnType<ChainRawBodies['fields']> = {
       ...(extra.answer ? { answer: extra.answer } : {}),
       ...(extra.chain ? { chain: extra.chain } : {}),
       matchedKeys: extra.matchedKeys ?? [],
@@ -370,7 +358,7 @@ export class HookRouter {
       usedOtherwise: extra.usedOtherwise ?? false,
       evaluated: extra.evaluated,
       routeReason: reason,
-      ...rawAnswerFields(extra.raw, extra.request)
+      ...extra.bodies?.fields()
     }
     const settledAt = this.host.now()
     if (extra.timing)

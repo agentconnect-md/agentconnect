@@ -5,6 +5,7 @@ import {
   type ApiGateEvaluationRequest,
   type ApiGateEvaluationsRequestInput,
   DECISION_EVALUATION_RAW_V1_FEATURE,
+  DECISION_EVALUATION_STEPS_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_EVALUATION_FILTER_V1_FEATURE,
   DECISION_MODEL_EVALUATIONS_V1_FEATURE,
@@ -189,6 +190,10 @@ const COLD_ACTIVATE_MAX_TRIES = 5
 const COLD_ACTIVATE_MAX_CONNECTIONS = 5
 
 /** Raised when no live/READY connection exists for a daemon. */
+// A detail asks for its reached chain steps only from a daemon that parses includeSteps.
+const chainSteps = (features: readonly string[]) =>
+  features.includes(DECISION_EVALUATION_STEPS_V1_FEATURE) ? { includeSteps: true as const } : {}
+
 export class NoConnection extends Error {
   constructor(readonly daemonId: string) {
     super(`no live connection for daemon ${daemonId}`)
@@ -934,8 +939,14 @@ export class ControlSender {
     return DecisionEvaluationReply.parse(
       await c.conn.request(
         'decision/evaluation',
-        // Raw provider JSON is asked for only from a daemon that parses includeRaw; an older strict one would reject it.
-        c.capabilities.features.includes(DECISION_EVALUATION_RAW_V1_FEATURE) ? { ...req, includeRaw: true } : req,
+        // Raw JSON and chain steps are asked for only from a daemon that parses the flag; an older strict one would reject it.
+        {
+          ...req,
+          ...(c.capabilities.features.includes(DECISION_EVALUATION_RAW_V1_FEATURE)
+            ? { includeRaw: true as const }
+            : {}),
+          ...chainSteps(c.capabilities.features)
+        },
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 5000, maxTries: 1 },
         orgId
@@ -977,7 +988,7 @@ export class ControlSender {
     return DecisionModelEvaluationReply.parse(
       await c.conn.request(
         'decision/model-evaluation',
-        req,
+        { ...req, ...chainSteps(c.capabilities.features) },
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 5000, maxTries: 1 },
         orgId
@@ -1016,7 +1027,7 @@ export class ControlSender {
     return ApiGateEvaluationReply.parse(
       await c.conn.request(
         'decision/api-gate-evaluation',
-        req,
+        { ...req, ...chainSteps(c.capabilities.features) },
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 5000, maxTries: 1 },
         orgId
@@ -1060,8 +1071,14 @@ export class ControlSender {
     return DecisionRoutingEvaluationReply.parse(
       await c.conn.request(
         'decision/routing-evaluation',
-        // Raw provider JSON is asked for only from a daemon that parses includeRaw; an older strict one would reject it.
-        c.capabilities.features.includes(DECISION_EVALUATION_RAW_V1_FEATURE) ? { ...req, includeRaw: true } : req,
+        // Raw JSON and chain steps are asked for only from a daemon that parses the flag; an older strict one would reject it.
+        {
+          ...req,
+          ...(c.capabilities.features.includes(DECISION_EVALUATION_RAW_V1_FEATURE)
+            ? { includeRaw: true as const }
+            : {}),
+          ...chainSteps(c.capabilities.features)
+        },
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 5000, maxTries: 1 },
         orgId

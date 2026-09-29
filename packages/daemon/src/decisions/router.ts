@@ -33,7 +33,7 @@ import {
   type ResolvedDecisionBundle,
   type ResolvedRoutedChannel
 } from './bundle.js'
-import { rawAnswerFields, type DecisionEvaluationInput } from './evaluator.js'
+import { ChainRawBodies, type DecisionEvaluationInput, type RawAnswerFields } from './evaluator.js'
 import type { DecisionEvidence, DecisionUnavailableReason } from './evidence.js'
 import { DEFAULT_DECISION_GATE_LIMITS } from './gate.js'
 import { DecisionLaneRuntime, laneId, verdictKey, type Lane } from './lanes.js'
@@ -213,6 +213,7 @@ interface RouterAnswer {
   request?: string
   raw?: string
   rawTruncated?: true
+  stepRaw?: RawAnswerFields[]
 }
 
 const TERMINAL_UNAVAILABLE = new Set(['not_member', 'unsupported', 'off', 'routing_disabled', 'no_agent'])
@@ -644,8 +645,7 @@ export class DecisionRouter {
       const frozen = JSON.stringify({ ...delivery, frozenConstraint: constraint } satisfies RouterDelivery)
       if (!(await store.beginDecisionEvaluation(row.seq, row.subject, fence, JSON.stringify(built.state), frozen)))
         return
-      let raw: string | undefined
-      let request: string | undefined
+      const bodies = new ChainRawBodies()
       const definitions = new Map((config.definitions ?? []).map((definition) => [definition.id, definition]))
       const definitionOf = (id: string) => (id === config.decisionId ? config : definitions.get(id)!)
       const { evaluation, trace } = await runDecisionChain<DecisionRoutingStep>({
@@ -662,12 +662,7 @@ export class DecisionRouter {
               decision: definitionOf(step.decisionId),
               state: built.state,
               deadlineAt: row.deadlineAt,
-              onRawRequest: (text) => {
-                if (index === 0) request = text
-              },
-              onRawResponse: (text) => {
-                if (index === 0) raw = text
-              }
+              ...bodies.hooks(index)
             },
             signal
           ),
@@ -685,8 +680,7 @@ export class DecisionRouter {
           reason: evaluation.reason,
           usage: decisionChainUsage(trace),
           chain: trace,
-          raw,
-          request
+          bodies
         })
         return
       }
@@ -694,8 +688,7 @@ export class DecisionRouter {
         model: evaluation.model,
         usage: decisionChainUsage(trace),
         chain: trace,
-        raw,
-        request
+        bodies
       })
     } catch (err) {
       const reason = task.cancelReason
@@ -785,10 +778,8 @@ export class DecisionRouter {
       answerJson?: RouterAnswer
       chain?: DecisionChainEvaluation[]
       recovered?: boolean
-      /** The provider's response body text, kept with the answer until retention strips it. */
-      raw?: string
-      /** The exact request body sent, kept verbatim alongside the response. */
-      request?: string
+      /** The provider bodies each step sent and received, kept with the answer until retention strips them. */
+      bodies?: ChainRawBodies
     }
   ): Promise<boolean> {
     let resolved: ReturnType<typeof resolveRoutingTargets>
@@ -852,7 +843,7 @@ export class DecisionRouter {
       usedOtherwise: match?.usedOtherwise ?? false,
       ...(resolved.fallback ? { fallback: resolved.fallback } : {}),
       ...(extra.recovered ? { recovered: true } : {}),
-      ...rawAnswerFields(extra.raw, extra.request)
+      ...extra.bodies?.fields()
     }
     const settledAt = this.host.now()
     const latencyMs = Math.max(0, settledAt - row.createdAt)

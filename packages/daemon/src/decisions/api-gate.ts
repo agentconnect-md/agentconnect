@@ -40,6 +40,8 @@ export interface ApiGateEvidence {
   chain: DecisionChainTrace
   rawRequest: string | null
   rawResponse: string | null
+  /** Later chain steps' provider bodies by trace index; the first step's are rawRequest/rawResponse. */
+  stepRaw: Array<{ request?: string; response?: string } | undefined>
   latencyMs: number
 }
 
@@ -53,6 +55,7 @@ export async function evaluateApiGate(input: ApiGateInput): Promise<ApiGateVerdi
     chain: [],
     rawRequest: null,
     rawResponse: null,
+    stepRaw: [],
     latencyMs: 0
   }
   const abort = new AbortController()
@@ -106,9 +109,11 @@ async function evaluate(
             deadlineAt,
             onRawRequest: (text) => {
               if (index === 0) evidence.rawRequest = text
+              else evidence.stepRaw[index] = { ...evidence.stepRaw[index], request: text }
             },
             onRawResponse: (text) => {
               if (index === 0) evidence.rawResponse = text
+              else evidence.stepRaw[index] = { ...evidence.stepRaw[index], response: text }
             }
           },
           stepSignal

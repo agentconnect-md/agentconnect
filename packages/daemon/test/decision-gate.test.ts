@@ -208,14 +208,16 @@ describe('DecisionGate', () => {
     expect(h.calls[1]!.input.deadlineAt).toBe(h.calls[0]!.input.deadlineAt)
     expect(h.calls[1]!.input.decision.question.instructions).toBe('x'.repeat(14_000))
     expect(Buffer.byteLength(decisionRequestBody(h.calls[1]!.input))).toBeLessThanOrEqual(32_000)
+    h.calls[1]!.input.onRawRequest?.('{"child":1}')
+    h.calls[1]!.input.onRawResponse?.('{"answer":false}')
     h.calls[1]!.resolve(no)
     await h.gate.idle()
     const verdict = await h.store.getDecisionVerdict(posted.record.seq, AGENT)
     expect(verdict?.state).toBe('skipped')
-    expect(JSON.parse(verdict!.answerJson!).chain.map((step: { decisionId: string }) => step.decisionId)).toEqual([
-      'd-1',
-      'd-2'
-    ])
+    const stored = JSON.parse(verdict!.answerJson!)
+    expect(stored.chain.map((step: { decisionId: string }) => step.decisionId)).toEqual(['d-1', 'd-2'])
+    // The second step's bodies are kept beside the first step's, aligned with the trace.
+    expect(stored.stepRaw).toEqual([{}, { request: '{"child":1}', raw: '{"answer":false}' }])
     expect(h.releases).toHaveLength(0)
   })
 

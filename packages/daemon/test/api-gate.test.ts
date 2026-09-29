@@ -151,6 +151,52 @@ describe('evaluateApiGate', () => {
     })
   })
 
+  it("freezes each reached chain step with its condition and a later step's raw bodies", async () => {
+    const when = { type: 'boolean' as const, values: [true] }
+    const chained: ChannelDecisionGate = { ...gate, nextStepId: STEP, steps: [{ id: STEP, decisionId: SECOND, when }] }
+    let evidence: ApiGateEvidence | undefined
+    const verdict = await evaluateApiGate(
+      input({
+        projection: projection(chained, [ROOT, SECOND]),
+        evaluate: async (req) => {
+          req.onRawRequest?.(`{"request":"${req.evaluationId}"}`)
+          return answered(true)
+        },
+        onEvidence: (e) => (evidence = e)
+      })
+    )
+    const record = apiGateEvaluationRecord({
+      projection: projection(chained, [ROOT, SECOND]),
+      verdict,
+      evidence: evidence!,
+      messageId: 'turn-1',
+      sender: 'Example caller',
+      text: 'How do I install the daemon?',
+      at: 0
+    })
+    expect(record?.detail.rawRequest).toEqual({ text: '{"request":"turn-1"}', truncated: false })
+    expect(record?.detail.steps).toEqual([
+      {
+        stepId: '',
+        decisionId: ROOT,
+        providerId: 'example-provider',
+        model: 'example-model',
+        question: definition(ROOT).question,
+        condition: gate.when
+      },
+      {
+        stepId: STEP,
+        decisionId: SECOND,
+        providerId: 'example-provider',
+        model: 'example-model',
+        question: definition(SECOND).question,
+        condition: when,
+        rawRequest: { text: '{"request":"turn-1:1"}', truncated: false },
+        rawResponse: null
+      }
+    ])
+  })
+
   it('records a failed evaluation as unavailable and a missing Decision not at all', async () => {
     let evidence: ApiGateEvidence | undefined
     const onEvidence = (e: ApiGateEvidence) => (evidence = e)

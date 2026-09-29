@@ -70,7 +70,11 @@ export const ApiGateEvaluationsReply = DecisionEvaluationRecordPage.refine(
   { message: 'The evaluation page must fit within 32 KiB.' }
 )
 export type ApiGateEvaluationsReply = z.infer<typeof ApiGateEvaluationsReply>
-export const ApiGateEvaluationRequest = z.strictObject({ ...ApiGateLane, seq: z.number().int().positive() })
+export const ApiGateEvaluationRequest = z.strictObject({
+  ...ApiGateLane,
+  seq: z.number().int().positive(),
+  includeSteps: z.literal(true).optional()
+})
 export type ApiGateEvaluationRequest = z.infer<typeof ApiGateEvaluationRequest>
 export const ApiGateEvaluationReply = z
   .strictObject({ evaluation: DecisionEvaluationRecordDetail.nullable() })
