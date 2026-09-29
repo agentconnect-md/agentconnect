@@ -215,9 +215,8 @@ may remain best-effort. Coalescing configuration updates is allowed only when
 the latest snapshot fully replaces them. Revocations remain outstanding until
 the intended peers acknowledge or their relevant authorization expires; loss
 of a CP ownership lease alone does not expire a cached data-plane grant.
-Expose pending propagation rather than
-claiming it has completed. Retain tombstones and delivery state through that
-boundary, then compact them.
+Expose pending propagation rather than claiming it has completed. Retain
+tombstones and delivery state through that boundary, then compact them.
 
 SSE uses cross-CP metadata invalidations, with the existing per-user visibility
 checks at each subscriber. Opening or re-establishing a stream, or recovering a
@@ -296,6 +295,35 @@ new required behavior is capability-gated. These compatibility checks apply to
 one-replica upgrades too. Runtime credential rotation is a separate operation
 with its own overlap contract.
 
+### Daemon status during handoff
+
+Control connection status is distinct from daemon execution health. The current
+API already has a bounded `connecting` grace, but the Console mapper collapses
+it into `offline`. The HA implementation must preserve that distinction through
+the API and UI, using the shared liveness view:
+
+| Observation                                                                   | Console behavior                                                                                                        |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| READY connection owned by any CP                                              | Show Online, regardless of which replica serves the read.                                                               |
+| Control connection is recovering within the liveness grace                    | Show Reconnecting in amber; retain last-observed work state with its freshness, without claiming it is newly confirmed. |
+| Liveness grace expires without recovery, or an authoritative stop is observed | Show Unreachable for the lost control link, or Offline for a confirmed stop, in red.                                    |
+| The Console cannot refresh CP state                                           | Mark the view stale or unavailable; do not convert every daemon to Offline.                                             |
+
+The reconnect grace uses the last confirmed heartbeat and the configured
+missed-heartbeat window (currently `HEARTBEAT_SEC × MISSED_BEATS`, 45 seconds
+by default). Polling, reconnect attempts, and switching CP replicas must not
+restart that window. Actual workload failures, including duty self-fence,
+remain visible during grace. Presentation does not authorize deletion,
+reassignment, or new work; those operations continue to enforce their shared
+liveness and resource fences.
+
+The 10-second handoff target and the liveness grace answer different questions.
+A recovery taking longer than 10 seconds can preserve business continuity and
+still fail the rollout budget; it is not by itself evidence of daemon failure.
+Record handoff duration, business continuity, and state convergence separately.
+After recovery, refresh authoritative state rather than merely clearing a UI
+timer. Changing colors or extending grace does not satisfy the HA contract.
+
 ### Delivery and acceptance
 
 Implement in three bounded steps, keeping steady-state replication disabled
@@ -305,9 +333,10 @@ until all three pass:
    Gate replica counts above one in the chart until all three steps pass.
 2. Recoverable broadcasts, cross-CP SSE, mutation gates, and background/cache
    audit. Preserve existing durable implementations instead of replacing them.
-3. Request drain, bounded reconnect waiting, mixed-version rollout checks, and
-   the end-to-end continuity drill. Size the chart's termination grace and drain
-   settings against the measured rollout budget.
+3. Request drain, bounded reconnect waiting, truthful daemon status,
+   mixed-version rollout checks, and the end-to-end continuity drill. Size the
+   chart's termination grace and drain settings against the measured rollout
+   budget.
 
 Use two **independent CP processes** sharing PostgreSQL, not two application
 objects that accidentally share module-global locks. The release gate covers:
@@ -323,6 +352,10 @@ objects that accidentally share module-global locks. The release gate covers:
   IM, relay ingress, Webchat streaming/new verification, and long-running turns.
   CP upgrade causes no lost accepted messages, restarted runtimes, interrupted
   turns, missing Webchat output, or duty self-fence; handoff meets its budget.
+- Verify Reconnecting during a healthy handoff, accurate stale state when CP
+  reads fail, and visible failure after grace expires. A recovery beyond the
+  handoff budget must fail rollout acceptance even if work continues; neither
+  retries nor replica changes may keep a dead daemon indefinitely Reconnecting.
 - Separately kill an owner process or partition it from PostgreSQL. Verify
   bounded recovery and stale-owner rejection without weakening the existing
   prolonged-outage self-fence. This is distinct from the planned-rollout promise.
