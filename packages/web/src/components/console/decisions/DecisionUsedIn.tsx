@@ -292,7 +292,7 @@ export function DecisionUsedIn({
                 <span className="col-span-2 flex min-w-0 items-center gap-[9px] desktop:col-span-1">
                   {markOf(place)}
                   <span className="mono min-w-0 truncate text-[12.5px] text-(--text-primary)">{place.label}</span>
-                  <span className="flex-none text-[11.5px] text-(--text-tertiary)">
+                  <span className="min-w-0 shrink-[4] truncate text-[11.5px] text-(--text-tertiary)">
                     {t(`usedBy.kind.${place.kind}`)}
                   </span>
                 </span>
@@ -322,7 +322,7 @@ export function DecisionUsedIn({
                         title={t('usedIn.history', { place: place.label })}
                         onClick={() => setOpenedKey(place.key)}
                       >
-                        <Icon name="history" size={14} />
+                        <Icon name="rotate-ccw-clock" size={14} />
                       </button>
                     ) : (
                       <span className="w-[30px]" />
