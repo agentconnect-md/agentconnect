@@ -180,11 +180,20 @@ daemons the connection epoch is exactly `sessionEpoch`, claimed in the auth
 transaction that increments it, before any connection-derived writes. It is
 not the daemon's existing `generation` field, which identifies a pod template.
 Relays gain a CP-issued epoch; their current client-local generation is not a
-cross-CP fence. Peer registration uses REGISTERING and READY; DRAINING remains
-the daemon's explicit departure under `daemon/drain`. CP retirement is a
-separate RETIRING state on the owner incarnation, never a peer departure. Record
-daemon drain as a durable daemon-scoped operation, re-asserted at registration;
-all CPs consult it and resume drain completion across connection-owner changes.
+cross-CP fence. Peer registration uses REGISTERING and READY. Persist a daemon's
+shutdown-draining declaration by `(daemon id, boot id)` before admitting it for
+placement. The daemon supplies it at registration and on subsequent heartbeats;
+every CP consults the shared record. It stays true across same-boot reconnects;
+only an accepted new boot clears the prior boot's declaration under the
+registration fence. Today this departure is the heartbeat `duties.draining` bit,
+held only in the owning CP's memory and lost on re-registration.
+
+Keep `daemon/drain` separate: it is a scoped rebalance operation, not shutdown.
+Its production caller is the currently unarmed Watchdog path. Record its scope,
+operation ID and deadline; settle it on `drain/done`, definitive error or timeout
+without clearing a shutdown declaration or bypassing reassignment fences.
+CP retirement is a separate RETIRING state on the owner incarnation, never a
+peer departure.
 
 ```mermaid
 flowchart LR
@@ -228,16 +237,18 @@ flowchart LR
   the shared view. A local registry miss or planned CP handoff is not daemon
   failure and must not remove a healthy data-plane route or reassign its duty.
 
-Unexpired READY or DRAINING connections serve controls; a DRAINING daemon takes
-no new placement. REGISTERING waits within a deadline. A RETIRING CP serves or
+Unexpired READY or DRAINING connections serve controls. A shutdown-draining
+boot takes no new placement; a rebalance drain excludes its recorded scope.
+REGISTERING waits within a deadline. A RETIRING CP serves or
 forwards every inventoried admission and turn RPC from attached peers until
 handoff; it stops only background vacancy allocation and new worker claims.
 CP retirement does not change a peer's own READY/DRAINING state.
 Expired/missing ownership without a proven stop is unknown: reads re-resolve,
 mutations fail closed, and existing data routes retain their own authority.
 Deletion requires a fenced retirement decision, never just directory absence.
-Compute HTTP-bot notice authority from the shared relay roster, and re-resolve
-CP-relayed daemon requests such as `executor/prepare` across owner changes.
+Compute HTTP-bot notice authority from relays with fresh shared presence and
+eligible ingress, not every retained roster entry. Re-resolve CP-relayed daemon
+requests such as `executor/prepare` across owner changes.
 
 Connection epochs identify transports, not daemon boots. Placement, duty terms,
 launch IDs, and resource revisions retain their own fences. In particular,
@@ -253,22 +264,28 @@ After renewal failure, remove public readiness and stop new authority changes.
 No later than 10 seconds after the last confirmed renewal, stop all
 authoritative controls. An authenticated probe identifies a healthy target only
 if it is publicly ready, not RETIRING, accepting control upgrades, and confirms
-a renewal within one interval using database time. A cached directory row is
-insufficient. The result determines what happens to existing sockets:
+a renewal within one interval using database time. Probe peer addresses and the
+shared public endpoint, and use fresh discovery of all active CP incarnations
+and their readiness so a surge or replacement can be found without a database
+read. Cached membership, desired replica count, or an empty/unreachable endpoint
+cannot prove that no healthy target exists. Step 1 must define that discovery
+source and its bounded refresh.
+The result determines what happens to existing sockets:
 
 - With a healthy target, release control sockets once with `1012` within that
   10-second deadline, earlier if a peer's remaining duty margin requires it.
-- When all other serving CPs explicitly report that they cannot renew, or there
-  is only one CP, stop authoritative controls but keep established relay links
-  in a non-authoritative transport mode. Keep
+- When fresh discovery establishes the active set and every member reports
+  that it cannot renew, stop authoritative controls but keep established relay
+  links in an acknowledged non-authoritative transport mode. This includes a
+  verified single-CP set. Keep
   transport keepalive running and answer CP-dependent RPCs with retryable
   unavailable; do not publish grants, renew authority, or claim shared READY.
   Preserve already-converged relay ingress within its cached-grant and daemon
   authority lifetimes. Daemon control links may still be released once to seek
   renewal elsewhere. Probe with bounded backoff and release relay links when a
   healthy target becomes available.
-- An unreachable peer or one not yet accepting upgrades is unknown, not evidence
-  that every CP cannot renew.
+- An unreachable peer, one not yet accepting upgrades, or membership that cannot
+  be freshly enumerated is unknown, not evidence that every CP cannot renew.
   Release control links within the deadline so they can seek a reachable CP;
   relay data-plane readiness follows the locally observable rules below.
 
@@ -280,7 +297,9 @@ existing duty self-fences still apply. Uncached verification and new grants
 remain unavailable; preserving relay ingress is not a claim of full CP service.
 
 Keep stable relay identity and routing metadata separate from connection lease
-expiry. Stale control presence becomes unknown, not a roster removal: neither
+expiry. `RELAY_STALE_SEC` bounds control-presence freshness and eligibility for
+roles such as notice authority, evaluated on reads using database time; it no
+longer deletes routes. Stale presence becomes unknown, not a roster removal: neither
 the sweeper nor roster reads may withdraw an existing route solely because its
 CP could not persist a heartbeat. A held link may update observed `lastSeenAt`
 when the database is writable, conditional on its connection epoch; that does
@@ -296,41 +315,57 @@ socket timers. Include a frozen process or packet loss without FIN in the drill.
 
 Endpoint withdrawal runs concurrently with detection; planned retirement waits
 for it before release. Budget at most 5 seconds from a failed renewal/readiness
-probe
-through load-balancer propagation, inside the 10-second detection/release
+probe through load-balancer propagation, inside the 10-second detection/release
 window. Step 3 must configure and measure that path; today's 10-second probe
 with the default failure threshold cannot meet it. On a fault, the release
 deadline wins if withdrawal is late. A redial into a still-listed CP gets a
 retryable refusal or a timeout: both use capped jitter without increasing
-backoff inside the handoff deadline. Override the current 10-second control
-handshake timeout with an initial 1-second per-attempt cap, also capped by the
-remaining 2-second total dial/auth allocation. Auth retries share that allocation;
-they do not reset it. After the handoff deadline use ordinary bounded backoff.
+backoff inside the handoff deadline. Only those handoff redials use an initial
+1-second per-attempt cap, bounded by the remaining handoff deadline. Preserve the
+normal 10-second timeout for initial connects and recovery outside that window.
+The 2-second dial/auth allocation below is a planning slice: after spending it,
+continue positive-duration attempts with capped jitter inside the remaining
+total budget, recording the overrun against that budget. Never reset the total
+deadline or create zero-timeout retries. Ordinary backoff resumes after it expires.
 
-Let `D` include detection, endpoint withdrawal and release, and `H` be the
-10-second handoff below, including redial. Healthy-target failover requires
-`D + H <= 20 seconds`, less than the remaining relay liveness and Console grace
-and each remaining duty deadline minus one heartbeat. As an initial relay margin,
-also require `D + H < RELAY_STALE_SEC - HEARTBEAT_SEC - RELAY_REAP_INTERVAL_SEC`
-(45 - 5 - 15 = 25 seconds with the chart); the sweep interval is reserved margin,
-not an extension of authority. Thus this profile requires
-`HEARTBEAT_SEC < RELAY_STALE_SEC - RELAY_REAP_INTERVAL_SEC - (D + H)`;
-the initial bounds require a heartbeat below 10 seconds. The code default of
-15 seconds does not qualify merely because its Console grace is also 45 seconds.
-Admission latency must fit its own budget below.
+Measure `D` from injected fault onset through detection, endpoint withdrawal and
+release, and `H` from release through the complete handoff below. Require
+`D <= 10 seconds`, `H <= 10 seconds`, and `D + H <= 20 seconds`. It must also fit
+below the remaining Console grace and each actual remaining duty deadline minus
+one heartbeat; admission latency must fit its own budget below.
 
-Relay readiness currently fails after roughly 20–30 seconds of CP-link loss.
-The proposed reconnect grace runs from the last confirmed control exchange.
-For healthy-target failover, require `D + H <= grace <= 20 seconds` and
-`grace < RELAY_STALE_SEC - HEARTBEAT_SEC`; attempts and replica changes cannot
-reset it. A longer outage may preserve readiness
-only while the CP has explicitly negotiated non-authoritative mode, that
-transport remains live, and authenticated daemon data links can still serve
-the cached ingress routes. Cached grants alone never establish readiness.
-Loss of those routes removes readiness. A relay partitioned from healthy CPs
-leaves the Service when its control grace expires. Initial startup, incomplete initial
-projections, and expired/revoked authority still fail closed. Step 3 must define
-and test route-health freshness; a bare open socket is insufficient evidence.
+Relay `rc/heartbeat` is send-only today. Use confirmed WS ping/pong on the
+authenticated control connection as the proposed contact anchor, expose its
+monotonic timestamp to readiness, and retain the proposed 2-second ping cadence.
+A pong proves transport contact, never authority renewal. Let `P` bound the age
+of the last confirmation at fault onset, including cadence, round-trip delay
+and scheduler jitter. Readiness grace `G` runs from that confirmation, not the
+fault or a reconnect attempt. Let `Q` bound relay probe and endpoint propagation
+after `/readyz` fails. Require `P + D + H < G` and
+`G + Q < RELAY_STALE_SEC - HEARTBEAT_SEC`; neither retries nor changing replicas
+refreshes the anchor without a confirmed contact. An initial profile to validate is
+`P <= 5s`, `G = 30s`, `Q <= 5s`: 25s of recovery fits with 5s slack, and Service
+removal takes at most 35s from the last contact, below 45 - 5 = 40s of remaining
+control-presence freshness. Thus the initial profile requires `HEARTBEAT_SEC < 10s`;
+the code default of 15s does not qualify just because Console grace is 45s.
+The sweeper interval is not extra presence lifetime. Step 3 must configure and
+measure both CP and relay probes; today's relay probes alone add roughly 20–30s.
+
+A CP may retain a relay link past its release deadline only if the relay
+acknowledges non-authoritative mode before that deadline; otherwise close it and apply the
+same grace. In that mode fresh ping/pong confirmations refresh contact grace,
+but require still-authorized projections and observable daemon data health.
+Recovery handoff uses the last such fresh confirmation, not a pre-outage renewal.
+An unready relay can become ready after those conditions hold again, or after a
+normal authenticated registration and complete projection. Attempts alone never
+restore readiness. Initial startup and expired/revoked authority fail closed.
+
+Assess data health per route: loss of one daemon disables its affected routes,
+not every relay serving other healthy routes. Whole-Service readiness fails on a
+shared prerequisite failure or no usable ingress capacity for that Service.
+Cached grants or a bare open data socket are insufficient evidence. Step 3 must
+define route-health freshness and empty/standby capacity semantics. When control
+contact is lost, `/readyz` fails at `G` and Service removal completes by `G + Q`.
 
 ### Control changes and live events
 
@@ -470,8 +505,9 @@ The initial allocation is 1 second for jitter/redial admission, 2 for dial/auth,
 5 for snapshot build and unchanged-state convergence, and 2 for renewal and
 completion observation. Step 3 adds a `1012`-aware fast reconnect, bounded
 registration concurrency, and convergence that does not wait for an unchanged
-agent's active turn to finish. Repeated failures use normal bounded backoff.
-The full budget must fit below relay readiness/roster horizons above and every
+agent's active turn to finish. Failures within the handoff window use the capped
+retry policy above; ordinary bounded backoff resumes after that window.
+The full budget must fit below the relay readiness/presence bounds above and every
 held duty's actual remaining `T_fence`, with a heartbeat interval of margin.
 Use the configured [duty lease bounds](k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7),
 not an assumed 90 seconds from disconnect; never extend a fence to hide delay.
@@ -533,12 +569,16 @@ advertise HA while a pre-bridge CP may exist. Activation participants are all
 serving CP incarnations; each must support and acknowledge the level. Serialize
 registration against activation on the level row, and re-check READY peers in
 the activation transaction. Every bridge-or-later CP must refuse authority and
-READY if it lacks an active level, including when recovering from an outage.
+READY unless it implements every active level, including during outage recovery.
 
 Preflight connected peers; offline peers do not veto activation. Refuse later
 registration only for missing safety capabilities such as fencing, snapshot
-framing and tombstones. Missing continuity-only capabilities such as mutation
-retry/deduplication use per-feature upgrade-required responses: preserve safe
+framing and tombstones. After authentication, deliver any pending authorized
+bootstrap upgrade before issuing a typed, retryable upgrade-required refusal;
+never map incompatibility to `AUTH_FAILED`/4401 or a token re-mint instruction.
+This registration-only upgrade path grants no placement or ordinary control
+authority before safety preflight passes. Missing continuity-only capabilities
+such as mutation retry/deduplication use per-feature upgrade-required responses: preserve safe
 control/lifecycle access, exclude that peer from the continuity guarantee, and
 never retry its ambiguous writes. Step 3 must classify the capability inventory.
 Missing rows during bootstrap mean unknown legacy ownership, never proof that
@@ -567,7 +607,12 @@ unready or mean the saved values are effective. Classify changes before apply:
 - Security-tightening changes, including revoked providers, compromised secrets
   and audience restrictions, use shared revocation and fail closed for affected
   scopes. Do not retain an unsafe old value for continuity or claim completion
-  while revocation is pending.
+  while revocation is pending. This overrides pending-apply and ready-replacement
+  rules: lagging and RETIRING consumers deny affected operations as soon as they
+  observe the tightening, until they can apply it. A consumer unable to receive
+  or enforce that denial requires coordinated withdrawal/stop and restart,
+  outside the CP-only continuity promise; keep propagation pending until all
+  affected consumers acknowledge or their old authority is fenced out.
 - Incompatible changes or component restarts outside CP require a separately
   planned transition; they are outside this uninterrupted CP-only promise.
 
@@ -576,16 +621,21 @@ ready replacement is available, through RETIRING, stopped obsolete publications,
 forwarding of applicable control RPCs, and `1012` handoff. Merely changing HTTP
 readiness leaves stale socket pushes alive. Today's process-once application and
 Setup `restartRequired` response do not implement this rollout. Step 3 must
-inventory relay deployment consumers, including the currently apply-once GitHub
-webhook secret. Assume no field is reloadable until its consumer atomically
-applies/acknowledges higher revisions and rejects lower ones; otherwise it stays
-pending for a separate component restart.
+inventory CP consumers (OIDC audience, provider credentials and code-host
+settings) and relay consumers. Today's relay applies its GitHub webhook secret
+once, but replaces `publicRelayUrl` and deployment-owned assignments on every
+handshake. Assume no field supports live updates until its consumer atomically
+applies/acknowledges higher revisions and rejects lower ones; otherwise plan a
+separate restart, subject to the security-tightening precedence above.
 
 Equal `configRevision` must render the same digest across overlapping CPs. A
 durable active render epoch selects an immutable input bundle: renderer semantics
-and every deployment-document field that reaches a fenced projection, including
-GitLab/Gitea host values. Retain that bundle for overlap and supported rollback;
-process-local configuration must not override it. Keep the active bundle until
+and every configuration input to a fenced projection, regardless of source.
+This includes deployment-document GitLab/Gitea hosts, startup-environment
+`PUBLIC_CP_URL` and `S3_PUBLIC_BASE_URL` inputs to `iconUrl`, and the origin used
+for relay `publicRelayUrl`. Environment changes follow the same activation and
+revision advancement as document changes. Retain the bundle for overlap and
+supported rollback; process-local configuration must not override it. Keep the active bundle until
 every serving CP supports and acknowledges the next one. Then activate it and
 advance affected agent revisions under the same fence; discard
 in-flight publications from the previous epoch. Preserve digest normalization
@@ -604,7 +654,7 @@ the API and UI, using the shared liveness view:
 | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | READY connection owned by any CP                                              | Show Online, regardless of which replica serves the read.                                                               |
 | READY connection whose CP incarnation is RETIRING                             | Show Online until the control socket closes; CP retirement is not daemon departure.                                     |
-| Daemon has a shared DRAINING operation                                        | Show its actual drain state on every CP and exclude it from new placement; reconnect resumes that operation.            |
+| Daemon's current boot declares shutdown draining                              | Show its drain state on every CP and exclude that boot from new placement; control reconnect does not clear it.         |
 | Control connection is recovering within the liveness grace                    | Show Reconnecting in amber; retain last-observed work state with its freshness, without claiming it is newly confirmed. |
 | Liveness grace expires without recovery, or an authoritative stop is observed | Show Unreachable for the lost control link, or Offline for a confirmed stop, in red.                                    |
 | The Console cannot refresh CP state                                           | Mark the view stale or unavailable; do not convert every daemon to Offline.                                             |
@@ -644,7 +694,8 @@ replication rather than guarantees already supplied by the current code:
 
 - Step 1: directory schema, isolation predicates for every connection-derived
   write, peer certificate provisioning, daemon boot identity negotiation,
-  durable daemon-drain recovery, stable relay roster identity, migration lock
+  boot-scoped shutdown declarations and scoped rebalance recovery, fresh CP
+  discovery, stable relay roster identity, migration lock
   budgets below the renewal interval, and retirement of unknown peers with
   credential fencing and cached-grant settlement.
   Directory absence or credential revocation alone is not proof that cached
@@ -661,9 +712,10 @@ replication rather than guarantees already supplied by the current code:
   separately whether to add per-org plaintext cache eviction.
 - Step 3: select and implement the deployment-side serial retirement gate,
   its halt/rollback behavior, activation-level and peer-capability checks,
-  deployment-input/render-epoch activation and reloadable-field inventory,
-  relay route-health/readiness freshness, the complete admission/turn RPC inventory
-  and propagated deadlines, supported fleet load, and measured timing knobs.
+  render-epoch activation covering all configuration inputs, CP/relay field
+  classification, relay contact/route-health freshness and probe propagation,
+  the complete admission/turn RPC inventory and propagated deadlines, supported
+  fleet load, and measured timing knobs.
   PDB/spreading protect the chosen two-replica disruption profile; they do not
   replace the CP-only handoff gate or cover a simultaneous relay/daemon rollout.
 
@@ -683,7 +735,9 @@ The release gate covers:
   revocations, deletion guards, and SSE have the same result on both replicas.
 - Race reconnect and ownership transfer with old frames, callbacks, and cleanup.
   Stale owner incarnations or connection epochs cannot mutate current state or
-  resurrect deleted bindings.
+  resurrect deleted bindings. Reconnect a shutdown-draining boot before its first
+  heartbeat: no CP may grant it work; a new boot clears only its predecessor's
+  declaration. A rebalance completion must not clear shutdown intent.
 - Lose notifications and restart a delivery worker between commit and ACK.
   Independent consumers, snapshots, tombstones, and retries converge without
   missing a recipient or duplicating a non-idempotent effect.
@@ -704,12 +758,14 @@ The release gate covers:
   Trigger an agent with no current duty holder during handoff: its rendezvous
   admission completes inside the remaining relay retry budget without a drop.
 - Exercise new-CP token mint versus old-CP verification, a deployment-document
-  save changing a fenced spec input (such as a GitLab/Gitea host) followed by a
+  save or startup-environment change affecting a fenced spec input followed by a
   controlled rollout without losing all CP readiness or producing equal-revision
   digest conflicts, staged activation, render-epoch change in both directions,
   and rollback to a release
   supporting all active levels. Verify that the supported rollout procedure
-  refuses an incompatible rollback before starting it.
+  refuses an incompatible rollback before starting it. A safety-incompatible
+  daemon can still receive its authorized bootstrap upgrade without a 4401 loop;
+  security tightening fences affected scopes even on non-reloadable consumers.
 - Verify Reconnecting during a healthy handoff, accurate stale state when CP
   reads fail, and visible failure after grace expires. A recovery beyond the
   handoff budget must fail rollout acceptance even if work continues; neither
@@ -717,14 +773,19 @@ The release gate covers:
 - Separately kill an owner, freeze it without FIN, or partition it from PostgreSQL.
   Force one redial onto a still-listed frozen CP and verify numeric detection,
   dial/auth, endpoint withdrawal, and handoff deadlines while another CP is healthy.
-  Partition a relay from healthy CPs and verify bounded loss of readiness; a
+  Start a healthy replacement after the owner's DB partition so cached membership
+  cannot find it. Age the last relay confirmation by `P`, then exercise the full
+  `D + H` budget without a readiness flap. Partition a relay from healthy CPs and
+  verify Service removal within `G + Q` of its last confirmed contact; a
   cached grant must not keep an unroutable relay in the Service. With global DB
   loss and with one CP, verify relay ingress on cached, still-authorized assignments,
   unavailable uncached control
   operations, bounded retries, no stale-owner writes, and the existing duty
   self-fence. Recover after an outage longer than 45 seconds and preserve stable
   relay identities/routes through reconciliation, including asymmetric peer
-  reachability. Recovery cannot restore authority without reconciliation. These
+  reachability, entry/exit from non-authoritative mode, and route-health recovery.
+  Losing one daemon must not withdraw relays still serving unrelated routes.
+  Recovery cannot restore authority without reconciliation. These
   fault drills are distinct from the planned-rollout promise.
 
 ## Validation
