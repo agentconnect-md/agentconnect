@@ -18,8 +18,11 @@ adding or reusing a diagram or screenshot, inspect its visible text and verify
 that it still matches the current architecture. Prefer diffable SVG or Mermaid
 source over opaque raster diagrams.
 
-The defining architectural choice: **the Control Plane is never on the message hot
-path.** Agent execution always happens inside a daemon on the data plane. Where
+The defining architectural choice: **live platform message bodies and ACP update
+streams stay on the daemon/relay data plane.** Some admission steps and turn
+operations require CP control RPCs; their recovery requirements are defined in
+[high-availability.md](docs/designs/high-availability.md). Agent execution always
+happens inside a daemon on the data plane. Where
 that daemon runs is a deployment choice, not part of the invariant — self-hosted
 on machines the organization operates, or a member of the install's managed
 Kubernetes pool (Cloud), which shares one PostgreSQL data plane and launches

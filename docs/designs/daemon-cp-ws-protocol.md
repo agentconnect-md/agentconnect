@@ -592,7 +592,7 @@ On WS drop the daemon enters **DEGRADED** (local autonomy, D1):
 
 A planned CP restart closes only the control transport; it is not a
 `daemon/drain` command. The proposed [CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget)
-requires generation-fenced reconnection, bounded request recovery, and confirmed
+requires connection-epoch fencing, bounded request recovery, and confirmed
 duty renewal before self-fence. It does not promise indefinite pool operation
 without the CP.
 

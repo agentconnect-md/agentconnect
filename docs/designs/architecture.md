@@ -18,7 +18,7 @@ owning daemon. The Control Plane remains responsible only for orchestration.
 
 The direct consequences are:
 
-- The center is not on the hot path of any user message.
+- Live platform message bodies and ACP update streams stay on the daemon/relay data plane. Some admission steps and turn operations require CP control RPCs; their recovery requirements are defined in [high-availability.md](high-availability.md).
 - The agent's driver protocol (ACP) is **owned by the daemon and never crosses the Control Plane**: self-hosted, over a local connection with no network hop; in the pool, over one in-cluster dial to the sandbox pod (§3.1).
 - Each daemon is a self-contained "message processing + agent execution" unit that can scale and tolerate failures independently.
 
@@ -33,9 +33,9 @@ below that hold in only one mode are marked; everything unmarked holds in both.
 
 ### Goals
 
-- Keep the Control Plane off the messaging hot path. The control connection
-  carries orchestration and telemetry plus bounded, authorized, on-demand reads
-  of daemon-local data for the Web UI; those reads are not persisted by the
+- Keep live message transport and ACP streams on the data plane. The control
+  connection carries orchestration, admission RPCs and telemetry plus bounded,
+  authorized BFF reads and workspace writes; their content is not persisted by the
   Control Plane.
 - Keep direct platform integrations and agent execution owned by the daemon,
   using the relay only for ingress that requires a stable public callback or
@@ -227,8 +227,11 @@ daemon ←→ Control Plane (WebSocket)
   - daemon reports: runtime status, usage, health
 ```
 
-Orchestration does not carry live user messages. Execution may still await CP
-control operations, such as a credential fetch or CP-homed memory write.
+Live platform message bodies and ACP update streams stay on the daemon/relay
+data plane. Some admission steps (`duty/claim`, `rc/thread-lookup`, `hook/start`)
+and turn operations require CP control RPCs; the proposed bounded recovery
+contract is in [high-availability.md](high-availability.md#planned-rollout-and-reconnect-budget).
+Today those dependencies can fail during a control disconnect.
 
 ---
 
@@ -350,8 +353,8 @@ host to run sandboxed.
 
 ### Advantages
 
-- **No central hot path**: messages do not pass through the Control Plane, so the center is neither a throughput bottleneck nor a single point of failure.
-- **Low latency**: the message loop stays inside the daemon and its ACP call is local or one in-cluster hop, never a round trip through a center.
+- **Direct message transport**: live platform message bodies and ACP update streams stay on the daemon/relay data plane; admission and turn control dependencies follow §6.2.
+- **Local agent transport**: the daemon's ACP call is local or one in-cluster hop. Admission and some turn operations can additionally await CP control RPCs.
 - **Strong failure isolation**: one daemon failure affects only its sessions, producing a small blast radius.
 - **Near-linear scaling**: adding daemons adds throughput without a central bottleneck.
 - **Degradable control plane**: local work can continue through CP outages within the authority and dependency bounds above.

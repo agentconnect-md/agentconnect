@@ -932,8 +932,10 @@ uninterrupted service through those transitions.
 The proposed [CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget)
 requires bounded waiting for all control-dependent verification/lookups,
 bounded data-plane readiness through handoff, and atomic replacement snapshots.
-Those changes are prerequisites, not existing guarantees. Relay crash-delivery
-and replay guarantees remain unchanged.
+When no CP can renew, it also requires established relay links to preserve
+cached, authorized ingress in a non-authoritative control mode; new control
+authority remains unavailable. Those changes are prerequisites, not existing
+guarantees. Relay crash-delivery and replay guarantees remain unchanged.
 
 | Failure                             | HTTP bot ingress                                                                                               | Hook ingress                                                     | Webchat                                                            | Agent API egress                              |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------- |
