@@ -1,7 +1,6 @@
 'use client'
 
 import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
-import { ruleSummaries } from '@/components/console/decisions/rule-summary'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
 
@@ -719,8 +718,9 @@ export default function HomeView() {
                             name: selectedDecision?.name ?? t('composer.byDecision'),
                             selected: byDecision,
                             onSelect: () => setRuntime((current) => ({ fastMode: current.fastMode })),
-                            rules: ruleSummaries(agent.modelSelection, selectedDecision?.question),
-                            fallback: defaultModel || agent.runtime,
+                            selection: agent.modelSelection,
+                            question: selectedDecision?.question,
+                            fallback: { runtime: agent.runtime, model: defaultModel },
                             decisionHref:
                               selectedDecision && orgPath(`/decisions/${encodeURIComponent(selectedDecision.id)}`),
                             evaluations: modelEvaluationsTarget(agent)

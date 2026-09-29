@@ -3,7 +3,7 @@ import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
 import { RuntimeModelSelect } from './RuntimeModelSelect'
-import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
+import type { AgentModelSelection, DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
 
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
 vi.mock('@/components/marks', () => ({
@@ -18,6 +18,12 @@ afterEach(() => {
   act(() => root.unmount())
   container.remove()
 })
+
+const selection: AgentModelSelection = {
+  decisionId: '44444444-4444-4444-8444-444444444444',
+  rules: [{ when: { type: 'choice', thresholds: { feature: 0.6 } }, runtime: 'codex', model: 'model-capable' }]
+}
+const fallback = { runtime: 'codex', model: 'model-standard' }
 
 it('searches across runtimes, selects a complete pair and can return to the agent Decision', async () => {
   const onChange = vi.fn()
@@ -36,7 +42,7 @@ it('searches across runtimes, selects a complete pair and can return to the agen
           ]
         }}
         onChange={onChange}
-        decision={{ name: 'Complexity', selected: true, onSelect }}
+        decision={{ name: 'Complexity', selected: true, onSelect, selection, fallback }}
       />
     )
   )
@@ -149,7 +155,7 @@ it('names the Decision and omits the footer while By decision is selected, and F
         compact
         value={{ runtime: 'codex', model: 'model-standard' }}
         onChange={vi.fn()}
-        decision={{ name: 'Task type', selected: true, onSelect: vi.fn() }}
+        decision={{ name: 'Task type', selected: true, onSelect: vi.fn(), selection, fallback }}
         settings={settings}
         source={{ runtimeModels: [{ runtime: 'codex', version: '', models: ['model-standard'] }] }}
       />
@@ -323,8 +329,8 @@ it('shows the composer pill details on hover, including By decision rules, but n
             name: 'Task type',
             selected: true,
             onSelect: vi.fn(),
-            rules: [{ when: 'feature ≥ 60%', then: 'model-capable' }],
-            fallback: 'model-standard'
+            selection,
+            fallback
           }}
           source={{ runtimeModels: [{ runtime: 'codex', version: '', models: ['model-standard'] }] }}
         />

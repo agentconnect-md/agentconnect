@@ -71,7 +71,6 @@ import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentDecisionsCard } from '@/components/console/AgentDecisionsCard'
 import { DecisionModelLabel } from '@/components/console/decisions/DecisionModelLabel'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
-import { ruleSummaries } from '@/components/console/decisions/rule-summary'
 import { useCodeHostRowRouting } from '@/components/console/decisions/routing/useCodeHostRowRouting'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
@@ -948,8 +947,9 @@ function AgentDetail() {
     <DecisionModelLabel
       size={14}
       name={selectedDecision?.name ?? t('modelByDecision')}
-      rules={ruleSummaries(da.modelSelection, selectedDecision?.question)}
-      fallback={selectedModelId(capabilitySource, da.runtime, da.model) || da.model || da.runtime}
+      selection={da.modelSelection}
+      question={selectedDecision?.question}
+      fallback={{ runtime: da.runtime, model: selectedModelId(capabilitySource, da.runtime, da.model) || da.model }}
       decisionHref={selectedDecision && orgPath(`/decisions/${encodeURIComponent(selectedDecision.id)}`)}
       evaluations={modelEvaluationsTarget(da)}
     />
