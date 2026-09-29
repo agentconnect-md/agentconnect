@@ -735,6 +735,14 @@ edit the agent, since the rows are callers' messages; nothing is persisted on th
 The rules modal on an API row opens them in the Recent evaluations drawer. Bodies
 expire after 24 hours or 20 newer verdicts per API, summaries after seven days.
 
+**Try a message** on an API row previews a draft gate through
+`POST /agents/:agentId/api/:protocol/gate/preview`, for callers who can edit the
+agent. Its sample is the gate's own state minus what the agent binds —
+`currentMessage.text` with an empty `history` (decisions.md §9.3) — and the CP
+sends it to a serving daemon advertising `decision-preview-v1` exactly as the live
+gate would build it (`source: 'chat'`, the agent, the text cut to 8 KiB). Nothing is
+written; an unavailable evaluation reads as admitted, never refused.
+
 Tool activity arrives as `data-tool` parts rather than AI SDK tool parts, and
 as AG-UI activity snapshots rather than `TOOL_CALL_*` events, because webchat
 carries a tool's title and status but not its name or arguments. A client that

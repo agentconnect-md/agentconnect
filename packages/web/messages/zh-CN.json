@@ -4638,9 +4638,6 @@
     },
     "providerModel": "提供方 · 模型",
     "gateTry": {
-      "placeholder": "在此频道试一条消息…",
-      "senderLabel": "历史消息 {index} 的发送者",
-      "historyLabel": "历史消息 {index}",
       "wouldSkip": "将跳过",
       "notApplied": "未应用",
       "notAppliedBody": {
@@ -4654,7 +4651,14 @@
       "triggersAgent": "将触发 {agent}",
       "stale": "本次运行后草稿已更改，请重新运行。",
       "offline": "没有已连接的守护进程服务此会话，无法运行预览。请在其重新连接后重试。",
-      "failed": "无法运行预览。{message}"
+      "failed": "无法运行预览。{message}",
+      "api": {
+        "offline": "没有连接中的 daemon 在服务这个 agent，预览无法运行。请在它重新连接后再试。",
+        "unavailableBody": "评估不可用。{reason} 这次调用仍会由 {agent} 回答，这不算拒绝。",
+        "unsupported": "服务这个 agent 的 daemon 还不能预览这个 gate。请升级它，本次没有进行评估。",
+        "admits": "{agent} 会回答这次调用",
+        "refuses": "这次调用会被拒绝"
+      }
     },
     "evaluations": {
       "toggle": "最近评估",
@@ -5014,7 +5018,17 @@
         "hidden": "你无法查看的决策",
         "forbidden": "你的角色无法修改该仓库的路由：需要对关注该仓库的每个 agent 都有编辑权限。",
         "hiddenAgent": "你无权查看的 agent",
-        "triggerLocked": "由 decision 决定：每次更新都会评估，本行自己的触发方式不再生效。"
+        "triggerLocked": "由 decision 决定：每次更新都会评估，本行自己的触发方式不再生效。",
+        "try": {
+          "notAppliedBody": {
+            "paused": "路由已暂停，所有 agent 都会像没有 decision 时一样接收这个事件。本次没有进行评估。",
+            "needs_review": "已保存的规则需要复查，路由已关闭。修复后再试。本次没有进行评估。",
+            "unsupported": "评估主机的 daemon 还不能预览 decision。请升级它，本次没有进行评估。"
+          },
+          "unavailableBody": "评估不可用：{reason} 所有 agent 都会像没有 decision 时一样接收这个事件，这不算跳过。",
+          "agents": "Agent",
+          "noAgent": "没有 agent 接收这个事件"
+        }
       }
     },
     "chain": {
@@ -5028,6 +5042,52 @@
       "trigger": "触发",
       "skip": "跳过",
       "resetCondition": "重新设置条件"
+    },
+    "tryState": {
+      "sample": "示例 state",
+      "editor": "示例编辑方式",
+      "fields": "字段",
+      "raw": "Raw JSON",
+      "rawLabel": "示例 state 的 JSON",
+      "bound": "由这里填写，不来自示例：{keys}",
+      "currentSender": "当前消息的发送者 id",
+      "currentText": "当前消息",
+      "currentPlaceholder": "要判断的消息",
+      "historySender": "历史消息 {index} 的发送者 id",
+      "historyText": "历史消息 {index}",
+      "addHistory": "添加一条历史消息",
+      "removeHistory": "删除历史消息 {index}",
+      "addAgent": "向 {field} 添加 agent",
+      "addAgentShort": "agent",
+      "removeAgent": "移除 {agent}",
+      "eventName": "事件名",
+      "eventAction": "事件动作",
+      "subjectKind": "主题类型",
+      "subjectNumber": "主题编号",
+      "subjectState": "主题状态",
+      "subjectTitle": "主题标题",
+      "subjectAuthor": "主题作者 login",
+      "subjectLabels": "主题标签，用逗号分隔",
+      "subjectDraft": "草稿",
+      "subjectBody": "主题正文",
+      "commitMessages": "提交信息",
+      "addFile": "添加一个改动文件",
+      "removeFile": "删除 {path}",
+      "filePath": "文件 {index} 的路径",
+      "fileStatus": "文件 {index} 的状态",
+      "fileAdditions": "文件 {index} 的新增行数",
+      "fileDeletions": "文件 {index} 的删除行数",
+      "fileDiff": "文件 {index} 的 diff",
+      "showDiff": "编辑 diff（{lines} 行）",
+      "addDiff": "添加 diff",
+      "stale": "本次运行后草稿或示例已更改，请重新运行。",
+      "failed": "无法运行预览。{message}",
+      "errors": {
+        "json": "不是有效的 JSON：{message}",
+        "shape": "示例必须是一个 JSON 对象。",
+        "bound": "“{key}” 由这里填写，不来自示例，请删除。",
+        "schema": "{path}：{message}"
+      }
     }
   },
   "ProviderKeys": {

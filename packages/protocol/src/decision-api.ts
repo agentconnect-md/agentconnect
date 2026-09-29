@@ -195,6 +195,35 @@ export interface DecisionGatePreviewResult {
   }
 }
 
+/** Try a draft chat API gate on the agent's serving daemon; the result reads like a conversation gate's. */
+export interface ApiGatePreviewInput {
+  gate: ChannelDecisionGate
+  state: import('./decision.js').ApiGateTryState
+}
+
+/** Try a draft code-host routing on the scope's evaluation host. */
+export interface CodeHostRoutingPreviewInput {
+  config: SharedBotDecisionRouting
+  state: import('./decision.js').CodeHostTryState
+}
+
+// `unavailable` fires every member, as the live router fails open; `skip` fires none.
+export interface CodeHostRoutingPreviewResult {
+  chain?: import('./decision.js').DecisionChainTrace
+  mode: 'mock' | 'live'
+  evaluation: DecisionEvaluation | null
+  consumer: {
+    type: 'code_host_routing'
+    outcome: 'activate' | 'skip' | 'unavailable' | 'not_applied'
+    notAppliedReason?: 'paused' | 'needs_review' | 'unsupported'
+    reason?: string
+    matchedRuleIds: string[]
+    matchedKeys: string[]
+    usedOtherwise: boolean
+    targets: Array<{ agentId: string; name: string | null }>
+  }
+}
+
 export interface DecisionRoutingPreviewInput {
   /** The draft configuration and draft scope; neither is saved. */
   config: SharedBotDecisionRouting

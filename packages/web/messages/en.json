@@ -4638,9 +4638,6 @@
     },
     "providerModel": "Provider · model",
     "gateTry": {
-      "placeholder": "Try a message in this channel…",
-      "senderLabel": "Sender of history message {index}",
-      "historyLabel": "History message {index}",
       "wouldSkip": "Would skip",
       "notApplied": "Not applied",
       "notAppliedBody": {
@@ -4654,7 +4651,14 @@
       "triggersAgent": "Would trigger {agent}",
       "stale": "The draft changed after this run. Run again.",
       "offline": "No daemon serving this conversation is connected, so the preview can't run. Try again once it reconnects.",
-      "failed": "Couldn't run the preview. {message}"
+      "failed": "Couldn't run the preview. {message}",
+      "api": {
+        "offline": "No daemon serving this agent is connected, so the preview can't run. Try again once it reconnects.",
+        "unavailableBody": "Evaluation unavailable. {reason} The call would still be answered by {agent}; this is not a refusal.",
+        "unsupported": "The daemon serving this agent can't preview this gate yet. Upgrade it — nothing was evaluated.",
+        "admits": "{agent} would answer the call",
+        "refuses": "The call would be refused"
+      }
     },
     "evaluations": {
       "toggle": "Recent evaluations",
@@ -5014,7 +5018,17 @@
         "hidden": "A decision you cannot see",
         "forbidden": "Your role cannot change this repository's routing: it needs edit access to every agent watching it.",
         "hiddenAgent": "An agent you cannot see",
-        "triggerLocked": "Set by the decision: every update is judged, so this row's own trigger does not apply."
+        "triggerLocked": "Set by the decision: every update is judged, so this row's own trigger does not apply.",
+        "try": {
+          "notAppliedBody": {
+            "paused": "Routing is paused, so every agent takes the event as without a decision. No evaluation ran.",
+            "needs_review": "The saved rules need review, so routing is off. Repair them to try. No evaluation ran.",
+            "unsupported": "The evaluation host daemon can't preview decisions yet. Upgrade it — no evaluation ran."
+          },
+          "unavailableBody": "Evaluation unavailable: {reason} Every agent takes the event, as without a decision; this is not a skip.",
+          "agents": "Agents",
+          "noAgent": "No agent takes the event"
+        }
       }
     },
     "chain": {
@@ -5028,6 +5042,52 @@
       "trigger": "Trigger",
       "skip": "Skip",
       "resetCondition": "Reset condition"
+    },
+    "tryState": {
+      "sample": "Sample state",
+      "editor": "Sample editor",
+      "fields": "Fields",
+      "raw": "Raw JSON",
+      "rawLabel": "Sample state as JSON",
+      "bound": "Filled in here, not by the sample: {keys}",
+      "currentSender": "Current message sender id",
+      "currentText": "Current message",
+      "currentPlaceholder": "The message being evaluated",
+      "historySender": "Sender id of history message {index}",
+      "historyText": "History message {index}",
+      "addHistory": "Add a history message",
+      "removeHistory": "Remove history message {index}",
+      "addAgent": "Add an agent to {field}",
+      "addAgentShort": "agent",
+      "removeAgent": "Remove {agent}",
+      "eventName": "Event name",
+      "eventAction": "Event action",
+      "subjectKind": "Subject kind",
+      "subjectNumber": "Subject number",
+      "subjectState": "Subject state",
+      "subjectTitle": "Subject title",
+      "subjectAuthor": "Subject author login",
+      "subjectLabels": "Subject labels, comma separated",
+      "subjectDraft": "Draft",
+      "subjectBody": "Subject body",
+      "commitMessages": "Commit messages",
+      "addFile": "Add a changed file",
+      "removeFile": "Remove {path}",
+      "filePath": "Path of file {index}",
+      "fileStatus": "Status of file {index}",
+      "fileAdditions": "Additions in file {index}",
+      "fileDeletions": "Deletions in file {index}",
+      "fileDiff": "Diff of file {index}",
+      "showDiff": "Edit diff ({lines, plural, one {1 line} other {# lines}})",
+      "addDiff": "Add a diff",
+      "stale": "The draft or sample changed after this run. Run again.",
+      "failed": "Couldn't run the preview. {message}",
+      "errors": {
+        "json": "Not valid JSON: {message}",
+        "shape": "The sample must be one JSON object.",
+        "bound": "\"{key}\" is filled in here, not by the sample. Remove it.",
+        "schema": "{path}: {message}"
+      }
     }
   },
   "ProviderKeys": {

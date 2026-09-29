@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DecisionEvaluation, DecisionQuestion } from '@agentconnect.md/protocol'
-import { gatePreviewOutcome, gateSampleState, PREVIEW_SENDER } from './decision-gate-preview.js'
+import { apiGateSampleState, gatePreviewOutcome, gateSampleState, PREVIEW_SENDER } from './decision-gate-preview.js'
 
 const boolean: DecisionQuestion = {
   type: 'boolean',
@@ -93,5 +93,27 @@ describe('gatePreviewOutcome', () => {
       matchedKeys: [],
       evaluation: { status: 'unavailable', reason: 'invalid_response' }
     })
+  })
+})
+
+describe('apiGateSampleState', () => {
+  const agent = { name: 'docs', description: 'Answers docs questions' }
+
+  it('is the state the daemon API gate builds: chat source, the agent, one message, no history', () => {
+    expect(apiGateSampleState({ currentMessage: { text: 'What is 4 * 100?' }, history: [] }, agent)).toEqual({
+      source: 'chat',
+      agent,
+      currentMessage: { text: 'What is 4 * 100?' },
+      history: [],
+      truncated: false
+    })
+  })
+
+  it('cuts the text to 8 KiB on a character boundary and marks it truncated', () => {
+    const state = apiGateSampleState({ currentMessage: { text: `a${'é'.repeat(5000)}` }, history: [] }, agent)
+    const text = (state.currentMessage as { text: string }).text
+    expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(8 * 1024)
+    expect(text.endsWith('é')).toBe(true)
+    expect(state.truncated).toBe(true)
   })
 })

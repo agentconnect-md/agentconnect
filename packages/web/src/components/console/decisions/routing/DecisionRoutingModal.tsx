@@ -15,6 +15,7 @@ import { useDecisionsPrototype } from '@/lib/decisions/provider'
 import { errorParts } from '@/lib/decisions/binding'
 import {
   INITIAL_ROUTING_STATE,
+  draftConfig,
   draftFromDetail,
   routingCanSave,
   routingDraftIssues,
@@ -26,6 +27,7 @@ import {
 import { useRoutingRoster } from '@/lib/decisions/routing-roster'
 import { RoutingChainFields } from './RoutingChainFields'
 import { DecisionRoutingEvaluationsDrawer } from './DecisionRoutingEvaluationsDrawer'
+import { DecisionRoutingTry } from './DecisionRoutingTry'
 import { Note, routingSaveError, saveErrorText } from './RoutingFields'
 
 /** Take one conversation out of a shared bot's routing, handing it back to @-mentions with its default agent, or `agentId`. */
@@ -96,6 +98,7 @@ export function DecisionRoutingModal({
   const state = routingDrafts[routingKeyFor(botId)] ?? INITIAL_ROUTING_STATE
   const dispatch = useCallback((event: RoutingEvent) => dispatchRouting(botId, event), [botId, dispatchRouting])
   const [helpOpen, setHelpOpen] = useState(false)
+  const [tryOpen, setTryOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const saving = useRef(false)
   const { data, error, mutate } = useSWR(orgId && botId ? ['decision-routing', api.mode, orgId, botId] : null, () =>
@@ -224,6 +227,7 @@ export function DecisionRoutingModal({
     )
   else {
     const paused = saved?.config?.enabled === false
+    const tryConfig = draftConfig(draft)
     const readiness = saved?.config && !paused ? saved.readiness.status : null
     body = (
       <div className="flex flex-col gap-3">
@@ -271,15 +275,28 @@ export function DecisionRoutingModal({
         />
 
         {decision && (
-          <button
-            type="button"
-            className="lnk gap-[6px] self-start text-[11.5px] font-medium"
-            aria-expanded={helpOpen}
-            onClick={() => setHelpOpen((open) => !open)}
-          >
-            <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-            {tDecisions('binding.howThisWorks')}
-          </button>
+          <div className="flex flex-wrap items-center gap-[14px]">
+            <button
+              type="button"
+              className="lnk gap-[6px] text-[11.5px] font-medium"
+              aria-expanded={helpOpen}
+              onClick={() => setHelpOpen((open) => !open)}
+            >
+              <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+              {tDecisions('binding.howThisWorks')}
+            </button>
+            {tryConfig && canWrite && (
+              <button
+                type="button"
+                className="lnk gap-[6px] text-[11.5px] font-medium"
+                aria-expanded={tryOpen}
+                onClick={() => setTryOpen((open) => !open)}
+              >
+                <Icon name={tryOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                {tDecisions('binding.tryMessage')}
+              </button>
+            )}
+          </div>
         )}
         {decision && helpOpen && (
           <div className="flex flex-col gap-1">
@@ -287,6 +304,17 @@ export function DecisionRoutingModal({
             <Note icon="git-branch">{t('notes.constrained')}</Note>
             <Note icon="clock">{t('notes.history')}</Note>
           </div>
+        )}
+        {decision && tryConfig && canWrite && (
+          <DecisionRoutingTry
+            botId={botId}
+            channelId={channelId}
+            draft={draft}
+            config={tryConfig}
+            decision={decision}
+            agents={roster.agents}
+            open={tryOpen}
+          />
         )}
 
         {serverError && (

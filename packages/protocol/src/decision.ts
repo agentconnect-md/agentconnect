@@ -450,6 +450,102 @@ export const DecisionPreviewSample = z.strictObject({
 })
 export type DecisionPreviewSample = z.infer<typeof DecisionPreviewSample>
 
+// Try samples are the live Jev state minus what the consumer binds (agent, source, ids, conversation, context).
+const TrySender = z.strictObject({ id: z.string().trim().min(1).max(128) })
+const TryText = z.string().max(16 * 1024)
+const TryCurrentText = z
+  .string()
+  .trim()
+  .min(1)
+  .max(16 * 1024)
+const TryHistory = z
+  .array(z.strictObject({ sender: TrySender, text: TryText }))
+  .max(50)
+  .default([])
+
+/** A conversation gate's Try state: `currentMessage` and `history` as the daemon's state names them. */
+export const ConversationTryState = z.strictObject({
+  currentMessage: z.strictObject({ sender: TrySender.optional(), text: TryCurrentText }),
+  history: TryHistory
+})
+export type ConversationTryState = z.infer<typeof ConversationTryState>
+
+const TryAgentIds = z.array(z.string().min(1).max(128)).max(16).default([])
+/** A shared-bot routing's Try state; `addressing` picks the situation (mentions, or a thread's constraint). */
+export const RoutingTryState = ConversationTryState.extend({
+  addressing: z
+    .strictObject({
+      mentions: TryAgentIds,
+      constraint: z
+        .strictObject({ eligibleAgentIds: TryAgentIds, participantAgentIds: TryAgentIds })
+        .default({ eligibleAgentIds: [], participantAgentIds: [] })
+    })
+    .optional()
+})
+export type RoutingTryState = z.infer<typeof RoutingTryState>
+
+/** An API call's Try state: one message and no history, as the API gate judges a call. */
+export const ApiGateTryState = z.strictObject({
+  currentMessage: z.strictObject({ text: TryCurrentText }),
+  history: z.array(z.unknown()).max(0, 'An API call carries no history.').default([])
+})
+export type ApiGateTryState = z.infer<typeof ApiGateTryState>
+
+const CodeHostTrySender = z.strictObject({
+  id: z.string().trim().min(1).max(256),
+  association: z.string().max(64).optional()
+})
+const CodeHostTryEntry = z.strictObject({ sender: CodeHostTrySender, text: TryText })
+/** A code-host routing's Try state: the webhook event, subject, thread, and change as the host state names them. */
+export const CodeHostTryState = z.strictObject({
+  event: z.strictObject({ name: z.string().trim().min(1).max(64), action: z.string().max(64).optional() }),
+  subject: z.strictObject({
+    kind: z.enum(['issue', 'pull_request', 'merge_request']).optional(),
+    number: z.number().int().positive().optional(),
+    title: z.string().max(1024).optional(),
+    url: z.string().max(2048).optional(),
+    author: z
+      .strictObject({
+        login: z.string().max(256).optional(),
+        type: z.string().max(64).optional(),
+        association: z.string().max(64).optional()
+      })
+      .optional(),
+    labels: z.array(z.string().max(256)).max(100).default([]),
+    state: z.string().max(64).optional(),
+    draft: z.boolean().optional(),
+    body: TryText.optional()
+  }),
+  currentMessage: CodeHostTryEntry.extend({ text: TryCurrentText }),
+  history: z.array(CodeHostTryEntry).max(50).default([]),
+  pullRequest: z
+    .strictObject({
+      baseSha: z.string().max(64).optional(),
+      headSha: z.string().max(64).optional(),
+      commitMessages: z
+        .string()
+        .max(4 * 1024)
+        .default(''),
+      files: z
+        .array(
+          z.strictObject({
+            path: z.string().min(1).max(1024),
+            previousPath: z.string().max(1024).optional(),
+            status: z.string().max(32),
+            additions: z.number().int().nonnegative().optional(),
+            deletions: z.number().int().nonnegative().optional(),
+            diff: TryText.default(''),
+            diffTruncated: z.boolean().default(false)
+          })
+        )
+        .max(100)
+        .default([]),
+      filesTruncated: z.boolean().default(false)
+    })
+    .optional()
+})
+export type CodeHostTryState = z.infer<typeof CodeHostTryState>
+
 // The answer a Recent evaluations row shows: the value and its confidence, never a probability vector.
 export const DecisionAnswerSummary = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('boolean'), value: z.boolean(), probability: Probability }),

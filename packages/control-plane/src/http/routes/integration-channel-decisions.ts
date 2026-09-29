@@ -15,14 +15,11 @@ import {
   DecisionPreviewSample,
   decisionAgentContext,
   decisionGateIssues,
-  nextGateStep,
-  runDecisionChain,
   DecisionChainTrace,
-  type DecisionGateStep,
   supportsDecision
 } from '@agentconnect.md/protocol'
 import { canView } from '../../authorization/policy.js'
-import { gatePreviewOutcome, gateSampleState } from '../../domain/decision-gate-preview.js'
+import { gateSampleState } from '../../domain/decision-gate-preview.js'
 import { ProtocolError } from '../../domain/errors.js'
 import { AgentId, IntegrationId } from '../../domain/ids.js'
 import type { AgentRecord } from '../../persistence/ports.js'
@@ -30,6 +27,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { ConnectionClosed } from '../../ws/registry.js'
 import { conversationAudienceAllows, readableConversation, type ReadableConversation } from '../conversation-access.js'
 import { decisionGateReadiness, gateConsumer, visibleDecisionChain } from '../decision-access.js'
+import { runGatePreview, type GatePreviewRun } from '../gate-preview.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
@@ -41,7 +39,7 @@ const PreviewBody = z.strictObject({ decisionBinding: ChannelDecisionGate, state
 const ReadinessDto = z.object({
   status: z.enum(['ready', 'pending_sync', 'needs_review', 'daemon_offline', 'unsupported'])
 })
-const GatePreviewDto = z.object({
+export const GatePreviewDto = z.object({
   mode: z.literal('live'),
   readiness: ReadinessDto,
   evaluation: DecisionEvaluation.nullable(),
@@ -199,54 +197,26 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
           )
         }
         if (!(await authorized())) return reply.code(404).send(notFound('channel not found'))
-        let evaluation: DecisionEvaluation
-        let chain: DecisionChainTrace | undefined
-        let matched = false
-        let matchedKeys: string[] = []
+        let result: GatePreviewRun
         try {
-          const deadlineAt = performance.timeOrigin + performance.now() + 5000
-          const result = await runDecisionChain<DecisionGateStep>({
-            root: gate,
-            steps: gate.steps,
-            deadlineAt,
-            evaluate: async (step) => {
-              if (!(await authorized())) return { status: 'unavailable', reason: 'credentials' }
-              const d = definitions!.get(step.decisionId)!
-              const request = DecisionPreviewRequest.safeParse({
-                ...parsed.data,
-                evaluationId: randomUUID(),
-                decision: { name: d.name, providerId: d.providerId, model: d.model, question: d.question },
-                ...(gate.steps?.length
-                  ? { budgetMs: Math.max(1, Math.floor(deadlineAt - (performance.timeOrigin + performance.now()))) }
-                  : {})
-              })
-              return request.success
-                ? (await deps.control.decisionPreview(daemonId, orgId, request.data)).evaluation
-                : { status: 'unavailable', reason: 'unsupported_input' }
-            },
-            next: (step, evaluation) => {
-              const result = nextGateStep(definitions!.get(step.decisionId)!.question, step, evaluation.answer)
-              matched = result.matched
-              matchedKeys = result.matchedKeys
-              return result.nextStepId ? [result.nextStepId] : []
-            }
+          result = await runGatePreview(deps, {
+            orgId,
+            daemonId,
+            gate,
+            definitions: definitions!,
+            request: parsed.data,
+            authorized
           })
-          evaluation = result.evaluation
-          if (gate.steps?.length) chain = result.trace
         } catch (err) {
           req.log.warn({ daemonId, error: (err as Error).name }, 'gate preview could not reach the serving daemon')
           return reply.code(503).send(unavailable('Decision preview is unavailable. Try again.'))
         }
         if (!(await authorized())) return reply.code(404).send(notFound('channel not found'))
-        const result =
-          evaluation.status === 'unavailable'
-            ? gatePreviewOutcome(decision.question, gate.when, evaluation)
-            : { evaluation, outcome: matched ? ('trigger' as const) : ('skip' as const), matched, matchedKeys }
         return {
           mode: 'live' as const,
           readiness: { status: readiness.status === 'pending_sync' ? ('pending_sync' as const) : ('ready' as const) },
           evaluation: result.evaluation,
-          ...(chain ? { chain } : {}),
+          ...(result.chain ? { chain: result.chain } : {}),
           consumer: {
             type: 'gate' as const,
             outcome: result.outcome,

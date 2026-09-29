@@ -1,5 +1,6 @@
 import {
   matchDecisionCondition,
+  type ApiGateTryState,
   type DecisionCondition,
   type DecisionEvaluation,
   type DecisionEvaluationAgent,
@@ -66,4 +67,17 @@ export function gatePreviewOutcome(
       evaluation: { status: 'unavailable', reason: 'invalid_response' }
     }
   }
+}
+
+const API_GATE_TEXT_MAX_BYTES = 8 * 1024
+
+/** An API gate Try in the state the daemon's API gate builds: the call's text, cut to 8 KiB, and no history. */
+export function apiGateSampleState(sample: ApiGateTryState, agent: DecisionEvaluationAgent): Record<string, unknown> {
+  const text = sample.currentMessage.text
+  const bytes = new TextEncoder().encode(text)
+  const content =
+    bytes.length <= API_GATE_TEXT_MAX_BYTES
+      ? text
+      : new TextDecoder().decode(bytes.subarray(0, API_GATE_TEXT_MAX_BYTES)).replace(/\uFFFD$/, '')
+  return { source: 'chat', agent, currentMessage: { text: content }, history: [], truncated: content !== text }
 }

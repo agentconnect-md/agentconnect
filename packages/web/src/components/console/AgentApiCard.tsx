@@ -26,6 +26,7 @@ import {
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import type { SavedGate } from '@/lib/decisions/binding'
 import { apiGateEvaluations } from '@/lib/decisions/evaluation-source'
+import { apiGateTry } from '@/lib/decisions/try-source'
 import { DecisionBindingStrip, DecisionGateEntry } from '@/components/console/decisions/DecisionBindingStrip'
 import type { ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 import {
@@ -209,7 +210,10 @@ function ApiRow({
           surface="api"
           // Only those who can edit the agent read the calls its gate judged.
           {...(agent.canEdit
-            ? { evaluations: apiGateEvaluations(decisions.api, decisions.orgId, agent.id, entry.protocol) }
+            ? {
+                evaluations: apiGateEvaluations(decisions.api, decisions.orgId, agent.id, entry.protocol),
+                trySource: apiGateTry(decisions.api, decisions.orgId, agent.id, entry.protocol)
+              }
             : {})}
           onSave={(gate) => saveGate(gate)}
         />

@@ -1,10 +1,16 @@
 // The chat APIs an agent accepts calls on (shared-bot-relay.md §10.4), anchored on the agent like a hook: reads need visibility, writes `denyViewerWrite`.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
+import { randomUUID } from 'node:crypto'
 import {
   API_GATE_EVALUATIONS_V1_FEATURE,
   AgentApiProtocol,
+  ApiGateTryState,
   ChannelDecisionGate,
+  DECISION_PREVIEW_V1_FEATURE,
+  DecisionPreviewRequest,
+  decisionAgentContext,
+  supportsDecision,
   DecisionEvaluationRecordDetail,
   DecisionEvaluationRecordPage,
   decisionGateIssues,
@@ -23,6 +29,9 @@ import { ctxOf, denyViewerWrite, orgOf } from '../rbac.js'
 import { apiGateReadiness, apiProtocolUnsupported, visibleDecisionChain } from '../decision-access.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
+import { apiGateSampleState } from '../../domain/decision-gate-preview.js'
+import { runGatePreview, type GatePreviewRun } from '../gate-preview.js'
+import { GatePreviewDto } from './integration-channel-decisions.js'
 
 const AgentParams = z.object({ orgId: z.string(), agentId: z.string().uuid() })
 const EntryParams = AgentParams.extend({ protocol: AgentApiProtocol })
@@ -241,6 +250,131 @@ export function agentApiRoutes(deps: HttpDeps) {
       await reply.code(503).send(unavailable('the evaluation host is offline', 'DAEMON_OFFLINE'))
       return null
     }
+
+    r.post(
+      '/agents/:agentId/api/:protocol/gate/preview',
+      {
+        bodyLimit: 40 * 1024,
+        schema: {
+          tags: [Tag.Decisions],
+          summary: 'Try a chat API gate',
+          operationId: 'previewAgentApiGate',
+          description:
+            'Evaluates a draft Decision gate for `protocol` against a sample call on a daemon serving the agent, in the state the live gate builds (`currentMessage.text`, no history; the agent and source are bound here), then applies the draft condition. Writes nothing and never stores the sample. Needs edit access to the agent. An unsupported daemon returns `not_applied` without a model call; 503 when no serving daemon is connected; a provider failure returns `unavailable`, which admits the call and never means skip.',
+          params: EntryParams,
+          body: z.strictObject({ gate: ChannelDecisionGate, state: ApiGateTryState }),
+          response: { 200: GatePreviewDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const agent = await editableAgent(req, reply)
+        if (!agent) return reply
+        const protocol = req.params.protocol
+        if (!(await deps.repos.agentApiEntry.listForAgent(agent.id)).some((e) => e.protocol === protocol))
+          return notFound(reply, 'the agent does not accept this API')
+        const { gate, state } = req.body
+        const definitions = await visibleDecisionChain(deps, req, gate)
+        const decision = definitions?.get(gate.decisionId)
+        if (!definitions || !decision)
+          return reply
+            .code(404)
+            .send({ error: 'Not Found', statusCode: 404, message: 'decision not found', code: 'DECISION_NOT_FOUND' })
+        const badRequest = (message: string, issues?: Array<{ path: Array<string | number>; message: string }>) =>
+          reply.code(400).send({ error: 'Bad Request', statusCode: 400, message, ...(issues ? { issues } : {}) })
+        if ([...definitions.values()].some((d) => !supportsDecision(d)))
+          return badRequest('Unsupported Decision provider, model, or question type.')
+        const issues = decisionGateIssues(
+          decision.question,
+          gate,
+          new Map([...definitions].map(([id, d]) => [id, d.question]))
+        )
+        if (issues.length > 0) return badRequest('The condition does not match the Decision question', issues)
+        const target = { agentId: agent.id, name: agent.displayName ?? agent.name }
+        const notApplied = (message: string) => ({
+          mode: 'live' as const,
+          readiness: { status: 'unsupported' as const },
+          evaluation: null,
+          consumer: {
+            type: 'gate' as const,
+            outcome: 'not_applied' as const,
+            notAppliedReason: 'unsupported' as const,
+            reason: message,
+            matched: false,
+            matchedKeys: [],
+            target
+          }
+        })
+        const readiness = await apiGateReadiness(deps, agent, protocol, (gate.steps?.length ?? 0) > 0)
+        if (readiness.status === 'unsupported')
+          return notApplied(readiness.reason ?? 'Upgrade the daemon to gate API calls by decision.')
+        const readyConn = (id: string) => {
+          const conn = deps.daemonConns.get(id)
+          return conn?.state === 'READY' ? conn : undefined
+        }
+        const daemonId = (await deps.placementResolver.servingDaemons(agent)).find((id) => readyConn(id))
+        if (!daemonId) return reply.code(503).send(unavailable('the evaluation host is offline', 'DAEMON_OFFLINE'))
+        if (!readyConn(daemonId)?.capabilities?.features.includes(DECISION_PREVIEW_V1_FEATURE))
+          return notApplied('Upgrade the daemon to preview decisions.')
+        const parsed = DecisionPreviewRequest.safeParse({
+          agentId: agent.id,
+          evaluationId: randomUUID(),
+          decision: {
+            name: decision.name,
+            providerId: decision.providerId,
+            model: decision.model,
+            question: decision.question
+          },
+          state: apiGateSampleState(state, decisionAgentContext(agent))
+        })
+        if (!parsed.success) return badRequest('The preview must fit within 32 KiB.')
+        // Fenced on both sides of the call: role, edit access, serving placement, and the Decisions themselves.
+        const authorized = async (): Promise<boolean> => {
+          const role = await deps.repos.org.roleOf(agent.orgId, ctxOf(req).userId)
+          if (!role || role === 'viewer') return false
+          const viewer = { ...ctxOf(req), role }
+          const [current, stillVisible] = await Promise.all([
+            deps.repos.agent.get(agent.orgId, agent.id),
+            Promise.all([...definitions.keys()].map((id) => deps.repos.decision.get(agent.orgId, id)))
+          ])
+          return (
+            !!current &&
+            canEdit(current, viewer) &&
+            stillVisible.every((d) => !!d && canView(d, viewer)) &&
+            (await deps.placementResolver.servingDaemons(current)).includes(daemonId)
+          )
+        }
+        if (!(await authorized())) return notFound(reply, 'agent not found')
+        let result: GatePreviewRun
+        try {
+          result = await runGatePreview(deps, {
+            orgId: agent.orgId,
+            daemonId,
+            gate,
+            definitions,
+            request: parsed.data,
+            authorized
+          })
+        } catch (err) {
+          req.log.warn({ daemonId, error: (err as Error).name }, 'API gate preview could not reach the serving daemon')
+          return reply.code(503).send(unavailable('Decision preview is unavailable. Try again.', 'DAEMON_OFFLINE'))
+        }
+        if (!(await authorized())) return notFound(reply, 'agent not found')
+        return {
+          mode: 'live' as const,
+          readiness: { status: 'ready' as const },
+          evaluation: result.evaluation,
+          ...(result.chain ? { chain: result.chain } : {}),
+          consumer: {
+            type: 'gate' as const,
+            outcome: result.outcome,
+            matched: result.matched,
+            matchedKeys: result.matchedKeys,
+            target
+          }
+        }
+      }
+    )
 
     r.get(
       '/agents/:agentId/api/:protocol/evaluations',

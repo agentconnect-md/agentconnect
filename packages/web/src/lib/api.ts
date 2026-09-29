@@ -4,7 +4,14 @@
 // mappers translate the lean wire DTOs into the richer UI shapes from `./data`,
 // filling fields the API does not (yet) expose with placeholders.
 
-import type { DecisionApi, DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
+import type {
+  ApiGatePreviewInput,
+  CodeHostRoutingPreviewInput,
+  CodeHostRoutingPreviewResult,
+  DecisionApi,
+  DecisionConversationRef,
+  DecisionGatePreviewResult
+} from '@agentconnect.md/protocol/decision-api'
 import type {
   AgentModelSelection,
   AgentRepositorySelector,
@@ -4359,6 +4366,16 @@ export function fetchAgentApiGateEvaluations(
   return apiGet(`${agentApiBase(agentId, orgId)}/${protocol}/evaluations${suffix ? `?${suffix}` : ''}`)
 }
 
+/** Try a draft gate on this API against a sample call, on a daemon serving the agent; writes nothing. */
+export function previewAgentApiGate(
+  agentId: string,
+  protocol: AgentApiProtocol,
+  input: ApiGatePreviewInput,
+  orgId?: string
+): Promise<DecisionGatePreviewResult> {
+  return apiPost(`${agentApiBase(agentId, orgId)}/${protocol}/gate/preview`, input)
+}
+
 export function fetchAgentApiGateEvaluation(
   agentId: string,
   protocol: AgentApiProtocol,
@@ -4482,6 +4499,15 @@ export function fetchCodeHostRoutingEvaluations(
   if (page.decisionId) query.set('decisionId', page.decisionId)
   const suffix = query.toString()
   return apiGet(`${codeHostRoutingPath(scope, orgId)}/evaluations${suffix ? `?${suffix}` : ''}`)
+}
+
+// Try a draft routing against a sample event on the scope's evaluation host; writes nothing.
+export function previewCodeHostRouting(
+  scope: CodeHostRoutingKey,
+  input: CodeHostRoutingPreviewInput,
+  orgId?: string
+): Promise<CodeHostRoutingPreviewResult> {
+  return apiPost(`${codeHostRoutingPath(scope, orgId)}/preview`, input)
 }
 
 export function fetchCodeHostRoutingEvaluation(

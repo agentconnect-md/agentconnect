@@ -322,6 +322,12 @@ conversations; shared-bot routing stays refused.
   reads **Any update**, because the Decision judges every update.
 - A selected fire's run appears in the hook's run history as usual; a non-selected candidate has no
   run.
+- **Try a message** in the rules modal previews the draft through
+  `POST /api/v1/decision-routing/:provider/:repoId/:family/preview` against a sample host state
+  (decisions.md §9.3): the CP binds `source` and `repository`, runs the chain on the saved
+  evaluation host (else the first member with a connected daemon), and settles as the router does
+  — matched members, Otherwise's every member or none, every member when the evaluation is
+  unavailable. It writes nothing; paused, Needs review, and unsupported hosts are Not applied.
 
 ## 8. Not in this version
 

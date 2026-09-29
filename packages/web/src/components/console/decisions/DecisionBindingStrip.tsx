@@ -33,6 +33,7 @@ import { DecisionConditionFields, conditionSummary } from './DecisionConditionFi
 import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
 import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import { DecisionGateTry } from './DecisionGateTry'
+import { conversationGateTry, type GateTrySource } from '@/lib/decisions/try-source'
 import { DecisionChip } from './DecisionChip'
 import { GateChainFields } from './GateChainFields'
 import { DecisionPicker } from './DecisionPicker'
@@ -177,12 +178,13 @@ export function DecisionBindingStrip({
   status,
   surface = 'channel',
   evaluations,
+  trySource,
   applyAll,
   onSave
 }: {
   /** The gate's identity: organization, owning bot, and conversation (see `gateKey`). */
   bindingKey: string
-  /** The live conversation Try and Recent evaluations read; null where none is addressable. */
+  /** The live conversation Try and Recent evaluations read by default; null where none is addressable. */
   conversation: DecisionConversationRef | null
   canWrite: boolean
   /** The agent this conversation dispatches to — the gate's one fixed target. */
@@ -200,6 +202,8 @@ export function DecisionBindingStrip({
   surface?: 'channel' | 'api'
   /** Where Recent evaluations read when there is no conversation, as for an API gate. */
   evaluations?: DecisionEvaluationSource
+  /** Where Try runs when there is no conversation, as for an API gate. */
+  trySource?: GateTrySource
   /** Persist the gate; a rejection keeps the draft for Retry. */
   onSave: (gate: ChannelDecisionGate) => Promise<void>
   /** Write the same gate to every By decision conversation of this bot; absent where there is no other one. */
@@ -215,7 +219,8 @@ export function DecisionBindingStrip({
   const canWrite = writable && myRole !== 'viewer'
   const pathname = usePathname()
   const search = useSearchParams()
-  const { decisions, loading, reload, bindingDrafts, setBindingDraft, beginInlineCreate } = useDecisionsPrototype()
+  const { api, decisions, loading, reload, bindingDrafts, setBindingDraft, beginInlineCreate } = useDecisionsPrototype()
+  const tries = trySource ?? (conversation ? conversationGateTry(api, conversation) : null)
   const draft = bindingDrafts[bindingKey] ?? null
   const saving = useRef(false)
   // Retry repeats the last write, so a failed Apply to all retries every conversation rather than just this one.
@@ -550,7 +555,7 @@ export function DecisionBindingStrip({
                   <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
                   {t('binding.howThisWorks')}
                 </button>
-                {conversation && canWrite && (
+                {tries && canWrite && (
                   <button
                     type="button"
                     className="lnk gap-[6px] text-[11.5px] font-medium"
@@ -578,9 +583,9 @@ export function DecisionBindingStrip({
               </div>
             )}
 
-            {decision && when && conversation && canWrite && (
+            {decision && when && tries && canWrite && (
               <DecisionGateTry
-                conversation={conversation}
+                source={tries}
                 decision={decision}
                 when={when}
                 binding={gate ?? undefined}

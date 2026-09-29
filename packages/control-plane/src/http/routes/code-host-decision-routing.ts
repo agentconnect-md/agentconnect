@@ -1,9 +1,22 @@
+import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
   CodeHostRoutingFamily,
   CodeHostRoutingProvider,
+  CodeHostTryState,
+  DECISION_CHAIN_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
+  DECISION_PREVIEW_V1_FEATURE,
+  DecisionChainTrace,
+  DecisionEvaluation,
+  DecisionPreviewRequest,
+  matchDecisionCondition,
+  runDecisionChain,
+  type DecisionAnswer,
+  type DecisionQuestion,
+  type DecisionRoutingStep,
   DECISION_EVALUATION_FILTER_V1_FEATURE,
   DecisionEvaluationRecordDetail,
   DecisionEvaluationRecordPage,
@@ -13,6 +26,7 @@ import {
   type DecisionValidationIssue
 } from '@agentconnect.md/protocol'
 import { codeHostsOf } from '../../codehost/registry.js'
+import { codeHostSampleState, settleCodeHostPreview } from '../../domain/code-host-routing-preview.js'
 import { canEdit, canView } from '../../authorization/policy.js'
 import { ProtocolError } from '../../domain/errors.js'
 import { OrgId } from '../../domain/ids.js'
@@ -59,6 +73,21 @@ const DetailDto = z.object({
   // Every agent with an enabled trigger of this provider on this repository and family: the only valid rule targets.
   members: z.array(z.object({ agentId: z.string(), hookId: z.string(), name: z.string().nullable() })),
   evaluationAgentId: z.string().nullable()
+})
+const PreviewDto = z.object({
+  mode: z.literal('live'),
+  evaluation: DecisionEvaluation.nullable(),
+  chain: DecisionChainTrace.optional(),
+  consumer: z.object({
+    type: z.literal('code_host_routing'),
+    outcome: z.enum(['activate', 'skip', 'unavailable', 'not_applied']),
+    notAppliedReason: z.enum(['paused', 'needs_review', 'unsupported']).optional(),
+    reason: z.string().optional(),
+    matchedRuleIds: z.array(z.string()),
+    matchedKeys: z.array(z.string()),
+    usedOtherwise: z.boolean(),
+    targets: z.array(z.object({ agentId: z.string(), name: z.string().nullable() }))
+  })
 })
 
 const notFound = (message: string, code?: string) => ({
@@ -364,6 +393,198 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
       a: { record: CodeHostDecisionRoutingRecord; host: AgentRecord | null },
       b: Awaited<ReturnType<typeof lane>>
     ) => !!b && b !== 'forbidden' && b.record.id === a.record.id && b.host?.id === a.host?.id
+
+    r.post(
+      '/decision-routing/:provider/:repoId/:family/preview',
+      {
+        bodyLimit: 40 * 1024,
+        schema: {
+          tags: [Tag.Decisions],
+          summary: 'Try repository routing',
+          operationId: 'previewCodeHostDecisionRouting',
+          description:
+            "Evaluates a draft routing config for one code-host repository and subject family against a sample event, in the state the hook router builds (`event`, `subject`, `currentMessage`, `history`, optional `pullRequest`; the provider and repository are bound here), on the evaluation agent's serving daemon (the saved host, else the first member with a connected one). Settles targets as the router does: every matched rule's member, Otherwise's every member or none, and every member when the evaluation is unavailable. Writes nothing and never stores the sample. Paused, Needs review, and unsupported configurations return `not_applied` without a model call; 503 when no host daemon is connected.",
+          params: ScopeParams,
+          body: z.strictObject({ config: SharedBotDecisionRouting, state: CodeHostTryState }),
+          response: { 200: PreviewDto, 400: IssuesErrorDto, 403: ErrorDto, 404: IssuesErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const view = await load(req)
+        if (!readable(req, view)) return reply.code(404).send(notFound(REPOSITORY_NOT_FOUND))
+        if (view.members.length === 0)
+          return reply
+            .code(400)
+            .send(
+              badRequest(
+                `No enabled ${codeHostsOf(deps)[view.scope.provider].displayName} trigger watches this repository and family.`
+              )
+            )
+        const { config, state } = req.body
+        const definitions = await visibleDecisionChain(deps, req, config)
+        const decision = definitions?.get(config.decisionId)
+        if (!definitions || !decision) return reply.code(404).send(notFound('decision not found', 'DECISION_NOT_FOUND'))
+        if ([...definitions.values()].some((d) => !supportsDecision(d)))
+          return reply.code(400).send(badRequest('Unsupported Decision provider, model, or question type.'))
+        const memberIds = view.members.map((m) => m.agent.id as string)
+        const issues = hookRoutingIssues(
+          {
+            orgId: view.scope.orgId,
+            decisionId: config.decisionId,
+            config,
+            needsReview: false,
+            definition: decision,
+            definitions: [...definitions.values()]
+          },
+          new Set(memberIds)
+        )
+        if (issues.length > 0) return reply.code(400).send(badRequest('The routing configuration is invalid.', issues))
+        const nameOf = (agentId: string) => {
+          const agent = view.members.find((m) => m.agent.id === agentId)?.agent
+          return agent && canView(agent, ctxOf(req)) ? agent.displayName || agent.name : null
+        }
+        const blank = {
+          type: 'code_host_routing' as const,
+          matchedRuleIds: [],
+          matchedKeys: [],
+          usedOtherwise: false,
+          targets: []
+        }
+        const notApplied = (reason: 'paused' | 'needs_review' | 'unsupported', message?: string) => ({
+          mode: 'live' as const,
+          evaluation: null,
+          consumer: {
+            ...blank,
+            outcome: 'not_applied' as const,
+            notAppliedReason: reason,
+            ...(message ? { reason: message } : {})
+          }
+        })
+        if (!config.enabled) return notApplied('paused')
+        if (view.record?.needsReview && isDeepStrictEqual(view.record.config, config))
+          return notApplied('needs_review', 'The Decision changed; review these rules.')
+        // The saved host when it still serves the scope, else the first member a connected daemon serves.
+        const chained = (config.steps?.length ?? 0) > 0
+        const hostFeatures = [DECISION_PREVIEW_V1_FEATURE, ...(chained ? [DECISION_CHAIN_V1_FEATURE] : [])]
+        const ordered = [...view.members].sort(
+          (a, b) =>
+            Number(b.agent.id === view.record?.evaluationAgentId) -
+            Number(a.agent.id === view.record?.evaluationAgentId)
+        )
+        let host: { agent: AgentRecord; daemonId: string } | null = null
+        let outdated = false
+        for (const { agent } of ordered) {
+          const daemonId = (await deps.placementResolver.servingDaemons(agent)).find((id) => readyConn(id))
+          if (!daemonId) continue
+          if (!hostFeatures.every((f) => readyConn(daemonId)?.capabilities?.features.includes(f))) {
+            outdated = true
+            continue
+          }
+          host = { agent, daemonId }
+          break
+        }
+        if (!host) {
+          if (outdated) return notApplied('unsupported', 'Upgrade the evaluation host daemon to preview decisions.')
+          return reply.code(503).send(unavailable(OFFLINE, 'DAEMON_OFFLINE'))
+        }
+        const { agent: executor, daemonId } = host
+        const parsed = DecisionPreviewRequest.safeParse({
+          agentId: executor.id,
+          evaluationId: randomUUID(),
+          decision: {
+            name: decision.name,
+            providerId: decision.providerId,
+            model: decision.model,
+            question: decision.question
+          },
+          state: codeHostSampleState(state, { provider: view.scope.provider, repoFullName: view.repoFullName })
+        })
+        if (!parsed.success) return reply.code(400).send(badRequest('The preview must fit within 32 KiB.'))
+        // Fenced on both sides of the call: role, scope visibility, the Decisions, and the host still serving its member.
+        const authorized = async (): Promise<boolean> => {
+          const role = await deps.repos.org.roleOf(view.scope.orgId, ctxOf(req).userId)
+          if (!role || role === 'viewer') return false
+          const viewer = { ...ctxOf(req), role }
+          const [fresh, stillVisible, current] = await Promise.all([
+            load(req),
+            Promise.all([...definitions.keys()].map((id) => deps.repos.decision.get(view.scope.orgId, id))),
+            deps.repos.agent.get(view.scope.orgId, executor.id)
+          ])
+          if (!fresh || !fresh.members.some((m) => canView(m.agent, viewer))) return false
+          if (stillVisible.some((d) => !d || !canView(d, viewer)) || !current) return false
+          if (!fresh.members.some((m) => m.agent.id === current.id)) return false
+          return (await deps.placementResolver.servingDaemons(current)).includes(daemonId)
+        }
+        if (!(await authorized())) return reply.code(404).send(notFound(REPOSITORY_NOT_FOUND))
+        const answers = new Map<string, { question: DecisionQuestion; answer: DecisionAnswer }>()
+        let evaluation: DecisionEvaluation
+        let chain: DecisionChainTrace | undefined
+        try {
+          const deadlineAt = performance.timeOrigin + performance.now() + 5000
+          const result = await runDecisionChain<DecisionRoutingStep>({
+            root: config,
+            steps: config.steps,
+            deadlineAt,
+            evaluate: async (step) => {
+              if (!(await authorized())) return { status: 'unavailable', reason: 'credentials' }
+              const d = definitions.get(step.decisionId)!
+              const request = DecisionPreviewRequest.safeParse({
+                ...parsed.data,
+                evaluationId: randomUUID(),
+                decision: { name: d.name, providerId: d.providerId, model: d.model, question: d.question },
+                ...(chained
+                  ? { budgetMs: Math.max(1, Math.floor(deadlineAt - (performance.timeOrigin + performance.now()))) }
+                  : {})
+              })
+              return request.success
+                ? (await deps.control.decisionPreview(daemonId, view.scope.orgId, request.data)).evaluation
+                : { status: 'unavailable', reason: 'unsupported_input' }
+            },
+            next: (step, result) => {
+              const question = definitions.get(step.decisionId)!.question
+              const id = config.steps?.find((s) => s === step)?.id
+              if (id) answers.set(id, { question, answer: result.answer })
+              return step.rules.flatMap((rule) =>
+                rule.action.type === 'decision' && matchDecisionCondition(question, rule.when, result.answer).matched
+                  ? [rule.action.nextStepId]
+                  : []
+              )
+            }
+          })
+          evaluation = result.evaluation
+          if (chained) chain = result.trace
+        } catch (err) {
+          req.log.warn({ daemonId, error: (err as Error).name }, 'routing preview could not reach the host')
+          return reply.code(503).send(unavailable('Routing preview is unavailable. Try again.', 'DAEMON_OFFLINE'))
+        }
+        if (!(await authorized())) return reply.code(404).send(notFound(REPOSITORY_NOT_FOUND))
+        const settled = settleCodeHostPreview({
+          question: decision.question,
+          routing: config,
+          evaluation,
+          chain: answers,
+          memberIds
+        })
+        return {
+          mode: 'live' as const,
+          evaluation:
+            settled.reason === 'invalid_response'
+              ? { status: 'unavailable' as const, reason: 'invalid_response' as const }
+              : evaluation,
+          ...(chain ? { chain } : {}),
+          consumer: {
+            ...blank,
+            outcome: settled.outcome,
+            ...(settled.reason ? { reason: settled.reason } : {}),
+            matchedRuleIds: settled.matchedRuleIds,
+            matchedKeys: settled.matchedKeys,
+            usedOtherwise: settled.usedOtherwise,
+            targets: settled.agentIds.map((agentId) => ({ agentId, name: nameOf(agentId) }))
+          }
+        }
+      }
+    )
 
     r.get(
       '/decision-routing/:provider/:repoId/:family/evaluations',

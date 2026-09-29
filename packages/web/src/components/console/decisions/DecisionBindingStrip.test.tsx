@@ -228,7 +228,7 @@ describe('DecisionBindingStrip', () => {
   it('runs the gate Try on the conversation without a daemon pick and keeps the verdict after collapsing', async () => {
     const view = await render(<MockStrip bindingKey="org-test|support-bot|#help" />)
     await clickText(view, 'Try a message')
-    await typeInto(view.querySelector('input[aria-label="Current message"]'), 'Can someone ship the hotfix?')
+    await typeInto(view.querySelector('textarea[aria-label="Current message"]'), 'Can someone ship the hotfix?')
     await clickText(view, 'Try')
     await act(async () => {})
 
@@ -237,8 +237,8 @@ describe('DecisionBindingStrip', () => {
     expect(findByText(view, 'Would trigger')).toBeUndefined()
 
     await clickText(view, 'Try a message')
-    expect(view.querySelector('input[aria-label="Current message"]')).toBeNull()
-    expect(view.querySelector('[data-testid="gate-try-result"]')).toBeTruthy()
+    expect(view.querySelector('textarea[aria-label="Current message"]')).toBeNull()
+    expect(view.querySelector('[data-testid="try-result"]')).toBeTruthy()
   })
 
   it('opens Recent evaluations from a saved gate even without write permission', async () => {

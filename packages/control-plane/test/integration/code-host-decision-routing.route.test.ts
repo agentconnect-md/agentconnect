@@ -5,11 +5,14 @@ import {
   DECISION_CHAIN_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_EVALUATION_FILTER_V1_FEATURE,
+  DECISION_PREVIEW_V1_FEATURE,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
   type DecisionDraft,
   type DecisionEvaluationRecordDetail,
+  type DecisionEvaluation,
   type DecisionEvaluationRecordPage,
+  type DecisionPreviewRequest,
   type DecisionEvaluationRequest,
   type DecisionEvaluationsRequest,
   type HookRoutingProjection,
@@ -48,6 +51,13 @@ const choiceDraft: DecisionDraft = {
   ...boolDraft,
   name: 'Kind',
   question: { type: 'choice', instructions: 'Which kind?', criteria: { bug: 'A bug', question: 'A question' } }
+}
+
+const YES: DecisionEvaluation = {
+  status: 'answered',
+  model: 'jev-1.13.0',
+  answer: { type: 'boolean', value: true, probability: 0.9 },
+  usage: { inputTokens: 10, outputTokens: 1 }
 }
 
 const row = {
@@ -90,6 +100,12 @@ const detail: DecisionEvaluationRecordDetail = {
 type Spec = { agentId: string; hookRoutings?: HookRoutingProjection[] }
 
 class SpyControl {
+  readonly previews: Array<{ daemonId: string; req: DecisionPreviewRequest }> = []
+  nextPreview: () => Promise<{ evaluation: DecisionEvaluation }> = async () => ({ evaluation: YES })
+  async decisionPreview(daemonId: string, _orgId: string, req: DecisionPreviewRequest) {
+    this.previews.push({ daemonId, req })
+    return this.nextPreview()
+  }
   readonly lists: DecisionEvaluationsRequest[] = []
   readonly gets: DecisionEvaluationRequest[] = []
   readonly specs: Spec[] = []
@@ -821,5 +837,131 @@ describe('repository Decision routing — GitLab and Gitea', () => {
     expect(upgrade.json()).toMatchObject({ code: 'DAEMON_UPGRADE_REQUIRED' })
     expect((await app.app.inject({ method: 'DELETE', url: GITEA_SCOPE })).statusCode).toBe(204)
     expect(await prisma.codeHostDecisionRouting.count()).toBe(0)
+  })
+})
+
+describe('repository Decision routing — Try', () => {
+  const PREVIEW_FEATURES = [
+    DECISION_EVALUATIONS_V1_FEATURE,
+    HOOK_DECISION_ROUTING_V1_FEATURE,
+    DECISION_PREVIEW_V1_FEATURE
+  ]
+  const sample = {
+    event: { name: 'issues', action: 'opened' },
+    subject: { kind: 'issue', number: 7, title: 'Crash on start', labels: ['bug'], body: 'It crashes.' },
+    currentMessage: { sender: { id: 'reporter' }, text: 'It crashes on start' }
+  }
+  async function tryWorld(features: string[] = PREVIEW_FEATURES) {
+    const world = await seedWorld()
+    const { app, spy } = appWith({ features })
+    app.relayReg.add(new FakeRelay('relay-new', [HOOK_DECISION_ROUTING_V1_FEATURE]))
+    await createHook(app, world.early)
+    await createHook(app, world.late)
+    const decisionId = await createDecision(app)
+    const config = (otherwise: 'skip' | 'default_agent' = 'skip', enabled = true) => ({
+      enabled,
+      decisionId,
+      rules: [{ id: 'r1', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: world.late } }],
+      otherwise: { type: otherwise }
+    })
+    const post = (payload: Record<string, unknown>) =>
+      app.app.inject({ method: 'POST', url: `${SCOPE}/preview`, payload })
+    return { ...world, app, spy, config, post }
+  }
+
+  it("runs an unsaved draft in the hook router's state and fires the matched rule's member", async () => {
+    const w = await tryWorld()
+    const res = await w.post({ config: w.config(), state: sample })
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json()).toMatchObject({
+      mode: 'live',
+      evaluation: YES,
+      consumer: {
+        type: 'code_host_routing',
+        outcome: 'activate',
+        matchedRuleIds: ['r1'],
+        usedOtherwise: false,
+        targets: [{ agentId: w.late }]
+      }
+    })
+    expect(w.spy.previews).toHaveLength(1)
+    expect(w.spy.previews[0]!.req.state).toEqual({
+      source: 'github',
+      event: sample.event,
+      repository: { fullName: 'example-org/example-repo' },
+      subject: sample.subject,
+      currentMessage: {
+        id: 'preview-1',
+        sender: { id: 'reporter' },
+        text: 'It crashes on start',
+        threadId: 'preview-thread'
+      },
+      history: [],
+      context: { partial: false, reasons: [], omittedMessages: 0 }
+    })
+    // Writes nothing: no routing is saved by a Try.
+    expect(await prisma.codeHostDecisionRouting.count()).toBe(0)
+  })
+
+  it("runs on the saved routing's evaluation host", async () => {
+    const w = await tryWorld()
+    expect((await w.app.app.inject({ method: 'PUT', url: SCOPE, payload: { config: w.config() } })).statusCode).toBe(
+      200
+    )
+    const host = (await prisma.codeHostDecisionRouting.findFirstOrThrow()).evaluationAgentId
+    expect(host).toBe(w.early)
+    await w.post({ config: w.config(), state: sample })
+    expect(w.spy.previews[0]).toMatchObject({ daemonId: EARLY_DAEMON, req: { agentId: w.early } })
+  })
+
+  it('settles Otherwise and an unavailable answer as the router does', async () => {
+    const w = await tryWorld()
+    w.spy.nextPreview = async () => ({
+      evaluation: { ...YES, answer: { type: 'boolean', value: false, probability: 0.1 } }
+    })
+    const skipped = (await w.post({ config: w.config(), state: sample })).json().consumer
+    expect(skipped).toMatchObject({ outcome: 'skip', usedOtherwise: true, targets: [] })
+    const everyone = (await w.post({ config: w.config('default_agent'), state: sample })).json().consumer
+    expect(everyone.outcome).toBe('activate')
+    expect(everyone.targets.map((t: { agentId: string }) => t.agentId).sort()).toEqual([w.early, w.late].sort())
+    w.spy.nextPreview = async () => ({ evaluation: { status: 'unavailable', reason: 'timeout' } })
+    const failed = (await w.post({ config: w.config(), state: sample })).json().consumer
+    expect(failed).toMatchObject({ outcome: 'unavailable', reason: 'timeout' })
+    expect(failed.targets).toHaveLength(2)
+  })
+
+  it('is Not applied while paused or on a host that cannot preview, with no model call', async () => {
+    const w = await tryWorld()
+    expect((await w.post({ config: w.config('skip', false), state: sample })).json().consumer).toMatchObject({
+      outcome: 'not_applied',
+      notAppliedReason: 'paused'
+    })
+    const old = appWith({ features: [DECISION_EVALUATIONS_V1_FEATURE, HOOK_DECISION_ROUTING_V1_FEATURE] })
+    const outdated = await old.app.app.inject({
+      method: 'POST',
+      url: `${SCOPE}/preview`,
+      payload: { config: w.config(), state: sample }
+    })
+    expect(outdated.json().consumer).toMatchObject({ outcome: 'not_applied', notAppliedReason: 'unsupported' })
+    expect([...w.spy.previews, ...old.spy.previews]).toHaveLength(0)
+  })
+
+  it('refuses a bound field, a rule target outside the members, and a viewer', async () => {
+    const w = await tryWorld()
+    const bound = await w.post({ config: w.config(), state: { ...sample, repository: { fullName: 'x/y' } } })
+    expect(bound.statusCode).toBe(400)
+    const outsider = {
+      ...w.config(),
+      rules: [{ id: 'r1', when: { type: 'boolean', values: [true] }, action: { type: 'agent', agentId: randomUUID() } }]
+    }
+    expect((await w.post({ config: outsider, state: sample })).statusCode).toBe(400)
+    const viewer = appWith({ features: PREVIEW_FEATURES, userId: await member('viewer') })
+    const refused = await viewer.app.app.inject({
+      method: 'POST',
+      url: `${SCOPE}/preview`,
+      payload: { config: w.config(), state: sample }
+    })
+    expect(refused.statusCode).toBe(403)
+    expect([...w.spy.previews, ...viewer.spy.previews]).toHaveLength(0)
   })
 })

@@ -1326,7 +1326,7 @@ Use the existing Console surface, with the following reading and tab order:
 | Channels   | Searchable multiselect of this bot's eligible group channels; Off rows disabled with an enable-settings link          |
 | Rules      | Numbered When / Then rows, Add rule, Remove; Choice shows all matches, Score rows sort by lower bound                 |
 | Otherwise  | Fixed final row: Use default agent or Do not activate                                                                 |
-| Footer     | Cancel, Save; dirty, saving, success and retry states                                                                 |
+| Footer     | Try a message (§9.3), Cancel, Save; dirty, saving, success and retry states                                           |
 
 One scope applies to the whole rule list. Selecting channels explicitly applies
 By decision to those enabled conversations on Save. Show the affected channel names
@@ -1380,12 +1380,28 @@ The prototype must model those transitions rather than changing only its button 
 
 ### 9.3 Previews with the correct consumer
 
-For the initial chat examples, input is Current message and optional ordered
-Conversation history with sender IDs. Routing also chooses a channel and a sample situation: new conversation,
-explicit mention, or established thread. These are preview inputs, not runtime
-policy switches. Draft edits make prior results stale until rerun. The console's
-rules modal no longer offers routing Try; the routing rows below describe the
-`decision-routing/preview` endpoint, which remains.
+Every consumer's rules modal offers **Try a message** with one input: the sample
+**state**, shaped as the live Jev state that consumer sends, or a subset of it. The
+fields the consumer binds are never part of the sample: its agent, source,
+conversation, repository and context, and each entry's `id`, `threadId` and `time`.
+The editor draws the state as its JSON, folds the bound fields into `…`, and makes
+only the varying values editable: message texts, history rows (add and remove),
+sender ids as small fields, and the consumer-specific parts below. **Raw JSON**
+switches to the same state as text; both editors validate against one protocol
+schema per consumer, and a bound field is refused by name rather than dropped.
+
+| Consumer           | Sample state                                                                                              | Endpoint                                                |
+| ------------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Conversation gate  | `currentMessage` (`sender.id`, `text`), `history[]`                                                       | `integrations/:id/channels/:channelId/decision-preview` |
+| Shared-bot routing | As a gate, plus `addressing` (`mentions`, `constraint`); the channel is the row the modal was opened from | `bots/:id/decision-routing/preview`                     |
+| Chat API gate      | `currentMessage.text`; `history` is always empty                                                          | `agents/:agentId/api/:protocol/gate/preview`            |
+| Code-host routing  | `event`, `subject`, `currentMessage`, `history[]`, and `pullRequest` for a proposed-change family         | `decision-routing/:provider/:repoId/:family/preview`    |
+
+Routing reads its situation from `addressing` as the router's own state carries it:
+none is a new conversation, `mentions` an explicit mention, and a `constraint`
+without mentions an established thread whose `participantAgentIds` already
+participate. These are preview inputs, not runtime policy switches. Draft edits
+make prior results stale until rerun; switching editors does not.
 
 | Surface / situation          | Result shown                                                                                                                        |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
