@@ -4761,6 +4761,7 @@
         "inRange": "in range",
         "threshold": "≥ {value}",
         "answer": "Answer",
+        "confidence": "Confidence",
         "tokens": "{input} in · {output} out tokens",
         "expired": "Retention removed the full distribution; only the summary answer remains.",
         "status": {

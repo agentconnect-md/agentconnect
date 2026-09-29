@@ -194,6 +194,7 @@ describe('DecisionEvaluationsDrawer', () => {
     expect(bars[0]!.textContent).toContain('✓ triggers')
     expect(bars[1]!.textContent).not.toContain('✓ triggers')
     expect(result.textContent).toContain('412 in · 3 out tokens')
+    expect(result.textContent).not.toContain('Confidence')
     const raw = [...result.querySelectorAll('details')]
     expect(raw.map((block) => block.querySelector('summary')?.textContent)).toEqual([
       expect.stringContaining('Raw request'),
@@ -283,6 +284,9 @@ describe('DecisionEvaluationsDrawer', () => {
     expect(bars[1]!.getAttribute('data-chosen')).toBe('true')
     expect(result.textContent).not.toContain('✓ triggers')
     expect(result.textContent).toContain('90 in · 5 out tokens')
+    // Jev's confidence is shown apart from the answer; a Boolean answer has none.
+    expect(result.textContent).toContain('Answer other')
+    expect(result.textContent).toContain('Confidence 80%')
     expect(result.querySelector('details pre')?.textContent).toContain('"child": "request"')
     expect(view.textContent).toContain('Is this a support request?')
     expect(view.textContent).toContain('typesafe / jev-child')

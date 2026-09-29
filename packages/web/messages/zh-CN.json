@@ -4761,6 +4761,7 @@
         "inRange": "在区间内",
         "threshold": "≥ {value}",
         "answer": "回答",
+        "confidence": "置信度",
         "tokens": "输入 {input} · 输出 {output} tokens",
         "expired": "保留策略已移除完整分布，只剩摘要回答。",
         "status": {

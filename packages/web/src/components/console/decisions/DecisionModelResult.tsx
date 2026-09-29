@@ -5,7 +5,7 @@
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
-import { answerText, latencyText } from '@/lib/decisions/evaluations'
+import { answerParts, latencyText } from '@/lib/decisions/evaluations'
 import { distributionRows, modelLine, prettyJson, type DistributionRow } from '@/lib/decisions/model-result'
 import type {
   DecisionAnswer,
@@ -168,7 +168,7 @@ export function DecisionModelResult({
         words
       })
     : []
-  const answered = answerText(summary, words)
+  const answered = answerParts(summary, words)
   const facts = [
     latencyText(latencyMs),
     usage ? t('tokens', { input: usage.inputTokens, output: usage.outputTokens }) : null
@@ -204,7 +204,12 @@ export function DecisionModelResult({
           <div className="flex flex-wrap items-center gap-x-[14px] gap-y-1 border-t border-(--border-subtle) pt-[9px] font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
             {answered && (
               <span>
-                {t('answer')} <b className="mono font-medium text-(--text-primary)">{answered}</b>
+                {t('answer')} <b className="mono font-medium text-(--text-primary)">{answered.value}</b>
+              </span>
+            )}
+            {answered?.confidence && (
+              <span>
+                {t('confidence')} <b className="mono font-medium text-(--text-primary)">{answered.confidence}</b>
               </span>
             )}
             {answered && matched && <span className="font-medium text-(--status-online)">{t('triggers')}</span>}
