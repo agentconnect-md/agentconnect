@@ -20,6 +20,10 @@ export function codeHostSampleState(
     text: e.text,
     threadId: PREVIEW_THREAD
   })
+  // The live state always reads history from observation, and a change without its supplement says so.
+  const isPull = sample.subject.kind === 'pull_request' || sample.subject.kind === 'merge_request'
+  const missing = isPull && !sample.pullRequest
+  const reasons = ['observed_history', ...(missing ? ['pull_request_unavailable'] : [])]
   return {
     source: scope.provider,
     event: sample.event,
@@ -27,8 +31,12 @@ export function codeHostSampleState(
     subject: sample.subject,
     currentMessage: entry(sample.currentMessage, sample.history.length),
     history: sample.history.map(entry),
-    ...(sample.pullRequest ? { pullRequest: sample.pullRequest } : {}),
-    context: { partial: false, reasons: [], omittedMessages: 0 }
+    ...(sample.pullRequest
+      ? { pullRequest: sample.pullRequest }
+      : missing
+        ? { pullRequest: { commitMessages: '', files: [], filesTruncated: true } }
+        : {}),
+    context: { partial: true, reasons, omittedMessages: 0 }
   }
 }
 

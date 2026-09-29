@@ -5078,7 +5078,7 @@
       "fileAdditions": "文件 {index} 的新增行数",
       "fileDeletions": "文件 {index} 的删除行数",
       "fileDiff": "文件 {index} 的 diff",
-      "showDiff": "编辑 diff（{lines} 行）",
+      "showDiff": "编辑 diff（{lines, plural, other {# 行}}）",
       "addDiff": "添加 diff",
       "stale": "本次运行后草稿或示例已更改，请重新运行。",
       "failed": "无法运行预览。{message}",

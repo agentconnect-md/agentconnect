@@ -897,7 +897,7 @@ describe('repository Decision routing — Try', () => {
         threadId: 'preview-thread'
       },
       history: [],
-      context: { partial: false, reasons: [], omittedMessages: 0 }
+      context: { partial: true, reasons: ['observed_history'], omittedMessages: 0 }
     })
     // Writes nothing: no routing is saved by a Try.
     expect(await prisma.codeHostDecisionRouting.count()).toBe(0)
