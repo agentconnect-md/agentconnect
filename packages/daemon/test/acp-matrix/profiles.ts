@@ -425,11 +425,11 @@ export const PROFILES: Profile[] = [
     }
   },
   {
-    // @openma/deepseek-harness-acp@0.4.33: loadSession, http MCP, sandbox-mode/model/effort selectors, usage.
+    // @openma/deepseek-harness-acp@0.4.35: loadSession, http MCP, sandbox-mode/model/effort selectors, usage.
     id: 'dsh',
     registryId: 'dsh-acp',
     memory: {
-      runtime: runtime('npx', ['-y', '-p', '@openma/deepseek-harness-acp@0.4.33', 'dsh-acp']),
+      runtime: runtime('npx', ['-y', '-p', '@openma/deepseek-harness-acp@0.4.35', 'dsh-acp']),
       expected: { managed: true, none: true, native: false }
     },
     scenario: {
@@ -440,7 +440,7 @@ export const PROFILES: Profile[] = [
       },
       configOptions: [
         select('mode', 'mode', ['read-only', 'workspace-write', 'danger-full-access'], 'workspace-write'),
-        select('model', 'model', ['deepseek-v4-pro', 'deepseek-v4-flash']),
+        select('model', 'model', ['deepseek-official::deepseek-flash', 'deepseek-official::deepseek-v4-pro']),
         select('effort', 'thought_level', ['off', 'low', 'high', 'max'], 'high')
       ],
       prompt: { usage: { used: 900, size: 1_000_000 } },
@@ -450,7 +450,7 @@ export const PROFILES: Profile[] = [
       loadSession: true,
       mcp: { http: true, sse: false },
       promptImage: true,
-      models: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+      models: ['deepseek-official::deepseek-flash', 'deepseek-official::deepseek-v4-pro'],
       permissionModes: ['read-only', 'workspace-write', 'danger-full-access'],
       usage: true,
       skillsAgentId: 'universal'

@@ -393,8 +393,9 @@ describe('permissionModeChoicesFor', () => {
 describe('Codex permission modes', () => {
   it("offers exactly the modes the runtime owns, under Codex's own names", () => {
     expect(permissionModeOptions('codex')).toEqual([
-      { v: 'read-only', l: 'Ask for approval' },
-      { v: 'agent', l: 'Approve for me' },
+      { v: 'read-only', l: 'Read-only' },
+      { v: 'workspace-write', l: 'Workspace access' },
+      { v: 'agent', l: 'Auto review' },
       { v: 'agent-full-access', l: 'Full access' }
     ])
   })

@@ -1138,7 +1138,7 @@ describe('Daemon in-conversation commands', () => {
       ...selectHost(),
       permissionModeOptions: vi.fn(() => ({
         current: 'agent',
-        modes: ['read-only', 'agent', 'agent-full-access']
+        modes: ['read-only', 'workspace-write', 'agent', 'agent-full-access']
       })),
       setSessionPermissionMode: vi.fn(async () => true)
     }
@@ -1170,8 +1170,9 @@ describe('Daemon in-conversation commands', () => {
     // bare /permission lists Codex's own mode names, not the raw wire ids.
     await (daemon as any).onInboundOutcome(dm('200', '/permission'))
     const listed = conn.postMessage.mock.calls.at(-1)![1] as string
-    expect(listed).toContain('Ask for approval')
-    expect(listed).toContain('Approve for me')
+    expect(listed).toContain('Read-only')
+    expect(listed).toContain('Workspace access')
+    expect(listed).toContain('Auto review')
     expect(listed).toContain('Full access')
     expect(listed).not.toContain('agent-full-access')
 
@@ -1188,8 +1189,8 @@ describe('Daemon in-conversation commands', () => {
       CHROME_REPLY
     )
 
-    // the default mode resolves from its Codex label too ("approve for me" → agent)
-    await (daemon as any).onInboundOutcome(dm('220', '/permission approve for me'))
+    // The default mode resolves from its Codex label too.
+    await (daemon as any).onInboundOutcome(dm('220', '/permission auto review'))
     expect(await store.getPermissionModeOverride(key)).toBe('agent')
     await vi.waitFor(() => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')

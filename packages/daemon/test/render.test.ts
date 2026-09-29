@@ -1296,17 +1296,26 @@ describe('buildStatusModal (Configure controls modal)', () => {
 
   it('labels Codex permission-mode ids with their desktop-app names (value stays the wire id)', () => {
     const view = buildStatusModal(
-      { permissionMode: 'agent-full-access', permissionModes: ['read-only', 'agent', 'agent-full-access'] },
+      {
+        permissionMode: 'agent-full-access',
+        permissionModes: ['read-only', 'workspace-write', 'agent', 'agent-full-access']
+      },
       KEY
     )
     const select = accessoryById(view, 'ac_set_permission_mode')
     // Underlying values are the runtime-owned ids sent over the wire, unchanged.
-    expect(select.options.map((o: any) => o.value)).toEqual(['read-only', 'agent', 'agent-full-access'])
+    expect(select.options.map((o: any) => o.value)).toEqual([
+      'read-only',
+      'workspace-write',
+      'agent',
+      'agent-full-access'
+    ])
     expect(select.initial_option.value).toBe('agent-full-access')
-    // Display text is Codex's own name for each mode (agent = "Approve for me").
+    // Display text uses Codex's current name for each mode.
     expect(select.options.map((o: any) => o.text.text)).toEqual([
-      'Permission · Ask for approval',
-      'Permission · Approve for me',
+      'Permission · Read-only',
+      'Permission · Workspace access',
+      'Permission · Auto review',
       'Permission · Full access'
     ])
     expect(select.initial_option.text.text).toBe('Permission · Full access')

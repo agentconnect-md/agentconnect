@@ -173,7 +173,7 @@ const CoreConfigShape = {
   // ignores both keys.
   PRESET_AGENT_POOL_RUNTIME: z.string().default('dsh-acp'),
   // Model pinned on that placement; empty ⇒ leave it to the runtime's own default.
-  PRESET_AGENT_POOL_MODEL: z.string().default('deepseek-v4-flash'),
+  PRESET_AGENT_POOL_MODEL: z.string().default('deepseek-official::deepseek-flash'),
   // (SLACK_PLATFORM_* and FEISHU/LARK_PLATFORM_* moved into the provider env
   // shapes spread above.)
   // The MCP endpoint's dedicated public origin (agent-assistant.md §6.1), e.g.

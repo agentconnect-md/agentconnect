@@ -94,7 +94,7 @@ const RUNTIME_MEMORY_POLICIES: RuntimeMemoryPolicy[] = [
     disabledEnv: () => ({})
   },
   {
-    // @openma/deepseek-harness-acp@0.4.33 (dsh 0.1.5-rc.1): memory MCP and session references are opt-in overlays.
+    // @openma/deepseek-harness-acp@0.4.35 (dsh 0.1.7-rc.2): memory MCP and session references are opt-in overlays.
     id: 'dsh-acp',
     sig: /(?:^|[\\/])dsh-acp(?:@[^\\/]*)?$/,
     disabledEnv: () => ({})

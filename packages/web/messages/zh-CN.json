@@ -153,8 +153,9 @@
       "add": "添加"
     },
     "permissionModes": {
-      "askForApproval": "请求审批",
-      "approveForMe": "由我自动审批",
+      "readOnly": "只读",
+      "workspaceAccess": "工作区访问",
+      "autoReview": "自动审核",
       "fullAccess": "完全访问",
       "manual": "手动",
       "acceptEdits": "接受编辑",

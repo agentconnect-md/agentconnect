@@ -153,8 +153,9 @@
       "add": "Add"
     },
     "permissionModes": {
-      "askForApproval": "Ask for approval",
-      "approveForMe": "Approve for me",
+      "readOnly": "Read-only",
+      "workspaceAccess": "Workspace access",
+      "autoReview": "Auto review",
       "fullAccess": "Full access",
       "manual": "Manual",
       "acceptEdits": "Accept edits",

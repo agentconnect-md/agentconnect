@@ -784,14 +784,11 @@ export function effortLabel(runtime: string, v: string): string {
 
 export function permissionModeOptions(runtime: string): { v: string; l: string }[] {
   if (runtimeLabel(runtime) === 'Codex') {
-    // Labels are copied verbatim from codex-acp's own AgentMode names, so this fallback reads
-    // the same as the catalog path that prefers what the runtime reports. Values are codex-acp's
-    // runtime-owned ids: `agent` is Codex's default (its own reviewer approves what it judges
-    // safe), `agent-full-access` is danger-full-access — out-of-workspace + network, and
-    // `read-only` runs the daemon's read-only sandbox profile.
+    // Match Codex ACP's mode names until the runtime catalog arrives.
     return [
-      { v: 'read-only', l: 'Ask for approval' },
-      { v: 'agent', l: 'Approve for me' },
+      { v: 'read-only', l: 'Read-only' },
+      { v: 'workspace-write', l: 'Workspace access' },
+      { v: 'agent', l: 'Auto review' },
       { v: 'agent-full-access', l: 'Full access' }
     ]
   }
