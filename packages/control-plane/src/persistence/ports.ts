@@ -5490,6 +5490,7 @@ export interface DecisionChannelUsage {
   botId: BotId
   channelId: string
   channelName: string | null
+  rules: import('@agentconnect.md/protocol').DecisionUsageRules | null
 }
 
 /** One conversation addressed the way a session key addresses it, not by integration. */
@@ -5721,6 +5722,7 @@ export interface BotDecisionRoutingUsage {
   botId: BotId
   botName: string
   agentIds: AgentId[]
+  rules: import('@agentconnect.md/protocol').DecisionUsageRules | null
 }
 
 export interface BotDecisionRoutingRepo {
@@ -5773,6 +5775,7 @@ export interface CodeHostDecisionRoutingUsage {
   repoFullName: string
   family: import('@agentconnect.md/protocol').CodeHostRoutingFamily
   agentIds: AgentId[]
+  rules: import('@agentconnect.md/protocol').DecisionUsageRules | null
 }
 
 export interface CodeHostDecisionRoutingRepo {

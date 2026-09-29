@@ -15,6 +15,8 @@ import type {
   DecisionQuestion,
   DecisionRoutingEvaluationRecordDetail,
   DecisionRoutingEvaluationRecordPage,
+  DecisionUsageRules,
+  DecisionUsageTarget,
   DecisionValidationIssue,
   RoutingTargetEffect,
   SharedBotDecisionRouting
@@ -59,6 +61,9 @@ export interface DecisionUsage {
   family?: CodeHostRoutingFamily
   // kind=api_gate: the agent's chat API the gate sits on.
   protocol?: AgentApiProtocol
+  // This Decision's step at the place: each rule and where an unmatched answer goes; absent for an agent tool.
+  rules?: DecisionUsageRules['rules']
+  otherwise?: DecisionUsageTarget
 }
 
 export interface DecisionDetail {

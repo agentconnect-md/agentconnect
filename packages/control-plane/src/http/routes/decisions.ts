@@ -10,8 +10,12 @@ import {
   DecisionDraft,
   DecisionEvaluation,
   DecisionPreviewRequest,
+  DecisionUsageRules,
+  DecisionUsageTarget,
   decisionChainIds,
+  gateUsageRules,
   modelSelectionDecisionIds,
+  modelUsageRules,
   supportsDecision,
   type DecisionDefinition
 } from '@agentconnect.md/protocol'
@@ -56,7 +60,10 @@ const UsageDto = z.object({
   repoId: z.string().optional(),
   family: CodeHostRoutingFamily.optional(),
   // kind=api_gate: the agent's chat API the gate sits on.
-  protocol: AgentApiProtocol.optional()
+  protocol: AgentApiProtocol.optional(),
+  // This Decision's step at the place; absent for an agent tool.
+  rules: DecisionUsageRules.shape.rules.optional(),
+  otherwise: DecisionUsageTarget.optional()
 })
 const DecisionInUseDto = ErrorDto.extend({ usages: z.array(UsageDto), hiddenUsageCount: z.number().int() })
 const ReadinessDto = z.object({
@@ -147,7 +154,8 @@ export function decisionRoutes(deps: HttpDeps) {
       label: `#${u.channelName ?? u.channelId} · ${u.agentName}`,
       rootDecisionId: u.rootDecisionId,
       integrationId: u.integrationId,
-      channelId: u.channelId
+      channelId: u.channelId,
+      ...u.rules
     })
     // Shared-bot routers on these Decisions, visible when the caller can see at least one of the bot's agents.
     const routingUsages = async (req: FastifyRequest, decisionIds?: readonly string[]) => {
@@ -160,7 +168,8 @@ export function decisionRoutes(deps: HttpDeps) {
       kind: 'shared_bot_routing' as const,
       id: u.botId,
       label: u.botName,
-      rootDecisionId: u.rootDecisionId
+      rootDecisionId: u.rootDecisionId,
+      ...u.rules
     })
     // Code-host routings on these Decisions, visible when the caller can see one of the scope's members or targets.
     const codeHostUsages = async (req: FastifyRequest, decisionIds?: readonly string[]) => {
@@ -176,7 +185,8 @@ export function decisionRoutes(deps: HttpDeps) {
       rootDecisionId: u.rootDecisionId,
       provider: u.provider,
       repoId: u.repoId.toString(),
-      family: u.family
+      family: u.family,
+      ...u.rules
     })
     // Distinct conversations, counted across sibling rows the same way as the visible set.
     const conversationCount = (usages: readonly DecisionChannelUsage[]) =>
@@ -188,7 +198,11 @@ export function decisionRoutes(deps: HttpDeps) {
           kind: 'model_selection' as const,
           id: agent.id,
           label: agent.displayName ?? agent.name,
-          rootDecisionId: agent.modelSelection!.decisionId
+          rootDecisionId: agent.modelSelection!.decisionId,
+          ...modelUsageRules(agent.modelSelection!, decisionId, {
+            runtime: agent.runtime ?? '',
+            model: agent.model ?? ''
+          })
         })),
         ...(agent.decisionIds ?? []).map((decisionId) => ({
           decisionId,
@@ -204,7 +218,8 @@ export function decisionRoutes(deps: HttpDeps) {
                 id: agent.id,
                 label: agent.displayName ?? agent.name,
                 rootDecisionId: gate.decisionId,
-                protocol: protocol as AgentApiProtocol
+                protocol: protocol as AgentApiProtocol,
+                ...gateUsageRules(gate, decisionId)
               }))
             : []
         )

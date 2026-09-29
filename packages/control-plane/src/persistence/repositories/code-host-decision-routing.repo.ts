@@ -6,6 +6,7 @@ import {
   decisionChainIds,
   decisionRoutingAgentIds,
   isCodeHostRoutingScope,
+  routingUsageRules,
   type CodeHostRoutingFamily,
   type CodeHostRoutingProvider
 } from '@agentconnect.md/protocol'
@@ -255,7 +256,8 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
         repoFullName: true,
         family: true,
         rules: true,
-        steps: true
+        steps: true,
+        otherwise: true
       },
       orderBy: [{ repoFullName: 'asc' }, { family: 'asc' }]
     })
@@ -273,6 +275,7 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
     return rows.flatMap((row) => {
       const rules = SharedBotDecisionRouting.shape.rules.safeParse(row.rules)
       const steps = SharedBotDecisionRouting.shape.steps.safeParse(row.steps)
+      const otherwise = SharedBotDecisionRouting.shape.otherwise.safeParse(row.otherwise)
       const chain = { decisionId: row.decisionId, ...(steps.success && steps.data ? { steps: steps.data } : {}) }
       const targets = rules.success ? decisionRoutingAgentIds({ rules: rules.data, steps: chain.steps }) : []
       const members = hooks
@@ -288,7 +291,11 @@ export class PgCodeHostDecisionRoutingRepo implements CodeHostDecisionRoutingRep
           repoId: row.repoId,
           repoFullName: row.repoFullName,
           family: row.family,
-          agentIds: [...new Set([...members, ...targets])].map(AgentId)
+          agentIds: [...new Set([...members, ...targets])].map(AgentId),
+          rules:
+            rules.success && otherwise.success
+              ? routingUsageRules({ ...chain, rules: rules.data, otherwise: otherwise.data }, id)
+              : null
         }))
     })
   }

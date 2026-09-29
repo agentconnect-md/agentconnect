@@ -332,6 +332,83 @@ export function decisionRoutingAgentIds(routing: Pick<SharedBotDecisionRouting, 
   ]
 }
 
+// Where a place sends one of its Decision's answers, as the Decision page lists that place's rules.
+export const DecisionUsageTarget = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('trigger') }),
+  z.strictObject({ type: z.literal('skip') }),
+  z.strictObject({ type: z.literal('default_agent') }),
+  z.strictObject({ type: z.literal('agent'), agentId: z.string() }),
+  z.strictObject({ type: z.literal('model'), runtime: z.string(), model: z.string() }),
+  z.strictObject({ type: z.literal('decision'), decisionId: z.string() })
+])
+export type DecisionUsageTarget = z.infer<typeof DecisionUsageTarget>
+
+export const DecisionUsageRules = z.object({
+  rules: z.array(z.object({ when: DecisionCondition, then: DecisionUsageTarget })),
+  otherwise: DecisionUsageTarget.optional()
+})
+export type DecisionUsageRules = z.infer<typeof DecisionUsageRules>
+
+type UsageChain<T extends DecisionChainStep> = T & { steps?: ReadonlyArray<T & { id: string }> }
+
+// The chain step that asks `decisionId`, and a continuation to another step as a target.
+function usageStep<T extends DecisionChainStep>(chain: UsageChain<T>, decisionId: string) {
+  const step = [chain, ...(chain.steps ?? [])].find((entry) => entry.decisionId === decisionId)
+  const next = (id: string): DecisionUsageTarget => ({
+    type: 'decision',
+    decisionId: chain.steps?.find((entry) => entry.id === id)?.decisionId ?? ''
+  })
+  return { step, next }
+}
+
+/** A gate step triggers the agent or continues on a match, and skips or takes its else step otherwise. */
+export function gateUsageRules(gate: UsageChain<DecisionGateStep>, decisionId: string): DecisionUsageRules | null {
+  const { step, next } = usageStep(gate, decisionId)
+  if (!step) return null
+  return {
+    rules: [{ when: step.when, then: step.nextStepId ? next(step.nextStepId) : { type: 'trigger' } }],
+    otherwise: step.elseStepId ? next(step.elseStepId) : { type: 'skip' }
+  }
+}
+
+/** A routing step's rules; an answer no rule matches, at any step, takes the router's Otherwise. */
+export function routingUsageRules(
+  routing: Pick<SharedBotDecisionRouting, 'decisionId' | 'rules' | 'steps' | 'otherwise'>,
+  decisionId: string
+): DecisionUsageRules | null {
+  const { step, next } = usageStep<DecisionRoutingStep>(routing, decisionId)
+  if (!step) return null
+  return {
+    rules: step.rules.map((rule) => ({
+      when: rule.when,
+      then:
+        rule.action.type === 'agent'
+          ? { type: 'agent', agentId: rule.action.agentId }
+          : rule.action.type === 'skip'
+            ? { type: 'skip' }
+            : next(rule.action.nextStepId)
+    })),
+    otherwise: { type: routing.otherwise.type }
+  }
+}
+
+/** A model-selection step's rules; an unmatched answer keeps the agent's own runtime and model. */
+export function modelUsageRules(
+  selection: UsageChain<DecisionModelStep>,
+  decisionId: string,
+  fallback: { runtime: string; model: string }
+): DecisionUsageRules | null {
+  const { step, next } = usageStep(selection, decisionId)
+  if (!step) return null
+  return {
+    rules: step.rules.map((rule) => ({
+      when: rule.when,
+      then: 'runtime' in rule ? { type: 'model', runtime: rule.runtime, model: rule.model } : next(rule.nextStepId)
+    })),
+    otherwise: { type: 'model', ...fallback }
+  }
+}
+
 // The bot's routing config for exactly the conversations this recipient hosts, with each resolved default agent.
 export const SharedBotRoutingProjection = z.object({
   botId: Id,

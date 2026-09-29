@@ -3,7 +3,8 @@ import {
   DecisionBundleDefinition,
   SharedBotDecisionRouting,
   decisionChainIds,
-  decisionRoutingAgentIds
+  decisionRoutingAgentIds,
+  routingUsageRules
 } from '@agentconnect.md/protocol'
 import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 import { Prisma, type BotDecisionRouting, type Decision } from '../../generated/prisma/client.js'
@@ -227,6 +228,7 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
         botId: true,
         rules: true,
         steps: true,
+        otherwise: true,
         bot: { select: { name: true, integrations: { where: { status: 'active' }, select: { agentId: true } } } }
       },
       orderBy: { botId: 'asc' }
@@ -234,6 +236,7 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
     return rows.flatMap((row) => {
       const rules = SharedBotDecisionRouting.shape.rules.safeParse(row.rules)
       const steps = SharedBotDecisionRouting.shape.steps.safeParse(row.steps)
+      const otherwise = SharedBotDecisionRouting.shape.otherwise.safeParse(row.otherwise)
       const chain = { decisionId: row.decisionId, ...(steps.success && steps.data ? { steps: steps.data } : {}) }
       const targets = rules.success ? decisionRoutingAgentIds({ rules: rules.data, steps: chain.steps }) : []
       return decisionChainIds(chain)
@@ -243,7 +246,11 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
           rootDecisionId: row.decisionId,
           botId: BotId(row.botId),
           botName: row.bot.name,
-          agentIds: [...new Set([...row.bot.integrations.map((i) => i.agentId), ...targets])].map(AgentId)
+          agentIds: [...new Set([...row.bot.integrations.map((i) => i.agentId), ...targets])].map(AgentId),
+          rules:
+            rules.success && otherwise.success
+              ? routingUsageRules({ ...chain, rules: rules.data, otherwise: otherwise.data }, id)
+              : null
         }))
     })
   }
