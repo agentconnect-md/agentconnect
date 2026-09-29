@@ -146,6 +146,67 @@ describe('DecisionRoutingEvaluationsDrawer', () => {
     expect(expired.textContent).not.toContain('Evaluated message')
   })
 
+  it("switches the model result, rules and snapshot to a selected chain step's frozen Decision", async () => {
+    const api = decisionMock.createDecisionMockApi()
+    const original = api.getRoutingEvaluation.bind(api)
+    vi.spyOn(api, 'getRoutingEvaluation').mockImplementation(async (...args) => {
+      const detail = await original(...args)
+      if (!detail.snapshot || !detail.fullAnswer) return detail
+      const question = {
+        type: 'choice' as const,
+        instructions: 'Is it a bug report?',
+        criteria: { bug: 'A defect', other: 'Anything else' }
+      }
+      const rule = {
+        id: 'child-bug',
+        when: { type: 'choice' as const, thresholds: { bug: 0.5 } },
+        action: { type: 'agent' as const, agentId: 'technical-agent' }
+      }
+      const answer = { type: 'choice' as const, value: 'bug', probabilities: { bug: 0.7, other: 0.3 }, confidence: 0.7 }
+      const usage = { inputTokens: 1, outputTokens: 1 }
+      return {
+        ...detail,
+        snapshot: {
+          ...detail.snapshot,
+          routing: { ...detail.snapshot.routing, steps: [{ id: 'child', decisionId: 'child-decision', rules: [rule] }] }
+        },
+        chain: [
+          {
+            stepId: '',
+            decisionId: detail.decisionId,
+            evaluation: { status: 'answered' as const, answer: detail.fullAnswer, model: 'jev-root', usage }
+          },
+          {
+            stepId: 'child',
+            decisionId: 'child-decision',
+            evaluation: { status: 'answered' as const, answer, model: 'jev-child', usage }
+          }
+        ],
+        steps: [
+          {
+            stepId: '',
+            decisionId: detail.decisionId,
+            providerId: detail.snapshot.providerId,
+            model: detail.snapshot.model,
+            question: detail.snapshot.question
+          },
+          { stepId: 'child', decisionId: 'child-decision', providerId: 'typesafe', model: 'jev-child', question }
+        ]
+      }
+    })
+    const view = await render(api)
+    await click(rows(view)[2])
+    const sheet = detail()!
+    await click(sheet.querySelectorAll('ol[aria-label] button')[1])
+    const bars = [...sheet.querySelectorAll('[data-testid="model-result"] li')]
+    expect(bars[0]!.textContent).toContain('✓ triggers')
+    expect(bars[0]!.textContent).toContain('Rule 1 → Technical')
+    const rules = [...sheet.querySelectorAll('ol:not([aria-label]) li')].map((row) => row.textContent)
+    expect(rules[0]).toMatch(/^1.*Technical$/)
+    expect(sheet.textContent).toContain('Is it a bug report?')
+    expect(sheet.textContent).toContain('typesafe / jev-child')
+  })
+
   it('numbers frozen Score rules by lower bound, the same order the summary uses', async () => {
     const api = decisionMock.createDecisionMockApi()
     const original = api.getRoutingEvaluation.bind(api)

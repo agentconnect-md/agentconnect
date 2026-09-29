@@ -157,14 +157,38 @@ export function DecisionRoutingEvaluationDetail({
       : []
     const matchedRuleIds = matches.filter((m) => m.match.matched).map((m) => m.rule.id)
     const matchedKeys = [...new Set(matches.flatMap((m) => (m.match.matched ? m.match.matchedKeys : [])))]
+    const numbers = ruleNumbers(step.question, rules)
     return {
-      ...base,
-      ruleThresholds: thresholdsOf(rules),
-      matchedKeys,
-      matched: matchedRuleIds.length > 0,
-      keyNotes: ruleKeyNotes(rules, ruleNumbers(step.question, rules), matchedRuleIds, matchedKeys)
+      rules,
+      numbers,
+      matchedRuleIds,
+      result: {
+        ...base,
+        ruleThresholds: thresholdsOf(rules),
+        matchedKeys,
+        matched: matchedRuleIds.length > 0,
+        keyNotes: ruleKeyNotes(rules, numbers, matchedRuleIds, matchedKeys)
+      }
     }
   })()
+  // The Rules and Snapshot sections follow the selected step: its question, rules, hits and model.
+  const shown = snapshot
+    ? stepResult
+      ? {
+          question: step!.question,
+          rules: stepResult.rules,
+          numbers: stepResult.numbers,
+          hits: stepResult.matchedRuleIds,
+          model: `${step!.providerId} / ${step!.model}`
+        }
+      : {
+          question: snapshot.question,
+          rules: snapshot.routing.rules,
+          numbers,
+          hits: record?.matchedRuleIds ?? [],
+          model: `${snapshot.providerId} / ${snapshot.model}`
+        }
+    : null
 
   return (
     <div className="flex flex-col gap-[14px] px-[18px] py-4" data-testid="routing-evaluation-detail">
@@ -224,7 +248,7 @@ export function DecisionRoutingEvaluationDetail({
         </Facts>
       )}
       <DecisionChainResults chain={detail?.chain} names={decisions} {...selector} />
-      {stepResult && <DecisionModelResult {...stepResult} expired={expired} />}
+      {stepResult && <DecisionModelResult {...stepResult.result} expired={expired} />}
       {record && !stepResult && (
         <DecisionModelResult
           question={snapshot?.question ?? null}
@@ -315,21 +339,21 @@ export function DecisionRoutingEvaluationDetail({
           )}
         </Section>
       )}
-      {snapshot && (
+      {snapshot && shown && (
         <Section title={t('evaluations.sheet.routing')}>
           <ol className="m-0 flex list-none flex-col gap-[6px] p-0">
-            {displayOrder(snapshot.question, snapshot.routing.rules).map((index) => {
-              const rule = snapshot.routing.rules[index]!
-              const hit = record?.matchedRuleIds.includes(rule.id) === true
+            {displayOrder(shown.question, shown.rules).map((index) => {
+              const rule = shown.rules[index]!
+              const hit = shown.hits.includes(rule.id)
               return (
                 <li key={rule.id} className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal">
                   <span
                     className={`mono flex h-[18px] w-[18px] flex-none items-center justify-center rounded-xs text-[10px] ${hit ? 'bg-(--brand) text-white' : 'bg-(--surface-active) text-(--text-secondary)'}`}
                   >
-                    {numbers.get(rule.id) ?? index + 1}
+                    {shown.numbers.get(rule.id) ?? index + 1}
                   </span>
                   <span className="mono min-w-0 flex-1 truncate text-[11.5px] text-(--text-primary)">
-                    {conditionSummary(snapshot.question, rule.when, words)}
+                    {conditionSummary(shown.question, rule.when, words)}
                   </span>
                   <span className="text-(--text-tertiary)">→</span>
                   <span className="mono text-[11.5px] text-(--text-secondary)">
@@ -359,16 +383,16 @@ export function DecisionRoutingEvaluationDetail({
           </ol>
         </Section>
       )}
-      {snapshot && (
+      {shown && (
         <Section title={t('evaluations.sheet.snapshot')}>
           <span className="font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-primary)">
-            {snapshot.question.instructions}
+            {shown.question.instructions}
           </span>
           <Row
             label={tDecisions('evaluations.sheet.questionType')}
-            value={tDecisions(`types.${snapshot.question.type}`)}
+            value={tDecisions(`types.${shown.question.type}`)}
           />
-          <Row label={t('evaluations.sheet.model')} value={`${snapshot.providerId} / ${snapshot.model}`} />
+          <Row label={t('evaluations.sheet.model')} value={shown.model} />
         </Section>
       )}
       {snapshot && <Note icon="clock">{t('evaluations.sheet.asConfigured')}</Note>}

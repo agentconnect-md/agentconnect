@@ -112,6 +112,12 @@ function ModelEvaluationsBody({ state, padX }: { state: ModelEvaluations; padX: 
   const record = items.find((item) => item.seq === open) ?? null
   const shown = detail.data ?? record
   const chainStep = useChainStep(open, detail.data?.chain, detail.data?.steps)
+  // The frozen question the shown step answered; the root keeps only its requested model, not its provider.
+  const instructions = chainStep.step
+    ? { question: chainStep.step.question, model: `${chainStep.step.providerId} / ${chainStep.step.model}` }
+    : detail.data?.question
+      ? { question: detail.data.question, model: detail.data.requestedModel }
+      : null
   const errorKind = errorParts(state.error)
   const reason = shown?.reason
   const reasonLabel =
@@ -230,6 +236,18 @@ function ModelEvaluationsBody({ state, padX }: { state: ModelEvaluations; padX: 
                   rawRequest={detail.data.rawRequest}
                   rawResponse={detail.data.rawResponse}
                 />
+              )}
+              {instructions && (
+                <Section title={decisions('evaluations.detail.instructions')}>
+                  <span className="font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-primary)">
+                    {instructions.question.instructions}
+                  </span>
+                  <Row
+                    label={decisions('evaluations.sheet.questionType')}
+                    value={decisions(`types.${instructions.question.type}`)}
+                  />
+                  {instructions.model && <Row label={decisions('model')} value={instructions.model} />}
+                </Section>
               )}
               {detail.data.selection && (
                 <Section title={t('rules')}>
