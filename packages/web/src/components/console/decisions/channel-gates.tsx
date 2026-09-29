@@ -9,7 +9,7 @@ import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { gateStatus, savedGateOf, type SavedGate } from '@/lib/decisions/binding'
 import type { ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 import { channelListSemantics } from '@/components/console/platforms/registry'
-import { DecisionBindingStrip, DecisionGateEntry } from './DecisionBindingStrip'
+import { DecisionBindingStrip, DecisionGateEntry, editDraftFor } from './DecisionBindingStrip'
 
 /** A row's trigger choice; `decision` saves only with its gate, through the rules modal. */
 export type GateTrigger = IntegrationChannelRow['trigger'] | 'decision'
@@ -105,13 +105,16 @@ export function useChannelGates() {
     row,
     agentName,
     padX,
-    siblings
+    siblings,
+    modalOnly = false
   }: {
     botId: string | undefined
     integrationId: string | undefined
     row: IntegrationChannelRow
     agentName: string
     padX: number
+    /** Render only the rules modal while a draft is open, never the status under a row. */
+    modalOnly?: boolean
     /** Every conversation of the same bot, for Apply to all; each writes through its own integration. */
     siblings?: {
       platform: string | undefined
@@ -182,7 +185,13 @@ export function useChannelGates() {
         saved={saved}
         savedName={mode === 'live' ? (row.decision?.name ?? null) : undefined}
         status={
-          !saved ? null : mode === 'live' ? gateStatus(row.decision) : gate?.needsReview ? 'needs_review' : 'ready'
+          !saved || modalOnly
+            ? null
+            : mode === 'live'
+              ? gateStatus(row.decision)
+              : gate?.needsReview
+                ? 'needs_review'
+                : 'ready'
         }
         {...(applyAll ? { applyAll } : {})}
         onSave={(next) => write({ integrationId, row }, next)}
@@ -190,5 +199,27 @@ export function useChannelGates() {
     )
   }
 
-  return { decisions, offered, bindingKey, rowTrigger, busy, pickTrigger, decisionTriggers, offers, entry, strip }
+  /** Open a saved gate's rules modal, as its pill does; false when the row has none. */
+  const edit = (botId: string | undefined, row: IntegrationChannelRow): boolean => {
+    const saved = savedGate(botId, row)
+    if (!decisions || !saved) return false
+    const decision = decisions.decisions.find((entry) => entry.id === saved.decisionId) ?? null
+    decisions.setBindingDraft(bindingKey(botId, row), (current) => current ?? editDraftFor(saved, decision))
+    return true
+  }
+
+  return {
+    decisions,
+    offered,
+    bindingKey,
+    saved: savedGate,
+    rowTrigger,
+    busy,
+    pickTrigger,
+    decisionTriggers,
+    offers,
+    entry,
+    strip,
+    edit
+  }
 }

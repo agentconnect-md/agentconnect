@@ -78,8 +78,9 @@ export function DecisionRoutingModal({
   onClose
 }: {
   botId: string
-  channelId: string
-  /** The conversation as its row reads. */
+  /** The row it opened from, which Save adds to the scope; absent from the Decision page. */
+  channelId?: string
+  /** The conversation as its row reads, or the bot's name without a row. */
   channelName: string
   /** Reopened after an inline Create decision: keep the draft it returned to instead of starting from the saved routing. */
   resume?: boolean
@@ -119,9 +120,9 @@ export function DecisionRoutingModal({
   }, [error, dispatch])
   // Opening from a row puts that conversation in scope, so Save routes it; Cancel drops the addition with every other edit.
   const draft = fresh ? state.draft : null
-  const inScope = draft?.channelIds.includes(channelId) ?? false
+  const inScope = !channelId || (draft?.channelIds.includes(channelId) ?? false)
   useEffect(() => {
-    if (draft && !inScope) dispatch({ type: 'ADD_CHANNEL', channelId })
+    if (draft && channelId && !inScope) dispatch({ type: 'ADD_CHANNEL', channelId })
   }, [draft, inScope, channelId, dispatch])
 
   const busy = state.phase === 'saving'
@@ -158,13 +159,15 @@ export function DecisionRoutingModal({
   const disabled = !canWrite || busy
   // Inline Create decision returns here with the row named, so its modal reopens on the same draft.
   const returnParams = new URLSearchParams(search.toString())
-  returnParams.set(RESUME_PARAM, `${botId}|${channelId}`)
+  returnParams.set(RESUME_PARAM, `${botId}|${channelId ?? ''}`)
   const returnTo = `${pathname}?${returnParams.toString()}`
   const botName = roster.bot?.name ?? botId
   const botSettings = orgPath(`/integrations?bot=${encodeURIComponent(botId)}`)
   const names = new Map(roster.channels.map((channel) => [channel.channelId, channel.name]))
   const nameOf = (id: string) => names.get(id) ?? saved?.channels.find((c) => c.channelId === id)?.name ?? id
   const others = (draft?.channelIds ?? []).filter((id) => id !== channelId)
+  // Without a row, Try runs in the first conversation the rules already cover.
+  const tryChannel = channelId ?? draft?.channelIds[0]
 
   const submit = async (body: ReturnType<typeof toSave>, retry = false) => {
     if (!body || saving.current) return
@@ -255,7 +258,7 @@ export function DecisionRoutingModal({
             {readiness === 'needs_review' && <> — {t('banner.needsReview')}</>}
           </Note>
         )}
-        {!savedChannelIds.includes(channelId) && <Note icon="info">{tm('unsaved')}</Note>}
+        {channelId && !savedChannelIds.includes(channelId) && <Note icon="info">{tm('unsaved')}</Note>}
         {others.length > 0 && <Note icon="users">{tm('alsoApplies', { names: others.map(nameOf).join(', ') })}</Note>}
 
         <RoutingChainFields
@@ -305,10 +308,10 @@ export function DecisionRoutingModal({
             <Note icon="clock">{t('notes.history')}</Note>
           </div>
         )}
-        {decision && tryConfig && canWrite && (
+        {decision && tryConfig && canWrite && tryChannel && (
           <DecisionRoutingTry
             botId={botId}
-            channelId={channelId}
+            channelId={tryChannel}
             draft={draft}
             config={tryConfig}
             decision={decision}

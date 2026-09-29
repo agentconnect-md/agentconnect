@@ -148,6 +148,10 @@ export function AgentApiCard({
   )
 }
 
+/** An agent chat API gate's binding key, shared by its row and the Decision page. */
+export const apiGateKey = (orgId: string | undefined, agentId: string, protocol: AgentApiProtocol) =>
+  `api:${orgId ?? ''}:${agentId}:${protocol}`
+
 /** One protocol: its Decision gate (the same `+ Decision` and rules as a channel's By decision) and its Quickstart. */
 function ApiRow({
   agent,
@@ -165,7 +169,7 @@ function ApiRow({
   const t = useTranslations('Integrations.api')
   const decisions = useOptionalDecisionsPrototype()
   const { activeOrg } = useOrgs()
-  const bindingKey = `api:${activeOrg?.id ?? ''}:${agent.id}:${entry.protocol}`
+  const bindingKey = apiGateKey(activeOrg?.id, agent.id, entry.protocol)
   const saved: SavedGate | null = entry.gate ? (({ type: _type, ...gate }) => gate)(entry.gate) : null
   const saveGate = async (gate: ChannelDecisionGate | null) => {
     await setAgentApiGate(agent.id, entry.protocol, gate)

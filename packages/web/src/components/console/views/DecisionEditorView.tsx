@@ -2,7 +2,7 @@
 
 // The reusable question and standalone preview; consumers own their conditions.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
@@ -18,6 +18,7 @@ import { VisibilityField, sameSharing, type SharingValue } from '@/components/co
 import { DecisionModelSelect } from '@/components/console/decisions/DecisionModelSelect'
 import { DecisionUsageList } from '@/components/console/decisions/DecisionUsageList'
 import { DecisionUsedIn } from '@/components/console/decisions/DecisionUsedIn'
+import { useDecisionPlaceEditors } from '@/components/console/decisions/useDecisionPlaceEditors'
 import { decisionInUse } from '@/lib/decisions/binding'
 import { decisionExample } from '@/lib/decisions/examples'
 import { decisionUsageHref } from '@/lib/decisions/usage-links'
@@ -303,6 +304,15 @@ function DecisionEditor() {
       ? gated.filter((usage) => decisionConditionNeedsReview(definition.question, questionFrom(draft), usage.when))
       : []
   const usages = usageState.usages
+  // A place edited from the Used in card re-reads the usages, so its rule chip shows what was saved.
+  const refreshUsages = useCallback(() => {
+    if (!id) return
+    void api.getDecision(id).then(
+      (detail) => setUsageState({ status: 'ready', usages: detail.usages }),
+      () => undefined
+    )
+  }, [api, id])
+  const placeEditors = useDecisionPlaceEditors({ usages, onChanged: refreshUsages })
   const usageNames = [...usages.map((usage) => usage.label), ...gated.map((usage) => usage.channelName)].join(', ')
   const hrefFor = (usage: DecisionUsage) => decisionUsageHref(usage, orgPath, integrations)
   // A place is known by its integration's platform, its bot's, its code host, or its agent's own icon.
@@ -906,8 +916,11 @@ function DecisionEditor() {
                 const agent = agents.find((row) => row.id === agentId)
                 return agent && agentLabel(agent)
               }}
+              canEdit={placeEditors.editable}
+              onEdit={placeEditors.edit}
             />
           )}
+          {placeEditors.editors}
         </div>
 
         <div className="flex min-w-0 flex-col gap-4 desktop:sticky desktop:top-4">

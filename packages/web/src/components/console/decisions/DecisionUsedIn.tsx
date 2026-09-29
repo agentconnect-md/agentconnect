@@ -36,6 +36,7 @@ interface Place {
   review?: boolean
   rules?: Partial<DecisionUsageRules>
   source?: RecordedUsage
+  usage?: DecisionUsage
 }
 
 // A place whose conversation the caller cannot read answers 404; that is a hidden place, not a failed one.
@@ -53,7 +54,8 @@ const ICONS: Record<Kind, string> = {
   api_gate: 'code-xml'
 }
 const COLUMNS = 'desktop:grid-cols-[minmax(0,1.1fr)_minmax(0,1.3fr)_56px_68px]'
-const usageKey = (usage: DecisionUsage) => `${usage.kind}:${usage.id}${usage.protocol ? `:${usage.protocol}` : ''}`
+export const usageKey = (usage: DecisionUsage) =>
+  `${usage.kind}:${usage.id}${usage.protocol ? `:${usage.protocol}` : ''}`
 
 function recorded(usage: DecisionUsage): usage is RecordedUsage {
   return (
@@ -120,7 +122,9 @@ export function DecisionUsedIn({
   inUse = false,
   hrefFor,
   markFor,
-  agentName
+  agentName,
+  canEdit,
+  onEdit
 }: {
   decisionId: string
   question: DecisionQuestion
@@ -135,6 +139,9 @@ export function DecisionUsedIn({
   markFor?: (usage: DecisionUsage) => ReactNode
   /** A rule's target agent by the name the viewer sees; unresolved agents read as hidden. */
   agentName?: (id: string) => string | undefined
+  /** Whether a place's own editor opens here; other places link to where the console edits them. */
+  canEdit?: (usage: DecisionUsage) => boolean
+  onEdit?: (usage: DecisionUsage) => void
 }) {
   const t = useTranslations('Decisions')
   const { api, orgId } = useDecisionsPrototype()
@@ -154,6 +161,7 @@ export function DecisionUsedIn({
       href: hrefFor(usage),
       mark: markFor?.(usage),
       rules: { rules: usage.rules, otherwise: usage.otherwise },
+      usage,
       ...(recorded(usage) ? { source: usage } : {})
     }))
   ]
@@ -302,7 +310,17 @@ export function DecisionUsedIn({
                     {dayCount(place)}
                   </span>
                   <span className="flex items-center justify-end gap-[6px]">
-                    {place.href ? (
+                    {place.usage && onEdit && canEdit?.(place.usage) ? (
+                      <button
+                        type="button"
+                        className="iconbtn"
+                        aria-label={t('usedIn.edit', { place: place.label })}
+                        title={t('usedIn.edit', { place: place.label })}
+                        onClick={() => onEdit(place.usage!)}
+                      >
+                        <Icon name="sliders-horizontal" size={14} />
+                      </button>
+                    ) : place.href ? (
                       <Link
                         href={place.href}
                         className="iconbtn"

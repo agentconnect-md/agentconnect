@@ -75,6 +75,8 @@ interface ModalOpts {
   focusSection?: EditAgentSection
   /** The daemon the Edit-agent picker opens on — the one the chained Add-daemon dialog just connected. */
   daemonId?: string
+  /** Edit agent: fired once the save went through, so the opener can re-read what it shows. */
+  onSaved?: () => void
 }
 
 interface ModalData {
@@ -234,6 +236,7 @@ export function ModalProvider({ children }: { children: ReactNode }) {
                 agent={open.target as Agent}
                 focusSection={open.opts?.focusSection}
                 preselectDaemonId={open.opts?.daemonId}
+                {...(open.opts?.onSaved ? { onSaved: open.opts.onSaved } : {})}
                 onClose={close}
               />
             )}

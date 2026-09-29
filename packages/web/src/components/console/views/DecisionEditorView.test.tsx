@@ -29,7 +29,7 @@ vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     members: [],
     memberSets,
-    integrations: [{ id: 'int-1', agentId: 'agent-1', platform: 'slack' }],
+    integrations: [{ id: 'int-1', agentId: 'agent-1', platform: 'slack', channels: [] }],
     bots: [],
     agents: []
   })
@@ -425,7 +425,12 @@ describe('DecisionEditorView', () => {
       document.body.querySelector(`a[aria-label="Edit ${label}"]`)?.getAttribute('href')
     expect(settingsOf('#general · Support')).toBe('/agents/agent-1')
     expect(settingsOf('Reviewer')).toBe('/agents/agent-2?tab=tools')
-    expect(settingsOf('Support bot')).toBe('/integrations?bot=support-bot')
+    // A shared bot's rules open in place instead of on its settings page.
+    expect(settingsOf('Support bot')).toBeUndefined()
+    await click(document.body.querySelector('button[aria-label="Edit Support bot"]'))
+    expect(document.body.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe(
+      'Support bot · By decision rules'
+    )
   })
 
   it('replaces the criteria wholesale when the question type changes', async () => {

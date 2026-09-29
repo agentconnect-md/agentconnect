@@ -44,6 +44,8 @@ async function mount(
     hiddenCount?: number
     markFor?: (usage: DecisionUsage) => ReactNode
     agentName?: (id: string) => string | undefined
+    canEdit?: (usage: DecisionUsage) => boolean
+    onEdit?: (usage: DecisionUsage) => void
     before?: (api: DecisionApi) => void
   } = {}
 ) {
@@ -111,6 +113,20 @@ describe('DecisionUsedIn', () => {
     await act(async () => button('gate:gate-1', /^Recent evaluations/)!.click())
     await act(async () => {})
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+  })
+
+  it("opens a place's own editor where one is offered, and links the rest to their settings", async () => {
+    const onEdit = vi.fn()
+    const help: DecisionUsage = { kind: 'gate', id: 'gate-1', label: '#help', integrationId: 'int-1', channelId: 'C1' }
+    await mount(() => [help, { kind: 'gate', id: 'gate-2', label: '#ops', integrationId: 'int-2', channelId: 'C2' }], {
+      canEdit: (usage) => usage.id === 'gate-1',
+      onEdit
+    })
+    const edit = button('gate:gate-1', /^Edit/)!
+    expect(edit.tagName).toBe('BUTTON')
+    await act(async () => edit.click())
+    expect(onEdit).toHaveBeenCalledWith(help)
+    expect(button('gate:gate-2', /^Edit/)?.getAttribute('href')).toBe('/integrations/int-2')
   })
 
   it('shows the rule as a chip and every rule with its fallback on hover', async () => {

@@ -51,7 +51,7 @@ function selectsNothing(when: DecisionCondition | null): boolean {
 }
 
 /** The draft an edit of a saved gate opens: another question type restarts empty, and no Decision asks for a pick. */
-function editDraftFor(saved: SavedGate, decision: DecisionEntry | null): DecisionBindingDraft {
+export function editDraftFor(saved: SavedGate, decision: DecisionEntry | null): DecisionBindingDraft {
   if (!decision) return { decisionId: null, when: null, phase: 'editing', explicitPick: true }
   if (decision.question.type !== saved.when.type)
     return {
