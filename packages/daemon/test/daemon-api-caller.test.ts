@@ -125,4 +125,17 @@ describe('an API turn over the relay', () => {
     })
     await vi.waitFor(() => expect(verdicts[0]).toEqual({ outcome: { outcome: 'cancelled' } }))
   })
+
+  it('ends the waiting turn even when the gate declines what the caller wrote instead', async () => {
+    const { internal, op, handedOut, verdicts } = await start()
+    await op({ op: 'turn', text: 'Clean the build', user: 'Example user', origin: 'ai-sdk-ui' })
+    await handedOut()
+    vi.spyOn(internal, 'admitApiTurn').mockResolvedValue(false)
+    expect(await op({ op: 'turn', text: 'Off topic', user: 'Example user', origin: 'ai-sdk-ui' })).toMatchObject({
+      accepted: false,
+      reason: 'declined'
+    })
+    expect(verdicts[0]).toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(internal.permissions.awaitsApiCaller(chatId)).toBe(false)
+  })
 })

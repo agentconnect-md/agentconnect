@@ -694,7 +694,7 @@ after that index, and forwards each answer as `elicitation_choice` or
 the rest of the turn into the same assistant message. Any relay instance can
 take it, since the stream rebinds on the daemon. An answer whose turn has ended
 gets 409 `turn_ended`. A caller who sends a new message instead of answering has
-moved on: the daemon cancels the waiting turn before admitting the new one. One
+moved on: the daemon cancels the waiting turn before the new one meets its gate. One
 that does neither for `API_CALLER_ANSWER_TIMEOUT_MS`, 10 minutes, has its turn
 cancelled by the daemon. On AG-UI, whose stream carries neither, both keep the
 console behavior: approvals wait for an Agent editor, and elicitations for an

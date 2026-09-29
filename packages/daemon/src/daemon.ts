@@ -10865,13 +10865,13 @@ export class Daemon {
       const protocol = AgentApiProtocol.safeParse(op.origin)
       // A protocol this build does not know has no gate it could evaluate; the relay sends one only where it is advertised.
       if (!protocol.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported' }
-      if (!(await this.admitApiTurn(msg.agentId, protocol.data, op.text, msg.msgId, op.user)))
-        return { msgId: msg.msgId, accepted: false, reason: 'declined' }
-      // A caller who writes again instead of answering has moved on: the turn waiting on its answer ends first.
+      // A caller who writes again instead of answering has moved on, whether or not the gate admits what it wrote.
       if (this.permissions.awaitsApiCaller(msg.chatId)) {
         await this.webchatTransport.handleWebchatCancel(msg.chatId, msg.agentId)
         await this.waitForSafetyDrain(msg.agentId)
       }
+      if (!(await this.admitApiTurn(msg.agentId, protocol.data, op.text, msg.msgId, op.user)))
+        return { msgId: msg.msgId, accepted: false, reason: 'declined' }
     }
     // Session-targeted continuation: `turn` dispatches onto the target session's
     // own coordinates; runtime-set ops are refused (this ingress adds human
