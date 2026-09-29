@@ -21,6 +21,7 @@ import {
   type ChatRoute
 } from './agent-chat-route.js'
 import { RELAY_AG_UI_CHAT_PATH } from './ag-ui-encoder.js'
+import { APPROVAL_TOOL_NAME, ASK_TOOL_NAME } from './chat-stream-encoder.js'
 import { WebchatRouter } from './webchat-router.js'
 import { WebchatVerdictCache } from './webchat-verdict-cache.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -111,7 +112,7 @@ afterEach(async () => {
   route = undefined
 })
 
-async function start(opts: { verdict?: Verify; online?: boolean } = {}): Promise<Harness> {
+async function start(opts: { verdict?: Verify; online?: boolean; idleMs?: number } = {}): Promise<Harness> {
   let now = T0
   const daemon = new FakeDaemon()
   const router = new WebchatRouter()
@@ -133,6 +134,7 @@ async function start(opts: { verdict?: Verify; online?: boolean } = {}): Promise
     }),
     router,
     keepaliveMs: 60_000,
+    ...(opts.idleMs ? { turnIdleTimeoutMs: opts.idleMs } : {}),
     log
   })
   await app.listen({ port: 0, host: '127.0.0.1' })
@@ -522,6 +524,132 @@ describe('POST /ai-sdk/agents/:agentId/chat', () => {
     expect(h.daemon.sent.map((m) => m.agentId)).toEqual([AGENT])
     finish(h, h.daemon.turns()[0]!)
     await read(stream)
+  })
+})
+
+describe("an AI SDK turn's questions", () => {
+  /** A daemon that names `turnId` as the conversation's live stream and takes its resume. */
+  function parked(h: Harness, turnId: string, live = true): void {
+    const base = h.daemon.ack
+    h.daemon.ack = (m) =>
+      m.payload.op === 'attach'
+        ? live
+          ? { msgId: m.msgId, accepted: true, turnId, generation: 2 }
+          : { msgId: m.msgId, accepted: false, reason: 'stream_not_found' }
+        : base(m)
+  }
+  /** The assistant message as `useChat` holds it once the caller answered its tool call. */
+  const answered = (message: UIMessage, answer: Record<string, unknown>): UIMessage => ({
+    ...message,
+    parts: message.parts.map((p) => (p.type === 'dynamic-tool' ? ({ ...p, ...answer } as typeof p) : p))
+  })
+
+  it('hands the caller a question as a tool call, then resumes the turn with the answer from the next request', async () => {
+    const h = await start()
+    const first = await chat(h)
+    const turnId = h.daemon.turns()[0]!
+    emit(h, turnId, { kind: 'message', text: 'Let me check.' })
+    const index = seq
+    emit(h, turnId, {
+      kind: 'elicitation',
+      requestId: 'elicit-1',
+      message: 'Which branch?',
+      options: [
+        { value: 'main', label: 'main' },
+        { value: 'dev', label: 'dev' }
+      ]
+    })
+    const { message, errors } = await read(first.stream)
+    expect(errors).toEqual([])
+    expect(message.parts.at(-1)).toMatchObject({
+      type: 'dynamic-tool',
+      toolName: ASK_TOOL_NAME,
+      toolCallId: 'elicit-1',
+      state: 'input-available',
+      input: { message: 'Which branch?', options: [{ value: 'main' }, { value: 'dev' }] },
+      callProviderMetadata: { agentconnect: { turnId, index } }
+    })
+
+    // The stream ended and freed the conversation; the turn waits on the daemon for the answer.
+    parked(h, turnId)
+    const next = await chat(h, [
+      userMessage('u1', 'hello'),
+      answered(message, { state: 'output-available', output: 'dev' })
+    ])
+    expect(h.daemon.sent.map((m) => m.payload)).toEqual([
+      expect.objectContaining({ op: 'turn' }),
+      { op: 'attach' },
+      { op: 'resume', turnId, generation: 3, afterIndex: index },
+      { op: 'elicitation_choice', requestId: 'elicit-1', value: 'dev' }
+    ])
+    emit(h, turnId, { kind: 'elicitation_resolved', requestId: 'elicit-1', outcome: 'accepted', label: 'dev' })
+    emit(h, turnId, { kind: 'message', text: 'Using dev.' })
+    finish(h, turnId)
+    const resumed = await read(next.stream)
+    expect(resumed.errors).toEqual([])
+    expect(resumed.message.id).toBe(turnId)
+    expect(resumed.message.parts.filter((p) => p.type === 'text')).toMatchObject([{ text: 'Using dev.' }])
+  })
+
+  it("hands the caller a runtime approval, and forwards its verdict with whether the key's owner may allow it", async () => {
+    const h = await start({ verdict: async () => ({ ...VERDICT, callerApproves: true }) })
+    const first = await chat(h)
+    const turnId = h.daemon.turns()[0]!
+    const requestId = '77777777-7777-4777-8777-777777777777'
+    emit(h, turnId, { kind: 'permission', requestId, tool: 'Bash', detail: 'rm -rf build' })
+    const { message } = await read(first.stream)
+    expect(message.parts.at(-1)).toMatchObject({
+      type: 'dynamic-tool',
+      toolName: APPROVAL_TOOL_NAME,
+      toolCallId: requestId,
+      state: 'approval-requested',
+      input: { tool: 'Bash', detail: 'rm -rf build' },
+      approval: { id: requestId }
+    })
+
+    parked(h, turnId)
+    const next = await chat(h, [
+      userMessage('u1', 'hello'),
+      answered(message, { state: 'approval-responded', approval: { id: requestId, approved: false } })
+    ])
+    expect(h.daemon.sent.at(-1)!.payload).toEqual({
+      op: 'permission_choice',
+      requestId,
+      allow: false,
+      mayAllow: true,
+      user: 'Ada',
+      userId: 'user-1'
+    })
+    finish(h, turnId)
+    expect((await read(next.stream)).errors).toEqual([])
+  })
+
+  it('answers 409 turn_ended to an answer whose turn is over, delivering nothing', async () => {
+    const h = await start()
+    const first = await chat(h)
+    const turnId = h.daemon.turns()[0]!
+    emit(h, turnId, { kind: 'elicitation', requestId: 'elicit-1', message: 'Which branch?', options: [] })
+    const { message } = await read(first.stream)
+    parked(h, turnId, false)
+    const res = await post(h, {
+      id: CHAT_ID,
+      messages: [answered(message, { state: 'output-available', output: 'main' })],
+      trigger: 'submit-message'
+    })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ reason: 'turn_ended' })
+    expect(h.daemon.sent.map((m) => m.payload.op)).toEqual(['turn', 'attach'])
+    // The conversation is free again.
+    const again = await chat(h, [userMessage('u2', 'start over')])
+    finish(h, h.daemon.turns()[1]!)
+    await read(again.stream)
+  })
+
+  it('cancels a turn it gave up on for silence, so the conversation is not left busy', async () => {
+    const h = await start({ idleMs: 50 })
+    const { stream } = await chat(h)
+    expect((await read(stream)).errors).toEqual(['the agent stopped responding'])
+    await vi.waitFor(() => expect(h.daemon.sent.at(-1)!.payload).toEqual({ op: 'cancel', agentId: AGENT }))
   })
 })
 

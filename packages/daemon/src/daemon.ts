@@ -10867,6 +10867,11 @@ export class Daemon {
       if (!protocol.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported' }
       if (!(await this.admitApiTurn(msg.agentId, protocol.data, op.text, msg.msgId, op.user)))
         return { msgId: msg.msgId, accepted: false, reason: 'declined' }
+      // A caller who writes again instead of answering has moved on: the turn waiting on its answer ends first.
+      if (this.permissions.awaitsApiCaller(msg.chatId)) {
+        await this.webchatTransport.handleWebchatCancel(msg.chatId, msg.agentId)
+        await this.waitForSafetyDrain(msg.agentId)
+      }
     }
     // Session-targeted continuation: `turn` dispatches onto the target session's
     // own coordinates; runtime-set ops are refused (this ingress adds human
@@ -10920,7 +10925,8 @@ export class Daemon {
           op.mentions,
           op.post,
           op.worktree,
-          op.steer
+          op.steer,
+          op.origin
         )
         return {
           msgId: msg.msgId,
@@ -11001,6 +11007,16 @@ export class Daemon {
           requestId: op.requestId,
           value: op.value,
           webchatConversationId: msg.chatId
+        })
+        return { msgId: msg.msgId, accepted: true }
+      case 'permission_choice':
+        // The conversation confines the answer to a request this caller was handed.
+        this.permissions.handleCallerPermissionChoice({
+          requestId: op.requestId,
+          allow: op.allow,
+          mayAllow: op.mayAllow,
+          conversationId: msg.chatId,
+          ...(op.userId ? { actor: { userId: op.userId, ...(op.user ? { name: op.user } : {}) } } : {})
         })
         return { msgId: msg.msgId, accepted: true }
       case 'app_rpc':
@@ -11862,6 +11878,7 @@ export class Daemon {
    *  physical convergence a duty change drives. */
   private permissionHost(): PermissionHost {
     return {
+      cancelTurn: (p) => this.interruptTurn(p.plan.agentId, p.plan.sessionKey, 'cancel', p.acpSessionId, { only: p }),
       log: () => this.log,
       clock: () => this.clock,
       store: () => this.store,

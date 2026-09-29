@@ -6,14 +6,22 @@ import {
   AGENT_API_PROTOCOL_FEATURE,
   AGENT_CHAT_ID_MAX_CHARS,
   AGENT_CHAT_KEY_REFUSAL,
-  type RdChat,
-  type RelayWebchatOp
+  RelayWebchatOp,
+  type RdChat
 } from '@agentconnect.md/protocol'
 import type { WebchatVerdict } from './webchat-verdict-cache.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { ChatSink, WebchatRouter } from './webchat-router.js'
-import { UiMessageStreamEncoder, type ChatProtocol, type ChatStreamEncoder } from './chat-stream-encoder.js'
+import {
+  APPROVAL_TOOL_NAME,
+  ASK_TOOL_NAME,
+  UiMessageStreamEncoder,
+  type ChatAnswer,
+  type ChatAnswers,
+  type ChatProtocol,
+  type ChatStreamEncoder
+} from './chat-stream-encoder.js'
 import { AG_UI_CHAT_PROTOCOL } from './ag-ui-encoder.js'
 import {
   deliverWebchatMsg,
@@ -21,6 +29,7 @@ import {
   resolveWebchatDaemon,
   webchatRdMsg,
   type WebchatDaemonDeps,
+  type WebchatDaemonTarget,
   type WebchatParticipant
 } from './webchat-daemon-bridge.js'
 import type { Logger } from './log.js'
@@ -99,6 +108,34 @@ export function chatIdOf(body: unknown): string | undefined {
   return body.id.length > 0 && body.id.length <= AGENT_CHAT_ID_MAX_CHARS ? body.id : undefined
 }
 
+/** The answers a `useChat` request carries: its last message is the assistant's, holding our tool calls the caller answered. */
+export function chatAnswers(body: unknown): ChatAnswers | undefined {
+  if (!isRecord(body) || !Array.isArray(body.messages)) return undefined
+  const last: unknown = body.messages.at(-1)
+  if (!isRecord(last) || last.role !== 'assistant' || !Array.isArray(last.parts)) return undefined
+  let at: { turnId: string; index: number } | undefined
+  const answers: ChatAnswer[] = []
+  for (const part of last.parts) {
+    if (!isRecord(part) || part.type !== 'dynamic-tool' || typeof part.toolCallId !== 'string') continue
+    if (part.toolName !== ASK_TOOL_NAME && part.toolName !== APPROVAL_TOOL_NAME) continue
+    const meta = isRecord(part.callProviderMetadata) ? part.callProviderMetadata.agentconnect : undefined
+    if (!isRecord(meta) || typeof meta.turnId !== 'string' || !Number.isSafeInteger(meta.index)) continue
+    // Every question of the turn the message holds, answered or not, marks how far the caller has read.
+    if (at && at.turnId !== meta.turnId) return undefined
+    if (!at || (meta.index as number) > at.index) at = { turnId: meta.turnId, index: meta.index as number }
+    const requestId = part.toolCallId
+    if (part.toolName === ASK_TOOL_NAME) {
+      if (part.state === 'output-available')
+        answers.push({ kind: 'elicitation', requestId, value: part.output ?? null })
+      else if (part.state === 'output-error') answers.push({ kind: 'elicitation', requestId, value: null })
+    } else if (isRecord(part.approval) && typeof part.approval.approved === 'boolean') {
+      answers.push({ kind: 'permission', requestId, allow: part.approval.approved })
+    }
+  }
+  if (!at || !UUID_RE.test(at.turnId) || answers.length === 0) return undefined
+  return { turnId: at.turnId.toLowerCase(), afterIndex: at.index, answers }
+}
+
 /** AI SDK UI: the `useChat` chat id names the conversation, and the last user message's text parts are the turn. */
 export const AI_SDK_UI_CHAT_PROTOCOL: ChatProtocol = {
   id: 'ai-sdk-ui',
@@ -106,7 +143,8 @@ export const AI_SDK_UI_CHAT_PROTOCOL: ChatProtocol = {
   chatIdName: 'chat id',
   chatId: chatIdOf,
   text: chatTurnText,
-  encoder: (turnId) => new UiMessageStreamEncoder(turnId)
+  encoder: (turnId) => new UiMessageStreamEncoder(turnId),
+  answers: chatAnswers
 }
 
 // Every protocol the relay serves; one admission table spans them, since a key's chat id names the same conversation on each.
@@ -179,6 +217,48 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** The daemon ops a request's answers become, or undefined when one does not parse as an answer. */
+function answerOpsOf(answering: ChatAnswers, verdict: WebchatVerdict): RelayWebchatOp[] | undefined {
+  const ops: RelayWebchatOp[] = []
+  for (const answer of answering.answers) {
+    const parsed = RelayWebchatOp.safeParse(
+      answer.kind === 'elicitation'
+        ? { op: 'elicitation_choice', requestId: answer.requestId, value: answer.value }
+        : {
+            op: 'permission_choice',
+            requestId: answer.requestId,
+            allow: answer.allow,
+            mayAllow: verdict.callerApproves === true,
+            ...(verdict.user ? { user: verdict.user } : {}),
+            ...(verdict.userId ? { userId: verdict.userId } : {})
+          }
+    )
+    if (!parsed.success) return undefined
+    ops.push(parsed.data)
+  }
+  return ops
+}
+
+/** Rebind the parked turn's stream past what the caller has read, then deliver the answers; false when the turn is gone. */
+async function resumeWithAnswers(
+  send: (op: RelayWebchatOp) => Promise<{ ack: { accepted: boolean; turnId?: string; generation?: number } }>,
+  answering: ChatAnswers,
+  ops: RelayWebchatOp[]
+): Promise<boolean> {
+  const probed = (await send({ op: 'attach' })).ack
+  if (!probed.accepted || probed.turnId?.toLowerCase() !== answering.turnId || probed.generation === undefined)
+    return false
+  const { ack } = await send({
+    op: 'resume',
+    turnId: answering.turnId,
+    generation: probed.generation + 1,
+    afterIndex: answering.afterIndex
+  })
+  if (!ack.accepted) return false
+  for (const op of ops) await send(op)
+  return true
+}
+
 interface ChatTurnOptions {
   conversationId: string
   router: ChatRouteDeps['router']
@@ -188,6 +268,8 @@ interface ChatTurnOptions {
   idleTimeoutMs: number
   log: Logger
   onSettled: (turn: ChatTurn) => void
+  /** Ask the daemon to cancel the turn, so one the relay gave up on does not keep the conversation busy. */
+  cancel: () => void
 }
 
 /** One admitted turn: holds the slot until its own `done`, and streams to the response while the client stays. */
@@ -220,8 +302,11 @@ class ChatTurn implements ChatSink {
       this.lastIndex = ev.output.index
     }
     this.armIdle()
-    if (ev.kind === 'output') this.write(this.encoder!.output(ev.output))
-    else this.settle(this.encoder!.done(ev.done), `done (${ev.done.error ? 'error' : (ev.done.stopReason ?? 'end')})`)
+    if (ev.kind === 'output') {
+      this.write(this.encoder!.output(ev.output))
+      // The caller holds a question now; the turn waits on the daemon for its answer in the next request.
+      if (this.encoder!.awaitingCaller) this.settle('', 'handed the caller a question')
+    } else this.settle(this.encoder!.done(ev.done), `done (${ev.done.error ? 'error' : (ev.done.stopReason ?? 'end')})`)
   }
 
   /** The turn never started (refused or undeliverable): free the slot, nothing was streamed. */
@@ -234,8 +319,14 @@ class ChatTurn implements ChatSink {
   }
 
   /** The daemon admitted `turnId`: open the stream and replay whatever arrived first. */
-  stream(turnId: string, res: ServerResponse, daemon: Pick<RelayDaemonConnection, 'onceClosed'>): void {
+  stream(
+    turnId: string,
+    res: ServerResponse,
+    daemon: Pick<RelayDaemonConnection, 'onceClosed'>,
+    afterIndex = -1
+  ): void {
     this.turnId = turnId
+    this.lastIndex = afterIndex
     const encoder = this.o.encoder(turnId)
     this.encoder = encoder
     this.res = res
@@ -286,7 +377,10 @@ class ChatTurn implements ChatSink {
 
   private armIdle(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer)
-    this.idleTimer = setTimeout(() => this.fail('the agent stopped responding', 'idle timeout'), this.o.idleTimeoutMs)
+    this.idleTimer = setTimeout(() => {
+      this.fail('the agent stopped responding', 'idle timeout')
+      this.o.cancel()
+    }, this.o.idleTimeoutMs)
     this.idleTimer.unref()
   }
 
@@ -346,7 +440,11 @@ export function registerAgentChatRoutes(
           return refuse(reply, 403, 'this agent does not accept API calls', 'api_disabled')
         }
         const conversationId = rawConversationId.toLowerCase()
-        const text = protocol.text(req.body)
+        // A request whose last message answers the turn's questions resumes that turn instead of starting one.
+        const answering = protocol.answers?.(req.body)
+        const answerOps = answering ? answerOpsOf(answering, verdict) : undefined
+        if (answering && !answerOps) return refuse(reply, 400, 'an answer does not fit the question it answers')
+        const text = answering ? '' : protocol.text(req.body)
         if (text === undefined) return refuse(reply, 400, 'the request has no user message with text')
         if (Buffer.byteLength(text, 'utf8') > CHAT_TEXT_MAX_BYTES) {
           return refuse(reply, 413, `a turn's text is limited to ${CHAT_TEXT_MAX_BYTES} bytes`)
@@ -385,6 +483,23 @@ export function registerAgentChatRoutes(
           return refuse(reply, 503, 'the agent daemon is offline', 'no_agent')
         }
 
+        const binding = {
+          chatId: conversationId,
+          ...(verdict.targetSessionId ? { targetSessionId: verdict.targetSessionId } : {})
+        }
+        // The daemon that took the last op, so every later op of this request reaches the same one.
+        let link: WebchatDaemonTarget = target
+        const send = async (op: RelayWebchatOp) => {
+          const delivered = await deliverWebchatMsg(
+            bridge,
+            link,
+            webchatRdMsg(binding, agentId, participant, op),
+            participant,
+            capability
+          )
+          link = { daemonId: delivered.daemonId, conn: delivered.conn }
+          return delivered
+        }
         const turn = new ChatTurn({
           conversationId,
           router: deps.router,
@@ -393,11 +508,37 @@ export function registerAgentChatRoutes(
           keepaliveMs: deps.keepaliveMs ?? DEFAULT_KEEPALIVE_MS,
           idleTimeoutMs: deps.turnIdleTimeoutMs ?? DEFAULT_TURN_IDLE_TIMEOUT_MS,
           log,
-          onSettled: (t) => live.delete(t)
+          onSettled: (t) => live.delete(t),
+          cancel: () =>
+            void send({ op: 'cancel', agentId }).catch((error) =>
+              log.warn(`chat: cancelling an idle turn in ${conversationId} failed ${deliveryFailureDiagnostic(error)}`)
+            )
         })
         live.add(turn)
         // Subscribed before the send, so output that races the ack is not lost.
         deps.router.register(conversationId, turn)
+
+        if (answering && answerOps) {
+          let resumed: Awaited<ReturnType<typeof resumeWithAnswers>>
+          try {
+            resumed = await resumeWithAnswers(send, answering, answerOps)
+          } catch (error) {
+            turn.abandon()
+            log.warn(`chat: answer delivery failed ${deliveryFailureDiagnostic(error)}`)
+            return refuse(reply, 503, 'the answer could not be delivered to the agent', 'no_agent')
+          }
+          if (!resumed) {
+            turn.abandon()
+            log.info(`chat: answer for turn ${answering.turnId} in ${conversationId} found the turn ended`)
+            return refuse(reply, 409, 'the turn these answers belong to has ended', 'turn_ended')
+          }
+          log.info(
+            `chat: turn ${answering.turnId} resumed with ${answering.answers.length} answer(s) in ${conversationId}`
+          )
+          reply.hijack()
+          turn.stream(answering.turnId, reply.raw, link.conn, answering.afterIndex)
+          return reply
+        }
 
         // A text turn only: no targets, mentions, runtime overrides, attachments, or delegated MCP entitlement.
         const turnId = randomUUID()
@@ -411,19 +552,9 @@ export function registerAgentChatRoutes(
           // The daemon evaluates this API's Decision gate before admitting the turn.
           origin: protocol.id
         }
-        const binding = {
-          chatId: conversationId,
-          ...(verdict.targetSessionId ? { targetSessionId: verdict.targetSessionId } : {})
-        }
         let delivered: Awaited<ReturnType<typeof deliverWebchatMsg>>
         try {
-          delivered = await deliverWebchatMsg(
-            bridge,
-            target,
-            webchatRdMsg(binding, agentId, participant, op),
-            participant,
-            capability
-          )
+          delivered = await send(op)
         } catch (error) {
           turn.abandon()
           log.warn(`chat: turn delivery failed ${deliveryFailureDiagnostic(error)}`)

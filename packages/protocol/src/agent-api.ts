@@ -28,6 +28,11 @@ export const AGENT_API_PROTOCOL_FEATURE: Readonly<Partial<Record<AgentApiProtoco
   'ag-ui': API_AG_UI_V1_FEATURE
 }
 
+// Protocols whose stream hands the agent's questions to the caller and whose next request answers them.
+export const API_CALLER_ANSWER_PROTOCOLS: ReadonlySet<string> = new Set<AgentApiProtocol>(['ai-sdk-ui'])
+// How long an API turn waits on its caller's answer before the daemon cancels it.
+export const API_CALLER_ANSWER_TIMEOUT_MS = 10 * 60_000
+
 // A Decision gate per protocol: a turn is admitted only when the chain matches, or when it cannot be evaluated.
 export const AgentApiGates = z.partialRecord(AgentApiProtocol, ChannelDecisionGate)
 export type AgentApiGates = z.infer<typeof AgentApiGates>

@@ -211,7 +211,9 @@ export const RcVerifyResult = z.object({
   targetSessionId: z.string().min(1).optional(),
   remoteMcp: WebchatRemoteMcpEntitlement.optional(),
   // The primary agent's enabled chat APIs; the relay's chat API refuses a protocol absent here. Plain strings, so a newer CP's protocol never fails an older relay's parse.
-  apiProtocols: z.array(z.string().min(1)).max(16).optional()
+  apiProtocols: z.array(z.string().min(1)).max(16).optional(),
+  // The API key's owner could decide this agent's approvals in the console, so its calls may decide them too.
+  callerApproves: z.boolean().optional()
 })
 export type RcVerifyResult = z.infer<typeof RcVerifyResult>
 

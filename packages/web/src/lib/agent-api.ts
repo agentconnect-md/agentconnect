@@ -83,7 +83,7 @@ function aiSdkExamples(chatUrl: string): Record<QuickstartTab, QuickstartFile[]>
     node: [
       {
         file: 'chat.ts',
-        code: `// npm i ai (AI SDK 5 or later)
+        code: `// npm i ai (AI SDK 6 or later)
 import { DefaultChatTransport } from "ai";
 
 const transport = new DefaultChatTransport({
@@ -119,7 +119,7 @@ export async function POST(req: Request) {
       },
       {
         file: 'app/page.tsx',
-        code: `// npm i ai @ai-sdk/react (AI SDK 5 or later)
+        code: `// npm i ai @ai-sdk/react (AI SDK 6 or later)
 "use client";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";

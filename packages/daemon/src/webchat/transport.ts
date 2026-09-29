@@ -176,7 +176,8 @@ export class WebchatTransport {
     mentions?: string[],
     post?: { postId: string; at: number },
     requestedWorktree?: boolean,
-    steer?: boolean
+    steer?: boolean,
+    apiProtocol?: string
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
@@ -295,6 +296,7 @@ export class WebchatTransport {
     )
     // Broadcast the reconciliation post daemon-wide so a cold attach through another relay receives it.
     stream.postSink = (p) => this.host.sendWebchatPost(p)
+    if (apiProtocol !== undefined) stream.apiProtocol = apiProtocol
     // Observed-inbound analogue for webchat (turn-final refresh, §5.4): record the user message at
     // ADMISSION so an in-flight generation sees it at the final fence; the identical later append
     // from SessionManager.handle dedups in place on (channel, ts).

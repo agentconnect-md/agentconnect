@@ -56,6 +56,8 @@ export interface WebchatTurnContext {
    * consumed by the daemon host selector and never forwarded to ACP/model input. */
   remoteMcp?: WebchatRemoteMcpEntitlement
   doneSent?: boolean
+  /** The chat API this turn came through (shared-bot-relay.md §10.4); its caller may be handed the agent's questions. */
+  apiProtocol?: string
   /** This turn is driven by the local evaluation harness, not a browser. Its
    *  webchat shape is synthetic, so the session-visibility capture gate does NOT
    *  treat it as a private Playground conversation — measuring memory capture is

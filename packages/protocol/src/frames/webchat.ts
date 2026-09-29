@@ -470,6 +470,13 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     outcome: z.enum(['accepted', 'dismissed', 'cancelled', 'completed']),
     label: z.string().optional()
   }),
+  // A runtime approval handed to an API caller first (shared-bot-relay.md §10.4), answered by `permission_choice`.
+  z.object({
+    kind: z.literal('permission'),
+    requestId: z.string().uuid(),
+    tool: z.string().max(240),
+    detail: z.string().max(240)
+  }),
   // An MCP App opened (webchat-mcp-apps.md §5). A new KIND rather than a field on something
   // existing, and the skew that follows is the closed one: a relay or browser predating it fails
   // exactly this frame's decode and shows the turn without the frame, while the tool's own text

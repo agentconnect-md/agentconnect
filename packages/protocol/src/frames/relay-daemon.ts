@@ -284,6 +284,17 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     ]),
     agentId: z.string().uuid().optional()
   }),
+  // An API caller's answer to a `permission` event, stamped by the relay with the key's owner and whether that owner may allow it.
+  z.object({
+    op: z.literal('permission_choice'),
+    requestId: z.string().uuid(),
+    allow: z.boolean(),
+    // False ⇒ an allow waits for an Agent editor instead; a refusal is always the caller's to make.
+    mayAllow: z.boolean(),
+    user: z.string().optional(),
+    userId: z.string().optional(),
+    agentId: z.string().uuid().optional()
+  }),
   // One MCP App view's request to the daemon (webchat-mcp-apps.md §5). `callId` is browser-minted
   // and correlates the `app_rpc_result` event that answers it; `appId` names the live card the
   // view belongs to, and the daemon resolves BOTH against its own record of that conversation's

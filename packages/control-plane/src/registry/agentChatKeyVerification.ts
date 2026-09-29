@@ -1,7 +1,7 @@
 // The relay's check of an API key on the agent chat API (shared-bot-relay.md §10.4): the HTTP key checks, then the caller's chat id resolved to its conversation.
 import { createHash } from 'node:crypto'
 import { AGENT_CHAT_KEY_REFUSAL, type RcVerifyResult } from '@agentconnect.md/protocol'
-import { canView } from '../authorization/policy.js'
+import { AuthorizationAction, can, canEdit, canView } from '../authorization/policy.js'
 import { isAgentLevelPermission, keyAdmitted, selectionCovers } from '../domain/api-key-permission.js'
 import { AgentId, OrgId, type SessionId } from '../domain/ids.js'
 import type { IconStore } from '../icons/icon-store.js'
@@ -126,6 +126,10 @@ export function createAgentChatKeyVerifier(
     if (!verdict.ok && (verdict.reason === 'agent unplaced' || verdict.reason === 'daemon offline')) {
       return refuse(AGENT_CHAT_KEY_REFUSAL.agentUnavailable)
     }
-    return verdict
+    if (!verdict.ok) return verdict
+    // Exactly the console's decision route: a full key whose owner may write in the org and edit the agent.
+    const callerApproves =
+      key.permission === 'full' && can(ctx, { action: AuthorizationAction.OrganizationWrite }) && canEdit(agent, ctx)
+    return { ...verdict, callerApproves }
   }
 }

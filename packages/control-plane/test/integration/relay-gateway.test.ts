@@ -1371,7 +1371,14 @@ describe('rc/verify(agent-chat-key)', () => {
     const { ws } = await openRelay(base, 'pod-key', 'wss://pod-key.example.test')
 
     const first = await verifyKey(ws, key, AGENT)
-    expect(first).toMatchObject({ ok: true, agentId: AGENT, userId: DEFAULT_OWNER_ID, apiProtocols: ['ai-sdk-ui'] })
+    // A chat-only key cannot decide the agent's approvals, even for an owner who could in the console.
+    expect(first).toMatchObject({
+      ok: true,
+      agentId: AGENT,
+      userId: DEFAULT_OWNER_ID,
+      apiProtocols: ['ai-sdk-ui'],
+      callerApproves: false
+    })
     expect(first.conversationId).toBe(agentChatConversationId(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, AGENT, 'chat-1'))
     expect(first.remoteMcp).toBeUndefined()
     expect(await prisma.webchatConversation.findUnique({ where: { id: first.conversationId! } })).toMatchObject({
@@ -1380,8 +1387,9 @@ describe('rc/verify(agent-chat-key)', () => {
     })
     expect((await verifyKey(ws, key, AGENT)).conversationId).toBe(first.conversationId)
     expect((await verifyKey(ws, key, AGENT, 'chat-2')).conversationId).not.toBe(first.conversationId)
-    // A full key reaches the agent too, under the same owner's conversation.
-    expect((await verifyKey(ws, await mintKey(app, {}), AGENT)).conversationId).toBe(first.conversationId)
+    // A full key reaches the agent too, under the same owner's conversation, and may decide its approvals.
+    const full = await verifyKey(ws, await mintKey(app, {}), AGENT)
+    expect(full).toMatchObject({ conversationId: first.conversationId, callerApproves: true })
     // The key that opened the conversation names its sessions; a console conversation has none.
     const consoleConversation = randomUUID()
     const conversations = new PgWebchatConversationRepo(prisma)

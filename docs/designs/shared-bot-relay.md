@@ -634,32 +634,71 @@ on AG-UI also the request's `tools`, `state`, `context`, and `forwardedProps`.
 The turn carries no delegated MCP entitlement, and the relay streams the turn's
 `rd/chat` output back in the route's protocol.
 
-**Scope:** each route exposes one operation, a text turn to the path's agent; a
-`useChat` request has no representation for anything else, and the AG-UI route
-reads nothing else from its request. The webchat token route is the console's
-alone: a key admitted only for `agent:chat` cannot mint a token, so the browser
-socket's other operations, runtime and permission changes, per-turn overrides,
-`targets`, `mentions`, elicitation, and MCP App calls, are out of the key
-holder's reach. The daemon's `allowRuntimeChangesInChat` gate is unaffected.
+**Scope:** each route exposes one operation, a text turn to the path's agent,
+and the AI SDK route also the answers to that turn's questions below; the AG-UI
+route reads nothing else from its request. The webchat token route is the
+console's alone: a key admitted only for `agent:chat` cannot mint a token, so the
+browser socket's other operations, runtime and permission changes, per-turn
+overrides, `targets`, `mentions`, and MCP App calls, are out of the key holder's
+reach. The daemon's `allowRuntimeChangesInChat` gate is unaffected.
 
-| `rd/chat` output                         | UI message stream                                       | AG-UI                                                     |
-| ---------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------- |
-| turn admitted                            | `start`, `start-step`                                   | `RUN_STARTED`                                             |
-| `message`                                | `text-start` / `text-delta` / `text-end`                | `TEXT_MESSAGE_START` / `_CONTENT` / `_END`                |
-| `thinking`                               | `reasoning-start` / `reasoning-delta` / `reasoning-end` | `REASONING_START`, `REASONING_MESSAGE_*`, `REASONING_END` |
-| `tool_call`, `tool_update`               | `data-tool`, keyed by `toolCallId`                      | `ACTIVITY_SNAPSHOT` `tool`, one per `toolCallId`          |
-| `plan`                                   | `data-plan`                                             | `ACTIVITY_SNAPSHOT` `plan`                                |
-| `session_info`                           | `message-metadata` with the title                       | `CUSTOM` `session_info` with the title                    |
-| `notice`                                 | `data-notice`                                           | `ACTIVITY_SNAPSHOT` `notice`                              |
-| `done`                                   | `finish`                                                | `RUN_FINISHED`, `cancelled` outcome for a cancelled turn  |
-| `done` with `error`                      | `error`, with the reason                                | `RUN_ERROR`, with the reason                              |
-| elicitation, MCP App, `superseded` kinds | dropped                                                 | dropped                                                   |
+| `rd/chat` output            | UI message stream                                                           | AG-UI                                                     |
+| --------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------- |
+| turn admitted               | `start`, `start-step`                                                       | `RUN_STARTED`                                             |
+| `message`                   | `text-start` / `text-delta` / `text-end`                                    | `TEXT_MESSAGE_START` / `_CONTENT` / `_END`                |
+| `thinking`                  | `reasoning-start` / `reasoning-delta` / `reasoning-end`                     | `REASONING_START`, `REASONING_MESSAGE_*`, `REASONING_END` |
+| `tool_call`, `tool_update`  | `data-tool`, keyed by `toolCallId`                                          | `ACTIVITY_SNAPSHOT` `tool`, one per `toolCallId`          |
+| `plan`                      | `data-plan`                                                                 | `ACTIVITY_SNAPSHOT` `plan`                                |
+| `session_info`              | `message-metadata` with the title                                           | `CUSTOM` `session_info` with the title                    |
+| `notice`                    | `data-notice`                                                               | `ACTIVITY_SNAPSHOT` `notice`                              |
+| `done`                      | `finish`                                                                    | `RUN_FINISHED`, `cancelled` outcome for a cancelled turn  |
+| `done` with `error`         | `error`, with the reason                                                    | `RUN_ERROR`, with the reason                              |
+| `elicitation`               | `agentconnect_ask` tool call; the stream ends                               | dropped                                                   |
+| `permission`                | `agentconnect_approval` tool call with an approval request; the stream ends | dropped                                                   |
+| MCP App, `superseded` kinds | dropped                                                                     | dropped                                                   |
 
 A rejected ack arrives before any output, so the relay answers it with an HTTP
 status instead of a stream: 409 for `busy`, 422 for `declined`, 503 when the
 agent cannot take the turn now (`no_agent`, `paused`, `draining`), 502
 otherwise, with the ack reason in the body. A daemon link that drops mid-turn
 ends the stream with `error`.
+
+**Questions and approvals:** on the AI SDK route an API turn's questions go to
+its caller, in the AI SDK's own tool shapes, so `useChat` answers them with
+`addToolOutput` and `addToolApprovalResponse` and a client may answer them in
+code. The daemon marks the turn with its `origin` and treats a protocol in
+`API_CALLER_ANSWER_PROTOCOLS` this way:
+
+- An elicitation (an MCP form or URL ask, AskUserQuestion, a memory-write
+  approval) streams as today's webchat card. The relay hands it out as a
+  dynamic `agentconnect_ask` tool call whose input is the card, finishes the
+  step with `tool-calls`, and ends the response without cancelling the turn.
+- A runtime approval, an ACP `session/request_permission` or an MCP tool
+  approval, streams as a `permission` event with the tool and its one-line
+  detail, handed out as an `agentconnect_approval` tool call carrying a
+  `tool-approval-request`. It is not an Agent editor's request yet: a refusal
+  selects the runtime's narrowest reject option (an MCP approval declines) and
+  no editor ever sees it, so a public client that refuses every approval in
+  code never reaches the editors. An allow takes the narrowest allow option when
+  the key's owner could decide the request in the console, a `full` key whose
+  owner may write in the org and edit the agent, which the CP returns as
+  `callerApproves`. Any other allow becomes an ordinary editor request, with its
+  notice on the caller's stream, and the turn waits for that decision.
+
+Each tool call's `providerMetadata.agentconnect` names the turn and the output
+index it was handed out at, and the AI SDK returns it on the part. A request
+whose last message is the assistant's, holding answered parts of ours, resumes
+that turn rather than starting one: the relay `attach`es, `resume`s the stream
+after that index, and forwards each answer as `elicitation_choice` or
+`permission_choice`, stamped with the key's owner and `mayAllow`, then streams
+the rest of the turn into the same assistant message. Any relay instance can
+take it, since the stream rebinds on the daemon. An answer whose turn has ended
+gets 409 `turn_ended`. A caller who sends a new message instead of answering has
+moved on: the daemon cancels the waiting turn before admitting the new one. One
+that does neither for `API_CALLER_ANSWER_TIMEOUT_MS`, 10 minutes, has its turn
+cancelled by the daemon. On AG-UI, whose stream carries neither, both keep the
+console behavior: approvals wait for an Agent editor, and elicitations for an
+answer from the console's live session.
 
 **Decision gate:** an added API can carry a Decision gate, a
 `ChannelDecisionGate` chain saved through
@@ -730,7 +769,9 @@ daemon refuses a turn whose `origin` it does not know as `unsupported`.
   SDK's `stop()` aborts only the fetch, and the turn finishes into the session
   transcript. The slot is also released when the daemon link that admitted
   the turn drops, since its `done` can no longer arrive there, and after a
-  30-minute silence as a last resort.
+  30-minute silence as a last resort, which also sends the daemon a `cancel` so
+  the conversation is not left busy. A stream that hands the caller a question
+  releases the slot when it ends.
 - The response carries only output whose `turnId` is the admitted turn's.
   Output from another participant on the same conversation, such as a browser
   socket, is not forwarded.
