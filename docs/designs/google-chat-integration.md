@@ -945,8 +945,8 @@ proves (§3) or the `customers/…` key of its first Space event, and the
 `domains/…` key of every DM it serves. The relay's Google Chat plugin, not core,
 fences it (§10.4): a Space of another customer is refused with a 200 that Google
 never retries and one log line a minute, while a DM passes and its domain is
-recorded, because Google shows an unlisted app only to its own organization's
-people, so a DM's domain is that organization's; an app meant for other
+recorded, because an app not published publicly on the Marketplace reaches only
+its own organization's people, so a DM's domain is that organization's; an app meant for other
 organizations is the deployment app instead. A key the relay learns is reported
 as `rc/bot-tenant` (`{ botId, tenantId }`, at least once, acknowledged, deduplicated by the Control
 Plane, and sent only to a Control Plane advertising `bot-tenant-v1`); the
@@ -1180,7 +1180,7 @@ answer, from two requests.
 ### 10.9 Distribution and rollout
 
 The hosted app lives in its own Cloud project, because the listing type is
-final: it is published public and unlisted first, then listed. A self-hosted
+final: it is published public and listed. A self-hosted
 deployment keeps bring-your-own-app or a private listing of its own app. Listing
 assets (privacy policy, terms, icon, screenshots, the OAuth consent screen) are
 prepared in parallel with the code, since review takes days and cannot start
@@ -1201,8 +1201,9 @@ Order of work:
 - **B2** (done): the deployment app always multi-tenant, its anchor on the relay
   snapshot, the key re-stamp on a boot pass, and the 409 for a per-agent install
   of its project.
-- **C**: the listing, the unlisted publication, and the cross-customer round
-  trip from a second Workspace organization.
+- **C**: the listing, published public and listed, with a test account for
+  Google's reviewers in a claimed Workspace, and the cross-customer round trip
+  from a second Workspace organization.
 
 Verified live on September 28, 2026: Google honours the claim prompt the relay
 answers synchronously (§11.7), and a claim from a direct message and then from a
