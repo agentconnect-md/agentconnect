@@ -756,11 +756,17 @@ export async function resolveTrackedCommits(
 ): Promise<Map<string, string>> {
   const tracked = new Map<string, string>()
   if (!resolve) return tracked
+  // One head read per distinct definition, all in flight at once: each is its own network round trip.
+  const pending = new Map<string, AgentSkillEntry>()
   for (const entry of entries) {
     if (isPinnedGitSkillRef(entry)) continue
     const digest = gitResolutionDigest(entry)
-    if (tracked.has(digest)) continue
-    const commit = await resolve(entry)
+    if (!pending.has(digest)) pending.set(digest, entry)
+  }
+  const commits = await Promise.all(
+    [...pending].map(async ([digest, entry]) => [digest, await resolve(entry)] as const)
+  )
+  for (const [digest, commit] of commits) {
     if (commit && /^[a-f0-9]{40}$/i.test(commit)) tracked.set(digest, commit.toLowerCase())
   }
   return tracked

@@ -88,6 +88,57 @@ describe('cluster skill shim staging', () => {
     }
   })
 
+  it('stages sources side by side: one failing its CLI stage is skipped, the other still publishes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skill-parallel-'))
+    const workspace = join(root, 'workspace')
+    await mkdir(workspace)
+    try {
+      const authority = {
+        groupId: 'g',
+        term: '1',
+        daemonId: 'd',
+        agentId: 'a',
+        workspaceIncarnation: 'w',
+        shimGeneration: 1
+      }
+      const handler = new ClusterSkillHandler({
+        stagingRoot: join(root, 'staging'),
+        workspaceRoot: workspace,
+        stateRoot: join(root, 'state')
+      })
+      const client = new ClusterSkillClient({ request: (_cap, payload) => handler.handle(payload) }, true, true, true)
+      const operationId = randomUUID()
+      const skill = (name: string) => Buffer.from(`---\nname: ${name}\ndescription: fixture\n---\n# Fixture\n`)
+      // `good` holds one skill; `bad` holds 65, past the cell's bundle cap.
+      const bodies = new Map<string, Buffer>([['good\0good/SKILL.md', skill('good')]])
+      for (let index = 0; index < 65; index++) bodies.set(`bad\0skill-${index}/SKILL.md`, skill(`skill-${index}`))
+      const files = [...bodies].map(([key, body]) => {
+        const [sourceId, path] = key.split('\0') as [string, string]
+        return { sourceId, path, size: body.length, sha256: sha256(body) }
+      })
+      const { handle } = await client.begin({ operationId, authority, skillsAgentId: 'codex', files })
+      for (const file of files) {
+        await client.upload(operationId, handle, file, bodies.get(`${file.sourceId}\0${file.path}`)!)
+      }
+      const reply = await client.reconcile({
+        operationId,
+        handle,
+        authority,
+        priorRoots: [],
+        replayKey: 'a'.repeat(64),
+        allowDesiredAdoption: false,
+        sources: [
+          { sourceId: 'bad', sourceKind: 'managed', selections: [] },
+          { sourceId: 'good', sourceKind: 'managed', selections: [] }
+        ]
+      })
+      expect(reply.skipped).toEqual([{ sourceId: 'bad', reason: expect.stringContaining('too many bundles') }])
+      expect(reply.roots.map((entry) => [entry.sourceId, entry.path.split('/').at(-1)])).toEqual([['good', 'good']])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('refuses incomplete, out-of-order and superseded prior receipts before publication', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-skill-prior-'))
     const workspace = join(root, 'workspace')

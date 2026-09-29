@@ -137,6 +137,23 @@ describe('Git skill source cache', () => {
     expect((await skills.resolve(entry({ githubRepoId: '2' }), COMMIT_A, options())).cached).toBe(true)
   })
 
+  it('downloads a commit once when two folders of one repository are requested at the same time', async () => {
+    const skills = cache()
+    const [pack, root] = await Promise.all([
+      skills.resolve(entry({ subDir: 'pack' }), COMMIT_A, options()),
+      skills.resolve(entry(), COMMIT_A, options())
+    ])
+    expect(acquisitions).toHaveLength(1)
+    expect(await readdir(pack.sourceDir)).toEqual(['demo'])
+    expect((await readdir(root.sourceDir)).sort()).toEqual(['README.md', 'pack'])
+    // Once published, both folders are hits sharing one claim and its access check; still no download.
+    await Promise.all([
+      skills.resolve(entry({ subDir: 'pack' }), COMMIT_A, options()),
+      skills.resolve(entry(), COMMIT_A, options())
+    ])
+    expect(acquisitions).toHaveLength(1)
+  })
+
   it('lets two preparations that miss the same commit at once both succeed on one entry', async () => {
     const skills = cache()
     const [left, right] = await Promise.all([

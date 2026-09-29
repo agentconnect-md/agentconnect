@@ -314,42 +314,52 @@ export class ClusterSkillHandler {
         input.operationId,
         input.replayKey
       )
-      for (const source of input.sources) {
-        const snapshot = join(this.deps.stagingRoot, input.handle, sourceDirectory(source.sourceId))
+      // Each source stages through the CLI in its own disposable cell, so the cells run at once;
+      // their results are taken in source order below, which is the order they have always had.
+      const stagings = await Promise.all(
+        input.sources.map(async (source) => {
+          const snapshot = join(this.deps.stagingRoot, input.handle, sourceDirectory(source.sourceId))
+          const staged: CandidateSkillBundle[] = []
+          try {
+            const cell = await stageSkillsCliCell({
+              sourceSnapshot: snapshot,
+              agentId: operation.skillsAgentId,
+              selectedSkills: source.selections
+            })
+            cleanups.push(cell.cleanup)
+            for (const bundle of cell.bundles) {
+              const inspected = await inspectLocalSkillSource(bundle.absolutePath)
+              const files = inspected.files.map((file) => ({
+                path: file.path,
+                mode: file.mode & 0o111 ? 0o700 : 0o600,
+                size: file.size,
+                sha256: file.sha256.replace(/^sha256:/, '')
+              }))
+              staged.push({
+                relativeRoot: bundle.relativePath,
+                sourceKey: source.sourceId,
+                sourceDir: bundle.absolutePath,
+                files,
+                treeDigest: treeDigest(files)
+              })
+            }
+            return { source, staged }
+          } catch (error) {
+            return { source, error }
+          }
+        })
+      )
+      for (const outcome of stagings) {
         // One source failing its CLI stage — an oversized asset, too many files, a CLI crash — costs
         // that source its skills for this run, never the agent its session: the others still publish,
         // the failed source keeps whatever it had, and the daemon logs the named reason.
-        const staged: CandidateSkillBundle[] = []
-        try {
-          const cell = await stageSkillsCliCell({
-            sourceSnapshot: snapshot,
-            agentId: operation.skillsAgentId,
-            selectedSkills: source.selections
-          })
-          cleanups.push(cell.cleanup)
-          for (const bundle of cell.bundles) {
-            const inspected = await inspectLocalSkillSource(bundle.absolutePath)
-            const files = inspected.files.map((file) => ({
-              path: file.path,
-              mode: file.mode & 0o111 ? 0o700 : 0o600,
-              size: file.size,
-              sha256: file.sha256.replace(/^sha256:/, '')
-            }))
-            staged.push({
-              relativeRoot: bundle.relativePath,
-              sourceKey: source.sourceId,
-              sourceDir: bundle.absolutePath,
-              files,
-              treeDigest: treeDigest(files)
-            })
-          }
-        } catch (error) {
-          if (mutationSignal.aborted) throw error
-          const reason = error instanceof Error ? error.message : 'unknown skills CLI error'
-          skipped.push({ sourceId: source.sourceId, reason: reason.slice(0, 1024) })
+        if ('error' in outcome) {
+          if (mutationSignal.aborted) throw outcome.error
+          const reason = outcome.error instanceof Error ? outcome.error.message : 'unknown skills CLI error'
+          skipped.push({ sourceId: outcome.source.sourceId, reason: reason.slice(0, 1024) })
           continue
         }
-        candidates.push(...staged)
+        candidates.push(...outcome.staged)
       }
       // A Git source id names its commit, so a skipped source's prior roots carry the PREVIOUS
       // revision's id and cannot be matched by id. As on the daemon-local path, a run that skipped

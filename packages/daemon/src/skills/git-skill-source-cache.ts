@@ -62,6 +62,8 @@ export class GitSkillSourceCache {
   private readonly now: () => number
   private readonly acquire: typeof acquireGitSkillSource
   private readonly verifyAccess: typeof verifyGitSkillSourceAccess
+  /** Acquisitions in flight per entry, so sources that share a repository and commit download it once. */
+  private readonly inflight = new Map<string, Promise<{ entryDir: string; cached: boolean }>>()
 
   constructor(
     private readonly root: string,
@@ -89,18 +91,60 @@ export class GitSkillSourceCache {
     // The same parse the acquisition applies: a GitHub /tree/<ref>/<path> source names its folder in the URL.
     const subDir = resolveBoundedGitSkillSource(entry).subDir
     const planned = plannedCommit?.toLowerCase()
-    await fsp.mkdir(this.stagingRoot(), { recursive: true, mode: 0o700 })
-    await fsp.chmod(this.root, 0o700).catch(() => undefined)
-    const staging = join(this.stagingRoot(), randomUUID())
+    if (!planned || !COMMIT_SHA.test(planned)) {
+      // No commit to key on until the ref is resolved: acquire, then cache under what it resolved to.
+      const { entryDir, commit } = await this.download(entry, undefined, opts, githubRepoId)
+      return { sourceDir: sourceDirIn(entryDir, subDir), resolvedCommit: commit, cached: false }
+    }
+    // Claimed before the first await, so two sources of this agent that share a repository and
+    // commit — two folders of one collection — look it up and download it once, not twice.
+    const key = this.entryDir(opts.agentId, githubRepoId, planned)
+    const pending = this.inflight.get(key)
+    if (pending) {
+      const claimed = await pending
+      return { sourceDir: sourceDirIn(claimed.entryDir, subDir), resolvedCommit: planned, cached: claimed.cached }
+    }
+    const claim = this.claimEntry(entry, planned, opts, githubRepoId)
+    this.inflight.set(key, claim)
     try {
-      if (planned && COMMIT_SHA.test(planned)) {
-        const hit = await this.lookup(opts.agentId, githubRepoId, planned)
-        if (hit) {
-          // Throws, like an acquisition would, when the agent can no longer read the repository.
-          await this.verifyAccess(entry, { ...opts, privateHome: join(staging, 'home') })
-          return { sourceDir: sourceDirIn(hit, subDir), resolvedCommit: planned, cached: true }
-        }
+      const claimed = await claim
+      return { sourceDir: sourceDirIn(claimed.entryDir, subDir), resolvedCommit: planned, cached: claimed.cached }
+    } finally {
+      this.inflight.delete(key)
+    }
+  }
+
+  /** The entry for one planned commit: a hit whose access this agent re-proves, else a download. */
+  private async claimEntry(
+    entry: AgentSkillEntry,
+    planned: string,
+    opts: Omit<AcquireOptions, 'destination'>,
+    githubRepoId: string
+  ): Promise<{ entryDir: string; cached: boolean }> {
+    const hit = await this.lookup(opts.agentId, githubRepoId, planned)
+    if (hit) {
+      const staging = await this.newStaging()
+      try {
+        // Throws, like an acquisition would, when the agent can no longer read the repository.
+        await this.verifyAccess(entry, { ...opts, privateHome: join(staging, 'home') })
+      } finally {
+        await fsp.rm(staging, { recursive: true, force: true }).catch(() => undefined)
       }
+      return { entryDir: hit, cached: true }
+    }
+    const { entryDir, commit } = await this.download(entry, planned, opts, githubRepoId)
+    if (commit !== planned) throw new Error('skill Git source did not resolve to its planned commit')
+    return { entryDir, cached: false }
+  }
+
+  private async download(
+    entry: AgentSkillEntry,
+    planned: string | undefined,
+    opts: Omit<AcquireOptions, 'destination'>,
+    githubRepoId: string
+  ): Promise<{ entryDir: string; commit: string }> {
+    const staging = await this.newStaging()
+    try {
       const acquired = await this.acquire(planned ? { ...entry, ref: planned } : entry, {
         ...opts,
         destination: staging
@@ -109,10 +153,16 @@ export class GitSkillSourceCache {
       if (!COMMIT_SHA.test(commit)) throw new Error('skill Git source resolved to an invalid commit')
       const entryDir = await this.publish(opts.agentId, githubRepoId, commit, join(staging, REPOSITORY_DIR))
       await this.prune()
-      return { sourceDir: sourceDirIn(entryDir, subDir), resolvedCommit: commit, cached: false }
+      return { entryDir, commit }
     } finally {
       await fsp.rm(staging, { recursive: true, force: true }).catch(() => undefined)
     }
+  }
+
+  private async newStaging(): Promise<string> {
+    await fsp.mkdir(this.stagingRoot(), { recursive: true, mode: 0o700 })
+    await fsp.chmod(this.root, 0o700).catch(() => undefined)
+    return join(this.stagingRoot(), randomUUID())
   }
 
   /** Evict idle entries, then the least recently used beyond the byte budget; never one in use. */
