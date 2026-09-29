@@ -2467,6 +2467,12 @@ export function buildContainer(
       daemons: connReg,
       conversations: repos.webchatConversation,
       sessions: repos.session,
+      // Unfiltered by viewer: the verifier admits only org-visible members itself.
+      conversationMembers: async (orgId, key) =>
+        await repos.session.listConversationMembers(
+          { agentIds: (await repos.agent.list(OrgId(orgId))).map((agent) => agent.id) },
+          key
+        ),
       memberSets: repos.memberSet,
       orgs: repos.org,
       remoteMcp: webchatRemoteMcp,

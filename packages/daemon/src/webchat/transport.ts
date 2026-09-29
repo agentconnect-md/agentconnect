@@ -428,7 +428,8 @@ export class WebchatTransport {
     text: string,
     author: WebchatAuthor,
     sink: WebchatSink,
-    requestedTurnId?: string
+    requestedTurnId?: string,
+    post?: { postId: string; at: number }
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
     if (!this.host.agents().has(agentId)) {
@@ -448,6 +449,8 @@ export class WebchatTransport {
     const integration = originKindOf(local.platform) === 'hook' ? null : this.continuationIntegration(agentId, local)
     if (integration === undefined) return { accepted: false, turnId, reason: 'integration_offline' }
     await this.rememberAuthorName(author)
+    // One console line sent to several hook members is one post (#2500): its shared id and time let co-hosted members share a row and the merged view dedupe the rest; a chat session keeps its mirror-ordered row.
+    const shared = integration === null ? post : undefined
     const msg: NormalizedMessage = {
       msgId: `webchat-cont:${chatId}:${turnId}`,
       traceId: turnId,
@@ -457,7 +460,8 @@ export class WebchatTransport {
       ...(local.thread ? { thread: local.thread } : {}),
       ...(local.transportScope ? { transportScope: local.transportScope } : {}),
       // Ordered as NEW content in the origin session (the replyToSession rule).
-      transcriptTs: monotonicTs(),
+      transcriptTs: shared ? String(shared.at) : monotonicTs(),
+      ...(shared ? { transcriptPostId: shared.postId } : {}),
       sender: { id: author.id, isBot: false, name: author.name },
       text,
       mentionedBots: integration?.botUserId ? [integration.botUserId] : [],

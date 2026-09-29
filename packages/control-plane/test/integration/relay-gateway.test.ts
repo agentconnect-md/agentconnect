@@ -1268,6 +1268,40 @@ describe('webchat session-continuation mint + verify', () => {
     relayWs.close()
     daemonWs.close()
   })
+
+  // #2500: a pull request several agents worked on is continued as one conversation from any member's token.
+  it("verifies a hook target with its merged conversation's other members, each at its own session", async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const { ws: relayWs } = await openRelay(base, 'pod-cont-6', 'wss://pod-cont-6.example.test', CONTINUATION)
+    const daemonWs = await connectDaemonReady(base, [...CONTINUATION, WEBCHAT_HOOK_CONTINUATION_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON })
+    const pullRequest = { daemonId: DAEMON, platform: 'hook', channel: 'github:1310543401', thread: '1552' }
+    await seedSessionMeta(prisma, HOOK_SESSION_ID, AGENT, pullRequest)
+    await seedSessionMeta(prisma, 'acp-continuation-hook-peer', AGENT_B, pullRequest)
+    // Another pull request on the same repository is a different conversation.
+    await seedSessionMeta(prisma, 'acp-continuation-hook-other', AGENT_B, { ...pullRequest, thread: '1553' })
+
+    const minted = await mintSessionToken(app, HOOK_SESSION_ID)
+    expect(minted.statusCode).toBe(200)
+    sendFrame(relayWs, 'rc/verify', {
+      kind: 'webchat-token',
+      credential: (minted.json() as { token: string }).token,
+      conversationBinding: 'v1'
+    })
+    const verdict = (await nextFrame(relayWs, 'rc/verify/ok')).payload as RcVerifyResult
+    expect(verdict).toMatchObject({
+      ok: true,
+      targetSessionId: HOOK_SESSION_ID,
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true },
+        { agentId: AGENT_B, daemonId: DAEMON, targetSessionId: 'acp-continuation-hook-peer' }
+      ]
+    })
+
+    relayWs.close()
+    daemonWs.close()
+  })
 })
 
 // The relay gates its new credential signals on the advertised feature; an older relay's revocation still lands.

@@ -10825,7 +10825,8 @@ export class Daemon {
               op.text,
               webchatAuthorOf(op),
               sink,
-              op.turnId
+              op.turnId,
+              op.post
             )
             .then((ack) => ({
               msgId: msg.msgId,

@@ -1,8 +1,6 @@
 // @vitest-environment happy-dom
 
-// A continued multi-agent conversation reaches one member session per send, and the composer's roster
-// chips pick which. Before this the merged page always continued its representative's session, so a
-// reader could never address anyone else in the room.
+// A continued multi-agent conversation addresses its members: a hook one by @mention, a chat one through a chip-picked member per send.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -13,7 +11,7 @@ import type { ConversationDto, SessionDetailDto, SessionDto } from '@/lib/api'
 
 const fixtures = vi.hoisted(() => {
   const CONVERSATION_KEY = 'hook-conversation'
-  const wire = { continuable: new Map<string, boolean>() }
+  const wire = { continuable: new Map<string, boolean>(), platform: 'slack' }
   const member = (sessionId: string, agentId: string): SessionDto =>
     ({
       sessionId,
@@ -88,17 +86,19 @@ vi.mock('next/link', () => ({
 vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>()
   const { member, detail, AGENT_BY_SESSION } = fixtures
-  const conversation: ConversationDto = {
+  // Representative first, as the resolver serves it; the origin is per test.
+  const conversation = (): ConversationDto => ({
     key: fixtures.CONVERSATION_KEY,
-    platform: 'hook',
+    platform: fixtures.wire.platform,
     channel: 'github:1',
     thread: '7',
-    // Representative first, as the resolver serves it.
     sessions: [member('s-architect', 'agent-architect'), member('s-review', 'agent-review')]
-  }
+  })
   return {
     ...actual,
-    fetchConversationByKey: vi.fn(() => Promise.resolve({ conversation, accessSyncDegraded: false, accessIssues: [] })),
+    fetchConversationByKey: vi.fn(() =>
+      Promise.resolve({ conversation: conversation(), accessSyncDegraded: false, accessIssues: [] })
+    ),
     fetchSessionMessages: vi.fn(() => Promise.resolve({ messages: [], nextCursor: null })),
     fetchSessionDetail: vi.fn((id: string) => Promise.resolve(detail(id, AGENT_BY_SESSION[id] ?? ''))),
     fetchMySessionIdentity: vi.fn(() => Promise.reject(new Error('no identity'))),
@@ -237,6 +237,7 @@ const sendButton = () =>
 
 beforeEach(() => {
   wire.continuable = new Map()
+  wire.platform = 'slack'
   playgroundSpies.pgSend.mockClear()
   playgroundSpies.markSessionTarget.mockClear()
   window.matchMedia = ((query: string) => ({
@@ -306,6 +307,46 @@ describe('the recipient of a continued multi-agent conversation', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
+      undefined
+    )
+  })
+})
+
+describe('a continued hook-origin conversation (#2500)', () => {
+  it('drops the recipient pick and addresses every continuable member through the representative', async () => {
+    wire.platform = 'hook'
+    await render()
+
+    expect(recipient('architect')).toBeUndefined()
+    expect(recipient('review-bot')).toBeUndefined()
+    expect(placeholder()).toBe('Message everyone…')
+
+    await act(async () => sendButton()?.click())
+    expect(playgroundSpies.markSessionTarget).toHaveBeenCalledWith('s-architect', 's-architect')
+    expect(playgroundSpies.pgSend).toHaveBeenCalledWith(
+      's-architect',
+      'agent-architect',
+      undefined,
+      undefined,
+      [expect.objectContaining({ agentId: 'agent-architect' }), expect.objectContaining({ agentId: 'agent-review' })],
+      undefined,
+      undefined
+    )
+  })
+
+  it('leaves a member whose own session cannot continue out of the addressed roster', async () => {
+    wire.platform = 'hook'
+    wire.continuable.set('s-review', false)
+    await render()
+
+    await act(async () => sendButton()?.click())
+    expect(playgroundSpies.pgSend).toHaveBeenCalledWith(
+      's-architect',
+      'agent-architect',
+      undefined,
+      undefined,
+      [expect.objectContaining({ agentId: 'agent-architect' })],
       undefined,
       undefined
     )

@@ -432,4 +432,45 @@ describe('webchat session-targeted continuation — hook origin', () => {
     expect(postMessage).not.toHaveBeenCalled()
     await daemon.stop()
   })
+
+  // #2500: one console line sent to several members of a merged conversation is one post, so each member's copy carries the relay's shared id and time.
+  it("records the human turn under the relay's shared post id and time", async () => {
+    const { daemon, d } = await boot(() => 'ok')
+    await d.store.upsertSession({
+      key: HOOK_KEY,
+      agentId: AGENT,
+      platform: 'hook',
+      channel: 'github:42',
+      thread: '1552',
+      acpSessionId: HOOK_ACP,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.setSessionClassification(HOOK_KEY, {
+      sourceBindingKind: 'external',
+      externalProvider: 'github',
+      externalRealmKey: 'github.com',
+      externalResourceKind: 'repository',
+      externalResourceKey: '42'
+    })
+    const POST_ID = '12121212-1212-4212-8212-121212121212'
+    const AT = 1_790_000_000_000
+    const events: RdChatEvent[] = []
+    const ack = await d.handleRelayMsg(
+      turn('both of you, look again', {
+        targetSessionId: HOOK_ACP,
+        payload: { op: 'turn', text: 'both of you, look again', user: 'owner', post: { postId: POST_ID, at: AT } }
+      }),
+      (e) => events.push(e)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    const page = await d.store.transcriptPage('github:42', '1552', null, 50, AGENT)
+    const human = (page.rows as Array<{ text: string; ts?: string; postId?: string }>).find(
+      (r) => r.text === 'both of you, look again'
+    )
+    expect(human).toMatchObject({ ts: String(AT), postId: POST_ID })
+    await daemon.stop()
+  })
 })

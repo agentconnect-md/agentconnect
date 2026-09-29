@@ -12,11 +12,22 @@ import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { servesSessionContent } from '../domain/session-content.js'
 import type { PlacementResolver, ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
-import type { WebchatTokenService } from './webchatToken.js'
+import type { WebchatTokenClaims, WebchatTokenService } from './webchatToken.js'
+import type { ConversationKey } from '../persistence/ports.js'
 
 interface VerificationDaemon {
   state: string
   capabilities?: RegisterReq['capabilities']
+}
+
+/** The member-session fields a peer's continuation gate reads. */
+interface ConversationMember {
+  id: string
+  agentId: string
+  daemonId: string | null
+  contentSetId: string | null
+  visibility: string
+  contentPurgedAt: Date | null
 }
 
 export interface WebchatVerificationDeps {
@@ -37,6 +48,9 @@ export interface WebchatVerificationDeps {
       orgId: string
       agentId: string
       platform: string | null
+      tenantScope?: string | null
+      channel?: string | null
+      thread?: string | null
       daemonId: string | null
       contentSetId: string | null
       visibility: string
@@ -44,6 +58,8 @@ export interface WebchatVerificationDeps {
       contentPurgedAt: Date | null
     } | null>
   }
+  /** The current session per agent of one merged conversation in the org, unfiltered by viewer (merged-conversation-view.md §5.2). */
+  conversationMembers?: (orgId: string, key: ConversationKey) => Promise<ConversationMember[]>
   /** Who else holds the shared store a session was written to (`domain/session-content.ts`). */
   memberSets: { sharedStoreMemberIdsOf(setId: string): Promise<string[]> }
   orgs: { roleOf(orgId: string, userId: string): Promise<string | null> }
@@ -53,26 +69,7 @@ export interface WebchatVerificationDeps {
   placement: Pick<PlacementResolver, 'dispatchDaemon'>
 }
 
-/**
- * Builds the relay-facing webchat verifier. Ordinary token and live-placement
- * checks are authoritative. The PRIMARY agent must be placed on a READY daemon
- * (unchanged single-agent behavior); member participants resolve best-effort —
- * one whose daemon is unplaced or not READY is returned WITHOUT a `daemonId`,
- * and the relay refuses turns targeting it. Expected delegation denials return
- * no reference; unexpected dependency failures propagate to the relay handler's
- * retryable INTERNAL response instead of being misreported as a successful
- * verification.
- *
- * A SESSION-TARGETED conversation (non-null `targetSessionId`) re-checks the
- * continuation gates on every dial: the target session must exist un-purged and
- * chat-origin, the signed user must still hold a non-viewer role (private
- * sessions: console ownership), and the owner agent's dispatch daemon must still
- * serve the session's content (its recorder, or a holder of the shared store it
- * was written to) with the continuation capability. Any drift
- * fails the token instead of degrading into a fresh webchat session. The full
- * provider-identity expansion ran at mint (≤ token TTL ago); verify re-checks
- * with the console identity, which fails closed for platform-identity owners.
- */
+/** Builds the relay-facing webchat verifier: the primary must be placed on a READY daemon while members resolve best-effort, and a session-targeted row re-runs its continuation gates on every dial so drift fails the token instead of opening a fresh webchat session. */
 export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (token: string) => Promise<RcVerifyResult> {
   return async (token) => {
     const claims = await deps.tokens.verify(token)
@@ -142,10 +139,12 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       ) {
         return { ok: false, reason: 'continuation unavailable' }
       }
-      // Single fixed participant; no roster growth, no remote MCP entitlement.
+      // No roster growth and no remote MCP entitlement; a hook target also brings its conversation's other members (#2500).
+      const peers =
+        originKindOf(session.platform ?? '') === 'hook' ? await hookConversationPeers(deps, session, claims) : []
       return {
         ...verifiedBase,
-        participants: [{ agentId: claims.agentId, daemonId: agentDaemonId, primary: true }],
+        participants: [{ agentId: claims.agentId, daemonId: agentDaemonId, primary: true }, ...peers],
         targetSessionId
       }
     }
@@ -204,4 +203,41 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
     })
     return entitlement ? { ...verified, remoteMcp: entitlement } : verified
   }
+}
+
+/** The other agents' sessions of a hook target's merged conversation that pass the same continuation gates, each as a participant carrying its own target (#2500); a private one stays out, since only the target's owner was proven at mint. */
+async function hookConversationPeers(
+  deps: WebchatVerificationDeps,
+  target: { platform: string | null; tenantScope?: string | null; channel?: string | null; thread?: string | null },
+  claims: WebchatTokenClaims
+): Promise<RcWebchatParticipant[]> {
+  if (!deps.conversationMembers || !target.platform || !target.channel || !target.thread) return []
+  const members = await deps.conversationMembers(claims.orgId, {
+    platform: target.platform,
+    tenantScope: target.tenantScope ?? null,
+    channel: target.channel,
+    thread: target.thread
+  })
+  const peers: RcWebchatParticipant[] = []
+  for (const member of members) {
+    if (member.agentId === claims.agentId || member.visibility !== 'org' || member.contentPurgedAt !== null) continue
+    const agent = await deps.agents.getUnscoped(AgentId(member.agentId))
+    if (!agent || agent.orgId !== claims.orgId) continue
+    const daemonId = await deps.placement.dispatchDaemon(agent)
+    const daemon = daemonId ? deps.daemons.get(daemonId) : undefined
+    if (!daemonId || daemon?.state !== 'READY') continue
+    const features = daemon.capabilities?.features ?? []
+    if (
+      !features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE) ||
+      !features.includes(WEBCHAT_HOOK_CONTINUATION_FEATURE)
+    ) {
+      continue
+    }
+    const sharedStoreMembers = member.contentSetId
+      ? await deps.memberSets.sharedStoreMemberIdsOf(member.contentSetId)
+      : []
+    if (!servesSessionContent({ recordedDaemonId: member.daemonId, sharedStoreMembers }, daemonId)) continue
+    peers.push({ agentId: member.agentId, daemonId, targetSessionId: member.id })
+  }
+  return peers
 }

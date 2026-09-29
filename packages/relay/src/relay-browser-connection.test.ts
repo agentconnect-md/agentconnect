@@ -50,7 +50,7 @@ function build(
     ack?: RdAck
     remoteMcp?: WebchatRemoteMcpEntitlement
     log?: Logger
-    participants?: Array<{ agentId: string; daemonId?: string; primary?: boolean }>
+    participants?: Array<{ agentId: string; daemonId?: string; primary?: boolean; targetSessionId?: string }>
     targetSessionId?: string
     supports?: boolean
   } = {}
@@ -316,6 +316,39 @@ describe('RelayBrowserConnection', () => {
     conn['onClose']()
     await tick()
     expect(sent.at(-1)).toMatchObject({ targetSessionId: TARGET, payload: { op: 'close' } })
+  })
+
+  it("stamps each continued participant's own session and sends no context copy to a member left out", async () => {
+    const PEER = '22222222-2222-4222-8222-222222222222'
+    const THIRD = '44444444-4444-4444-8444-444444444444'
+    const { conn, transport, sent } = build({
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true, targetSessionId: 'session-a' },
+        { agentId: PEER, daemonId: DAEMON, targetSessionId: 'session-b' },
+        { agentId: THIRD, daemonId: DAEMON, targetSessionId: 'session-c' }
+      ]
+    })
+    transport.feed({ text: 'both of you', mentions: [AGENT, PEER], targets: [AGENT, PEER] })
+    await tick()
+    // Two turns, and no transcript-only context copy for the third member.
+    expect(sent.map((frame) => [frame.agentId, frame.targetSessionId, frame.payload.op])).toEqual([
+      [AGENT, 'session-a', 'turn'],
+      [PEER, 'session-b', 'turn']
+    ])
+    const [first, second] = sent.map((frame) => frame.payload as { post?: { postId: string; at: number } })
+    expect(first?.post?.postId).toBeDefined()
+    expect(second?.post).toEqual(first?.post)
+    conn['onClose']()
+    await tick()
+    expect(
+      sent.filter((frame) => frame.payload.op === 'close').map((frame) => [frame.agentId, frame.targetSessionId])
+    ).toEqual(
+      expect.arrayContaining([
+        [AGENT, 'session-a'],
+        [PEER, 'session-b'],
+        [THIRD, 'session-c']
+      ])
+    )
   })
 
   it('forwards structured mentions inside every per-target rd/msg(turn) payload', async () => {

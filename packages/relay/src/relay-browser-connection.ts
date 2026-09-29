@@ -368,7 +368,8 @@ export class RelayBrowserConnection implements ChatSink {
       ...(op.attachments?.length ? { attachments: op.attachments } : {})
     }
     for (const p of this.byAgentId.values()) {
-      if (valid.includes(p.agentId) || !p.daemonId) continue
+      // A continued member session is independent of its peers (#2500), so a turn addressed elsewhere leaves it untouched.
+      if (valid.includes(p.agentId) || !p.daemonId || p.targetSessionId) continue
       const conn = this.deps.daemonConnFor(p.daemonId)
       if (!conn) continue
       void conn
@@ -496,6 +497,7 @@ export class RelayBrowserConnection implements ChatSink {
   }
 
   private async forwardClose(daemon: RelayDaemonConnection, agentId: string): Promise<void> {
+    const targetSessionId = this.byAgentId.get(agentId)?.targetSessionId ?? this.deps.targetSessionId
     try {
       await daemon.sendMsg({
         source: 'webchat',
@@ -503,7 +505,7 @@ export class RelayBrowserConnection implements ChatSink {
         sessionKey: this.deps.chatId,
         msgId: randomUUID(),
         chatId: this.deps.chatId,
-        ...(this.deps.targetSessionId ? { targetSessionId: this.deps.targetSessionId } : {}),
+        ...(targetSessionId ? { targetSessionId } : {}),
         ...(this.remoteMcp ? { remoteMcp: this.remoteMcp } : {}),
         payload: { op: 'close' }
       })

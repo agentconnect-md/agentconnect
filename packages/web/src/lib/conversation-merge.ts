@@ -128,7 +128,9 @@ function safeEventTimeUs(value: number): number {
  */
 export function duplicateIdentity(platform: string, row: SessionMessageDto): string | null {
   if (row.kind !== 'text') return null
-  if (platform === 'webchat') return row.postId ? `post:${row.postId}` : null
+  // A canonical post id is minted once per line, so it identifies every copy on any platform, including a console line sent into several hook members (#2500).
+  if (row.postId) return `post:${row.postId}`
+  if (platform === 'webchat') return null
   return platformMessageIdentity(platform, row)
 }
 

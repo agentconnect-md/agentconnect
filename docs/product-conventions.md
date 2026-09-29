@@ -150,6 +150,19 @@ request, the issue, or anywhere else the trigger came from; both are ordinary se
 history, readable in the console and carried into the agent's context like any other turn.
 An agent that has a code-host tool can still act on the subject, as it could in any turn.
 
+A **multi-agent hook-origin conversation**, such as a pull request that several agents
+worked on, is continued as a whole from its merged conversation page:
+
+- A message goes to the members it @-mentions.
+- A message that mentions nobody goes to every member that can continue.
+- Each addressed member receives the message in its own session.
+- A member the message does not address receives no copy.
+- The message appears once in the merged transcript.
+
+A chat-origin multi-agent conversation still continues one member at a time, because
+each continued message is mirrored into the chat thread, and a single message must
+not be posted there once per member.
+
 ## Where a streamed reply may be split
 
 A long reply may be delivered as more than one chat message, but a split must always fall

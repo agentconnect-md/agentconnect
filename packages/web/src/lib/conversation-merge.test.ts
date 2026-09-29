@@ -51,15 +51,11 @@ describe('duplicateIdentity', () => {
     expect(duplicateIdentity('webchat', row({ kind: 'reasoning', postId: POST }))).toBeNull()
   })
 
-  it('dedupes nothing under a platform id no module claims', () => {
-    // The rule used to be Slack's for every unrecognized id, because Slack was
-    // the fall-through arm of the if-chain. The published module contract says
-    // the opposite — absent `messageIdentity` ⇒ never dedupe — and dedupe is
-    // the only step here that can delete a row, so the guess goes the other
-    // way now. A Slack-SHAPED ts under an unknown id is the case that changed.
+  it('dedupes nothing but a canonical post id under a platform id no module claims', () => {
+    // Absent `messageIdentity` a ts is never guessed at, while a post id minted once per line identifies every copy (#2500).
     for (const platform of ['zulip', 'hook', 'github', 'playground', 'Slack', '']) {
       expect(duplicateIdentity(platform, row({ ts: '1754123456.000200' })), platform).toBeNull()
-      expect(duplicateIdentity(platform, row({ postId: POST })), platform).toBeNull()
+      expect(duplicateIdentity(platform, row({ postId: POST })), platform).toBe(`post:${POST}`)
     }
     // Prototype keys are ids like any other — the registry is a Map, so they
     // resolve to no module rather than to `Object.prototype`.
@@ -198,6 +194,14 @@ describe('mergeConversation', () => {
     ])
     expect(merged.filter((m) => m.row.text === 'thread msg')).toHaveLength(1)
     expect(merged.map((m) => m.row.text).filter((t) => t.startsWith('a2a'))).toHaveLength(2)
+  })
+
+  it('renders a console line sent into two hook members once (#2500)', () => {
+    const merged = mergeConversation([
+      src(A, 'hook', [row({ sender: 'user-1', ts: '1790000000000', postId: POST, text: 'both of you' })]),
+      src(B, 'hook', [row({ sender: 'user-1', ts: '1790000000000', postId: POST, text: 'both of you' })])
+    ])
+    expect(merged.filter((m) => m.row.text === 'both of you')).toHaveLength(1)
   })
 
   it('keeps both copies when the platform id is one no module claims', () => {

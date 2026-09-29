@@ -121,7 +121,8 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
         participants.map((p) => ({
           agentId: p.agentId,
           ...(p.daemonId ? { daemonId: p.daemonId } : {}),
-          ...(p.recordedDaemonId ? { recordedDaemonId: p.recordedDaemonId } : {})
+          ...(p.recordedDaemonId ? { recordedDaemonId: p.recordedDaemonId } : {}),
+          ...(p.targetSessionId ? { targetSessionId: p.targetSessionId } : {})
         })),
         result.verifiedAtMs
       )

@@ -48,6 +48,8 @@ export interface WebchatParticipant {
   /** Where this participant's content is (#2218); never healed, since the recorder decides whether another member may take a turn. */
   recordedDaemonId?: string
   primary?: boolean
+  /** This participant's own continuation target, set on a hook conversation's peers (#2500); wins over the binding's. */
+  targetSessionId?: string
 }
 
 /** The verdict-bound fields every rd/msg of one conversation carries; never browser or request input. */
@@ -93,13 +95,14 @@ export function webchatRdMsg(
   participant: WebchatParticipant | undefined,
   payload: RelayWebchatOp
 ): RdMsgWebchat {
+  const targetSessionId = participant?.targetSessionId ?? binding.targetSessionId
   return {
     source: 'webchat',
     agentId,
     sessionKey: binding.chatId,
     msgId: randomUUID(),
     chatId: binding.chatId,
-    ...(binding.targetSessionId ? { targetSessionId: binding.targetSessionId } : {}),
+    ...(targetSessionId ? { targetSessionId } : {}),
     ...(participant?.recordedDaemonId ? { recordedDaemonId: participant.recordedDaemonId } : {}),
     ...(binding.remoteMcp ? { remoteMcp: binding.remoteMcp } : {}),
     payload

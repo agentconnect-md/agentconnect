@@ -215,6 +215,8 @@ function buildWebchatVerifier(
     conversationRow?: { targetSessionId: string | null } | null
     /** Target session row for the continuation branch. */
     sessionById?: Record<string, Awaited<ReturnType<WebchatVerificationDeps['sessions']['getUnscoped']>>>
+    /** The target's merged-conversation members (default: none). */
+    conversationMembers?: Awaited<ReturnType<NonNullable<WebchatVerificationDeps['conversationMembers']>>>
     /** Members of a shared-store set, by set id (default: none). */
     sharedStoreMembersBySet?: Record<string, string[]>
     /** The placement resolver (default: placement alone — no duty ledger, no live members). */
@@ -285,6 +287,7 @@ function buildWebchatVerifier(
         target: async () => (over.conversationRow === undefined ? { targetSessionId: null } : over.conversationRow)
       },
       sessions: { getUnscoped: async (id) => over.sessionById?.[id] ?? null },
+      conversationMembers: async () => over.conversationMembers ?? [],
       memberSets: { sharedStoreMemberIdsOf: async (setId) => over.sharedStoreMembersBySet?.[setId] ?? [] },
       orgs: { roleOf: async () => (over.role === undefined ? 'collaborator' : over.role) },
       placement: over.placement ?? PLACEMENT_ONLY,
@@ -1170,6 +1173,74 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
       { daemonFeatures: [...CONTINUATION_FEATURES, WEBCHAT_HOOK_CONTINUATION_FEATURE] }
     )
     await expect(capable.verifier('t')).resolves.toMatchObject({ ok: true, targetSessionId: TARGET_SESSION_ID })
+  })
+
+  // #2500: a hook target brings the other members of its merged conversation, each addressed at its own session.
+  describe('a hook target’s merged conversation', () => {
+    const PEER = '77777777-7777-4777-8777-777777777777'
+    const OFFLINE_PEER = '88888888-8888-4888-8888-888888888888'
+    const OFFLINE_DAEMON = '99999999-9999-4999-8999-999999999999'
+    const HOOK_FEATURES = [...CONTINUATION_FEATURES, WEBCHAT_HOOK_CONTINUATION_FEATURE]
+    const peer = (id: string, agentId: string, over: Record<string, unknown> = {}) => ({
+      id,
+      agentId,
+      daemonId: WEBCHAT_DAEMON_ID,
+      contentSetId: null,
+      visibility: 'org',
+      contentPurgedAt: null,
+      ...over
+    })
+    const hookTarget = (over: Parameters<typeof buildWebchatVerifier>[0] = {}) =>
+      buildWebchatVerifier({
+        conversationRow: { targetSessionId: TARGET_SESSION_ID },
+        sessionById: {
+          [TARGET_SESSION_ID]: { ...targetSession({ platform: 'hook' }), channel: 'github:42', thread: '1552' }
+        },
+        daemonFeatures: HOOK_FEATURES,
+        ...over
+      })
+
+    it('adds each continuable peer with its own target, after the primary', async () => {
+      const h = hookTarget({
+        conversationMembers: [peer(TARGET_SESSION_ID, WEBCHAT_AGENT_ID), peer('peer-session', PEER)]
+      })
+      await expect(h.verifier('t')).resolves.toMatchObject({
+        ok: true,
+        targetSessionId: TARGET_SESSION_ID,
+        participants: [
+          { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true },
+          { agentId: PEER, daemonId: WEBCHAT_DAEMON_ID, targetSessionId: 'peer-session' }
+        ]
+      })
+    })
+
+    it('leaves out a private, purged, or offline peer', async () => {
+      const h = hookTarget({
+        conversationMembers: [
+          peer('private-session', PEER, { visibility: 'private' }),
+          peer('purged-session', PEER, { contentPurgedAt: new Date() }),
+          peer('offline-session', OFFLINE_PEER)
+        ],
+        agentById: {
+          [OFFLINE_PEER]: {
+            id: AgentId(OFFLINE_PEER),
+            orgId: 'org-1',
+            placementKind: 'daemon',
+            setId: null,
+            daemonId: OFFLINE_DAEMON
+          }
+        },
+        daemonById: { [OFFLINE_DAEMON]: { state: 'OFFLINE', features: HOOK_FEATURES } }
+      })
+      const result = await h.verifier('t')
+      expect(result.participants).toEqual([{ agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true }])
+    })
+
+    it('never expands a chat-origin target, whose mirror would post one line per member', async () => {
+      const h = targeted({}, { conversationMembers: [peer('peer-session', PEER)] })
+      const result = await h.verifier('t')
+      expect(result.participants).toHaveLength(1)
+    })
   })
 
   it('keeps private sessions owner-only using the exact mint-time identity proof', async () => {

@@ -370,7 +370,8 @@ async function main(): Promise<void> {
       }
       router.deliverPost(bound.post)
       for (const p of roster) {
-        if (p.agentId === post.agentId || !p.daemonId) continue
+        // A continued member session takes no peer context (#2500).
+        if (p.agentId === post.agentId || !p.daemonId || p.targetSessionId) continue
         const conn = rdServer.get(p.daemonId)
         if (!conn) continue
         void conn

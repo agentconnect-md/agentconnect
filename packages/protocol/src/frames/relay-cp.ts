@@ -160,7 +160,9 @@ export const RcWebchatParticipant = z.object({
   daemonId: z.string().uuid().optional(),
   // The member that recorded this participant's current session, which is where its content is unless a shared store holds it. The relay carries it on every op so a member that reached the turn another way can refuse it (#2218).
   recordedDaemonId: z.string().uuid().optional(),
-  primary: z.boolean().optional()
+  primary: z.boolean().optional(),
+  // This participant's own CP-selected continuation target, stamped on its rd/msg only; set on the peers a hook target's conversation brings (#2500).
+  targetSessionId: z.string().min(1).optional()
 })
 export type RcWebchatParticipant = z.infer<typeof RcWebchatParticipant>
 

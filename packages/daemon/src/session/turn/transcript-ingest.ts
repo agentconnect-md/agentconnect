@@ -90,10 +90,9 @@ export async function ingestInboundTranscript(input: TranscriptIngestInput): Pro
   const mention = attachmentMention(msg.attachments)
   const transcriptAttachments = transcriptImageAttachments(msg.attachments)
   const transcriptText = mention ? `${msg.text}\n${mention}`.trim() : msg.text
-  // Webchat only, so it never collides with a step-1 row: chat ingress is what writes those, and
-  // webchat is not chat ingress (message-intake.md §5 step 1).
+  // Webchat and a console post into a continued hook session only: neither is chat ingress, so neither collides with a step-1 row (message-intake.md §5 step 1).
   const ts =
-    msg.platform === 'webchat'
+    msg.platform === 'webchat' || (msg.adoptedSession === true && msg.transcriptPostId !== undefined)
       ? await probeWebchatSlot(
           input.ts,
           {

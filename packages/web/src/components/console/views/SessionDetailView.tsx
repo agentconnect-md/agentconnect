@@ -2766,17 +2766,24 @@ export default function SessionDetailView() {
     }
   )
   const memberContinuable = (sessionId: string): boolean => otherMemberDetails?.get(sessionId)?.canContinue === true
+  // A hook conversation continued through its representative reaches every member by @mention (#2500); a chat one mirrors per member, so it keeps the one-member pick.
+  const wholeConversation =
+    conversationMode && conversationRoster?.platform === 'hook' && currentSessionDetail?.canContinue === true
   // A pick that can no longer continue falls back to the representative rather than locking the composer on it.
   const composerMember =
-    conversationMode && composerPick.scope === conversationKey
+    conversationMode && !wholeConversation && composerPick.scope === conversationKey
       ? conversationMembers?.find(
           (member) =>
             member.agentId === composerPick.agentId && member.sessionId !== id && memberContinuable(member.sessionId)
         )
       : undefined
   const composerSessionId = composerMember?.sessionId ?? id
-  const promptSessionIds =
-    sentSessionIds.scope === (conversationKey ?? '') ? [...sentSessionIds.ids, composerSessionId] : [composerSessionId]
+  // A whole-conversation send can land in any member, so every member's rows confirm its live prompt.
+  const promptSessionIds = wholeConversation
+    ? (conversationMembers ?? []).map((member) => member.sessionId)
+    : sentSessionIds.scope === (conversationKey ?? '')
+      ? [...sentSessionIds.ids, composerSessionId]
+      : [composerSessionId]
   const composerDetail = composerMember
     ? (otherMemberDetails?.get(composerMember.sessionId) ?? null)
     : currentSessionDetail
@@ -3871,10 +3878,17 @@ export default function SessionDetailView() {
       ).map((p) => ({ ...p, name: rosterParticipantName(p, agentById.get(p.agentId)) }))
     : []
   const multiLive = liveRoster.length > 1
-  // A continued multi-agent conversation reaches one member session per send, picked on the composer's roster chips.
-  const pickRecipient = !isPg && !isWebchat && conversationMode && multiLive
+  // A chat-origin continued conversation reaches one member session per send, picked on the composer's roster chips.
+  const pickRecipient = !isPg && !isWebchat && conversationMode && multiLive && !wholeConversation
   const composerAgentId = composerMember?.agentId ?? session.agentId ?? ''
   const composerAgentName = liveRoster.find((p) => p.agentId === composerAgentId)?.name ?? session.agentName
+  // Only members whose own session can continue are addressed, so a bare send never wakes one the relay cannot reach.
+  const conversationRosterToSend = wholeConversation
+    ? liveRoster.filter((p) => {
+        const member = conversationMembers?.find((m) => m.agentId === p.agentId)
+        return !!member && (member.sessionId === id || memberContinuable(member.sessionId))
+      })
+    : undefined
   const resumePlaceholder = continuationBlocked
     ? continuationReason === 'agent_moved'
       ? 'This session can’t continue because the agent moved to another daemon.'
@@ -3920,7 +3934,7 @@ export default function SessionDetailView() {
       composerAgentId,
       text,
       isWebchat ? session.channelId : undefined,
-      isWebchat ? liveRoster : undefined,
+      isWebchat ? liveRoster : conversationRosterToSend,
       undefined,
       pick ?? undefined
     )

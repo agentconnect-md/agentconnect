@@ -398,6 +398,13 @@ session read policy; the merge renders what comes back:
 | Live        | On resume the existing relay socket streams all lanes into the merged canvas — identical to the live Playground (which this page effectively replaces post-refresh) | SWR revalidate / poll, like the session detail today. Streaming deferred to the ACP gateway track.                                                                                                                                            |
 | Typing/busy | per-participant, from existing lane state                                                                                                                           | activity dot from `activityState`, as today                                                                                                                                                                                                   |
 
+A hook-origin conversation, such as a pull request several agents worked on, has no
+thread to mirror into. Its composer therefore drops the chip pick and routes like the
+webchat column: a message goes to the members it @-mentions, or to every continuable
+member when it mentions nobody. Placeholder "Message everyone…". See
+[webchat-cross-integration-continuation.md](webchat-cross-integration-continuation.md)
+§10. Every copy of the line carries one `postId`, so the merge renders it once.
+
 ## 9. Conversations and session lineage (parent/child)
 
 Sessions carry a second graph besides the conversation: **lineage** —
