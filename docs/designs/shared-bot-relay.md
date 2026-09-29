@@ -18,9 +18,9 @@ credentials, route metadata, relay rosters, and revocations over control
 channels. Live message ingress, attachments, replies, and ACP output streams do
 not traverse it. Separately, an authorized Web UI request may cause the CP to
 proxy a bounded daemon-local transcript, tool-body, memory, or workspace read
-without persisting the response. This preserves the hot-path boundary in
-[architecture.md](architecture.md): established
-message and agent-execution paths can continue while CP is unavailable.
+without persisting the response. This preserves the data-plane boundary in
+[architecture.md](architecture.md); admission and turn control dependencies
+remain subject to the [availability contract](high-availability.md).
 
 ## 1. Protocol Model
 
@@ -934,7 +934,10 @@ requires bounded waiting for all control-dependent verification/lookups,
 bounded data-plane readiness through handoff, and atomic replacement snapshots.
 When no CP can renew, it also requires established relay links to preserve
 cached, authorized ingress in a non-authoritative control mode; new control
-authority remains unavailable. Those changes are prerequisites, not existing
+authority remains unavailable. A lost control link has bounded readiness grace;
+longer preservation requires explicit non-authoritative mode and observable live
+daemon routes ([readiness rules](high-availability.md#owner-failure-and-database-loss)).
+Those changes are prerequisites, not existing
 guarantees. Relay crash-delivery and replay guarantees remain unchanged.
 
 | Failure                             | HTTP bot ingress                                                                                               | Hook ingress                                                     | Webchat                                                            | Agent API egress                              |

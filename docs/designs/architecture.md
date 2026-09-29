@@ -173,7 +173,7 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 - Dedicated-bot ingress connects directly to the daemon.
 - Slack and Lark / Feishu HTTP callbacks, GitHub and generic webhooks, and webchat ingress enter through the relay pool, which forwards the normalized request to the owning daemon.
 - Outbound platform traffic is sent directly by the daemon.
-- Neither ingress model puts the Control Plane on the message hot path. See [shared-bot-relay.md](shared-bot-relay.md).
+- Both models keep live message bodies on the daemon/relay data plane; some admission steps require CP control RPCs (§6.2). See [shared-bot-relay.md](shared-bot-relay.md).
 
 ### 5.2 Control Plane ↔ daemon: WebSocket (Control and Bounded Read-Back)
 
@@ -218,7 +218,7 @@ The Control Plane is not part of either live content path. It supplies control-p
 configuration and authorization metadata, but platform messages and ACP output do not
 traverse it.
 
-### 6.2 Orchestration Flow (Decoupled from Messages)
+### 6.2 Orchestration Flow (Control RPCs)
 
 ```
 daemon ←→ Control Plane (WebSocket)
@@ -250,7 +250,7 @@ The Control Plane achieves "orchestration without touching messages" over the co
 
 - **Multiple agents per daemon**: one daemon runs multiple agents concurrently, each driven by an independent ACP adapter (`claude-agent-acp` or `codex-acp`).
 - **Multiple daemons**: every daemon has the same topology and platform-integration capabilities; the Control Plane orchestrates how they share sessions and load.
-- **Horizontal scaling**: adding a daemon adds throughput. With no central hot path, scaling is approximately linear.
+- **Horizontal scaling**: execution capacity grows with daemons; admission and control capacity must scale with it.
 
 ---
 

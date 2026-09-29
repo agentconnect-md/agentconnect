@@ -21,7 +21,7 @@ the picture it draws.
 
 ### Core architecture
 
-- [architecture.md](designs/architecture.md) — The anchor: bridging messaging platforms to agent execution, the CP-off-the-hot-path invariant, and the deployment shapes.
+- [architecture.md](designs/architecture.md) — The anchor: bridging messaging platforms to agent execution, the daemon/relay data-plane boundary, and the deployment shapes.
 - [system-detailed-design.md](designs/system-detailed-design.md) — Components, technology choices, and the interfaces between them.
 - [daemon-detailed-design.md](designs/daemon-detailed-design.md) — The daemon: CLI, configuration, lifecycle, platform integration, CP interaction.
 - [control-plane-implementation.md](designs/control-plane-implementation.md) — The Control Plane: composition root, persistence, and the HTTP/WS edges.

@@ -471,7 +471,7 @@ controlPlane:
     # placed agent waits before anything can pick it up. It is paid on the first turn of every
     # agent an install creates, against a beat that costs a few indexed statements per daemon.
     HEARTBEAT_SEC: '5'
-    # Heartbeat interval × missed beats sets the Console's offline grace; keep their product at 45 seconds.
+    # Keep Console grace at 45s; proposed HA also requires HEARTBEAT_SEC < RELAY_STALE_SEC - RELAY_REAP_INTERVAL_SEC - (D + H), initially <10s (docs/designs/high-availability.md).
     MISSED_BEATS: '9'
     SECRETS_PROVIDER: memory
     # CORS: unset in the default same-origin mode (browser talks to the CP under /cp).
