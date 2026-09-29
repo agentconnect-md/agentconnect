@@ -10,7 +10,9 @@ import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import { codeHostTemplate } from '@/lib/decisions/try-state'
 import type { DecisionDefinition, SharedBotDecisionRouting } from '@agentconnect.md/protocol/decision'
 import type { CodeHostRoutingPreviewResult } from '@agentconnect.md/protocol/decision-api'
+import { tryEvaluation } from '@/lib/decisions/evaluation-source'
 import { answerRows } from '../DecisionGateTry'
+import { DecisionEvaluationDetail } from '../DecisionEvaluationDetail'
 import { DecisionTryPanel, TryNote, TryRow, type TryResultView, type TryTone } from '../try/DecisionTryPanel'
 import { CodeHostStateFields } from '../try/TryStateFields'
 
@@ -73,6 +75,20 @@ export function CodeHostRoutingTry({
       badge,
       tone: TONE[consumer.outcome],
       ...(preview.chain ? { chain: preview.chain } : {}),
+      ...(preview.detail
+        ? {
+            details: (
+              <DecisionEvaluationDetail
+                source={tryEvaluation('code_host', preview.detail)}
+                seq={0}
+                summary={preview.detail}
+                decisionName={(id) =>
+                  decisions.find((entry) => entry.id === id)?.name ?? tDecisions('binding.hiddenDecision')
+                }
+              />
+            )
+          }
+        : {}),
       body:
         consumer.outcome === 'not_applied' ? (
           <TryNote>{tc(`notAppliedBody.${consumer.notAppliedReason ?? 'paused'}`)}</TryNote>

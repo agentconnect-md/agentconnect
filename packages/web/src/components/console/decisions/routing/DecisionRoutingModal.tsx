@@ -312,6 +312,7 @@ export function DecisionRoutingModal({
           <DecisionRoutingTry
             botId={botId}
             channelId={tryChannel}
+            channelName={nameOf(tryChannel)}
             draft={draft}
             config={tryConfig}
             decision={decision}

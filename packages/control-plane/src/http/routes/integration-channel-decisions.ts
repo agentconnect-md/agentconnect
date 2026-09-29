@@ -27,7 +27,8 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { ConnectionClosed } from '../../ws/registry.js'
 import { conversationAudienceAllows, readableConversation, type ReadableConversation } from '../conversation-access.js'
 import { decisionGateReadiness, gateConsumer, visibleDecisionChain } from '../decision-access.js'
-import { runGatePreview, type GatePreviewRun } from '../gate-preview.js'
+import { previewsRaw, runGatePreview, type GatePreviewRun } from '../gate-preview.js'
+import { gatePreviewDetail } from '../../domain/decision-preview-detail.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
@@ -44,6 +45,7 @@ export const GatePreviewDto = z.object({
   readiness: ReadinessDto,
   evaluation: DecisionEvaluation.nullable(),
   chain: DecisionChainTrace.optional(),
+  detail: DecisionEvaluationRecordDetail.optional(),
   consumer: z.object({
     type: z.literal('gate'),
     outcome: z.enum(['trigger', 'skip', 'unavailable', 'not_applied']),
@@ -177,7 +179,8 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
             agentId: consumer.agent.id,
             conversationName: row.name ?? undefined,
             agent: decisionAgentContext(consumer.agent)
-          })
+          }),
+          ...(previewsRaw(deps, daemonId) ? { raw: true } : {})
         })
         if (!parsed.success) return reply.code(400).send(badRequest('The preview must fit within 32 KiB.'))
         // Fenced on both sides of the call: role, consumer visibility, serving placement, and the Decision itself.
@@ -217,6 +220,15 @@ export function integrationChannelDecisionRoutes(deps: HttpDeps) {
           readiness: { status: readiness.status === 'pending_sync' ? ('pending_sync' as const) : ('ready' as const) },
           evaluation: result.evaluation,
           ...(result.chain ? { chain: result.chain } : {}),
+          detail: gatePreviewDetail({
+            gate,
+            definitions: definitions!,
+            state: parsed.data.state,
+            run: result.run,
+            outcome: result.outcome,
+            matchedKeys: result.matchedKeys,
+            sessionMode: 'createNew'
+          }),
           consumer: {
             type: 'gate' as const,
             outcome: result.outcome,

@@ -76,6 +76,7 @@ async function render(api: DecisionApi, draft: RoutingDraft = saved, question = 
         <DecisionRoutingTry
           botId="support-bot"
           channelId={channelId}
+          channelName="#help"
           draft={next}
           config={draftConfig(next)!}
           decision={question}
@@ -137,6 +138,70 @@ describe('DecisionRoutingTry', () => {
     expect(text).toContain('Matched rules1, 2')
     expect(text).toContain('Billing')
     expect(text).toContain('Technical')
+  })
+
+  it("opens the run's routing detail from Details without reading a stored verdict", async () => {
+    const api = decisionMock.createDecisionMockApi()
+    const real = api.previewRouting.bind(api)
+    vi.spyOn(api, 'previewRouting').mockImplementation(async (botId, input) => {
+      const preview = await real(botId, input)
+      return {
+        ...preview,
+        detail: {
+          seq: 0,
+          at: '2026-09-29T10:00:00.000Z',
+          channel: 'help-channel',
+          messageId: null,
+          title: 'My billing API failed',
+          decisionId: decision.id,
+          outcome: 'routed',
+          reason: null,
+          evaluated: true,
+          answer: null,
+          matchedKeys: [],
+          matchedRuleIds: [],
+          usedOtherwise: false,
+          fallback: null,
+          targets: [
+            {
+              agentId: 'billing-agent',
+              effect: 'selected',
+              via: 'implicit',
+              participant: false,
+              disposition: 'admitted',
+              reason: null
+            }
+          ],
+          latencyMs: 300,
+          requestedModel: decision.model,
+          actualModel: decision.model,
+          usage: null,
+          detailsExpired: false,
+          snapshot: null,
+          constraint: [],
+          input: {
+            currentMessage: {
+              id: 'preview-1',
+              sender: { id: 'U0123ABCD' },
+              text: 'My billing API failed',
+              threadId: null
+            },
+            history: [],
+            historyOmitted: 0,
+            context: { partial: false, reasons: [], omittedMessages: 0 }
+          },
+          fullAnswer: null
+        }
+      }
+    })
+    const stored = vi.spyOn(api, 'getRoutingEvaluation')
+    const { view } = await render(api)
+    await runWith(view)
+    await click(button(view, 'Details'))
+    const drawer = document.body.querySelector('[data-testid="try-details"]')!
+    expect(drawer.textContent).toContain('My billing API failed')
+    expect(drawer.textContent).toContain('Billing')
+    expect(stored).not.toHaveBeenCalled()
   })
 
   it('numbers unsorted Score rules by lower bound, as the editor does', async () => {

@@ -75,7 +75,8 @@ export function DecisionRoutingEvaluationDetail({
   summary,
   agentNames,
   decisionName,
-  onBack
+  onBack,
+  record: given
 }: {
   botId: string
   channelId: string
@@ -84,16 +85,20 @@ export function DecisionRoutingEvaluationDetail({
   summary: DecisionRoutingEvaluationRecord | null
   agentNames: ReadonlyMap<string, string>
   decisionName: (decisionId: string) => string
-  onBack: () => void
+  /** Back to the list; a detail opened on its own, such as a Try's, has none. */
+  onBack?: () => void
+  /** A record already in hand, such as a Try's run, read instead of the bot's stored verdict. */
+  record?: DecisionRoutingEvaluationRecordDetail
 }) {
   const t = useTranslations('Decisions.routing')
   const tDecisions = useTranslations('Decisions')
   const locale = useLocale()
   const { api, orgId, decisions } = useDecisionsPrototype()
-  const { data, error, isLoading } = useSWR(
-    ['decision-routing-evaluation', api.mode, orgId, botId, channelId, seq],
-    () => api.getRoutingEvaluation(botId, { channelId, seq })
+  const loaded = useSWR(given ? null : ['decision-routing-evaluation', api.mode, orgId, botId, channelId, seq], () =>
+    api.getRoutingEvaluation(botId, { channelId, seq })
   )
+  const { error, isLoading } = loaded
+  const data = given ?? loaded.data
   const words = {
     yes: tDecisions('condition.yes'),
     no: tDecisions('condition.no'),
@@ -192,7 +197,7 @@ export function DecisionRoutingEvaluationDetail({
 
   return (
     <div className="flex flex-col gap-[14px] px-[18px] py-4" data-testid="routing-evaluation-detail">
-      <BackLink onClick={onBack} />
+      {onBack && <BackLink onClick={onBack} />}
       <DetailTitle title={record?.title} />
       {record && (
         <div className="flex flex-wrap items-center gap-2">

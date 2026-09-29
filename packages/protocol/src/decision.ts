@@ -631,6 +631,13 @@ export const DecisionAnswerSummary = z.discriminatedUnion('type', [
 ])
 export type DecisionAnswerSummary = z.infer<typeof DecisionAnswerSummary>
 
+/** The summary a Recent evaluations row keeps of a full answer. */
+export function decisionAnswerSummary(answer: DecisionAnswer): DecisionAnswerSummary {
+  if (answer.type === 'boolean') return { type: 'boolean', value: answer.value, probability: answer.probability }
+  if (answer.type === 'choice') return { type: 'choice', value: answer.value, confidence: answer.confidence }
+  return { type: 'score', value: answer.value, confidence: answer.confidence }
+}
+
 // One frozen state entry as the daemon evaluated it; the current message is never truncated, so it may exceed 16 KiB.
 export const DecisionEvaluationEntry = z.object({
   id: z.string().max(256),
@@ -711,6 +718,33 @@ export type DecisionChainStepDetail = z.infer<typeof DecisionChainStepDetail>
 // Present only when the CP asked for it (decision-evaluation-steps-v1).
 export const DecisionChainDetail = z.array(DecisionChainStepDetail).max(DECISION_CHAIN_MAX_STEPS)
 export type DecisionChainDetail = z.infer<typeof DecisionChainDetail>
+
+/** Each reached chain step as a Recent evaluations detail shows it; none unless every step's Decision is known. */
+export function chainStepDetails(input: {
+  trace: DecisionChainTrace
+  definition(decisionId: string): Pick<DecisionChainStepDetail, 'providerId' | 'model' | 'question'> | undefined
+  condition?(stepId: string): unknown
+  raw?(index: number): Pick<DecisionChainStepDetail, 'rawRequest' | 'rawResponse'> | undefined
+}): DecisionChainDetail | undefined {
+  const steps = input.trace.map((step, index) => {
+    const definition = input.definition(step.decisionId)
+    const condition = DecisionCondition.safeParse(input.condition?.(step.stepId))
+    return definition
+      ? {
+          stepId: step.stepId,
+          decisionId: step.decisionId,
+          providerId: definition.providerId,
+          model: definition.model,
+          question: definition.question,
+          ...(condition.success ? { condition: condition.data } : {}),
+          ...(index > 0 ? input.raw?.(index) : {})
+        }
+      : undefined
+  })
+  if (steps.some((step) => !step)) return undefined
+  const parsed = DecisionChainDetail.safeParse(steps)
+  return parsed.success ? parsed.data : undefined
+}
 
 // What an evaluation judged in one line, like a session title; null once retention strips the input.
 export const DecisionEvaluationTitle = z.string().max(256).nullable()

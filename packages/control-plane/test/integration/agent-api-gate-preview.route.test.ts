@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import {
   API_DECISION_GATE_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
+  DECISION_PREVIEW_RAW_V1_FEATURE,
   DECISION_PREVIEW_V1_FEATURE,
   type DecisionEvaluation,
   type DecisionPreviewRequest
@@ -46,7 +47,14 @@ function open(opts: { features?: string[]; offline?: boolean; userId?: string } 
     next: async (): Promise<{ evaluation: DecisionEvaluation }> => ({ evaluation: yes }),
     async decisionPreview(_daemonId: string, _orgId: string, req: DecisionPreviewRequest) {
       previews.push(req)
-      return this.next()
+      const reply = await this.next()
+      return req.raw
+        ? {
+            ...reply,
+            rawRequest: { text: '{"model":"jev-1.13.0"}', truncated: false },
+            rawResponse: { text: '{"answer":true}', truncated: false }
+          }
+        : reply
     },
     async agentUpsert(): Promise<void> {}
   }
@@ -90,6 +98,7 @@ describe('POST /agents/:agentId/api/:protocol/gate/preview', () => {
       mode: 'live',
       readiness: { status: 'ready' },
       evaluation: yes,
+      detail: expect.objectContaining({ outcome: 'triggered', title: 'How do I install the CLI?' }),
       consumer: {
         type: 'gate',
         outcome: 'trigger',
@@ -110,6 +119,22 @@ describe('POST /agents/:agentId/api/:protocol/gate/preview', () => {
     // Writes nothing: the saved gate stays unset.
     const entries = (await a.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/api` })).json()
     expect(entries).toMatchObject({ entries: [{ protocol: 'ai-sdk-ui', gate: null }] })
+  })
+
+  it('returns the provider bodies in its detail from a daemon that hands them back', async () => {
+    const { a, previews } = open({ features: [...FEATURES, DECISION_PREVIEW_RAW_V1_FEATURE] })
+    const decisionId = await setup(a)
+    const res = await preview(a, { gate: gateOf(decisionId), state })
+    expect(previews[0]).toMatchObject({ raw: true })
+    expect(res.json().detail).toMatchObject({
+      rawRequest: { text: '{"model":"jev-1.13.0"}', truncated: false },
+      rawResponse: { text: '{"answer":true}', truncated: false },
+      input: { currentMessage: { text: 'How do I install the CLI?' }, history: [] }
+    })
+    // An older daemon is never sent the field its strict schema would reject.
+    const old = open()
+    await preview(old.a, { gate: gateOf(decisionId), state })
+    expect(old.previews[0]).not.toHaveProperty('raw')
   })
 
   it('answers skip for an unmatched condition and unavailable for a provider failure, never a skip', async () => {

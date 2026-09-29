@@ -14,6 +14,7 @@ import {
   DecisionEvaluation,
   DecisionPreviewRequest,
   DecisionPreviewSample,
+  DecisionRoutingEvaluationRecordDetail,
   SharedBotDecisionRouting,
   decisionRoutingIssues,
   manifestFor,
@@ -33,6 +34,8 @@ import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { routingHostMembers } from '../routing-host.js'
+import { previewStep, previewsRaw } from '../gate-preview.js'
+import { routingPreviewDetail, type PreviewStepRaw } from '../../domain/decision-preview-detail.js'
 import { ctxOf, denyViewerWrite, orgOf } from '../rbac.js'
 
 const IdParam = z.object({ id: z.string().uuid() })
@@ -66,6 +69,7 @@ const RoutingPreviewDto = z.object({
   readiness: z.object({ status: z.enum(['ready', 'pending_sync', 'needs_review', 'unsupported']) }),
   evaluation: DecisionEvaluation.nullable(),
   chain: DecisionChainTrace.optional(),
+  detail: DecisionRoutingEvaluationRecordDetail.optional(),
   consumer: z.object({
     type: z.literal('shared_bot_routing'),
     outcome: z.enum(['activate', 'continue', 'skip', 'unavailable', 'not_applied']),
@@ -274,6 +278,7 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
               }))
         const answers = new Map<string, { question: DecisionQuestion; answer: DecisionAnswer }>()
         let chain: DecisionChainTrace | undefined
+        let trace: DecisionChainTrace = []
         const settle = (answer: Parameters<typeof settleRoutingPreview>[0]['answer']) =>
           settleRoutingPreview({
             question: decision.question,
@@ -336,7 +341,8 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
             model: decision.model,
             question: decision.question
           },
-          state: routingSampleState(sample, situation, { conversationName: conversation[0]?.name ?? undefined })
+          state: routingSampleState(sample, situation, { conversationName: conversation[0]?.name ?? undefined }),
+          ...(previewsRaw(deps, hostId) ? { raw: true } : {})
         })
         if (!parsed.success) return reply.code(400).send(badRequest('The preview must fit within 32 KiB.'))
         // Fenced on both sides of the call: role, bot visibility, the Decision, and the host still serving the member.
@@ -356,26 +362,32 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
         }
         if (!(await authorized())) return reply.code(404).send(notFound('bot not found'))
         let evaluation: DecisionEvaluation
+        const raws: Array<PreviewStepRaw | undefined> = []
+        const at = new Date()
+        const startedAt = performance.now()
         try {
-          const deadlineAt = performance.timeOrigin + performance.now() + 5000
+          const deadlineAt = performance.timeOrigin + startedAt + 5000
           const result = await runDecisionChain<DecisionRoutingStep>({
             root: config,
             steps: config.steps,
             deadlineAt,
-            evaluate: async (step) => {
+            evaluate: async (step, index) => {
               if (!(await authorized())) return { status: 'unavailable', reason: 'credentials' }
               const d = definitions!.get(step.decisionId)!
-              const request = DecisionPreviewRequest.safeParse({
-                ...parsed.data,
-                evaluationId: randomUUID(),
-                decision: { name: d.name, providerId: d.providerId, model: d.model, question: d.question },
-                ...(config.steps?.length
-                  ? { budgetMs: Math.max(1, Math.floor(deadlineAt - (performance.timeOrigin + performance.now()))) }
-                  : {})
+              return previewStep(deps, {
+                orgId,
+                daemonId: hostId,
+                raws,
+                index,
+                request: {
+                  ...parsed.data,
+                  evaluationId: randomUUID(),
+                  decision: { name: d.name, providerId: d.providerId, model: d.model, question: d.question },
+                  ...(config.steps?.length
+                    ? { budgetMs: Math.max(1, Math.floor(deadlineAt - (performance.timeOrigin + performance.now()))) }
+                    : {})
+                }
               })
-              return request.success
-                ? (await deps.control.decisionPreview(hostId, orgId, request.data)).evaluation
-                : { status: 'unavailable', reason: 'unsupported_input' }
             },
             next: (step, result) => {
               const question = definitions!.get(step.decisionId)!.question
@@ -389,13 +401,33 @@ export function decisionRoutingPreviewRoutes(deps: HttpDeps) {
             }
           })
           evaluation = result.evaluation
+          trace = result.trace
           if (config.steps?.length) chain = result.trace
         } catch (err) {
           req.log.warn({ daemonId: hostId, error: (err as Error).name }, 'routing preview could not reach the host')
           return reply.code(503).send(unavailable('Routing preview is unavailable. Try again.'))
         }
         if (!(await authorized())) return reply.code(404).send(notFound('bot not found'))
-        return result(settle(evaluation.status === 'answered' ? evaluation.answer : 'unavailable'), evaluation)
+        const preview = result(settle(evaluation.status === 'answered' ? evaluation.answer : 'unavailable'), evaluation)
+        const { outcome } = preview.consumer
+        if (outcome === 'not_applied') return preview
+        return {
+          ...preview,
+          detail: routingPreviewDetail({
+            config,
+            definitions: definitions!,
+            state: parsed.data.state,
+            run: { evaluation, trace, raws, latencyMs: performance.now() - startedAt, at },
+            channelId,
+            defaultAgentId,
+            constraint: constraint.map(({ agentId, participant, via }) => ({
+              agentId,
+              participant,
+              via: via ?? 'implicit'
+            })),
+            consumer: { ...preview.consumer, outcome }
+          })
+        }
       }
     )
   }

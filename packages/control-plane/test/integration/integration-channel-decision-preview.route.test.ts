@@ -139,6 +139,25 @@ describe('POST /integrations/:id/channels/:channelId/decision-preview', () => {
       mode: 'live',
       readiness: { status: 'ready' },
       evaluation: yes,
+      // The run as the conversation's Recent evaluations detail reads it; an older daemon sends no bodies.
+      detail: expect.objectContaining({
+        seq: 0,
+        title: 'My deploy is failing',
+        decisionId,
+        outcome: 'triggered',
+        answer: { type: 'boolean', value: true, probability: 0.9 },
+        requestedModel: 'jev-1.13.0',
+        actualModel: 'jev-1.13.0',
+        snapshot: expect.objectContaining({ decisionId, condition: { type: 'boolean', values: [true] } }),
+        input: expect.objectContaining({
+          agent: expect.objectContaining({ name: 'helper' }),
+          currentMessage: expect.objectContaining({ sender: { id: 'U2' }, text: 'My deploy is failing' }),
+          history: [expect.objectContaining({ sender: { id: 'U1' }, text: 'Is anyone around?' })]
+        }),
+        fullAnswer: { type: 'boolean', value: true, probability: 0.9 },
+        rawRequest: null,
+        rawResponse: null
+      }),
       consumer: {
         type: 'gate',
         outcome: 'trigger',

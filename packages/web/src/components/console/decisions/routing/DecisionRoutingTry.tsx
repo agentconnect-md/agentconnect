@@ -11,6 +11,7 @@ import type { DecisionDefinition, SharedBotDecisionRouting } from '@agentconnect
 import type { DecisionRoutingPreviewResult } from '@agentconnect.md/protocol/decision-api'
 import { conditionSummary } from '../DecisionConditionFields'
 import { answerRows } from '../DecisionGateTry'
+import { DecisionRoutingEvaluationDetail } from './DecisionRoutingEvaluationDetail'
 import { DecisionTryPanel, TryNote, TryRow, type TryResultView, type TryTone } from '../try/DecisionTryPanel'
 import { RoutingStateFields } from '../try/TryStateFields'
 
@@ -25,6 +26,7 @@ const TONE: Record<DecisionRoutingPreviewResult['consumer']['outcome'], TryTone>
 export function DecisionRoutingTry({
   botId,
   channelId,
+  channelName,
   draft,
   config,
   decision,
@@ -34,6 +36,7 @@ export function DecisionRoutingTry({
   botId: string
   /** The conversation the modal was opened from: the sample's channel. */
   channelId: string
+  channelName: string
   draft: RoutingDraft
   /** The draft as a saveable configuration. */
   config: SharedBotDecisionRouting
@@ -90,6 +93,24 @@ export function DecisionRoutingTry({
       badge,
       tone: TONE[consumer.outcome],
       ...(preview.chain ? { chain: preview.chain } : {}),
+      ...(preview.detail
+        ? {
+            details: (
+              <DecisionRoutingEvaluationDetail
+                botId={botId}
+                channelId={channelId}
+                channelName={channelName}
+                seq={0}
+                summary={preview.detail}
+                record={preview.detail}
+                agentNames={names}
+                decisionName={(id) =>
+                  decisions.find((entry) => entry.id === id)?.name ?? tDecisions('binding.hiddenDecision')
+                }
+              />
+            )
+          }
+        : {}),
       body:
         consumer.outcome === 'not_applied' ? (
           <TryNote>{t(`try.notAppliedBody.${consumer.notAppliedReason ?? 'off'}`)}</TryNote>

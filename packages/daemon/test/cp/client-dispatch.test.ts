@@ -5,6 +5,7 @@ import {
   MAX_FRAME_BYTES,
   SESSION_LIVE_TAIL_FEATURE,
   DECISION_PROVIDER_PROFILES,
+  DECISION_RAW_JSON_MAX_CHARS,
   DECISION_TOOLS_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE
 } from '@agentconnect.md/protocol'
@@ -189,7 +190,9 @@ describe('CpClient dispatch', () => {
       catalog: () => ({
         providers: DECISION_PROVIDER_PROFILES.map((profile) => ({ ...profile, cloudAvailable: false }))
       }),
-      evaluate: vi.fn(async () => result)
+      evaluate: vi.fn(
+        async (_input: { onRawRequest?: (text: string) => void; onRawResponse?: (text: string) => void }) => result
+      )
     }
     const { client, t } = await readyClient({ decisionEvaluator, orgForAgent: () => 'example-org' }, [], 'frame')
     try {
@@ -216,6 +219,25 @@ describe('CpClient dispatch', () => {
         payload: { evaluation: result }
       })
       expect(decisionEvaluator.evaluate).toHaveBeenCalledTimes(1)
+      // The bodies come back only when the Try asks for them, for its detail.
+      expect(t.lastSent().payload).not.toHaveProperty('rawRequest')
+      decisionEvaluator.evaluate.mockImplementationOnce(
+        async (input: { onRawRequest?: (text: string) => void; onRawResponse?: (text: string) => void }) => {
+          input.onRawRequest?.('{"model":"jev-latest"}')
+          input.onRawResponse?.('x'.repeat(DECISION_RAW_JSON_MAX_CHARS + 1))
+          return result
+        }
+      )
+      t.pushInbound(frame('decision/preview', { ...payload, raw: true }, { orgId: 'example-org' }))
+      await tick()
+      expect(t.lastSent()).toMatchObject({
+        type: 'decision/preview/result',
+        payload: {
+          evaluation: result,
+          rawRequest: { text: '{"model":"jev-latest"}', truncated: false },
+          rawResponse: { truncated: true }
+        }
+      })
       t.pushInbound(frame('decision/catalog', {}, { orgId: 'example-org' }))
       await tick()
       expect(t.lastSent()).toMatchObject({

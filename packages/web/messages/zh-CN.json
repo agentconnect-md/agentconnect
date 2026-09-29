@@ -5076,6 +5076,10 @@
       "addDiff": "添加 diff",
       "stale": "本次运行后草稿或示例已更改，请重新运行。",
       "failed": "无法运行预览。{message}",
+      "details": "详情",
+      "detailsTitle": "试运行详情",
+      "detailsSubtitle": "本次运行不会记录到最近评估",
+      "detailsClose": "关闭试运行详情",
       "errors": {
         "json": "不是有效的 JSON：{message}",
         "shape": "示例必须是一个 JSON 对象。",

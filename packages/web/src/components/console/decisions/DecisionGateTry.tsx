@@ -14,7 +14,9 @@ import type {
   DecisionDefinition
 } from '@agentconnect.md/protocol/decision'
 import type { DecisionGatePreviewResult } from '@agentconnect.md/protocol/decision-api'
+import { tryEvaluation } from '@/lib/decisions/evaluation-source'
 import { conditionSummary } from './DecisionConditionFields'
+import { DecisionEvaluationDetail } from './DecisionEvaluationDetail'
 import { DecisionTryPanel, TryNote, TryRow, type TryResultView, type TryTone } from './try/DecisionTryPanel'
 import { ApiStateFields, ConversationStateFields } from './try/TryStateFields'
 
@@ -61,6 +63,7 @@ export function DecisionGateTry({
   const { decisions } = useDecisionsPrototype()
   const words = { yes: t('condition.yes'), no: t('condition.no'), none: t('condition.noAnswer') }
   const api = source.lane === 'api'
+  const decisionName = (id: string) => decisions.find((entry) => entry.id === id)?.name ?? t('binding.hiddenDecision')
   // Any edit to the Decision (including a saved question or model change) or condition makes the last run stale.
   const signature = useMemo(
     () =>
@@ -95,6 +98,18 @@ export function DecisionGateTry({
       badge,
       tone: TONE[consumer.outcome],
       ...(preview.chain ? { chain: preview.chain } : {}),
+      ...(preview.detail
+        ? {
+            details: (
+              <DecisionEvaluationDetail
+                source={tryEvaluation(api ? 'api' : 'conversation', preview.detail)}
+                seq={0}
+                summary={preview.detail}
+                decisionName={decisionName}
+              />
+            )
+          }
+        : {}),
       body: (
         <>
           {consumer.outcome === 'unavailable' ? (

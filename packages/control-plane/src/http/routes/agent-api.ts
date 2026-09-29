@@ -30,7 +30,8 @@ import { apiGateReadiness, apiProtocolUnsupported, visibleDecisionChain } from '
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import { apiGateSampleState } from '../../domain/decision-gate-preview.js'
-import { runGatePreview, type GatePreviewRun } from '../gate-preview.js'
+import { previewsRaw, runGatePreview, type GatePreviewRun } from '../gate-preview.js'
+import { gatePreviewDetail } from '../../domain/decision-preview-detail.js'
 import { GatePreviewDto } from './integration-channel-decisions.js'
 
 const AgentParams = z.object({ orgId: z.string(), agentId: z.string().uuid() })
@@ -325,7 +326,8 @@ export function agentApiRoutes(deps: HttpDeps) {
             model: decision.model,
             question: decision.question
           },
-          state: apiGateSampleState(state, decisionAgentContext(agent))
+          state: apiGateSampleState(state, decisionAgentContext(agent)),
+          ...(previewsRaw(deps, daemonId) ? { raw: true } : {})
         })
         if (!parsed.success) return badRequest('The preview must fit within 32 KiB.')
         // Fenced on both sides of the call: role, edit access, serving placement, and the Decisions themselves.
@@ -365,6 +367,15 @@ export function agentApiRoutes(deps: HttpDeps) {
           readiness: { status: 'ready' as const },
           evaluation: result.evaluation,
           ...(result.chain ? { chain: result.chain } : {}),
+          detail: gatePreviewDetail({
+            gate,
+            definitions,
+            state: parsed.data.state,
+            run: result.run,
+            outcome: result.outcome,
+            matchedKeys: result.matchedKeys,
+            sessionMode: 'api'
+          }),
           consumer: {
             type: 'gate' as const,
             outcome: result.outcome,

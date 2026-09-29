@@ -7,11 +7,14 @@ import {
   DecisionModelEvaluationRecordDetail,
   DecisionModelEvaluationRecordPage,
   DecisionQuestion,
+  DecisionRawJson,
   DecisionRoutingEvaluationRecordDetail,
   DecisionRoutingEvaluationRecordPage
 } from '../decision.js'
 
 export const DECISION_PREVIEW_V1_FEATURE = 'decision-preview-v1'
+// The peer returns a preview's provider request and response JSON when asked with `raw: true`.
+export const DECISION_PREVIEW_RAW_V1_FEATURE = 'decision-preview-raw-v1'
 // The peer understands BindMatch{kind:'decision'}, core.decisions and rd/msg.decisionId, and never treats them as Any.
 export const DECISION_TRIGGER_V1_FEATURE = 'decision-trigger-v1'
 // The peer understands routedConversations/evaluationDaemonId, shared_bot_routing bindings and bundle.sharedBotRouting, never as Any.
@@ -104,13 +107,20 @@ export const DecisionPreviewRequest = z
     evaluationId: z.string().uuid(),
     decision: DecisionDraft,
     state: z.record(z.string(), z.unknown()),
-    budgetMs: z.number().int().min(1).max(5000).optional()
+    budgetMs: z.number().int().min(1).max(5000).optional(),
+    // Sent only to a decision-preview-raw-v1 peer; an older strict one would reject it.
+    raw: z.literal(true).optional()
   })
   .refine((input) => new TextEncoder().encode(JSON.stringify(input)).byteLength <= 32 * 1024, {
     message: 'The preview must fit within 32 KiB.'
   })
 export type DecisionPreviewRequest = z.infer<typeof DecisionPreviewRequest>
-export const DecisionPreviewReply = z.object({ evaluation: DecisionEvaluation })
+// The provider bodies come back only for `raw: true`, null when no request went out; the CP proxies and never stores them.
+export const DecisionPreviewReply = z.object({
+  evaluation: DecisionEvaluation,
+  rawRequest: DecisionRawJson.nullable().optional(),
+  rawResponse: DecisionRawJson.nullable().optional()
+})
 export type DecisionPreviewReply = z.infer<typeof DecisionPreviewReply>
 
 // Bounded, daemon-owned Recent evaluations reads; the CP proxies them and never persists the bodies.

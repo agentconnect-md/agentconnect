@@ -5076,6 +5076,10 @@
       "addDiff": "Add a diff",
       "stale": "The draft or sample changed after this run. Run again.",
       "failed": "Couldn't run the preview. {message}",
+      "details": "Details",
+      "detailsTitle": "Try details",
+      "detailsSubtitle": "This run is not recorded in Recent evaluations",
+      "detailsClose": "Close Try details",
       "errors": {
         "json": "Not valid JSON: {message}",
         "shape": "The sample must be one JSON object.",

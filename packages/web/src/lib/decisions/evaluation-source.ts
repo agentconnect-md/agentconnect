@@ -71,3 +71,16 @@ export function apiGateEvaluations(
       api.mode === 'mock' ? api.getEvaluation(ref, seq) : fetchAgentApiGateEvaluation(agentId, protocol, seq, orgId)
   }
 }
+
+// A Try's run read as one evaluation of its lane; nothing is stored, so the detail is already in hand.
+export function tryEvaluation(
+  lane: DecisionEvaluationSource['lane'],
+  detail: DecisionEvaluationRecordDetail
+): DecisionEvaluationSource {
+  return {
+    lane,
+    key: ['try', lane, detail.at, String(detail.latencyMs)],
+    list: async () => ({ items: [], nextCursor: null }),
+    get: async () => detail
+  }
+}

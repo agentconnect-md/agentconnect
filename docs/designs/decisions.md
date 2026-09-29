@@ -1403,6 +1403,14 @@ without mentions an established thread whose `participantAgentIds` already
 participate. These are preview inputs, not runtime policy switches. Draft edits
 make prior results stale until rerun; switching editors does not.
 
+Each evaluated result carries **Details**, which opens the run in its lane's
+Recent evaluations detail view: the gate detail for the conversation, API and
+code-host lanes, and the routing detail for a shared bot, drawn by the same
+components. The CP builds that record from the exact state it sent (bound fields
+included) and the settled outcome. A daemon advertising `decision-preview-raw-v1`
+is asked for the provider request and response JSON with `raw: true`; the CP
+proxies them and stores nothing. The drawer states that the run is not recorded.
+
 | Surface / situation          | Result shown                                                                                                                        |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | Decision Try                 | Typed answer, requested/actual model, latency, context-trimming information                                                         |

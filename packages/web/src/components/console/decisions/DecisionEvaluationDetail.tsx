@@ -61,7 +61,8 @@ export function DecisionEvaluationDetail({
   /** The list row, shown while the detail loads and kept when it fails. */
   summary: DecisionEvaluationRecord | null
   decisionName: (decisionId: string) => string
-  onBack: () => void
+  /** Back to the list; a detail opened on its own, such as a Try's, has none. */
+  onBack?: () => void
 }) {
   const t = useTranslations('Decisions')
   const locale = useLocale()
@@ -84,7 +85,7 @@ export function DecisionEvaluationDetail({
 
   return (
     <div className="flex flex-col gap-[14px] px-[18px] py-4" data-testid="evaluation-detail">
-      <BackLink onClick={onBack} />
+      {onBack && <BackLink onClick={onBack} />}
       <DetailTitle title={record?.title} />
       {record && (
         <div className="flex flex-wrap items-center gap-2">

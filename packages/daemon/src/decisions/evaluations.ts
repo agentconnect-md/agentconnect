@@ -4,6 +4,7 @@ import {
   DECISION_RAW_JSON_MAX_CHARS,
   DECISION_LIST_MAX_BYTES,
   DecisionAnswer,
+  decisionAnswerSummary,
   DecisionChainTrace,
   DecisionCondition,
   DecisionEvaluationEntry,
@@ -13,7 +14,6 @@ import {
   DecisionRoutingTargetRecord,
   SharedBotDecisionRouting,
   routingEvaluationOutcome,
-  type DecisionAnswerSummary,
   type DecisionChainDetail,
   type DecisionRawJson,
   type DecisionRoutingEvaluationRecordDetail,
@@ -89,11 +89,7 @@ function outcomeOf(row: DecisionVerdictRow): DecisionEvaluationOutcome {
   return 'pending'
 }
 
-export function summaryOf(answer: DecisionAnswer): DecisionAnswerSummary {
-  if (answer.type === 'boolean') return { type: 'boolean', value: answer.value, probability: answer.probability }
-  if (answer.type === 'choice') return { type: 'choice', value: answer.value, confidence: answer.confidence }
-  return { type: 'score', value: answer.value, confidence: answer.confidence }
-}
+export const summaryOf = decisionAnswerSummary
 
 function answerOf(row: DecisionVerdictRow): { answer: DecisionAnswer | null; matchedKeys: string[] } {
   const stored = record(parseJson(row.answerJson))

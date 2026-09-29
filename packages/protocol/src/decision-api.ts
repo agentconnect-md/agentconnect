@@ -186,6 +186,8 @@ export interface DecisionGatePreviewInput {
 // Gate Try on the conversation's serving daemon; `unavailable` continues to the target and is never a skip.
 export interface DecisionGatePreviewResult {
   chain?: import('./decision.js').DecisionChainTrace
+  /** The run as a Recent evaluations detail reads it; absent when nothing was evaluated. */
+  detail?: import('./decision.js').DecisionEvaluationRecordDetail
   mode: 'mock' | 'live'
   readiness: DecisionReadiness
   evaluation: DecisionEvaluation | null
@@ -215,6 +217,8 @@ export interface CodeHostRoutingPreviewInput {
 // `unavailable` fires every member, as the live router fails open; `skip` fires none.
 export interface CodeHostRoutingPreviewResult {
   chain?: import('./decision.js').DecisionChainTrace
+  /** The run as a Recent evaluations detail reads it; absent when nothing was evaluated. */
+  detail?: import('./decision.js').DecisionEvaluationRecordDetail
   mode: 'mock' | 'live'
   evaluation: DecisionEvaluation | null
   consumer: {
@@ -244,6 +248,8 @@ export type DecisionRoutingNotAppliedReason = 'off' | 'outside_scope' | 'paused'
 // Routing Try on the bot's evaluation host; `unavailable` names its continuation and is never a skip.
 export interface DecisionRoutingPreviewResult {
   chain?: import('./decision.js').DecisionChainTrace
+  /** The run as a Recent evaluations detail reads it; absent when nothing was evaluated. */
+  detail?: import('./decision.js').DecisionRoutingEvaluationRecordDetail
   mode: 'mock' | 'live'
   readiness: DecisionReadiness
   evaluation: DecisionEvaluation | null

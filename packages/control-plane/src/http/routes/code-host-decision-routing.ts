@@ -27,6 +27,8 @@ import {
 } from '@agentconnect.md/protocol'
 import { codeHostsOf } from '../../codehost/registry.js'
 import { codeHostSampleState, settleCodeHostPreview } from '../../domain/code-host-routing-preview.js'
+import { codeHostPreviewDetail, type PreviewStepRaw } from '../../domain/decision-preview-detail.js'
+import { previewStep, previewsRaw } from '../gate-preview.js'
 import { canEdit, canView } from '../../authorization/policy.js'
 import { ProtocolError } from '../../domain/errors.js'
 import { OrgId } from '../../domain/ids.js'
@@ -78,6 +80,7 @@ const PreviewDto = z.object({
   mode: z.literal('live'),
   evaluation: DecisionEvaluation.nullable(),
   chain: DecisionChainTrace.optional(),
+  detail: DecisionEvaluationRecordDetail.optional(),
   consumer: z.object({
     type: z.literal('code_host_routing'),
     outcome: z.enum(['activate', 'skip', 'unavailable', 'not_applied']),
@@ -502,7 +505,8 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
             provider: view.scope.provider,
             family: view.scope.family,
             repoFullName: view.repoFullName
-          })
+          }),
+          ...(previewsRaw(deps, daemonId) ? { raw: true } : {})
         })
         if (!parsed.success) return reply.code(400).send(badRequest('The preview must fit within 32 KiB.'))
         // Fenced on both sides of the call: role, scope visibility, the Decisions, and the host still serving its member.
@@ -524,26 +528,33 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
         const answers = new Map<string, { question: DecisionQuestion; answer: DecisionAnswer }>()
         let evaluation: DecisionEvaluation
         let chain: DecisionChainTrace | undefined
+        let trace: DecisionChainTrace = []
+        const raws: Array<PreviewStepRaw | undefined> = []
+        const at = new Date()
+        const startedAt = performance.now()
         try {
-          const deadlineAt = performance.timeOrigin + performance.now() + 5000
+          const deadlineAt = performance.timeOrigin + startedAt + 5000
           const result = await runDecisionChain<DecisionRoutingStep>({
             root: config,
             steps: config.steps,
             deadlineAt,
-            evaluate: async (step) => {
+            evaluate: async (step, index) => {
               if (!(await authorized())) return { status: 'unavailable', reason: 'credentials' }
               const d = definitions.get(step.decisionId)!
-              const request = DecisionPreviewRequest.safeParse({
-                ...parsed.data,
-                evaluationId: randomUUID(),
-                decision: { name: d.name, providerId: d.providerId, model: d.model, question: d.question },
-                ...(chained
-                  ? { budgetMs: Math.max(1, Math.floor(deadlineAt - (performance.timeOrigin + performance.now()))) }
-                  : {})
+              return previewStep(deps, {
+                orgId: view.scope.orgId,
+                daemonId,
+                raws,
+                index,
+                request: {
+                  ...parsed.data,
+                  evaluationId: randomUUID(),
+                  decision: { name: d.name, providerId: d.providerId, model: d.model, question: d.question },
+                  ...(chained
+                    ? { budgetMs: Math.max(1, Math.floor(deadlineAt - (performance.timeOrigin + performance.now()))) }
+                    : {})
+                }
               })
-              return request.success
-                ? (await deps.control.decisionPreview(daemonId, view.scope.orgId, request.data)).evaluation
-                : { status: 'unavailable', reason: 'unsupported_input' }
             },
             next: (step, result) => {
               const question = definitions.get(step.decisionId)!.question
@@ -557,6 +568,7 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
             }
           })
           evaluation = result.evaluation
+          trace = result.trace
           if (chained) chain = result.trace
         } catch (err) {
           req.log.warn({ daemonId, error: (err as Error).name }, 'routing preview could not reach the host')
@@ -570,8 +582,18 @@ export function codeHostDecisionRoutingRoutes(deps: HttpDeps) {
           chain: answers,
           memberIds
         })
+        const detail = codeHostPreviewDetail({
+          config,
+          definitions,
+          state: parsed.data.state,
+          run: { evaluation, trace, raws, latencyMs: performance.now() - startedAt, at },
+          outcome: settled.outcome,
+          ...(settled.reason ? { reason: settled.reason } : {}),
+          matchedKeys: settled.matchedKeys
+        })
         return {
           mode: 'live' as const,
+          detail,
           evaluation:
             settled.reason === 'invalid_response'
               ? { status: 'unavailable' as const, reason: 'invalid_response' as const }

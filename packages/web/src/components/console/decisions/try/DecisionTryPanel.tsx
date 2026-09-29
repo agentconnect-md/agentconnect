@@ -18,6 +18,7 @@ import {
 } from '@/lib/decisions/try-state'
 import type { DecisionChainTrace } from '@agentconnect.md/protocol/decision'
 import { DecisionChainResults } from '../DecisionChainResults'
+import { EvaluationsDrawer } from '../EvaluationParts'
 import { StateJson } from './StateJson'
 
 export type TryTone = 'positive' | 'neutral' | 'error' | 'paused'
@@ -34,6 +35,8 @@ export interface TryResultView {
   tone: TryTone
   body: ReactNode
   chain?: DecisionChainTrace
+  /** The run as its lane's Recent evaluations detail, opened from Details; absent when nothing was evaluated. */
+  details?: ReactNode
 }
 
 /** One label/value line of a result card. */
@@ -93,6 +96,7 @@ export function DecisionTryPanel<L extends TryLane, R>({
   const [running, setRunning] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
   const [result, setResult] = useState<{ signature: string; sample: string; value: R } | null>(null)
+  const [detailsOpen, setDetailsOpen] = useState(false)
   // Both editors key the same state alike, so switching between them never makes a run stale.
   const sample = useMemo(() => {
     const parsed = mode === 'raw' ? parseTryState(lane, raw) : null
@@ -131,6 +135,7 @@ export function DecisionTryPanel<L extends TryLane, R>({
     const ran = current
     try {
       const outcome = await run(checked.value)
+      setDetailsOpen(false)
       setResult({ signature: ran, sample: trySampleTitle(checked.value), value: outcome })
     } catch (cause) {
       const parts = errorParts(cause)
@@ -235,10 +240,32 @@ export function DecisionTryPanel<L extends TryLane, R>({
             <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-normal leading-[1.45]">
               {result.sample}
             </span>
+            {shown.details && (
+              <button
+                type="button"
+                className="lnk flex-none gap-[5px] text-[11.5px] font-medium"
+                aria-haspopup="dialog"
+                onClick={() => setDetailsOpen(true)}
+              >
+                <Icon name="panel-right-open" size={12} />
+                {t('details')}
+              </button>
+            )}
             <span className={`badge flex-none ${BADGE[shown.tone]}`}>{shown.badge}</span>
           </div>
           <div className="flex flex-col gap-[7px] bg-(--surface-app) px-[12px] py-[11px]">{shown.body}</div>
         </div>
+      )}
+      {detailsOpen && shown?.details && (
+        <EvaluationsDrawer
+          title={t('detailsTitle')}
+          subtitle={t('detailsSubtitle')}
+          closeLabel={t('detailsClose')}
+          onClose={() => setDetailsOpen(false)}
+          testId="try-details"
+        >
+          {shown.details}
+        </EvaluationsDrawer>
       )}
       {result && stale && (
         <span

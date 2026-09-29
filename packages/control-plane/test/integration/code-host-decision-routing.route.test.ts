@@ -899,6 +899,12 @@ describe('repository Decision routing — Try', () => {
       history: [],
       context: { partial: true, reasons: ['observed_history'], omittedMessages: 0 }
     })
+    expect(res.json().detail).toMatchObject({
+      title: 'It crashes on start',
+      outcome: 'triggered',
+      snapshot: null,
+      input: { context: { partial: true, reasons: ['observed_history'] } }
+    })
     // Writes nothing: no routing is saved by a Try.
     expect(await prisma.codeHostDecisionRouting.count()).toBe(0)
   })

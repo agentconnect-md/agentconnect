@@ -166,6 +166,74 @@ describe('DecisionGateTry', () => {
     expect(view.querySelector('[data-testid="try-result"]')?.textContent).toMatch(/would answer the call/)
   })
 
+  it("opens the run's detail from Details as a Recent evaluations detail, with its raw JSON", async () => {
+    const api = useApi(decisionMock.createDecisionMockApi())
+    vi.spyOn(api, 'previewGate').mockResolvedValue({
+      mode: 'live',
+      readiness: { status: 'ready' },
+      evaluation: {
+        status: 'answered',
+        model: 'jev-1.13.0',
+        answer: { type: 'boolean', value: true, probability: 0.8 },
+        usage: { inputTokens: 12, outputTokens: 1 }
+      },
+      consumer: {
+        type: 'gate',
+        outcome: 'trigger',
+        matched: true,
+        matchedKeys: [],
+        target: { agentId: 'a', name: 'Moderator' }
+      },
+      detail: {
+        seq: 0,
+        at: '2026-09-29T10:00:00.000Z',
+        messageId: null,
+        title: 'Please help',
+        decisionId: 'needs-response',
+        outcome: 'triggered',
+        reason: null,
+        answer: { type: 'boolean', value: true, probability: 0.8 },
+        matchedKeys: [],
+        latencyMs: 420,
+        requestedModel: 'jev-1.13.0',
+        actualModel: 'jev-1.13.0',
+        usage: { inputTokens: 12, outputTokens: 1 },
+        detailsExpired: false,
+        snapshot: {
+          decisionId: 'needs-response',
+          providerId: 'typesafe',
+          model: 'jev-1.13.0',
+          question: boolean.question,
+          condition: { type: 'boolean', values: [true] },
+          sessionMode: 'createNew'
+        },
+        input: {
+          agent: { name: 'Moderator', description: 'Keeps the channel on topic' },
+          currentMessage: { id: 'preview-1', sender: { id: 'U0123ABCD' }, text: 'Please help', threadId: null },
+          history: [],
+          historyOmitted: 0,
+          context: { partial: false, reasons: [], omittedMessages: 0 }
+        },
+        fullAnswer: { type: 'boolean', value: true, probability: 0.8 },
+        rawRequest: { text: '{"model":"jev-1.13.0","state":{}}', truncated: false },
+        rawResponse: { text: '{"decision":true}', truncated: false },
+        evidence: null
+      }
+    })
+    const view = await render(<Try when={{ type: 'boolean', values: [true] }} />)
+    await type(view.querySelector(CURRENT), 'Please help')
+    await click(button(view, 'Try'))
+    await click(button(view, 'Details'))
+    const drawer = document.body.querySelector('[data-testid="try-details"]')!
+    expect(drawer.textContent).toContain('Try details')
+    const detail = drawer.querySelector('[data-testid="evaluation-detail"]')!
+    expect(detail.textContent).toContain('Please help')
+    expect(detail.textContent).toContain('Keeps the channel on topic')
+    // No list to go back to: the drawer holds this one run.
+    expect(button(detail as HTMLElement, 'All evaluations')).toBeUndefined()
+    expect(drawer.innerHTML).toContain('jev-1.13.0')
+  })
+
   it('marks the result stale once the sample or condition changes', async () => {
     useApi(decisionMock.createDecisionMockApi())
     const view = await render(<Try when={{ type: 'boolean', values: [false] }} />)
