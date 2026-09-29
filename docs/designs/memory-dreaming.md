@@ -464,14 +464,21 @@ channel is observed, not required — the policy rides `_meta.systemPrompt` when
 runtime has one, otherwise it is prepended inline to the turn, so runtimes without
 that channel (Codex, OpenCode) distill too instead of silently no-op'ing.
 
-> **Residual risk (owner-accepted P2, tracked in #658).** Unlike a dream,
-> distillation writes to shared live memory **unreviewed** and runs on the agent's
-> **warm host** (full tool credentials), not a dedicated `excludeAgentToolCredentials`
-> host. On the untrusted-channel (inline-policy) path the policy and the turn share
-> user-message priority, so a prompt injection could write poisoned facts, or read a
-> warm-host credential and re-encode it into a "memory" (read-only blocks writes, not
-> reads). #658 will give that path the dream's credential-isolated host; the
-> trusted-channel path is unchanged.
+> **Accepted residual risk (#658).** Distillation writes to its selected live memory
+> scope without content review and may reuse the agent's warm host with its tool
+> credentials. On the inline-policy path, policy and turn text share user-message
+> priority: prompt injection may poison memory or re-encode a readable credential
+> into memory. Read-only/plan mode and literal-value masking do not eliminate those
+> risks.
+>
+> This is an accepted trade-off under the [execution trust model](architecture.md#91-execution-trust-model)
+> and [agent secret contract](../product-conventions.md#agent-secret-environment-variables).
+> [Agent-scoped memory is shared across users](../product-conventions.md#memory-backend-selection);
+> disable memory where that sharing is unsuitable. A dedicated credential-isolated
+> distillation host and mandatory review/quarantine are not planned. This decision
+> accepts the remaining risk; it does not claim a security fix. Execution and memory
+> scope boundaries, the verified read-only gate, and the dream host's existing
+> `excludeAgentToolCredentials` mitigation still apply.
 
 Concrete unification points:
 

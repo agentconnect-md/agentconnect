@@ -7506,7 +7506,7 @@ export class Daemon {
       if (this.memoryExtractionUnavailable.has(host)) {
         throw new Error('memory extraction is unavailable for this runtime host')
       }
-      // Read-only gates extraction; system-prompt transport is optional, and warm-host credential exposure remains tracked in #658.
+      // Read-only gates extraction; prompt transport is optional and credential exposure follows memory-dreaming.md §8.
       const trusted = host.usesMetaSystemPrompt()
       let sessionId = this.memoryExtractionSessions.get(cacheKey)
       if (!sessionId || !host.hasSession(sessionId)) {
@@ -7611,34 +7611,7 @@ export class Daemon {
     }
   }
 
-  /**
-   * One bounded commit-message pass for the console's wand (webchat-side-panels.md §5.1): a FRESH
-   * isolated ACP session on the agent's own runtime, prompted once, then discarded.
-   *
-   * What is copied from the two extraction passes and what is not:
-   * - The **fresh, discarded session** is the dream's shape (daemon.ts `runDreamExtractionOnHost`):
-   *   nothing about one press may linger in a cached context, and the LIVE chat session is never
-   *   prompted — the design requires no transcript entry, and the live session also carries tools
-   *   and history this call must not get.
-   * - The **warm host** is distillation's shape (`runMemoryExtraction`). A dedicated one-off host is
-   *   the dream's credential isolation, and it costs an adapter spawn per press; the reader is
-   *   watching a spinner. The diff is the agent's own staged work, not a mined third-party
-   *   transcript, so the residual accepted here is the one #658 already tracks for distillation:
-   *   an injected diff runs against a host that holds tool credentials, and read-only blocks writes,
-   *   not reads.
-   * - **Silence** is distillation's shape: a collector with no `sessionKey` and no `transcript`, so
-   *   this produces zero store rows, zero telemetry, and no platform delivery — the collector's
-   *   presence in `onAcpUpdate` is what keeps the whole turn out of every consumer at once.
-   * - **No MCP tools at all** (`newSession(cwd, [])`), and the collector's blanket permission cancel
-   *   denies anything the runtime asks to do. Its BUILT-IN tools cannot be removed over ACP, so the
-   *   read-only/plan mode below is the hard gate that neuters them, exactly as the dream documents.
-   *
-   * cwd is a throwaway empty dir, not the checkout: the runtime would otherwise load the repository's
-   * own agent instructions into a utility call that must only read the diff it was handed.
-   *
-   * Every failure here is DATA at the caller (`cp/workspace-git.ts` turns it into `ok:false`), so
-   * this method may throw freely — including on the `signal`, which the caller arms as its budget.
-   */
+  // Run a silent, read-only commit-message pass in a fresh session; credential exposure follows memory-dreaming.md §8.
   private async runCommitMessagePass(
     agentId: string,
     systemPrompt: string,
