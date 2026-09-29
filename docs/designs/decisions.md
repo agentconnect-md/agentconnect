@@ -1470,8 +1470,12 @@ Decision detail lists its places of use in one card, a row per place (conversati
 gates, Shared Bot Routing, repository routing, Agent model selection, chat API gates,
 and agent tools, which record none). Each row shows the place's integration, bot, code
 host, or agent mark; this Decision's rules there as a chip; its evaluations in the last
-24 hours, counted from the newest page of 50 (`50+` beyond it); and buttons to the
-place's settings and to its full list in a drawer. `GET /decisions/:id` returns each
+24 hours, counted from the newest page of 50 (`50+` beyond it); an Edit button; and
+its full list in a drawer. Edit opens the place's own editor on the page: a gate's or
+chat API gate's rules, a shared bot's or repository's routing rules, or Edit agent at
+Runtime for a model selection. An agent tool, which has no such editor, links to its
+agent's tools. A rules modal opened here names no conversation, so it adds none to a
+bot's scope, and an inline Create decision returns to it. `GET /decisions/:id` returns each
 usage's rules for this Decision's step, so the card reads no per-place configuration.
 A place whose conversation the viewer cannot read counts as hidden rather than failed,
 a gate whose condition needs review turns its chip amber, and places the viewer cannot
