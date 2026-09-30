@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  API_GATE_EVALUATIONS_V1_FEATURE,
   DECISION_EVALUATION_RAW_V1_FEATURE,
+  DECISION_EVALUATION_STEPS_V1_FEATURE,
   DECISION_EVALUATIONS_V1_FEATURE,
+  DECISION_MODEL_EVALUATIONS_V1_FEATURE,
   DECISION_ROUTING_EVALUATIONS_V1_FEATURE
 } from '@agentconnect.md/protocol'
 import { ControlSender } from './outbound.js'
@@ -29,6 +32,40 @@ describe('ControlSender evaluation details', () => {
     expect(next.request.mock.calls.map((call: unknown[]) => call[1])).toEqual([
       { ...lane, includeRaw: true },
       { ...lane, botId: BOT, includeRaw: true }
+    ])
+  })
+
+  it('asks for chain steps only from a daemon that advertises decision-evaluation-steps-v1', async () => {
+    const lane = { agentId: AGENT, integrationId: 'int-a', channel: 'C1', seq: 3 }
+    const model = { agentId: AGENT, seq: 3 }
+    const api = { agentId: AGENT, protocol: 'openai' as const, seq: 3 }
+    const base = [
+      DECISION_EVALUATIONS_V1_FEATURE,
+      DECISION_ROUTING_EVALUATIONS_V1_FEATURE,
+      DECISION_MODEL_EVALUATIONS_V1_FEATURE,
+      API_GATE_EVALUATIONS_V1_FEATURE
+    ]
+    const read = async (sender: ControlSender) => {
+      await sender.decisionEvaluation('d-1', 'org-1', lane)
+      await sender.decisionRoutingEvaluation('d-1', 'org-1', { ...lane, botId: BOT })
+      await sender.decisionModelEvaluation('d-1', 'org-1', model)
+      await sender.decisionApiGateEvaluation('d-1', 'org-1', api)
+    }
+    const old = senderWith(base)
+    await read(old.sender)
+    expect(old.request.mock.calls.map((call: unknown[]) => call[1])).toEqual([
+      lane,
+      { ...lane, botId: BOT },
+      model,
+      api
+    ])
+    const next = senderWith([...base, DECISION_EVALUATION_STEPS_V1_FEATURE])
+    await read(next.sender)
+    expect(next.request.mock.calls.map((call: unknown[]) => call[1])).toEqual([
+      { ...lane, includeSteps: true },
+      { ...lane, botId: BOT, includeSteps: true },
+      { ...model, includeSteps: true },
+      { ...api, includeSteps: true }
     ])
   })
 })

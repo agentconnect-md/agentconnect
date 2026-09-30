@@ -10,7 +10,12 @@
  *
  * Rules carry `hmacSecret` — NEVER log a rule object.
  */
-import { codeHostHookRuleOf, type CodeHostProvider, type RcHookAssign } from '@agentconnect.md/protocol'
+import {
+  codeHostHookRuleOf,
+  type CodeHostProvider,
+  type RcHookAssign,
+  type RcCodeHostFeedbackWatch
+} from '@agentconnect.md/protocol'
 
 /** The code-host routing key: the provider-qualified external repository id; a display path is never a match key. */
 function repoIndexKey(provider: CodeHostProvider, externalId: string): string {
@@ -24,6 +29,20 @@ function ruleRepoIndexKey(rule: RcHookAssign): string | undefined {
 }
 
 export class HookTable {
+  private feedbackWatches = new Map<
+    string,
+    RcCodeHostFeedbackWatch & { watch: NonNullable<RcCodeHostFeedbackWatch['watch']> }
+  >()
+
+  feedbackWatch(update: RcCodeHostFeedbackWatch): void {
+    const key = repoIndexKey(update.provider, update.repoId)
+    if (update.watch) this.feedbackWatches.set(key, { ...update, watch: update.watch })
+    else this.feedbackWatches.delete(key)
+  }
+
+  getFeedbackWatch(provider: CodeHostProvider, repoId: string) {
+    return this.feedbackWatches.get(repoIndexKey(provider, repoId))
+  }
   private byHookId = new Map<string, RcHookAssign>()
   private byToken = new Map<string, RcHookAssign>()
   /** (provider, externalId) → hookId → rule (fan-out: several hooks may watch one repository). */

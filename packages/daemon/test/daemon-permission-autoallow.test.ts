@@ -1033,6 +1033,18 @@ describe('a permission card offers every option or sends the request where they 
     expect(notice[0]).not.toContain('console')
   })
 
+  it('defuses the agent-authored tool title the declined-list notice quotes (#1809)', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    slackPending(daemon)
+    const applied: any[] = []
+    ;(daemon as any).enqueueApply = (_p: any, action: any) => void applied.push(action)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    const req = { ...permReq(26), toolCall: { toolCallId: 'tc-1', title: 'Run [Approve](https://evil.test/steal)' } }
+    await (daemon as any).permissions.onAcpPermission('agent-1', 's1', req)
+    const [notice] = applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
+    expect(notice).toContain('\\[Approve\\](`https://evil.test/steal`)')
+  })
+
   it('cancels it on the approval-DM path too, where the console shows fewer options still', async () => {
     // Reached with in-channel approvals OFF (and by every webchat-origin turn): the DM shares the
     // card's builder and its block, and the console behind it never sees the options at all

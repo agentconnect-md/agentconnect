@@ -1,24 +1,4 @@
-/**
- * Runtime-native memory capability registry.
- *
- * AgentConnect's providers are runtime-independent, but `managed` and `none`
- * must suppress a harness's OWN cross-session memory, while `native` must both
- * relocate that memory under the agent root and expose its files to the console.
- * Those levers are harness-specific and security-sensitive, so they live in one
- * explicit registry rather than being scattered across provider branches.
- *
- * Convention for adding a supported harness:
- *  1. classify its persistent-memory behavior against official docs / shipped code;
- *  2. add a policy with a verified disable switch (or a verified no-op when the
- *     harness has no native persistent memory at all);
- *  3. add `native` env/read-root only when both isolation and file surfacing are
- *     verified; and
- *  4. declare the expected providers in the curated ACP matrix. Its contract test
- *     makes an omitted or drifting classification fail CI.
- *
- * Unknown runtimes keep `managed` available (our store still works) but cannot
- * claim the stronger `none` or `native` semantics: those fail closed upstream.
- */
+// One verified registry per harness: how to turn its own memory off, and where it keeps that memory under a HOME.
 import { join } from 'node:path'
 import type { RuntimeDef } from '../../config/config-schema.js'
 
@@ -28,10 +8,9 @@ export interface RuntimeMemoryCapabilities {
   native: boolean
 }
 
-/** The native provider's verified redirect + console read root. */
+/** Where a native harness keeps its memory under a HOME, so a VM can share it across an agent's sessions. */
 export interface NativeRuntimeMemorySpec {
-  env: (agentRoot: string) => Record<string, string>
-  readRoot: (agentRoot: string) => string
+  readRoot: (home: string) => string
 }
 
 interface RuntimeMemoryPolicy {
@@ -41,7 +20,7 @@ interface RuntimeMemoryPolicy {
   sig: RegExp
   /** Verified way to turn the harness's own persistent memory off. */
   disabledEnv: (effectiveEnv: NodeJS.ProcessEnv) => Record<string, string>
-  /** Present only when native storage isolation + console surfacing are verified. */
+  /** Present only when the harness's own memory location is verified. */
   native?: NativeRuntimeMemorySpec
 }
 
@@ -125,7 +104,6 @@ const RUNTIME_MEMORY_POLICIES: RuntimeMemoryPolicy[] = [
     sig: /(?:^|[\\/@])claude(?:-[a-z-]+)?(?:@[^\\/]*)?$/,
     disabledEnv: () => ({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' }),
     native: {
-      env: (root) => ({ CLAUDE_CONFIG_DIR: join(root, '.claude') }),
       // Claude keys auto-memory by a cwd-derived project subdirectory.
       readRoot: (root) => join(root, '.claude', 'projects')
     }
@@ -135,7 +113,6 @@ const RUNTIME_MEMORY_POLICIES: RuntimeMemoryPolicy[] = [
     sig: /(?:^|[\\/])codex(?:-acp)?(?:@[^\\/]*)?$/,
     disabledEnv: (env) => ({ CODEX_CONFIG: codexConfigWithMemories(env.CODEX_CONFIG, false) }),
     native: {
-      env: (root) => ({ CODEX_HOME: join(root, '.codex') }),
       readRoot: (root) => join(root, '.codex', 'memories')
     }
   },
@@ -188,7 +165,7 @@ export function runtimeMemoryDisabledEnv(
   return policyFor(runtime, runtimeId)?.disabledEnv(effectiveEnv)
 }
 
-/** Native redirect/read-root policy, or undefined when native is unsupported. */
+/** Where a native harness keeps its memory, or undefined when native is unsupported. */
 export function nativeRuntimeMemorySpecFor(
   runtime: RuntimeDef | undefined,
   runtimeId?: string

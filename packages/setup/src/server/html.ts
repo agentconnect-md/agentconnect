@@ -282,8 +282,8 @@ export const SETUP_HTML = String.raw`<!doctype html>
         </dl>
         <p id="gitea-status" class="muted"></p>
         <p id="gitea-probe" class="muted" hidden></p>
-        <p class="muted">Each organization connects Gitea by pasting the personal access token of a bot user it created, in the console — nothing about that identity is a deployment setting. Gitea 1.23 or later is required, and the address is checked against that floor when it is saved.</p>
-        <p class="muted">Leave the field empty for gitea.com. A self-hosted instance under a path prefix keeps the prefix. Forgejo and Codeberg are not supported.</p>
+        <p class="muted">Each organization connects Gitea by pasting the personal access token of a bot user it created, in the console — nothing about that identity is a deployment setting. Gitea 1.23 or later, or Forgejo 15 or later, is required, and the address is checked against that floor when it is saved.</p>
+        <p class="muted">Leave the field empty for gitea.com. A self-hosted instance under a path prefix keeps the prefix. A Forgejo instance, Codeberg included, is entered the same way.</p>
         <div id="gitea-config-controls" class="subsection">
           <label class="field">Instance base URL<input id="gitea-base-url" autocomplete="off" placeholder="Leave empty for https://gitea.com"></label>
         </div>
@@ -389,13 +389,13 @@ export const SETUP_HTML = String.raw`<!doctype html>
         <p id="googlechat-status" class="muted"></p>
         <div id="googlechat-drift" class="notice" hidden></div>
         <p>HTTP endpoint URL:</p><ul id="googlechat-callbacks" class="uris"></ul>
-        <p>Authentication audience:</p><ul id="googlechat-audience" class="uris"></ul>
         <ol class="muted">
           <li>Use a Google Workspace account that may create a Cloud project and service-account keys. An organization policy can block key creation.</li>
           <li>Create a Google Cloud project for this app and enable the Google Chat API in it.</li>
-          <li>On the Chat API Configuration page, set the HTTP endpoint URL and the Project Number audience above, allow 1:1 messages and joining spaces, and choose who can use the app.</li>
+          <li>On the Chat API Configuration page, build the app as a Google Workspace add-on, the default for a new app (convert an existing app first). Under Connection settings choose HTTP endpoint URL, use one URL for all triggers, and enter the URL above. Allow 1:1 messages and joining spaces, and choose who can use the app.</li>
+          <li>Under Commands, add a slash command named /help with the description "Show how to use this app" and command ID 1; any free ID works, since AgentConnect matches the name.</li>
           <li>In the same project, create a service account and a JSON key for it, grant it the Browser role on the project, and enable the Cloud Resource Manager API; AgentConnect reads the project number with that key.</li>
-          <li>Save the project ID and key here. The project number is optional: when entered, it must match the number read from the key's project.</li>
+          <li>Save the project ID and key here. The project number is optional: it is on the project's settings page and in the add-on's service account email, service-PROJECT_NUMBER@gcp-sa-gsuiteaddons.iam.gserviceaccount.com. When entered, it must match the number read from the key's project.</li>
           <li>Configure Google sign-in above, then add the app in Google Chat and send it a message. Each Google Workspace organization connects itself from Google Chat by signing in to the console with Google; publish the app on the Google Workspace Marketplace to reach other organizations.</li>
         </ol>
         <div class="row"><a id="googlechat-configuration" class="button" href="https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat" target="_blank" rel="noopener">Open Chat API configuration</a></div>
@@ -799,9 +799,6 @@ export const SETUP_HTML = String.raw`<!doctype html>
       const googleChatKey = configured(byKey, 'googleChat.serviceAccountKey');
       const expectedGoogleChat = expected.googleChat;
       renderUriList('googlechat-callbacks', expectedGoogleChat ? [expectedGoogleChat.callbackUrl] : []);
-      renderUriList('googlechat-audience', expectedGoogleChat
-        ? [expectedGoogleChat.audienceSetting + (googleChat ? ' ' + googleChat.projectNumber : '')]
-        : []);
       text('googlechat-project-id', googleChat && googleChat.projectId);
       text('googlechat-project-number', googleChat && googleChat.projectNumber);
       el('googlechat-key-display').textContent = googleChatKey ? '***' : 'Not configured';

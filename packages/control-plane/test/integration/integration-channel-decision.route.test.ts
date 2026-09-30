@@ -595,7 +595,17 @@ describe('chained conversation gates', () => {
     ).toEqual([root, child].sort())
     expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/decisions/${child}` })).statusCode).toBe(409)
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/decisions/${child}` })).json().usages).toEqual([
-      expect.objectContaining({ kind: 'gate', rootDecisionId: root })
+      expect.objectContaining({
+        kind: 'gate',
+        rootDecisionId: root,
+        rules: [{ when: { type: 'score', min: 1, max: 3 }, then: { type: 'trigger' } }],
+        otherwise: { type: 'skip' }
+      })
+    ])
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/decisions/${root}` })).json().usages).toEqual([
+      expect.objectContaining({
+        rules: [{ when: { type: 'boolean', values: [true] }, then: { type: 'decision', decisionId: child } }]
+      })
     ])
     const changed = await app.app.inject({ method: 'PATCH', url: `${ORG}/decisions/${child}`, payload: boolDraft })
     expect(changed.statusCode, changed.body).toBe(200)

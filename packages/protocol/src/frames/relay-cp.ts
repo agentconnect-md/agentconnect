@@ -1,3 +1,4 @@
+import { RcCodeHostFeedback, RcCodeHostFeedbackResult, RcCodeHostFeedbackWatch } from './codehost-feedback.js'
 import { z } from 'zod'
 import { frameSchema } from '../envelope.js'
 import {
@@ -56,7 +57,7 @@ export const RcAuth = z.object({
 })
 export type RcAuth = z.infer<typeof RcAuth>
 
-// The deployment Google Chat app's anchor (google-chat-integration.md §10.4): its audience and the console's claim page.
+// The deployment Google Chat app's anchor (google-chat-integration.md §10.4): its project number and the console's claim page.
 export const RcGoogleChatAnchor = z.object({
   projectNumber: z.string().regex(/^[1-9]\d{0,19}$/),
   claimUrl: z.string().url({ protocol: /^https$/ })
@@ -68,7 +69,12 @@ export type RcGoogleChatAnchor = z.infer<typeof RcGoogleChatAnchor>
 export const RcDeploymentConfig = z.object({
   revision: z.number().int().nonnegative(),
   githubWebhookSecret: z.string().min(1).optional(),
-  googleChatAnchor: RcGoogleChatAnchor.optional()
+  googleChatAnchor: RcGoogleChatAnchor.optional(),
+  // The relay pool's public origin (the CP's PUBLIC_RELAY_URL): a provider that signs for its callback URL is checked against it.
+  publicRelayUrl: z
+    .string()
+    .url({ protocol: /^https?$/ })
+    .optional()
 })
 export type RcDeploymentConfig = z.infer<typeof RcDeploymentConfig>
 
@@ -119,6 +125,18 @@ export type RcHeartbeat = z.infer<typeof RcHeartbeat>
 
 // ── delegated verification (§9 / §10) ────────────────────────────────────────
 
+/** The longest chat id the agent chat API accepts; `useChat` generates far shorter ones. */
+export const AGENT_CHAT_ID_MAX_CHARS = 128
+
+/** Why the CP refused an agent chat key, each of which the relay answers with its own status. */
+export const AGENT_CHAT_KEY_REFUSAL = {
+  invalidKey: 'invalid key',
+  notPermitted: 'key not permitted',
+  agentNotFound: 'agent not found',
+  agentMoved: 'agent moved',
+  agentUnavailable: 'agent unavailable'
+} as const
+
 // R→C REQ → rc/verify/ok. The relay holds no database, so it delegates credential
 // checks to the CP: a daemon's API key on `rd/hello`, or a browser's CP-minted
 // short-lived webchat token. The credential is secret material — NEVER log.
@@ -141,6 +159,13 @@ export const RcVerify = z.discriminatedUnion('kind', [
     kind: z.literal('webchat-token'),
     credential: z.string().min(1),
     conversationBinding: z.literal('v1').optional()
+  }),
+  // An API key on the agent chat API (shared-bot-relay.md §10.4): the CP maps (key owner, agent, chat id) to its conversation.
+  z.object({
+    kind: z.literal('agent-chat-key'),
+    credential: z.string().min(1),
+    agentId: z.string().uuid(),
+    chatId: z.string().min(1).max(AGENT_CHAT_ID_MAX_CHARS)
   })
 ])
 export type RcVerify = z.infer<typeof RcVerify>
@@ -188,8 +213,10 @@ export const RcVerifyResult = z.object({
   // coordinate comes from the daemon's own session row.
   targetSessionId: z.string().min(1).optional(),
   remoteMcp: WebchatRemoteMcpEntitlement.optional(),
-  // The minting API key's agent-level permission (daemon-api-key-auth.md §6), `agent:chat` in v1: the relay's agent chat API accepts such a token and the browser socket refuses it. Absent for a console or full-key mint. A plain string, and this object is not strict, so a relay and a CP on either side of this field still agree.
-  permission: z.string().min(1).optional()
+  // The primary agent's enabled chat APIs; the relay's chat API refuses a protocol absent here. Plain strings, so a newer CP's protocol never fails an older relay's parse.
+  apiProtocols: z.array(z.string().min(1)).max(16).optional(),
+  // The API key's owner could decide this agent's approvals in the console, so its calls may decide them too.
+  callerApproves: z.boolean().optional()
 })
 export type RcVerifyResult = z.infer<typeof RcVerifyResult>
 
@@ -1301,6 +1328,9 @@ export const RELAY_CP_SCHEMAS = {
   'rc/codehost-membership-authz/ok': RcCodeHostMembershipAuthzResult,
   'rc/github-rerequest': RcGithubRerequest,
   'rc/github-rerequest/ok': RcGithubRerequestResult,
+  'rc/codehost-feedback-watch': RcCodeHostFeedbackWatch,
+  'rc/codehost-feedback': RcCodeHostFeedback,
+  'rc/codehost-feedback/ok': RcCodeHostFeedbackResult,
   'rc/pull-request-feedback': RcPullRequestFeedback,
   'rc/pull-request-feedback/ok': RcPullRequestFeedbackResult,
   'rc/hook-assign': RcHookAssign,
@@ -1357,6 +1387,9 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/codehost-membership-authz/ok', RELAY_CP_SCHEMAS['rc/codehost-membership-authz/ok']),
   frameSchema('rc/github-rerequest', RELAY_CP_SCHEMAS['rc/github-rerequest']),
   frameSchema('rc/github-rerequest/ok', RELAY_CP_SCHEMAS['rc/github-rerequest/ok']),
+  frameSchema('rc/codehost-feedback', RELAY_CP_SCHEMAS['rc/codehost-feedback']),
+  frameSchema('rc/codehost-feedback/ok', RELAY_CP_SCHEMAS['rc/codehost-feedback/ok']),
+  frameSchema('rc/codehost-feedback-watch', RELAY_CP_SCHEMAS['rc/codehost-feedback-watch']),
   frameSchema('rc/pull-request-feedback', RELAY_CP_SCHEMAS['rc/pull-request-feedback']),
   frameSchema('rc/pull-request-feedback/ok', RELAY_CP_SCHEMAS['rc/pull-request-feedback/ok']),
   frameSchema('rc/hook-assign', RELAY_CP_SCHEMAS['rc/hook-assign']),

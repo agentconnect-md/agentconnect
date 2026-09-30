@@ -199,18 +199,13 @@ export interface CodeHostProviderWorkspace {
 export interface CodeHostProviderHooks {
   /** The effect axes this host's hook body carries, with its inert defaults for the axes it lacks. */
   effects(body: CodeHostHookEffectBody): CodeHostHookEffects
-  /**
-   * Re-converge this host's managed ingress for one repository after a hook or
-   * grant write. A no-op where the host's webhook is deployment-wide (a GitHub
-   * App delivers for every covered repository, so no write can change it).
-   * Fire-and-forget: `onError` reports, and the convergence never fails CRUD.
-   */
+  /** Refresh ingress after hook, grant or workspace writes; onError keeps failures out of CRUD responses. */
   convergeManagedRepository(
     deps: CodeHostDeps,
     orgId: OrgId,
     repoId: bigint | null,
     onError: (err: unknown) => void
-  ): void
+  ): void | Promise<void>
 }
 
 /** A routed rule's Any update cadence (code-host-decisions.md §4), in the vocabulary this host's hook rows store. */

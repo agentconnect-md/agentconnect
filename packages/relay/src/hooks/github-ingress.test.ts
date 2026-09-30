@@ -2018,8 +2018,15 @@ describe('github ingress', () => {
       expect(h.sent).toHaveLength(1)
     })
 
-    it('dispatches issue close/delete and merged PR as workspace-cleanup lifecycle fires', async () => {
-      h.table.upsert(rule({}, { events: [] }))
+    it('dispatches issue close/delete and merged PR as workspace-cleanup lifecycle fires to their family rows', async () => {
+      h.table.upsert(rule({}, { events: ['issues:*', 'issue_comment:created'], commentFamilies: ['issues'] }))
+      h.table.upsert(
+        rule(
+          { hookId: HOOK_B },
+          { events: ['pull_request:*', 'issue_comment:created'], commentFamilies: ['pull_request'] }
+        )
+      )
+      h.table.upsert(rule({ hookId: HOOK_C }, { events: ['release:published'] }))
       const merged = pullPayload({ action: 'closed' })
       ;(merged.pull_request as Record<string, unknown>).merged = true
 
@@ -2048,6 +2055,7 @@ describe('github ingress', () => {
       await flush()
       const hooks = h.sent.filter((msg) => msg.source === 'hook')
       expect(hooks).toHaveLength(3)
+      expect(hooks.map((msg) => msg.hookId)).toEqual([HOOK, HOOK, HOOK_B])
       expect(hooks[0]).toMatchObject({
         sessionKey: 'acme/infra#42',
         event: 'issues:closed',
@@ -2072,7 +2080,7 @@ describe('github ingress', () => {
     it.each(['closed', 'deleted'] as const)(
       'does not send issue %s cleanup to a daemon without the lifecycle cleanup capability',
       async (action) => {
-        h.table.upsert(rule({}, { events: [] }))
+        h.table.upsert(rule({}, { events: ['issues:*'] }))
         h.cleanupSupported = false
 
         expect((await post('issues', issuesPayload({ action }))).statusCode).toBe(202)

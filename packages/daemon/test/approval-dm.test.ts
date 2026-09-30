@@ -86,6 +86,7 @@ async function world(over?: {
   const host: PermissionHost = {
     log: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) as never,
     clock: () => ({ now: () => Date.now() }) as never,
+    cancelTurn: vi.fn(async () => {}),
     store: () => store,
     agents: () => new Map([[AGENT, { id: AGENT } as never]]),
     pending: () => pending,

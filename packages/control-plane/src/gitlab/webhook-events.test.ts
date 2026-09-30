@@ -31,6 +31,7 @@ describe('unionGitlabWebhookEvents', () => {
       issues_events: true,
       merge_requests_events: true,
       note_events: true,
+      pipeline_events: false,
       releases_events: false
     })
   })
@@ -41,6 +42,7 @@ describe('unionGitlabWebhookEvents', () => {
       issues_events: false,
       merge_requests_events: false,
       note_events: false,
+      pipeline_events: false,
       releases_events: true
     })
   })
@@ -55,6 +57,13 @@ describe('unionGitlabWebhookEvents', () => {
       note_events: true,
       issues_events: false,
       push_events: false
+    })
+  })
+  it('subscribes feedback without requiring a review trigger', () => {
+    expect(unionGitlabWebhookEvents([], PROJECT, true)).toMatchObject({
+      note_events: true,
+      merge_requests_events: true,
+      pipeline_events: true
     })
   })
 })

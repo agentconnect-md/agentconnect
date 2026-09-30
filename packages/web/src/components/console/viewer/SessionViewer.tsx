@@ -4,14 +4,16 @@
 // Both halves are read live from the owning daemon through the CP (body-locality), so an offline daemon, a path this checkout does not have, a binary file, a file too large for one slice, a workspace that is not a git checkout and a path with no changes in the scope asked for are all expected answers — each is drawn as data, never as a failure of the pane.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import dynamic from 'next/dynamic'
 import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
-import { formatFileSize } from '@/components/console/FileBrowser'
+import { formatFileSize, MARKDOWN_FILE_RE } from '@/components/console/FileBrowser'
+import { resolveWorkspaceMarkdownLink } from '@/components/console/workspace-links'
 import { LineDiffTable } from '@/components/console/LineDiff'
 import { parseUnifiedDiff } from '@/components/console/viewer/unified-diff'
 import { gitWriteRequestFailureText } from '@/components/console/dock/git-write'
-import { escapeHtml, highlight, languageLabel, linkifyHtml, loadHljs } from '@/lib/highlight'
+import { escapeHtml, highlight, languageLabel, linkifyHtml, loadHljs, splitHtmlLines } from '@/lib/highlight'
 import {
   ApiError,
   fetchWorkspaceFile,
@@ -22,6 +24,9 @@ import {
   type WorkspaceFileDto,
   type WorkspaceGitDiffDto
 } from '@/lib/api'
+
+// react-markdown is heavy and only needed for a Markdown preview, so it stays out of the main console bundle.
+const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), { ssr: false })
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : null)
@@ -115,6 +120,7 @@ export function SessionViewer({
   diffRefreshTick = 0,
   onModeChange,
   onIndexChanged,
+  onOpenPath,
   onClose
 }: {
   agentId: string
@@ -132,6 +138,8 @@ export function SessionViewer({
   onModeChange?: (mode: ViewerMode) => void
   /** This pane staged or unstaged the open path. Omitted ⇒ no Stage/Unstage action at all, which is how a reader whose role cannot write, and a host with nothing to re-read, both get a pane that does not offer one. */
   onIndexChanged?: () => void
+  /** A relative link in a Markdown preview was followed. Omitted ⇒ such links are drawn unavailable. */
+  onOpenPath?: (path: string) => void
   onClose: () => void
 }) {
   const t = useTranslations('Sessions.viewer')
@@ -273,17 +281,19 @@ export function SessionViewer({
   const name = path.split('/').at(-1) ?? path
   const dir = path.slice(0, Math.max(0, path.length - name.length - 1))
   const isText = file?.exists === true && file.encoding === 'utf8'
+  const isMd = MARKDOWN_FILE_RE.test(name)
+  const [mdView, setMdView] = useState<'preview' | 'code'>('preview')
+  const showMarkdown = isMd && isText && mdView === 'preview'
 
   // Lines as an editor counts them: a trailing newline ENDS the last line rather than beginning an empty one, so the gutter and the header's count describe the same rows.
   const lines = useMemo(() => {
     if (!read.content) return []
-    const parts = read.content.split('\n')
+    const parts = read.content.split(/\r?\n/)
     if (parts.length > 1 && parts[parts.length - 1] === '') parts.pop()
     return parts
   }, [read.content])
   // Rendered and highlighted from the SAME string as the gutter is numbered from.
   const text = useMemo(() => lines.join('\n'), [lines])
-  const gutter = useMemo(() => lines.map((_, index) => index + 1).join('\n'), [lines])
 
   // Highlighted HTML is stored WITH the source it was produced from. The highlighter is async, so a paginated or reloaded slice would otherwise render the previous revision's colouring — and its gutter — beside the new source for as many paints as the pass takes; escaped plain text is the correct thing to show in that window.
   const [html, setHtml] = useState<{ text: string; name: string; html: string } | null>(null)
@@ -310,8 +320,9 @@ export function SessionViewer({
     }
   }, [isText, text, name])
   const fresh = html && html.text === text && html.name === name ? html.html : null
-  const codeHtml = useMemo(
-    () => (isText && text ? linkifyHtml(fresh ?? escapeHtml(text)) : null),
+  // One fragment per line, so a wrapped line keeps its number beside its first row.
+  const codeLines = useMemo(
+    () => (isText && lines.length > 0 ? splitHtmlLines(linkifyHtml(fresh ?? escapeHtml(text))) : []),
     [isText, text, fresh]
   )
 
@@ -463,21 +474,44 @@ export function SessionViewer({
         </div>
       )
     }
+    if (showMarkdown) {
+      return (
+        <div className="min-h-0 flex-1 overflow-auto px-[18px] py-4" data-viewer-markdown="">
+          <MarkdownView
+            content={read.content}
+            resolveLink={(href) =>
+              resolveWorkspaceMarkdownLink(
+                path,
+                href,
+                (target) => onOpenPath?.(target.path),
+                () => Boolean(onOpenPath)
+              )
+            }
+          />
+        </div>
+      )
+    }
+    const last = codeLines.length - 1
     return (
       // The viewer's OWN scroller: the page's `.content` is what the transcript's stick-to-bottom pins, so a file that grew the page would move the transcript's anchor instead of scrolling here.
       <div className="min-h-0 flex-1 overflow-auto" data-viewer-code="">
-        <div className="flex min-w-max">
-          {/* One text node, not a row per line: the numbers then share the code's line boxes by construction, and `sticky` keeps them in place while a long line scrolls sideways. */}
-          <pre
-            aria-hidden="true"
-            data-viewer-gutter=""
-            className="mono sticky left-0 z-[1] m-0 flex-none select-none border-r border-(--border-subtle) bg-(--surface-card) px-3 py-[14px] text-right text-[12px] leading-[1.7] whitespace-pre text-(--text-disabled)"
-          >
-            {gutter}
-          </pre>
-          <pre className="hljs mono m-0 flex-none bg-transparent px-4 py-[14px] text-[12px] leading-[1.7] whitespace-pre text-(--text-primary)">
-            {codeHtml != null ? <code dangerouslySetInnerHTML={{ __html: codeHtml }} /> : <code>{text}</code>}
-          </pre>
+        {/* A row per line with long lines wrapped; the auto column sizes the gutter to the widest number. */}
+        <div className="hljs mono grid grid-cols-[auto_minmax(0,1fr)] bg-transparent text-[12px] leading-[1.7]">
+          {codeLines.map((html, index) => (
+            <div key={index} className="contents" data-viewer-line="">
+              <span
+                aria-hidden="true"
+                data-viewer-gutter=""
+                className={`select-none border-r border-(--border-subtle) bg-(--surface-card) px-3 text-right text-(--text-disabled) ${index === 0 ? 'pt-[14px]' : ''} ${index === last ? 'pb-[14px]' : ''}`}
+              >
+                {index + 1}
+              </span>
+              <code
+                className={`min-w-0 px-4 whitespace-pre-wrap [overflow-wrap:anywhere] text-(--text-primary) ${index === 0 ? 'pt-[14px]' : ''} ${index === last ? 'pb-[14px]' : ''}`}
+                dangerouslySetInnerHTML={{ __html: html }}
+              />
+            </div>
+          ))}
         </div>
       </div>
     )
@@ -523,6 +557,33 @@ export function SessionViewer({
               onClick={() => onModeChange('file')}
             >
               {t('file')}
+            </button>
+          </div>
+        ) : null}
+        {/* Preview / Code for a Markdown file in File mode; Preview is the default, as in the Files tab. */}
+        {mode === 'file' && isMd && isText ? (
+          <div
+            data-viewer-markdown-modes=""
+            className="flex flex-none items-center gap-px rounded-sm bg-(--surface-sunken) p-px"
+            role="group"
+          >
+            <button
+              type="button"
+              className={mdView === 'preview' ? PILL_ON : PILL_OFF}
+              data-viewer-markdown-mode="preview"
+              aria-pressed={mdView === 'preview'}
+              onClick={() => setMdView('preview')}
+            >
+              {t('preview')}
+            </button>
+            <button
+              type="button"
+              className={mdView === 'code' ? PILL_ON : PILL_OFF}
+              data-viewer-markdown-mode="code"
+              aria-pressed={mdView === 'code'}
+              onClick={() => setMdView('code')}
+            >
+              {t('code')}
             </button>
           </div>
         ) : null}

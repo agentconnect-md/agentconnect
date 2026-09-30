@@ -4,7 +4,14 @@
 // mappers translate the lean wire DTOs into the richer UI shapes from `./data`,
 // filling fields the API does not (yet) expose with placeholders.
 
-import type { DecisionApi, DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
+import type {
+  ApiGatePreviewInput,
+  CodeHostRoutingPreviewInput,
+  CodeHostRoutingPreviewResult,
+  DecisionApi,
+  DecisionConversationRef,
+  DecisionGatePreviewResult
+} from '@agentconnect.md/protocol/decision-api'
 import type {
   AgentModelSelection,
   AgentRepositorySelector,
@@ -32,6 +39,7 @@ import type {
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
 import type {
+  AgentApiProtocol,
   HookKind,
   SessionStayedHomeReason,
   ProviderKeyProvider,
@@ -102,8 +110,7 @@ function cpBase(): string {
   return (runtime || process.env.NEXT_PUBLIC_CP_URL || 'http://localhost:8080/api/v1').replace(/\/+$/, '')
 }
 
-/** The CP REST base (`http(s)://…/api/v1`). Exposed so the API tab can show the exact
- *  mint endpoint the console calls. */
+/** The CP REST base (`http(s)://…/api/v1`), so an agent's API Quickstart shows the exact mint endpoint. */
 export function cpRestBase(): string {
   return cpBase()
 }
@@ -2129,9 +2136,7 @@ function sessionChannelLabel(
   triggeredByName: string | null,
   hookKind: HookKind | null | undefined
 ): string {
-  // webchat's `channel` is the conversationId (a UUID) — never a human channel. Show the
-  // "Playground" label (matching platName + the live playground session), and keep the raw
-  // id in channelId so the detail view can RESUME it (reconnect with `?conversation_id=`).
+  // webchat's `channel` is its conversation id: show the API key that opened it, else "Playground"; channelId keeps the id for resume.
   const isWebchat = platform === 'webchat'
   const isDream = platform === 'dream'
   // A headless webhook's `channel` is the hook id (and `thread` may be the delivery key),
@@ -2148,7 +2153,7 @@ function sessionChannelLabel(
   // The sigil is the platform's, not the channel convention's: a Linear room is a team
   // named "<Workspace> / <Team>", and a Telegram or Lark group has no marker either.
   return isWebchat
-    ? 'Playground'
+    ? channelName?.trim() || 'Playground'
     : isDream
       ? 'Memory'
       : isHook
@@ -4312,6 +4317,74 @@ export async function fetchAgentHooks(agentId: string, orgId?: string): Promise<
   return apiGet<HookDto[]>(`${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/hooks`)
 }
 
+// ── agent chat APIs (the API card on the Integrations tab, shared-bot-relay.md §10.4) ──
+export type { AgentApiProtocol }
+
+export interface AgentApiEntryDto {
+  protocol: AgentApiProtocol
+  createdBy: string | null
+  createdAt: string
+  /** The Decision a turn over this API must pass; absent from a CP without gates. */
+  gate?: ChannelDecisionGate | null
+}
+
+const agentApiBase = (agentId: string, orgId?: string) => `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/api`
+
+export async function fetchAgentApiEntries(agentId: string, orgId?: string): Promise<AgentApiEntryDto[]> {
+  return (await apiGet<{ entries: AgentApiEntryDto[] }>(agentApiBase(agentId, orgId))).entries
+}
+
+export async function addAgentApi(agentId: string, protocol: AgentApiProtocol): Promise<AgentApiEntryDto> {
+  return apiPut<AgentApiEntryDto>(`${agentApiBase(agentId)}/${protocol}`)
+}
+
+export async function removeAgentApi(agentId: string, protocol: AgentApiProtocol): Promise<void> {
+  await apiDelete<void>(`${agentApiBase(agentId)}/${protocol}`)
+}
+
+/** Gate turns over this API by a Decision, or `null` to admit every turn. */
+export async function setAgentApiGate(
+  agentId: string,
+  protocol: AgentApiProtocol,
+  gate: ChannelDecisionGate | null
+): Promise<AgentApiEntryDto> {
+  return apiPut<AgentApiEntryDto>(`${agentApiBase(agentId)}/${protocol}/gate`, { gate })
+}
+
+/** The verdicts this API's gate reached, newest first, read from the agent's serving daemon. */
+export function fetchAgentApiGateEvaluations(
+  agentId: string,
+  protocol: AgentApiProtocol,
+  page: { cursor?: number; limit?: number; decisionId?: string } = {},
+  orgId?: string
+): Promise<DecisionEvaluationRecordPage> {
+  const query = new URLSearchParams()
+  if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
+  if (page.limit !== undefined) query.set('limit', String(page.limit))
+  if (page.decisionId) query.set('decisionId', page.decisionId)
+  const suffix = query.toString()
+  return apiGet(`${agentApiBase(agentId, orgId)}/${protocol}/evaluations${suffix ? `?${suffix}` : ''}`)
+}
+
+/** Try a draft gate on this API against a sample call, on a daemon serving the agent; writes nothing. */
+export function previewAgentApiGate(
+  agentId: string,
+  protocol: AgentApiProtocol,
+  input: ApiGatePreviewInput,
+  orgId?: string
+): Promise<DecisionGatePreviewResult> {
+  return apiPost(`${agentApiBase(agentId, orgId)}/${protocol}/gate/preview`, input)
+}
+
+export function fetchAgentApiGateEvaluation(
+  agentId: string,
+  protocol: AgentApiProtocol,
+  seq: number,
+  orgId?: string
+): Promise<DecisionEvaluationRecordDetail> {
+  return apiGet(`${agentApiBase(agentId, orgId)}/${protocol}/evaluations/${encodeURIComponent(String(seq))}`)
+}
+
 // The capability URL is sufficient by default. HMAC is an optional second
 // factor, with its signing secret revealed once by the create response.
 export async function createHook(input: CreateHookInput): Promise<CreatedHookDto> {
@@ -4428,6 +4501,15 @@ export function fetchCodeHostRoutingEvaluations(
   return apiGet(`${codeHostRoutingPath(scope, orgId)}/evaluations${suffix ? `?${suffix}` : ''}`)
 }
 
+// Try a draft routing against a sample event on the scope's evaluation host; writes nothing.
+export function previewCodeHostRouting(
+  scope: CodeHostRoutingKey,
+  input: CodeHostRoutingPreviewInput,
+  orgId?: string
+): Promise<CodeHostRoutingPreviewResult> {
+  return apiPost(`${codeHostRoutingPath(scope, orgId)}/preview`, input)
+}
+
 export function fetchCodeHostRoutingEvaluation(
   scope: CodeHostRoutingKey,
   seq: number,
@@ -4511,6 +4593,13 @@ export async function replaceSlackBotToken(id: string, botToken: string): Promis
 }
 
 // ── Google Chat (google-chat-integration.md §3) ──
+/** `GET /integrations/googlechat/app`: the deployment app's project number, null when the deployment has none. */
+export interface GoogleChatDeploymentAppDto {
+  projectNumber: string | null
+}
+export async function fetchGoogleChatDeploymentApp(orgId?: string): Promise<GoogleChatDeploymentAppDto> {
+  return apiGet<GoogleChatDeploymentAppDto>(`${orgBase(orgId)}/integrations/googlechat/app`)
+}
 /** Replace a per-agent Chat app's service-account key under the create path's validation; the key is write-only. */
 export async function replaceGoogleChatKey(botId: string, serviceAccountKey: string): Promise<BotDto> {
   return apiPut<BotDto>(`${orgBase()}/bots/${encodeURIComponent(botId)}/googlechat/key`, { serviceAccountKey })
@@ -4806,6 +4895,58 @@ export async function regenerateMyApiKey(id: string): Promise<MintedUserKeyDto> 
 // Revoke one of the caller's own keys (kill switch).
 export async function revokeMyApiKey(id: string): Promise<UserApiKeyDto> {
   return apiDelete<UserApiKeyDto>(`/me/keys/${encodeURIComponent(id)}`)
+}
+
+// ── service accounts ─────────────────────────────────────────────────────────
+// Org members that never sign in; owners manage them and mint their keys (daemon-api-key-auth.md §6).
+export type ServiceAccountRole = Exclude<MemberRole, 'owner'>
+
+export interface ServiceAccountDto {
+  userId: string
+  name: string // fixed: part of `email`
+  email: string
+  displayName: string
+  role: ServiceAccountRole
+  createdAt: string
+}
+
+const serviceAccountBase = (orgId: string, id?: string) =>
+  `${orgBase(orgId)}/service-accounts${id ? `/${encodeURIComponent(id)}` : ''}`
+
+export async function fetchServiceAccounts(orgId: string): Promise<ServiceAccountDto[]> {
+  return apiGet<ServiceAccountDto[]>(serviceAccountBase(orgId))
+}
+
+export async function createServiceAccount(
+  orgId: string,
+  input: { name: string; role: ServiceAccountRole }
+): Promise<ServiceAccountDto> {
+  return apiPost<ServiceAccountDto>(serviceAccountBase(orgId), input)
+}
+
+export async function updateServiceAccount(
+  orgId: string,
+  id: string,
+  patch: { displayName?: string; role?: ServiceAccountRole }
+): Promise<ServiceAccountDto> {
+  return apiPatch<ServiceAccountDto>(serviceAccountBase(orgId, id), patch)
+}
+
+export async function deleteServiceAccount(orgId: string, id: string): Promise<void> {
+  await apiDelete<void>(serviceAccountBase(orgId, id))
+}
+
+// A service account's keys, with the /me/keys shapes minus the org the path already fixes.
+export const serviceAccountKeysApi = (orgId: string, id: string) => {
+  const base = `${serviceAccountBase(orgId, id)}/keys`
+  const one = (keyId: string) => `${base}/${encodeURIComponent(keyId)}`
+  return {
+    list: () => apiGet<UserApiKeyDto[]>(base),
+    create: ({ orgId: _orgId, ...body }: Parameters<typeof createMyApiKey>[0]) => apiPost<MintedUserKeyDto>(base, body),
+    update: (keyId: string, patch: Parameters<typeof updateMyApiKey>[1]) => apiPatch<UserApiKeyDto>(one(keyId), patch),
+    regenerate: (keyId: string) => apiPost<MintedUserKeyDto>(`${one(keyId)}/regenerate`, {}),
+    revoke: (keyId: string) => apiDelete<UserApiKeyDto>(one(keyId))
+  }
 }
 
 // ── orgs ──────────────────────────────────────────────────────────────────────
@@ -6042,6 +6183,8 @@ export interface GiteaConnectionDto {
    *  floor the CP enforces. Both null until the first credentialed contact. */
   instanceVersion: string | null
   instanceVersionSupported: boolean | null
+  /** The product that version names, decided by the CP; `gitea` until first contact. */
+  instanceProduct: 'gitea' | 'forgejo'
   instanceVersionFloor: string
   /** The token scopes the connect step verifies (§4.1) — shown beside the input. */
   requiredScopes: string[]

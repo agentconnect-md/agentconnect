@@ -252,7 +252,9 @@
       "regenerateTitle": "Regenerate API key",
       "regenerateBody": "will get a new value. The current value stops working immediately; the name, permission, agents and expiry stay.",
       "regenerating": "Regenerating…",
-      "regeneratedTitle": "API key regenerated"
+      "regeneratedTitle": "API key regenerated",
+      "owner": "Owner",
+      "serviceAccount": "Service account"
     },
     "social": {
       "title": "Sign-in methods",
@@ -458,7 +460,9 @@
       "loadMore": "Load more",
       "diffTooLarge": "This diff is too large to send whole — only its first part is shown. Open the file to read the rest.",
       "diffTruncated": "This diff has more lines than the viewer draws — only its first part is shown.",
-      "malformedDiff": "Part of this diff is shown raw — its hunks are not two-way (a merge conflict, usually). Counts cover only the readable parts."
+      "malformedDiff": "Part of this diff is shown raw — its hunks are not two-way (a merge conflict, usually). Counts cover only the readable parts.",
+      "preview": "Preview",
+      "code": "Code"
     },
     "list": {
       "allAgents": "All agents",
@@ -859,8 +863,10 @@
     "actions": {
       "account": "Account",
       "createOrganization": "Create organization",
+      "theme": "Theme",
       "lightMode": "Light mode",
       "darkMode": "Dark mode",
+      "systemMode": "System",
       "signOut": "Sign out",
       "yourProfile": "Your profile",
       "search": "Search",
@@ -869,6 +875,7 @@
       "collapseSidebar": "Collapse sidebar",
       "switchLight": "Switch to light theme",
       "switchDark": "Switch to dark theme",
+      "switchSystem": "Follow system theme",
       "toggleTheme": "Toggle theme",
       "add": "Add",
       "addAgent": "Add agent",
@@ -1426,6 +1433,7 @@
         "leaveConfirm": "Leave {space}? A {platform} bot cannot leave one {noun} — it leaves the whole server, and every {nounPlural} of it disappears from this list. Re-invite it to undo."
       },
       "directMessages": "Direct messages",
+      "openIn": "Open {name} in {platform}",
       "ownerChange": {
         "title": "Move this team’s default?",
         "body": "{owner} is a private agent, and being {room}’s default is what lets it act there. Its live sessions in this team can still be stopped, but it will not answer in them again. A new mention or delegation opens a session with the new default.",
@@ -1485,6 +1493,7 @@
       "connectGitea": "Connect Gitea",
       "cancel": "Cancel",
       "openRepository": "Open {repo} on Gitea",
+      "openProject": "Open {project} on GitLab",
       "working": "Working…",
       "repairRepository": "Repair this repository",
       "rotateSecret": "Rotate the webhook signing secret",
@@ -1523,7 +1532,7 @@
       "gitlab": "GitLab",
       "connectGitlab": "Connect GitLab",
       "connectMyAccount": "Connect my account",
-      "gitlabVersionRequirement": "Setting up new projects and bots needs {version} or later. Projects already set up keep working until their credentials expire.",
+      "gitlabVersionRequirement": "Setting up projects and bots requires GitLab {version} or later. Existing credentials remain available until they expire, but webhook delivery may stop.",
       "gitlabNotEnabled": "Not enabled on this deployment — no GitLab application is configured.",
       "gitlabNotConnectedHint": "Connect a GitLab account with Maintainer or Owner access to your projects. You then pick a project when you add a trigger or an agent workspace, and AgentConnect sets up its project bot and webhook there.",
       "reconnectNeeded": "reconnect needed",
@@ -1912,41 +1921,51 @@
           "create": "Configure a Chat app in Google Cloud",
           "existing": "An unused Google Chat app"
         }
+      },
+      "api": {
+        "protocol": "Protocol",
+        "aiSdkUiDescription": "Chat over the AI SDK UI message stream, for the useChat hook.",
+        "agUiDescription": "Chat over the AG-UI event stream, for HttpAgent and CopilotKit.",
+        "acp2Description": "Agent Client Protocol v2, for editors and agent clients.",
+        "soon": "Soon",
+        "added": "Added",
+        "docs": "Docs",
+        "add": "Add API",
+        "adding": "Adding…"
       }
+    },
+    "api": {
+      "title": "API",
+      "remove": "Remove",
+      "quickstart": "Quickstart",
+      "removeTitle": "Remove API",
+      "removeConfirm": "Remove",
+      "removing": "Removing…",
+      "removeBody": "{agent} stops accepting API calls. Keys that cover it stay valid for other agents.",
+      "docs": "Docs",
+      "close": "Close",
+      "chatEndpoint": "Chat",
+      "copy": "Copy",
+      "copySnippet": "Copy code",
+      "examples": "Examples",
+      "tabs": {
+        "curl": "curl",
+        "node": "Node",
+        "browser": "Browser"
+      },
+      "keys": "Agent chat keys",
+      "createKey": "Create key",
+      "keysLoading": "Loading keys…",
+      "noKeys": "No Agent chat key reaches this agent yet.",
+      "me": "Me",
+      "allAgents": "All agents",
+      "done": "Done"
     }
   },
   "Agents": {
     "description": "AI agents running across your daemons. Click one to inspect its sessions.",
     "addAgent": "Add agent",
     "add": "Add",
-    "apiPanel": {
-      "organizationLoadError": "Couldn’t load the organization required for API access.",
-      "loading": "Loading API configuration…",
-      "relayNotConfigured": "Relay endpoint not configured",
-      "buildDescription": "Build on <agent>{agent}</agent>: mint short-lived credentials, then stream a run through the relay.",
-      "authentication": "Authentication",
-      "apiKeyDescription": "Use a personal API key for {organization}. It acts as you in this organization and is shown only once when created.",
-      "connectionEndpoints": "Connection endpoints",
-      "post": "POST",
-      "webSocketMethod": "WSS",
-      "streaming": "streaming",
-      "copied": "Copied",
-      "copyMintEndpoint": "Copy mint endpoint",
-      "mintEndpointCopied": "Mint endpoint copied",
-      "copyWebSocketEndpoint": "Copy WebSocket endpoint",
-      "webSocketEndpointCopied": "WebSocket endpoint copied",
-      "connect": "Connect",
-      "copy": "Copy",
-      "streamEvents": "Stream events",
-      "serverToClient": "server → client",
-      "events": {
-        "ready": "Socket accepted — carries the conversationId the CP allocated.",
-        "ack": "Your message was delivered to the agent — carries a turnId.",
-        "output": "A reply chunk: output.event is message / thinking / tool_call / tool_update.",
-        "done": "Turn finished — done.stopReason and done.usage (tokens / cost).",
-        "error": "Delivery failed — e.g. the agent has no live daemon."
-      }
-    },
     "workspaceScope": {
       "defaultBranch": "HEAD",
       "workspaceCheckout": "Workspace checkout: {name}",
@@ -2849,7 +2868,7 @@
         "inControlPlaneHelp": "The Control Plane keeps the memory files, so they follow the agent to any daemon and need no machine to be up.",
         "movingToControlPlane": "Moving memory to the Control Plane…",
         "externalDescription": "An owner-reviewed external plugin; configure exactly what may be recalled and captured below.",
-        "nativeDescription": "The runtime's own memory (Claude / Codex), isolated under the agent root.",
+        "nativeDescription": "The runtime's own memory (Claude / Codex), kept in its own directories.",
         "noneDescription": "No persistent memory is loaded or saved.",
         "managedDescription": "A memory directory we keep for the agent.",
         "autoDistillLabel": "Automatically distill durable facts after each turn (uses an additional model call).",
@@ -2895,7 +2914,7 @@
         "autoAccept": "Auto-accept {state}",
         "agentScope": "Agent scope",
         "channelScope": "Channel scope",
-        "nativeSummary": "Runtime-native memory · Agent scope",
+        "nativeSummary": "Runtime-native memory",
         "connectionNamed": "Connection {id}",
         "noConnection": "No connection",
         "recallEveryTurn": "Recall every turn",
@@ -2952,17 +2971,6 @@
         "unknownTimezone": "{human} · “{timezone}” is not a known IANA timezone",
         "nextRun": "{human} · next {next} ({timezone})",
         "daemonTimezone": "{human} · in the daemon host’s timezone"
-      },
-      "nativeMemory": {
-        "rendering": "Rendering…",
-        "retry": "Retry",
-        "noMemory": "No memory yet.",
-        "memoryFilePath": "Memory file path",
-        "newMemoryFileName": "New memory file name",
-        "addFile": "Add file",
-        "edit": "Edit",
-        "listError": "Couldn't list memory — the owning daemon may be offline.",
-        "readError": "Couldn't read the file — the owning daemon may be offline."
       },
       "toolsDialog": {
         "wrongOrganization": "This agent belongs to another organization.",
@@ -4281,6 +4289,30 @@
       "copied": "copied",
       "copy": "copy"
     },
+    "serviceAccounts": {
+      "title": "Service accounts",
+      "new": "New account",
+      "empty": "No service accounts yet",
+      "loadError": "Couldn't load service accounts.",
+      "keys": "Keys",
+      "keysTitle": "{name} keys",
+      "createTitle": "New service account",
+      "editTitle": "Edit service account",
+      "name": "Name",
+      "namePlaceholder": "docs-bot",
+      "displayName": "Display name",
+      "role": "Role",
+      "invalidName": "Use lowercase letters, digits, and single hyphens.",
+      "create": "Create",
+      "creating": "Creating…",
+      "save": "Save",
+      "saving": "Saving…",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "deleting": "Deleting…",
+      "deleteTitle": "Delete service account",
+      "deleteBody": "{name} and all of its keys will be deleted."
+    },
     "environment": {
       "title": "Variables & secrets",
       "add": "Add",
@@ -4443,30 +4475,25 @@
         "shared_bot_routing": "shared bot routing",
         "code_host_routing": "repository routing",
         "agent_tool": "agent tool",
-        "model_selection": "model selection"
+        "model_selection": "model selection",
+        "api_gate": "chat API gate"
       },
       "needsReview": "needs review",
       "ok": "ok",
       "hidden": "{count, plural, one {# more you cannot see} other {# more you cannot see}}",
       "hiddenUnknown": "Used by items you cannot see"
     },
-    "recentBySource": {
-      "title": "Recent evaluations",
-      "loading": "Loading evaluations…",
-      "chainHistory": "This source records the Decision chain from its first step.",
-      "noSources": "No current source records evaluations for this Decision.",
-      "empty": "No recent evaluations from this source.",
-      "upgrade": "Upgrade this source's evaluation host to filter by Decision.",
-      "error": "Could not load evaluations from this source.",
-      "retry": "Retry",
-      "usedIn": "used in {count, plural, one {1 place} other {# places}}",
-      "all": "All",
-      "settings": "Settings",
-      "openPanel": "Open panel",
-      "notRecorded": "This place does not record evaluations.",
-      "emptyAll": "No recent evaluations yet.",
+    "usedIn": {
+      "title": "Used in",
+      "place": "Place",
+      "rule": "Rule",
+      "day": "24 h",
+      "edit": "Edit {place}",
+      "history": "Recent evaluations for {place}",
+      "hidden": "You cannot see this place's evaluations.",
+      "error": "Could not load evaluations from this place.",
       "partialError": "{count, plural, one {1 place could not be loaded.} other {# places could not be loaded.}}",
-      "hidden": "You cannot see this place's evaluations."
+      "retry": "Retry"
     },
     "errors": {
       "name": "Give the decision a name before saving.",
@@ -4493,6 +4520,7 @@
     },
     "binding": {
       "decision": "Decision",
+      "statusLabel": "Status",
       "selectDecision": "Select a decision…",
       "pickDecision": "Pick a decision.",
       "decisionRemoved": "decision removed",
@@ -4504,6 +4532,7 @@
       "triggerCondition": "Trigger condition",
       "helpMentions": "A mention does not skip the decision; it only fixes that this agent is the one that can be triggered.",
       "helpHistory": "Recent conversation history is included automatically, including messages that did not trigger the agent.",
+      "helpApiText": "Only the call's own message is judged; earlier messages in the conversation are not included.",
       "helpUnavailable": "If evaluation is unavailable, eligible messages continue to the agent.",
       "add": "Add decision",
       "addTitle": "Judge each message with a decision before this agent responds",
@@ -4512,6 +4541,10 @@
       "rulesTitle": "<name>{channel}</name> · By decision rules",
       "rulesTitleBare": "By decision rules",
       "rulesSubtitle": "Decides when <name>{agent}</name> responds in this channel",
+      "rulesSubtitleApi": "Decides when <name>{agent}</name> answers a call over this API",
+      "applyAll": "Apply to all channels",
+      "applyAllConfirm": "Apply these rules to all {count} channels of this bot? Rules already set on them are replaced.",
+      "applyAllFailed": "{count, plural, one {1 channel} other {# channels}} could not be saved ({names}): {message}",
       "close": "Close",
       "noDecisions": "No decisions yet. Create one to judge messages here.",
       "hiddenDecision": "A decision you can't view",
@@ -4600,9 +4633,6 @@
     },
     "providerModel": "Provider · model",
     "gateTry": {
-      "placeholder": "Try a message in this channel…",
-      "senderLabel": "Sender of history message {index}",
-      "historyLabel": "History message {index}",
       "wouldSkip": "Would skip",
       "notApplied": "Not applied",
       "notAppliedBody": {
@@ -4616,7 +4646,14 @@
       "triggersAgent": "Would trigger {agent}",
       "stale": "The draft changed after this run. Run again.",
       "offline": "No daemon serving this conversation is connected, so the preview can't run. Try again once it reconnects.",
-      "failed": "Couldn't run the preview. {message}"
+      "failed": "Couldn't run the preview. {message}",
+      "api": {
+        "offline": "No daemon serving this agent is connected, so the preview can't run. Try again once it reconnects.",
+        "unavailableBody": "Evaluation unavailable. {reason} The call would still be answered by {agent}; this is not a refusal.",
+        "unsupported": "The daemon serving this agent can't preview this gate yet. Upgrade it — nothing was evaluated.",
+        "admits": "{agent} would answer the call",
+        "refuses": "The call would be refused"
+      }
     },
     "evaluations": {
       "toggle": "Recent evaluations",
@@ -4627,6 +4664,12 @@
         "empty": "No evaluations yet. New issues and change requests judged for this repository appear here.",
         "offline": "The daemon that evaluates this repository's routing is not connected, so recent evaluations can't be read right now.",
         "unsupported": "Upgrade the daemon that evaluates this repository's routing to see its recent evaluations."
+      },
+      "api": {
+        "empty": "No evaluations yet. Calls this API judged appear here.",
+        "offline": "No daemon serving this agent is connected, so recent evaluations can't be read right now.",
+        "unsupported": "Upgrade the daemon serving this agent to see this API's recent evaluations.",
+        "retention": "Details are kept for 24 hours, or for the 20 most recent evaluations of this API; the summary stays after that."
       },
       "error": "Couldn't load recent evaluations. {message}",
       "loadMore": "Load more",
@@ -4685,6 +4728,7 @@
         "usageValue": "{input} in · {output} out",
         "decision": "Decision as evaluated",
         "questionType": "Question type",
+        "agent": "Agent",
         "input": "Evaluated message",
         "noHistory": "No earlier messages were included.",
         "historyOmitted": "{count, plural, one {# earlier message not shown} other {# earlier messages not shown}}",
@@ -4716,6 +4760,7 @@
         "inRange": "in range",
         "threshold": "≥ {value}",
         "answer": "Answer",
+        "confidence": "Confidence",
         "tokens": "{input} in · {output} out tokens",
         "expired": "Retention removed the full distribution; only the summary answer remains.",
         "status": {
@@ -4957,7 +5002,6 @@
         "otherwiseEveryAgent": "{subject, select, pull_request {Without a matching rule, every agent reviews the PR as it does without a decision.} merge_request {Without a matching rule, every agent reviews the MR as it does without a decision.} other {Without a matching rule, every agent takes the issue as it does without a decision.}}",
         "add": "Add decision",
         "addTitle": "{subject, select, pull_request {Every PR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.} merge_request {Every MR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.} other {Every issue goes to all agents. Add a decision to pick agents on every update; the rows then run on any update.}}",
-        "pillTitle": "By decision · {name}. Every update of the {subject, select, pull_request {PR} merge_request {MR} other {issue}} is judged, and the decision picks who takes it. Click to edit rules.",
         "pillStatusTitle": "By decision · {name} · {status}. Click to review the rules.",
         "statusBody": {
           "needs_review": "{decision} changed and these rules no longer fit its answers. New {subject, select, pull_request {pull requests} merge_request {merge requests} other {issues}} on this repository are held until you save the rules again.",
@@ -4968,7 +5012,17 @@
         "hidden": "A decision you cannot see",
         "forbidden": "Your role cannot change this repository's routing: it needs edit access to every agent watching it.",
         "hiddenAgent": "An agent you cannot see",
-        "triggerLocked": "Set by the decision: every update is judged, so this row's own trigger does not apply."
+        "triggerLocked": "Set by the decision: every update is judged, so this row's own trigger does not apply.",
+        "try": {
+          "notAppliedBody": {
+            "paused": "Routing is paused, so every agent takes the event as without a decision. No evaluation ran.",
+            "needs_review": "The saved rules need review, so routing is off. Repair them to try. No evaluation ran.",
+            "unsupported": "The evaluation host daemon can't preview decisions yet. Upgrade it — no evaluation ran."
+          },
+          "unavailableBody": "Evaluation unavailable: {reason} Every agent takes the event, as without a decision; this is not a skip.",
+          "agents": "Agents",
+          "noAgent": "No agent takes the event"
+        }
       }
     },
     "chain": {
@@ -4982,6 +5036,56 @@
       "trigger": "Trigger",
       "skip": "Skip",
       "resetCondition": "Reset condition"
+    },
+    "tryState": {
+      "sample": "Sample state",
+      "editor": "Sample editor",
+      "fields": "Fields",
+      "raw": "Raw JSON",
+      "rawLabel": "Sample state as JSON",
+      "bound": "Filled in here, not by the sample: {keys}",
+      "currentSender": "Current message sender id",
+      "currentText": "Current message",
+      "currentPlaceholder": "The message being evaluated",
+      "historySender": "Sender id of history message {index}",
+      "historyText": "History message {index}",
+      "addHistory": "Add a history message",
+      "removeHistory": "Remove history message {index}",
+      "addAgent": "Add an agent to {field}",
+      "addAgentShort": "agent",
+      "removeAgent": "Remove {agent}",
+      "eventName": "Event name",
+      "eventAction": "Event action",
+      "subjectKind": "Subject kind",
+      "subjectNumber": "Subject number",
+      "subjectState": "Subject state",
+      "subjectTitle": "Subject title",
+      "subjectAuthor": "Subject author login",
+      "subjectLabels": "Subject labels, comma separated",
+      "subjectDraft": "Draft",
+      "subjectBody": "Subject body",
+      "commitMessages": "Commit messages",
+      "addFile": "Add a changed file",
+      "removeFile": "Remove {path}",
+      "filePath": "Path of file {index}",
+      "fileStatus": "Status of file {index}",
+      "fileAdditions": "Additions in file {index}",
+      "fileDeletions": "Deletions in file {index}",
+      "fileDiff": "Diff of file {index}",
+      "showDiff": "Edit diff ({lines, plural, one {1 line} other {# lines}})",
+      "addDiff": "Add a diff",
+      "stale": "The draft or sample changed after this run. Run again.",
+      "failed": "Couldn't run the preview. {message}",
+      "details": "Details",
+      "detailsTitle": "Try details",
+      "detailsSubtitle": "This run is not recorded in Recent evaluations",
+      "detailsClose": "Close Try details",
+      "errors": {
+        "json": "Not valid JSON: {message}",
+        "shape": "The sample must be one JSON object.",
+        "bound": "\"{key}\" is filled in here, not by the sample. Remove it.",
+        "schema": "{path}: {message}"
+      }
     }
   },
   "ProviderKeys": {
@@ -5451,6 +5555,11 @@
     "googlechat": {
       "checking": "Checking this deployment…",
       "relayRequired": "Google Chat delivers over HTTPS callbacks only, so it needs a public callback endpoint. Ask an administrator to configure one, then connect an app here.",
+      "marketplace": {
+        "install": "Install from Google Workspace Marketplace",
+        "next": "After installing, message the app in Google Chat to connect this organization.",
+        "useOwn": "Use your own Google Chat app instead"
+      },
       "prerequisites": {
         "title": "Before you start",
         "account": "A Google Workspace account that can configure Chat apps",
@@ -5462,12 +5571,17 @@
       "configure": {
         "title": "Configure the Chat app",
         "endpoint": "HTTP endpoint URL",
-        "audience": "Authentication audience",
+        "appType": "App type",
+        "appTypeValue": "Google Workspace add-on; convert an existing Chat app first",
+        "connection": "Connection settings",
+        "connectionValue": "HTTP endpoint URL, the same URL for all triggers",
         "functionality": "Functionality",
         "receiveDms": "Receive 1:1 messages",
         "joinSpaces": "Join spaces and group conversations",
         "visibility": "Visibility",
         "visibilityValue": "The people and groups who can use the app",
+        "commands": "Commands",
+        "commandsValue": "A slash command named /help, described “Show how to use this app”, with command ID 1; any free ID works",
         "copy": "Copy",
         "copied": "Copied"
       },

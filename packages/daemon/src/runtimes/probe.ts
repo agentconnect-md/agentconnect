@@ -1,12 +1,14 @@
 import { accessSync, constants, existsSync } from 'node:fs'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { parse as parseToml } from 'smol-toml'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { CURATED_RUNTIME_CATALOG } from './curated.js'
 import { parseArchiveLaunch } from './archive-store.js'
 import type { ResolvedRuntimeCatalog } from './registry.js'
 import type { SeededCredentialFile } from './runtime-seeded-credentials.js'
 import { resolveClaudeConfigSources, resolveOmpCredentialSource } from './runtime-credential-sources.js'
+import { readRegularFileSync } from '../fs/regular-file.js'
 
 // Direct executables establish installation; package launchers still need the product's own host state.
 
@@ -182,6 +184,31 @@ const DSH_CREDENTIALS = [
 const ANTIGRAVITY_SEED = ['settings.json', 'antigravity-oauth-token', 'installation_id'] as const
 /** OpenClaw acp bridge inputs: gateway address + token config and its .env fallback. */
 const OPENCLAW_SEED = ['openclaw.json', '.env'] as const
+
+/** Kimi Code's default login slot plus every file-stored OAuth ref its config.toml names (2.x logins are environment-scoped). */
+function kimiCredentialFiles(root: string): SeededCredentialFile[] {
+  const names = new Set(['kimi-code'])
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return
+    const ref = value as { storage?: unknown; key?: unknown }
+    if (ref.storage === 'file' && typeof ref.key === 'string') {
+      // Kimi's own mapping: `oauth/<name>` or a bare `<name>` is stored as credentials/<name>.json.
+      const name = ref.key.startsWith('oauth/') ? ref.key.slice('oauth/'.length) : ref.key
+      if (/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(name)) names.add(name)
+    }
+    for (const child of Object.values(value)) visit(child)
+  }
+  try {
+    visit(parseToml(readRegularFileSync(join(root, 'config.toml'), 1024 * 1024).toString('utf8')))
+  } catch {
+    // No readable config: only the default slot.
+  }
+  return [...names].map((name) => ({
+    path: join('credentials', `${name}.json`),
+    format: 'oauth',
+    provider: 'kimi-code'
+  }))
+}
 
 export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // Project only the active global file's saved API key and rollout cache; session and MCP state stay private.
@@ -415,16 +442,17 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   ],
 
   // Moonshot Kimi CLI — ~/.kimi (legacy) or ~/.kimi-code (newer, honors $KIMI_CODE_HOME).
-  kimi: (env) => [
-    ...state(env.KIMI_CODE_HOME || join(home(env), '.kimi-code'), '.kimi-code', undefined, undefined, [
-      { path: join('credentials', 'kimi-code.json'), format: 'oauth', provider: 'kimi-code' }
-    ]),
-    ...state(env.KIMI_SHARE_DIR || join(home(env), '.kimi'), '.kimi', undefined, undefined, [
-      { path: join('credentials', 'kimi-code.json'), format: 'oauth', provider: 'kimi-code' }
-    ]),
-    ...state(join(home(env), '.kimi'), '.kimi'),
-    ...state(join(home(env), '.kimi-code'), '.kimi-code')
-  ],
+  kimi: (env) => {
+    const root = env.KIMI_CODE_HOME || join(home(env), '.kimi-code')
+    return [
+      ...state(root, '.kimi-code', undefined, undefined, kimiCredentialFiles(root)),
+      ...state(env.KIMI_SHARE_DIR || join(home(env), '.kimi'), '.kimi', undefined, undefined, [
+        { path: join('credentials', 'kimi-code.json'), format: 'oauth', provider: 'kimi-code' }
+      ]),
+      ...state(join(home(env), '.kimi'), '.kimi'),
+      ...state(join(home(env), '.kimi-code'), '.kimi-code')
+    ]
+  },
 
   // Factory Droid — ~/.factory.
   'factory-droid': (env) => state(join(home(env), '.factory'), '.factory'),

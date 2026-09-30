@@ -7,6 +7,7 @@ import {
   GOOGLE_CHAT_EVENTS_PATH,
   googleChatCallbackUrl,
   googleChatErrorMessage,
+  googleChatMarketplaceUrl,
   googleChatSetupState,
   parseServiceAccountKey,
   projectNumberOk
@@ -85,6 +86,13 @@ describe('setup values', () => {
     expect(GOOGLE_CHAT_EVENTS_PATH).toBe(PROTOCOL_EVENTS_PATH)
     expect(googleChatCallbackUrl('https://relay.example.test/')).toBe('https://relay.example.test/googlechat/events')
     expect(googleChatCallbackUrl(null)).toBeNull()
+  })
+
+  it('links a Chat app’s Marketplace listing by its project number', () => {
+    expect(googleChatMarketplaceUrl('100000000000')).toBe(
+      'https://workspace.google.com/marketplace/app/agentconnect/100000000000'
+    )
+    expect(googleChatMarketplaceUrl('not-a-number')).toBeNull()
   })
 
   it('accepts an empty or numeric project number', () => {

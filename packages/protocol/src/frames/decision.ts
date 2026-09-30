@@ -7,11 +7,14 @@ import {
   DecisionModelEvaluationRecordDetail,
   DecisionModelEvaluationRecordPage,
   DecisionQuestion,
+  DecisionRawJson,
   DecisionRoutingEvaluationRecordDetail,
   DecisionRoutingEvaluationRecordPage
 } from '../decision.js'
 
 export const DECISION_PREVIEW_V1_FEATURE = 'decision-preview-v1'
+// The peer returns a preview's provider request and response JSON when asked with `raw: true`.
+export const DECISION_PREVIEW_RAW_V1_FEATURE = 'decision-preview-raw-v1'
 // The peer understands BindMatch{kind:'decision'}, core.decisions and rd/msg.decisionId, and never treats them as Any.
 export const DECISION_TRIGGER_V1_FEATURE = 'decision-trigger-v1'
 // The peer understands routedConversations/evaluationDaemonId, shared_bot_routing bindings and bundle.sharedBotRouting, never as Any.
@@ -29,6 +32,8 @@ export const DECISION_EVALUATION_FILTER_V1_FEATURE = 'decision-evaluation-filter
 export const DECISION_ROUTING_EVALUATIONS_V1_FEATURE = 'decision-routing-evaluations-v1'
 // The peer returns rawRequest/rawResponse on evaluation details when a request sets includeRaw.
 export const DECISION_EVALUATION_RAW_V1_FEATURE = 'decision-evaluation-raw-v1'
+// The peer returns each reached chain step's frozen question and provider bodies when a detail request sets includeSteps.
+export const DECISION_EVALUATION_STEPS_V1_FEATURE = 'decision-evaluation-steps-v1'
 // The peer hosts code-host hook routing (rd/msg hook `routing`, AgentSpec.hookRoutings) and reads its lanes, or the relay forwards to one.
 export const HOOK_DECISION_ROUTING_V1_FEATURE = 'hook-decision-routing-v1'
 // The peer also routes GitLab and Gitea hooks: their routed rules and hookRoutings projections go only to such a peer.
@@ -102,13 +107,20 @@ export const DecisionPreviewRequest = z
     evaluationId: z.string().uuid(),
     decision: DecisionDraft,
     state: z.record(z.string(), z.unknown()),
-    budgetMs: z.number().int().min(1).max(5000).optional()
+    budgetMs: z.number().int().min(1).max(5000).optional(),
+    // Sent only to a decision-preview-raw-v1 peer; an older strict one would reject it.
+    raw: z.literal(true).optional()
   })
   .refine((input) => new TextEncoder().encode(JSON.stringify(input)).byteLength <= 32 * 1024, {
     message: 'The preview must fit within 32 KiB.'
   })
 export type DecisionPreviewRequest = z.infer<typeof DecisionPreviewRequest>
-export const DecisionPreviewReply = z.object({ evaluation: DecisionEvaluation })
+// The provider bodies come back only for `raw: true`, null when no request went out; the CP proxies and never stores them.
+export const DecisionPreviewReply = z.object({
+  evaluation: DecisionEvaluation,
+  rawRequest: DecisionRawJson.nullable().optional(),
+  rawResponse: DecisionRawJson.nullable().optional()
+})
 export type DecisionPreviewReply = z.infer<typeof DecisionPreviewReply>
 
 // Bounded, daemon-owned Recent evaluations reads; the CP proxies them and never persists the bodies.
@@ -141,11 +153,12 @@ export const DecisionEvaluationsReply = DecisionEvaluationRecordPage.extend({
 })
 export type DecisionEvaluationsReply = z.infer<typeof DecisionEvaluationsReply>
 
-// includeRaw is sent only to a peer advertising decision-evaluation-raw-v1, so an older strict peer never sees it.
+// includeRaw and includeSteps go only to a peer advertising their feature, so an older strict peer never sees them.
 export const DecisionEvaluationRequest = z.strictObject({
   ...EvaluationLane,
   seq: z.number().int().nonnegative(),
-  includeRaw: z.literal(true).optional()
+  includeRaw: z.literal(true).optional(),
+  includeSteps: z.literal(true).optional()
 })
 export type DecisionEvaluationRequest = z.infer<typeof DecisionEvaluationRequest>
 export const DecisionEvaluationReply = z
@@ -173,7 +186,8 @@ export const DecisionModelEvaluationsReply = DecisionModelEvaluationRecordPage.r
 export type DecisionModelEvaluationsReply = z.infer<typeof DecisionModelEvaluationsReply>
 export const DecisionModelEvaluationRequest = z.strictObject({
   agentId: z.string().uuid(),
-  seq: z.number().int().positive()
+  seq: z.number().int().positive(),
+  includeSteps: z.literal(true).optional()
 })
 export type DecisionModelEvaluationRequest = z.infer<typeof DecisionModelEvaluationRequest>
 export const DecisionModelEvaluationReply = z
@@ -211,7 +225,8 @@ export const DecisionRoutingEvaluationRequest = z.strictObject({
   ...RoutingLane,
   channel: z.string().min(1).max(512),
   seq: z.number().int().nonnegative(),
-  includeRaw: z.literal(true).optional()
+  includeRaw: z.literal(true).optional(),
+  includeSteps: z.literal(true).optional()
 })
 export type DecisionRoutingEvaluationRequest = z.infer<typeof DecisionRoutingEvaluationRequest>
 export const DecisionRoutingEvaluationReply = z

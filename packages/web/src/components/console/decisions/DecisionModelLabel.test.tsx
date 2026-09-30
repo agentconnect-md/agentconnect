@@ -2,6 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
+import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'example-org' } }) }))
 import { DecisionModelLabel } from './DecisionModelLabel'
 
@@ -14,14 +15,28 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-it('names the Decision beside its icon and shows its rules on hover', async () => {
+const selection: AgentModelSelection = {
+  decisionId: '44444444-4444-4444-8444-444444444444',
+  rules: [
+    { when: { type: 'boolean', values: [true] }, runtime: 'claude', model: 'opus' },
+    { when: { type: 'boolean', values: [false] }, runtime: 'codex', model: '' }
+  ]
+}
+const fallback = { runtime: 'claude', model: 'sonnet' }
+
+it('names the Decision beside its icon and words its rules on hover as Yes or No', async () => {
   vi.useFakeTimers()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
   await act(async () =>
     root.render(
-      <DecisionModelLabel name="PR Model" rules={[{ when: 'large ≥ 60%', then: 'opus' }]} fallback="sonnet" />
+      <DecisionModelLabel
+        name="PR Model"
+        selection={selection}
+        question={{ type: 'boolean', instructions: 'Is it large?', criteria: { true: 'Large', false: 'Small' } }}
+        fallback={fallback}
+      />
     )
   )
   const label = container.querySelector('span')!
@@ -30,7 +45,7 @@ it('names the Decision beside its icon and shows its rules on hover', async () =
   await act(async () => label.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
   await act(async () => vi.advanceTimersByTime(260))
   expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
-    'ModelBy decisionDecisionPR Model1large ≥ 60%opus—Fallbacksonnet'
+    'ModelBy decisionDecisionPR Model1Yesopus2Nocodex—Fallbacksonnet'
   )
 })
 
@@ -43,6 +58,8 @@ it('links the Decision and opens Recent evaluations from an interactive card', a
     root.render(
       <DecisionModelLabel
         name="PR Model"
+        selection={selection}
+        fallback={fallback}
         decisionHref="/decisions/d1"
         evaluations={{ agentId: 'a1', agentName: 'Reviewer', live: false }}
       />

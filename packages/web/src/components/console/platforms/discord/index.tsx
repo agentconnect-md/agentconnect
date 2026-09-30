@@ -36,7 +36,12 @@ export const discordModule: WebPlatformModule<typeof discordApi> = {
     // A Discord bot joins a SERVER, not a channel, so the only leave the console
     // can offer is the whole server — the band heading's action, not the row's.
     leave: 'space',
-    cannotLeaveRowHint: { key: 'discordCannotLeaveRowHint' }
+    cannotLeaveRowHint: { key: 'discordCannotLeaveRowHint' },
+    // A server channel opens under its server, a DM under "@me".
+    conversationUrl: ({ channelId, spaceId, kind }) => {
+      const scope = kind === 'im' ? '@me' : spaceId && encodeURIComponent(spaceId)
+      return scope ? `https://discord.com/channels/${scope}/${encodeURIComponent(channelId)}` : undefined
+    }
   },
   messageIdentity: (row) => (DISCORD_SNOWFLAKE.test(row.ts) ? `ts:${row.ts}` : null)
 }

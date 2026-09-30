@@ -25,8 +25,10 @@ export {
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_EFFECT_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
+  GOOGLE_CHAT_ACTION_PARAMETER,
   GOOGLE_CHAT_ELICIT_FUNCTION,
   GOOGLE_CHAT_EVENTS_PATH,
+  googleChatEventsUrl,
   INTEGRATION_REVOKED_FEATURE,
   isSelfManagedGitlabHost,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
@@ -175,6 +177,8 @@ export type { OrganizationMode, FrameOrgPeer, FrameOrgRef, FrameOrgVerdict } fro
 
 // ── relay wires (separate frame unions; shared-bot-relay.md §7/§8) ──
 export * from './frames/relay-cp.js'
+// An agent's chat APIs and their Decision gates (shared-bot-relay.md §10.4).
+export * from './agent-api.js'
 // Manifest-declared Slack shortcut id — defined in the bundler-facing
 // `./slack-app-manifest.ts` leaf, re-exported here so the package root keeps
 // serving it next to the runtime Slack action ids above.
@@ -226,3 +230,5 @@ export * from './memory-entries.js'
 export * from './frames/memory-entries.js'
 
 export * from './frames/memory-transaction.js'
+
+export * from './frames/codehost-feedback.js'

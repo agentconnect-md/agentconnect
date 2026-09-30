@@ -1,6 +1,6 @@
 # Design: Unified Memory Operations and Context
 
-**Status:** Implementation in progress. Common reads, bounded search, console history, conditional managed mutations, external record mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh remains pending. The console's compatibility views are retired except the runtime-native file browser; the legacy file/record tools and routes remain for old clients and the console's overview read. This design does not change the plugin ABI by itself.
+**Status:** Implementation in progress. Common reads, bounded search, console history, conditional managed mutations, external record mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh remains pending. The console's compatibility views are retired, and native memory has no console view; the legacy file/record tools and routes remain for old clients and the console's overview read. This design does not change the plugin ABI by itself.
 
 **Related:** [Memory evolution](memory-evolution.md), [managed memory](memory-system-plan.md), [Dream](memory-dreaming.md), [product conventions](../product-conventions.md).
 
@@ -132,7 +132,7 @@ Effective capabilities are the intersection of reviewed adapter capabilities, im
 
 Today external v1 advertises operation names, item budgets and capture idempotency, but does not certify all the stronger properties above. Map only proven properties; `version` presence alone cannot imply atomic conditional writes, and capture idempotency cannot automatically imply CRUD idempotency. A future profile revision must negotiate additional properties and pin the new manifest; do not reinterpret existing third-party manifests as claiming them.
 
-Native/none remain distinct lifecycle modes. Native tools are runtime-owned and must not be silently replaced by this entry family. Its existing file browser can remain a compatibility view. None exposes no memory operations.
+Native/none remain distinct lifecycle modes. Native tools are runtime-owned and must not be silently replaced by this entry family. The console does not show native memory. None exposes no memory operations.
 
 ## 5. Provider and service boundaries
 

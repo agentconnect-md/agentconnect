@@ -29,6 +29,7 @@ import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { CodeHostRoutingFamily, DecisionAnswer, DecisionQuestion } from '../decision.js'
+import { AgentApiProtocolName } from '../agent-api.js'
 import { DECISION_ROUTING_FORWARD_V1_FEATURE } from './decision.js'
 
 /**
@@ -214,7 +215,9 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     worktree: z.boolean().optional(),
     // Steer-or-refuse (#1847): the browser sent this while a turn was running and keeps its
     // own queue, so the daemon steers it into that turn or refuses `busy` — never parks it.
-    steer: z.boolean().optional()
+    steer: z.boolean().optional(),
+    // The chat API the turn came through; the daemon evaluates that API's Decision gate before admitting it.
+    origin: AgentApiProtocolName.optional()
   }),
   // A conversation post another participant produced (a user turn targeted
   // elsewhere, or a peer agent's reply), fanned out by the relay so THIS frame's
@@ -279,6 +282,17 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
         .refine((v) => Object.keys(v).length <= ELICIT_FORM_WIRE_FIELD_CAP),
       z.null()
     ]),
+    agentId: z.string().uuid().optional()
+  }),
+  // An API caller's answer to a `permission` event, stamped by the relay with the key's owner and whether that owner may allow it.
+  z.object({
+    op: z.literal('permission_choice'),
+    requestId: z.string().uuid(),
+    allow: z.boolean(),
+    // False ⇒ an allow waits for an Agent editor instead; a refusal is always the caller's to make.
+    mayAllow: z.boolean(),
+    user: z.string().optional(),
+    userId: z.string().optional(),
     agentId: z.string().uuid().optional()
   }),
   // One MCP App view's request to the daemon (webchat-mcp-apps.md §5). `callId` is browser-minted
@@ -613,11 +627,12 @@ export const WireFeishuCardActionResponse = z.object({
 })
 export type WireFeishuCardActionResponse = z.infer<typeof WireFeishuCardActionResponse>
 
-/** A verified Google Chat card click on an elicitation card, as the relay forwards it in a `platform_action` payload. */
+/** A verified Google Chat click on an elicitation card, as the relay forwards it in a `platform_action` payload. */
 export const WireGoogleChatCardAction = z.object({
+  /** The action the button's `agentconnect.action` parameter named. */
   function: z.string().min(1),
   parameters: z.record(z.string(), z.string()),
-  /** Every input widget on the card, by its `name`, as `common.formInputs` carried it. */
+  /** Every input widget on the card, by its `name`, as `commonEventObject.formInputs` carried it. */
   formInputs: z.record(z.string(), z.array(z.string())),
   /** The card message's `spaces/…/messages/…` name, when the event carried it. */
   message: z.string().min(1).optional()

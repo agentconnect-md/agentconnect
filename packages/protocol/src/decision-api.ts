@@ -1,3 +1,4 @@
+import type { AgentApiProtocol } from './agent-api.js'
 import type {
   ChannelDecisionBinding,
   ChannelDecisionGate,
@@ -14,6 +15,8 @@ import type {
   DecisionQuestion,
   DecisionRoutingEvaluationRecordDetail,
   DecisionRoutingEvaluationRecordPage,
+  DecisionUsageRules,
+  DecisionUsageTarget,
   DecisionValidationIssue,
   RoutingTargetEffect,
   SharedBotDecisionRouting
@@ -47,7 +50,7 @@ export interface DecisionProviderOption {
 }
 
 export interface DecisionUsage {
-  kind: 'gate' | 'shared_bot_routing' | 'code_host_routing' | 'agent_tool' | 'model_selection'
+  kind: 'gate' | 'shared_bot_routing' | 'code_host_routing' | 'agent_tool' | 'model_selection' | 'api_gate'
   id: string
   label: string
   rootDecisionId?: string
@@ -56,6 +59,11 @@ export interface DecisionUsage {
   provider?: CodeHostRoutingProvider
   repoId?: string
   family?: CodeHostRoutingFamily
+  // kind=api_gate: the agent's chat API the gate sits on.
+  protocol?: AgentApiProtocol
+  // This Decision's step at the place: each rule and where an unmatched answer goes; absent for an agent tool.
+  rules?: DecisionUsageRules['rules']
+  otherwise?: DecisionUsageTarget
 }
 
 export interface DecisionDetail {
@@ -178,6 +186,8 @@ export interface DecisionGatePreviewInput {
 // Gate Try on the conversation's serving daemon; `unavailable` continues to the target and is never a skip.
 export interface DecisionGatePreviewResult {
   chain?: import('./decision.js').DecisionChainTrace
+  /** The run as a Recent evaluations detail reads it; absent when nothing was evaluated. */
+  detail?: import('./decision.js').DecisionEvaluationRecordDetail
   mode: 'mock' | 'live'
   readiness: DecisionReadiness
   evaluation: DecisionEvaluation | null
@@ -189,6 +199,37 @@ export interface DecisionGatePreviewResult {
     matched: boolean
     matchedKeys: string[]
     target: { agentId: string; name: string }
+  }
+}
+
+/** Try a draft chat API gate on the agent's serving daemon; the result reads like a conversation gate's. */
+export interface ApiGatePreviewInput {
+  gate: ChannelDecisionGate
+  state: import('./decision.js').ApiGateTryState
+}
+
+/** Try a draft code-host routing on the scope's evaluation host. */
+export interface CodeHostRoutingPreviewInput {
+  config: SharedBotDecisionRouting
+  state: import('./decision.js').CodeHostTryState
+}
+
+// `unavailable` fires every member, as the live router fails open; `skip` fires none.
+export interface CodeHostRoutingPreviewResult {
+  chain?: import('./decision.js').DecisionChainTrace
+  /** The run as a Recent evaluations detail reads it; absent when nothing was evaluated. */
+  detail?: import('./decision.js').DecisionEvaluationRecordDetail
+  mode: 'mock' | 'live'
+  evaluation: DecisionEvaluation | null
+  consumer: {
+    type: 'code_host_routing'
+    outcome: 'activate' | 'skip' | 'unavailable' | 'not_applied'
+    notAppliedReason?: 'paused' | 'needs_review' | 'unsupported'
+    reason?: string
+    matchedRuleIds: string[]
+    matchedKeys: string[]
+    usedOtherwise: boolean
+    targets: Array<{ agentId: string; name: string | null }>
   }
 }
 
@@ -207,6 +248,8 @@ export type DecisionRoutingNotAppliedReason = 'off' | 'outside_scope' | 'paused'
 // Routing Try on the bot's evaluation host; `unavailable` names its continuation and is never a skip.
 export interface DecisionRoutingPreviewResult {
   chain?: import('./decision.js').DecisionChainTrace
+  /** The run as a Recent evaluations detail reads it; absent when nothing was evaluated. */
+  detail?: import('./decision.js').DecisionRoutingEvaluationRecordDetail
   mode: 'mock' | 'live'
   readiness: DecisionReadiness
   evaluation: DecisionEvaluation | null

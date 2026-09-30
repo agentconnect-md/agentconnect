@@ -1,7 +1,20 @@
+import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { SQUARE_MARK_FILL_PCT } from './mark-box'
-import { AgentIconView, GiteaMark, GithubMark, GitlabMark, OrgIconView, PlatformMark, modelProviderSlug } from './marks'
+import { GiteaProductContext } from '@/lib/gitea-product'
+import {
+  AgentIconView,
+  ApiProtocolMark,
+  FORGEJO_BRAND_COLOR,
+  GITEA_BRAND_COLOR,
+  GiteaMark,
+  GithubMark,
+  GitlabMark,
+  OrgIconView,
+  PlatformMark,
+  modelProviderSlug
+} from './marks'
 
 describe('modelProviderSlug', () => {
   it('reads the provider prefix from provider/model ids', () => {
@@ -85,6 +98,28 @@ describe('icon views', () => {
   })
 })
 
+describe('ApiProtocolMark', () => {
+  const render = (protocol: string) => renderToStaticMarkup(<ApiProtocolMark protocol={protocol} />)
+
+  it('draws each protocol in the text color, capped like the other brand marks', () => {
+    for (const protocol of ['ai-sdk-ui', 'ag-ui']) {
+      const markup = render(protocol)
+      expect(markup).toContain('currentColor')
+      expect(markup).toContain(`width:${SQUARE_MARK_FILL_PCT}%`)
+    }
+    // ACP's glyph is a wide wordmark, so it spans the box instead.
+    expect(render('acp-2')).toContain('viewBox="0 0 160 61"')
+    expect(render('acp-2')).toContain('fill="currentColor"')
+  })
+
+  it('keeps each protocol visually distinct and falls back to the code glyph', () => {
+    const marks = ['ai-sdk-ui', 'ag-ui', 'acp-2', 'future-protocol'].map(render)
+    expect(new Set(marks).size).toBe(4)
+    expect(marks[1]).toContain('vector-effect="non-scaling-stroke"')
+    expect(marks[3]).toContain('lucide-code-xml')
+  })
+})
+
 describe('GitlabMark', () => {
   it('renders the official multi-color tanuki rather than a monochrome glyph', () => {
     const markup = renderToStaticMarkup(<GitlabMark />)
@@ -129,17 +164,17 @@ describe('PlatformMark', () => {
     expect(full).not.toContain('width:60%')
   })
 
-  it('caps the square brand glyphs at 80% while other marks honour a full-bleed box', () => {
+  it('caps every brand mark at 80% while padded glyphs honour a full-bleed box', () => {
     // No padding inside this artwork, so an uncapped fillPct=100 would outsize the marks beside it.
-    for (const platform of ['github', 'gitlab', 'discord', 'linear']) {
-      // Slack belongs here too, but renders without `ssr`, so SSR gives it an empty <span>.
+    for (const platform of ['github', 'gitlab', 'gitea', 'discord', 'linear', 'telegram', 'feishu', 'qq']) {
+      // Slack and webhook belong here too, but render without `ssr`, so SSR gives them an empty <span>.
       const markup = renderToStaticMarkup(<PlatformMark platform={platform} fillPct={100} />)
       expect(markup, platform).toContain('width:80%')
       expect(markup, platform).not.toContain('width:100%')
     }
-    // Below the cap nothing changes, and an uncapped mark still fills its box.
+    // Below the cap nothing changes, and a padded glyph still fills its box.
     expect(renderToStaticMarkup(<PlatformMark platform="discord" fillPct={70} />)).toContain('width:70%')
-    expect(renderToStaticMarkup(<PlatformMark platform="telegram" fillPct={100} />)).toContain('width:100%')
+    expect(renderToStaticMarkup(<PlatformMark platform="api" fillPct={100} />)).toContain('width:100%')
   })
 
   it('lands a full-bleed square glyph on the fill a directly-named mark can ask for', () => {
@@ -152,6 +187,20 @@ describe('PlatformMark', () => {
     expect(renderToStaticMarkup(<GithubMark fillPct={SQUARE_MARK_FILL_PCT} />)).toContain(fill)
     expect(renderToStaticMarkup(<GitlabMark fillPct={SQUARE_MARK_FILL_PCT} />)).toContain(fill)
     expect(renderToStaticMarkup(<GiteaMark fillPct={SQUARE_MARK_FILL_PCT} />)).toContain(fill)
+  })
+
+  it('draws the Forgejo mark wherever a Gitea mark stands when the instance is Forgejo', () => {
+    const forgejo = (node: ReactNode) =>
+      renderToStaticMarkup(<GiteaProductContext.Provider value="forgejo">{node}</GiteaProductContext.Provider>)
+    // Outside a provider, and before any connection reports a version, the mark stays Gitea's.
+    expect(renderToStaticMarkup(<GiteaMark />)).toContain(`color:${GITEA_BRAND_COLOR}`)
+    expect(forgejo(<GiteaMark />)).toContain(`color:${FORGEJO_BRAND_COLOR}`)
+    expect(forgejo(<PlatformMark platform="gitea" />)).toContain(`color:${FORGEJO_BRAND_COLOR}`)
+    expect(forgejo(<GiteaMark />)).not.toBe(
+      renderToStaticMarkup(<GiteaMark />).replace(GITEA_BRAND_COLOR, FORGEJO_BRAND_COLOR)
+    )
+    // A monochrome surface keeps its own color on either product.
+    expect(forgejo(<GiteaMark color="#fff" />)).toContain('color:#fff')
   })
 
   it('uses the filled Lark brand asset for the shared Lark and Feishu platform family', () => {

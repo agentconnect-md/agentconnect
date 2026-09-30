@@ -1,10 +1,13 @@
 /** GitLab ingress (`POST /webhooks/gitlab`, gitlab-com-integration.md §11.2, §12): per-rule Standard Webhooks verification before any matching, uniform 404, 202 when unmatched; the payload is never logged. */
+import { gitlabFeedback } from './codehost-feedback.js'
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
   codeHostSubjectBody,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
+  type RcCodeHostFeedback,
+  type RcCodeHostFeedbackResult,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   type GitlabHookMetadata,
   type GitlabHookTarget,
@@ -32,6 +35,7 @@ import type { Logger } from '../log.js'
 export const GITLAB_BODY_LIMIT = 1024 * 1024
 
 export interface GitlabIngressDeps {
+  reportFeedback?: (signal: RcCodeHostFeedback) => Promise<RcCodeHostFeedbackResult>
   table: HookTable
   /** Late-bound: the rd/* server exists only after `listen()` (routes register before). */
   daemons: () => Pick<RelayDaemonServer, 'get'> | undefined
@@ -47,13 +51,15 @@ export interface GitlabIngressDeps {
 }
 
 /** The payload slice the matcher reads: untrusted filter input; authorization is the signature plus the CP's live membership check (§12.2). */
-interface GitlabPayload {
+export interface GitlabPayload {
   object_kind?: string
   event_type?: string
   user?: { id?: number; username?: string; name?: string; avatar_url?: string }
   project?: { id?: number; path_with_namespace?: string; web_url?: string }
   project_id?: number
   object_attributes?: {
+    status?: string
+    sha?: string
     id?: number
     iid?: number
     title?: string
@@ -553,7 +559,8 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       const projectId = payload.project?.id ?? payload.project_id
       if (projectId === undefined || !Number.isSafeInteger(projectId)) return notFound(reply)
       const rules = deps.table.getByCodeHostRepo('gitlab', String(projectId))
-      if (rules.length === 0) return notFound(reply)
+      const watch = deps.table.getFeedbackWatch('gitlab', String(projectId))
+      if (rules.length === 0 && !watch) return notFound(reply)
 
       const webhookId = headerString(req.headers['webhook-id'])
       const webhookTimestamp = headerString(req.headers['webhook-timestamp'])
@@ -561,23 +568,40 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       if (!webhookId || !webhookTimestamp || !signature) return notFound(reply)
       // Accept any rule's key, so a mid-rotation mixed table cannot drop deliveries.
       const nowMs = deps.clock.now()
-      const verified = rules.some(
-        (rule) =>
-          rule.gitlab &&
-          verifyStandardWebhook(rule.gitlab.signingToken, webhookId, webhookTimestamp, raw, signature, nowMs)
-      )
+      const watchVerified =
+        watch && verifyStandardWebhook(watch.watch.signingKey, webhookId, webhookTimestamp, raw, signature, nowMs)
+      const verified =
+        watchVerified ||
+        rules.some(
+          (rule) =>
+            rule.gitlab &&
+            verifyStandardWebhook(rule.gitlab.signingToken, webhookId, webhookTimestamp, raw, signature, nowMs)
+        )
       if (!verified) return notFound(reply)
 
       const deliveryKey = webhookId.slice(0, 200)
       const firedAt = new Date(nowMs).toISOString()
+
+      const authorAgentIds = new Set<string>()
+      const feedback = watchVerified && watch ? gitlabFeedback(watch, deliveryKey, payload) : undefined
+      if (feedback) {
+        try {
+          const result = await deps.reportFeedback?.(feedback)
+          if (!result?.accepted) return reply.code(503).send({ error: 'Feedback unavailable' })
+          for (const id of result.authorAgentIds) authorAgentIds.add(id)
+        } catch {
+          return reply.code(503).send({ error: 'Feedback unavailable' })
+        }
+      }
 
       const cleanupEvent = gitlabThreadWorktreeCleanupEvent(payload)
       const cleanupIid = payload.object_attributes?.iid
       if (cleanupEvent && cleanupIid !== undefined && cleanupIid > 0) {
         // Maintenance cleanup (§12): relay-authored, never a turn, and past the actor gate so no worktree leaks.
         const kind = cleanupEvent.startsWith('issues') ? ('issue' as const) : ('merge_request' as const)
+        const family = kind === 'issue' ? 'issues' : 'merge_request'
         for (const rule of rules) {
-          if (rule.kind !== 'gitlab' || !rule.gitlab) continue
+          if (rule.kind !== 'gitlab' || !rule.gitlab || !gitlabRuleFamilies(rule).has(family)) continue
           const gitlab: GitlabHookMetadata = {
             projectId: rule.gitlab.projectId,
             ...(rule.gitlab.host !== undefined ? { host: rule.gitlab.host } : {}),
@@ -597,7 +621,7 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
             gitlab,
             context: buildGitlabContext(payload, {
               eventAction: cleanupEvent,
-              family: kind === 'issue' ? 'issues' : 'merge_request',
+              family,
               labels: [],
               mentionText: undefined,
               iid: cleanupIid
@@ -659,6 +683,7 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       })
 
       const dispatchRule = (rule: RcHookAssign, notice?: RdHookNotice): void => {
+        if (authorAgentIds.has(rule.agentId)) return
         // A notice is a fixed post, never routed; a routed rule spends the budget only when selected.
         const routed = notice === undefined && router.routed(rule)
         if (!routed && !deps.limiter.allow(rule.hookId)) {

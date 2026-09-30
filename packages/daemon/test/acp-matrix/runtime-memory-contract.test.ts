@@ -7,18 +7,9 @@ import {
 import { runtimeMemoryCapabilities } from '../../src/memory/runtime/capabilities.js'
 import { PROFILES } from './profiles.js'
 
-/**
- * Harness-addition gate for the runtime-specific part of memory providers.
- *
- * `profiles.ts` is the curated set of ACP harnesses AgentConnect claims to cover.
- * Making every profile declare an expected provider matrix turns memory handling
- * into part of that support contract: adding a harness requires an explicit review
- * of its native-memory off-switch and redirect semantics, rather than discovering
- * the omission when a user first selects `none`.
- */
+// Every curated harness declares its memory matrix, so adding one forces a review of its off-switch and native memory location.
 describe.each(PROFILES)('runtime memory contract · $registryId', (profile) => {
   const agent = (provider: MemoryProviderKind) => ({
-    dir: '/agents/bot-a',
     runtime: profile.registryId,
     memory: { provider }
   })

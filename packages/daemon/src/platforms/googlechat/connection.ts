@@ -78,12 +78,23 @@ export interface ConsolidatedGoogleChatGroup {
   integrations: { agentId: string; integrationId: string }[]
 }
 
-/** §7.5 opaque identity: the app, its key, and the row's tenant, so a rotated key opens a new client and two customer rows never share one (§10.8). */
+/** §7.5 opaque identity: the app, its key, the row's tenant, and the events URL its cards name, so any change opens a new client (§10.8, §11.5). */
 export function googleChatConnKey(
-  c: Pick<IntegrationGoogleChatConfig, 'projectNumber' | 'serviceAccountKey' | 'tenantIds' | 'ownTenantIds'>
+  c: Pick<
+    IntegrationGoogleChatConfig,
+    'projectNumber' | 'serviceAccountKey' | 'tenantIds' | 'ownTenantIds' | 'eventsUrl'
+  >
 ): string {
   return createHash('sha256')
-    .update(JSON.stringify([c.projectNumber, c.serviceAccountKey, c.tenantIds ?? null, c.ownTenantIds ?? null]))
+    .update(
+      JSON.stringify([
+        c.projectNumber,
+        c.serviceAccountKey,
+        c.tenantIds ?? null,
+        c.ownTenantIds ?? null,
+        c.eventsUrl ?? null
+      ])
+    )
     .digest('hex')
 }
 
@@ -254,10 +265,12 @@ export class GoogleChatConnection implements PlatformConnection {
   readonly key: string
   readonly integrationId: string
   readonly agentId: string
-  /** The Chat app's Google Cloud project number: its durable identity and token audience. */
+  /** The Chat app's Google Cloud project number: its durable identity. */
   readonly projectNumber: string
   /** No permalink base: Chat deep links come from the message's own `spaceUri`, so the console URL is the fallback. */
   readonly workspaceUrl = ''
+  /** The relay's public events URL, which every card button names as its function (§11.5). */
+  readonly eventsUrl: string | undefined
   private readonly parsedKey: ParsedKey | GoogleChatApiError
   private readonly fetchImpl: typeof fetch
   private readonly now: () => number
@@ -286,6 +299,7 @@ export class GoogleChatConnection implements PlatformConnection {
     this.integrationId = group.integrationId
     this.agentId = group.agentId
     this.projectNumber = group.config.projectNumber
+    this.eventsUrl = group.config.eventsUrl
     this.parsedKey = parseServiceAccountKey(group.config.serviceAccountKey)
     if (this.parsedKey instanceof GoogleChatApiError)
       deps.log?.warn(`googlechat: integration ${this.integrationId}: ${this.parsedKey.message}`)
@@ -385,6 +399,18 @@ export class GoogleChatConnection implements PlatformConnection {
         }),
       this.writeGate
     )
+  }
+
+  /** Delete a message this daemon created, as a withdrawn placeholder is; one already gone counts as deleted. */
+  async deleteOwnMessage(name: string): Promise<void> {
+    await this.assertOwnTenant(spaceOf(name))
+    await this.queueFor(spaceOf(name)).enqueue(async () => {
+      try {
+        await this.request<MessageResource>('DELETE', name, { retry: 'idempotent' })
+      } catch (err) {
+        if (!(err instanceof GoogleChatApiError && err.kind === 'not_found')) throw err
+      }
+    }, this.writeGate)
   }
 
   /** Replace the cards of a message this daemon created, as a settled elicitation card is rewritten. */
@@ -601,7 +627,7 @@ export class GoogleChatConnection implements PlatformConnection {
 
   /** One Chat API call with bounded, jittered retries: `idempotent` retries every retryable refusal, `rate_limit_only` just a 429. */
   private async request<T>(
-    method: 'GET' | 'POST' | 'PATCH',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     path: string,
     opts: {
       query?: Record<string, string>

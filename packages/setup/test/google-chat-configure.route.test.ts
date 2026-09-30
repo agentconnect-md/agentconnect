@@ -141,7 +141,6 @@ describe('POST /api/v1/configure/google-chat (§3)', () => {
       revision: 4,
       restartRequired: true,
       callbackUrl: 'https://relay.example.test/googlechat/events',
-      audience: { setting: 'Project Number', value: PROJECT_NUMBER },
       probe: { status: 'ok' }
     })
     expect(requests).toEqual([GOOGLE_TOKEN_ENDPOINT, CRM_URL, GOOGLE_TOKEN_ENDPOINT, GOOGLE_CHAT_PROBE_URL])
@@ -156,9 +155,9 @@ describe('POST /api/v1/configure/google-chat (§3)', () => {
 
     const status = await app.inject({ method: 'GET', url: '/api/v1/deployment-config' })
     expect(status.statusCode).toBe(200)
-    expect(status.json().providerExpectations.googleChat).toMatchObject({
+    expect(status.json().providerExpectations.googleChat).toEqual({
       callbackUrl: 'https://relay.example.test/googlechat/events',
-      audienceSetting: 'Project Number'
+      configurationUrl: expect.stringContaining('chat.googleapis.com')
     })
     expect(status.json().secrets).toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'googleChat.serviceAccountKey', configured: true })])
@@ -250,12 +249,11 @@ describe('POST /api/v1/configure/google-chat (§3)', () => {
     expect(writes).toEqual([])
   })
 
-  it('stores the number resolved from the key when none is entered, and shows it as the audience', async () => {
+  it('stores the number resolved from the key when none is entered', async () => {
     const { app, writes } = server()
 
     const response = await configure(app, { projectId: PROJECT_ID, serviceAccountKey: KEY })
     expect(response.statusCode).toBe(200)
-    expect(response.json().audience).toEqual({ setting: 'Project Number', value: PROJECT_NUMBER })
     expect(writes[0]?.values.googleChat).toEqual({ projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER })
   })
 
@@ -312,6 +310,7 @@ describe('POST /api/v1/configure/google-chat (§3)', () => {
     expect(page.statusCode).toBe(200)
     expect(page.body).toContain('Each Google Workspace organization connects itself from Google Chat.')
     expect(page.body).toContain('Configure Google sign-in above')
+    expect(page.body).toContain('add a slash command named /help')
   })
 
   it('requires a key for a different project', async () => {

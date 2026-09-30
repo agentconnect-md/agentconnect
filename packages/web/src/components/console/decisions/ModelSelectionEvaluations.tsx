@@ -9,6 +9,7 @@ import { errorParts } from '@/lib/decisions/binding'
 import { answerText, cancelReasonKey } from '@/lib/decisions/evaluations'
 import { useOrgs } from '@/lib/org-context'
 import { MOCK_MODE, MOCK_PREFIX } from '@/lib/data'
+import { chainStepResult, useChainStep } from '@/lib/decisions/chain-step'
 import { DecisionChainResults } from './DecisionChainResults'
 import { DecisionModelResult } from './DecisionModelResult'
 import {
@@ -110,6 +111,13 @@ function ModelEvaluationsBody({ state, padX }: { state: ModelEvaluations; padX: 
   const { items, cursor, open, setOpen, detail } = state
   const record = items.find((item) => item.seq === open) ?? null
   const shown = detail.data ?? record
+  const chainStep = useChainStep(open, detail.data?.chain, detail.data?.steps)
+  // The frozen question the shown step answered; the root keeps only its requested model, not its provider.
+  const instructions = chainStep.step
+    ? { question: chainStep.step.question, model: `${chainStep.step.providerId} / ${chainStep.step.model}` }
+    : detail.data?.question
+      ? { question: detail.data.question, model: detail.data.requestedModel }
+      : null
   const errorKind = errorParts(state.error)
   const reason = shown?.reason
   const reasonLabel =
@@ -205,22 +213,42 @@ function ModelEvaluationsBody({ state, padX }: { state: ModelEvaluations; padX: 
           {shown.detailsExpired && <ExpiredBanner title={t('expired')} body={t('expiredBody')} />}
           {detail.data && (
             <>
-              <DecisionModelResult
-                question={detail.data.question}
-                answer={detail.data.fullAnswer}
-                summary={detail.data.answer}
-                matchedKeys={[]}
-                matched={false}
-                requestedModel={detail.data.requestedModel ?? '—'}
-                actualModel={detail.data.actualModel}
-                latencyMs={detail.data.latencyMs}
-                usage={detail.data.usage}
-                status={detail.data.fullAnswer ? 'answered' : detail.data.reason ? 'unavailable' : 'not_evaluated'}
-                expired={detail.data.detailsExpired}
-                rawRequest={detail.data.rawRequest}
-                rawResponse={detail.data.rawResponse}
-              />
-              <DecisionChainResults chain={detail.data.chain} />
+              <DecisionChainResults chain={detail.data.chain} {...chainStep.selector} />
+              {chainStep.step && (
+                <DecisionModelResult
+                  {...chainStepResult(chainStep.step, detail.data.chain![chainStep.index]!)}
+                  expired={detail.data.detailsExpired}
+                />
+              )}
+              {!chainStep.step && (
+                <DecisionModelResult
+                  question={detail.data.question}
+                  answer={detail.data.fullAnswer}
+                  summary={detail.data.answer}
+                  matchedKeys={[]}
+                  matched={false}
+                  requestedModel={detail.data.requestedModel ?? '—'}
+                  actualModel={detail.data.actualModel}
+                  latencyMs={detail.data.latencyMs}
+                  usage={detail.data.usage}
+                  status={detail.data.fullAnswer ? 'answered' : detail.data.reason ? 'unavailable' : 'not_evaluated'}
+                  expired={detail.data.detailsExpired}
+                  rawRequest={detail.data.rawRequest}
+                  rawResponse={detail.data.rawResponse}
+                />
+              )}
+              {instructions && (
+                <Section title={decisions('evaluations.detail.instructions')}>
+                  <span className="font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-primary)">
+                    {instructions.question.instructions}
+                  </span>
+                  <Row
+                    label={decisions('evaluations.sheet.questionType')}
+                    value={decisions(`types.${instructions.question.type}`)}
+                  />
+                  {instructions.model && <Row label={decisions('model')} value={instructions.model} />}
+                </Section>
+              )}
               {detail.data.selection && (
                 <Section title={t('rules')}>
                   <pre className="m-0 overflow-auto rounded-md border border-(--border-subtle) p-3 text-[11px]">

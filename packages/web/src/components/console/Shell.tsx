@@ -32,11 +32,22 @@ import { TooltipLayer } from './Tooltip'
 import { SearchOpenContext } from './search-open'
 import { LoadingState, LogoMark, OrgIconView } from '@/components/marks'
 import LanguageSwitcher, { LanguageSubmenu } from '@/components/LanguageSwitcher'
+import { MenuSubmenu } from '@/components/MenuSubmenu'
 import { Avatar, Icon } from '@/components/ui'
 import { getUser, isAuthConfigured, logout } from '@/lib/auth'
 import { useProfile } from '@/lib/profile'
 import { useIsMobile } from '@/lib/use-is-mobile'
-import { applyTheme, clearThemeAttr, getStoredTheme, type Theme } from '@/lib/theme'
+import {
+  applyTheme,
+  clearThemeAttr,
+  DARK_QUERY,
+  getStoredThemePreference,
+  nextThemePreference,
+  resolveTheme,
+  storeThemePreference,
+  systemPrefersDark,
+  type ThemePreference
+} from '@/lib/theme'
 import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-view'
 import { NotificationProvider } from '@/lib/notifications'
 import { NotificationBell, NotificationToastContainer } from './NotificationCenter'
@@ -97,8 +108,8 @@ const isActive = (pathname: string, href: string) =>
 // releases / support without rebuilding; unset ⇒ these agentconnect.md defaults. See
 // lib/public-env.tsx (HELP_* keys) + resolveHelpLinks().
 const HELP_LINK_DEFAULTS = {
-  mcp: 'https://docs.agentconnect.md/docs/mcp-connector',
-  docs: 'https://docs.agentconnect.md',
+  mcp: 'https://www.agentconnect.md/docs/connect-automate/mcp-connector',
+  docs: 'https://www.agentconnect.md/docs',
   releases: 'https://github.com/agentconnect-md/agentconnect/releases',
   support: 'mailto:contact@agentconnect.md'
 }
@@ -106,13 +117,21 @@ const HELP_LINK_DEFAULTS = {
 // Resolve at render (not module load) so it reads the runtime config: window.__AC_ENV
 // in the browser, process.env during SSR — mirroring lib/auth.ts. `support` accepts a
 // mailto: or an https: URL. NEXT_PUBLIC_* is the local-dev build-time fallback.
-function resolveHelpLinks(): typeof HELP_LINK_DEFAULTS {
+function resolveHelpLinks(): typeof HELP_LINK_DEFAULTS & { version: string } {
   const src = typeof window === 'undefined' ? process.env : (window.__AC_ENV ?? {})
+  // The deployed release tag, else the release baked into this build without its +sha.
+  const version = src.RELEASE_VERSION || (process.env.NEXT_PUBLIC_APP_VERSION ?? '').replace(/\+.*$/, '')
+  // A fork's own releases URL is used as is; ours jumps to this release on the list page.
+  const releases =
+    src.HELP_RELEASES_URL ||
+    process.env.NEXT_PUBLIC_HELP_RELEASES_URL ||
+    (version ? `${HELP_LINK_DEFAULTS.releases}#release-${version}` : HELP_LINK_DEFAULTS.releases)
   return {
     mcp: src.HELP_MCP_URL || process.env.NEXT_PUBLIC_HELP_MCP_URL || HELP_LINK_DEFAULTS.mcp,
     docs: src.HELP_DOCS_URL || process.env.NEXT_PUBLIC_HELP_DOCS_URL || HELP_LINK_DEFAULTS.docs,
-    releases: src.HELP_RELEASES_URL || process.env.NEXT_PUBLIC_HELP_RELEASES_URL || HELP_LINK_DEFAULTS.releases,
-    support: src.HELP_SUPPORT_URL || process.env.NEXT_PUBLIC_HELP_SUPPORT_URL || HELP_LINK_DEFAULTS.support
+    releases,
+    support: src.HELP_SUPPORT_URL || process.env.NEXT_PUBLIC_HELP_SUPPORT_URL || HELP_LINK_DEFAULTS.support,
+    version
   }
 }
 
@@ -198,7 +217,7 @@ function RailAccount({
   onCreateOrg,
   canCreateOrg,
   theme,
-  onToggleTheme,
+  onSelectTheme,
   onSignOut
 }: {
   display: { picture?: string | null; initials: string; name: string; email?: string }
@@ -210,8 +229,8 @@ function RailAccount({
   /** Routes to /welcome?new=1 — org creation is step 1 of the onboarding flow. */
   onCreateOrg: () => void
   canCreateOrg: boolean
-  theme: Theme
-  onToggleTheme: () => void
+  theme: ThemePreference
+  onSelectTheme: (theme: ThemePreference) => void
   onSignOut: () => void
 }) {
   const t = useTranslations('Shell')
@@ -310,10 +329,14 @@ function RailAccount({
             </Link>
             <LanguageSubmenu onPicked={() => setOpen(false)} />
             <div className="dmsep" />
-            <button className="dmi" onClick={onToggleTheme}>
-              <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={15} color="var(--text-tertiary)" />
-              {theme === 'dark' ? t('actions.lightMode') : t('actions.darkMode')}
-            </button>
+            <MenuSubmenu
+              icon="sun-moon"
+              label={t('actions.theme')}
+              options={THEME_OPTIONS.map((value) => ({ value, label: t(THEME_MENU_LABEL[value]) }))}
+              value={theme}
+              onSelect={onSelectTheme}
+              onPicked={() => setOpen(false)}
+            />
             <div className="dmsep" />
             <button className="dmi" onClick={onSignOut}>
               <Icon name="log-out" size={15} color="var(--text-tertiary)" />
@@ -452,12 +475,9 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   // no-auth placeholder (the design's demo persona only in mock mode).
   const { user: display } = useProfile()
 
-  // Color theme (light / dark). `mounted` gates the apply-effect so the first
-  // client pass never stomps the attribute the (app)-layout init script already
-  // set — avoiding a dark→light→dark flash on hard reload. The stored preference
-  // is read after mount (SSR renders the light default), applied to <html>, and
-  // cleared when the console unmounts so /login stays light.
-  const [theme, setTheme] = useState<Theme>('light')
+  // Theme preference (system / light / dark), read after mount so the first pass keeps the init script's attribute; cleared on unmount so /login stays light.
+  const [themePref, setThemePref] = useState<ThemePreference>('system')
+  const [systemDark, setSystemDark] = useState(false)
   const [themeReady, setThemeReady] = useState(false)
   // `mounted` flips after the first client render. The desktop-first SSR markup
   // (useIsMobile is false on the server) briefly paints on phones before the mobile
@@ -472,7 +492,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const [railCollapsed, setRailCollapsed] = useState(false)
   const [railAnim, setRailAnim] = useState(false)
   useEffect(() => {
-    setTheme(getStoredTheme())
+    setThemePref(getStoredThemePreference())
+    setSystemDark(systemPrefersDark())
     setThemeReady(true)
     setMounted(true)
     try {
@@ -486,12 +507,25 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     const id = requestAnimationFrame(() => setRailAnim(true))
     return () => cancelAnimationFrame(id)
   }, [mounted])
+  const theme = resolveTheme(themePref, systemDark)
   useEffect(() => {
     if (!themeReady) return
     applyTheme(theme)
     return () => clearThemeAttr()
   }, [theme, themeReady])
-  const toggleTheme = useCallback(() => setTheme((t) => (t === 'dark' ? 'light' : 'dark')), [])
+  // Track the device's color scheme live so `system` follows an OS switch without a reload.
+  useEffect(() => {
+    const mql = window.matchMedia?.(DARK_QUERY)
+    if (!mql) return
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches)
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [])
+  const selectTheme = useCallback((next: ThemePreference) => {
+    storeThemePreference(next)
+    setThemePref(next)
+  }, [])
+  const toggleTheme = useCallback(() => selectTheme(nextThemePreference(themePref)), [selectTheme, themePref])
   const toggleRail = useCallback(() => {
     setRailCollapsed((v) => {
       const next = !v
@@ -572,7 +606,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
             </span>
           </Link>
           <div className="flex-1" />
-          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          <ThemeToggle theme={themePref} onToggle={toggleTheme} />
           {isAuthConfigured() && <UserMenu display={display} orgPath={orgPath} onSignOut={signOut} />}
         </header>
         <div className="flex-1 overflow-auto">{children}</div>
@@ -757,8 +791,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     orgPath={orgPath}
                     onCreateOrg={goCreateOrg}
                     canCreateOrg={canCreateOrg}
-                    theme={theme}
-                    onToggleTheme={toggleTheme}
+                    theme={themePref}
+                    onSelectTheme={selectTheme}
                     onSignOut={signOut}
                   />
                 ) : (
@@ -766,10 +800,10 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     type="button"
                     onClick={toggleTheme}
                     className="railiconbtn"
-                    title={theme === 'dark' ? t('actions.switchLight') : t('actions.switchDark')}
+                    title={t(THEME_SWITCH_LABEL[nextThemePreference(themePref)])}
                     aria-label={t('actions.toggleTheme')}
                   >
-                    <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
+                    <Icon name={THEME_ICON[nextThemePreference(themePref)]} size={16} />
                   </button>
                 )}
                 <div
@@ -794,7 +828,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                   {helpMenu && (
                     <>
                       <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
-                      <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[236px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
+                      <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-max rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
                         {/* The desktop way back to a skipped checklist, both auth modes — the
                           pill has no other desktop re-entry point. Owner-only, like the
                           checklist itself. */}
@@ -852,6 +886,11 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                         >
                           <Icon name="gift" size={15} color="var(--text-tertiary)" />
                           {t('help.whatsNew')}
+                          {help.version && (
+                            <span className="rounded-full bg-(--surface-active) px-[6px] font-mono text-[10px] font-medium leading-[16px] text-(--text-tertiary)">
+                              {help.version}
+                            </span>
+                          )}
                         </a>
                         <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
                           <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
@@ -947,10 +986,10 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     <button
                       className="mappbtn"
                       aria-label={t('actions.toggleTheme')}
-                      title={theme === 'dark' ? t('actions.switchLight') : t('actions.switchDark')}
+                      title={t(THEME_SWITCH_LABEL[nextThemePreference(themePref)])}
                       onClick={toggleTheme}
                     >
-                      <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
+                      <Icon name={THEME_ICON[nextThemePreference(themePref)]} size={20} />
                     </button>
                     {authOn && (
                       <Link
@@ -1061,19 +1100,32 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   )
 }
 
-// Top-bar theme toggle (light ↔ dark). Shared by the console top bar and the onboarding
-// header so both flip the same shell-owned theme state.
-function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
-  const t = useTranslations('Shell.actions')
+// Theme toggle controls show the preference a click switches to (light → dark → system → light).
+const THEME_ICON: Record<ThemePreference, string> = { light: 'sun', dark: 'moon', system: 'monitor' }
+const THEME_SWITCH_LABEL = {
+  light: 'actions.switchLight',
+  dark: 'actions.switchDark',
+  system: 'actions.switchSystem'
+} as const satisfies Record<ThemePreference, string>
+const THEME_OPTIONS = ['light', 'dark', 'system'] as const satisfies readonly ThemePreference[]
+const THEME_MENU_LABEL = {
+  light: 'actions.lightMode',
+  dark: 'actions.darkMode',
+  system: 'actions.systemMode'
+} as const satisfies Record<ThemePreference, string>
+
+// Onboarding-header theme toggle over the same shell-owned preference.
+function ThemeToggle({ theme, onToggle }: { theme: ThemePreference; onToggle: () => void }) {
+  const t = useTranslations('Shell')
   return (
     <button
       type="button"
       className="iconbtn"
       onClick={onToggle}
-      title={theme === 'dark' ? t('switchLight') : t('switchDark')}
-      aria-label={t('toggleTheme')}
+      title={t(THEME_SWITCH_LABEL[nextThemePreference(theme)])}
+      aria-label={t('actions.toggleTheme')}
     >
-      <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
+      <Icon name={THEME_ICON[nextThemePreference(theme)]} size={16} />
     </button>
   )
 }

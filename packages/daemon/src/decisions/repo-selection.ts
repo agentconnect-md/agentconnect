@@ -188,18 +188,21 @@ export async function evaluateChunks<C, T>(
   return results
 }
 
-/** How long one chunk waits out the evaluator's shared slots before `capacity` fails the start (decision 18). */
-export const REPO_SELECTION_CAPACITY_WAIT_MS = 15_000
+/** How long one chunk retries a transient refusal before it fails the start (decision 18). */
+export const REPO_SELECTION_RETRY_WAIT_MS = 15_000
 
-/** Evaluate once, retrying only the evaluator's own `capacity` answer with backoff until the wait runs out: other Decision consumers share its slots, and no other refusal is retried. */
-export async function evaluateWithCapacityWait(
+/** The refusals a retry can clear: shared slots, the per-request deadline, and a provider-side failure. */
+const TRANSIENT_REASONS: ReadonlySet<string> = new Set(['capacity', 'timeout', 'provider'])
+
+/** Evaluate once, retrying a transient refusal with backoff until the wait runs out; credentials and input refusals are never retried. */
+export async function evaluateWithRetryWait(
   evaluate: () => Promise<DecisionEvaluation>,
   deps: { now: () => number; sleep: (ms: number) => Promise<void>; waitMs?: number }
 ): Promise<DecisionEvaluation> {
-  const deadline = deps.now() + (deps.waitMs ?? REPO_SELECTION_CAPACITY_WAIT_MS)
+  const deadline = deps.now() + (deps.waitMs ?? REPO_SELECTION_RETRY_WAIT_MS)
   for (let attempt = 0; ; attempt++) {
     const evaluation = await evaluate()
-    if (evaluation.status !== 'unavailable' || evaluation.reason !== 'capacity') return evaluation
+    if (evaluation.status !== 'unavailable' || !TRANSIENT_REASONS.has(evaluation.reason)) return evaluation
     const remaining = deadline - deps.now()
     if (remaining <= 0) return evaluation
     await deps.sleep(Math.min(250 * 2 ** attempt, 2_000, remaining))

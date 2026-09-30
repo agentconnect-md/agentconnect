@@ -43,6 +43,8 @@ import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
 import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
 import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
 import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEnvironmentCard'
+import { ServiceAccountsCard } from '@/components/console/ServiceAccountsCard'
+import { Scrim } from '@/components/console/Scrim'
 
 // A session-access row is a platform name and its switch. What the switch does is
 // said once, in the card header — restating it per row ("People with Slack access"
@@ -752,15 +754,17 @@ export default function SettingsView() {
 
       {isOwner && activeOrg && <InviteLinksCard orgId={activeOrg.id} />}
 
+      {isOwner && activeOrg && <ServiceAccountsCard org={activeOrg} />}
+
       {inviting && (
-        <div className="scrim" onClick={() => setInviting(false)}>
+        <Scrim onEscape={() => setInviting(false)} onClick={() => setInviting(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <InviteMembersModal onClose={() => setInviting(false)} onAdded={onMembersChanged} />
           </div>
-        </div>
+        </Scrim>
       )}
       {editing && (
-        <div className="scrim" onClick={() => setEditing(null)}>
+        <Scrim onEscape={() => setEditing(null)} onClick={() => setEditing(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <EditMemberModal
               member={editing}
@@ -770,7 +774,7 @@ export default function SettingsView() {
               onChanged={onMembersChanged}
             />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

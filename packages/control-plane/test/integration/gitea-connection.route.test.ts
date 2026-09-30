@@ -68,6 +68,7 @@ describe('POST /gitea/connections (§4.1)', () => {
       instanceUrl: 'https://gitea.com',
       instanceVersion: '1.27.3',
       instanceVersionSupported: true,
+      instanceProduct: 'gitea',
       instanceVersionFloor: '1.23',
       requiredScopes: ['read:user', 'write:repository', 'write:issue', 'read:organization']
     })
@@ -152,12 +153,25 @@ describe('POST /gitea/connections (§4.1)', () => {
     expect((await prisma.giteaConnection.findUniqueOrThrow({ where: { id } })).credentialEpoch).toBe(1n)
   })
 
-  it('refuses an instance below the 1.23 floor, a fork included', async () => {
-    const a = app({ fake: { version: '11.0.0+gitea-1.22.0' } })
-    const res = await a.app.inject({ method: 'POST', url: `${ORG}/gitea/connections`, payload: { token: TOKEN } })
-    expect(res.statusCode).toBe(409)
-    expect(res.json()).toMatchObject({ code: 'instance_version_unsupported' })
+  it('refuses a Gitea below 1.23 and a Forgejo below 15', async () => {
+    for (const version of ['1.22.6', '14.0.2+gitea-1.22.0']) {
+      const a = app({ fake: { version } })
+      const res = await a.app.inject({ method: 'POST', url: `${ORG}/gitea/connections`, payload: { token: TOKEN } })
+      expect(res.statusCode, version).toBe(409)
+      expect(res.json()).toMatchObject({ code: 'instance_version_unsupported' })
+      expect(res.json().message).toContain('requires Gitea 1.23 or later, or Forgejo 15.0 or later')
+    }
     expect(await prisma.giteaConnection.count()).toBe(0)
+  })
+
+  it('connects to a supported Forgejo and names its floor, not Gitea’s', async () => {
+    const { body } = await connect(app({ fake: { version: '15.0.9+gitea-1.22.0' } }))
+    expect(body).toMatchObject({
+      instanceVersion: '15.0.9+gitea-1.22.0',
+      instanceVersionSupported: true,
+      instanceProduct: 'forgejo',
+      instanceVersionFloor: '15.0'
+    })
   })
 
   it('refuses a bot already serving another organization, and a second connection in this one', async () => {

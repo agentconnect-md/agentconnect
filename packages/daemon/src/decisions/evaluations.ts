@@ -1,8 +1,10 @@
 import {
+  DecisionEvaluationAgent,
   DECISION_EVALUATION_DETAIL_MAX_BYTES,
   DECISION_RAW_JSON_MAX_CHARS,
   DECISION_LIST_MAX_BYTES,
   DecisionAnswer,
+  decisionAnswerSummary,
   DecisionChainTrace,
   DecisionCondition,
   DecisionEvaluationEntry,
@@ -12,7 +14,7 @@ import {
   DecisionRoutingTargetRecord,
   SharedBotDecisionRouting,
   routingEvaluationOutcome,
-  type DecisionAnswerSummary,
+  type DecisionChainDetail,
   type DecisionRawJson,
   type DecisionRoutingEvaluationRecordDetail,
   type DecisionRoutingEvaluationReply,
@@ -28,6 +30,7 @@ import {
   type DecisionEvaluationsRequest
 } from '@agentconnect.md/protocol'
 import { transcriptChannelKey, type DecisionVerdictRow, type LocalStore } from '../store/local-store.js'
+import { chainStepDetails, dropStepRaw } from './chain-steps.js'
 import { routerSubject } from './router.js'
 import { hookRouterSubject } from '../codehost/hook-routing.js'
 import { clampSessionTitle } from '../messages/hook-message.js'
@@ -86,11 +89,7 @@ function outcomeOf(row: DecisionVerdictRow): DecisionEvaluationOutcome {
   return 'pending'
 }
 
-function summaryOf(answer: DecisionAnswer): DecisionAnswerSummary {
-  if (answer.type === 'boolean') return { type: 'boolean', value: answer.value, probability: answer.probability }
-  if (answer.type === 'choice') return { type: 'choice', value: answer.value, confidence: answer.confidence }
-  return { type: 'score', value: answer.value, confidence: answer.confidence }
-}
+export const summaryOf = decisionAnswerSummary
 
 function answerOf(row: DecisionVerdictRow): { answer: DecisionAnswer | null; matchedKeys: string[] } {
   const stored = record(parseJson(row.answerJson))
@@ -190,7 +189,9 @@ function inputOf(row: DecisionVerdictRow): DecisionEvaluationRecordDetail['input
   const history = all.slice(-100)
   const context = record(state?.context)
   const reasons = Array.isArray(context?.reasons) ? context.reasons : []
+  const agent = DecisionEvaluationAgent.safeParse(state?.agent)
   return {
+    ...(agent.success ? { agent: agent.data } : {}),
     currentMessage,
     history,
     historyOmitted: all.length - history.length,
@@ -341,17 +342,60 @@ function chainOf(row: DecisionVerdictRow): { chain?: DecisionChainTrace } {
   return parsed.success ? { chain: parsed.data } : {}
 }
 
+// A verdict's frozen consumer names each step's Decision; a gate's consumer also holds each step's condition.
+function verdictStepsOf(
+  row: DecisionVerdictRow,
+  chain: DecisionChainTrace | undefined,
+  withRaw: boolean
+): { steps?: DecisionChainDetail } {
+  if (!chain?.length) return {}
+  const config = record(parseJson(row.configJson))
+  const stored = record(parseJson(row.answerJson))
+  const root = { providerId: config?.providerId, model: config?.model, question: config?.question }
+  const definitions = new Map<string, unknown>(
+    (Array.isArray(config?.definitions) ? config.definitions : []).flatMap((entry) => {
+      const id = text(record(entry)?.id, 128)
+      return id ? [[id, entry] as const] : []
+    })
+  )
+  const consumer = record(record(config?.binding)?.consumer)
+  const gateSteps = Array.isArray(consumer?.steps) ? consumer.steps.map(record) : []
+  const stepRaw = Array.isArray(stored?.stepRaw) ? stored.stepRaw.map(record) : []
+  const steps = chainStepDetails({
+    trace: chain,
+    definition: (id) => {
+      const entry = record(id === config?.decisionId ? root : definitions.get(id))
+      const question = DecisionQuestion.safeParse(entry?.question)
+      const providerId = text(entry?.providerId, 128)
+      const model = text(entry?.model, 128)
+      return question.success && providerId && model ? { providerId, model, question: question.data } : undefined
+    },
+    condition: (stepId) => (stepId ? gateSteps.find((step) => step?.id === stepId)?.when : consumer?.when),
+    raw: (index) => {
+      if (!withRaw) return undefined
+      const entry = stepRaw[index]
+      return {
+        rawRequest: typeof entry?.request === 'string' ? rawJson(entry.request) : null,
+        rawResponse: typeof entry?.raw === 'string' ? rawJson(entry.raw, undefined, entry.rawTruncated === true) : null
+      }
+    }
+  })
+  return steps ? { steps } : {}
+}
+
 type RawDetail = {
   input: DecisionEvaluationRecordDetail['input']
   snapshot?: unknown
   chain?: DecisionChainTrace
+  steps?: DecisionChainDetail
   rawRequest?: DecisionRawJson | null
   rawResponse?: DecisionRawJson | null
 }
 
-// Fit order: shorten the stored request, then drop the oldest history, then the raw response, then the input.
+// Fit order: later steps' bodies (last first), the stored request, the oldest history, the raw response, then the input.
 function fitDetail(detail: RawDetail, conversation: DecisionEvaluationConversation, requestText: string | null): void {
   const fits = () => encodedBytes({ evaluation: detail, conversation }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES
+  dropStepRaw(detail.steps, fits)
   if (detail.rawRequest && requestText !== null && !fits()) {
     let lo = 0
     let hi = detail.rawRequest.text.length - 1
@@ -372,6 +416,7 @@ function fitDetail(detail: RawDetail, conversation: DecisionEvaluationConversati
   }
   if (!fits() && detail.rawResponse) detail.rawResponse = null
   if (!fits()) detail.input = null
+  if (!fits()) delete detail.steps
   if (!fits()) delete detail.chain
   if (!fits()) detail.snapshot = null
 }
@@ -467,12 +512,14 @@ export class DecisionEvaluationReader {
     if (!summary.success) return { evaluation: null, conversation }
     const expired = summary.data.detailsExpired
     const fullAnswer = expired ? null : answerOf(row).answer
+    const chain = expired ? {} : chainOf(row)
     const detail: DecisionEvaluationRecordDetail = {
       ...summary.data,
       snapshot: snapshotOf(row),
       input: expired ? null : inputOf(row),
       fullAnswer,
-      ...(!expired ? chainOf(row) : {}),
+      ...chain,
+      ...(req.includeSteps ? verdictStepsOf(row, chain.chain, req.includeRaw === true) : {}),
       evidence:
         row.state === 'admitted' ? { snapshotSeq: Number(row.seq), suppliedBackground: suppliedCount(row) } : null
     }
@@ -531,13 +578,15 @@ export class DecisionEvaluationReader {
     const summary = DecisionRoutingEvaluationRecord.safeParse(routerSummaryRow(row, await this.mentionNames([row])))
     if (!summary.success) return { evaluation: null, conversation }
     const expired = summary.data.detailsExpired
+    const chain = expired ? {} : chainOf(row)
     const detail: DecisionRoutingEvaluationRecordDetail = {
       ...summary.data,
       snapshot: routerSnapshotOf(row),
       constraint: expired ? null : routerConstraintOf(row, summary.data.targets),
       input: expired ? null : inputOf(row),
       fullAnswer: expired ? null : answerOf(row).answer,
-      ...(!expired ? chainOf(row) : {})
+      ...chain,
+      ...(req.includeSteps ? verdictStepsOf(row, chain.chain, req.includeRaw === true) : {})
     }
     const { requestText, ...raw } = req.includeRaw ? rawOf(row, expired) : { requestText: null }
     Object.assign(detail, raw)

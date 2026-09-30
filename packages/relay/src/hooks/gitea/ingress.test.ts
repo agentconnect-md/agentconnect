@@ -729,14 +729,16 @@ describe('gitea ingress', () => {
     expect(h.reports).toEqual([expect.objectContaining({ status: 'failed', reason: 'rejected:unsupported' })])
   })
 
-  it('merged pull requests and closed issues fan out as maintenance cleanup, bypassing the gate', async () => {
+  it('merged pull requests and closed issues fan out as maintenance cleanup to their family rows, bypassing the gate', async () => {
     h.authzResult = false // the gate would deny — cleanup must not care
     h.table.upsert(rule({}, { events: ['merge_request:*'] }))
+    h.table.upsert(rule({ hookId: HOOK_B }, { events: ['issues:*'] }))
     const merged = pullPayload({ action: 'closed', pull_request: { merged: true } })
     expect((await post(h, merged, { eventType: 'pull_request' })).statusCode).toBe(202)
     await flush()
     expect(h.authzRequests).toHaveLength(0)
     expect(h.sent).toHaveLength(1)
+    expect((h.sent[0] as RdMsgHook).hookId).toBe(HOOK)
     expect((h.sent[0] as RdMsgHook).event).toBe('merge_request:merged')
     expect((h.sent[0] as RdMsgHook).sessionKey).toBe(`gitea:${REPO}:pull:77`)
 
@@ -744,6 +746,7 @@ describe('gitea ingress', () => {
     const closed = issuePayload({ action: 'closed' })
     expect((await post(h, closed, { eventType: 'issues', delivery: 'd2' })).statusCode).toBe(202)
     await flush()
+    expect(h.sent.map((m) => (m as RdMsgHook).hookId)).toEqual([HOOK_B])
     expect((h.sent[0] as RdMsgHook).event).toBe('issues:closed')
     expect((h.sent[0] as RdMsgHook).sessionKey).toBe(`gitea:${REPO}:issue:42`)
 

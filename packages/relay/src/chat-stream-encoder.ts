@@ -1,5 +1,5 @@
 // Encoders from one turn's `rd/chat` output to a chat wire protocol; the AI SDK UI message stream is the first (shared-bot-relay.md §10.4).
-import type { WebchatDone, WebchatOutput } from '@agentconnect.md/protocol'
+import type { AgentApiProtocol, WebchatDone, WebchatOutput } from '@agentconnect.md/protocol'
 
 /** One turn's encoder: each call returns the wire text to write, possibly empty. */
 export interface ChatStreamEncoder {
@@ -14,9 +14,35 @@ export interface ChatStreamEncoder {
   fail(message: string): string
   /** A no-op the client ignores, keeping idle intermediaries from closing a silent turn. */
   keepalive(): string
+  /** Set once the stream handed the caller a question and ended; the turn waits for the next request's answer. */
+  readonly awaitingCaller?: boolean
 }
 
-export type ChatStreamEncoderFactory = (turnId: string) => ChatStreamEncoder
+/** One chat wire protocol the agent chat API serves: its route, how its request names the conversation and the turn, and its stream. */
+export interface ChatProtocol {
+  /** The API entry an agent adds, and the turn's `origin`. */
+  readonly id: AgentApiProtocol
+  readonly path: string
+  /** How a 400 names the conversation id this protocol's request must carry. */
+  readonly chatIdName: string
+  chatId(body: unknown): string | undefined
+  /** The turn's text, or undefined when the request has no user message with text. */
+  text(body: unknown): string | undefined
+  encoder(turnId: string, body: unknown): ChatStreamEncoder
+  /** The caller's answers to a parked turn's questions, when this protocol hands them out and the request carries some. */
+  answers?(body: unknown): ChatAnswers | undefined
+}
+
+/** One answer to a question the stream handed out: an elicitation's value (null dismisses) or a permission verdict. */
+export type ChatAnswer =
+  { kind: 'elicitation'; requestId: string; value: unknown } | { kind: 'permission'; requestId: string; allow: boolean }
+
+/** A request answering a parked turn: which turn, the last output the caller already has, and its answers. */
+export interface ChatAnswers {
+  turnId: string
+  afterIndex: number
+  answers: ChatAnswer[]
+}
 
 /** The subset of the `ai` package's `UIMessageChunk` this encoder emits; the tests pin it to that type. */
 export type UiMessageChunk =
@@ -32,6 +58,15 @@ export type UiMessageChunk =
   | { type: 'reasoning-end'; id: string }
   | { type: 'message-metadata'; messageMetadata: { title: string } }
   | { type: 'error'; errorText: string }
+  | {
+      type: 'tool-input-available'
+      toolCallId: string
+      toolName: string
+      input: unknown
+      dynamic: true
+      providerMetadata: { agentconnect: { turnId: string; index: number } }
+    }
+  | { type: 'tool-approval-request'; approvalId: string; toolCallId: string }
   | { type: `data-${string}`; id?: string; data: unknown }
 
 export type UiFinishReason = 'stop' | 'length' | 'content-filter' | 'tool-calls' | 'error' | 'other'
@@ -59,6 +94,10 @@ export function uiFinishReason(stopReason: string | undefined): UiFinishReason {
   }
 }
 
+// The dynamic tools a turn's questions arrive as: `addToolOutput` answers the first, `addToolApprovalResponse` the second.
+export const ASK_TOOL_NAME = 'agentconnect_ask'
+export const APPROVAL_TOOL_NAME = 'agentconnect_approval'
+
 const sse = (chunk: UiMessageChunk): string => `data: ${JSON.stringify(chunk)}\n\n`
 const SSE_DONE = 'data: [DONE]\n\n'
 
@@ -70,6 +109,7 @@ export class UiMessageStreamEncoder implements ChatStreamEncoder {
   private noticeSeq = 0
   // A `tool_update` carries only what changed, so each part is rebuilt from the call's last full state.
   private readonly tools = new Map<string, { toolCallId: string; title: string; status: string }>()
+  awaitingCaller = false
 
   constructor(private readonly turnId: string) {}
 
@@ -79,7 +119,8 @@ export class UiMessageStreamEncoder implements ChatStreamEncoder {
 
   output(output: WebchatOutput): string {
     const ev = output.event
-    if (!ev) return '' // a status-only snapshot has no part
+    // A status-only snapshot has no part, and a stream that handed out a question has ended.
+    if (!ev || this.awaitingCaller) return ''
     switch (ev.kind) {
       case 'message':
         return this.delta('text', ev.text, ev.segmentId)
@@ -109,9 +150,36 @@ export class UiMessageStreamEncoder implements ChatStreamEncoder {
             ? sse({ type: 'data-notice', id: `notice-${++this.noticeSeq}`, data: { text: ev.text, standing: true } })
             : sse({ type: 'data-notice', id: 'notice', data: { text: ev.text } }))
         )
+      case 'elicitation': {
+        const { kind: _kind, requestId, ...card } = ev
+        return this.handOut(requestId, ASK_TOOL_NAME, card, output.index)
+      }
+      case 'permission':
+        return this.handOut(ev.requestId, APPROVAL_TOOL_NAME, { tool: ev.tool, detail: ev.detail }, output.index, true)
       default:
-        return '' // elicitation, MCP App, and `superseded` kinds have no representation here
+        return '' // a settled card, MCP App, and `superseded` kinds have no representation here
     }
+  }
+
+  /** Hand the caller one question as a dynamic tool call and end the stream; the next request's answer resumes the turn. */
+  private handOut(requestId: string, toolName: string, input: unknown, index: number, approval = false): string {
+    this.awaitingCaller = true
+    const call = sse({
+      type: 'tool-input-available',
+      toolCallId: requestId,
+      toolName,
+      input,
+      dynamic: true,
+      providerMetadata: { agentconnect: { turnId: this.turnId, index } }
+    })
+    return (
+      this.close() +
+      call +
+      (approval ? sse({ type: 'tool-approval-request', approvalId: requestId, toolCallId: requestId }) : '') +
+      sse({ type: 'finish-step' }) +
+      sse({ type: 'finish', finishReason: 'tool-calls' }) +
+      SSE_DONE
+    )
   }
 
   done(done: WebchatDone): string {

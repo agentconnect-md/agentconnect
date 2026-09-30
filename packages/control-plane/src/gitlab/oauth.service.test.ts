@@ -180,7 +180,7 @@ function gitlabFetch(script: Scripted = {}): FetchLike {
         scope: 'api'
       })
     }
-    if (url.endsWith('/api/v4/version')) return Response.json({ version: script.version ?? '18.11.0-ee' })
+    if (url.endsWith('/api/v4/version')) return Response.json({ version: script.version ?? '19.1.0-ee' })
     if (url.endsWith('/user')) return Response.json({ id: 4242, username: 'example-admin' })
     if (url.endsWith('/oauth/revoke')) return Response.json({})
     throw new Error(`unexpected gitlab call: ${url}`)
@@ -301,7 +301,7 @@ describe('GitlabOauthService (§9)', () => {
   })
 
   it('records the observed version and refuses a below-floor instance (§24.2)', async () => {
-    for (const version of ['18.10.9-ee', 'not-a-version']) {
+    for (const version of ['18.11.0-ee', '19.0.9-ee', '19.0.9', 'not-a-version']) {
       const h = harness({ script: { version } })
       const { url } = await h.service.start(ORG, USER, '/settings')
       const nonce = new URL(url).searchParams.get('state')!
@@ -321,7 +321,7 @@ describe('GitlabOauthService (§9)', () => {
     const h = await connectedHarness()
     expect(await h.instanceState.get('https://gitlab.com')).toMatchObject({
       baseUrl: 'https://gitlab.com',
-      version: '18.11.0-ee',
+      version: '19.1.0-ee',
       enterprise: true
     })
   })

@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline'
 const rl = createInterface({ input: process.stdin })
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\n')
 let sessionCounter = 0
+let promptCounter = 0
 
 // `AC_IGNORE_SIGTERM` simulates a hung/buggy adapter for AcpHost.stop() escalation
 // tests: SIGTERM is swallowed and a keep-alive interval survives the graceful stdin
@@ -222,6 +223,31 @@ rl.on('line', async (line) => {
     sessionPermissionModes.delete(params.sessionId)
     send({ jsonrpc: '2.0', id, result: {} })
   } else if (method === 'session/prompt') {
+    if (promptCounter++ === 0 && process.env.AC_FIRST_PROMPT_FAILURE) {
+      const failure = JSON.parse(process.env.AC_FIRST_PROMPT_FAILURE)
+      const air = clientCapabilities?._meta?.jetbrains?.air
+      if (air?.version === 1 && air.capabilities.includes('sessionFailure')) {
+        send({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            stopReason: 'end_turn',
+            _meta: { jetbrains: { air: { version: 1, sessionFailure: failure } } }
+          }
+        })
+      } else {
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: params.sessionId,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: failure.title } }
+          }
+        })
+        send({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } })
+      }
+      return
+    }
     const text = (params.prompt ?? []).map((b) => b.text ?? '').join('')
     if (holdPromptForSteer) {
       heldPrompts.set(params.sessionId, id)

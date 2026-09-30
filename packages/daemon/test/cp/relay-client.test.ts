@@ -10,6 +10,7 @@ import {
   RD_HOOK_NOTICE_V1,
   RD_CODEHOST_RELEASE_V1,
   GITLAB_COM_V1_FEATURE,
+  API_AG_UI_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_CODEHOST_REPLY_TARGET_V1,
@@ -116,9 +117,7 @@ describe('RelayClient (daemon → one relay)', () => {
   it('rd/hello → rd/hello/ok (matching relayId) → READY', async () => {
     const { client, transports } = make()
     const t = await toReady(client, transports)
-    // Hello also advertises this build's optional `rd/*` behaviors, so the relay can
-    // REFUSE a delivery this daemon cannot honor rather than degrade it
-    // (send-message-routing-rework.md §8.4).
+    // Hello advertises this build's optional `rd/*` behaviors, so a relay refuses what it cannot honor (send-message-routing-rework.md §8.4).
     expect(t.lastReq('rd/hello')!.payload).toEqual({
       apiKey: 'daemon-key',
       daemonId: DAEMON_ID,
@@ -128,6 +127,7 @@ describe('RelayClient (daemon → one relay)', () => {
         RD_AGENT_IMPLICIT_ROUTING_V1,
         RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
         RD_WEBCHAT_ATTACH_V1,
+        API_AG_UI_V1_FEATURE,
         GITLAB_COM_V1_FEATURE,
         GITLAB_INSTANCE_V1_FEATURE,
         GITEA_V1_FEATURE,

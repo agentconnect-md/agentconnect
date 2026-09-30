@@ -1465,23 +1465,24 @@ export function agentRoutes(deps: HttpDeps) {
         app.log.debug({ agentId: agent.id, daemonId: target }, 'agent/remove skipped: daemon offline')
       })
 
-    // A gitlab workspace write changes who consumes the project, so the §7.2
-    // accounts and memberships must reconverge — the same kick a gitlab hook
-    // write does. Retargeting converges BOTH projects, IN THE ORDER GIVEN: the
-    // agent joins one and leaves the other, and joining must land first.
-    // Fire-and-forget, like every post-write convergence here.
-    const convergeGitlabProjects = (orgId: OrgId, projectIds: Iterable<bigint | undefined>): void => {
-      const gitlab = deps.gitlab
-      if (!gitlab) return
-      const projects = [...new Set([...projectIds].filter((id): id is bigint => id !== undefined))]
-      // SEQUENTIAL: two projects under one top-level group share the agent's
-      // single account, so converging them in parallel would have them contend
-      // for its mutation lease and back off against each other.
+    // Converge the destination before the source so shared provider accounts retain a live membership.
+    const convergeWorkspaceRepositories = (
+      orgId: OrgId,
+      agents: Iterable<Pick<AgentRecord, 'workspace' | 'workspaceRepoId'>>
+    ): void => {
       void (async () => {
-        for (const projectId of projects) {
-          await gitlab.provisioner
-            .convergeProject(orgId, projectId)
-            .catch((err) => app.log.warn({ err, projectId: projectId.toString() }, 'gitlab workspace converge failed'))
+        const seen = new Set<string>()
+        for (const agent of agents) {
+          if (agent.workspace.mode !== 'git' || !agent.workspace.credential || agent.workspaceRepoId === undefined)
+            continue
+          const provider = agent.workspace.credential.provider
+          const repoId = agent.workspaceRepoId
+          const key = `${provider}:${repoId}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          await codeHosts[provider].hooks.convergeManagedRepository(deps, orgId, repoId, (err) =>
+            app.log.warn({ err, provider, repoId: String(repoId) }, 'workspace webhook converge failed')
+          )
         }
       })()
     }
@@ -1833,7 +1834,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Create an agent',
           description:
-            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason. The legacy `runInSandbox` maps to `host` or the placement’s sandbox, and a request naming both must agree (400). `repositorySelector` names the Decision provider and model the per-session repository selector asks; one that does not answer Choice questions is refused with 400.',
+            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding; a request authenticated by an API key cannot use it. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason. The legacy `runInSandbox` maps to `host` or the placement’s sandbox, and a request naming both must agree (400). `repositorySelector` names the Decision provider and model the per-session repository selector asks; one that does not answer Choice questions is refused with 400.',
           operationId: 'createAgent',
           body: CreateAgentBody,
           querystring: z.object({ connect: z.stringbool().default(false) }),
@@ -1850,6 +1851,10 @@ export function agentRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
+        // `?connect=true` mints a daemon key, which only an interactive sign-in may do, as on `POST /daemons/token`.
+        if (req.query.connect && (req.apiKeyId !== undefined || req.delegatedInvocation !== undefined)) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'interactive sign-in required' })
+        }
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
         // Placement accepts visible org-owned daemons and this org's member sets, never another
         // org's daemon — or a SET, which names no member and is validated against its live members
@@ -2160,10 +2165,7 @@ export function agentRoutes(deps: HttpDeps) {
             }
           }
           await syncMcpDefsForAgent(agent, [], agent.mcpServers)
-          // A gitlab workspace makes this agent a consumer of its project (§7.2).
-          if (agent.workspace.mode === 'git' && agent.workspace.credential?.provider === 'gitlab') {
-            convergeGitlabProjects(agent.orgId, [agent.workspaceRepoId])
-          }
+          convergeWorkspaceRepositories(agent.orgId, [agent])
           return reply.code(201).send({
             ...toDto(
               agent,
@@ -2925,7 +2927,7 @@ export function agentRoutes(deps: HttpDeps) {
             } catch (err) {
               // The edit rolled back, so the membership just bound belongs to an
               // agent that does not consume the project: converge it away.
-              convergeGitlabProjects(existing.orgId, [workspaceRepoId])
+              convergeWorkspaceRepositories(existing.orgId, [{ workspace, workspaceRepoId }])
               throw err
             }
             if (!applied.ok) return conflict(gitlabAccountUnavailableMessage(applied.reason))
@@ -2933,18 +2935,7 @@ export function agentRoutes(deps: HttpDeps) {
           } else {
             converted = await applyWorkspace()
           }
-          // Joining, leaving, or re-clamping a gitlab project moves its §7.2
-          // membership set. DESTINATION FIRST, and the order is load-bearing: an
-          // account with no membership left in its root retires, so converging
-          // the project being left first would retire the very account the
-          // destination is about to bind — deleting it at GitLab and recreating
-          // it under a new user id. Binding the destination first leaves the
-          // source unbind with a still-bound account to spare.
-          const gitlabVouched = (workspace: AgentWorkspace): boolean =>
-            workspace.mode === 'git' && workspace.credential?.provider === 'gitlab'
-          if (gitlabVouched(existing.workspace) || gitlabVouched(converted.workspace)) {
-            convergeGitlabProjects(converted.orgId, [converted.workspaceRepoId, existing.workspaceRepoId])
-          }
+          convergeWorkspaceRepositories(converted.orgId, [converted, existing])
           return toDto(
             converted,
             ctxOf(req),
@@ -3389,6 +3380,7 @@ export function agentRoutes(deps: HttpDeps) {
           if (current.daemonId && current.memory?.provider === 'external') {
             await removeExternalMemoryFromDaemonIfUnused(current.orgId, current.daemonId, current.memory.connectionId)
           }
+          convergeWorkspaceRepositories(current.orgId, [current])
           for (const h of removedHooks) deps.hooks.remove(h.id)
           // The cascade wrote no hook row, so the routed scopes these left are re-hosted and their hosts bumped here.
           void deps.hookRouting

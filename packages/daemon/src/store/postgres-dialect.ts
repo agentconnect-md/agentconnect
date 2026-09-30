@@ -213,6 +213,7 @@ export const canonicalColumns = [
   'settledAt',
   'finishedAt',
   'bodiesStrippedAt',
+  'messageId',
   'releasedSeq'
 ] as const
 

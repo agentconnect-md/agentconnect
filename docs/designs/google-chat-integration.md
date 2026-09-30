@@ -3,13 +3,17 @@
 Status: **implemented** — the four platform modules, the Setup Server card, and the
 chart route are merged, and §9 was verified end to end against a live Chat app on
 September 27, 2026 (DM and Space mention, threaded replies, streamed edits, the
-Markdown subset, and the console views). Open follow-ups: several agents sharing one
-app, and a Marketplace listing for more than one Workspace customer.
+Markdown subset, and the console views). AgentConnect serves a Chat app only as a
+Google Workspace add-on (§11), verified live against a converted app on September
+28, 2026 (§11.7); the Chat API app form was removed before any release. Open
+follow-ups: several agents sharing one app, and a Marketplace listing for more than
+one Workspace customer.
 
-The console offers Google Chat only where the deployment turns on the `google-chat`
-feature flag (the chart's `features.googleChat`, off by default); an existing Google
-Chat bot keeps its Bots tab, and the Control Plane, relay, and daemon serve it either
-way.
+The console offers Google Chat everywhere. The preset agent offers the deployment
+app first (§3) only with the `google-chat-deployment-app` feature flag (the chart's
+`features.googleChatDeploymentApp`, off by default), which a deployment turns on once
+its app's Marketplace listing is live; without it, that agent connects its own app
+like any other.
 
 Related: [issue #2262](https://github.com/agentconnect-md/agentconnect/issues/2262),
 [platform modules](integration-plugin-architecture.md),
@@ -18,10 +22,11 @@ Related: [issue #2262](https://github.com/agentconnect-md/agentconnect/issues/22
 ## 1. Decision and scope
 
 Add a native `googlechat` platform. One operator-owned Google Chat app serves one
-AgentConnect agent across its DMs and Spaces. Google sends HTTPS interaction
-callbacks to the existing relay, which verifies and forwards them to the owning
-daemon. The daemon sends replies through the Google Chat REST API. This follows
-the existing Slack HTTP ingress pattern.
+AgentConnect agent across its DMs and Spaces. The app is built as a Google
+Workspace add-on (§11), so Google sends its HTTPS event callbacks to the existing
+relay, which verifies and forwards them to the owning daemon. The daemon sends
+replies through the Google Chat REST API. This follows the existing Slack HTTP
+ingress pattern.
 
 Use HTTPS relay ingress for the first version. Google Cloud Pub/Sub is an
 alternative for installations without a public relay, not a prerequisite or a
@@ -43,8 +48,8 @@ adapters remain a separate discussion.
 
 Ambient Space history, unmentioned thread follow-ups, group DMs, attachments,
 cards other than the welcome and elicitation cards, dialogs, app-home surfaces,
-Google-native commands, shared bots, Google identity linking, and synchronization
-of Google membership into Console session permissions are outside the first
+Google-native commands other than `/help` (§11.4), shared bots, Google identity
+linking, and synchronization of Google membership into Console session permissions are outside the first
 version. An elicitation the card cannot render (URL mode, an over-long option
 list) fails explicitly and never invents an answer or approval. Serving many Workspace customers from one
 published app, and the identity link that comes with it, are designed in §10.
@@ -61,7 +66,7 @@ and [testing visibility](https://developers.google.com/workspace/chat/test-inter
 
 ```mermaid
 flowchart LR
-    G[Google Chat] -->|HTTPS interaction event| L[Relay: verify and resolve app]
+    G[Google Chat] -->|HTTPS add-on event| L[Relay: verify and resolve app]
     L -->|Pre-addressed message over daemon connection| R
     subgraph D[AgentConnect daemon]
         R[Routing and durable admission]
@@ -97,32 +102,30 @@ Credential replacement drains old output connections using existing egress lease
 
 ### Verify the app before routing
 
-Use one module-owned HTTPS route with Google's **Project Number** authentication
-audience, mounted at `GOOGLE_CHAT_EVENTS_PATH` (`/googlechat/events`), a
-constant the protocol package owns so the Setup Server's published callback URL
-and the relay's route cannot drift. The chart's relay `HTTPRoute` lists every
-public relay path explicitly, so it carries this one too; without it the gateway
-answers 404 before a callback reaches the relay. Google posts each event with
-`Authorization: Bearer <JWT>`. The live probe fixed the token's shape: RS256
-with a `kid` header, issuer `chat@system.gserviceaccount.com`, audience the Cloud
-project number as a decimal string, and a one-hour lifetime. A decoded token
-audience is only a candidate lookup key. Before any discovery or forwarding, the
-relay verifies with `jose` (`importX509` + `jwtVerify`): the certificate whose
-`kid` matches from Google's map at
-`https://www.googleapis.com/service_accounts/v1/metadata/x509/chat@system.gserviceaccount.com`,
-RS256 only, that issuer, the bot's exact project number as the audience, and
-`exp`/`iat` with a minute of clock tolerance. One process-wide certificate cache
-serves every Google Chat bot: it honors the response's `max-age` (clamped between
-one minute and a day; one hour without one), keeps the last good map when a
-refresh fails, and refetches for an unknown `kid` at most once every five
-minutes. Any failure is a 401 and nothing is routed. Do not use an unverified
-body field, header, or URL parameter as an authority. Because the proof is a
-fetched certificate, this is the first plugin whose `verify` returns a promise;
-the relay seam awaits either form.
+Use one module-owned HTTPS route mounted at `GOOGLE_CHAT_EVENTS_PATH`
+(`/googlechat/events`), a constant the protocol package owns so the Setup Server's
+published endpoint URL and the relay's route cannot drift. The chart's relay
+`HTTPRoute` lists every public relay path explicitly, so it carries this one too;
+without it the gateway answers 404 before a callback reaches the relay. Google
+posts each event with `Authorization: Bearer <Google ID token>`: RS256 with a
+`kid` header, a Google issuer, the configured endpoint URL as its audience, the
+add-on's service account as its verified email, and a one-hour lifetime (§11.2).
+The project number in that email is only a candidate lookup key. Before any
+discovery or forwarding, the relay verifies with `jose` (`importJWK` +
+`jwtVerify`): the key whose `kid` matches in Google's OIDC JWKS, RS256 only, a
+Google issuer, the relay's own events URL as the audience, a verified email naming
+the bot's exact project number, and `exp`/`iat` with a minute of clock tolerance.
+One process-wide key cache serves every Google Chat bot: it honors the response's
+`max-age` (clamped between one minute and a day; one hour without one), keeps the
+last good set when a refresh fails, refetches for an unknown `kid` at most once
+every five minutes, and holds at most 16 keys. Any failure is a 401 and nothing is
+routed. Do not use an unverified body field, header, or URL parameter as an
+authority. Because the proof is a fetched key set, this is the first plugin whose
+`verify` returns a promise; the relay seam awaits either form.
 
-Google also supports URL-audience OIDC tokens. Project-number verification makes
-the intended app explicit on a shared relay endpoint. Google documents both modes
-in [request verification](https://developers.google.com/workspace/chat/verify-requests-from-chat).
+The audience is the endpoint URL, so the project number the service account names
+is what makes the intended app explicit on a shared relay endpoint. See Google's
+[request verification](https://developers.google.com/workspace/chat/verify-requests-from-chat).
 Bind the verified project number to the installed bot, then apply
 [ingress tenant fencing](ingress-tenant-fence.md). The token proves the Google app
 context; it does not grant the message sender AgentConnect editor privileges.
@@ -154,8 +157,8 @@ number is the deployment app's is refused with 409 `GOOGLE_CHAT_DEPLOYMENT_APP`.
 
 The key check, the project-number resolution, and the `chat.bot` probe live in
 the Control Plane's Google Chat module, which the Setup Server imports. The Setup
-Server runs the validation below before it stores anything and shows the HTTPS
-callback and **Project Number** audience to copy.
+Server runs the validation below before it stores anything and shows the HTTP
+endpoint URL to copy.
 
 The token exchange authenticates only the key's `client_email` and private key;
 the JSON's `project_id` is an editable field. The owning project is therefore
@@ -185,8 +188,8 @@ both manifest-prefilled creation links and `apps.manifest.create`, which our
 [Slack install flow](slack-install-smoothing.md) uses. The Google configuration
 documentation checked for this design does not establish an equivalent public
 creation link or API. Do not promise automatic provisioning based on the existence
-of Google Workspace add-on manifests: those still require Chat API configuration
-and use a different app model. See [Slack manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/)
+of Google Workspace add-on deployment manifests: a Chat app built as an add-on is
+still configured on the Chat API configuration page. See [Slack manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/)
 and [Google add-on configuration](https://developers.google.com/workspace/marketplace/enable-configure-sdk).
 
 The wizard should present these concrete steps:
@@ -194,8 +197,10 @@ The wizard should present these concrete steps:
 1. Confirm a suitable Workspace account and permission to configure the app and
    use the selected service-account credential method.
 2. Complete Google's Cloud project, API, and configuration prerequisites.
-3. Copy the generated app information, HTTPS callback, and audience setting into
-   Google Cloud Console; configure who can find and use the app.
+3. Build the app as a Google Workspace add-on with the HTTP endpoint URL
+   connection and one URL for all triggers, copy the generated endpoint into
+   Google Cloud Console, add the `/help` slash command, and configure who can
+   find and use the app.
 4. Create the service account in the Chat app's own project, grant it the Browser
    role on that project, and enable the Cloud Resource Manager API; then provide
    its credential through the secret form and validate it. Show an actionable
@@ -208,16 +213,23 @@ Google documents organization-level [key-creation constraints](https://docs.clou
 Account and credential readiness therefore belong at the start of setup.
 
 The console module (`packages/web/src/components/console/platforms/googlechat/`)
-builds these steps as its one pane, for an organization's own app; the
-deployment app is claimed from Google Chat, not from the console. Without a
+builds these steps for an organization's own app. On the organization's preset
+agent, where a claim lands (§10.5), and with the `google-chat-deployment-app` flag on,
+it first links the deployment app's Google
+Workspace Marketplace listing, `https://workspace.google.com/marketplace/app/<slug>/<project number>`
+from the number `GET /integrations/googlechat/app` reports only where a claim
+can complete, that is, with the relay anchor of §10.4 (a Chat app's
+Marketplace ID is its project number, and Google redirects any slug to the
+listing's own); the organization then connects itself from Google Chat. Without a
 public relay the pane says so and offers nothing, because Google Chat has no
 other transport. The pane lists the prerequisites (steps 1 and 2 and the
 service account of step 4), links to the
-Chat API configuration page, and shows the values to copy with copy buttons: the
-HTTPS endpoint (the relay origin plus `GOOGLE_CHAT_EVENTS_PATH`), the **Project
-Number** audience, 1:1 messages and joining spaces, and visibility. The form
-takes the project ID (filled from a pasted key), an optional project number, and
-the key in a masked field that is cleared after every submission. Each
+Chat API configuration page, and shows the values to enter: the HTTP endpoint
+URL with a copy button (the relay origin plus `GOOGLE_CHAT_EVENTS_PATH`), the
+add-on app type, the HTTP endpoint connection with one URL for all triggers, 1:1
+messages and joining spaces, visibility, and the `/help` slash command. The form
+takes the project ID (filled from a pasted key), an optional project number, and the
+key in a masked field that is cleared after every submission. Each
 `GOOGLE_CHAT_*` refusal maps to one sentence that names its fix; the two
 project-read refusals name the Browser role and the Cloud Resource Manager API.
 An installation then reaches a test step that keeps three states apart: saved
@@ -229,7 +241,7 @@ a Space mention rather than a tested state, since a DM session is private to
 its sender and the console cannot observe that test. The step states both §6
 consequences. Settings → Bots shows the app's project ID and
 number (the bot DTO's public `platformConfig` and `externalAppId`), the endpoint
-and audience to check, the key's state, and the scope limits, and replaces a
+to check, the key's state, and the scope limits, and replaces a
 per-agent app's key through `PUT /bots/:id/googlechat/key` under the create
 path's validation; the deployment app's key stays with the Setup Server.
 
@@ -246,17 +258,19 @@ distribution requirements. See [testing visibility](https://developers.google.co
 The Console wizard, or the Setup Server for the deployment-owned app, collects
 credentials and shows the derived installation metadata:
 
-| Value                    | Storage and meaning                                                                                                             |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Google Cloud project ID  | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                                           |
-| Verified project number  | Canonical app identity and token audience, resolved through Cloud Resource Manager with the key; must match any entered number. |
-| HTTPS callback URL       | Generated from the configured relay origin and the Google Chat module route; copy into Google's app settings.                   |
-| Service-account key JSON | Write-only credential in the encrypted bot secret store; the deployment app's secret is copied onto each claimed customer row.  |
-| Chat app user identity   | The app's `users/…` name from traffic (a verified add or mention, or the first reply); Google has no app-authenticated read.    |
+| Value                    | Storage and meaning                                                                                                                                                   |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Google Cloud project ID  | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                                                                                 |
+| Verified project number  | Canonical app identity, named by the add-on service account that signs requests; resolved through Cloud Resource Manager with the key; must match any entered number. |
+| HTTP endpoint URL        | Generated from the configured relay origin and the Google Chat module route; copy into the add-on's connection settings; every token's audience.                      |
+| Service-account key JSON | Write-only credential in the encrypted bot secret store; the deployment app's secret is copied onto each claimed customer row.                                        |
+| Chat app user identity   | The app's `users/…` name from traffic (a verified add or mention, or the first reply); Google has no app-authenticated read.                                          |
 
-Keep the app and service account in one project for the first version. Configure
-Chat API interaction events with an HTTPS endpoint and **Project Number** audience,
-leaving the Workspace add-on option, native commands, and link previews disabled.
+Keep the app and service account in one project for the first version. Build the
+app as a Google Workspace add-on with the HTTP endpoint URL connection and one URL
+for all triggers (§11). Under Commands add one slash command: name `/help`,
+description "Show how to use this app", command ID 1. The relay matches the
+name, never the ID, so any free ID works (§11.3). Leave link previews disabled.
 Enable DMs and joining Spaces. Follow Google's API and visibility requirements;
 AgentConnect does not provision cloud resources. No Pub/Sub API, topic,
 subscription, or Pub/Sub IAM grant is required for this path.
@@ -299,9 +313,9 @@ and the identity is not the project number. All three were verified live on
 September 27, 2026; do not reintroduce a Control Plane or daemon read of it.
 
 The identity is therefore learned from traffic. The relay reads it from Google's
-own data: the one `ADD` annotation on a message-bearing `ADDED_TO_SPACE` names
-the app being added, and a Space `MESSAGE` that mentions exactly one app names
-this one, because Google delivers Space messages only to the apps they mention.
+own data: a Space message whose annotations mention or add exactly one app names
+this one, because Google delivers Space messages only to the apps they mention or
+add. An add carries no message and teaches nothing.
 The ingest keeps what it learned and reports it through `reportBotUserId`, which
 updates that relay's own routing table for mention matching and echo
 suppression; nothing forwards it to the Control Plane, so each relay learns it
@@ -326,7 +340,7 @@ DM/mention test to verify the complete round trip. Two resolution failures have
 their own answers: a disabled Cloud Resource Manager API asks the operator to
 enable it in the key's project, and a denied project read asks for the Browser
 role on the service account. A Google credential passing validation does not
-prove the operator copied the endpoint and audience settings correctly.
+prove the operator copied the endpoint URL correctly.
 
 ### Operating cost
 
@@ -339,12 +353,11 @@ Google Cloud project still configures the Chat app and its credentials.
 
 ### Event coverage and normalization
 
-Consume Chat interaction `Event` JSON from the verified HTTPS callback, not the
-CloudEvent schema used by the separate Google Workspace Events API. Google's
-[`EventType` reference](https://developers.google.com/workspace/chat/api/reference/rest/v1/EventType)
-documents `MESSAGE` for DMs and app invocations in Spaces. The first version
-requires a fresh app mention on each Space input, including thread replies. It
-does not advertise access to all Space messages.
+Consume the Workspace add-on `EventObject` from the verified HTTPS callback
+(§11.3), not the CloudEvent schema used by the separate Google Workspace Events
+API. Its `messagePayload` carries DMs and app invocations in Spaces. The first
+version requires a fresh app mention on each Space input, including thread
+replies. It does not advertise access to all Space messages.
 
 Normalize in the pure message package. The verified relay assignment supplies the
 installed app and integration scope; payloads cannot choose an AgentConnect organization,
@@ -370,35 +383,35 @@ all Chat app mentions, so it must not silently erase references to other bots.
 Callback attempts share the Google message identity for deduplication; do not
 generate a new delivery ID each time the relay receives the event.
 
-Ignore app-authored messages. `ADDED_TO_SPACE` updates observed membership and can
-also carry the user's triggering message when an @mention adds the app. Pass that
-embedded message through the same normalization, gates, and durable admission as
-`MESSAGE`; use the same app-scoped message receipt regardless of event type.
-Only an add event without a message stops after the membership update. A repeated
-membership observation must not skip admission of its still-unaccepted message.
-Google documents this combined event in its
+Ignore app-authored messages. An `addedToSpacePayload` updates observed
+membership, starts no turn, and is answered with a welcome (§10.7). When an
+@mention adds the app, Google sends that message as its own `messagePayload`
+request, which takes the ordinary normalization,
+gates, and durable admission. Google documents the split in its
 [request mapping](https://developers.google.com/workspace/add-ons/chat/convert#request-mapping-by-use-case).
 
-`REMOVED_FROM_SPACE` updates membership and disables delivery there without
+A `removedFromSpacePayload` updates membership and disables delivery there without
 starting a turn or attempting a farewell message. Reconcile stale or conflicting
-membership hints with bounded provider reads. Unsupported event types do not
-activate an agent. The relay ingest keeps the Spaces it has observed the app in
-and reports that snapshot through `reportChannels` on every add and remove: the
+membership hints with bounded provider reads. The `/help` slash command is
+answered by the relay in the HTTP body (§11.3, §11.4); no command or widget-update
+payload activates an agent. The relay ingest keeps the Spaces it has observed the
+app in and reports that snapshot through `reportChannels` on every add and remove: the
 Space name, its display name when present, and `im` for a DM. The Control Plane
-applies whole-bot snapshots only to platforms whose manifest declares
-authoritative membership enumeration, and Google Chat declares observed
-enumeration, so it does not persist this snapshot yet; accepting observed
-snapshots, or enumerating membership through `spaces.list`, is a follow-up.
+applies whole-bot snapshots only to platforms whose manifest declares authoritative
+membership enumeration, and Google Chat declares observed enumeration, so it does
+not persist this snapshot yet; accepting observed snapshots, or enumerating
+membership through `spaces.list`, is a follow-up.
 
-`CARD_CLICKED` is the one interaction event the relay handles. The normalizer
-classifies it as an `interaction` — the invoked function
-(`action.actionMethodName`, else `common.invokedFunction`), its parameters, the
-card's input widgets (`common.formInputs`), the card message, the clicking user,
-the Space, and the thread — under the same Space and sender checks a message
-gets, and it starts no turn. An elicitation card's click is forwarded to the
+A `buttonClickedPayload` is the one interaction the relay handles. The
+normalizer classifies it as an `interaction` — the action the button's
+`agentconnect.action` parameter names (§11.5), its parameters, the card's input
+widgets (`commonEventObject.formInputs`), the card message, the clicking user, the
+Space, and the thread — under the same Space and sender checks a message gets,
+and it starts no turn. An elicitation card's click is forwarded to the
 daemon (§5, Elicitation cards) and answered with an empty body; any other
 click is answered the same way. Every message, membership, and interaction result
-also carries the event's tenant key (§10.4) and its `configCompleteRedirectUrl`.
+also carries the event's tenant key (§10.4) and the payload's
+`configCompleteRedirectUri`.
 
 Run the existing discovery, conversation gate, trigger, command, session routing,
 and Decision checks. Off stays silent, including for commands. Restricted agents
@@ -410,13 +423,26 @@ replies in joined threads that Google never delivers; retain the common trigger
 policy without promising ambient capture. Admitted follow-ups use normal
 steering or queuing; `!queue` and `!cancel` keep their shared meanings.
 
+The app's connection is not one of the daemon's shared reply connections, so
+core's notices outside a turn's output reach Google Chat through the
+command-chrome surface's optional `notice` member
+([platform modules](integration-plugin-architecture.md) §7.4), never a
+platform branch in core. Two use it: the one-time notice that a restricted
+agent is not enabled in an addressed conversation, at the top of a DM or in the
+mentioned Space thread, and the notice that a cut turn's message will be picked
+up again or must be sent again
+([product conventions](../product-conventions.md), "A settings change does not
+cut a running answer"). A relayed Space delivery's trusted `mention` cause
+counts as the address, because the daemon learns the app's identity only from
+its first reply.
+
 ### ACK is an admission boundary
 
 Google allows 30 seconds for a synchronous response and supports later replies
-through the Chat API. Failed HTTP deliveries might be retried a few times within
-a few minutes, but retries are not guaranteed. Return an empty successful
-interaction response after admission and send all visible output asynchronously.
-Do not hold the request open for an agent turn. See
+through the Chat API. Failed HTTP deliveries might be retried a few times within a
+few minutes, but retries are not guaranteed. Return an empty successful response
+after admission and send all visible output asynchronously. Do not hold the request
+open for an agent turn. See
 [interaction handling and retries](https://developers.google.com/workspace/chat/receive-respond-interactions).
 
 `RelayIngressHost.forward` answers `accepted` when the relay handled the
@@ -453,9 +479,10 @@ and never converts the old `accepted` result into an HTTP success.
 | Duplicate             | `admitted` against an existing receipt                                                                       | 200 when a durable receipt proves prior acceptance; do not run the message again.                                                  |
 | Intentionally ignored | `rejected` with a gate reason (`off`, `muted`, `stopped`), or an unsupported event the module never forwards | 200 after that completed decision; no work is promised.                                                                            |
 | Retryable or unknown  | `retry` (`durability`, `draining`, `capacity`, `not_ready`, `offline`) or an admission timeout               | 503 so Google may redeliver.                                                                                                       |
-| Invalid request       | never forwarded                                                                                              | 401 when no assigned bot owns the token or it fails verification; 400 when the body is not a JSON object with a string `type`.     |
+| Invalid request       | never forwarded                                                                                              | 401 when no assigned bot owns the token or it fails verification; 400 when the body is not an add-on `EventObject` (§11.3).        |
 | Malformed event       | never forwarded                                                                                              | 200 with a log line after verification: the normalizer's `invalid` is permanent, and a 4xx would make Google redeliver it forever. |
-| Unclaimed tenant      | never forwarded: the deployment app's anchor answers it (§10.4)                                              | 200 with the welcome card or the `REQUEST_CONFIG` body; nothing is admitted, marked, or reported.                                  |
+| Unclaimed tenant      | never forwarded: the deployment app's anchor answers it (§10.4)                                              | 200 with the welcome card, the authorization prompt, or the help (§11.4); nothing is admitted, marked, or reported.                |
+| Welcome or `/help`    | never forwarded: a claimed or single-tenant row answers an add or `/help` itself (§10.7, §11.4)              | 200 with the welcome or the help as a created message; a `/help` is not marked.                                                    |
 
 The relay's inbound seam returns `HandledDelivery`; its optional `admission`
 member carries the `RelayAdmission` unchanged from the plugin's `handle` to the
@@ -506,8 +533,8 @@ settled repeat with 200 and forwards nothing; after `forwardStrict`,
 identity is the normalizer's `googlechat:<space>:<message name>`, so every
 callback attempt shares one; the relay's key prefixes it with the receiving
 bot's id, because the host's table is shared by every bot and a Space message
-that mentions two installed apps is delivered once per app with its own
-audience. A failed durable write remains retryable.
+that mentions two installed apps is delivered once per app, each signed for its
+own project. A failed durable write remains retryable.
 
 Commands require a completed, replay-safe disposition too. Bind cancellation to
 its original operation/turn so a repeated callback cannot cancel later work. On
@@ -523,8 +550,6 @@ daemon's ack cache.
 Lifecycle updates are idempotent observations: use event kind, Space, actor, and
 event time when no message resource exists, and confirm conflicting membership
 hints through provider reads. Do not collapse all add/remove events for a Space.
-For a message-bearing add event, the membership update alone is not acceptance:
-wait for the embedded message's admission disposition before acknowledging it.
 
 Set a documented receipt retention bound exceeding Google's retry horizon; keep
 at least 24 hours for the HTTP path. Replays beyond the configured bound, loss of
@@ -612,12 +637,43 @@ and leaves the row on its id when the read fails or finds more than one person. 
 way, because Google Chat has no status bar, typing indicator, or reaction to
 spend a richer mode on.
 
-Feedback is best effort after admission. Post no startup message, as on other
-chat platforms; do not promise native typing indicators or reactions. Membership loss,
-revoked credentials, missing threads, and deleted reply messages terminate or
-suspend the affected delivery with an actionable status. Keep generated output in
-the daemon transcript, subject to normal access rules; private DM output is not
-automatically available to a Console administrator.
+Feedback is best effort after admission. Google Chat gives an app no reaction
+without user authentication and no typing indicator, so a turn acknowledges itself
+with one placeholder that becomes the answer ([product
+conventions](../product-conventions.md), "A trigger is acknowledged before it is
+answered"). When a turn started by a real inbound message has shown nothing two
+seconds after it starts, the daemon posts `⏳ Working on it…` into the DM or the
+Space thread under the client id of the answer's first message
+(`googleChatClientId(delivery, 0, 0)`). The first visible text creates that same
+id, Google answers with the placeholder, and the stream patches it in the pass
+that already converges a stale echo; a failure notice takes it the same way,
+through the stream, or through the handle's `replace` for a turn that failed
+before it had output. Neither the placeholder nor the no-reply notice below is
+recorded in the transcript.
+
+A placeholder no text took is resolved once, when the turn's dispatch ends: an
+app-authenticated `spaces.messages.delete` of the app's own message when the turn
+ended silently on purpose (the `AC_NO_RESPONSE` marker), was cancelled, or failed without a notice; a patch to `Finished without a reply.`
+when it completed with no text; nothing when its durable row runs the message
+again (a shutdown drain, a duty handoff, a settings-change cut). A rerun posts its
+placeholder at once instead of after two seconds, so its create adopts whatever
+the earlier run left under that id — the placeholder, or a partial answer, as it
+stands — and resolves it by the same rules; because the id is derived rather than
+recorded, a crash needs nothing more. A turn that answers or ends within two
+seconds never posts one, and an interrupted turn never posts one late. A turn in
+output mode `none` posts none; its rerun deletes whatever an earlier run left by
+the derived name (`{space}/messages/{client id}`) at once and creates nothing, a
+missing message counting as already clear. The
+create, patches, and delete take the per-Space queue and the write budget like
+every other write. The daemon seam is the Layer-2 `acknowledge` member
+([integration-plugin-architecture.md](integration-plugin-architecture.md) §7.3).
+The delete was verified live (§11.7); Chat leaves its own "Message deleted by its
+author" line where the placeholder stood.
+
+Membership loss, revoked credentials, missing threads, and deleted reply messages
+terminate or suspend the affected delivery with an actionable status. Keep
+generated output in the daemon transcript, subject to normal access rules;
+private DM output is not automatically available to a Console administrator.
 
 Attachments are explicitly unsupported, including attachment-only inputs. Report
 that limitation without claiming to read the file. In particular, Google's
@@ -633,16 +689,18 @@ of [integration-plugin-architecture.md](integration-plugin-architecture.md) §7.
 (`platforms/googlechat/elicit-card.ts`). A lone single-select or boolean is a row
 of buttons, one per option plus `Dismiss`; anything else is a form of named input
 widgets — a text input for a typed or numeric answer, a dropdown for one option,
-checkboxes for several — with one `Confirm` and a `Dismiss`. Every button invokes
-the function `agentconnect.elicit` with the request id and a token; an option
-carries its position, never its value, as on every other surface. A URL-mode
-consent card is declined, since a link button reports nothing back.
+checkboxes for several — with one `Confirm` and a `Dismiss`. Every button names
+the action `agentconnect.elicit` in its `agentconnect.action` parameter, with the
+request id and a token, and the relay's events URL as its `function` (§11.5); an
+option carries its position, never its value, as on every other surface. Without
+that URL no card is built, like any ask no control can answer. A URL-mode consent
+card is declined, since a link button reports nothing back.
 
-The relay forwards the click's `CARD_CLICKED` to the bot's integration as a
-`platform_action` whose payload carries the function, its parameters, the card's
-`common.formInputs`, and the card message's name, and it answers Google with an
-empty body. The daemon re-checks the agent and integration, then hands the click
-to the permission coordinator: a `Confirm` goes through `submitElicitEditor`,
+The relay forwards the click's `buttonClickedPayload` to the bot's integration as
+a `platform_action` whose payload carries the action, its parameters, the card's
+`commonEventObject.formInputs`, and the card message's name, and it answers Google
+with an empty body. The daemon re-checks the agent and integration, then hands the
+click to the permission coordinator: a `Confirm` goes through `submitElicitEditor`,
 anything else through `handleElicitCardTap`, so every answer is re-derived against
 the card's own params. The settled card is rewritten with `messages.patch`
 (`updateMask=cardsV2`): the question with the decision under it and no controls.
@@ -678,7 +736,7 @@ behavior for private DM turns as part of the acceptance checks.
 | Area                    | Required contribution                                                                                                                                                                                                                                                                                                                             |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Protocol and message    | The platform id and its `KNOWN_PLATFORMS` entry, conservative manifest values, the daemon config payload schema, the `GOOGLE_CHAT_EVENTS_PATH` constant the Setup Server and the relay share, and pure Google event normalization.                                                                                                                |
-| Relay platform module   | The `googlechat` plugin: the route at the protocol path, RS256 verification against Google's published certificates through one shared cache, demux on the unverified audience, the app-identity bridge, observed-membership snapshots, `forwardStrict` with the split dedup pair, and the 20-second admission deadline.                          |
+| Relay platform module   | The `googlechat` plugin: the route at the protocol path, RS256 verification against Google's published keys through one shared cache (§2, §11.2), demux on the unverified project number, the app-identity bridge, observed-membership snapshots, `forwardStrict` with the split dedup pair, and the 20-second admission deadline.                |
 | Daemon platform module  | Done in `packages/daemon/src/platforms/googlechat/`: the config schema registration, the app-authenticated Chat REST connection and read port, the `relayIngress` member on the shared relay-ingress host port, the Markdown renderer and byte-budget splitter, the streaming turn output, command chrome, and the connection-registry lifecycle. |
 | Relay/daemon admission  | Extend the `im` ack with the routed path's `routeAdmission` / `recoverable`, map it through the host seam, and carry the disposition on `HandledDelivery`; cover commands and transient refusals.                                                                                                                                                 |
 | Daemon output           | Done: client ids derive from the durable delivery identity, results land on transcript rows keyed by the message resource name, an ambiguous create reconciles by `GET` on its client id, and every write goes through one per-Space `PlatformSendQueue`.                                                                                         |
@@ -702,7 +760,7 @@ refactor is required.
 
 ## 8. Pub/Sub alternative and cost
 
-Google Cloud Pub/Sub can deliver the same interaction events through an outbound
+Google Cloud Pub/Sub can deliver the same add-on events through an outbound
 pull connection when an installation has no public relay. It is Google's managed
 service: the operator creates a topic and subscription, not a self-hosted broker.
 This alternative adds cloud IAM, billing, subscriber lifecycle, and lease
@@ -741,8 +799,8 @@ The implementation must then demonstrate:
   body app IDs before any conversation discovery or forwarding.
 - One admitted message despite concurrent callbacks, reconnect, restart, and late
   redelivery after completion; a failed durable write remains retryable.
-- A message-bearing add event admits its first prompt once, including redelivery
-  after membership was recorded; a message-less add starts no turn.
+- An add starts no turn, and the @mention that added the app is admitted once as
+  its own message.
 - Correct dispositions for ignored messages and queue overflow; durable receipts
   for steering and a redelivered cancellation after the original turn ends.
 - No cross-app, cross-Space, or cross-thread routing; no turn while a conversation
@@ -766,7 +824,7 @@ patches remain provider-validation gates, not claims of completed support.
 
 Status: **steps A and B implemented, step C pending**. Step A: the message
 package's tenant keys and `interaction` event, the relay's per-customer demux
-and fence, the welcome card, and the `REQUEST_CONFIG` answer (§10.4, §10.7);
+and fence, the welcome card, and the claim prompt (§10.4, §10.7);
 the customer rows and their relay assignment (§10.3), the claim route and page
 (§10.5), and the Google account id on the user row (§10.6). Step B: the customer
 fence of both install paths, the tenant a single-tenant row records from its
@@ -804,7 +862,7 @@ organization proves the cross-customer path once the listing is approved.
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Every event's `user.domainId` is the "unique identifier of the user's Google Workspace domain". A named Space carries `space.customer` (`customers/{customer}`); a DM does not.                                                                                                                                                                                                  | [User](https://developers.google.com/workspace/chat/api/reference/rest/v1/User), [Space](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces) |
 | A Chat user id is the Google account's OIDC `sub`: "the `sub` value can be converted to Chat's user format by prepending `users/`". Google recommends guarding a configuration page with Google Sign-In and validating the identity token before trusting the asserted user.                                                                                                     | [Connect a Chat app with web services](https://developers.google.com/workspace/chat/connect-web-services-tools)                                                     |
-| `{ "actionResponse": { "type": "REQUEST_CONFIG", "url": … } }` shows the user a private prompt; the event carries `configCompleteRedirectUrl`, which the configuration page must redirect to on completion, after which Chat removes the prompt and sends the original event again. A `REQUEST_CONFIG` response carries no message.                                              | Same page; observed live on a published app                                                                                                                         |
+| An add-on's `{ "basic_authorization_prompt": { "authorization_url": …, "resource": … } }` shows the user a private prompt; the payload carries `configCompleteRedirectUri`, which the configuration page must redirect to on completion, after which Chat removes the prompt and sends the original event again. The prompt carries no message.                                  | [Third-party service guide](https://developers.google.com/workspace/add-ons/guides/connect-third-party-service); observed live (§11.7)                              |
 | `spaces.list` under app authentication lists every Space the app is in, across all customers, and filters only by `spaceType`; DMs appear only after their first message.                                                                                                                                                                                                        | [spaces.list](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces/list)                                                                       |
 | Quotas are per Cloud project: 3,000 message writes and 3,000 reads per minute, 60 space writes per minute, 1 write per second per space.                                                                                                                                                                                                                                         | [Limits](https://developers.google.com/workspace/chat/limits)                                                                                                       |
 | A membership's `affiliation` says whether the member is `INTERNAL` to the Workspace organization that owns the space, `EXTERNAL` (a consumer account or another organization), or `MANAGED_EXTERNAL` (a guest the owning organization provisioned); a named Space may admit external users (`externalUserAllowed`). App authentication reads a human membership with that field. | [Membership](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.members), observed live                                                      |
@@ -889,8 +947,8 @@ proves (§3) or the `customers/…` key of its first Space event, and the
 `domains/…` key of every DM it serves. The relay's Google Chat plugin, not core,
 fences it (§10.4): a Space of another customer is refused with a 200 that Google
 never retries and one log line a minute, while a DM passes and its domain is
-recorded, because Google shows an unlisted app only to its own organization's
-people, so a DM's domain is that organization's; an app meant for other
+recorded, because an app not published publicly on the Marketplace reaches only
+its own organization's people, so a DM's domain is that organization's; an app meant for other
 organizations is the deployment app instead. A key the relay learns is reported
 as `rc/bot-tenant` (`{ botId, tenantId }`, at least once, acknowledged, deduplicated by the Control
 Plane, and sent only to a Control Plane advertising `bot-tenant-v1`); the
@@ -905,24 +963,23 @@ That is the safety line §1 lists as outside the first version.
 
 ### 10.4 Relay: demux by app, fence by customer, claim the unknown
 
-The relay keeps demuxing on the verified audience (§2), which selects the
-platform app rather than a single bot. The plugin supplies the event's tenant
-key as the second demux hint — a Space event's `space.customer`, a DM event's
-`user.domainId` as `domains/…`, never a Space sender's domain, since that sender
-may be an external member (`googleChatTenantKey` in the message package, the
-same derivation the normalizer stamps on every result) — and the assignment
-supplies the keys a row is known by: a customer row's `ingress` bag carries
-`tenantIds`, a single-tenant row's carries neither, and the anchor carries
-`claimUrl`. Core does the rest exactly as
-[ingress tenant fencing](ingress-tenant-fence.md) does for a distributed Slack app, generalized to a row known by several keys: a
-row with `tenantIds` enters only the composite `(app, tenant)` index, one entry
-per key, is never learned app-only, and passes the fence only for a delivery
-naming one of its keys; the anchor sits in the app-only index beside it. A
-claimed tenant therefore resolves to its row and routes as today; any other
-tenant of the audience resolves to the anchor. A malformed `tenantIds` or a
-`claimUrl` that is not an https URL refuses the assignment rather than reading
-as absent, because absent would make the row serve every tenant of its
-audience.
+The relay keeps demuxing on the project number the verified token's service account
+names (§2), which selects the platform app rather than a single bot. The plugin
+supplies the event's tenant key as the second demux hint — a Space event's
+`space.customer`, a DM event's `user.domainId` as `domains/…`, never a Space
+sender's domain, since that sender may be an external member (`googleChatTenantKey`
+in the message package, the same derivation the normalizer stamps on every result) —
+and the assignment supplies the keys a row is known by: a customer row's `ingress`
+bag carries `tenantIds`, a single-tenant row's carries neither, and the anchor
+carries `claimUrl`. Core does the rest exactly as
+[ingress tenant fencing](ingress-tenant-fence.md) does for a distributed Slack app,
+generalized to a row known by several keys: a row with `tenantIds` enters only the
+composite `(app, tenant)` index, one entry per key, is never learned app-only, and
+passes the fence only for a delivery naming one of its keys; the anchor sits in the
+app-only index beside it. A claimed tenant therefore resolves to its row and routes
+as today; any other tenant of the app resolves to the anchor. A malformed `tenantIds` or a
+`claimUrl` that is not an https URL refuses the assignment rather than reading as
+absent, because absent would make the row serve every tenant of its app.
 
 The anchor is not a bot row. The Control Plane sends every relay its deployment
 snapshot on authentication (`RcDeploymentConfig`), and while the deployment app
@@ -938,10 +995,11 @@ nothing to the Control Plane.
 The anchor serves no tenant: whatever core routed to it is unclaimed, and the
 plugin answers it in the HTTP body — `HandledDelivery.syncResponse`,
 which the Google route sends on its 200 — within Google's window and without a
-daemon: the welcome card of §10.7 on `ADDED_TO_SPACE`, the `REQUEST_CONFIG`
-answer pointing at the claim page of §10.5 on a `MESSAGE`, and an empty body
-for anything else, including a card click and an event
-that names no Workspace tenant (§10.8). Nothing is forwarded, reported as
+daemon: the welcome card of §10.7 on an add, the authorization prompt (§11.4)
+pointing at the claim page of §10.5 on a message, the help of §11.4 on `/help`,
+and an empty body for anything else, including a button click and an event that
+names no Workspace tenant
+(§10.8). Nothing is forwarded, reported as
 membership, read from the dedup table, or marked in it. A bounded per-tenant
 memo (a few hundred entries, least recently seen first out) keeps the relay's
 own log line to one per tenant per minute, since a domain-wide administrator
@@ -950,21 +1008,21 @@ always the prompt. The prompt is private to its sender, so such an install
 produces no session and no stored data, only one private prompt per person who
 writes to the app before the claim. A single-tenant row, with neither
 `tenantIds` nor `claimUrl`, stays in the app-only index and core routes every
-tenant of its audience to it; the plugin then applies the row's own fence
+tenant of its app to it; the plugin then applies the row's own fence
 (§10.3) from the `ownTenantIds` its assignment carries and what its traffic has
 taught it since.
 
 ### 10.5 Claiming a customer
 
-The claim page is the console's `/googlechat/claim?state=…`, reached through
-`REQUEST_CONFIG` or the welcome card's link (§10.7), and it posts to
+The claim page is the console's `/googlechat/claim?state=…`, reached through the
+authorization prompt or the welcome card's link (§10.7), and it posts to
 `POST /orgs/:orgId/integrations/googlechat/claim` (`{ state }`, owner or
 collaborator):
 
 1. The relay's `state` is base64url JSON, deliberately unsigned: the app's
    project number, the space, the asking `users/{id}` on a prompt, whether the
-   event came from a DM or a Space, the tenant key it saw, the event's
-   `configCompleteRedirectUrl` when it carried one, and when it was minted. The
+   event came from a DM or a Space, the tenant key it saw, the payload's
+   `configCompleteRedirectUri` when it carried one, and when it was minted. The
    welcome card's link names no user and carries no completion URL: the whole
    conversation sees the card, so its claimant is whoever signs in. The route re-derives every fact it acts on from Google and
    from the signed-in identity, so a forged state claims only what its bearer
@@ -1013,8 +1071,9 @@ collaborator):
    and answers 201. Either way it answers the completion URL when the state
    carried one, which the page follows.
 6. Chat removes the prompt and sends the original event again; it now routes
-   like any other delivery. Without a completion URL the page ends on a link
-   back to the conversation (`https://chat.google.com/room/{id}` for a Space,
+   like any other delivery. Without a completion URL the page closes itself
+   when the browser allows it, as for a tab Chat opened; otherwise it ends on a
+   link back to the conversation (`https://chat.google.com/room/{id}` for a Space,
    `https://chat.google.com/dm/{id}` for a DM) and asks the person to send
    their message again.
 
@@ -1061,16 +1120,29 @@ visibility; Google membership still does not become a console ACL.
 
 ### 10.7 Cards and the welcome message
 
-The relay posts one card: the welcome message an unclaimed tenant sees on
-`ADDED_TO_SPACE`, one paragraph and a single `Connect` button that opens the
-claim page (`googleChatWelcomeCard` in the relay's Google Chat module),
-mirroring what published Chat apps do. The button is an `openLink`, not an
-action: Chat refuses a `REQUEST_CONFIG` answer to `CARD_CLICKED` ("Requesting
-user authentication isn't allowed as a response to the event type", observed
-live on September 28, 2026), so a click could not reach the private prompt.
-Any message from an unclaimed tenant still gets the `REQUEST_CONFIG` answer of
-§10.4. Replies stay text; the only other card is the elicitation card of §5,
-which builds on the `interaction` path.
+The relay posts one card: the welcome message an unclaimed tenant sees on an
+add, answered as a created message (§11.4), one paragraph and a single `Connect`
+button that opens the claim page (`googleChatWelcomeCard` in the relay's Google
+Chat module), mirroring what published Chat apps do. The button is an `openLink`,
+not an action: Chat refused a configuration prompt as the answer to a card click
+("Requesting user authentication isn't allowed as a response to the event type",
+observed live on September 28, 2026, before the app became an add-on), so a click
+could not reach the private prompt. Any message from an unclaimed tenant still
+gets the authorization prompt of §10.4. Replies stay text; the only other card is
+the elicitation card of §5, which builds on the `interaction` path.
+
+A claimed customer row and a single-tenant row welcome an add too, in the DM or
+Space it happened in, because Marketplace review expects an app to introduce
+itself when it is added. The relay answers the `addedToSpacePayload`
+synchronously with a plain-text created message (`googleChatWelcome` in the
+relay's Google Chat module, §11.4): the app is an AI agent powered by
+AgentConnect, how to reach it (a direct message, or an @mention in a Space,
+answered in that thread), and that `/help` lists the commands. The relay knows
+no agent name, so the text is product-level. The add is still reported as
+membership, and a single-tenant row's fence refuses another customer's add
+before anything is posted; a removal is answered with an empty body. An
+@mention that adds the app therefore gets the welcome and then the agent's
+answer, from two requests.
 
 ### 10.8 Daemon, quotas, privacy
 
@@ -1110,7 +1182,7 @@ which builds on the `interaction` path.
 ### 10.9 Distribution and rollout
 
 The hosted app lives in its own Cloud project, because the listing type is
-final: it is published public and unlisted first, then listed. A self-hosted
+final: it is published public and listed. A self-hosted
 deployment keeps bring-your-own-app or a private listing of its own app. Listing
 assets (privacy policy, terms, icon, screenshots, the OAuth consent screen) are
 prepared in parallel with the code, since review takes days and cannot start
@@ -1118,7 +1190,7 @@ without them.
 
 Order of work:
 
-- **A** (done): the welcome card, `CARD_CLICKED` and `REQUEST_CONFIG` on the
+- **A** (done): the welcome card, button clicks, and the claim prompt on the
   relay; the claim page and route with the customer rows they write; and the
   Google account id on the user row.
 - **B** (done): the customer fence for both install paths, the tenant a
@@ -1131,11 +1203,228 @@ Order of work:
 - **B2** (done): the deployment app always multi-tenant, its anchor on the relay
   snapshot, the key re-stamp on a boot pass, and the 409 for a per-agent install
   of its project.
-- **C**: the listing, the unlisted publication, and the cross-customer round
-  trip from a second Workspace organization.
+- **C**: the listing, published public and listed, with a test account for
+  Google's reviewers in a claimed Workspace, and the cross-customer round trip
+  from a second Workspace organization.
 
-Verified live on September 28, 2026: Google honours the `REQUEST_CONFIG` body
-the relay answers synchronously, and a claim from a direct message and then from
-a Space round-trips, which also proves a sign-in's Google account id equals the
+Verified live on September 28, 2026: Google honours the claim prompt the relay
+answers synchronously (§11.7), and a claim from a direct message and then from a
+Space round-trips, which also proves a sign-in's Google account id equals the
 Chat user id. Still to verify live: whether a domain-wide administrator install
-delivers one `ADDED_TO_SPACE` per user.
+delivers one add (`addedToSpacePayload`) per user.
+
+## 11. Workspace add-on form
+
+Status: **implemented**; the live checks are in §11.7.
+
+### 11.1 Why only this form
+
+AgentConnect serves a Google Chat app only as a Google Workspace add-on over its
+HTTP endpoint, `GOOGLE_CHAT_EVENTS_PATH` on the relay. Google Cloud creates new
+Chat apps as add-ons by default and recommends that form, and an existing app
+converts one way ("Convert to add-on"). The only capability an add-on lacks is the
+app home page (`APP_HOME`), which AgentConnect does not use. With one form the
+relay trusts one token issuer, answers in one envelope, and the daemon renders
+cards one way. Support for Chat apps that are not add-ons was removed before any
+release, so there is no migration or fallback: such an app's requests carry
+another issuer's token and are refused with a 401. Add-ons also offer Apps Script,
+Pub/Sub, and Dialogflow connections; only the HTTP endpoint is used, and one common
+URL serves every trigger. See Google's
+[conversion guide](https://developers.google.com/workspace/add-ons/chat/convert),
+[alternate runtimes](https://developers.google.com/workspace/add-ons/guides/alternate-runtimes),
+and [configuration](https://developers.google.com/workspace/add-ons/chat/configure).
+
+### 11.2 Request authentication
+
+| Part         | Add-on request                                                                                           |
+| ------------ | -------------------------------------------------------------------------------------------------------- |
+| Token        | A Google ID token: issuer `https://accounts.google.com` or `accounts.google.com`, RS256, `kid`           |
+| Keys         | Google's OIDC JWKS, `https://www.googleapis.com/oauth2/v3/certs`                                         |
+| Audience     | The HTTP endpoint URL as configured; a per-trigger URL would be its own audience                         |
+| App identity | `email` = `service-<PROJECT_NUMBER>@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`, `email_verified: true` |
+
+A token whose unverified issuer is not Google's is refused before any key lookup.
+Verification then requires RS256, a Google issuer, the relay's own public events
+URL as the audience, `email_verified: true`, the add-on service account whose
+project number is the candidate row's, and `exp`/`iat` within a minute of
+tolerance. That number is the app's identity: unverified it is the demux hint
+`appId`, verified it must equal the row's `apiAppId`, and the multi-tenant demux of
+§10.4 then picks the customer row, the anchor, or a single-tenant row. The JWKS is
+cached once per relay process: `max-age` clamped between a minute and a day, the
+last good set kept on a failed refresh, an unknown `kid` refetched at most once
+every five minutes, and at most 16 keys. Any failure is the same 401. The operator
+configures one common URL; a per-trigger override would carry another audience and
+be refused.
+
+The relay learns its public events URL from the Control Plane, which already owns
+the relay pool's public origin as `PUBLIC_RELAY_URL`: the deployment snapshot
+(`RcDeploymentConfig`) carries it as `publicRelayUrl`, http-normalized as the
+console and the Setup Server publish it, core hands it to plugins through
+`RelayIngressHost.publicRelayUrl()`, and the plugin appends the events path
+(`googleChatEventsUrl`). The ingest reads it per request, so every registration's
+snapshot applies. Until a snapshot names it, every request is refused. The audience
+is compared literally, so the URL in Google's configuration must be exactly the one
+the console shows. Because a snapshot now reaches relays whose Control Plane stores
+no deployment document, a revision-0 snapshot no longer replaces the relay's
+startup GitHub webhook secret.
+
+### 11.3 Request body
+
+A request is an `EventObject`: `commonEventObject` (`parameters`, `formInputs`,
+`hostApp`, …), `authorizationEventObject`, and `chat` with `user`, `eventTime`, an
+optional `space`, and exactly one payload. The normalizer in the message package
+(`normalizeGoogleChatEvent`) takes it directly and dispatches on the payload
+present, as Google's samples do:
+
+| Payload                        | Result                                                                                                |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `chat.messagePayload`          | A message: a DM, or an app mention in a Space                                                         |
+| `chat.addedToSpacePayload`     | Membership `added`; it carries no message, and the adding @mention arrives as its own request         |
+| `chat.removedFromSpacePayload` | Membership `removed`                                                                                  |
+| `chat.buttonClickedPayload`    | An `interaction` (§11.5)                                                                              |
+| `chat.appCommandPayload`       | `help` for the `/help` slash command, answered by the relay (§11.4); any other command is unsupported |
+| `chat.widgetUpdatedPayload`    | Unsupported: nothing starts                                                                           |
+
+A command arrives as an `appCommandPayload` whose `appCommandMetadata` carries
+`appCommandId` (the ID configured for it) and `appCommandType` (`SLASH_COMMAND`
+or `QUICK_COMMAND`); a slash command's `message` names it in an annotation of
+type `SLASH_COMMAND`, whose `slashCommand` is the Chat API's
+`SlashCommandMetadata` (`bot`, `type`, `commandName`, `commandId`). The
+normalizer classifies a `SLASH_COMMAND` whose annotation's `commandName` is
+`/help` (`GOOGLE_CHAT_HELP_COMMAND`) as `help`, under the Space and sender
+checks a click gets; it matches the name, never the ID, so the operator's
+choice of ID does not matter. Another slash command is unsupported
+(`slash_command`), and a quick command or a command without its type is
+unsupported (`event_type`). See Google's
+[event object](https://developers.google.com/workspace/add-ons/concepts/event-objects#chat-event-object),
+[slash commands for add-ons](https://developers.google.com/workspace/add-ons/chat/commands),
+and the [message annotation](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages#annotation).
+
+The event's Space is the payload's `space`, else `chat.space`; the message is the
+payload's `message`, its thread in `message.thread`; the sender or clicker is
+`chat.user`; `chat.eventTime` is the fallback timestamp; the payload's
+`configCompleteRedirectUri` is the claim's completion URL; and `isDialogEvent` on a
+message or a click is an unsupported dialog. `authorizationEventObject` holds the
+user's OAuth token and ID tokens: nothing reads, copies, or logs it. A body without
+exactly one payload, or whose `chat.space` names another Space than the payload's,
+is malformed (a 200 and a log line, §4). Classification, tenant keys
+(`googleChatTenantKey`), the app identity learned from annotations, the dedup
+identity, and `interaction` are those of §4 and §10. The @mention that adds the app
+arrives as two requests, the add and then the message, so an unclaimed tenant gets
+both the welcome card and the prompt, and a claimed one the welcome and then the
+agent's answer.
+
+### 11.4 Synchronous answers
+
+`googleChatWelcomeCard`, `googleChatClaimPrompt`, `googleChatWelcome`, and
+`googleChatHelp` in the relay's Google Chat module each build the add-on envelope
+directly:
+
+| Answer          | Body                                                                                           |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| Welcome card    | `{ hostAppDataAction: { chatDataAction: { createMessageAction: { message: { cardsV2 } } } } }` |
+| Claim prompt    | `{ basic_authorization_prompt: { authorization_url, resource: "AgentConnect" } }`              |
+| Welcome message | `{ hostAppDataAction: { chatDataAction: { createMessageAction: { message: { text } } } } }`    |
+| Help            | The same envelope, carrying the help text                                                      |
+| Anything else   | `{}`                                                                                           |
+
+The unclaimed welcome card and claim prompt come from the anchor (§10.4); a
+claimed customer row and a single-tenant row answer an add with the welcome
+message (§10.7). Every row answers `/help` with the help in the conversation it
+was typed in, and nothing is forwarded to a daemon. The help says what the app
+is, how to reach it, and the text commands the daemon understands, each in a few
+words: `!new`, `!stop`, `!cancel`, `!resume`, `!queue your message`, `!status`,
+`!model`, `!effort`, `!permission`, and `!fast on|off`, sent as a message and,
+in a Space, with an @mention. The list is `GOOGLE_CHAT_COMMAND_HELP`, keyed by
+the kinds of the shared command grammar (`parseCommand` in the activation policy
+package), so the type system refuses a grammar kind without a line and a test
+refuses a line the grammar does not parse or a grammar word the list omits. For
+an unclaimed tenant the help also says the organization must connect the app
+first by sending it a message; the anchor still answers a `/help` naming no
+Workspace tenant with `{}`. Both text answers use the `createMessageAction` the
+welcome card was verified with, and both were verified live (§11.7).
+
+Google defines `resource` as the display name of the protected resource or service
+shown on the prompt. The claim connects the person's Workspace to AgentConnect, so
+it is the product name, `AgentConnect` (`GOOGLE_CHAT_PROMPT_RESOURCE`), never an
+organization's name. Chat accepts only this basic authorization card from an
+add-on; custom authorization cards are not supported there. See Google's
+[third-party service guide](https://developers.google.com/workspace/add-ons/guides/connect-third-party-service).
+
+### 11.5 Card actions
+
+An add-on card button's `onClick.action.function` is the full HTTP URL Google posts
+the click to: the relay's events URL, the same URL requests arrive at, so the
+click's token audience is the one the relay already checks. The action name
+travels as a parameter:
+
+- Every button carries its action in the `agentconnect.action` parameter
+  (`GOOGLE_CHAT_ACTION_PARAMETER`), beside the request id and token; the
+  elicitation card's is `agentconnect.elicit`.
+- The normalizer reads the action from `commonEventObject.parameters`; a click
+  without it is malformed. The daemon's click parser stays keyed on the action
+  name.
+- The daemon learns the URL from `IntegrationGoogleChatConfig.eventsUrl`, which the
+  Control Plane projects from `PUBLIC_RELAY_URL` with the same `googleChatEventsUrl`;
+  it is part of the connection key. Without it no card is built and the ask takes
+  the decline path §1 requires of a card whose answer could never arrive.
+- The relay answers the click with an empty body, and the daemon settles the card
+  with `messages.patch` as before.
+
+### 11.6 Outbound and configuration
+
+Outbound is the daemon's app-authenticated `spaces.messages.create` and `patch`
+with the key of §3. Google's own add-on quickstart replies asynchronously through
+the Chat API with a service-account key, and this was verified to keep working for
+a converted app (§11.7). On the Chat API configuration page the operator builds the
+app as a Google Workspace add-on (the default for a new app; an existing one is
+converted first), chooses the HTTP endpoint URL connection with one URL for all
+triggers, and enters the events URL the Setup Server or the console shows; where a
+conversion asks for a Card Interaction URL it is the same URL. No authentication
+audience is set. The project number stays the app's identity and an optional
+credential field, validated against the key's project; it is on the project
+dashboard and in the add-on's service account email.
+
+### 11.7 Live checks
+
+Verified on September 28, 2026 against a multi-tenant deployment app and a
+per-agent app, both converted to add-ons:
+
+- A DM and a Space mention arrive with the add-on's ID token, verify, and route to
+  the claimed customer row; while the Workspace is unclaimed, the anchor answers
+  them (§10.4).
+- The converted per-agent app keeps routing to its single-tenant row, which
+  answers its DMs.
+- App-authenticated create and patch keep working: the agent's replies post, and a
+  settled elicitation card is rewritten in place.
+- Adding the app to a Space of an unclaimed Workspace renders the welcome card from
+  `createMessageAction`, and its `openLink` button opens the claim page.
+- A DM from an unclaimed Workspace renders the authorization prompt, which Chat
+  shows as `<app name> requires configuration` with a **Configure** button that
+  opens `authorization_url`. The redirect it carries is
+  `https://chat.google.com/api/bot_config_complete?token=…`, which the claim route
+  accepts (§10.5), and completing the claim sends the original message again, which
+  the new customer row answers.
+- An elicitation card posted after the conversion delivers its action back, and the
+  empty body answering the click shows the person no error.
+
+Verified the same night on v2.1.0-rc.5 (relay) and rc.6 (daemon), with every card
+rendered in the add-on form only:
+
+- An @mention that adds the app to a Space arrives as the two requests §11.3
+  expects, the add and then the message. The claimed row answers the add with the
+  welcome text, the message starts a turn answered in its thread, and the app's
+  identity is learned from the adding mention.
+- The `/help` slash command, registered on the app, is offered by Chat's command
+  picker and answered by the relay with the help text.
+- The placeholder appears once a turn has shown nothing for two seconds; the first
+  text replaces it in place, so the answer carries Chat's "Edited" mark and nothing
+  else is left. A turn that ends on `AC_NO_RESPONSE` deletes it under app
+  authentication.
+- An elicitation card's click reaches the relay with the `agentconnect.action`
+  parameter and settles the card; the answer takes the placeholder above the card.
+- The console offers the preset agent the deployment app's Marketplace listing.
+
+Not yet verified:
+
+- Whether `chat.space` ever disagrees with the payload's Space.

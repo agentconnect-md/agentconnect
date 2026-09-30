@@ -10,10 +10,12 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
+import { useSWRConfig } from 'swr'
 import { Button, Icon } from '@/components/ui'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { GiteaMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
+import { consoleKeys } from '@/lib/swr-keys'
 import {
   GITEA_DEFAULT_INSTANCE_URL,
   GITEA_REPOSITORY_STATE,
@@ -42,6 +44,7 @@ import {
   type GiteaRepositoryBindingDto,
   type GiteaRepositoryDto
 } from '@/lib/api'
+import { Scrim } from '@/components/console/Scrim'
 
 /** Machine-readable CP refusals the card says better itself; everything else is surfaced verbatim. */
 const REFUSAL: Record<string, string> = {
@@ -227,6 +230,12 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
   // able to say that the read it raced no longer speaks for them.
   const readSeq = useRef(0)
   const supersedeReads = (): number => ++readSeq.current
+  const { mutate } = useSWRConfig()
+  // A connect, replacement or removal can change the instance product every Gitea mark draws.
+  const observedVersion = connection?.instanceVersion ?? null
+  useEffect(() => {
+    if (activeOrg) void mutate(consoleKeys.giteaConnections(activeOrg.id))
+  }, [activeOrg, observedVersion, mutate])
 
   useEffect(() => {
     if (!activeOrg) return
@@ -461,7 +470,12 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
       {/* Below the floor nothing on the instance can be set up, so the card says it once. */}
       {enabled === true && connection?.instanceVersionSupported === false && (
         <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          <span>{ct('version', { name: 'Gitea', version: connection.instanceVersion ?? '' })}</span>
+          <span>
+            {ct('version', {
+              name: connection.instanceProduct === 'forgejo' ? 'Forgejo' : 'Gitea',
+              version: connection.instanceVersion ?? ''
+            })}
+          </span>
           <span className="badge bg-(--status-paused-soft) text-(--amber-500)">
             {ct('belowVersion', { version: connection.instanceVersionFloor })}
           </span>
@@ -605,7 +619,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
       )}
 
       {picking && connection !== null && (
-        <div className="scrim" onClick={() => setPicking(false)}>
+        <Scrim onEscape={() => setPicking(false)} onClick={() => setPicking(false)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <div className="modalhead">
               <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--surface-active)">
@@ -679,11 +693,11 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
               )}
             </div>
           </div>
-        </div>
+        </Scrim>
       )}
 
       {disconnecting && (
-        <div className="scrim" onClick={() => setDisconnecting(null)}>
+        <Scrim onEscape={() => setDisconnecting(null)} onClick={() => setDisconnecting(null)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <ConfirmGitea
               title={ct('disconnectGitea')}
@@ -695,11 +709,11 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => void disconnect(disconnecting)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
 
       {pending && (
-        <div className="scrim" onClick={() => setPending(null)}>
+        <Scrim onEscape={() => setPending(null)} onClick={() => setPending(null)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <ConfirmGitea
               title={ct('removeRepositoryTitle')}
@@ -711,7 +725,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => void remove(pending)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

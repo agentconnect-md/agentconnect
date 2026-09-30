@@ -44,7 +44,7 @@ but deployed authorization servers supporting it are still rare; the selection o
 (one org-level connection, consistent with centralized-tool-management.md §10). Runtime
 step-up on `403 insufficient_scope`. A reverse channel letting the relay report an upstream
 401 to the CP. Non-Streamable-HTTP upstreams. Several authorization servers per provider.
-CP replicas > 1 (§8).
+CP replication is handled by the [proposed HA contract](high-availability.md#concurrent-writers-and-background-work), not this OAuth implementation (§8).
 
 ## 3. The shape
 
@@ -229,8 +229,11 @@ the CP. The reverse channel that would close it (the relay reporting an upstream
 CP force-refreshes) needs a new R→C frame, a feature-negotiation bit, and a defence against
 a looping relay; `linearcred/request` is the precedent when it is built.
 
-`controlPlane.replicas` is 1, so the in-process chain is sufficient today. The **token**
-single-writer is durable regardless, because a refresh token is a cross-restart resource.
+The binding-mutation chain is process-local and does not protect even the
+overlap of a one-replica rollout. The [HA contract](high-availability.md#concurrent-writers-and-background-work)
+requires durable mutation coordination and cross-CP projection delivery before
+replication is enabled. The token-refresh single-writer lease is already durable;
+that alone does not deliver rotated bindings to other CPs' relays.
 
 ## 9. Console
 

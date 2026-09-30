@@ -7,8 +7,11 @@ import { useTranslations } from 'next-intl'
 import { AgentMark, MarkSlot } from '@/components/marks'
 import { Icon, Toggle } from '@/components/ui'
 import { ModelOption, ProviderModelMenu } from '@/components/console/ProviderModelMenu'
-import { DecisionModelHover, useModelEvaluationsLink } from '@/components/console/decisions/DecisionModelLabel'
-import type { ModelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
+import {
+  DecisionModelHover,
+  useModelEvaluationsLink,
+  type DecisionModelSummary
+} from '@/components/console/decisions/DecisionModelLabel'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import {
   displayedEffort,
@@ -51,15 +54,10 @@ export interface RunSettingsControls {
   fast?: { value: boolean; onChange(value: boolean): void }
 }
 
-/** The agent Decision a composer can defer to, with its rules summarized for the hover card. */
-export interface RuntimeDecisionChoice {
-  name: string
+/** The agent Decision a composer can defer to, with what its hover card summarizes. */
+export interface RuntimeDecisionChoice extends DecisionModelSummary {
   selected: boolean
   onSelect(): void
-  rules?: readonly { when: string; then: string }[]
-  fallback?: string
-  decisionHref?: string
-  evaluations?: ModelEvaluationsTarget
 }
 
 function SettingSelect({ label, control }: { label: string; control: RunSettingControl }) {
@@ -237,7 +235,8 @@ export function RuntimeModelSelect({
   const hoverContent = decision?.selected ? (
     <DecisionModelHover
       name={decision.name}
-      rules={decision.rules}
+      selection={decision.selection}
+      question={decision.question}
       fallback={decision.fallback}
       decisionHref={decision.decisionHref}
       onEvaluations={link.onEvaluations}

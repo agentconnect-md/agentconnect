@@ -1,4 +1,5 @@
 import {
+  AGENT_API_PROTOCOLS,
   ChannelDecisionGate,
   DecisionDraft,
   DecisionQuestion,
@@ -13,7 +14,7 @@ import {
   type DecisionDraftInput
 } from '@agentconnect.md/protocol'
 import { canEdit, visibilityWhere } from '../../authorization/policy.js'
-import { BotId, IntegrationId, type OrgId } from '../../domain/ids.js'
+import { AgentId, BotId, IntegrationId, type OrgId } from '../../domain/ids.js'
 import { Prisma, type Decision } from '../../generated/prisma/client.js'
 import { DecisionInUse, OrgMembershipMissing, ResourceAudienceEmpty } from '../errors.js'
 import type { CodeHostRoutingScope, DecisionRepo, ViewCtx } from '../ports.js'
@@ -108,6 +109,7 @@ export class PgDecisionRepo implements DecisionRepo {
     actor: ViewCtx
   ): Promise<{
     decision: DecisionDefinition
+    consumerAgentIds: AgentId[]
     consumerIntegrationIds: IntegrationId[]
     consumerBotIds: BotId[]
     consumerCodeHostRoutings: CodeHostRoutingScope[]
@@ -240,8 +242,24 @@ export class PgDecisionRepo implements DecisionRepo {
         tx,
         codeHost.flatMap((r) => (r.evaluationAgentId ? [r.evaluationAgentId] : []))
       )
+      // A chat API gate ships its Decisions in the agent's spec, so each such agent is bumped and re-pushed.
+      const apiGateAgents = await tx.agent.findMany({
+        where: {
+          orgId,
+          OR: AGENT_API_PROTOCOLS.flatMap((protocol) => [
+            { runtimeOverrides: { path: ['apiGates', protocol, 'decisionId'], equals: id } },
+            { runtimeOverrides: { path: ['apiGates', protocol, 'steps'], array_contains: [{ decisionId: id }] } }
+          ])
+        },
+        select: { id: true }
+      })
+      await bumpAgentConfigRevisions(
+        tx,
+        apiGateAgents.map((a) => a.id)
+      )
       return {
         decision,
+        consumerAgentIds: apiGateAgents.map((a) => AgentId(a.id)),
         consumerIntegrationIds: [...new Set(consumers.map((c) => c.integrationId))].map(IntegrationId),
         consumerBotIds: routings.map((r) => BotId(r.botId)),
         consumerCodeHostRoutings: codeHost.flatMap((r) =>
@@ -277,7 +295,11 @@ export class PgDecisionRepo implements DecisionRepo {
             OR: [
               { runtimeOverrides: { path: ['decisionIds'], array_contains: [id] } },
               { runtimeOverrides: { path: ['modelSelection', 'decisionId'], equals: id } },
-              { runtimeOverrides: { path: ['modelSelection', 'steps'], array_contains: [{ decisionId: id }] } }
+              { runtimeOverrides: { path: ['modelSelection', 'steps'], array_contains: [{ decisionId: id }] } },
+              ...AGENT_API_PROTOCOLS.flatMap((protocol) => [
+                { runtimeOverrides: { path: ['apiGates', protocol, 'decisionId'], equals: id } },
+                { runtimeOverrides: { path: ['apiGates', protocol, 'steps'], array_contains: [{ decisionId: id }] } }
+              ])
             ]
           }
         })

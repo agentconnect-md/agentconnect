@@ -1,16 +1,13 @@
-import { GOOGLE_CHAT_EVENTS_PATH } from '@agentconnect.md/protocol'
+import { googleChatEventsUrl } from '@agentconnect.md/protocol'
 import type { ProviderAppConfig } from './provider-app.js'
-
-/** The authentication audience the Chat app configuration must select (§2). */
-export const GOOGLE_CHAT_AUDIENCE_SETTING = 'Project Number'
 
 /** The generic Chat API configuration page; a project-specific URL would not resolve for another operator. */
 export const GOOGLE_CHAT_CONFIGURATION_URL =
   'https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat'
 
 export interface GoogleChatConfiguredUrls {
+  /** The Workspace add-on's HTTP endpoint URL, which is also every request token's audience (§11.2). */
   callbackUrl: string
-  audienceSetting: typeof GOOGLE_CHAT_AUDIENCE_SETTING
   configurationUrl: string
 }
 
@@ -21,8 +18,7 @@ export function googleChatConfiguredUrls(config: ProviderAppConfig): GoogleChatC
     throw new Error('the Google Chat app requires a saved HTTPS ingress public URL')
   }
   return {
-    callbackUrl: `${relay.replace(/\/$/, '')}${GOOGLE_CHAT_EVENTS_PATH}`,
-    audienceSetting: GOOGLE_CHAT_AUDIENCE_SETTING,
+    callbackUrl: googleChatEventsUrl(relay),
     configurationUrl: GOOGLE_CHAT_CONFIGURATION_URL
   }
 }

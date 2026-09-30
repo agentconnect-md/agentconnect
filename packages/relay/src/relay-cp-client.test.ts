@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
+  CODEHOST_FEEDBACK_FEATURE,
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
@@ -203,6 +204,7 @@ describe('RelayCpClient', () => {
         GITLAB_COM_V1_FEATURE,
         GITLAB_INSTANCE_V1_FEATURE,
         PULL_REQUEST_FEEDBACK_FEATURE,
+        CODEHOST_FEEDBACK_FEATURE,
         GITEA_V1_FEATURE,
         DECISION_TRIGGER_V1_FEATURE,
         DECISION_ROUTING_V1_FEATURE,
@@ -272,6 +274,16 @@ describe('RelayCpClient', () => {
     await handshakeToReady(client, transport, 15, snapshot)
     expect(onDeploymentConfig).toHaveBeenCalledOnce()
     expect(onDeploymentConfig).toHaveBeenCalledWith(snapshot)
+  })
+
+  it('leaves the startup environment in place when the CP stores no document', async () => {
+    const onDeploymentConfig = vi.fn()
+    const onDeploymentSnapshot = vi.fn()
+    const { client, transport } = makeClient({ onDeploymentConfig, onDeploymentSnapshot })
+    const snapshot = { revision: 0, publicRelayUrl: 'https://relay.example.test' }
+    await handshakeToReady(client, transport, 15, snapshot)
+    expect(onDeploymentConfig).not.toHaveBeenCalled()
+    expect(onDeploymentSnapshot).toHaveBeenCalledWith(snapshot)
   })
 
   it('freezes an absent startup snapshot until the relay process restarts', async () => {

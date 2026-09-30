@@ -188,12 +188,14 @@ describe('gitea hooks — routes, compile, webhook converge (§7)', () => {
     const agent = await h.a.deps.repos.agent.get(OrgId(DEFAULT_ORG_ID), h.agentId as never)
     expect((await h.a.deps.agentSpecs.assemble(agent!)).giteaHost).toBe('https://gitea.com')
 
-    // Deleting the last hook removes the webhook again (§7's inverse).
+    // The writable workspace keeps review feedback subscribed after the last trigger is removed.
     const removed = await h.a.app.inject({ method: 'DELETE', url: `${ORG}/hooks/${dto.id}` })
     expect(removed.statusCode).toBe(204)
     await h.seam.settled()
-    expect(h.fake.hooks.size).toBe(0)
-    expect(await prisma.giteaWebhookSecret.count()).toBe(0)
+    expect(h.fake.hooks.size).toBe(1)
+    expect([...h.fake.hooks.values()][0]!.events).toContain('pull_request_comment')
+    expect([...h.fake.hooks.values()][0]!.events).not.toContain('pull_request_sync')
+    expect(await prisma.giteaWebhookSecret.count()).toBe(1)
   })
 
   it('refuses a repository the bot cannot see, an unauthorized agent, and GitLab-only run notes', async () => {

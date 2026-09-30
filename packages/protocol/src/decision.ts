@@ -332,6 +332,83 @@ export function decisionRoutingAgentIds(routing: Pick<SharedBotDecisionRouting, 
   ]
 }
 
+// Where a place sends one of its Decision's answers, as the Decision page lists that place's rules.
+export const DecisionUsageTarget = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('trigger') }),
+  z.strictObject({ type: z.literal('skip') }),
+  z.strictObject({ type: z.literal('default_agent') }),
+  z.strictObject({ type: z.literal('agent'), agentId: z.string() }),
+  z.strictObject({ type: z.literal('model'), runtime: z.string(), model: z.string() }),
+  z.strictObject({ type: z.literal('decision'), decisionId: z.string() })
+])
+export type DecisionUsageTarget = z.infer<typeof DecisionUsageTarget>
+
+export const DecisionUsageRules = z.object({
+  rules: z.array(z.object({ when: DecisionCondition, then: DecisionUsageTarget })),
+  otherwise: DecisionUsageTarget.optional()
+})
+export type DecisionUsageRules = z.infer<typeof DecisionUsageRules>
+
+type UsageChain<T extends DecisionChainStep> = T & { steps?: ReadonlyArray<T & { id: string }> }
+
+// The chain step that asks `decisionId`, and a continuation to another step as a target.
+function usageStep<T extends DecisionChainStep>(chain: UsageChain<T>, decisionId: string) {
+  const step = [chain, ...(chain.steps ?? [])].find((entry) => entry.decisionId === decisionId)
+  const next = (id: string): DecisionUsageTarget => ({
+    type: 'decision',
+    decisionId: chain.steps?.find((entry) => entry.id === id)?.decisionId ?? ''
+  })
+  return { step, next }
+}
+
+/** A gate step triggers the agent or continues on a match, and skips or takes its else step otherwise. */
+export function gateUsageRules(gate: UsageChain<DecisionGateStep>, decisionId: string): DecisionUsageRules | null {
+  const { step, next } = usageStep(gate, decisionId)
+  if (!step) return null
+  return {
+    rules: [{ when: step.when, then: step.nextStepId ? next(step.nextStepId) : { type: 'trigger' } }],
+    otherwise: step.elseStepId ? next(step.elseStepId) : { type: 'skip' }
+  }
+}
+
+/** A routing step's rules; an answer no rule matches, at any step, takes the router's Otherwise. */
+export function routingUsageRules(
+  routing: Pick<SharedBotDecisionRouting, 'decisionId' | 'rules' | 'steps' | 'otherwise'>,
+  decisionId: string
+): DecisionUsageRules | null {
+  const { step, next } = usageStep<DecisionRoutingStep>(routing, decisionId)
+  if (!step) return null
+  return {
+    rules: step.rules.map((rule) => ({
+      when: rule.when,
+      then:
+        rule.action.type === 'agent'
+          ? { type: 'agent', agentId: rule.action.agentId }
+          : rule.action.type === 'skip'
+            ? { type: 'skip' }
+            : next(rule.action.nextStepId)
+    })),
+    otherwise: { type: routing.otherwise.type }
+  }
+}
+
+/** A model-selection step's rules; an unmatched answer keeps the agent's own runtime and model. */
+export function modelUsageRules(
+  selection: UsageChain<DecisionModelStep>,
+  decisionId: string,
+  fallback: { runtime: string; model: string }
+): DecisionUsageRules | null {
+  const { step, next } = usageStep(selection, decisionId)
+  if (!step) return null
+  return {
+    rules: step.rules.map((rule) => ({
+      when: rule.when,
+      then: 'runtime' in rule ? { type: 'model', runtime: rule.runtime, model: rule.model } : next(rule.nextStepId)
+    })),
+    otherwise: { type: 'model', ...fallback }
+  }
+}
+
 // The bot's routing config for exactly the conversations this recipient hosts, with each resolved default agent.
 export const SharedBotRoutingProjection = z.object({
   botId: Id,
@@ -450,6 +527,102 @@ export const DecisionPreviewSample = z.strictObject({
 })
 export type DecisionPreviewSample = z.infer<typeof DecisionPreviewSample>
 
+// Try samples are the live Jev state minus what the consumer binds (agent, source, ids, conversation, context).
+const TrySender = z.strictObject({ id: z.string().trim().min(1).max(128) })
+const TryText = z.string().max(16 * 1024)
+const TryCurrentText = z
+  .string()
+  .trim()
+  .min(1)
+  .max(16 * 1024)
+const TryHistory = z
+  .array(z.strictObject({ sender: TrySender, text: TryText }))
+  .max(50)
+  .default([])
+
+/** A conversation gate's Try state: `currentMessage` and `history` as the daemon's state names them. */
+export const ConversationTryState = z.strictObject({
+  currentMessage: z.strictObject({ sender: TrySender.optional(), text: TryCurrentText }),
+  history: TryHistory
+})
+export type ConversationTryState = z.infer<typeof ConversationTryState>
+
+const TryAgentIds = z.array(z.string().min(1).max(128)).max(16).default([])
+/** A shared-bot routing's Try state; `addressing` picks the situation (mentions, or a thread's constraint). */
+export const RoutingTryState = ConversationTryState.extend({
+  addressing: z
+    .strictObject({
+      mentions: TryAgentIds,
+      constraint: z
+        .strictObject({ eligibleAgentIds: TryAgentIds, participantAgentIds: TryAgentIds })
+        .default({ eligibleAgentIds: [], participantAgentIds: [] })
+    })
+    .optional()
+})
+export type RoutingTryState = z.infer<typeof RoutingTryState>
+
+/** An API call's Try state: one message and no history, as the API gate judges a call. */
+export const ApiGateTryState = z.strictObject({
+  currentMessage: z.strictObject({ text: TryCurrentText }),
+  history: z.array(z.unknown()).max(0, 'An API call carries no history.').default([])
+})
+export type ApiGateTryState = z.infer<typeof ApiGateTryState>
+
+const CodeHostTrySender = z.strictObject({
+  id: z.string().trim().min(1).max(256),
+  association: z.string().max(64).optional()
+})
+const CodeHostTryEntry = z.strictObject({ sender: CodeHostTrySender, text: TryText })
+/** A code-host routing's Try state: the webhook event, subject, thread, and change as the host state names them. */
+export const CodeHostTryState = z.strictObject({
+  event: z.strictObject({ name: z.string().trim().min(1).max(64), action: z.string().max(64).optional() }),
+  subject: z.strictObject({
+    kind: z.enum(['issue', 'pull_request', 'merge_request']).optional(),
+    number: z.number().int().positive().optional(),
+    title: z.string().max(1024).optional(),
+    url: z.string().max(2048).optional(),
+    author: z
+      .strictObject({
+        login: z.string().max(256).optional(),
+        type: z.string().max(64).optional(),
+        association: z.string().max(64).optional()
+      })
+      .optional(),
+    labels: z.array(z.string().max(256)).max(100).default([]),
+    state: z.string().max(64).optional(),
+    draft: z.boolean().optional(),
+    body: TryText.optional()
+  }),
+  currentMessage: CodeHostTryEntry.extend({ text: TryCurrentText }),
+  history: z.array(CodeHostTryEntry).max(50).default([]),
+  pullRequest: z
+    .strictObject({
+      baseSha: z.string().max(64).optional(),
+      headSha: z.string().max(64).optional(),
+      commitMessages: z
+        .string()
+        .max(4 * 1024)
+        .default(''),
+      files: z
+        .array(
+          z.strictObject({
+            path: z.string().min(1).max(1024),
+            previousPath: z.string().max(1024).optional(),
+            status: z.string().max(32),
+            additions: z.number().int().nonnegative().optional(),
+            deletions: z.number().int().nonnegative().optional(),
+            diff: TryText.default(''),
+            diffTruncated: z.boolean().default(false)
+          })
+        )
+        .max(100)
+        .default([]),
+      filesTruncated: z.boolean().default(false)
+    })
+    .optional()
+})
+export type CodeHostTryState = z.infer<typeof CodeHostTryState>
+
 // The answer a Recent evaluations row shows: the value and its confidence, never a probability vector.
 export const DecisionAnswerSummary = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('boolean'), value: z.boolean(), probability: Probability }),
@@ -457,6 +630,13 @@ export const DecisionAnswerSummary = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('score'), value: z.number().nonnegative(), confidence: Probability })
 ])
 export type DecisionAnswerSummary = z.infer<typeof DecisionAnswerSummary>
+
+/** The summary a Recent evaluations row keeps of a full answer. */
+export function decisionAnswerSummary(answer: DecisionAnswer): DecisionAnswerSummary {
+  if (answer.type === 'boolean') return { type: 'boolean', value: answer.value, probability: answer.probability }
+  if (answer.type === 'choice') return { type: 'choice', value: answer.value, confidence: answer.confidence }
+  return { type: 'score', value: answer.value, confidence: answer.confidence }
+}
 
 // One frozen state entry as the daemon evaluated it; the current message is never truncated, so it may exceed 16 KiB.
 export const DecisionEvaluationEntry = z.object({
@@ -473,8 +653,36 @@ export type DecisionEvaluationEntry = z.infer<typeof DecisionEvaluationEntry>
 export const DecisionEvaluationOutcome = z.enum(['triggered', 'skipped', 'unavailable', 'canceled', 'pending'])
 export type DecisionEvaluationOutcome = z.infer<typeof DecisionEvaluationOutcome>
 
-// The frozen input an evaluation saw: the current message, bounded history, and context trimming.
+// The agent a Decision decided for, as its state named it (decisions.md §8.2).
+export const DecisionEvaluationAgent = z.strictObject({
+  name: z.string().max(256),
+  description: z.string().max(4 * 1024)
+})
+export type DecisionEvaluationAgent = z.infer<typeof DecisionEvaluationAgent>
+
+// A description seeds the agent's system prompt and may be long; a Decision's history must not be pushed out for it.
+export const DECISION_AGENT_DESCRIPTION_MAX_BYTES = 2 * 1024
+
+/** The agent a Decision's state names: its display name, and its description cut to a UTF-8 prefix. */
+export function decisionAgentContext(agent: {
+  name: string
+  displayName?: string | null
+  description?: string | null
+}): DecisionEvaluationAgent {
+  const description = agent.description?.trim() ?? ''
+  const bytes = new TextEncoder().encode(description)
+  return {
+    name: agent.displayName?.trim() || agent.name,
+    description:
+      bytes.length <= DECISION_AGENT_DESCRIPTION_MAX_BYTES
+        ? description
+        : new TextDecoder().decode(bytes.subarray(0, DECISION_AGENT_DESCRIPTION_MAX_BYTES)).replace(/\uFFFD$/, '')
+  }
+}
+
+// The frozen input an evaluation saw: the agent, the current message, bounded history, and context trimming.
 export const DecisionEvaluationInput = z.strictObject({
+  agent: DecisionEvaluationAgent.optional(),
   currentMessage: DecisionEvaluationEntry,
   history: z.array(DecisionEvaluationEntry).max(100),
   historyOmitted: z.number().int().nonnegative(),
@@ -493,6 +701,50 @@ export const DecisionRawJson = z.strictObject({
   truncated: z.boolean()
 })
 export type DecisionRawJson = z.infer<typeof DecisionRawJson>
+
+// One reached chain step as frozen, aligned with `chain`; the first step's provider bodies stay on the detail itself.
+export const DecisionChainStepDetail = z.strictObject({
+  stepId: z.string().max(128),
+  decisionId: Id,
+  providerId: Id,
+  model: Id,
+  question: DecisionQuestion,
+  // A gate step's own trigger condition; routing and model steps keep their rules in the frozen consumer.
+  condition: DecisionCondition.optional(),
+  rawRequest: DecisionRawJson.nullable().optional(),
+  rawResponse: DecisionRawJson.nullable().optional()
+})
+export type DecisionChainStepDetail = z.infer<typeof DecisionChainStepDetail>
+// Present only when the CP asked for it (decision-evaluation-steps-v1).
+export const DecisionChainDetail = z.array(DecisionChainStepDetail).max(DECISION_CHAIN_MAX_STEPS)
+export type DecisionChainDetail = z.infer<typeof DecisionChainDetail>
+
+/** Each reached chain step as a Recent evaluations detail shows it; none unless every step's Decision is known. */
+export function chainStepDetails(input: {
+  trace: DecisionChainTrace
+  definition(decisionId: string): Pick<DecisionChainStepDetail, 'providerId' | 'model' | 'question'> | undefined
+  condition?(stepId: string): unknown
+  raw?(index: number): Pick<DecisionChainStepDetail, 'rawRequest' | 'rawResponse'> | undefined
+}): DecisionChainDetail | undefined {
+  const steps = input.trace.map((step, index) => {
+    const definition = input.definition(step.decisionId)
+    const condition = DecisionCondition.safeParse(input.condition?.(step.stepId))
+    return definition
+      ? {
+          stepId: step.stepId,
+          decisionId: step.decisionId,
+          providerId: definition.providerId,
+          model: definition.model,
+          question: definition.question,
+          ...(condition.success ? { condition: condition.data } : {}),
+          ...(index > 0 ? input.raw?.(index) : {})
+        }
+      : undefined
+  })
+  if (steps.some((step) => !step)) return undefined
+  const parsed = DecisionChainDetail.safeParse(steps)
+  return parsed.success ? parsed.data : undefined
+}
 
 // What an evaluation judged in one line, like a session title; null once retention strips the input.
 export const DecisionEvaluationTitle = z.string().max(256).nullable()
@@ -533,6 +785,7 @@ export const DecisionEvaluationRecordDetail = DecisionEvaluationRecord.extend({
   input: DecisionEvaluationInput.nullable(),
   fullAnswer: DecisionAnswer.nullable(),
   chain: DecisionChainTrace.optional(),
+  steps: DecisionChainDetail.optional(),
   // Present only when the CP asked for it (decision-evaluation-raw-v1); null once retention strips bodies.
   rawRequest: DecisionRawJson.nullable().optional(),
   rawResponse: DecisionRawJson.nullable().optional(),
@@ -579,6 +832,7 @@ export const DecisionModelEvaluationRecordDetail = DecisionModelEvaluationRecord
   input: z.record(z.string(), z.unknown()).nullable(),
   fullAnswer: DecisionAnswer.nullable(),
   chain: DecisionChainTrace.optional(),
+  steps: DecisionChainDetail.optional(),
   rawRequest: DecisionRawJson.nullable(),
   rawResponse: DecisionRawJson.nullable()
 })
@@ -673,6 +927,7 @@ export const DecisionRoutingEvaluationRecordDetail = DecisionRoutingEvaluationRe
   input: DecisionEvaluationInput.nullable(),
   fullAnswer: DecisionAnswer.nullable(),
   chain: DecisionChainTrace.optional(),
+  steps: DecisionChainDetail.optional(),
   rawRequest: DecisionRawJson.nullable().optional(),
   rawResponse: DecisionRawJson.nullable().optional()
 })

@@ -174,6 +174,8 @@ model User {
   oidcSubject             String?   @unique // OIDC `sub` → user
   // The provider user id of the linked Google identity, never the console token's `sub`; a Chat `users/{id}` names it.
   googleAccountId         String?   @unique
+  // A service account is an org member that never signs in; an owner mints its keys (daemon-api-key-auth.md §6).
+  kind                    UserKind  @default(human)
   // The moment the user redeemed their waitlist join link = "formal / activated"
   // user. Non-null ⇒ may enter the app
   // and create orgs under WAITLIST_MODE. ONLY the CP's redeem path writes this (the
@@ -295,6 +297,11 @@ model PendingKeyShred {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("pending_key_shred")
+}
+
+enum UserKind {
+  human
+  service_account
 }
 
 // Console roles (§3.2): owner = edit everything + manage members/org info (an
@@ -627,12 +634,13 @@ model ApiKey {
   revokedAt     DateTime? @db.Timestamptz(6) // kill switch — checked on every auth
   revokedReason String?
 
-  org    Org?    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org                  Org?                  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   // Cascade: deleting a daemon (DELETE /daemons/:id) removes its keys, so no
   // orphaned credential rows (daemonId-null but still hash-valid) survive.
-  daemon Daemon? @relation(fields: [daemonId], references: [id], onDelete: Cascade)
-  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  agents ApiKeyAgent[]
+  daemon               Daemon?               @relation(fields: [daemonId], references: [id], onDelete: Cascade)
+  user                 User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agents               ApiKeyAgent[]
+  webchatConversations WebchatConversation[]
 
   @@index([daemonId])
   @@index([userId])
@@ -652,6 +660,24 @@ model ApiKeyAgent {
   @@id([apiKeyId, agentId])
   @@index([agentId])
   @@map("api_key_agent")
+}
+
+/// A chat API the agent accepts calls on (shared-bot-relay.md §10.4); without a row the relay refuses that API for the agent.
+enum AgentApiProtocol {
+  ai_sdk_ui @map("ai-sdk-ui")
+  ag_ui     @map("ag-ui")
+}
+
+model AgentApiEntry {
+  agentId         String           @db.Uuid
+  protocol        AgentApiProtocol
+  createdByUserId String?
+  createdAt       DateTime         @default(now()) @db.Timestamptz(6)
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, protocol])
+  @@map("agent_api_entry")
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -944,6 +970,7 @@ model Agent {
   webchatMcpDelegations WebchatMcpDelegation[]
   presetRecords         PresetAgent[]
   apiKeySelections      ApiKeyAgent[]
+  apiEntries            AgentApiEntry[]
 
   organizationEnvironmentAssignments OrganizationEnvironmentAssignment[]
   memoryFiles           AgentMemoryFile[]
@@ -1404,32 +1431,42 @@ model SessionExecutorHint {
 
 // Durable PR ownership plus an optional level-triggered wake; no feedback bodies or CI logs.
 model SessionPullRequest {
-  orgId          String
-  repoId         BigInt    @db.BigInt
-  pullNumber     Int
-  installationId BigInt    @db.BigInt
-  repoFullName   String
-  sessionId      String?   @unique(map: "session_pull_request_session_key")
-  deliveryKey    String?
-  nextAttemptAt  DateTime? @db.Timestamptz(6)
-  claimOwner     String?   @db.Uuid
-  claimUntil     DateTime? @db.Timestamptz(6)
-  signalAt       DateTime? @db.Timestamptz(6)
+  orgId           String
+  repoId          BigInt    @db.BigInt
+  pullNumber      Int
+  installationId  BigInt?   @db.BigInt
+  provider        String    @default("github")
+  bindingId       String    @default("")
+  host            String?
+  headSha         String?
+  sourceAgentId   String?   @db.Uuid
+  sourceSessionId String?
+  repoFullName    String
+  sessionId       String?   @unique(map: "session_pull_request_session_key")
+  deliveryKey     String?
+  nextAttemptAt   DateTime? @db.Timestamptz(6)
+  claimOwner      String?   @db.Uuid
+  claimUntil      DateTime? @db.Timestamptz(6)
+  signalAt        DateTime? @db.Timestamptz(6)
 
   session SessionMeta? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-  @@id([orgId, repoId, pullNumber], map: "session_pull_request_pkey")
+  @@id([orgId, provider, bindingId, repoId, pullNumber], map: "session_pull_request_pkey")
   @@index([nextAttemptAt, claimUntil], map: "session_pull_request_pending_idx")
   @@map("session_pull_request")
 }
 
-// One row per PR feedback delivery key ever received, so a GitHub redelivery of the same event never wakes twice.
+// Provider-scoped delivery receipts suppress retries while permitting one event to notify several PRs.
 model SessionPullRequestDelivery {
   orgId       String
   deliveryKey String
+  provider    String   @default("github")
+  bindingId   String   @default("")
+  repoId      BigInt   @default(0)
+  pullNumber  Int      @default(0)
   receivedAt  DateTime @db.Timestamptz(6)
 
-  @@id([orgId, deliveryKey], map: "session_pull_request_delivery_pkey")
+  @@id([orgId, provider, bindingId, repoId, pullNumber, deliveryKey], map: "session_pull_request_delivery_pkey")
   @@index([receivedAt], map: "session_pull_request_delivery_received_idx")
   @@map("session_pull_request_delivery")
 }
@@ -1515,6 +1552,8 @@ model WebchatConversation {
   // deletion removes the row; retention purge keeps it and every continuation
   // gate rejects on the session's contentPurgedAt.
   targetSessionId      String?
+  // The API key that opened it through the agent chat API (shared-bot-relay.md §10.4); null for a console conversation.
+  apiKeyId             String?
   createdAt            DateTime @default(now()) @db.Timestamptz(6)
 
   org            Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -1522,6 +1561,7 @@ model WebchatConversation {
   user           User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
   currentSession SessionMeta?               @relation("WebchatCurrentSession", fields: [currentSessionId], references: [id], onDelete: SetNull)
   targetSession  SessionMeta?               @relation("WebchatTargetSession", fields: [targetSessionId], references: [id], onDelete: Cascade)
+  apiKey         ApiKey?                    @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
   delegations    WebchatMcpDelegation[]
   mcpOperations  WebchatMcpOperation[]
   participants   WebchatConversationAgent[]
@@ -1533,6 +1573,7 @@ model WebchatConversation {
   @@index([agentId])
   @@index([userId])
   @@index([currentSessionId])
+  @@index([apiKeyId])
   @@map("webchat_conversation")
 }
 
@@ -3009,6 +3050,7 @@ enum AuditKind {
   api_key_update
   api_key_revoke
   mcp_tool_call
+  agent_api_change
 }
 
 model AuditEvent {

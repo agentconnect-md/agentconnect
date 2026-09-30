@@ -1,6 +1,6 @@
 # Bundled local Logto tutorial
 
-Use only with `compose.yaml` plus `compose.logto.yaml`. Follow the current [Logto authentication guide](https://docs.agentconnect.md/docs/logto-authentication.md) if labels or provider requirements differ.
+Use only with `compose.yaml` plus `compose.logto.yaml`. Follow the current [Logto authentication guide](https://www.agentconnect.md/docs/self-hosting/sign-in.md) if labels or provider requirements differ.
 
 ## 1. Start and initialize Logto
 

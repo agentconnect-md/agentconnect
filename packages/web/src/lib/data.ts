@@ -1063,6 +1063,12 @@ export function permissionModeChoicesFor(
   }))
 }
 
+/** A dream runs only under a read-only or plan mode: a reported catalog without one cannot dream; before one arrives, assume it can. */
+export function runtimeCanDream(catalog: RuntimeModelCatalog | null | undefined): boolean {
+  if (!catalog) return true
+  return (catalog.permissionModes ?? []).some((mode) => mode.value === 'read-only' || mode.value === 'plan')
+}
+
 /** The permission-mode pill the Add flow preselects: the current value when the
  *  vocabulary offers it, else the runtime's own default (probe currentValue),
  *  else the first offered mode. With no dynamic vocabulary the static default

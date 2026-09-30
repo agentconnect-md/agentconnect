@@ -148,8 +148,8 @@ features:
   gitUrl: true
   # The QQ integration's console entry points; off hides them (an existing QQ bot keeps its Bots tab).
   qq: true
-  # The Google Chat integration's console entry points; off hides them (an existing Google Chat bot keeps its Bots tab).
-  googleChat: false
+  # The built-in agent offers the deployment's Google Chat app first, through its Marketplace listing; turn it on once that listing is live.
+  googleChatDeploymentApp: false
   # The By decision checkout for additional repositories; off hides it for new choices, existing ones stay shown.
   repositoryDecision: false
 
@@ -454,6 +454,7 @@ controlPlane:
         memory: 64Mi
       limits:
         memory: 128Mi
+  # The chart refuses more than 1 until the active-active Control Plane design ships.
   replicas: 1
   # Keep a newly Ready CP in the Service endpoints long enough for Gateway
   # endpoint discovery to converge before the rollout removes the old pod.
@@ -471,10 +472,7 @@ controlPlane:
     # placed agent waits before anything can pick it up. It is paid on the first turn of every
     # agent an install creates, against a beat that costs a few indexed statements per daemon.
     HEARTBEAT_SEC: '5'
-    # This one MULTIPLIES with the interval above: their product is the watchdog's freeze
-    # threshold and the offline grace the console reads. Move them together or shortening the
-    # interval quietly makes a daemon look dead sooner — nine beats of five seconds is the same
-    # 45 seconds three of fifteen were.
+    # HEARTBEAT_SEC × MISSED_BEATS sets Console grace (45s); proposed HA also needs HEARTBEAT_SEC <10s with the initial profile (docs/designs/high-availability.md).
     MISSED_BEATS: '9'
     SECRETS_PROVIDER: memory
     # CORS: unset in the default same-origin mode (browser talks to the CP under /cp).

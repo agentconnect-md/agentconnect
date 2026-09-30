@@ -13,7 +13,7 @@ import {
   CAPTURE_MAX_IDLE_MS,
   SessionPullRequestFeedbackService,
   type SessionPullRequestFeedbackServiceDeps
-} from './session-pull-request-feedback.service.js'
+} from '../codehost/session-pull-request-feedback.service.js'
 import type { SessionPullRequestCaptureResult } from './session-pull-request-link.service.js'
 
 const NOW = 1_780_000_000_000
@@ -71,6 +71,7 @@ function harness(over: Partial<SessionPullRequestFeedbackServiceDeps> = {}) {
   const clock = new FakeClock(NOW)
   const feedbackRepo = {
     hasSession: vi.fn(async () => false),
+    owner: vi.fn<SessionPullRequestFeedbackServiceDeps['feedback']['owner']>(async () => null),
     enqueueCapture: vi.fn(async () => true),
     claimNextCapture: vi.fn<SessionPullRequestFeedbackServiceDeps['feedback']['claimNextCapture']>(async () => null),
     completeCapture: vi.fn(async () => {}),
@@ -96,7 +97,8 @@ function harness(over: Partial<SessionPullRequestFeedbackServiceDeps> = {}) {
       getUnscoped: vi.fn(async () => SESSION)
     },
     agents: { getUnscoped: vi.fn(async () => AGENT) },
-    installations: { getByInstallationId: vi.fn(async () => INSTALLATION) },
+    sourceOf: vi.fn(async () => INSTALLATION.orgId),
+    validate: vi.fn(async () => true),
     memberSets: { sharedStoreMemberIdsOf: vi.fn(async () => []) },
     placement: { dispatchDaemon: vi.fn(async () => DAEMON_ID) },
     links,
@@ -296,5 +298,23 @@ describe('SessionPullRequestFeedbackService', () => {
     expect(h.links.capture).toHaveBeenCalledWith(AGENT, reopened)
     expect(h.feedbackRepo.linkSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: SESSION_ID }))
     expect(h.feedbackRepo.completeCapture).toHaveBeenCalledWith(CAPTURE, expect.any(String))
+  })
+  it('ignores the author session output while accepting another review session of the same agent', async () => {
+    const h = harness()
+    h.feedbackRepo.owner.mockResolvedValue({ agentId: AGENT_ID, sessionId: SESSION_ID })
+    const signal = {
+      provider: 'gitea' as const,
+      bindingId: 'binding',
+      repoId: '456',
+      repoFullName: 'example-org/example-repo',
+      deliveryKey: 'output:90',
+      pullNumber: 12,
+      sourceAgentId: AGENT_ID,
+      sourceSessionId: SESSION_ID
+    }
+    await h.service.enqueueForOrg(ORG_ID, signal)
+    expect(h.feedbackRepo.enqueue).not.toHaveBeenCalled()
+    await h.service.enqueueForOrg(ORG_ID, { ...signal, sourceSessionId: 'another-session' })
+    expect(h.feedbackRepo.enqueue).toHaveBeenCalledOnce()
   })
 })

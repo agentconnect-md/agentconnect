@@ -15,15 +15,17 @@ import {
   symlinkSync,
   unlinkSync
 } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { readRegularFileSync } from '../fs/regular-file.js'
 import {
   resolveClaudeCredentialSources,
   resolveCodexCredentialSources,
+  resolveKimiCredentialDir,
   resolveQoderCredentialSources,
   sharedCredentialProfile
 } from './runtime-credential-sources.js'
+import { runtimeStateLocations } from './probe.js'
 export { sharedCredentialProfile, type SharedCredentialProfile } from './runtime-credential-sources.js'
 
 export interface SharedRuntimeCredentialAccess {
@@ -367,6 +369,103 @@ function prepareQoderCredentials(profile: 'qoder' | 'qoder-cn', env: NodeJS.Proc
   }
 }
 
+/** An OAuth record's expiry, in ms, or undefined when the file is not one. */
+function kimiCredentialExpiry(path: string): number | undefined {
+  try {
+    const expires = (
+      JSON.parse(readRegularFileSync(path, MAX_CREDENTIAL_FILE_BYTES).toString('utf8')) as { expires_at?: unknown }
+    ).expires_at
+    return typeof expires === 'number' ? (expires < 1e11 ? expires * 1000 : expires) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** A real directory beneath the shared Kimi root, created if missing; the runtime can write that tree, so a link there is refused. */
+function kimiSharedSubdirectory(sharedRoot: string, path: string): string {
+  const info = lstatIfPresent(path)
+  if (info && (info.isSymbolicLink() || !info.isDirectory())) {
+    throw new Error(`kimi host credentials path is not a real directory: ${path}`)
+  }
+  if (!info) mkdirSync(path, { mode: 0o700 })
+  const real = realpathSync(path)
+  const inside = relative(sharedRoot, real)
+  if (!inside || inside.startsWith('..') || isAbsolute(inside)) {
+    throw new Error(`kimi host credentials path escapes the credentials directory: ${path}`)
+  }
+  return real
+}
+
+/** Fold a copy-seeded private Kimi credentials tree into the host's: a missing file moves, a rotated login with the later expiry wins. */
+function migratePrivateKimiCredentials(privateDir: string, sharedDir: string, sharedRoot: string): void {
+  for (const entry of readdirSync(privateDir, { withFileTypes: true })) {
+    const source = join(privateDir, entry.name)
+    const destination = join(sharedDir, entry.name)
+    if (entry.isDirectory()) {
+      migratePrivateKimiCredentials(source, kimiSharedSubdirectory(sharedRoot, destination), sharedRoot)
+      rmdirSync(source)
+      continue
+    }
+    if (!entry.isFile()) throw new Error(`kimi private credentials contain an unsupported entry: ${source}`)
+    if (!regularFileIfPresent(destination, 'kimi host credential')) {
+      moveCredentialFile(source, destination)
+    } else if (sameFileContents(source, destination)) {
+      unlinkSync(source)
+    } else {
+      const privateExpiry = kimiCredentialExpiry(source)
+      const hostExpiry = kimiCredentialExpiry(destination)
+      if (privateExpiry === undefined || hostExpiry === undefined || privateExpiry === hostExpiry) {
+        throw new Error(
+          `conflicting kimi credentials at ${source} and ${destination}; run host kimi login after resolving the conflict`
+        )
+      }
+      if (privateExpiry > hostExpiry) {
+        unlinkSync(destination)
+        moveCredentialFile(source, destination)
+      } else {
+        unlinkSync(source)
+      }
+    }
+  }
+}
+
+/** Kimi Code rotates its OAuth refresh token, so every private HOME shares the host's credentials directory instead of a copy. */
+function prepareKimiCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredentialAccess {
+  const sharedDir = ensureOwnedDirectory(resolveKimiCredentialDir(env), 'host kimi credentials directory')
+  const declared = runtimeStateLocations('kimi', env)
+    .filter((location) => location.destination === '.kimi-code')
+    .flatMap((location) => (location.credentialFiles ?? []).map((file) => join('.kimi-code', file.path)))
+  const hosted = readdirSync(sharedDir).map((name) => join('.kimi-code', 'credentials', name))
+  return {
+    env: {},
+    writablePaths: [sharedDir],
+    seedExclusions: [...new Set([...declared, ...hosted])],
+    preparePrivateHome: (runtimeHome) => {
+      const privateRoot = ensureOwnedDirectory(join(runtimeHome, '.kimi-code'), 'private kimi config directory')
+      const privateDir = join(privateRoot, 'credentials')
+      const privateInfo = lstatIfPresent(privateDir)
+      if (privateInfo?.isSymbolicLink()) {
+        let linked: string
+        try {
+          linked = realpathSync(privateDir)
+        } catch {
+          throw new Error(`private kimi credentials link is dangling: ${privateDir}`)
+        }
+        if (linked !== sharedDir)
+          throw new Error(`private kimi credentials link points outside host credentials: ${privateDir}`)
+        return
+      }
+      if (privateInfo) {
+        if (!privateInfo.isDirectory())
+          throw new Error(`private kimi credentials path is not a directory: ${privateDir}`)
+        migratePrivateKimiCredentials(privateDir, sharedDir, sharedDir)
+        rmdirSync(privateDir)
+      }
+      symlinkSync(sharedDir, privateDir)
+    }
+  }
+}
+
 export function prepareSharedRuntimeCredentials(opts: {
   runtimeId: string
   runtime?: RuntimeDef
@@ -374,6 +473,7 @@ export function prepareSharedRuntimeCredentials(opts: {
   platform?: NodeJS.Platform
 }): SharedRuntimeCredentialAccess | undefined {
   if ((opts.platform ?? process.platform) !== 'linux') return undefined
+  if (opts.runtimeId === 'kimi') return prepareKimiCredentials(opts.hostEnv ?? process.env)
   const profile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   if (!profile) return undefined
   const env = opts.hostEnv ?? process.env

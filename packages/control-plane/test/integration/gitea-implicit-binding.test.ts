@@ -278,17 +278,18 @@ describe('several agents on one repository (§6, §7)', () => {
     expect(managedHooks(h)[0]!.events).not.toContain('issues')
     for (const event of PR_EVENTS) expect(managedHooks(h)[0]!.events).toContain(event)
 
-    // (4) The last referencing trigger leaving does not unbind: the binding and its claim stay for the operator, and
-    // the webhook follows §7's inverse — no enabled trigger, no ingress — until the card's Remove releases the claim.
+    // The writable workspace keeps feedback ingress after its last trigger leaves.
     const firstHookId = (a.json() as { id: string }).id
     expect((await h.a.app.inject({ method: 'DELETE', url: `${ORG}/hooks/${firstHookId}` })).statusCode).toBe(204)
     await h.seam.settled()
     const [row] = await bindings()
     expect(row).toMatchObject({ repoId: REPO, state: 'ready' })
     expect(await claims()).toBe(1)
-    expect(managedHooks(h)).toHaveLength(0)
+    expect(managedHooks(h)).toHaveLength(1)
+    expect(managedHooks(h)[0]!.events).toContain('pull_request_comment')
+    expect(managedHooks(h)[0]!.events).not.toContain('pull_request_sync')
     const listed = await h.a.app.inject({ method: 'GET', url: `${ORG}/gitea/repositories` })
-    expect(listed.json()).toMatchObject({ bindings: [{ id: row!.id, webhookState: 'not_needed' }] })
+    expect(listed.json()).toMatchObject({ bindings: [{ id: row!.id, webhookState: 'installed' }] })
     // Still the first agent's workspace: the operator's Remove is refused until that reference is gone too.
     const held = await h.a.app.inject({ method: 'DELETE', url: `${ORG}/gitea/repositories/${row!.id}` })
     expect(held.statusCode).toBe(409)
@@ -296,6 +297,7 @@ describe('several agents on one repository (§6, §7)', () => {
     expect((await h.a.app.inject({ method: 'DELETE', url: `${ORG}/agents/${first}` })).statusCode).toBe(204)
     await h.seam.settled()
     expect(await bindings()).toHaveLength(1)
+    expect(managedHooks(h)).toHaveLength(0)
     const removed = await h.a.app.inject({ method: 'DELETE', url: `${ORG}/gitea/repositories/${row!.id}` })
     expect(removed.statusCode).toBe(200)
     expect(removed.json()).toEqual({ removed: true })
@@ -375,8 +377,11 @@ describe('gitea workspaces and grants bind on first use (§6)', () => {
     const rows = await bindings()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ repoId: SECOND, repoPath: 'example-org/second-repo', state: 'ready' })
-    // No trigger wants ingress yet, so the bind installed no webhook.
-    expect(h.fake.hooks.size).toBe(0)
+    // The workspace alone subscribes feedback after the agent row commits.
+    expect(managedHooks(h)).toHaveLength(1)
+    expect(managedHooks(h)[0]!.events).toEqual(
+      expect.arrayContaining(['pull_request_comment', 'status', 'workflow_run'])
+    )
   })
 
   it('replacing a workspace binds the repository it moves to', async () => {
@@ -396,6 +401,15 @@ describe('gitea workspaces and grants bind on first use (§6)', () => {
     const rows = await bindings()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ repoId: REPO, state: 'ready' })
+    expect(managedHooks(h)).toHaveLength(1)
+    const reset = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'scratch' }
+    })
+    expect(reset.statusCode).toBe(200)
+    await h.seam.settled()
+    expect(managedHooks(h)).toHaveLength(0)
   })
 
   it('an additional-repository grant binds the repository it names', async () => {

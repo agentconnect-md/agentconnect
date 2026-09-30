@@ -16,12 +16,17 @@
  */
 import {
   GitCloneUrlError,
+  decisionChainIds,
+  decisionGateIssues,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   redactGitUrlSecrets,
   type AgentAdditionalInstallation,
   type AgentAdditionalRepo,
+  type AgentApiGateProjections,
+  type AgentApiProtocol,
   type AgentSkillEntry,
+  type ChannelDecisionGate,
   type HookRoutingProjection,
   type ManagedSkillEntry,
   type AgentSpec
@@ -32,12 +37,13 @@ import type {
   AgentRepoAuthorizationRepo,
   AgentSecretStore,
   CodeHostDecisionRoutingRepo,
+  DecisionRepo,
   HookRepo,
   OrganizationEnvironmentResolver,
   OrganizationKnowledgeRepo,
   SkillSourceRepo
 } from '../persistence/ports.js'
-import { AgentId } from '../domain/ids.js'
+import { AgentId, OrgId } from '../domain/ids.js'
 import { gitlabManagedProjectPath } from '../domain/git-host.js'
 import { codeHostProviders } from '../codehost/registry.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
@@ -100,8 +106,28 @@ export class AgentSpecAssembler {
       hooks: Pick<HookRepo, 'listForOrgKind'>
     },
     // Optional for minimal test graphs: the agent's installation grants (decision 10); absent ⇒ [].
-    private readonly agentInstallationAuth?: Pick<AgentInstallationAuthorizationRepo, 'listForAgent'>
+    private readonly agentInstallationAuth?: Pick<AgentInstallationAuthorizationRepo, 'listForAgent'>,
+    // The Decisions an API gate names, shipped with it so admission never reads the CP; absent ⇒ no gates.
+    private readonly decisions?: Pick<DecisionRepo, 'getForAgent'>
   ) {}
+
+  /** Each chat API gate with its Decisions; a gate whose condition no longer fits its Decision is left out, so it fails open. */
+  async apiGatesOf(a: Pick<AgentRecord, 'orgId' | 'apiGates'>): Promise<AgentApiGateProjections> {
+    const decisions = this.decisions
+    if (!decisions) return {}
+    const projected: AgentApiGateProjections = {}
+    for (const [protocol, gate] of Object.entries(a.apiGates ?? {}) as Array<[AgentApiProtocol, ChannelDecisionGate]>) {
+      const definitions = await Promise.all(
+        decisionChainIds(gate).map((id) => decisions.getForAgent(OrgId(a.orgId), id))
+      )
+      if (definitions.some((d) => !d)) continue
+      const byId = new Map(definitions.map((d) => [d!.id, d!]))
+      const questions = new Map([...byId].map(([id, d]) => [id, d.question]))
+      if (decisionGateIssues(byId.get(gate.decisionId)!.question, gate, questions).length > 0) continue
+      projected[protocol] = { gate, definitions: [...byId.values()] }
+    }
+    return projected
+  }
 
   /** Fetch the agent's secret values + resolve its skills, then project the spec. */
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
@@ -114,7 +140,8 @@ export class AgentSpecAssembler {
       gitlabHook,
       giteaHook,
       hookRoutings,
-      additionalInstallations
+      additionalInstallations,
+      apiGates
     ] = await Promise.all([
       this.secrets.get(a.orgId, a.id),
       resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
@@ -124,7 +151,8 @@ export class AgentSpecAssembler {
       this.gitlabHookOf(a),
       this.giteaHookOf(a),
       this.hookRoutingsOf(a),
-      this.additionalInstallationsOf(a)
+      this.additionalInstallationsOf(a),
+      this.apiGatesOf(a)
     ])
     return this.project(
       a,
@@ -136,7 +164,8 @@ export class AgentSpecAssembler {
       gitlabHook,
       giteaHook,
       hookRoutings,
-      additionalInstallations
+      additionalInstallations,
+      apiGates
     )
   }
 
@@ -297,7 +326,8 @@ export class AgentSpecAssembler {
     gitlabHook = false,
     giteaHook = false,
     hookRoutings?: HookRoutingProjection[],
-    additionalInstallations: AgentAdditionalInstallation[] = []
+    additionalInstallations: AgentAdditionalInstallation[] = [],
+    apiGates: AgentApiGateProjections = {}
   ): AssembledAgentSpec {
     // Resolve by key across both sources BEFORE splitting into the two wire maps
     // (organization-secrets-and-variables.md §3.2), so the winner of a collision
@@ -315,7 +345,8 @@ export class AgentSpecAssembler {
       gitlabHost(this.gitlabHost, a.workspace, additionalRepos, gitlabHook),
       giteaHost(this.giteaHost, a.workspace, additionalRepos, giteaHook),
       hookRoutings,
-      additionalInstallations
+      additionalInstallations,
+      apiGates
     )
   }
 }
@@ -391,7 +422,9 @@ export function agentRecordToSpec(
   giteaInstance?: string,
   hookRoutings?: HookRoutingProjection[],
   // The agent's installation grants, already sorted; always shipped beside `additionalRepos` and never merged into it.
-  additionalInstallations: AgentAdditionalInstallation[] = []
+  additionalInstallations: AgentAdditionalInstallation[] = [],
+  // The chat API gates with their Decisions, already resolved by {@link AgentSpecAssembler.apiGatesOf}.
+  apiGates: AgentApiGateProjections = {}
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // The assembled spec always carries the host-neutral `git` arm; the per-peer
@@ -492,6 +525,8 @@ export function agentRecordToSpec(
     skills: skillEntries,
     decisionIds: a.decisionIds ?? [],
     modelSelection: a.modelSelection ?? null,
+    // Always shipped, so removing the last gate replicates.
+    apiGates,
     // Value or null, so clearing the evaluator replicates; the daemon digests null as the absent field.
     repositorySelector: a.repositorySelector ?? null,
     ...(hookRoutings !== undefined ? { hookRoutings } : {}),

@@ -23,6 +23,8 @@ import {
   stopRouting
 } from '@/components/console/decisions/routing/DecisionRoutingModal'
 import { RoutingEntry, type DispatchRouting } from '@/components/console/DefaultDispatchPicker'
+import { BotRoutingHover } from '@/components/console/decisions/routing/BotRoutingHover'
+import { useHoverCard } from '@/components/ui/HoverCard'
 import { SelfAgentTag } from '@/components/console/SelfAgentTag'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
@@ -336,6 +338,54 @@ export const roomGlyph = (kind: IntegrationChannelRow['kind'], platform?: string
 export const rowName = (kind: IntegrationChannelRow['kind'], platform?: string) =>
   isDirectConversation(kind) ? undefined : channelListSemantics(platform).RowName
 
+/** The bot fields a conversation link can depend on. */
+type ConversationLinkBot = { workspaceId?: string | null; feishuRegion?: 'feishu' | 'lark' | null }
+
+/** The page the row opens on the platform: the one its daemon reported, else the one its module builds from the row's ids. */
+export const rowUrl = (
+  c: IntegrationChannelRow,
+  platform: string | undefined,
+  bot: ConversationLinkBot | undefined
+): string | undefined =>
+  c.url ??
+  channelListSemantics(platform).conversationUrl?.({
+    channelId: c.channelId,
+    ...(c.spaceId ? { spaceId: c.spaceId } : {}),
+    ...(c.kind ? { kind: c.kind } : {}),
+    workspaceId: bot?.workspaceId ?? null,
+    feishuRegion: bot?.feishuRegion ?? null
+  })
+
+/** A row's printed name: the module's own rendering where it has one, else the name, linked to the conversation when there is a page to open. */
+export function ConversationName({
+  row,
+  name,
+  platform,
+  bot
+}: {
+  row: IntegrationChannelRow
+  name: string
+  platform: string | undefined
+  bot: ConversationLinkBot | undefined
+}) {
+  const t = useTranslations('Integrations.channelList')
+  const url = rowUrl(row, platform, bot)
+  const Name = rowName(row.kind, platform)
+  if (Name) return <Name name={name} channelKey={row.key} url={url} />
+  if (!url) return <span className="min-w-0 truncate">{name}</span>
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={t('openIn', { name, platform: platformName(platform) })}
+      className="min-w-0 truncate text-inherit no-underline hover:underline"
+    >
+      {name}
+    </a>
+  )
+}
+
 /** The place, named as the operator knows it. "on the platform" is our word for it,
  *  not theirs — a person deciding whether to remove a bot wants to read "in Telegram". */
 const platformName = (platform?: string): string => chatPlatformName(platform, 'the chat app')
@@ -583,17 +633,25 @@ function DispatchPicker({
   }
   const routed = routing?.active === true
   const routingName = routing?.name ?? translate('dispatch.routingFallback')
+  const card = useHoverCard({ interactive: true })
+  const routedHover = routed ? routing?.hover : undefined
   const heading =
     'px-[9px] pb-1 pt-[6px] font-sans text-[10px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)'
   return (
     <span className="flex-none">
       <button
         ref={btnRef}
-        onClick={toggle}
+        {...(routedHover ? card.triggerProps : {})}
+        onClick={() => {
+          card.hide()
+          toggle()
+        }}
         title={
-          routed
-            ? translate('dispatch.routedButton', { name: routingName })
-            : translate('defaultDispatch.button', { agent: current.label })
+          routedHover
+            ? undefined
+            : routed
+              ? translate('dispatch.routedButton', { name: routingName })
+              : translate('defaultDispatch.button', { agent: current.label })
         }
         aria-label={
           routed
@@ -668,6 +726,7 @@ function DispatchPicker({
                     <RoutingEntry
                       name={routed ? routingName : null}
                       canStop={routing.canStop}
+                      hover={routing.hover}
                       onOpen={() => {
                         close()
                         routing.onOpen()
@@ -684,6 +743,7 @@ function DispatchPicker({
           </>,
           document.body
         )}
+      {routedHover && card.card(routedHover)}
     </span>
   )
 }
@@ -748,7 +808,8 @@ export function IntegrationChannelList({
   // A derived roster is the platform's own list — nothing is observed into it, and nothing is dropped from here.
   const derivedRoster = channelListSemantics(platform).roster === 'derived'
   // The agents that share this bot — the candidate per-conversation defaults.
-  const memberIds = shareable && botId ? (bots.find((b) => b.id === botId)?.agentIds ?? []) : []
+  const bot = botId ? bots.find((b) => b.id === botId) : undefined
+  const memberIds = shareable ? (bot?.agentIds ?? []) : []
   // Dispatch is a decision only where there are two agents to decide between.
   const dispatchable = memberIds.length > 1
   // Why a private agent's rows start off. A platform whose gate is more than the row's own says so itself.
@@ -852,13 +913,13 @@ export function IntegrationChannelList({
           row: c,
           // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
           agentName: (defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? '',
-          padX
+          padX,
+          siblings: { platform, rows: channelRows.map((row) => ({ integrationId, row })) }
         })
   const row = (c: IntegrationChannelRow) => {
     // One member is no choice, so the row drops the picker unless the bot's routing owns the row.
     const def = dispatchable || (shareable && managedByRouting(c)) ? defaultAgent(c) : undefined
     const label = rowLabelParts(c, platform)
-    const Name = rowName(c.kind, platform)
     const trigger = rowTrigger(c)
     return (
       <Fragment key={c.channelId}>
@@ -870,11 +931,7 @@ export function IntegrationChannelList({
             {roomGlyph(c.kind, platform)}
           </span>
           <span className="mono flex min-w-0 flex-1 items-baseline gap-[6px] truncate text-[13px] text-(--text-primary)">
-            {Name ? (
-              <Name name={label.name} channelKey={c.key} url={c.url} />
-            ) : (
-              <span className="min-w-0 truncate">{label.name}</span>
-            )}
+            <ConversationName row={c} name={label.name} platform={platform} bot={bot} />
             {label.hint && <span className="flex-none text-(--text-tertiary)">{label.hint}</span>}
           </span>
           <div className="ml-auto flex items-center gap-2 max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
@@ -893,6 +950,12 @@ export function IntegrationChannelList({
                         name: c.decision?.name ?? null,
                         active: managedByRouting(c),
                         canStop: !!integrationId,
+                        hover: (
+                          <BotRoutingHover
+                            botId={botId}
+                            name={c.decision?.name ?? translate('dispatch.routingFallback')}
+                          />
+                        ),
                         onOpen: () => setRoutingRow({ botId, channelId: c.channelId, name: rowLabel(c) }),
                         onStop: (agentId?: string) =>
                           void act(async () => {

@@ -1,8 +1,9 @@
-// Google Chat's elicitation-card facet (§7.3): a cardsV2 message whose button clicks the relay forwards as CARD_CLICKED.
+// Google Chat's elicitation-card facet (§7.3): a cardsV2 message whose button clicks reach the events URL and the relay forwards.
 import { createHash } from 'node:crypto'
 import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
 import {
   elicitFormBlockId,
+  GOOGLE_CHAT_ACTION_PARAMETER,
   GOOGLE_CHAT_ELICIT_FUNCTION,
   type WireGoogleChatCardAction
 } from '@agentconnect.md/protocol'
@@ -57,8 +58,9 @@ export const GOOGLE_CHAT_ELICIT_SURFACE: ElicitSurface = {
   }
 }
 
-/** What the connection offers a card: a create by client id and a cards-only rewrite. */
+/** What the connection offers a card: a create by client id, a cards-only rewrite, and the events URL every button names. */
 interface GoogleChatCardPort {
+  eventsUrl?: string
   createMessage(input: {
     space: string
     thread?: string
@@ -88,13 +90,15 @@ function question(message: string): string {
   return cardText(`💬 ${clampTo(message, GOOGLE_CHAT_ELICIT_MESSAGE_CAP)}`)
 }
 
-function button(requestId: string, text: string, token: string): Record<string, unknown> {
+// Google posts a click to the button's `function`, the events URL (§11.5); the action rides our own parameter.
+function button(eventsUrl: string, requestId: string, text: string, token: string): Record<string, unknown> {
   return {
     text: clampTo(text, GOOGLE_CHAT_LABEL_CAP),
     onClick: {
       action: {
-        function: GOOGLE_CHAT_ELICIT_FUNCTION,
+        function: eventsUrl,
         parameters: [
+          { key: GOOGLE_CHAT_ACTION_PARAMETER, value: GOOGLE_CHAT_ELICIT_FUNCTION },
           { key: 'request', value: requestId },
           { key: 'token', value: token }
         ]
@@ -111,15 +115,16 @@ function card(widgets: Record<string, unknown>[]): unknown[] {
 export function buildGoogleChatElicitButtons(
   requestId: string,
   message: string,
-  options: readonly { label: string }[]
+  options: readonly { label: string }[],
+  eventsUrl: string
 ): unknown[] {
   return card([
     { textParagraph: { text: question(message) } },
     {
       buttonList: {
         buttons: [
-          ...options.map((o, i) => button(requestId, o.label, elicitOptionToken(i))),
-          button(requestId, 'Dismiss', GOOGLE_CHAT_ELICIT_DISMISS)
+          ...options.map((o, i) => button(eventsUrl, requestId, o.label, elicitOptionToken(i))),
+          button(eventsUrl, requestId, 'Dismiss', GOOGLE_CHAT_ELICIT_DISMISS)
         ]
       }
     }
@@ -137,7 +142,8 @@ function seeded(target: ElicitTarget): Set<string> {
 export function buildGoogleChatElicitForm(
   requestId: string,
   params: CreateElicitationRequest,
-  form: readonly ElicitTarget[]
+  form: readonly ElicitTarget[],
+  eventsUrl: string
 ): unknown[] | null {
   if (!form.length) return null
   const widgets: Record<string, unknown>[] = [
@@ -179,8 +185,8 @@ export function buildGoogleChatElicitForm(
   widgets.push({
     buttonList: {
       buttons: [
-        button(requestId, 'Confirm', GOOGLE_CHAT_ELICIT_CONFIRM),
-        button(requestId, 'Dismiss', GOOGLE_CHAT_ELICIT_DISMISS)
+        button(eventsUrl, requestId, 'Confirm', GOOGLE_CHAT_ELICIT_CONFIRM),
+        button(eventsUrl, requestId, 'Dismiss', GOOGLE_CHAT_ELICIT_DISMISS)
       ]
     }
   })
@@ -210,14 +216,18 @@ export const googleChatElicitCards: ElicitCardFacet = {
   platform: 'googlechat',
   reduction: GOOGLE_CHAT_ELICIT_SURFACE,
 
-  build(_host: ElicitCardHost, _turn: ElicitCardTurn, ask: ElicitCardAsk): ElicitCardDraft | null {
+  build(host: ElicitCardHost, turn: ElicitCardTurn, ask: ElicitCardAsk): ElicitCardDraft | null {
     // No consent control: a link button opens the page but reports nothing back, and consent is all that seam decides.
     if (ask.url || !ask.form?.length) return null
+    // Every button names the events URL, so without it no answer could ever arrive: no control for this ask.
+    const state = host.turnState(turn) as GoogleChatTurnState | undefined
+    const eventsUrl = (state?.conn as Partial<GoogleChatCardPort> | undefined)?.eventsUrl
+    if (!eventsUrl) return null
     // Core's own line between a one-tap card and a form, so the record and the card never disagree.
     const cardsV2 =
       elicitCardShape(ask.form) === 'inputs'
-        ? buildGoogleChatElicitForm(ask.requestId, ask.params, ask.form)
-        : buildGoogleChatElicitButtons(ask.requestId, ask.message, ask.form[0]!.options)
+        ? buildGoogleChatElicitForm(ask.requestId, ask.params, ask.form, eventsUrl)
+        : buildGoogleChatElicitButtons(ask.requestId, ask.message, ask.form[0]!.options, eventsUrl)
     return cardsV2 ? ({ cardsV2, fallbackText: ask.fallback } satisfies GoogleChatElicitDraft) : null
   },
 

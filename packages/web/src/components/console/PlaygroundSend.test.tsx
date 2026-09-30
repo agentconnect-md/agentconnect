@@ -25,7 +25,6 @@ vi.mock('@/lib/api', () => ({
       super(message)
     }
   },
-  agentApiRelayUrl: () => 'wss://relay.test',
   fetchSessionMessages: vi.fn(async () => ({ messages: [] })),
   mintWebchatConversation: vi.fn(async () => ({ conversationId: 'c1' })),
   webchatSocketUrl: () => 'wss://relay.test/ws',

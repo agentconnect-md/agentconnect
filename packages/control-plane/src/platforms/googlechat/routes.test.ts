@@ -1,4 +1,4 @@
-/** A per-agent Google Chat app's key rotation (§3); the deployment app takes its key from the Setup Server. */
+/** The deployment app's public identity, and a per-agent Google Chat app's key rotation (§3); the deployment app takes its key from the Setup Server. */
 import { generateKeyPairSync } from 'node:crypto'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -7,7 +7,7 @@ import { installZod } from '../../http/plugins/zod.js'
 import type { BotRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 import { GOOGLE_CHAT_PROBE_URL, GOOGLE_TOKEN_ENDPOINT, googleCloudProjectUrl } from './credential.js'
-import { GOOGLE_CHAT_DEPLOYMENT_KEY_MESSAGE, googleChatKeyRoutes } from './routes.js'
+import { GOOGLE_CHAT_DEPLOYMENT_KEY_MESSAGE, googleChatAppRoutes, googleChatKeyRoutes } from './routes.js'
 
 const ORG = OrgId('11111111-1111-4111-8111-111111111111')
 const PRESET = AgentId('77777777-7777-4777-8777-777777777777')
@@ -44,6 +44,37 @@ let running: FastifyInstance | undefined
 afterEach(async () => {
   await running?.close()
   running = undefined
+})
+
+describe('GET /integrations/googlechat/app', () => {
+  async function appHarness(seams: Parameters<typeof googleChatAppRoutes>[0], signedIn = true) {
+    const app = Fastify()
+    installZod(app)
+    app.addHook('onRequest', async (req) => {
+      if (signedIn) req.principal = { userId: 'user-1' }
+    })
+    await app.register(googleChatAppRoutes(seams))
+    running = app
+    return app.inject({ method: 'GET', url: '/integrations/googlechat/app' })
+  }
+
+  it('answers the deployment app’s project number and nothing of its key', async () => {
+    const serviceAccountKey = JSON.stringify(ROTATED)
+    const res = await appHarness({ app: { projectId: PROJECT_ID, projectNumber: '100000000000', serviceAccountKey } })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ projectNumber: '100000000000' })
+    expect(res.body).not.toContain('PRIVATE KEY')
+  })
+
+  it('answers null without a deployment app', async () => {
+    const res = await appHarness({})
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ projectNumber: null })
+  })
+
+  it('requires a signed-in caller', async () => {
+    expect((await appHarness({}, false)).statusCode).toBe(401)
+  })
 })
 
 describe('PUT /bots/:id/googlechat/key', () => {

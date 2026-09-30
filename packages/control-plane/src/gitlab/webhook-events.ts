@@ -1,25 +1,20 @@
 import type { HookRecord } from '../persistence/ports.js'
 import type { GitlabWebhookEvents } from './api.js'
 
-/**
- * The §11.1 desired-events input: the union every enabled gitlab hook on one
- * project wants from the managed webhook. Null means no hook wants ingress, so
- * the saga removes (or never installs) the webhook. Comment (`note`) events are
- * over-subscribed deliberately: threads opened by issue/MR triggers continue
- * through comments, so under-subscribing them would strand every per-thread
- * session; the relay filters what a rule did not ask for.
- */
+// Union trigger and author-feedback subscriptions; null means no consumer needs ingress.
 export function unionGitlabWebhookEvents(
   hooks: Pick<HookRecord, 'enabled' | 'kind' | 'repoId' | 'events' | 'commentFamilies'>[],
-  projectId: bigint
+  projectId: bigint,
+  feedback = false
 ): GitlabWebhookEvents | null {
   const relevant = hooks.filter((hook) => hook.enabled && hook.kind === 'gitlab' && hook.repoId === projectId)
-  if (relevant.length === 0) return null
+  if (relevant.length === 0 && !feedback) return null
   const events: GitlabWebhookEvents = {
     push_events: false,
     issues_events: false,
-    merge_requests_events: false,
-    note_events: false,
+    merge_requests_events: feedback,
+    note_events: feedback,
+    pipeline_events: feedback,
     releases_events: false
   }
   for (const hook of relevant) {

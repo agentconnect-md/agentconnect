@@ -33,7 +33,9 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: ['src/**/*.test.ts', 'test/**/*.unit.test.ts', 'test/protocol/fencing.test.ts'],
-          environment: 'node'
+          environment: 'node',
+          // Reuse the unit dependency graph per worker; these suites do not mock modules.
+          isolate: false
         }
       },
       {

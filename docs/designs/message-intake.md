@@ -398,6 +398,9 @@ actually working — with a bounded observation layer under it, and it resolves 
 
 ## 9. The state a Decision sees
 
+A gate's state also names the agent it decides for, as `agent: { name, description }`
+([decisions.md](decisions.md#evaluation-state)); a router's, which chooses among several, does not yet.
+
 Built from the channel record at the reserved `seq`:
 
 - `currentMessage`: the row at `seq`.

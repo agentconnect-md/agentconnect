@@ -37,10 +37,20 @@ describe('Google Chat HTTP ingress route', () => {
     app = undefined
   })
 
-  it('answers 400 for a body that is not a JSON object with a string type', async () => {
+  it('answers 400 for a body that is not an add-on request', async () => {
     const handleInbound = vi.fn(answering({}))
     app = makeApp(handleInbound)
-    for (const payload of ['not json', '[]', '{}', '{"type":7}', 'null']) {
+    const payloads = [
+      'not json',
+      '[]',
+      '{}',
+      '{"type":"MESSAGE"}',
+      'null',
+      '{"chat":"x"}',
+      '{"chat":[]}',
+      '{"commonEventObject":{}}'
+    ]
+    for (const payload of payloads) {
       expect((await post(app, payload)).statusCode, payload).toBe(400)
     }
     expect(handleInbound).not.toHaveBeenCalled()
@@ -69,15 +79,20 @@ describe('Google Chat HTTP ingress route', () => {
     }
   })
 
-  it('sends the handled delivery’s synchronous body on the 200: the welcome card or the claim prompt (§10.4)', async () => {
+  it('sends the handled delivery’s synchronous body on the 200: the welcome card or the authorization prompt (§10.4)', async () => {
     const prompt = {
-      actionResponse: { type: 'REQUEST_CONFIG', url: 'https://console.example.test/googlechat/claim?state=e30' }
+      basic_authorization_prompt: {
+        authorization_url: 'https://console.example.test/googlechat/claim?state=e30',
+        resource: 'AgentConnect'
+      }
     }
-    app = makeApp(answering({ syncResponse: prompt }))
+    const handleInbound = vi.fn(answering({ syncResponse: prompt }))
+    app = makeApp(handleInbound)
     const response = await post(app, JSON.stringify(dmMessage))
     expect(response.statusCode).toBe(200)
     expect(response.headers['content-type']).toMatch(/application\/json/)
     expect(response.json()).toEqual(prompt)
+    expect(handleInbound).toHaveBeenCalledTimes(1)
   })
 
   it('answers 503 for a retry verdict so Google may redeliver', async () => {

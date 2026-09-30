@@ -132,6 +132,7 @@ async function harness() {
   const evaluate = vi.fn<(input: DecisionEvaluationInput) => Promise<DecisionEvaluation>>(async () => MATCH_BOTH)
   // What the host applies now; null means the routing is gone, undefined keeps the event's own projection.
   const live: { current?: HookRoutingProjection | null; base?: HookRoutingProjection } = {}
+  const info = vi.fn<(message: string) => void>()
   const router = new HookRouter({
     store: () => store,
     pullRequestContext: async () => undefined,
@@ -139,7 +140,7 @@ async function harness() {
     now: () => Date.now(),
     ownerFence: () => 'local:test',
     currentProjection: () => (live.current === null ? undefined : (live.current ?? live.base)),
-    log: { warn: () => {} }
+    log: { warn: () => {}, info }
   })
   let n = 0
   const post = async (text: string, candidates: RdHookRouteCandidate[] = ALL, thread = '42', p = projection()) => {
@@ -161,7 +162,7 @@ async function harness() {
   }
   const agentsOf = (outcome: Awaited<ReturnType<HookRouter['choose']>>) =>
     outcome.accepted ? outcome.targets.map((t) => t.hookId) : outcome.reason
-  return { store, evaluate, post, agentsOf, live }
+  return { store, evaluate, post, agentsOf, live, info }
 }
 
 describe('hook router (host choice)', () => {
@@ -305,6 +306,18 @@ describe('hook router (host choice)', () => {
     expect(h.agentsOf(outcome)).toEqual([HOOK, HOOK_B, HOOK_C])
     if (outcome.accepted)
       expect(outcome.targets[0]!.selection).toMatchObject({ reason: 'unavailable', unavailableReason: 'provider' })
+    await h.store.close()
+  })
+
+  it('logs where each evaluation spent its time', async () => {
+    const h = await harness()
+    await (await h.post('Fix')).choose()
+    h.evaluate.mockResolvedValue({ status: 'unavailable', reason: 'timeout' } as DecisionEvaluation)
+    await (await h.post('Fix again')).choose()
+    expect(h.info.mock.calls.map(([line]) => line)).toEqual([
+      expect.stringMatching(/^hook-router:\S+ seq=\d+ match context=\d+ms evaluate=\d+ms total=\d+ms$/),
+      expect.stringMatching(/ unavailable\/timeout context=\d+ms evaluate=\d+ms total=\d+ms$/)
+    ])
     await h.store.close()
   })
 
@@ -456,7 +469,7 @@ describe('code-host decision state', () => {
     expect(context.pullRequest.files[0]!.diff).toHaveLength(12 * 1024)
   })
 
-  it('retains the event on enrichment failure and omits supplements for another revision', async () => {
+  it('retains the event on enrichment failure', async () => {
     const store = await openTestStore()
     try {
       const msg = fire({
@@ -477,25 +490,6 @@ describe('code-host decision state', () => {
           subject: { body: 'It crashes.' },
           pullRequest: { headSha: 'expected', files: [], filesTruncated: true },
           context: { partial: true, reasons: ['observed_history', 'history_unavailable', 'pull_request_unavailable'] }
-        }
-      })
-      const changed = await loadCodeHostDecisionContext({
-        ...input,
-        pullRequest: async () => ({
-          description: 'Later description',
-          headSha: 'other',
-          commitMessages: ['Later commit'],
-          files: [{ path: 'src/app.ts', status: 'modified', diff: '+later', diffTruncated: false }],
-          filesTruncated: false,
-          reasons: []
-        })
-      })
-      expect(buildCodeHostDecisionState(changed!, decision)).toMatchObject({
-        state: {
-          currentMessage: { text: 'Review this' },
-          subject: { body: 'It crashes.' },
-          pullRequest: { headSha: 'expected', commitMessages: '', files: [], filesTruncated: true },
-          context: { reasons: expect.arrayContaining(['revision_mismatch']) }
         }
       })
       const pullRequest = vi.fn(async () => undefined)

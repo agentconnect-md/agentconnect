@@ -16,7 +16,7 @@ const env = vi.hoisted(() => ({ mock: false, role: 'owner' }))
 const evals = vi.hoisted(() => ({ listEvaluations: vi.fn() }))
 const data = vi.hoisted(() => ({
   setChannelTrigger: vi.fn(async () => undefined),
-  setChannelDecision: vi.fn(async () => undefined)
+  setChannelDecision: vi.fn(async (..._args: unknown[]) => undefined)
 }))
 
 vi.mock('@/lib/data', async (original) => ({
@@ -106,6 +106,16 @@ afterEach(async () => {
 
 const CHOICE_WHEN = { type: 'choice' as const, thresholds: { billing: 0.5, technical: 0.5, sales: 0.5 } }
 const CHOICE_SUMMARY = 'billing ≥ 50%, technical ≥ 50%, sales ≥ 50%'
+
+// The pill's rules moved from its native title into the shared hover card.
+async function hoverText(node: Element | null | undefined) {
+  await act(async () => node!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 300)))
+  const text = document.body.querySelector('[role="tooltip"]')?.textContent
+  await act(async () => node!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })))
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 200)))
+  return text
+}
 
 const group = (over: Partial<IntegrationChannelRow> = {}): IntegrationChannelRow => ({
   channelId: 'C1',
@@ -209,7 +219,7 @@ describe('IntegrationChannelList By decision', () => {
   it('renders a saved DTO gate as a row pill naming its decision and condition, with no banner when ready', async () => {
     await render([gated()])
     expect(pill()?.textContent).toBe('Support category')
-    expect(pill()?.title).toContain(CHOICE_SUMMARY)
+    expect(await hoverText(pill())).toContain(CHOICE_SUMMARY)
     expect(document.body.querySelector('[role="status"]')).toBeNull()
     expect(byText('Trigger when')).toBeUndefined()
   })
@@ -370,6 +380,63 @@ describe('IntegrationChannelList By decision', () => {
     expect(byText('Trigger when')).toBeUndefined()
   })
 
+  it('applies the rules to every channel of the bot but its DMs, after a confirm', async () => {
+    const confirm = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirm)
+    await render([
+      group(),
+      group({ channelId: 'C2', name: 'random' }),
+      group({ channelId: 'D1', kind: 'im', name: '@Alice' })
+    ])
+    await addDecision()
+    await click(byText('Apply to all channels'))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('all 2 channels'))
+    const gate = { type: 'gate', decisionId: 'support-category', when: CHOICE_WHEN }
+    expect(data.setChannelDecision.mock.calls).toEqual([
+      ['int-1', 'C1', gate],
+      ['int-1', 'C2', gate]
+    ])
+    expect(byText('Trigger when')).toBeUndefined()
+    vi.unstubAllGlobals()
+  })
+
+  it('names the channels an Apply to all could not save and retries them all', async () => {
+    const confirm = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirm)
+    data.setChannelDecision.mockImplementation(async (...args: unknown[]) => {
+      if (args[1] === 'C2') throw new Error('network down')
+      return undefined
+    })
+    await render([group(), group({ channelId: 'C2', name: 'random' })])
+    await addDecision()
+    await click(byText('Apply to all channels'))
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(
+      '1 channel could not be saved (random)'
+    )
+    data.setChannelDecision.mockReset().mockResolvedValue(undefined)
+    await click(byText('Retry'))
+    expect(data.setChannelDecision.mock.calls.map((call) => call[1])).toEqual(['C1', 'C2'])
+    vi.unstubAllGlobals()
+  })
+
+  it('offers no Apply to all from a group DM, whose rules stay its own', async () => {
+    await render([
+      group({ channelId: 'G1', kind: 'mpim', name: 'alice, bob' }),
+      group({ channelId: 'C2', name: 'random' })
+    ])
+    // Direct rows render after the channels, so the group DM's entry is the last one.
+    await click(all('button[aria-label="Add decision"]').at(-1))
+    await act(async () => {})
+    expect(document.body.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toContain('alice, bob')
+    expect(byText('Apply to all channels')).toBeUndefined()
+  })
+
+  it('offers no Apply to all when the bot has no other channel', async () => {
+    await render([group(), group({ channelId: 'D1', kind: 'im', name: '@Alice' })])
+    await addDecision()
+    expect(byText('Apply to all channels')).toBeUndefined()
+  })
+
   it('keeps the draft and shows the server field issue when the condition is refused', async () => {
     data.setChannelDecision.mockRejectedValue(
       new ApiError('The condition does not match the Decision question', 400, undefined, {
@@ -425,7 +492,7 @@ describe('IntegrationChannelList By decision', () => {
     await click(pill())
     expect(byText('Trigger when')).toBeTruthy()
     await click(byText('Cancel'))
-    expect(pill()?.title).toContain(CHOICE_SUMMARY)
+    expect(await hoverText(pill())).toContain(CHOICE_SUMMARY)
     expect(byText('Trigger when')).toBeUndefined()
   })
 
@@ -446,7 +513,7 @@ describe('IntegrationChannelList By decision', () => {
     await render([group()])
     await addDecision()
     await click(byText('Save'))
-    expect(pill()?.title).toContain(CHOICE_SUMMARY)
+    expect(await hoverText(pill())).toContain(CHOICE_SUMMARY)
     expect(data.setChannelDecision).not.toHaveBeenCalled()
     expect(data.setChannelTrigger).not.toHaveBeenCalled()
   })

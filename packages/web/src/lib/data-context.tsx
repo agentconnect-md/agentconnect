@@ -11,6 +11,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import useSWR, { useSWRConfig } from 'swr'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
+import { GiteaProductContext, giteaProductOf } from '@/lib/gitea-product'
 import { revalidateMountedSessionLists, useSessionList } from '@/lib/use-session-list'
 import { randomUuid } from '@/lib/random-uuid'
 import { accessNotificationSnapshot, type AccessNotificationSnapshot } from '@/lib/access-notification-snapshot'
@@ -42,6 +43,7 @@ import {
   leaveIntegrationConversation as apiLeaveIntegrationConversation,
   updateBot as apiUpdateBot,
   fetchIntegrations,
+  fetchGiteaConnections,
   createHook as apiCreateHook,
   createGithubHook as apiCreateGithubHook,
   createGitlabHook as apiCreateGitlabHook,
@@ -917,6 +919,11 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   } = useSWR<MemberSetDto[]>(consoleKeys.memberSets(orgKey), ([, orgId]) => fetchMemberSets(orgId as string))
   // Cheap feature gate for the connectors integration; mock mode reports it on so
   // the demo console shows the "Add connectors" flow.
+  // Only the instance product is read from this, so every Gitea mark draws Gitea or Forgejo; the card fetches its own copy.
+  const { data: giteaConnections } = useSWR(MOCK_MODE ? null : consoleKeys.giteaConnections(orgKey), ([, orgId]) =>
+    fetchGiteaConnections(orgId as string)
+  )
+  const giteaProduct = giteaProductOf(giteaConnections?.connections ?? [])
   const { data: connectorsConfig } = useSWR<{ enabled: boolean }>(
     consoleKeys.connectorsConfig(orgKey),
     MOCK_MODE ? () => Promise.resolve({ enabled: true }) : ([, orgId]) => fetchConnectorsConfig(orgId as string)
@@ -1925,7 +1932,11 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     ]
   )
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+  return (
+    <Ctx.Provider value={value}>
+      <GiteaProductContext.Provider value={giteaProduct}>{children}</GiteaProductContext.Provider>
+    </Ctx.Provider>
+  )
 }
 
 export function useConsoleData(): ConsoleData {

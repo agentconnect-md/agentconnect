@@ -52,6 +52,49 @@ export function rawAnswerFields(
     : { ...sent, raw }
 }
 
+export type RawAnswerFields = ReturnType<typeof rawAnswerFields>
+
+/** A chain's provider bodies by step index; the first step's stay top-level, where rawAnswerFields puts them. */
+export class ChainRawBodies {
+  private readonly requests: Array<string | undefined> = []
+  private readonly responses: Array<string | undefined> = []
+
+  hooks(index: number): Pick<DecisionEvaluationInput, 'onRawRequest' | 'onRawResponse'> {
+    return {
+      onRawRequest: (text) => {
+        this.requests[index] = text
+      },
+      onRawResponse: (text) => {
+        this.responses[index] = text
+      }
+    }
+  }
+
+  get request(): string | undefined {
+    return this.requests[0]
+  }
+
+  get raw(): string | undefined {
+    return this.responses[0]
+  }
+
+  /** The later steps' bodies, aligned with the trace (the first entry is empty); none for a lone Decision. */
+  steps(): RawAnswerFields[] {
+    const length = Math.max(this.requests.length, this.responses.length)
+    return length > 1
+      ? Array.from({ length }, (_, index) =>
+          index === 0 ? {} : rawAnswerFields(this.responses[index], this.requests[index])
+        )
+      : []
+  }
+
+  /** What a verdict's answerJson keeps: the first step's fields plus `stepRaw` for the rest. */
+  fields(): RawAnswerFields & { stepRaw?: RawAnswerFields[] } {
+    const stepRaw = this.steps()
+    return { ...rawAnswerFields(this.raw, this.request), ...(stepRaw.length ? { stepRaw } : {}) }
+  }
+}
+
 /** The provider's serialized input cap (decisions.md §7.3). */
 export const DECISION_REQUEST_MAX_BYTES = 32 * 1024
 

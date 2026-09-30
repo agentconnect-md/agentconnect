@@ -19,6 +19,8 @@ export function decisionUsageHref(
     return agentId ? agentPath(agentId) : null
   }
   if (usage.kind === 'agent_tool') return agentPath(usage.id, 'tools')
+  // An API gate sits on the agent's API card, on its default Integrations tab.
+  if (usage.kind === 'api_gate') return agentPath(usage.id)
   if (usage.kind === 'model_selection') return agentPath(usage.id, 'config')
   // Routing rules open from each routed conversation, so a bot's usage lands on its configuration.
   if (usage.kind === 'shared_bot_routing') return orgPath(`/integrations?bot=${encodeURIComponent(usage.id)}`)

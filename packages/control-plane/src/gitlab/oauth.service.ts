@@ -1,23 +1,6 @@
-/**
- * GitLab.com OAuth connection lifecycle (gitlab-com-integration.md §9).
- *
- * Three-hop flow: authenticated `start` mints the one-shot state row (sealed
- * PKCE verifier, exact return path) and hands back the CP's own `begin` URL;
- * the unauthenticated `begin` top-level navigation stamps a browser-binding
- * cookie hash onto the row exactly once and 302s to GitLab; the callback
- * consumes the row exactly once, requires the same browser, exchanges the code
- * with the stored verifier, reads the instance version, and upserts only the
- * starting user's org connection. That version read is the first credentialed
- * call the CP makes (§24.2): below the 18.11 floor the connection is refused
- * with `instance_version_unsupported` before any provisioning can begin.
- *
- * Refresh is a distributed single-writer (§9.3): a short lease elects one
- * refresher, the committed pair advances a tokenVersion CAS, and any failed or
- * ambiguous refresh marks the connection `reauth_required` — never a blind
- * retry, because GitLab invalidates BOTH old tokens on refresh.
- *
- * NEVER log codes, state values, verifiers, tokens, or token responses.
- */
+// Browser-bound PKCE OAuth checks instance support before provisioning (§9, §24.2).
+// Refresh uses a lease and tokenVersion CAS; an ambiguous result requires reauthentication (§9.3).
+// Never log codes, state values, verifiers, tokens, or token responses.
 import { createHash, randomBytes } from 'node:crypto'
 import type { Clock } from '../domain/clock.js'
 import { OrgId } from '../domain/ids.js'
@@ -56,7 +39,7 @@ export type GitlabOauthResultCode =
   | 'browser_mismatch'
   | 'exchange_failed'
   | 'config_missing'
-  /** §24.2: the instance is below the 18.11 floor, or would not say what it is. */
+  /** §24.2: the instance is below the floor or reports an unreadable version. */
   | typeof INSTANCE_VERSION_UNSUPPORTED_REASON
 
 export class GitlabOauthDenied extends Error {

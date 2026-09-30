@@ -10,6 +10,9 @@ export default defineConfig({
     }
   },
   test: {
+    // Reuse DOM dependencies while keeping each file's module mocks and globals in its own VM.
+    pool: 'vmForks',
+    vmMemoryLimit: '512MiB',
     environment: 'node',
     setupFiles: ['./src/i18n/test-setup.ts'],
     reporters: githubActionsReporters('web.md')

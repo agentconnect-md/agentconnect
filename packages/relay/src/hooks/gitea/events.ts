@@ -66,6 +66,10 @@ interface GiteaPullRequestRef extends GiteaIssueRef {
 
 /** The slice of a Gitea webhook payload the matcher and envelope read. */
 export interface GiteaPayload {
+  state?: string
+  context?: string
+  sha?: string
+  workflow_run?: { head_sha?: string; conclusion?: string }
   action?: string
   /** Comment deliveries only: whether the commented subject is a pull request. */
   is_pull?: boolean

@@ -16,6 +16,7 @@ import type {
   SessionRepo,
   SessionUsageRepo,
   WebchatConversationRepo,
+  AgentApiEntryRepo,
   UserRepo,
   OrgRepo,
   WaitlistRepo,
@@ -196,6 +197,8 @@ export interface HttpDeps {
     sessionUsage: SessionUsageRepo
     /** Ownership-only metadata that authorizes browser conversation resumes. */
     webchatConversation: WebchatConversationRepo
+    /** The chat APIs each agent accepts calls on (the API card on its Integrations tab). */
+    agentApiEntry: AgentApiEntryRepo
     /** WebUI human identity — JIT-provisions the user behind a verified OIDC token. */
     user: UserRepo
     /** The caller's orgs (picker, create, owner-gated rename). */

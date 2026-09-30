@@ -118,8 +118,7 @@ describe('provider service base paths', () => {
     const config = { services: loadDeploymentEnvironment(PREFIXED_ENVIRONMENT).services }
 
     expect(googleChatConfiguredUrls(config)).toMatchObject({
-      callbackUrl: 'https://gateway.example.test/relay/googlechat/events',
-      audienceSetting: 'Project Number'
+      callbackUrl: 'https://gateway.example.test/relay/googlechat/events'
     })
     expect(() =>
       googleChatConfiguredUrls({

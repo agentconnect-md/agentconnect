@@ -134,3 +134,38 @@ describe('Agent create — connect block tie-in', () => {
     expect(body.connect).toBeUndefined()
   })
 })
+
+describe('API keys cannot manage daemon credentials', () => {
+  it('refuses a full key on every daemon credential route while a signed-in caller keeps them', async () => {
+    const app = build('https://cp.example.com')
+    const minted = await app.app.inject({ method: 'POST', url: '/api/v1/me/keys', payload: { orgId: DEFAULT_ORG_ID } })
+    const headers = { authorization: `Bearer ${(minted.json() as { apiKey: string }).apiKey}` }
+    const daemon = (await app.app.inject({ method: 'POST', url: `${ORG}/daemons/token` })).json() as {
+      daemonId: string
+    }
+    const [key] = (await app.app.inject({ method: 'GET', url: `${ORG}/daemons/${daemon.daemonId}/keys` })).json() as {
+      id: string
+    }[]
+    const daemonsBefore = await prisma.daemon.count()
+
+    const refused = [
+      { method: 'POST' as const, url: `${ORG}/daemons/token` },
+      { method: 'GET' as const, url: `${ORG}/daemons/${daemon.daemonId}/keys` },
+      { method: 'POST' as const, url: `${ORG}/daemons/${daemon.daemonId}/keys` },
+      { method: 'DELETE' as const, url: `${ORG}/daemons/${daemon.daemonId}/keys/${key!.id}` },
+      { method: 'POST' as const, url: `${ORG}/agents?connect=true`, payload: { name: 'key-bot', runtime: 'claude' } }
+    ]
+    for (const request of refused) {
+      const res = await app.app.inject({ ...request, headers })
+      expect(res.statusCode, `${request.method} ${request.url}`).toBe(403)
+      expect((res.json() as { message: string }).message).toBe('interactive sign-in required')
+    }
+    expect(await prisma.daemon.count()).toBe(daemonsBefore)
+    expect(await prisma.apiKey.count({ where: { daemonId: daemon.daemonId } })).toBe(1)
+    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: key!.id } })).revokedAt).toBeNull()
+    expect(await prisma.agent.count({ where: { name: 'key-bot' } })).toBe(0)
+
+    const signedIn = await app.app.inject({ method: 'POST', url: `${ORG}/daemons/${daemon.daemonId}/keys` })
+    expect(signedIn.statusCode).toBe(201)
+  })
+})

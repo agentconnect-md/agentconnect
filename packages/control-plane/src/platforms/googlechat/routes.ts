@@ -1,4 +1,4 @@
-// A per-agent Chat app's key rotation, and the agent a claimed customer lands on (google-chat-integration.md §3, §10.5).
+// The deployment app's public identity, a per-agent Chat app's key rotation, and the agent a claimed customer lands on (google-chat-integration.md §3, §10.5).
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
@@ -17,6 +17,16 @@ import { buildGoogleChatInstall, resolveGoogleChatApp } from './provider.js'
 
 /** A per-agent Chat app's replacement key (write-only). */
 const ReplaceGoogleChatKeyBody = z.object({ serviceAccountKey: z.string().trim().min(1).max(20_000) })
+
+/** The deployment-owned app as the console may see it: public identity only, never the key. */
+const GoogleChatDeploymentAppDto = z.object({
+  projectNumber: z
+    .string()
+    .nullable()
+    .describe(
+      'The deployment app’s Google Cloud project number, which is also its Google Workspace Marketplace app ID; null when the deployment has no Google Chat app an organization can connect.'
+    )
+})
 
 /** The 409 copy when a pasted key would replace the deployment-owned app's, which the Setup Server holds. */
 export const GOOGLE_CHAT_DEPLOYMENT_KEY_MESSAGE =
@@ -73,6 +83,33 @@ export function googleChatErrorLabel(status: number): string {
     503: 'Service Unavailable'
   }
   return labels[status] ?? 'Error'
+}
+
+/** `GET /integrations/googlechat/app`: the deployment app's project number, from which the console derives its Marketplace listing. */
+export function googleChatAppRoutes(googleChat: Pick<GoogleChatRouteSeams, 'app'>) {
+  return async function googleChatAppRoutesPlugin(app: FastifyInstance): Promise<void> {
+    const r = app.withTypeProvider<ZodTypeProvider>()
+
+    r.get(
+      '/integrations/googlechat/app',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Get the deployment Google Chat app',
+          description:
+            'The Google Chat app configured in the Setup Server, by its public identity: the Google Cloud project number, which is also its Google Workspace Marketplace app ID, or null when the deployment has none or its console cannot serve the claim page (it is not https). An organization installs that app from its Marketplace listing and then connects itself from Google Chat (`POST /integrations/googlechat/claim`). Never returns the app’s key.',
+          operationId: 'getGoogleChatDeploymentApp',
+          response: { 200: GoogleChatDeploymentAppDto, 401: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (!req.principal) {
+          return reply.code(401).send({ error: 'Unauthorized', statusCode: 401, message: 'authentication required' })
+        }
+        return { projectNumber: googleChat.app?.projectNumber ?? null }
+      }
+    )
+  }
 }
 
 /** `PUT /bots/:id/googlechat/key`: rotate a per-agent Chat app's service-account key under the create path's validation. */

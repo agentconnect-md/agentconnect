@@ -26,7 +26,7 @@ workflows. The CP persists no content unless the binding chose the
 `control-plane` home (M-8). A
 unified capability registry in
 [`memory/runtime/capabilities.ts`](../../packages/daemon/src/memory/runtime/capabilities.ts)
-disables or redirects runtime-native memory to prevent duplicate memory stores.
+disables runtime-native memory under every backend except `native`, so two memory stores never run at once.
 
 **Design goal:** the memory system must be **flexible
 enough** for users to choose a backend: one **built into the agent** (the
@@ -95,9 +95,7 @@ interface CaptureReceipt {
 interface MemoryProvider {
   readonly kind: 'none' | 'native' | 'managed' | 'external'
 
-  /** managed/external/none disable runtime-native memory;
-   * native redirects it into the agent root.
-   */
+  /** managed/external/none disable runtime-native memory; native adds nothing. */
   runtimeEnv(runtime: RuntimeDef, effectiveEnv: NodeJS.ProcessEnv): Record<string, string>
 
   /** managed creates the directory/index; other providers may no-op. */
@@ -124,7 +122,7 @@ interface MemoryProvider {
 }
 ```
 
-`FileMemoryAdmin` preserves managed/native
+`FileMemoryAdmin` preserves managed
 `list/read/write(path,mtime)`. `RecordMemoryAdmin` provides external
 `search/list/get/create/update/delete/history(id,version)`. CP, wire, and web
 layers recognize three **representation shapes** — `files | records | none` —
@@ -140,7 +138,7 @@ Responsibilities of the four providers:
 |              | runtimeEnv                                                    | Session standing context | Per-turn recall                   | recordTurn                  | Model tools                                             | Console                    |
 | ------------ | ------------------------------------------------------------- | ------------------------ | --------------------------------- | --------------------------- | ------------------------------------------------------- | -------------------------- |
 | **none**     | Disable runtime-native memory through verified switches       | Empty                    | Empty                             | No-op                       | Empty                                                   | none                       |
-| **native**   | Point the runtime memory directory at the agent root          | Empty (runtime loads it) | Empty                             | No-op (runtime records)     | Empty (use runtime-native)                              | files                      |
+| **native**   | Nothing: the runtime keeps its own directories                | Empty (runtime loads it) | Empty                             | No-op (runtime records)     | Empty (use runtime-native)                              | none                       |
 | **managed**  | Disable native memory for known runtimes                      | `MEMORY.md` index        | Empty in v1 (future local search) | Distill + append (optional) | Common entry tools + `read/writeMemory` (compatibility) | entries (files fallback)   |
 | **external** | **Same as managed: disable native memory; never leave blank** | Empty                    | Call plugin every activation      | Capture into local outbox   | Common entry tools + core record tools (compatibility)  | entries (records fallback) |
 
@@ -171,18 +169,24 @@ and become available again after switching back to their original provider.
 
 The runtime already has memory: Claude Code has **auto-memory**
 (`~/.claude/projects/<proj>/memory/MEMORY.md` plus the CLAUDE.md hierarchy), and
-Codex has **AGENTS.md**. The native provider **neither injects nor distills**. It
-does only two things:
+Codex has **AGENTS.md**. The native provider **neither injects nor distills**, and it
+moves nothing:
 
-- `runtimeEnv()`: point the runtime's memory/configuration directory **at the
-  agent root**. For Claude, set
-  `CLAUDE_CONFIG_DIR=<agent-root>/.claude` and
-  `autoMemoryDirectory=<agent-root>/memory`, and **enable** auto-memory by
-  omitting `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` under native. Memory
-  remains outside the workspace, isolated per agent, and never leaks into the
-  host's `~/.claude`.
-- Console access: read and write the runtime's memory files under the agent
-  root.
+- `runtimeEnv()` adds no variable. It sets no off-switch, so the runtime's
+  own memory stays on, and no directory redirect, so the memory lives wherever
+  the launch keeps runtime state. Under the Host strategy that is the host's
+  `~/.claude` or `~/.codex`, shared with every Host agent on the daemon and
+  with the host user, login included. Claude keys its auto-memory by working
+  directory, so agents still keep separate entries. Codex consolidates one
+  global memory per `CODEX_HOME` and has no project scoping. Under a sandbox
+  it is the agent's private HOME.
+- The console shows no native memory. The runtime owns its format and
+  location.
+
+An earlier design redirected `CLAUDE_CONFIG_DIR` / `CODEX_HOME` into the agent
+root for per-agent isolation. Under the Host strategy that moved the runtime's
+login away too: Codex refused to start without the directory, and Claude
+started signed out (#2668).
 
 The advantage is zero AgentConnect-side logic and behavior matching the native
 runtime experience. The cost is that it is **runtime-specific**: Claude and
@@ -737,7 +741,7 @@ drive core branching.
 
 - Managed sessions use the common entry tools and the common entry browser;
   `readMemory`/`writeMemory` and the file console remain the compatibility path.
-  Native keeps its runtime-owned tools and the file view.
+  Native keeps its runtime-owned tools and has no console view.
 - External memory receives the common entry tools for its declared
   list/get/create/update/delete operations (last-write-wins, no exact edit), plus
   core record tools with stable names as the compatibility contract:
@@ -942,11 +946,11 @@ type MemoryConfig =
 
 ### 6.1 Memory Capabilities for New Runtimes / Agent Harnesses
 
-Disabling and redirecting runtime-native memory, as well as locating its files,
+Disabling runtime-native memory, and locating native memory under a HOME,
 are harness-specific capabilities registered centrally in
 [`memory/runtime/capabilities.ts`](../../packages/daemon/src/memory/runtime/capabilities.ts). They
 must not be scattered as provider-specific string checks. One runtime policy
-drives the off switch for `managed`/`none` and the redirect/read root for
+drives the off switch for `managed`/`none` and the memory location for
 `native`, preventing two allowlists from drifting. Matching prefers registry ID,
 with command/argument signature as a fallback for `npx`/`uvx` wrappers and
 custom aliases.
@@ -955,8 +959,8 @@ When adding a harness we promise to support, explicitly declare expected
 `managed`/`none`/`native` behavior in the ACP matrix profile, and compare the
 contract test to the production registry. `managed` is always available.
 `none` is available only after verifying an off switch (or verifying the absence
-of persistent native memory). `native` is available only after both redirect
-and console read root are verified. Like `none`, `external` requires a verified
+of persistent native memory). `native` is available only after its memory
+location is verified. Like `none`, `external` requires a verified
 off switch: selecting a third party as the only store must not let an unknown
 runtime secretly retain another persistent copy. See the complete product
 invariant in

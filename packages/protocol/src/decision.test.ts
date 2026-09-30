@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DECISION_AGENT_DESCRIPTION_MAX_BYTES,
+  decisionAgentContext,
   ChannelDecisionGate,
   DecisionBundle,
   DecisionBundleDefinition,
@@ -31,6 +33,9 @@ import {
   DECISION_PROVIDER_PROFILES,
   supportsDecision,
   supportsRepositorySelector,
+  gateUsageRules,
+  modelUsageRules,
+  routingUsageRules,
   type DecisionAnswer,
   type SharedBotDecisionRouting
 } from './decision.js'
@@ -887,5 +892,64 @@ describe('routing evaluation outcomes (decisions.md §9.5)', () => {
         constraint: [{ agentId: 'A', participant: true, via: 'mention', text: 'x' }]
       }).success
     ).toBe(false)
+  })
+})
+
+describe('decisionAgentContext', () => {
+  it('prefers the display name and cuts a long description to a whole-character UTF-8 prefix', () => {
+    expect(decisionAgentContext({ name: 'docs', displayName: ' Docs bot ', description: ' Answers docs. ' })).toEqual({
+      name: 'Docs bot',
+      description: 'Answers docs.'
+    })
+    expect(decisionAgentContext({ name: 'docs', displayName: '', description: null })).toEqual({
+      name: 'docs',
+      description: ''
+    })
+    const long = decisionAgentContext({ name: 'docs', description: '文'.repeat(1_000) })
+    expect(new TextEncoder().encode(long.description).length).toBeLessThanOrEqual(DECISION_AGENT_DESCRIPTION_MAX_BYTES)
+    expect(long.description).toBe('文'.repeat(Math.floor(DECISION_AGENT_DESCRIPTION_MAX_BYTES / 3)))
+  })
+})
+
+describe('usage rules', () => {
+  const yes = { type: 'boolean' as const, values: [true] }
+  const no = { type: 'boolean' as const, values: [false] }
+  it("lists the asking step's rules, continuing to a later step's Decision", () => {
+    const gate = { decisionId: 'd1', when: yes, nextStepId: 's2', steps: [{ id: 's2', decisionId: 'd2', when: no }] }
+    expect(gateUsageRules(gate, 'd1')).toEqual({
+      rules: [{ when: yes, then: { type: 'decision', decisionId: 'd2' } }],
+      otherwise: { type: 'skip' }
+    })
+    expect(gateUsageRules(gate, 'd2')).toEqual({
+      rules: [{ when: no, then: { type: 'trigger' } }],
+      otherwise: { type: 'skip' }
+    })
+    expect(gateUsageRules(gate, 'd3')).toBeNull()
+  })
+  it("gives every routing step the router's Otherwise", () => {
+    const routing = {
+      decisionId: 'd1',
+      otherwise: { type: 'default_agent' as const },
+      rules: [
+        { id: 'r1', when: yes, action: { type: 'agent' as const, agentId: 'a1' } },
+        { id: 'r2', when: no, action: { type: 'decision' as const, nextStepId: 's2' } }
+      ],
+      steps: [{ id: 's2', decisionId: 'd2', rules: [{ id: 'r3', when: yes, action: { type: 'skip' as const } }] }]
+    }
+    expect(routingUsageRules(routing, 'd1')?.rules.map((rule) => rule.then)).toEqual([
+      { type: 'agent', agentId: 'a1' },
+      { type: 'decision', decisionId: 'd2' }
+    ])
+    expect(routingUsageRules(routing, 'd2')).toEqual({
+      rules: [{ when: yes, then: { type: 'skip' } }],
+      otherwise: { type: 'default_agent' }
+    })
+  })
+  it("falls back to the agent's own model", () => {
+    const selection = { decisionId: 'd1', rules: [{ when: yes, runtime: 'claude', model: 'opus' }] }
+    expect(modelUsageRules(selection, 'd1', { runtime: 'claude', model: 'sonnet' })).toEqual({
+      rules: [{ when: yes, then: { type: 'model', runtime: 'claude', model: 'opus' } }],
+      otherwise: { type: 'model', runtime: 'claude', model: 'sonnet' }
+    })
   })
 })

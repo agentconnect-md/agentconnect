@@ -3,7 +3,7 @@
 // Agent-type + IM-platform brand marks.
 // Sized to 60% of their container to match the .av / .imark CSS.
 
-import { useState, type ReactNode } from 'react'
+import { useState, type CSSProperties, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from './ui'
 import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
@@ -14,8 +14,9 @@ import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
 import { FcGoogle } from 'react-icons/fc'
-import { SiGitea, SiGithub } from 'react-icons/si'
+import { SiForgejo, SiGitea, SiGithub, SiVercel } from 'react-icons/si'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+import { useGiteaProduct } from '@/lib/gitea-product'
 import { LARK_MARK_SRC } from './console/platforms/feishu/mark'
 import { platformMark } from './console/platforms/marks'
 import { markBox, squareMarkBox } from './mark-box'
@@ -238,16 +239,57 @@ export function GitlabMark({ fillPct = 60 }: { fillPct?: number }) {
   return <IconifyIcon icon={gitlabIcon} ssr style={markBox(fillPct)} aria-hidden />
 }
 
-// Gitea mark — the simple-icons glyph in Gitea's brand green; `color` overrides it for a monochrome surface.
+// Gitea mark — the simple-icons glyph in its brand color, Forgejo's when the instance is Forgejo; `color` overrides it for a monochrome surface.
 export const GITEA_BRAND_COLOR = '#609926'
-export function GiteaMark({ color = GITEA_BRAND_COLOR, fillPct = 60 }: { color?: string; fillPct?: number }) {
-  return <SiGitea style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} aria-hidden />
+export const FORGEJO_BRAND_COLOR = '#FB923C'
+export function GiteaMark({ color, fillPct = 60 }: { color?: string; fillPct?: number }) {
+  return <GiteaProductGlyph style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} />
+}
+
+function GiteaProductGlyph({ style, color }: { style: CSSProperties; color?: string }) {
+  if (useGiteaProduct() === 'forgejo')
+    return <SiForgejo style={style} color={color ?? FORGEJO_BRAND_COLOR} aria-hidden />
+  return <SiGitea style={style} color={color ?? GITEA_BRAND_COLOR} aria-hidden />
 }
 
 /** The Kubernetes wheel — what a SELF-HOSTED pool is: the operator's own cluster, named by the
  *  thing they actually run. Cloud is the same pool as a product and keeps its own cloud glyph. */
 export function KubernetesMark({ fillPct = 100 }: { fillPct?: number }) {
   return <IconifyIcon icon={kubernetesIcon} ssr style={markBox(fillPct)} aria-hidden />
+}
+
+// AG-UI's kite and ACP's glyph, copied from each protocol's own logo SVG; both are single-color, so they take the text color.
+const AG_UI_KITE =
+  'M0,25.9335975 L16.5448881,6.52325783e-15 C40.848296,5.37332138 53,8.05998207 53,8.05998207 L43.1229639,62 L0,25.9335975 Z'
+const ACP_GLYPH =
+  'M130.75.385c5.428 0 10.297 2.81 13.011 7.511l14.214 24.618-.013-.005c2.599 4.504 2.707 9.932.28 14.513-2.618 4.944-7.862 8.015-13.679 8.015h-31.811c-.452 0-.873-.242-1.103-.637a1.268 1.268 0 0 1 0-1.274l3.919-6.78c.223-.394.65-.636 1.102-.636h28.288a5.622 5.622 0 0 0 4.925-2.849 5.615 5.615 0 0 0 0-5.69l-14.214-24.617a5.621 5.621 0 0 0-4.925-2.848 5.621 5.621 0 0 0-4.925 2.848l-14.214 24.618a6.267 6.267 0 0 0-.319.643.998.998 0 0 1-.069.14L101.724 54.4l-.823 1.313-2.529 4.39a1.27 1.27 0 0 1-1.103.636h-7.83c-.452 0-.873-.242-1.102-.637-.23-.394-.23-.879 0-1.274l2.188-3.791H66.803c-3.32 0-6.454-1.122-8.818-3.167a17.141 17.141 0 0 1-3.394-3.96 1.261 1.261 0 0 1-.091-.137L34.2 12.573a5.622 5.622 0 0 0-4.925-2.849 5.621 5.621 0 0 0-4.924 2.85L10.137 37.19a5.615 5.615 0 0 0 0 5.69 5.63 5.63 0 0 0 4.925 2.841h29.862a1.276 1.276 0 0 1 1.102 1.912l-3.912 6.778a1.27 1.27 0 0 1-1.102.638H14.495c-3.32 0-6.454-1.128-8.817-3.173-5.906-5.104-7.36-12.883-3.62-19.363L16.267 7.89C18.872 3.385 23.517.583 28.697.39c.184-.006.356-.006.534-.006 5.378 0 10.45 3.007 13.246 7.85l12.986 22.372L68.58 7.891C71.186 3.385 75.83.582 81.01.39c.185-.006.358-.006.536-.006 4.453 0 8.71 2.039 11.672 5.588.337.407.388.98.127 1.446l-3.765 6.6a1.268 1.268 0 0 1-2.205.006l-.847-1.465a5.623 5.623 0 0 0-4.926-2.848 5.622 5.622 0 0 0-4.924 2.848L62.464 37.18a5.614 5.614 0 0 0 0 5.689 5.628 5.628 0 0 0 4.925 2.842H95.91L117.76 7.87c2.714-4.683 7.575-7.486 12.99-7.486Z'
+
+/** A chat API protocol's mark in the text color: AI SDK UI under ai-sdk.dev's Vercel triangle, AG-UI and ACP from their logos. */
+export function ApiProtocolMark({ protocol }: { protocol: string }) {
+  const sq = squareMarkBox(100)
+  switch (protocol) {
+    case 'ai-sdk-ui':
+      return <SiVercel style={sq} color="currentColor" aria-hidden />
+    case 'ag-ui':
+      // A hairline at this size, so the stroke holds one screen width instead of scaling with the artwork.
+      return (
+        <svg viewBox="0 0 57 66" style={sq} fill="none" stroke="currentColor" aria-hidden>
+          <g transform="translate(2 2)" strokeWidth={1.25}>
+            <path d={AG_UI_KITE} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+            <line x1="16.5828221" y1="-1.07552856e-15" x2="43.2453988" y2="62" vectorEffect="non-scaling-stroke" />
+            <line x1="0" y1="25.9335975" x2="53" y2="8.48421053" vectorEffect="non-scaling-stroke" />
+          </g>
+        </svg>
+      )
+    case 'acp-2':
+      return (
+        <svg viewBox="0 0 160 61" style={markBox(100)} fill="currentColor" aria-hidden>
+          <path d={ACP_GLYPH} />
+        </svg>
+      )
+    default:
+      return <Icon name="code-xml" className="h-full w-full" />
+  }
 }
 
 /**
@@ -266,13 +308,8 @@ export function KubernetesMark({ fillPct = 100 }: { fillPct?: number }) {
  */
 export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fillPct?: number }) {
   const x = (platform || '').toLowerCase()
-  // Marks render at 60% of their box to sit inside .av / .imark tiles; callers can override
-  // fillPct — e.g. the Bots row fills a 14px box (fillPct=100) to match the design's full-bleed mark.
+  // `s` is for glyphs whose artwork carries padding; `sq` caps full-bleed brand artwork, as every platform module's mark does.
   const s = fillPct === 60 ? fill : markBox(fillPct)
-  // GitHub ships as a full-bleed square glyph with no internal padding of its own,
-  // so a caller asking for a full-bleed box (fillPct=100, e.g. the session rail
-  // rows) would render it visibly larger than every other mark beside it. The
-  // Slack and Discord marks take the same cap inside their own modules.
   const sq = squareMarkBox(fillPct)
   if (x.includes('github')) {
     return <SiGithub style={sq} color="currentColor" aria-hidden />
@@ -282,10 +319,18 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
     return <IconifyIcon icon={gitlabIcon} ssr style={sq} aria-hidden />
   }
   if (x.includes('gitea')) {
-    return <SiGitea style={sq} color={GITEA_BRAND_COLOR} aria-hidden />
+    return <GiteaProductGlyph style={sq} />
   }
   if (x.includes('hook')) {
-    return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />
+    return <IconifyIcon icon={webhooksLogoFillIcon} style={sq} color="var(--brand)" aria-hidden />
+  }
+  // The agent's chat API tile, a protocol rather than a platform.
+  if (x === 'api') {
+    return (
+      <span style={{ width: s.width, height: s.height }} className="flex items-center justify-center" aria-hidden>
+        <Icon name="code-xml" className="h-full w-full" color="var(--text-secondary)" />
+      </span>
+    )
   }
   // Headless schedule fires — no real platform channel behind them.
   if (x.includes('sched')) {

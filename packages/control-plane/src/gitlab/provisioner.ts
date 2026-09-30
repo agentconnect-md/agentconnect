@@ -137,10 +137,8 @@ export interface GitlabProvisionerDeps {
    *  the freshly read canonical facts. `cloneUrl` is the provider's own
    *  `http_url_to_repo` — never composed (§24.1). */
   syncWorkspacePaths?: (orgId: string, projectId: bigint, projectPath: string, cloneUrl?: string) => Promise<void>
-  /** Fired after any run that may have changed binding/webhook facts — the
-   *  container rebroadcasts the project's compiled hook rules (assign or
-   *  remove) so relays never keep a rule built from stale facts. */
-  onConverged?: (orgId: string, projectId: bigint) => void
+  /** Awaited when binding facts change, including before a webhook test delivery. */
+  onConverged?: (orgId: string, projectId: bigint) => void | Promise<void>
   api: GitlabApiClient
   log?: { warn(obj: object, msg: string): void }
 }
@@ -155,6 +153,14 @@ export class GitlabProvisioner {
   private readonly pendingFollowUps = new Set<string>()
 
   constructor(private readonly deps: GitlabProvisionerDeps) {}
+
+  private async notifyConverged(orgId: string, projectId: bigint): Promise<void> {
+    try {
+      await this.deps.onConverged?.(orgId, projectId)
+    } catch (err) {
+      this.deps.log?.warn({ err }, 'gitlab relay subscription refresh failed')
+    }
+  }
 
   /** Converge one binding to ready; persists the outcome state on the binding. */
   async provision(orgId: string, bindingId: string, opts: { followUp?: boolean } = {}): Promise<ProvisionOutcome> {
@@ -458,17 +464,8 @@ export class GitlabProvisioner {
       // become visible to convergence together, never one without the other.
       try {
         const result = await commit(live)
-        // The commit just made a new account and membership visible — and, after a
-        // rename, a new path. Compiled rules bake the project's bound
-        // service-account ids into their §12.1 veto set, and push events are
-        // relay-trusted once past it, so a rule left compiled from the old set
-        // would let this bot's own pushes trigger its siblings' hooks.
-        this.deps.onConverged?.(orgId, binding.projectId)
-        // The commit just made a new account and membership visible — and, after a
-        // rename, a new path. Compiled rules bake the project's bound
-        // service-account ids into their §12.1 veto set, and push events are
-        // relay-trusted once past it, so a rule left compiled from the old set
-        // would let this bot's own pushes trigger its siblings' hooks.
+        // Refresh the relay's bot veto set after publishing the new account membership.
+        await this.notifyConverged(orgId, binding.projectId)
         return { ok: true, result }
       } catch (e) {
         // The write never landed, so the bind it was for must not outlive it.
@@ -568,7 +565,7 @@ export class GitlabProvisioner {
       // Nothing was written for a contended pass, so something must come back
       // for it: a create, a takeover, or a single repair has no loop of its own.
       if (contended(outcome) && followUp) await this.scheduleFollowUp(orgId, binding.id, binding.projectId)
-      this.deps.onConverged?.(orgId, binding.projectId)
+      await this.notifyConverged(orgId, binding.projectId)
       return outcome
     } catch (e) {
       return this.failed(orgId, binding.id, e)
@@ -762,6 +759,7 @@ export class GitlabProvisioner {
       webhookId,
       desiredEventsHash: JSON.stringify(events)
     })
+    await this.notifyConverged(orgId, binding.projectId)
     if (fresh) {
       await gitlabTestWebhook(token, binding.projectId, webhookId, 'push_events', this.deps.api).catch((e) => {
         this.deps.log?.warn(
@@ -790,9 +788,8 @@ export class GitlabProvisioner {
       return { removed: false, reason: 'provisioning_in_progress' }
     }
     await this.deps.bindings.bumpCredentialEpoch(orgId, bindingId)
-    // The binding just left the servable states — pull the project's compiled
-    // rules off the relay pool now, not when cleanup eventually completes.
-    this.deps.onConverged?.(orgId, binding.projectId)
+    // Withdraw relay subscriptions as soon as cleanup revokes the binding.
+    await this.notifyConverged(orgId, binding.projectId)
     if (!binding.installerConnectionId) {
       await this.deps.bindings.update(orgId, bindingId, {
         state: 'cleanup_pending',

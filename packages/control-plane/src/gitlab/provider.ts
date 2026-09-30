@@ -130,7 +130,7 @@ export const gitlabCodeHostProvider: CodeHostProviderModule = {
     convergeManagedRepository: (deps, orgId, repoId, onError) => {
       const gitlab = deps.gitlab
       if (!gitlab || repoId === null) return
-      void gitlab.provisioner.convergeProject(orgId, repoId).catch(onError)
+      return gitlab.provisioner.convergeProject(orgId, repoId).catch(onError)
     }
   },
   routing: {

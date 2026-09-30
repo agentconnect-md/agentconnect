@@ -1,6 +1,6 @@
 // The Gitea arm of `rc/codehost-membership-authz` (gitea-integration.md §8): the actor's CURRENT permission through the connection token, never a delivered label; the login is re-resolved to its id first and the bot's `admin` carries the lookup, so `admin_degraded` fails closed.
 import type { RcCodeHostMembershipAuthz } from '@agentconnect.md/protocol'
-import { HookId } from '../domain/ids.js'
+import { HookId, OrgId } from '../domain/ids.js'
 import type {
   CodeHostTrustedActorRepo,
   GiteaConnectionRepo,
@@ -95,42 +95,10 @@ export class GiteaMembershipAuthzService {
     if (!first) return false
     if (authorizedHooks.some((candidate) => candidate.orgId !== first.orgId)) return false
 
-    // The rule's backing binding must be fully converged: the lookup needs the bot's admin (§4.4).
-    const binding = await this.deps.bindings.byRepo(first.orgId, repoId)
-    if (!binding || !authorizesMembership(binding.state)) return false
-    const connection = await this.deps.connections.get(binding.orgId, binding.connectionId)
-    if (!connection || connection.state !== 'connected') return false
-    const path = splitGiteaRepoPath(binding.repoPath)
-    if (!path) return false
-
-    // Loop guard (§8): the bot itself never authorizes a trigger, as the subject author or the actor.
     const actors: Actor[] = [{ id: BigInt(req.actorExternalId), username: req.actorUsername }]
-    if (req.subjectAuthorExternalId !== undefined) {
+    if (req.subjectAuthorExternalId !== undefined)
       actors.push({ id: BigInt(req.subjectAuthorExternalId), username: req.subjectAuthorUsername })
-    }
-    if (actors.some((actor) => actor.id === connection.botUserId)) return false
-    // Gitea's lookup is by username: a delivery that carries none cannot be authorized.
-    if (actors.some((actor) => actor.username === undefined)) return false
-
-    let token: string
-    try {
-      token = await this.deps.tokens.withToken(binding.orgId, binding.connectionId)
-    } catch {
-      return false
-    }
-    const trusted = await this.deps.trustedActors.actorIdsForRepo(first.orgId, 'gitea', repoId)
-    try {
-      for (const actor of actors) {
-        if (!(await this.actorAdmitted(token, path, actor, trusted, repoId))) return false
-      }
-    } catch (e) {
-      // A rejected token is the connection's verdict (§4.3), and this delivery's denial.
-      if (isGiteaAuthRejection(e)) {
-        await this.deps.tokens.onAuthRejected(binding.orgId, binding.connectionId)
-        return false
-      }
-      throw e
-    }
+    if (!(await this.actorsAllowed(first.orgId, repoId, actors))) return false
 
     // Re-read immediately before the allow verdict so a concurrent disable or retarget cannot
     // authorize a sibling whose durable snapshot is no longer current.
@@ -149,6 +117,43 @@ export class GiteaMembershipAuthzService {
   }
 
   // §8: the re-resolved id must match the delivered one, then the permission, the "Trusted users" list, or a team admits; a failed identity check is rescued by neither.
+  async actorsAllowed(orgId: string, repoId: bigint, actors: Actor[]): Promise<boolean> {
+    // The rule's backing binding must be fully converged: the lookup needs the bot's admin (§4.4).
+    const binding = await this.deps.bindings.byRepo(orgId, repoId)
+    if (!binding || !authorizesMembership(binding.state)) return false
+    const connection = await this.deps.connections.get(binding.orgId, binding.connectionId)
+    if (!connection || connection.state !== 'connected') return false
+    const path = splitGiteaRepoPath(binding.repoPath)
+    if (!path) return false
+
+    // Loop guard (§8): the bot itself never authorizes a trigger, as the subject author or the actor.
+    if (actors.some((actor) => actor.id === connection.botUserId)) return false
+    // Gitea's lookup is by username: a delivery that carries none cannot be authorized.
+    if (actors.some((actor) => actor.username === undefined)) return false
+
+    let token: string
+    try {
+      token = await this.deps.tokens.withToken(binding.orgId, binding.connectionId)
+    } catch {
+      return false
+    }
+    const trusted = await this.deps.trustedActors.actorIdsForRepo(OrgId(orgId), 'gitea', repoId)
+    try {
+      for (const actor of actors) {
+        if (!(await this.actorAdmitted(token, path, actor, trusted, repoId))) return false
+      }
+    } catch (e) {
+      // A rejected token is the connection's verdict (§4.3), and this delivery's denial.
+      if (isGiteaAuthRejection(e)) {
+        await this.deps.tokens.onAuthRejected(binding.orgId, binding.connectionId)
+        return false
+      }
+      throw e
+    }
+
+    return true
+  }
+
   private async actorAdmitted(
     token: string,
     path: RepoPath,

@@ -4,6 +4,7 @@ import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { TurnOutputSurface } from '../turn-output.js'
 import { googleChatElicitCards } from './elicit-card.js'
 import {
+  acknowledgeGoogleChatTurn,
   applyGoogleChatAction,
   GoogleChatConverger,
   initialGoogleChatTurnState,
@@ -24,6 +25,8 @@ export function createGoogleChatTurnOutput(
 ): TurnOutputSurface<Pending, DaemonRenderAction, GoogleChatConverger, NormalizedMessage> {
   return {
     platform: 'googlechat',
+    // No app reaction or typing indicator exists, so a slow turn is acknowledged by a placeholder (§5).
+    acknowledge: (ctx, turn) => acknowledgeGoogleChatTurn(ctx, turn, { warn: (message) => host.warn(message) }),
     elicitCards: googleChatElicitCards,
     createConverger: (ctx) => new GoogleChatConverger(normalizeMode(ctx.mode), ctx.resolveFileLink),
     initialTurnState: (ctx): GoogleChatTurnState => initialGoogleChatTurnState(ctx),

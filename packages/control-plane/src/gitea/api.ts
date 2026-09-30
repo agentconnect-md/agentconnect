@@ -7,6 +7,27 @@
  */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
 
+export interface GiteaFeedbackPull {
+  number: number
+  state: string
+  merged: boolean
+  head: { ref: string; sha: string; repo: { id: number } | null }
+}
+
+export async function giteaFeedbackPulls(
+  token: string,
+  repoPath: string,
+  number: number | undefined,
+  client: GiteaApiClient
+): Promise<GiteaFeedbackPull[]> {
+  const root = `/repos/${repoPath.split('/').map(encodeURIComponent).join('/')}/pulls`
+  const pulls =
+    number !== undefined
+      ? [await giteaRequest<GiteaFeedbackPull>(`${root}/${number}`, { token, client })]
+      : await giteaPagedGet<GiteaFeedbackPull>(`${root}?state=open`, { token, client, pageSize: 50 })
+  return pulls.filter((pull) => pull.state === 'open' && !pull.merged && pull.head?.repo)
+}
+
 /** `AUTH_REJECTED` is the definite rejection of §4.3; `FORBIDDEN` is a per-resource refusal of a valid token. */
 export type GiteaErrorCode = 'AUTH_REJECTED' | 'FORBIDDEN' | 'NOT_FOUND' | 'RATE_LIMITED' | 'VALIDATION' | 'INTERNAL'
 

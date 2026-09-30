@@ -177,7 +177,10 @@ shared-bot router independently to the same primary delivery.
 
 The initial surfaces are group conversations that already expose Off / Mention /
 Any message. Binary 1:1 DM controls, webchat, code-host hooks, cron, and direct agent
-calls retain their existing behavior. A gate evaluates all eligible conversational
+calls retain their existing behavior. A chat API the agent added is the one webchat
+exception: its gate lives in the agent's `apiGates`, keyed by protocol, and the
+daemon evaluates it on each API turn's text before admission
+([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api)). A gate evaluates all eligible conversational
 messages, including explicit mentions and replies in an existing thread. A negative
 answer never chooses another agent or clears a `!stop` mute.
 
@@ -341,6 +344,13 @@ retention separate from user-visible session transcript retention.
 
 Construct a structured state containing:
 
+- `agent`: the one agent the evaluation decides for, as `{ name, description }`: its
+  display name and the description its owner wrote, cut to a 2 KiB UTF-8 prefix, so a
+  question such as "is this something this agent can answer?" needs no copy of the
+  agent in its instructions. One Decision still serves many agents, since each
+  evaluation names its own. A channel gate, an API gate, and a new session's model and
+  repository selection carry it; a shared-bot router or code-host hook routing, which
+  choose among several agents, do not yet;
 - `currentMessage`: the one message being evaluated, including its sender and ID;
 - `history`: the retained prior conversation observations in chronological order;
 - `conversation`: relevant channel description or topic, when available;
@@ -730,7 +740,7 @@ consumer kind without restricting the reusable resource to gates and routers.
 | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `GET /decisions/providers?daemonId=:id`                                | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness       |
 | `GET /decisions`                                                       | Visible definitions, model/type, visible consumer counts                                    |
-| `GET /decisions/:id`                                                   | Definition and visible consumer usages                                                      |
+| `GET /decisions/:id`                                                   | Definition and visible consumer usages, each with this Decision's rules at that place       |
 | `POST /decisions`                                                      | DecisionDraft                                                                               |
 | `PATCH /decisions/:id`                                                 | Complete DecisionDraft, atomically saved                                                    |
 | `DELETE /decisions/:id`                                                | Refuse while used                                                                           |
@@ -743,6 +753,8 @@ consumer kind without restricting the reusable resource to gates and routers.
 | `GET /integrations/:id/channels/:channelId/decision-evaluations/:seq`  | One evaluation's frozen snapshot, input, answer, and evidence, or `detailsExpired`          |
 | `GET /agents/:id/model-evaluations`                                    | Session-start model choices, scoped to the Agent and each session's audience                |
 | `GET /agents/:id/model-evaluations/:seq`                               | One frozen model choice and its retained input, answer, and rules                           |
+| `GET /agents/:id/api/:protocol/evaluations`                            | A chat API gate's verdicts, newest first; editors of the Agent only                         |
+| `GET /agents/:id/api/:protocol/evaluations/:seq`                       | One API gate verdict's frozen snapshot, call text, answer, and chain                        |
 | `POST /bots/:id/decision-routing/preview` (Stage 2)                    | Routing draft, channel and sample context; precedence outcome or answer/rule/target         |
 | `GET /bots/:id/decision-routing/evaluations` (Stage 2)                 | Router verdicts newest first by `channelId`/`cursor`/`limit`; each row's audience checked   |
 | `GET /bots/:id/decision-routing/evaluations/:seq?channelId=` (Stage 2) | One router verdict's snapshots, constraint, input, answer, and per-target admissions        |
@@ -1082,6 +1094,7 @@ the model compares sender IDs, not display names, when attributing repeated cond
 
 ```json
 {
+  "agent": { "name": "Community helper", "description": "Answers product questions in the community channels." },
   "currentMessage": {
     "id": "message-c",
     "sender": { "id": "member-7", "name": "Example member" },
@@ -1107,8 +1120,8 @@ No agent-generated summary is needed to collect this context. `omittedMessages`
 counts known local removals only, never an invented count of unseen platform history.
 The supplied state is conversation data; instructions come from the saved question.
 
-Build the input in this order: preserve the question and current message, add the
-conversation metadata, then include the newest history that fits and present it
+Build the input in this order: preserve the question, the agent and the current message,
+add the conversation metadata, then include the newest history that fits and present it
 oldest-first. The 8,000-token budget is the target for the whole request, including
 the question and serialization. Use a verified provider-compatible counter when
 available; otherwise report the estimate as such and additionally cap serialized
@@ -1313,7 +1326,7 @@ Use the existing Console surface, with the following reading and tab order:
 | Channels   | Searchable multiselect of this bot's eligible group channels; Off rows disabled with an enable-settings link          |
 | Rules      | Numbered When / Then rows, Add rule, Remove; Choice shows all matches, Score rows sort by lower bound                 |
 | Otherwise  | Fixed final row: Use default agent or Do not activate                                                                 |
-| Footer     | Cancel, Save; dirty, saving, success and retry states                                                                 |
+| Footer     | Try a message (§9.3), Cancel, Save; dirty, saving, success and retry states                                           |
 
 One scope applies to the whole rule list. Selecting channels explicitly applies
 By decision to those enabled conversations on Save. Show the affected channel names
@@ -1367,12 +1380,36 @@ The prototype must model those transitions rather than changing only its button 
 
 ### 9.3 Previews with the correct consumer
 
-For the initial chat examples, input is Current message and optional ordered
-Conversation history with sender IDs. Routing also chooses a channel and a sample situation: new conversation,
-explicit mention, or established thread. These are preview inputs, not runtime
-policy switches. Draft edits make prior results stale until rerun. The console's
-rules modal no longer offers routing Try; the routing rows below describe the
-`decision-routing/preview` endpoint, which remains.
+Every consumer's rules modal offers **Try a message** with one input: the sample
+**state**, shaped as the live Jev state that consumer sends, or a subset of it. The
+fields the consumer binds are never part of the sample: its agent, source,
+conversation, repository and context, and each entry's `id`, `threadId` and `time`.
+The editor draws the state as its JSON, folds the bound fields into `…`, and makes
+only the varying values editable: message texts, history rows (add and remove),
+sender ids as small fields, and the consumer-specific parts below. **Raw JSON**
+switches to the same state as text; both editors validate against one protocol
+schema per consumer, and a bound field is refused by name rather than dropped.
+
+| Consumer           | Sample state                                                                                              | Endpoint                                                |
+| ------------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Conversation gate  | `currentMessage` (`sender.id`, `text`), `history[]`                                                       | `integrations/:id/channels/:channelId/decision-preview` |
+| Shared-bot routing | As a gate, plus `addressing` (`mentions`, `constraint`); the channel is the row the modal was opened from | `bots/:id/decision-routing/preview`                     |
+| Chat API gate      | `currentMessage.text`; `history` is always empty                                                          | `agents/:agentId/api/:protocol/gate/preview`            |
+| Code-host routing  | `event`, `subject`, `currentMessage`, `history[]`, and `pullRequest` for a proposed-change family         | `decision-routing/:provider/:repoId/:family/preview`    |
+
+Routing reads its situation from `addressing` as the router's own state carries it:
+none is a new conversation, `mentions` an explicit mention, and a `constraint`
+without mentions an established thread whose `participantAgentIds` already
+participate. These are preview inputs, not runtime policy switches. Draft edits
+make prior results stale until rerun; switching editors does not.
+
+Each evaluated result carries **Details**, which opens the run in its lane's
+Recent evaluations detail view: the gate detail for the conversation, API and
+code-host lanes, and the routing detail for a shared bot, drawn by the same
+components. The CP builds that record from the exact state it sent (bound fields
+included) and the settled outcome. A daemon advertising `decision-preview-raw-v1`
+is asked for the provider request and response JSON with `raw: true`; the CP
+proxies them and stores nothing. The drawer states that the run is not recorded.
 
 | Surface / situation          | Result shown                                                                                                                        |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -1437,22 +1474,38 @@ Follow-ups use that pinned target and create no new evaluation. Detail bodies ex
 after 24 hours or 20 newer choices for the same Agent; summaries expire after seven
 days. The CP proxies these reads without persisting their content.
 
-Decision detail shows its places of use and their recent evaluations in one card:
-a tab per place (conversation gates, Shared Bot Routing, repository routing, Agent
-model selection, and agent tools, which record none) after an **All** tab that merges
-every recorded place's latest page by time. Each place shows its integration's, bot's,
-code host's, or agent's mark; a place whose conversation the viewer cannot read is
-shown as hidden rather than failed, and a row whose bodies have expired says so.
-Hovering a tab names the place's kind and,
-for a gate, whether its condition needs review; a selected place offers its settings
-and its full list in a drawer, and places the viewer cannot see are counted below.
-Each source retains its own list, retention, detail drawer, and access checks;
-sibling installs of one bot have separate gate sources. The optional
+Decision detail lists its places of use in one card, a row per place (conversation
+gates, Shared Bot Routing, repository routing, Agent model selection, chat API gates,
+and agent tools, which record none). Each row shows the place's integration, bot, code
+host, or agent mark; this Decision's rules there as a chip; its evaluations in the last
+24 hours, counted from the newest page of 50 (`50+` beyond it); an Edit button; and
+its full list in a drawer. Edit opens the place's own editor on the page: a gate's or
+chat API gate's rules, a shared bot's or repository's routing rules, or Edit agent at
+Runtime for a model selection. An agent tool, which has no such editor, links to its
+agent's tools. A rules modal opened here names no conversation, so it adds none to a
+bot's scope, and an inline Create decision returns to it. `GET /decisions/:id` returns each
+usage's rules for this Decision's step, so the card reads no per-place configuration.
+A place whose conversation the viewer cannot read counts as hidden rather than failed,
+a gate whose condition needs review turns its chip amber, and places the viewer cannot
+see are counted below. Each source retains its own list, retention, detail drawer, and
+access checks; sibling installs of one bot have separate gate sources. The optional
 Decision ID filter runs on the daemon before paging;
 older daemons report upgrade required for filtered reads. These histories identify
 the root Decision of a recorded evaluation. A child Decision page reads its root
-chain's history and labels that scope; a retained detail shows which child steps
-were reached. Agent tool calls have no evaluation history here.
+chain's history; a retained detail shows which child steps were reached. Agent tool
+calls have no evaluation history here.
+
+Every placed Decision chip shares one hover card: a conversation gate's pill, a shared
+bot's or repository's routing, a runtime picked by Decision, and the rule chip on the
+Decision page each list their rules as condition → target with the Otherwise or
+Fallback. Outside the Decision page the card leads with the Decision, linked for
+viewers who can open it.
+
+A chat API gate keeps its own Agent-scoped history per protocol, read like a gate's
+and opened from the API row's rules modal or the Decision page, where its usage names
+the protocol; only editors of the Agent read it, since its rows are callers' messages, and
+the Decision page shows it to anyone else as hidden
+([shared-bot-relay.md §10.4](shared-bot-relay.md#104-agent-chat-api)).
 
 Open Recent evaluations from a gate binding or Shared Bot Routing. The routing list
 shows Time, Channel, Decision answer, Matched keys/intervals and rules / Otherwise,
@@ -1506,6 +1559,14 @@ characters; a detail serves each up to 16K characters, marked truncated, and bot
 disappear with the other bodies at retention. A daemon advertises
 `decision-evaluation-raw-v1` and returns them only when the CP's detail request
 sets `includeRaw`, so neither side sends a field an older strict peer rejects.
+A chained evaluation's detail also carries `steps`, one per reached step in trace
+order: that step's frozen Decision (provider, model, question), a gate step's own
+condition, and, with `includeRaw`, a later step's provider bodies (the first step's
+stay on the detail itself). Selecting a step in the detail's chain list switches
+the Model result and Instructions used to that step. The daemon advertises
+`decision-evaluation-steps-v1` and returns them only when the request sets
+`includeSteps`; when size forces a cut, later steps' bodies go first, last step
+first.
 
 Routing reads follow the same rules on the bot's evaluation host. The host answers
 `decision/routing-evaluations` and `decision/routing-evaluation` (feature
@@ -1851,7 +1912,7 @@ host and shared data-plane stores read their observation windows directly. No
 platform history request or agent turn is needed. When no recorded opening row is
 available, including a fresh Console chat, or the current message cannot fit the
 request budget, the existing opening-only state remains
-`{ source: "chat", currentMessage: { text }, history: [], truncated }`, with text
+`{ source: "chat", agent, currentMessage: { text }, history: [], truncated }`, with text
 bounded to an 8 KiB UTF-8 prefix. An empty history does not cause a later re-evaluation.
 
 Code-host hooks use the same loader, state builder and request fitter as hook routing
@@ -1960,8 +2021,9 @@ and the rule that leads to it, and the parent's name returns to it with edits ke
 A sheet's Save keeps its edits and returns one level. Its Cancel, ×, or Escape
 discards them and returns one level. Only the editor underneath saves or closes.
 Gate Try and the routing preview endpoint use the same traversal as live execution.
-Recent evaluation details retain the reached steps and their answers with the
-existing transcript retention boundary. The model-selection sample remains
+Recent evaluation details retain the reached steps, their frozen Decisions and
+answers with the existing transcript retention boundary, and show any reached
+step's Model result on selection (§9.5). The model-selection sample remains
 explicitly simulated.
 
 ## 11. Future possibilities

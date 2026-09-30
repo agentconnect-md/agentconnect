@@ -9,22 +9,38 @@
  * Run explicitly with:
  *   pnpm --filter @agentconnect.md/daemon test:runtime-matrix
  */
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createServer, type Server } from 'node:http'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AddressInfo } from 'node:net'
+import { fileURLToPath } from 'node:url'
+import { createServer as createSocketServer, type AddressInfo, type Server as SocketServer } from 'node:net'
 import type { McpServer } from '@agentclientprotocol/sdk'
 import { AcpHost, turnFailureCode, turnFailureReason } from '../../src/acp/acp-host.js'
 import { detectSandbox } from '../../src/acp/sandbox.js'
 import { loadConfig } from '../../src/config/load-config.js'
-import type { RuntimeDef } from '../../src/config/config-schema.js'
+import { MicrosandboxConfigSchema, type Config, type RuntimeDef } from '../../src/config/config-schema.js'
+import { microsandboxLauncher } from '../../src/execution/executor-vm.js'
+import { LocalExecutor } from '../../src/execution/local-executor.js'
+import { makeLogger } from '../../src/log.js'
+import type { MicrosandboxManager } from '../../src/microsandbox/driver.js'
+import { installMicrosandbox, microsandboxHostUnavailable } from '../../src/microsandbox/install.js'
+import { prepareMicrosandboxLaunch } from '../../src/microsandbox/launch.js'
+import { localMicrosandboxEnvironment } from '../../src/microsandbox/placement.js'
+import { definitionEnv } from '../../src/microsandbox/secrets.js'
+import { microsandboxSupportMounts } from '../../src/microsandbox/support.js'
+import { sandboxSubjectAgentId } from '../../src/remote/sandbox-subject.js'
+import { declaredRuntimeCatalog } from '../../src/runtimes/k8s-runtimes.js'
 import { resolveRoot } from '../../src/paths.js'
 import { installSkills } from '../../src/skills/install-skills.js'
 import { composeRuntimeLaunch } from '../../src/launch/compose.js'
 import { installedRuntimeCatalog } from '../../src/runtimes/probe.js'
-import { resolveRuntimeCatalog, type ResolvedRuntimeEntry } from '../../src/runtimes/registry.js'
+import {
+  resolveRuntimeCatalog,
+  type ResolvedRuntimeCatalog,
+  type ResolvedRuntimeEntry
+} from '../../src/runtimes/registry.js'
 import { FEATURES, type FeatureId } from './support-matrix.js'
 
 const IS_CI = Boolean(process.env.CI || process.env.GITHUB_ACTIONS)
@@ -32,6 +48,10 @@ const TURN_TIMEOUT = 180_000
 const SUITE_TIMEOUT = 30 * 60_000
 const SKILL_NAME = 'runtime-matrix-probe'
 const DEBUG_CHILD = process.env.AC_RUNTIME_MATRIX_DEBUG === '1'
+// Kept between runs so the msb package and the image are pulled once; short because VM socket paths must fit 108 bytes.
+const VM_ROOT = join(tmpdir(), 'acm-matrix')
+// A source build has no release image metadata; the full image ships every runtime the matrix can put in a VM.
+const DEFAULT_VM_IMAGE = 'ghcr.io/agentconnect-md/runtime-sandbox-full:latest'
 
 type Status = 'ok' | 'degrade' | 'na' | 'unavailable' | 'fail'
 interface Outcome {
@@ -253,6 +273,134 @@ async function runSandboxProbe(target: RuntimeTarget, root: string, token: strin
   }
 }
 
+/** This host's microsandbox backend, booted once for every runtime the image ships. */
+interface VmBackend {
+  manager: MicrosandboxManager
+  local: LocalExecutor
+  runtimes: Record<string, RuntimeDef>
+  servers: SocketServer[]
+}
+
+let vm: VmBackend | undefined
+let vmUnavailable = 'VM probe not requested'
+
+async function startVm(config: Config, catalog: ResolvedRuntimeCatalog): Promise<void> {
+  const host = microsandboxHostUnavailable()
+  if (host) {
+    vmUnavailable = host
+    return
+  }
+  if (!existsSync(fileURLToPath(new URL('../../dist/shim/index.js', import.meta.url)))) {
+    vmUnavailable = 'the VM stages the bundled shim: run `pnpm --filter @agentconnect.md/daemon build` first'
+    return
+  }
+  const image =
+    process.env.AC_RUNTIME_MATRIX_VM_IMAGE?.trim() ||
+    (config.sandbox.microsandbox === false ? undefined : config.sandbox.microsandbox.image) ||
+    DEFAULT_VM_IMAGE
+  mkdirSync(VM_ROOT, { recursive: true, mode: 0o700 })
+  // Stand-ins for the daemon's MCP and gitcred servers: the probe turn needs neither, the VM needs both bound.
+  const sockets = { mcp: join(VM_ROOT, 'mcp.sock'), gitcred: join(VM_ROOT, 'gitcred.sock') }
+  const servers = await Promise.all(
+    Object.values(sockets).map(
+      (path) =>
+        new Promise<SocketServer>((resolve, reject) => {
+          rmSync(path, { force: true })
+          const server = createSocketServer((socket) => socket.end())
+          server.once('error', reject)
+          server.listen(path, () => resolve(server))
+        })
+    )
+  )
+  const log = makeLogger(DEBUG_CHILD ? 'info' : 'warn')
+  try {
+    const manager = await installMicrosandbox({
+      root: VM_ROOT,
+      config: MicrosandboxConfigSchema.parse({ image }),
+      sockets,
+      log
+    })
+    const table = await manager.prepare()
+    let generation = 0
+    const local = new LocalExecutor({
+      launcher: microsandboxLauncher({ manager: () => manager }),
+      generations: { nextSandboxGeneration: async () => ++generation },
+      tunnelSocketPath: (tunnel) => sockets[tunnel],
+      log
+    })
+    vm = { manager, local, runtimes: declaredRuntimeCatalog(catalog, table).catalog.runtimes, servers }
+  } catch (error) {
+    for (const server of servers) server.close()
+    vmUnavailable = `microsandbox backend unavailable: ${(error as Error).message}`
+  }
+}
+
+async function stopVm(): Promise<void> {
+  if (!vm) return
+  await vm.local.stop().catch(() => {})
+  await vm.manager.stopAll().catch(() => {})
+  for (const server of vm.servers) server.close()
+  vm = undefined
+}
+
+async function runVmProbe(target: RuntimeTarget, token: string): Promise<Outcome> {
+  if (!vm) return { status: 'degrade', detail: vmUnavailable }
+  const runtime = vm.runtimes[target.id]
+  if (!runtime) return { status: 'degrade', detail: 'runtime is not shipped in the microsandbox image' }
+
+  const leaf = target.id.replace(/[^a-z0-9-]/gi, '-')
+  const scopeDir = join(VM_ROOT, 'scopes', leaf)
+  const cwd = join(scopeDir, 'workspace')
+  rmSync(scopeDir, { recursive: true, force: true })
+  mkdirSync(cwd, { recursive: true })
+  // Composed as a local VM session of this machine is: the image's command, this host's credential step.
+  const launch = prepareMicrosandboxLaunch({
+    runtimeId: target.id,
+    runtime,
+    explicitEnv: definitionEnv(runtime),
+    scopeDir,
+    daemonRoot: VM_ROOT,
+    cwd,
+    stateSourceEnv: process.env,
+    trustedMounts: microsandboxSupportMounts(VM_ROOT),
+    mounts: []
+  })
+  const environmentId = `matrix/${leaf}`
+  const environment = localMicrosandboxEnvironment(environmentId, launch.microsandbox)
+  const updates: unknown[] = []
+  const host = new AcpHost(runtime, {
+    runtimeId: target.id,
+    suppressChildStderr: !DEBUG_CHILD,
+    onUpdate: (_sessionId, update) => updates.push(update),
+    driver: vm.local.driverFor(environment),
+    env: { ...launch.env, AC_AGENT_ID: sandboxSubjectAgentId(environmentId) },
+    inheritProcessEnv: false,
+    toolSandbox: launch.toolSandbox
+  })
+  let sessionId: string | undefined
+  try {
+    await withTimeout(host.start(), `${target.id}/vm start`)
+    sessionId = await withTimeout(host.newSession(cwd), `${target.id}/vm session`)
+    await withTimeout(
+      host.prompt(sessionId, [{ type: 'text', text: `Reply with exactly ${token} and nothing else.` }]),
+      `${target.id}/vm prompt`
+    )
+    return textChunks(updates).join('').includes(token)
+      ? { status: 'ok', detail: 'real model turn completed inside a microsandbox VM' }
+      : { status: 'fail', detail: `VM model reply did not contain ${token}` }
+  } finally {
+    try {
+      if (sessionId && host.deleteSupported())
+        await withTimeout(host.deleteSession(sessionId), `${target.id}/vm delete`)
+    } finally {
+      await host.stop().catch(() => {})
+      await vm.manager.suspend(environmentId, { drain: true }).catch(() => {})
+      await vm.manager.discard(environmentId).catch(() => {})
+      rmSync(scopeDir, { recursive: true, force: true })
+    }
+  }
+}
+
 async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
   const result: RuntimeResult = {
     id: target.id,
@@ -270,6 +418,7 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
   const memoryToken = `MATRIX_MEMORY_OK_${nonce}`
   const skillToken = `MATRIX_SKILL_OK_${nonce}`
   const sandboxToken = `MATRIX_SANDBOX_OK_${nonce}`
+  const vmToken = `MATRIX_VM_OK_${nonce}`
   const updates: unknown[] = []
   let permissionRequested = false
   let host: AcpHost | undefined
@@ -435,6 +584,7 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
     // Run this independently before the resume/restart phase so a runtime-specific
     // session/load failure cannot masquerade as a sandbox failure.
     result.features.sandbox = await runSandboxProbe(target, root, sandboxToken).catch(runtimeErrorOutcome)
+    result.features.vm = await runVmProbe(target, vmToken).catch(runtimeErrorOutcome)
 
     if (host.loadSupported()) {
       await host.stop()
@@ -489,6 +639,31 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
   return result
 }
 
+/** Probes that run without the shared host session, for `AC_RUNTIME_MATRIX_ONLY` reruns. */
+const ISOLATED_PROBES = {
+  sandbox: (target: RuntimeTarget, root: string, token: string) => runSandboxProbe(target, root, token),
+  vm: (target: RuntimeTarget, _root: string, token: string) => runVmProbe(target, token)
+} satisfies Partial<Record<FeatureId, (target: RuntimeTarget, root: string, token: string) => Promise<Outcome>>>
+type IsolatedFeature = keyof typeof ISOLATED_PROBES
+
+async function runIsolatedProbe(feature: IsolatedFeature, target: RuntimeTarget): Promise<RuntimeResult> {
+  const root = mkdtempSync(join(tmpdir(), `ac-runtime-matrix-${feature}-${target.id}-`))
+  try {
+    const token = `MATRIX_${feature.toUpperCase()}_OK_${Date.now().toString(36)}`
+    const outcome = await ISOLATED_PROBES[feature](target, root, token).catch(runtimeErrorOutcome)
+    return {
+      id: target.id,
+      reachable: true,
+      features: { [feature]: outcome },
+      models: [],
+      modes: [],
+      mcp: { http: false, sse: false }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
 const SHORT: Record<FeatureId, string> = {
   capabilities: 'caps',
   lifecycle: 'life',
@@ -499,6 +674,7 @@ const SHORT: Record<FeatureId, string> = {
   'usage-fold': 'usage',
   memory: 'memory',
   sandbox: 'sbox',
+  vm: 'vm',
   mcp: 'mcp',
   skills: 'skills'
 }
@@ -539,8 +715,16 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
       .filter(([id]) => id !== 'qoder-cli-cn' && (requested.size === 0 || requested.has(id)))
       .map(([id, entry]) => ({ id, runtime: entry.runtime, entry }))
       .sort((a, b) => a.id.localeCompare(b.id))
-    if (process.env.AC_RUNTIME_MATRIX_ONLY === 'sandbox') features = ['sandbox']
-  })
+    const only = process.env.AC_RUNTIME_MATRIX_ONLY?.trim()
+    if (only) {
+      if (!(only in ISOLATED_PROBES))
+        throw new Error(`AC_RUNTIME_MATRIX_ONLY must be one of: ${Object.keys(ISOLATED_PROBES).join(', ')}`)
+      features = [only as IsolatedFeature]
+    }
+    if (features.includes('vm')) await startVm(config, catalog)
+  }, SUITE_TIMEOUT)
+
+  afterAll(stopVm)
 
   it(
     'starts every installed runtime and exercises its real model/provider',
@@ -548,29 +732,9 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
       expect(targets.length, 'no installed ACP runtimes were discovered on this host').toBeGreaterThan(0)
       const results: RuntimeResult[] = []
       for (const target of targets) {
-        const result =
-          features.length === 1 && features[0] === 'sandbox'
-            ? await (async (): Promise<RuntimeResult> => {
-                const root = mkdtempSync(join(tmpdir(), `ac-runtime-matrix-sandbox-${target.id}-`))
-                try {
-                  const outcome = await runSandboxProbe(
-                    target,
-                    root,
-                    `MATRIX_SANDBOX_OK_${Date.now().toString(36)}`
-                  ).catch(runtimeErrorOutcome)
-                  return {
-                    id: target.id,
-                    reachable: true,
-                    features: { sandbox: outcome },
-                    models: [],
-                    modes: [],
-                    mcp: { http: false, sse: false }
-                  }
-                } finally {
-                  rmSync(root, { recursive: true, force: true })
-                }
-              })()
-            : await runRuntime(target)
+        const isolated =
+          features.length === 1 && features[0]! in ISOLATED_PROBES ? (features[0] as IsolatedFeature) : undefined
+        const result = isolated ? await runIsolatedProbe(isolated, target) : await runRuntime(target)
         results.push(result)
         console.info(
           `[runtime-matrix] ${target.id}: ${result.reachable ? 'reachable' : 'unavailable'}${result.error ? ` — ${result.error}` : ''}`
@@ -583,6 +747,8 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
           const outcome = result.features[feature]
           if (outcome?.status === 'fail')
             console.info(`[runtime-matrix] FAIL ${result.id}/${feature}: ${outcome.detail}`)
+          else if (DEBUG_CHILD && outcome && outcome.status !== 'ok')
+            console.info(`[runtime-matrix] ${outcome.status} ${result.id}/${feature}: ${outcome.detail}`)
         }
       }
 

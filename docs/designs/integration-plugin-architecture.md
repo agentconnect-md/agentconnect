@@ -503,6 +503,16 @@ adapter owns everything platform-shaped. The GitHub poster/collector
 implements this same interface (no Layer-1 facets), removing the hardcoded
 `github` turn field from the dispatch path.
 
+A surface with neither a reaction (§7.1 `react`) nor an indicator acknowledges a
+turn itself through the optional `acknowledge` member. Core calls it at turn
+start, keeps the returned handle and an egress lease with the queue entry, hands
+it to `initialTurnState`, lets a failure notice from a turn with no output yet
+`replace` it, and `end`s it once after the dispatch as `completed`,
+`interrupted`, `failed`, or `rerun` (its durable row runs the message again).
+Core decides only that outcome; what the handle shows, and how the answer takes
+its place, belong to the platform. Google Chat's placeholder is the first
+implementer ([google-chat-integration.md](google-chat-integration.md) §5).
+
 After opening the runtime session, core supplies an optional file-link resolver to
 the output context. It captures the session's exact working directory, the roots the
 Console can browse, and the outward session URL. A surface calls it on assembled
@@ -520,6 +530,14 @@ posts), `tenantScope(integration, conn)` / `transportScopeIdentity(...)`
 (session-visibility owner identity), `openThreadForTopLevel?` (Discord opens
 a real thread and re-dispatches), command chrome renderers (the four-way
 `/status` formatting), and DM inference.
+
+The command-chrome surface (`platforms/command-chrome.ts`) also carries an
+optional `notice` member for core's notices outside a command or a turn's
+output: a gated conversation's one-time notice and a cut turn's notice. A
+platform with a shared reply connection keeps posting them through it; one
+whose connection is outside that set (Google Chat) posts them through
+`notice`, so core never branches on the platform. A surface without the member
+posts nothing, as before.
 
 The relay-ingress strategy is a member of the daemon platform contract rather
 than a core table keyed by platform name: `DaemonPlatformModule.relayIngress?`
@@ -593,8 +611,8 @@ interface RelayPlatformIngressPlugin<TIngest, TVerified> {
   // verify decrypts, and the decrypted payload has to reach handle() —
   // deriving it a second time there is both wasteful and a place for the two
   // derivations to disagree. `undefined` means reject. Google Chat's proof is
-  // a token checked against fetched certificates, so verify may also return a
-  // promise; core awaits either form.
+  // a Google ID token checked against fetched signing keys, so verify may also
+  // return a promise; core awaits either form.
   verify(ingest, rawBody, body, headers, now):
     TVerified | undefined | Promise<TVerified | undefined>
   // Two platforms require SYNCHRONOUS bodies on the HTTP 200 (Slack
@@ -682,12 +700,12 @@ and core owns the TTL table, offered two ways: `dedupSeen` marks on first sight
 answers from an admission disposition check first and mark only once the
 disposition is settled. The registry (`platforms/registry.ts`) lists Slack,
 Feishu, Linear, and Google Chat; Google Chat is the first plugin that answers
-from the admission disposition, holds no secret (Google signs each callback for
-the bot's project number, which the assignment carries as the expected
-audience), and verifies asynchronously. Four platform reads that would
-otherwise sit in core are capability reads per D2: Slack-only bot-mention
-admission (`botSenderRouting`), thread-root detection (adapter `isThreadRoot`
-or the threading capability), the Feishu egress-ownership fork
+from the admission disposition, holds no secret (Google signs each callback as
+the app's Workspace add-on service account, whose project number the assignment
+carries, for the relay's own events URL), and verifies asynchronously. Four
+platform reads that would otherwise sit in core are capability reads per D2:
+Slack-only bot-mention admission (`botSenderRouting`), thread-root detection
+(adapter `isThreadRoot` or the threading capability), the Feishu egress-ownership fork
 (`relayOwnsEgress` derived from the `egress` facet), and the echo-suppression
 guard. The existing `hooks/signature.ts` primitives are shared relay-core
 infrastructure serving both this seam and the webhook seam.
@@ -762,7 +780,7 @@ The real per-platform web surface is roughly nine items, not three: install
 wizard, transcript text renderer, `PlatformMark`, bots-settings fragments
 (Slack refresh/reinstall state machines, portal deep-links per region),
 CP API-client bindings + install-polling hooks, channel-list semantics
-(`roomNoun`, leave-ability, glyphs), conversation-merge id/timestamp domain
+(`roomNoun`, leave-ability, glyphs, conversation links), conversation-merge id/timestamp domain
 knowledge, per-platform marketing/help copy, and helper libs
 (`slack-manifest.ts`, `discord-invite.ts`, `telegram-privacy-auto-refresh`).
 

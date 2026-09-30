@@ -19,6 +19,17 @@ export function answerText(
   return `${scoreText(summary.value)} · ${percent(summary.confidence)}`
 }
 
+/** The answer and Jev's confidence apart; a Boolean has no confidence, so its value keeps the probability. */
+export function answerParts(
+  summary: DecisionAnswerSummary | null | undefined,
+  words: { yes: string; no: string }
+): { value: string; confidence: string | null } | null {
+  if (!summary) return null
+  if (summary.type === 'boolean') return { value: answerText(summary, words)!, confidence: null }
+  const value = summary.type === 'choice' ? summary.value : scoreText(summary.value)
+  return { value, confidence: percent(summary.confidence) }
+}
+
 export type OutcomeTone = 'success' | 'neutral' | 'error' | 'muted' | 'pending'
 
 /** Triggered reads as success, Unavailable as an error distinct from a Skipped neutral. */

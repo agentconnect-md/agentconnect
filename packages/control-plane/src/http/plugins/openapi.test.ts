@@ -196,6 +196,57 @@ describe('openapi plane', () => {
     }
   })
 
+  it('leaves every interactiveOnly route out of the spec', async () => {
+    const app = buildHttpServer(stubDeps())
+    const marked: string[] = []
+    app.addHook('onRoute', (route) => {
+      if (route.config?.interactiveOnly && route.method !== 'HEAD') marked.push(`${String(route.method)} ${route.url}`)
+    })
+    await app.ready()
+    try {
+      expect(marked.sort()).toEqual(
+        [
+          'DELETE /api/v1/me/keys/:id',
+          'DELETE /api/v1/orgs/:orgId/daemons/:id/keys/:keyId',
+          'GET /api/v1/orgs/:orgId/daemons/:id/keys',
+          'POST /api/v1/orgs/:orgId/daemons/:id/keys',
+          'POST /api/v1/orgs/:orgId/daemons/token',
+          'DELETE /api/v1/oauth/grants/:id',
+          'DELETE /api/v1/orgs/:orgId',
+          'GET /api/v1/me/keys',
+          'GET /api/v1/oauth/consent/context',
+          'GET /api/v1/oauth/grants',
+          'PATCH /api/v1/me/keys/:id',
+          'POST /api/v1/me/keys',
+          'POST /api/v1/me/keys/:id/regenerate',
+          'POST /api/v1/oauth/consent',
+          'POST /api/v1/orgs',
+          'GET /api/v1/orgs/:orgId/service-accounts',
+          'POST /api/v1/orgs/:orgId/service-accounts',
+          'PATCH /api/v1/orgs/:orgId/service-accounts/:id',
+          'DELETE /api/v1/orgs/:orgId/service-accounts/:id',
+          'GET /api/v1/orgs/:orgId/service-accounts/:id/keys',
+          'POST /api/v1/orgs/:orgId/service-accounts/:id/keys',
+          'PATCH /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId',
+          'POST /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId/regenerate',
+          'DELETE /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId'
+        ].sort()
+      )
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      for (const entry of marked) {
+        const [method, url] = entry.split(' ') as [string, string]
+        const path = url.replace(/:(\w+)/g, '{$1}')
+        expect(doc.paths?.[path]?.[method.toLowerCase()], entry).toBeUndefined()
+      }
+      expect(doc.paths?.['/api/v1/orgs']?.get?.operationId).toBe('listOrganizations')
+      const tags = doc.tags.map((t: { name: string }) => t.name)
+      expect(tags).not.toContain('API keys')
+      expect(tags).not.toContain('Daemon keys')
+    } finally {
+      await app.close()
+    }
+  })
+
   it('declares every templated path parameter — incl. the `/orgs/:orgId` prefix param', async () => {
     const app = await buildReady()
     try {

@@ -44,6 +44,7 @@ import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
 import { STEERING_METHOD, parseSteeringOutcome, steeringRequestParams, steeringSupported } from './steering.js'
 import type { SteeringIdleBehavior, SteeringOutcome } from './steering.js'
+import { RuntimeSessionFailure, SESSION_FAILURE_CAPABILITIES, sessionFailureFromMeta } from './session-failure.js'
 
 // The raw session config-option shapes (from the ACP SDK), re-exported so
 // sessionConfigOptions() consumers can type the option tree without importing
@@ -300,6 +301,14 @@ const PROVIDER_AUTH_MESSAGES = [
   /\bapi key not valid\b/i
 ]
 
+// Claude Code's own wording when another process holds, or died holding, its OAuth refresh lock.
+const OAUTH_REFRESH_CONTENTION = /\banother claude code process is refreshing it\b/i
+
+/** Whether a turn failed only because Claude Code's OAuth refresh lock was contended — transient, unlike a dead login. */
+export function isOAuthRefreshContention(err: unknown): boolean {
+  return OAUTH_REFRESH_CONTENTION.test(failureSignals(err).join('\n'))
+}
+
 /** Collect the small family of fields ACP adapters and provider SDKs use to
  * wrap an upstream error. The depth/seen guards tolerate nested `error.data`
  * and `cause` shapes without recursively inspecting an arbitrary request body.
@@ -339,6 +348,10 @@ function failureSignals(value: unknown, depth = 0, seen = new Set<object>()): st
 }
 
 export function turnFailureCode(err: unknown): TurnFailureCode {
+  if (err instanceof RuntimeSessionFailure) {
+    if (err.category === 'access') return HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
+    if (err.category === 'limit' && err.actions.length === 0) return HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
+  }
   const signals = failureSignals(err)
   if (signals.some((signal) => PROVIDER_QUOTA_CODES.has(signal.toLowerCase().replace(/[^a-z0-9]/g, '')))) {
     return HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
@@ -736,12 +749,7 @@ export class AcpHost {
         this.opts.log?.warn(`acp: leaving Codex's request_user_input tool off — ${(err as Error).message}`)
       }
     }
-    // NOTE: the memory-backend env (disable the runtime's own memory for `managed`,
-    // or redirect it under the private runtime HOME for `native`) is assembled by the daemon
-    // in ensureHost via memoryProviderFor(agent).runtimeEnv() and passed in through
-    // `opts.env` — it is NOT set here, so it stays per-agent-configurable. The
-    // runtime prober / chat CLI construct AcpHost without that env and therefore get
-    // the runtime's default memory behavior.
+    // The memory-backend env arrives in `opts.env` from memoryProviderFor at spawn; a host built without it keeps the runtime's default memory.
     // appendArgs carries any account-app-isolation flags (e.g. Copilot's
     // --disable-builtin-mcps) that must reach the adapter as CLI args.
     const spawnArgs = [...this.runtime.args, ...(isolateAccountApps ? appIsolation.appendArgs : [])]
@@ -878,6 +886,7 @@ export class AcpHost {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: {
         fs: { readTextFile: false, writeTextFile: false },
+        _meta: SESSION_FAILURE_CAPABILITIES,
         // Advertise form-based elicitation so runtimes may ask structured questions
         // (choice/boolean), and URL-based so credential/OAuth/payment flows take the seam the
         // spec reserves for them instead of a form that would carry the secret through chat.
@@ -1252,11 +1261,11 @@ export class AcpHost {
     }
   }
 
-  /** Drive one turn to completion. Returns the stop reason plus the agent's token
-   *  `usage` when the runtime reports it. Usage semantics are adapter-defined;
-   *  AgentConnect's managed Codex adapter returns one ACP-prompt delta. */
+  /** Drive one prompt; managed Codex usage is a per-prompt delta, and a typed terminal failure rejects. */
   async prompt(sessionId: string, blocks: ContentBlock[]): Promise<{ stopReason: StopReason; usage?: Usage }> {
     const res = await this.conn!.agent.request(methods.agent.session.prompt, { sessionId, prompt: blocks })
+    const failure = sessionFailureFromMeta(res._meta)
+    if (failure) throw failure
     return { stopReason: res.stopReason, usage: res.usage ?? undefined }
   }
 

@@ -32,10 +32,6 @@ vi.mock('@/components/console/UnifiedMemoryPanel', async () => {
   }
 })
 
-vi.mock('@/components/console/NativeMemoryFiles', () => ({
-  NativeMemoryFiles: () => <div data-testid="native-memory-view" />
-}))
-
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
 
 vi.mock('@/lib/data-context', () => ({
@@ -160,6 +156,32 @@ const changeValue = async (element: HTMLInputElement | HTMLTextAreaElement, valu
 }
 
 describe('MemoryPanel settings draft', () => {
+  it('locks dreaming off when the runtime cannot dream', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="22222222-2222-4222-8222-222222222222"
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+          canDream={false}
+        />
+      )
+    })
+
+    await openSettings(container)
+    const dreaming = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((box) =>
+      box.parentElement?.textContent?.includes('Enable dreaming')
+    )
+    expect(dreaming?.checked).toBe(false)
+    expect(dreaming?.disabled).toBe(true)
+    expect(container.textContent).not.toContain('Run on a schedule')
+  })
+
   it('defaults managed memory to daily auto-adopting dreaming and lets users opt out', async () => {
     container = document.createElement('div')
     document.body.append(container)
@@ -647,12 +669,10 @@ describe('MemoryPanel memory views', () => {
     expect(entries(host)).not.toBeNull()
     expect(entries(host)?.getAttribute('data-sandboxed')).toBe('')
     expect(entries(host)?.getAttribute('data-overview')).toBe('no')
-    expect(host.querySelector('[data-testid="native-memory-view"]')).toBeNull()
   })
 
-  it('keeps the runtime file browser for native memory, which has no entry view', async () => {
+  it('shows no memory contents for native memory, which the runtime keeps to itself', async () => {
     const host = await mount({ memoryProvider: 'native', memoryDreaming: { enabled: true } })
-    expect(host.querySelector('[data-testid="native-memory-view"]')).not.toBeNull()
     expect(entries(host)).toBeNull()
     expect(host.querySelector('[data-testid="dream-memory-view"]')).toBeNull()
   })

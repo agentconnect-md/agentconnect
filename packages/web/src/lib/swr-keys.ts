@@ -18,6 +18,7 @@ export const consoleKeys = {
   daemon: (orgId: string | null | undefined, daemonId: string) => consoleKey(orgId, 'daemon', daemonId),
   crons: (orgId: string | null | undefined) => consoleKey(orgId, 'crons'),
   integrations: (orgId: string | null | undefined) => consoleKey(orgId, 'integrations'),
+  giteaConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'gitea-connections'),
   bots: (orgId: string | null | undefined) => consoleKey(orgId, 'bots'),
   mcpProviders: (orgId: string | null | undefined) => consoleKey(orgId, 'mcp-providers'),
   skillSources: (orgId: string | null | undefined) => consoleKey(orgId, 'skill-sources'),
@@ -46,12 +47,16 @@ export const consoleKeys = {
    *  Slack-NAMED but answered per organization AND per caller, so it is
    *  org-scoped like every other row here. */
   deploymentConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'deployment-config'),
+  /** The deployment's own Google Chat app (`GET /integrations/googlechat/app`). */
+  googleChatApp: (orgId: string | null | undefined) => consoleKey(orgId, 'googlechat-app'),
   /** The deployment GitHub App enabled-probe (`GET /github/installations`, 404 ⇒ off). */
   githubApp: (orgId: string | null | undefined) => consoleKey(orgId, 'github-app'),
   connectorsConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'connectors-config'),
   memoryPluginInstallations: (orgId: string | null | undefined) => consoleKey(orgId, 'memory-plugin-installations'),
   externalMemoryConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'external-memory-connections'),
   members: (orgId: string | null | undefined) => consoleKey(orgId, 'members'),
+  serviceAccounts: (orgId: string | null | undefined) => consoleKey(orgId, 'service-accounts'),
+  serviceAccountKeys: (orgId: string | null | undefined, id: string) => consoleKey(orgId, 'service-account-keys', id),
   inviteLink: (orgId: string | null | undefined) => consoleKey(orgId, 'invite-link'),
   sessionAccess: <const Provider extends 'slack' | 'github' | 'feishu'>(
     orgId: string | null | undefined,
@@ -120,6 +125,11 @@ export const consoleKeys = {
   cronRuns: (orgId: string | null | undefined, cronId: string) => consoleKey(orgId, 'cron-runs', cronId),
   agentHooks: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-hooks', agentId) : null,
+  agentApi: (orgId: string | null | undefined, agentId: string | null | undefined) =>
+    agentId ? consoleKey(orgId, 'agent-api', agentId) : null,
+  // Every Agent chat key the caller can see: their own, plus each service account's for an owner.
+  agentChatKeys: (orgId: string | null | undefined, owner: boolean) =>
+    consoleKey(orgId, 'agent-chat-keys', owner ? 'owner' : 'member'),
   // Per-repository list reached through one hook row (the settings dialog's).
   hookTrustedActors: (orgId: string | null | undefined, hookId: string | null | undefined) =>
     hookId ? consoleKey(orgId, 'hook-trusted-actors', hookId) : null,

@@ -28,6 +28,7 @@ import {
   useSlackPlatformAppAvailable
 } from './GettingStartedChecklist'
 import { Button, Icon } from '@/components/ui'
+import { EscapeLayer } from '@/components/console/Scrim'
 
 // A r=10.5 progress ring (viewBox 0 0 26 26), rotated so it fills clockwise from 12
 // o'clock — the exact svg the design uses in the pill, drawer header and rail.
@@ -313,6 +314,7 @@ export default function GettingStarted() {
       {/* 1b — slide-over drawer */}
       {drawerOpen && (
         <>
+          <EscapeLayer onEscape={() => setDrawerOpen(false)} />
           <div
             onClick={() => setDrawerOpen(false)}
             className="fixed inset-0 z-[70] bg-[rgba(17,22,29,.26)] backdrop-blur-[2px]"

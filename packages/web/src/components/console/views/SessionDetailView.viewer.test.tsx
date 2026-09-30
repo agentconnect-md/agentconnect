@@ -316,7 +316,8 @@ async function render() {
 
 const text = () => container?.textContent ?? ''
 const pane = () => container?.querySelector('[data-conversation-pane]')
-const viewer = () => container?.querySelector('[data-viewer-code]')
+// A Markdown path opens as its preview, anything else as numbered source.
+const viewer = () => container?.querySelector('[data-viewer-code], [data-viewer-markdown]')
 // A real transcript leaf, found by its own text rather than by a hook added for the test: the node the marker text lives in is exactly what a remount would replace.
 const marker = () =>
   Array.from(container?.querySelectorAll('*') ?? []).find(
@@ -885,7 +886,7 @@ describe('the Git tab', () => {
     await press('[data-viewer-mode="file"]')
     expect(written().get('mode')).toBeNull()
     expect(written().get('file')).toBe('src/edited.ts')
-    expect(container?.querySelector('[data-viewer-code]')).not.toBeNull()
+    expect(container?.querySelector('[data-viewer-code], [data-viewer-markdown]')).not.toBeNull()
 
     await press('[data-viewer-mode="diff"]')
     expect(written().get('mode')).toBe('diff')
@@ -898,7 +899,7 @@ describe('the Git tab', () => {
   it('reads an unknown mode as File mode rather than refusing to open the file', async () => {
     nav.search = 'file=src%2Fnotes.md&mode=sideways'
     await render()
-    expect(container?.querySelector('[data-viewer-code]')).not.toBeNull()
+    expect(container?.querySelector('[data-viewer-code], [data-viewer-markdown]')).not.toBeNull()
     expect(container?.querySelector('[data-viewer-diff]')).toBeNull()
     expect(wire.diffCalls).toEqual([])
   })

@@ -19,6 +19,7 @@ export type FeatureId =
   | 'usage-fold'
   | 'memory'
   | 'sandbox'
+  | 'vm'
   | 'mcp'
   | 'skills'
 
@@ -29,6 +30,7 @@ export function verdictFor(feature: FeatureId, p: Profile): Verdict {
     case 'lifecycle':
     case 'interactive-permission':
     case 'sandbox':
+    case 'vm':
     case 'memory':
       return 'run'
     case 'model-switch':
@@ -56,6 +58,7 @@ export const FEATURES: FeatureId[] = [
   'usage-fold',
   'memory',
   'sandbox',
+  'vm',
   'mcp',
   'skills'
 ]

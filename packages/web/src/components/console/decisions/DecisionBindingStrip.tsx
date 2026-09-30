@@ -16,17 +16,27 @@ import {
   useDecisionsPrototype,
   type DecisionBindingDraft
 } from '@/lib/decisions/provider'
-import { bindingSaveError, type BindingSaveError, type GateStatus, type SavedGate } from '@/lib/decisions/binding'
+import {
+  bindingSaveError,
+  errorParts,
+  type BindingSaveError,
+  type GateStatus,
+  type SavedGate
+} from '@/lib/decisions/binding'
 import {
   decisionGateIssues,
+  gateUsageRules,
   type ChannelDecisionGate,
   type DecisionCondition
 } from '@agentconnect.md/protocol/decision'
 import type { DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
-import { DecisionConditionFields, conditionSummary } from './DecisionConditionFields'
+import { DecisionConditionFields } from './DecisionConditionFields'
 import { DecisionEvaluationsDrawer } from './DecisionEvaluationsDrawer'
+import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
 import { DecisionGateTry } from './DecisionGateTry'
+import { conversationGateTry, type GateTrySource } from '@/lib/decisions/try-source'
 import { DecisionChip } from './DecisionChip'
+import { DecisionRulesHover, decisionRow, useRuleLines } from './DecisionRulesHover'
 import { GateChainFields } from './GateChainFields'
 import { DecisionPicker } from './DecisionPicker'
 
@@ -41,7 +51,7 @@ function selectsNothing(when: DecisionCondition | null): boolean {
 }
 
 /** The draft an edit of a saved gate opens: another question type restarts empty, and no Decision asks for a pick. */
-function editDraftFor(saved: SavedGate, decision: DecisionEntry | null): DecisionBindingDraft {
+export function editDraftFor(saved: SavedGate, decision: DecisionEntry | null): DecisionBindingDraft {
   if (!decision) return { decisionId: null, when: null, phase: 'editing', explicitPick: true }
   if (decision.question.type !== saved.when.type)
     return {
@@ -114,16 +124,18 @@ export function DecisionGateEntry({
   onStop: () => void | Promise<void>
 }) {
   const t = useTranslations('Decisions')
-  const { myRole } = useOrgs()
+  const { myRole, orgPath } = useOrgs()
   const canWrite = writable && myRole !== 'viewer'
   const { decisions, bindingDrafts, setBindingDraft } = useDecisionsPrototype()
+  const ruleLines = useRuleLines()
   const [stopping, setStopping] = useState(false)
   const draft = bindingDrafts[bindingKey]
   if (saved) {
     const decision = decisions.find((entry) => entry.id === saved.decisionId) ?? null
     const label = decision?.name ?? savedName ?? t('binding.hiddenDecision')
-    const words = { yes: t('condition.yes'), no: t('condition.no'), none: t('condition.noAnswer') }
-    const summary = decision ? conditionSummary(decision.question, saved.when, words) : ''
+    const lines = ruleLines(gateUsageRules(saved, saved.decisionId), decision?.question, {
+      decision: (id) => decisions.find((entry) => entry.id === id)?.name
+    })
     const stop = () => {
       if (stopping) return
       setStopping(true)
@@ -133,7 +145,18 @@ export function DecisionGateEntry({
       <DecisionChip
         name={label}
         label={`${t('binding.editRules')}: ${label}`}
-        title={summary ? `${t('binding.editRules')} · ${summary}` : t('binding.editRules')}
+        hover={
+          <DecisionRulesHover
+            rows={[
+              decisionRow(
+                t('binding.decision'),
+                label,
+                decision && orgPath(`/decisions/${encodeURIComponent(decision.id)}`)
+              )
+            ]}
+            {...lines}
+          />
+        }
         disabled={disabled}
         openProps={{ 'data-gate-entry': bindingKey }}
         onOpen={() => {
@@ -168,11 +191,15 @@ export function DecisionBindingStrip({
   saved,
   savedName,
   status,
+  surface = 'channel',
+  evaluations,
+  trySource,
+  applyAll,
   onSave
 }: {
   /** The gate's identity: organization, owning bot, and conversation (see `gateKey`). */
   bindingKey: string
-  /** The live conversation Try and Recent evaluations read; null where none is addressable. */
+  /** The live conversation Try and Recent evaluations read by default; null where none is addressable. */
   conversation: DecisionConversationRef | null
   canWrite: boolean
   /** The agent this conversation dispatches to — the gate's one fixed target. */
@@ -186,8 +213,20 @@ export function DecisionBindingStrip({
   savedName?: string | null
   /** The saved gate's status; null without a saved gate. */
   status: GateStatus | null
+  /** What the gate judges: a conversation's messages, or the text of each call over an agent's chat API. */
+  surface?: 'channel' | 'api'
+  /** Where Recent evaluations read when there is no conversation, as for an API gate. */
+  evaluations?: DecisionEvaluationSource
+  /** Where Try runs when there is no conversation, as for an API gate. */
+  trySource?: GateTrySource
   /** Persist the gate; a rejection keeps the draft for Retry. */
   onSave: (gate: ChannelDecisionGate) => Promise<void>
+  /** Write the same gate to every By decision conversation of this bot; absent where there is no other one. */
+  applyAll?: {
+    count: number
+    /** Resolves with the conversations that failed and the first refusal, so the rest still land. */
+    onApply: (gate: ChannelDecisionGate) => Promise<{ failed: string[]; cause: unknown }>
+  }
 }) {
   const t = useTranslations('Decisions')
   const { orgPath, myRole } = useOrgs()
@@ -195,9 +234,12 @@ export function DecisionBindingStrip({
   const canWrite = writable && myRole !== 'viewer'
   const pathname = usePathname()
   const search = useSearchParams()
-  const { decisions, loading, reload, bindingDrafts, setBindingDraft, beginInlineCreate } = useDecisionsPrototype()
+  const { api, decisions, loading, reload, bindingDrafts, setBindingDraft, beginInlineCreate } = useDecisionsPrototype()
+  const tries = trySource ?? (conversation ? conversationGateTry(api, conversation) : null)
   const draft = bindingDrafts[bindingKey] ?? null
   const saving = useRef(false)
+  // Retry repeats the last write, so a failed Apply to all retries every conversation rather than just this one.
+  const lastWrite = useRef<typeof onSave | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const [tryOpen, setTryOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -227,7 +269,7 @@ export function DecisionBindingStrip({
     return () => document.removeEventListener('keydown', onKey)
   }, [open, busy, historyOpen, collapse])
 
-  const historyLink = conversation && saved && (
+  const historyLink = (conversation || evaluations) && saved && (
     <button
       type="button"
       className="lnk gap-[6px] text-[11.5px] font-medium"
@@ -238,9 +280,9 @@ export function DecisionBindingStrip({
       {t('evaluations.toggle')}
     </button>
   )
-  const historyDrawer = conversation && historyOpen && (
+  const historyDrawer = (conversation || evaluations) && historyOpen && (
     <DecisionEvaluationsDrawer
-      conversation={conversation}
+      {...(conversation ? { conversation } : { source: evaluations! })}
       {...(channelName ? { channelName } : {})}
       {...(agentName ? { agentName } : {})}
       onClose={() => setHistoryOpen(false)}
@@ -350,12 +392,13 @@ export function DecisionBindingStrip({
     })
   }
 
-  const save = async () => {
+  const save = async (write: (gate: ChannelDecisionGate) => Promise<void> = onSave) => {
     if (saving.current || busy || !decision || !when || !gate || invalidText) return
     saving.current = true
+    lastWrite.current = write
     setBindingDraft(bindingKey, { ...activeDraft, decisionId: decision.id, when, phase: 'saving' })
     try {
-      await onSave(gate)
+      await write(gate)
       collapse()
     } catch (cause) {
       const error = bindingSaveError(cause)
@@ -364,6 +407,13 @@ export function DecisionBindingStrip({
     } finally {
       saving.current = false
     }
+  }
+
+  const applyToAll = async (next: ChannelDecisionGate) => {
+    const { failed, cause } = await applyAll!.onApply(next)
+    if (!failed.length) return
+    const message = errorParts(cause)?.message ?? (cause instanceof Error ? cause.message : String(cause))
+    throw new Error(t('binding.applyAllFailed', { count: failed.length, names: failed.join(', '), message }))
   }
 
   const retryable = activeDraft.error?.kind === 'unsupported' || activeDraft.error?.kind === 'failed'
@@ -392,7 +442,7 @@ export function DecisionBindingStrip({
               </span>
               {agentName && (
                 <span className="mt-[2px] block font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  {t.rich('binding.rulesSubtitle', {
+                  {t.rich(surface === 'api' ? 'binding.rulesSubtitleApi' : 'binding.rulesSubtitle', {
                     agent: agentName,
                     name: (chunks) => <span className="mono text-(--text-secondary)">{chunks}</span>
                   })}
@@ -520,7 +570,7 @@ export function DecisionBindingStrip({
                   <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
                   {t('binding.howThisWorks')}
                 </button>
-                {conversation && canWrite && (
+                {tries && canWrite && (
                   <button
                     type="button"
                     className="lnk gap-[6px] text-[11.5px] font-medium"
@@ -536,15 +586,21 @@ export function DecisionBindingStrip({
 
             {decision && helpOpen && (
               <div className="flex flex-col gap-1">
-                <Note icon="messages-square">{t('binding.helpMentions')}</Note>
-                <Note icon="clock">{t('binding.helpHistory')}</Note>
+                {surface === 'api' ? (
+                  <Note icon="message-square-text">{t('binding.helpApiText')}</Note>
+                ) : (
+                  <>
+                    <Note icon="messages-square">{t('binding.helpMentions')}</Note>
+                    <Note icon="clock">{t('binding.helpHistory')}</Note>
+                  </>
+                )}
                 <Note icon="shield-alert">{t('binding.helpUnavailable')}</Note>
               </div>
             )}
 
-            {decision && when && conversation && canWrite && (
+            {decision && when && tries && canWrite && (
               <DecisionGateTry
-                conversation={conversation}
+                source={tries}
                 decision={decision}
                 when={when}
                 binding={gate ?? undefined}
@@ -566,7 +622,12 @@ export function DecisionBindingStrip({
                     {busy ? t('binding.saving') : t('save')}
                   </Button>
                   {retryable && (
-                    <Button variant="secondary" size="sm" className="max-desktop:flex-1" onClick={() => void save()}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="max-desktop:flex-1"
+                      onClick={() => void save(lastWrite.current ?? onSave)}
+                    >
                       {t('binding.retry')}
                     </Button>
                   )}
@@ -576,6 +637,23 @@ export function DecisionBindingStrip({
                 {canWrite ? t('cancel') : t('binding.close')}
               </Button>
               {historyLink}
+              {canWrite && applyAll && (
+                <>
+                  <span className="flex-1" />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="max-desktop:w-full"
+                    disabled={!!invalidText || busy || !decision}
+                    onClick={() => {
+                      if (window.confirm(t('binding.applyAllConfirm', { count: applyAll.count }))) void save(applyToAll)
+                    }}
+                  >
+                    <Icon name="copy-check" size={13} />
+                    {t('binding.applyAll')}
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         </div>

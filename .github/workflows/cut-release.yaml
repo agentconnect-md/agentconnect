@@ -1,13 +1,7 @@
 name: Cut Release
 
-# Promotes a commit to a STABLE release: force-updates the `release` branch to
-# the chosen commit (defaults to HEAD), which triggers Release on that branch →
-# semantic-release's stable channel (vX.Y.Z).
-#
-# The push uses a GitHub App installation token (same app as release.yaml), not
-# the built-in GITHUB_TOKEN — a built-in-token push wouldn't trigger Release, an
-# App-token push does. Needs RELEASE_APP_CLIENT_ID (var) + RELEASE_APP_PRIVATE_KEY
-# (secret), installed on this repo with Contents write.
+# Force-moves the `release` branch to the chosen commit, which triggers Release's stable channel (vX.Y.Z).
+# The ref update uses the release App's token: one made with the built-in GITHUB_TOKEN would not trigger Release.
 
 on:
   workflow_dispatch:
@@ -27,16 +21,12 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-      # Persist the App token as the git credential so the push below is authored
-      # by the App and therefore triggers Release.
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.inputs.commit }}
-          token: ${{ steps.app-token.outputs.token }}
-      - name: Sync Release Branch
+      # The refs API takes only a full SHA, so resolve the input (short SHA, branch, or tag) first.
+      - name: Move release branch
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          COMMIT: ${{ github.event.inputs.commit }}
         run: |
-          git checkout -b release
-          git log -1
-          git push -f --set-upstream origin release
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/${COMMIT:-$GITHUB_SHA}" --jq .sha)
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/release" -f sha="$sha" -F force=true --jq .object.sha
+          echo "Moved \`release\` to \`$sha\`" >> "$GITHUB_STEP_SUMMARY"

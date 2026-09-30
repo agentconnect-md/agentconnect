@@ -41,6 +41,33 @@ describe('WebchatTokenService', () => {
     expect(await svc.verify((await svc.mint(claims)).token)).toEqual(claims)
   })
 
+  it('round-trips the conversation peers a hook continuation mint authorized (#2500)', async () => {
+    const svc = new WebchatTokenService(PEPPER)
+    const claims = {
+      ...CLAIMS,
+      conversationPeers: [{ sessionId: 'session-b' }, { sessionId: 'session-c', privateOwnerIdentity: 'user:u1' }]
+    }
+    expect(await svc.verify((await svc.mint(claims)).token)).toEqual(claims)
+  })
+
+  it('drops a malformed peer list instead of trusting part of it', async () => {
+    const svc = new WebchatTokenService(PEPPER)
+    const key = new Uint8Array(createHmac('sha256', PEPPER).update('agentconnect.webchat-token.v2').digest())
+    const token = await new SignJWT({
+      user: CLAIMS.user,
+      agentId: CLAIMS.agentId,
+      orgId: CLAIMS.orgId,
+      conversationId: CLAIMS.conversationId,
+      conversationPeers: [{ sessionId: 'session-b' }, { sessionId: 7 }]
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(CLAIMS.userId)
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(key)
+    expect((await svc.verify(token))?.conversationPeers).toBeUndefined()
+  })
+
   it('rejects a token minted with a DIFFERENT pepper (bad signature)', async () => {
     const { token: minted } = await new WebchatTokenService(PEPPER).mint(CLAIMS)
     const other = new WebchatTokenService('a-totally-different-pepper-0123456789ab')

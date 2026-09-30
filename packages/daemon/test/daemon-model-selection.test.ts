@@ -543,6 +543,7 @@ describe('session-pinned Decision model', () => {
       expect.objectContaining({
         state: {
           source: 'chat',
+          agent: { name: 'Example agent', description: '' },
           currentMessage: { text: 'Opening request' },
           history: [],
           truncated: false

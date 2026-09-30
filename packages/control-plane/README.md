@@ -47,6 +47,9 @@ secrets with HashiCorp Vault Transit — see
 docs/designs/secret-store-seams.md and `.env.example` for the full variable
 list).
 
+`REASSIGN_GRACE_SEC` configures the unwired watchdog model; it is not an
+operational failover guarantee. Duty-governed recovery follows the duty ledger.
+
 ## Develop
 
 ### Local dev quickstart

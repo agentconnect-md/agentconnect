@@ -333,6 +333,68 @@ describe('DecisionEvaluationReader', () => {
     await s.close()
   })
 
+  it('returns every reached chain step as frozen, with later step bodies only when asked, and only for includeSteps', async () => {
+    const s = await openTestStore()
+    const child = { type: 'choice', instructions: 'Support?', criteria: { support: 'Support', other: 'Other' } }
+    const childWhen = { type: 'choice', thresholds: { support: 0.5 } }
+    const chained = {
+      ...config,
+      binding: {
+        channel: CH,
+        consumer: {
+          ...config.binding.consumer,
+          nextStepId: 's2',
+          steps: [{ id: 's2', decisionId: 'd-2', when: childWhen }]
+        }
+      },
+      definitions: [{ id: 'd-2', name: 'Support', providerId: 'typesafe', model: 'jev-child', question: child }]
+    }
+    const { seq } = await reserve(s, 1, { configJson: JSON.stringify(chained) })
+    const usage = { inputTokens: 10, outputTokens: 1 }
+    const other = { type: 'choice', value: 'other', probabilities: { support: 0.1, other: 0.9 }, confidence: 0.9 }
+    const chain = [
+      { stepId: '', decisionId: 'd-1', evaluation: { status: 'answered', answer: yes, model: 'jev-1', usage } },
+      { stepId: 's2', decisionId: 'd-2', evaluation: { status: 'answered', answer: other, model: 'jev-2', usage } }
+    ]
+    await settle(s, seq, 'skip', yes, [], state(), {
+      chain,
+      request: '{"root":1}',
+      stepRaw: [{}, { request: '{"child":1}', raw: '{"answer":"other"}' }]
+    })
+    const reader = readerFor(s)
+    expect((await reader.get(ORG, { ...lane, seq })).evaluation).not.toHaveProperty('steps')
+    const plain = await reader.get(ORG, { ...lane, seq, includeSteps: true })
+    expect(DecisionEvaluationReply.parse(plain)).toEqual(plain)
+    expect(plain.evaluation!.steps).toEqual([
+      {
+        stepId: '',
+        decisionId: 'd-1',
+        providerId: 'typesafe',
+        model: 'jev-latest',
+        question,
+        condition: config.binding.consumer.when
+      },
+      {
+        stepId: 's2',
+        decisionId: 'd-2',
+        providerId: 'typesafe',
+        model: 'jev-child',
+        question: child,
+        condition: childWhen
+      }
+    ])
+    const raw = (await reader.get(ORG, { ...lane, seq, includeRaw: true, includeSteps: true })).evaluation!
+    expect(raw.rawRequest).toEqual({ text: '{"root":1}', truncated: false })
+    expect(raw.steps![0]).not.toHaveProperty('rawRequest')
+    expect(raw.steps![1]).toMatchObject({
+      rawRequest: { text: '{"child":1}', truncated: false },
+      rawResponse: { text: '{"answer":"other"}', truncated: false }
+    })
+    await s.stripDecisionVerdictBodies(AT + 10 * 24 * 3_600_000)
+    expect((await reader.get(ORG, { ...lane, seq, includeSteps: true })).evaluation).not.toHaveProperty('steps')
+    await s.close()
+  })
+
   it('never rebuilds a request a verdict did not store', async () => {
     const s = await openTestStore()
     const { seq } = await reserve(s, 1)

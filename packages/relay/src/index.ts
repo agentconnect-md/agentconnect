@@ -14,6 +14,7 @@ import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
   RELAY_CP_SUBPROTOCOL,
+  type RcCodeHostFeedback,
   type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
   type RcRunReport
@@ -26,7 +27,7 @@ import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { WebchatRouter, bindWebchatPostAuthor } from './webchat-router.js'
 import { WebchatVerdictCache } from './webchat-verdict-cache.js'
-import { registerAiSdkChatRoute } from './ai-sdk-chat-route.js'
+import { registerAgentChatRoutes } from './agent-chat-route.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
 import { relayIngressPlugins } from './platforms/registry.js'
 import { CollaborationRouter } from './collaboration-router.js'
@@ -49,6 +50,8 @@ import { startRelayOpenTelemetry } from './observability.js'
 const telemetry = startRelayOpenTelemetry()
 
 const RELAY_WS_PATH = '/api/v1/relays/ws'
+// How long a verified agent chat key keeps chatting without the CP (shared-bot-relay.md §10.4).
+const AGENT_CHAT_VERDICT_TTL_MS = 60_000
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -183,6 +186,7 @@ async function main(): Promise<void> {
         daemonId: a.daemonId,
         integrationId: ''
       }),
+    onFeedbackWatch: (watch) => hookTable.feedbackWatch(watch),
     onHookAssign: (rule) => hookTable.upsert(rule),
     onHookRemove: (hookId) => hookTable.remove(hookId),
     // Bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2) —
@@ -271,6 +275,7 @@ async function main(): Promise<void> {
   // signing tokens, live membership through the CP, same shared run limiter.
   const gitlabAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
   const gitlabIngressDeps = {
+    reportFeedback: (signal: RcCodeHostFeedback) => client.reportCodeHostFeedback(signal),
     table: hookTable,
     daemons: () => held.rdServer,
     report: (r: RcRunReport) => client.emitRunReport(r),
@@ -286,6 +291,7 @@ async function main(): Promise<void> {
   // keys, bare-hex signature, no replay window, live membership through the CP.
   const giteaAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
   const giteaIngressDeps = {
+    reportFeedback: (signal: RcCodeHostFeedback) => client.reportCodeHostFeedback(signal),
     table: hookTable,
     daemons: () => held.rdServer,
     report: (r: RcRunReport) => client.emitRunReport(r),
@@ -327,12 +333,18 @@ async function main(): Promise<void> {
 
   // The webchat router (chatId → browser or AI SDK chat turn) — a daemon's rd/chat is delivered here.
   const router = new WebchatRouter()
-  // One verdict per token until its `exp`, shared by the browser socket and the AI SDK chat route (§10.4).
+  // One verdict per browser token until its `exp` (§10.4).
   const webchatVerdicts = new WebchatVerdictCache((token) => client.verify('webchat-token', token))
+  // One verdict per (API key, agent, chat id) for a minute, the bound on how long a revoked key keeps chatting (§10.4).
+  const agentChatVerdicts = new WebchatVerdictCache<[apiKey: string, agentId: string, chatId: string]>(
+    (apiKey, agentId, chatId) => client.verifyAgentChatKey(apiKey, agentId, chatId),
+    Date.now,
+    (_args, verifiedAtMs) => verifiedAtMs + AGENT_CHAT_VERDICT_TTL_MS
+  )
 
-  // Agent chat API (POST /ai-sdk/chat/:conversationId, §10.4); registered before listen, the rd/* server is late-bound.
-  const chatRoute = registerAiSdkChatRoute(server, {
-    verify: (token) => webchatVerdicts.verify(token),
+  // Agent chat API (POST /ai-sdk/… and /ag-ui/agents/:agentId/chat, §10.4); registered before listen, the rd/* server is late-bound.
+  const chatRoute = registerAgentChatRoutes(server, {
+    verify: (apiKey, agentId, chatId) => agentChatVerdicts.verify(apiKey, agentId, chatId),
     daemons: () => held.rdServer,
     router,
     log

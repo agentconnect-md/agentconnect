@@ -775,6 +775,11 @@ export function applySpecFields(
   if (spec.hookRoutings !== undefined) raw.hookRoutings = spec.hookRoutings
   if (spec.modelSelection === null) delete raw.modelSelection
   else if (spec.modelSelection !== undefined) raw.modelSelection = spec.modelSelection
+  // Always shipped by a current CP, so {} clears the last gate.
+  if (spec.apiGates !== undefined) {
+    if (Object.keys(spec.apiGates).length === 0) delete raw.apiGates
+    else raw.apiGates = spec.apiGates
+  }
   if (spec.repositorySelector === null) delete raw.repositorySelector
   else if (spec.repositorySelector !== undefined) raw.repositorySelector = spec.repositorySelector
   // Managed skill metadata is also a complete CP-owned set. The archive bytes

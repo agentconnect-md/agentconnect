@@ -87,7 +87,7 @@ sequenceDiagram
 
 - WS-level `ping`/`pong` (library keepalive) **plus** app-level `heartbeat` EVT carrying a load snapshot.
 - CP sends `heartbeatSec` in `auth/ok` (default **15s**). Daemon emits `heartbeat` every `heartbeatSec`.
-- **Watchdog:** if CP misses **3×heartbeatSec** of both pongs and heartbeats, it marks the daemon `unreachable`, freezes its routing assignments (does **not** reassign yet — see §7 split-brain), and surfaces it in the dashboard. Reassignment only after a `reassignGraceSec` (default 60s) to avoid double-serving.
+- **Watchdog model:** `Watchdog` describes missed-heartbeat freeze followed by `REASSIGN_GRACE_SEC` before rebalance. The current production container constructs it without wiring its timers, so this grace is not an operational HA guarantee. The proposed [HA shared liveness](high-availability.md#connection-ownership-and-forwarding) must respect placement (§7.2), launch (§4.4), and [duty fences](k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7); a local timeout alone cannot authorize reassignment.
 
 ---
 
@@ -382,7 +382,7 @@ const DrainProgress = z.object({ remaining: z.number().int(), drained: z.array(S
 const DrainDone = z.object({ released: z.array(SessionKey) }) // CP may now reassign — fenced by new epoch
 ```
 
-**Rebalance safety:** the CP only issues fresh `route/assign` for a released session **after** `drain/done` (or `deadline` + watchdog). Combined with `sessionEpoch` fencing, this guarantees no two daemons serve one session across a rebalance.
+**Rebalance safety contract:** new ownership requires a confirmed release or the relevant resource fence; a drain deadline or changed `sessionEpoch` alone does not prove that the previous owner stopped. The watchdog is not wired in production (§2.2). Member-set reassignment follows `T_fence` and `T_reassign` in the duty lease contract.
 
 ### 5.4 `cron/upsert` (C→D, REQ→ack) · `cron/remove` (C→D, REQ→ack)
 
@@ -511,6 +511,14 @@ ACP `session/update` streams into these milestones; CP persists the metadata,
 never the stream. `GET /sessions/:id` and `GET /sessions` read that stored
 metadata. `GET /sessions/:id/messages` remains a live daemon pull (§7.6).
 
+`event/session-sync` is the acknowledged form of the same metadata payload
+(D→C REQ → `ack`), negotiated with `session-metadata-ack-v1`. The daemon persists
+its latest snapshot per session in an outbox and clears that exact local
+revision only after CP persistence is acknowledged. A newer snapshot cannot be
+cleared by an older ACK. An older CP receives best-effort `event/session` while
+the durable snapshot remains queued for a later supported connection. This
+outbox does not make other telemetry frame families durable.
+
 ### 7.3 `facts/runtime-profile` (D→C, EVT) — runtime-profile facts feed (deprecated)
 
 CP accepts this per-runtime frame for protocol compatibility. Daemons publish
@@ -576,10 +584,17 @@ const AgentActivity = z.object({
 
 On WS drop the daemon enters **DEGRADED** (local autonomy, D1):
 
-- **Keeps serving** existing assignments from the D11 routing cache; cron keeps firing; in-memory secret leases used until TTL.
+- **Keeps serving** existing assignments and local crons within their [authority lifetimes](high-availability.md#authority-lifetimes). All member-set daemons stop duties without confirmed renewal at `T_fence`, including their platform connections and turns; this is earlier than the reassignment lease expiry.
 - **Pauses** consuming new orchestration: no new `route/assign` (none arrive anyway), no rebalance.
-- **Buffers** outbound telemetry (`event/session`, `facts/*`, acks) in D11; flushes on reconnect.
-- **Reconnect:** `auth{resume:{lastEpoch}}` → the CP answers `resume.accepted:false` and a full `register` reconcile (§3.3) re-aligns everything. **Split-brain guard:** the CP withholds reassignment of this daemon's sessions for `reassignGraceSec` after it goes unreachable, and `sessionEpoch` fencing rejects any control that crossed the gap.
+- **Persists** session-metadata milestones in the acknowledged outbox (§7.2); facts are restated from local state on reconnect. Transient live invalidations are best-effort.
+- **Best-effort reports:** `usage/report` has no guaranteed reconnect replay. `cron/report` restates fire stamps, not completion; a completion lost during disconnect can later appear failed after the CP reaper. The proposed HA rollout requires acknowledged terminal cron reporting before claiming accurate outcomes across handoff.
+- **Reconnect:** `auth{resume:{lastEpoch}}` → the CP answers `resume.accepted:false` and a full `register` reconcile (§3.3) re-aligns everything. `sessionEpoch` fences the control transport; placement, duty terms, and launch IDs fence resource ownership. Reconnection alone must not reassign unchanged work.
+
+A planned CP restart closes only the control transport; it is not a
+`daemon/drain` command. The proposed [CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget)
+requires connection-epoch fencing, bounded request recovery, and confirmed
+duty renewal before self-fence. It does not promise indefinite pool operation
+without the CP.
 
 ### 7.6 `session/list` + `session/history` (C→D, REQ → REP) — console session views
 

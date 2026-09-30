@@ -164,8 +164,10 @@ async function settle() {
 }
 
 const text = () => container?.textContent ?? ''
-const gutter = () => container?.querySelector('[data-viewer-gutter]')?.textContent ?? ''
-const code = () => container?.querySelector('[data-viewer-code] pre:last-of-type')?.textContent ?? ''
+const gutter = () =>
+  Array.from(container?.querySelectorAll('[data-viewer-gutter]') ?? [], (cell) => cell.textContent).join('\n')
+const code = () =>
+  Array.from(container?.querySelectorAll('[data-viewer-code] code') ?? [], (cell) => cell.textContent).join('\n')
 const click = async (selector: string) => {
   const target = container?.querySelector<HTMLElement>(selector)
   if (!target) throw new Error(`no ${selector}`)
@@ -270,6 +272,38 @@ describe('SessionViewer body', () => {
     await render()
     expect(container?.querySelector('[data-viewer-code] script')).toBeNull()
     expect(code()).toBe('<script>alert(1)</script>')
+  })
+
+  it('wraps long lines in place and keeps a highlighted span that crosses lines balanced per row', async () => {
+    wire.slices[0] = { content: 'a\nb' }
+    await render()
+    const rows = container?.querySelectorAll('[data-viewer-line]') ?? []
+    expect(rows).toHaveLength(2)
+    expect(container?.querySelector('[data-viewer-code] code')?.className).toContain('whitespace-pre-wrap')
+    expect(container?.querySelectorAll('[data-viewer-code] b.hljs-keyword')).toHaveLength(2)
+  })
+
+  it('numbers a CRLF file one row per line, with no carriage return left in the code', async () => {
+    wire.slices[0] = { content: 'one\r\ntwo\r\n' }
+    await render()
+    expect(gutter()).toBe('1\n2')
+    expect(code()).toBe('one\ntwo')
+  })
+
+  it('previews a Markdown file by default and toggles to its numbered source', async () => {
+    wire.slices[0] = { content: '# Title\n\nbody\n' }
+    await render({ path: 'README.md' })
+    await vi.waitFor(() => expect(container?.querySelector('[data-viewer-markdown] h1')?.textContent).toBe('Title'))
+    expect(container?.querySelector('[data-viewer-gutter]')).toBeNull()
+    await click('[data-viewer-markdown-mode="code"]')
+    expect(gutter()).toBe('1\n2\n3')
+    expect(container?.querySelector('[data-viewer-markdown]')).toBeNull()
+  })
+
+  it('offers no Markdown toggle for other files', async () => {
+    wire.slices[0] = { content: 'x' }
+    await render()
+    expect(container?.querySelector('[data-viewer-markdown-modes]')).toBeNull()
   })
 
   it('says an empty file is empty instead of drawing an empty gutter', async () => {

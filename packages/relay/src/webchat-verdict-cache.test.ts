@@ -23,7 +23,7 @@ const OK: RcVerifyResult = {
 function build(verdict: () => Promise<RcVerifyResult> = async () => OK) {
   let now = T0
   const verify = vi.fn(verdict)
-  const cache = new WebchatVerdictCache(verify, () => now)
+  const cache = new WebchatVerdictCache<[token: string]>(verify, () => now)
   return { cache, verify, advance: (ms: number) => (now += ms) }
 }
 
@@ -113,5 +113,22 @@ describe('WebchatVerdictCache', () => {
     advance(61_000)
     await cache.verify(token(T0 / 1000 + 600, 'long'))
     expect(cache.size()).toBe(1)
+  })
+
+  it('keys a fixed-lifetime cache by every argument, as the agent chat API caches a key per agent and chat id', async () => {
+    let now = T0
+    const verify = vi.fn(async (_key: string, _agentId: string, _chatId: string) => OK)
+    const cache = new WebchatVerdictCache<[string, string, string]>(
+      verify,
+      () => now,
+      (_args, verifiedAtMs) => verifiedAtMs + 60_000
+    )
+    await cache.verify('key', AGENT, 'chat-1')
+    await cache.verify('key', AGENT, 'chat-1')
+    await cache.verify('key', AGENT, 'chat-2')
+    expect(verify).toHaveBeenCalledTimes(2)
+    now += 60_000
+    await cache.verify('key', AGENT, 'chat-1')
+    expect(verify).toHaveBeenCalledTimes(3)
   })
 })

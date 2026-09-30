@@ -54,7 +54,12 @@ export const slackModule: WebPlatformModule<SlackApi> = {
     roomNoun: 'channel',
     roomGlyph: '#',
     // `conversations.leave` needs `channels:manage` (a re-authorize for every workspace); removing the bot in Slack clears the row instead.
-    leave: 'none'
+    leave: 'none',
+    // The web client opens any conversation kind under the bot's workspace.
+    conversationUrl: ({ channelId, workspaceId }) =>
+      workspaceId
+        ? `https://app.slack.com/client/${encodeURIComponent(workspaceId)}/${encodeURIComponent(channelId)}`
+        : undefined
   },
   // No Body: the rows stay generic; a revoked app's repair sits in the header, its progress beneath it.
   agentCard: {

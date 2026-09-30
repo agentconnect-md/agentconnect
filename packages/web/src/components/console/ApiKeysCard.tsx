@@ -2,13 +2,15 @@
 
 // The caller's personal API keys: each acts as you, with your role, in the one org it is minted for (daemon-api-key-auth.md §8).
 // Name, expiry, permission and agents are edited in place with the same secret; Regenerate alone reveals a new plaintext once (§6).
-// Self-contained: fetches `/me/keys` and renders its own scrim dialogs, so it drops into the Profile layouts and the agent API tab.
+// Self-contained: fetches `/me/keys` and renders its own scrim dialogs, so it drops into the Profile layouts and a service account's keys.
 
 import { useState } from 'react'
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { MOCK_MODE, agentLabel, type Agent } from '@/lib/data'
+import { AgentIconView } from '@/components/marks'
+import { FieldSelect } from '@/components/console/FieldSelect'
 import {
   fetchMyApiKeys,
   createMyApiKey,
@@ -23,6 +25,28 @@ import {
   type OrgDto
 } from '@/lib/api'
 import { consoleKeys, profileKeys } from '@/lib/swr-keys'
+import { Scrim } from '@/components/console/Scrim'
+
+/** Where the card reads and writes keys; the default is the caller's own `/me/keys`. */
+export interface ApiKeySource {
+  swrKey: readonly unknown[] | null
+  list: () => Promise<UserApiKeyDto[]>
+  create: typeof createMyApiKey
+  update: typeof updateMyApiKey
+  regenerate: typeof regenerateMyApiKey
+  revoke: typeof revokeMyApiKey
+  /** A service account's keys: the org is fixed and the keys do not act as the caller. */
+  serviceAccount?: boolean
+}
+
+export const MY_KEYS: ApiKeySource = {
+  swrKey: profileKeys.apiKeys,
+  list: fetchMyApiKeys,
+  create: createMyApiKey,
+  update: updateMyApiKey,
+  regenerate: regenerateMyApiKey,
+  revoke: revokeMyApiKey
+}
 
 // The dialog's permission choices, in the order offered (daemon-api-key-auth.md §6).
 const PERMISSIONS: ApiKeyPermission[] = ['full', 'read', 'agent:chat']
@@ -72,7 +96,8 @@ export default function ApiKeysCard({
   defaultName,
   embedded = false,
   title,
-  description
+  description,
+  source = MY_KEYS
 }: {
   orgs: OrgDto[]
   defaultOrgId?: string
@@ -85,6 +110,8 @@ export default function ApiKeysCard({
   embedded?: boolean
   title?: string
   description?: string
+  /** A service account's keys instead of the caller's own. */
+  source?: ApiKeySource
 }) {
   const t = useTranslations('Profile')
   const resolvedTitle = title ?? t('apiKeys.title')
@@ -97,7 +124,7 @@ export default function ApiKeysCard({
     error: loadError,
     isLoading: loading,
     mutate: mutateKeys
-  } = useSWR<UserApiKeyDto[]>(MOCK_MODE ? null : profileKeys.apiKeys, fetchMyApiKeys)
+  } = useSWR<UserApiKeyDto[]>(MOCK_MODE ? null : source.swrKey, source.list)
   const keys = keysData ?? []
   const reload = () => {
     void mutateKeys().catch(() => undefined)
@@ -214,9 +241,10 @@ export default function ApiKeysCard({
   const dialogs = (
     <>
       {creating && (
-        <div className="scrim">
+        <Scrim onEscape={() => setCreating(false)}>
           <div className="modal">
             <ApiKeyFormModal
+              source={source}
               orgs={orgs}
               defaultOrgId={defaultOrgId}
               defaultName={defaultName}
@@ -224,28 +252,39 @@ export default function ApiKeysCard({
               onSaved={reload}
             />
           </div>
-        </div>
+        </Scrim>
       )}
       {editing && (
-        <div className="scrim">
+        <Scrim onEscape={() => setEditing(null)}>
           <div className="modal">
-            <ApiKeyFormModal orgs={orgs} editing={editing} onClose={() => setEditing(null)} onSaved={reload} />
+            <ApiKeyFormModal
+              source={source}
+              orgs={orgs}
+              editing={editing}
+              onClose={() => setEditing(null)}
+              onSaved={reload}
+            />
           </div>
-        </div>
+        </Scrim>
       )}
       {regenerating && (
-        <div className="scrim">
+        <Scrim onEscape={() => setRegenerating(null)}>
           <div className="modal">
-            <RegenerateApiKeyModal apiKey={regenerating} onClose={() => setRegenerating(null)} onRegenerated={reload} />
+            <RegenerateApiKeyModal
+              source={source}
+              apiKey={regenerating}
+              onClose={() => setRegenerating(null)}
+              onRegenerated={reload}
+            />
           </div>
-        </div>
+        </Scrim>
       )}
       {revoking && (
-        <div className="scrim">
+        <Scrim onEscape={() => setRevoking(null)}>
           <div className="modal">
-            <RevokeApiKeyModal apiKey={revoking} onClose={() => setRevoking(null)} onRevoked={reload} />
+            <RevokeApiKeyModal source={source} apiKey={revoking} onClose={() => setRevoking(null)} onRevoked={reload} />
           </div>
-        </div>
+        </Scrim>
       )}
     </>
   )
@@ -342,31 +381,54 @@ function RevealFooter({ onClose }: { onClose: () => void }) {
   )
 }
 
+/** Who a new key is minted for, when the dialog offers the choice: the caller, or one of the org's service accounts. */
+export interface ApiKeyOwner {
+  id: string
+  label: string
+  serviceAccount: boolean
+  source: ApiKeySource
+}
+
 // ── create / edit dialog (org picker → mint → one-time reveal; or edit in place) ──
-function ApiKeyFormModal({
+export function ApiKeyFormModal({
+  source,
   orgs,
   defaultOrgId,
   defaultName,
   editing,
+  owners,
+  defaultPermission,
+  defaultAgentIds,
   onClose,
   onSaved
 }: {
+  source: ApiKeySource
   orgs: OrgDto[]
   defaultOrgId?: string
   defaultName?: string
   /** The key being edited; the org is fixed and the same secret stays in force. */
   editing?: UserApiKeyDto
+  /** Offer an Owner choice, first entry preselected; the org is then fixed to `defaultOrgId`. */
+  owners?: ApiKeyOwner[]
+  defaultPermission?: ApiKeyPermission
+  /** Preselected agents for an agent-level permission. */
+  defaultAgentIds?: string[]
   onClose: () => void
   onSaved: () => void
 }) {
   const t = useTranslations('Profile')
   const [orgId, setOrgId] = useState(editing?.orgId ?? defaultOrgId ?? orgs[0]?.id ?? '')
   const [name, setName] = useState(editing?.name ?? defaultName ?? '')
+  const [ownerId, setOwnerId] = useState(owners?.[0]?.id ?? '')
+  const owner = owners?.find((o) => o.id === ownerId)
+  const target = owner?.source ?? source
   // `'keep'` (edit only) leaves the stored expiry alone; a number or null is a new lifetime from now.
   const [expiresInDays, setExpiresInDays] = useState<number | null | 'keep'>(editing ? 'keep' : 90)
-  const [permission, setPermission] = useState<ApiKeyPermission>(editing?.permission ?? 'full')
-  const [agentScope, setAgentScope] = useState<'all' | 'selected'>(editing && !editing.allAgents ? 'selected' : 'all')
-  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>(editing?.agentIds ?? [])
+  const [permission, setPermission] = useState<ApiKeyPermission>(editing?.permission ?? defaultPermission ?? 'full')
+  const [agentScope, setAgentScope] = useState<'all' | 'selected'>(
+    (editing && !editing.allAgents) || (!editing && defaultAgentIds?.length) ? 'selected' : 'all'
+  )
+  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>(editing?.agentIds ?? defaultAgentIds ?? [])
   const [minted, setMinted] = useState<MintedUserKeyDto | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -408,13 +470,13 @@ function ApiKeyFormModal({
             : {})
         }
         if (Object.keys(patch).length > 0) {
-          await updateMyApiKey(editing.id, patch)
+          await source.update(editing.id, patch)
           onSaved()
         }
         onClose()
         return
       }
-      const m = await createMyApiKey({
+      const m = await target.create({
         orgId,
         ...(name.trim() ? { name: name.trim() } : {}),
         expiresInDays: expiresInDays === 'keep' ? 90 : expiresInDays,
@@ -448,66 +510,80 @@ function ApiKeyFormModal({
           <KeyReveal apiKey={minted.apiKey} />
         ) : (
           <>
-            <p className="mb-4 font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-              {t('apiKeys.description')}
-            </p>
+            {!source.serviceAccount && !owners && (
+              <p className="mb-4 font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
+                {t('apiKeys.description')}
+              </p>
+            )}
             <div className="flex flex-col gap-[14px]">
-              <div className="flex flex-col gap-[6px]">
+              <div className={source.serviceAccount || owners ? 'hidden' : 'flex flex-col gap-[6px]'}>
                 <span className="fldlbl">{t('apiKeys.organization')}</span>
-                <select
-                  className="dsinput-field disabled:opacity-60"
+                <FieldSelect
+                  ariaLabel={t('apiKeys.organization')}
                   value={orgId}
                   disabled={!!editing}
-                  onChange={(e) => pickOrg(e.target.value)}
-                >
-                  {(editing ? [{ id: editing.orgId, slug: editing.orgSlug, name: editing.orgName }] : orgs).map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.name ?? o.slug}
-                    </option>
-                  ))}
-                </select>
+                  onChange={pickOrg}
+                  options={(editing ? [{ id: editing.orgId, slug: editing.orgSlug, name: editing.orgName }] : orgs).map(
+                    (o) => ({ value: o.id, label: o.name ?? o.slug })
+                  )}
+                />
               </div>
               <div className="flex flex-col gap-[6px]">
                 <span className="fldlbl">{t('apiKeys.nameOptional')}</span>
                 <input
-                  className="dsinput-field"
+                  className="inp placeholder:text-(--text-tertiary)"
                   placeholder={t('apiKeys.namePlaceholder')}
                   value={name}
                   maxLength={120}
                   onChange={(e) => setName(e.target.value)}
                 />
               </div>
+              {owners && (
+                <div className="flex flex-col gap-[6px]">
+                  <span className="fldlbl">{t('apiKeys.owner')}</span>
+                  <FieldSelect
+                    ariaLabel={t('apiKeys.owner')}
+                    value={ownerId}
+                    onChange={setOwnerId}
+                    options={owners.map((o) => ({
+                      value: o.id,
+                      label: o.label,
+                      ...(o.serviceAccount ? { tag: t('apiKeys.serviceAccount') } : {})
+                    }))}
+                  />
+                </div>
+              )}
               <div className="flex flex-col gap-[6px]">
                 <span className="fldlbl">{t('apiKeys.permissionLabel')}</span>
-                <select
-                  className="dsinput-field"
+                <FieldSelect
+                  ariaLabel={t('apiKeys.permissionLabel')}
                   value={permission}
-                  onChange={(e) => setPermission(e.target.value as ApiKeyPermission)}
-                >
-                  {PERMISSIONS.map((p) => (
-                    <option key={p} value={p}>
-                      {p === 'full'
+                  onChange={setPermission}
+                  options={PERMISSIONS.map((p) => ({
+                    value: p,
+                    label:
+                      p === 'full'
                         ? t('apiKeys.permissionFull')
                         : p === 'read'
                           ? t('apiKeys.permissionRead')
-                          : t('apiKeys.permissionAgentChat')}
-                    </option>
-                  ))}
-                </select>
+                          : t('apiKeys.permissionAgentChat')
+                  }))}
+                />
               </div>
               {agentLevel && (
                 <div className="flex flex-col gap-[6px]">
                   <span className="fldlbl">{t('apiKeys.agentsLabel')}</span>
-                  <select
-                    className="dsinput-field"
+                  <FieldSelect
+                    ariaLabel={t('apiKeys.agentsLabel')}
                     value={agentScope}
-                    onChange={(e) => setAgentScope(e.target.value as 'all' | 'selected')}
-                  >
-                    <option value="all">{t('apiKeys.allAgents')}</option>
-                    <option value="selected">{t('apiKeys.selectedAgents')}</option>
-                  </select>
+                    onChange={setAgentScope}
+                    options={[
+                      { value: 'all', label: t('apiKeys.allAgents') },
+                      { value: 'selected', label: t('apiKeys.selectedAgents') }
+                    ]}
+                  />
                   {selecting && (
-                    <div className="max-h-[180px] overflow-y-auto rounded-sm border border-(--border-subtle)">
+                    <div className="max-h-[200px] overflow-y-auto rounded-md border border-(--border-subtle)">
                       {agents === undefined ? (
                         <div className="px-3 py-[9px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                           {t('apiKeys.agentsLoading')}
@@ -518,14 +594,20 @@ function ApiKeyFormModal({
                         </div>
                       ) : (
                         agents.map((a) => (
-                          <label key={a.id} className="flex cursor-pointer items-center gap-2 px-3 py-[7px]">
+                          <label
+                            key={a.id}
+                            className="flex cursor-pointer items-center gap-[9px] border-b border-(--border-subtle) px-3 py-[7px] last:border-b-0 hover:bg-(--surface-hover)"
+                          >
                             <input
                               type="checkbox"
-                              className="accent-(--brand)"
+                              className="flex-none accent-(--brand)"
                               checked={selectedAgentIds.includes(a.id)}
                               onChange={() => toggleAgent(a.id)}
                             />
-                            <span className="truncate font-sans text-[12.5px] font-normal leading-normal">
+                            <span className="av h-[22px] w-[22px] flex-none rounded-[6px]">
+                              <AgentIconView icon={a.icon} runtime={a.runtime} size={22} />
+                            </span>
+                            <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
                               {agentLabel(a)}
                             </span>
                           </label>
@@ -537,26 +619,23 @@ function ApiKeyFormModal({
               )}
               <div className="flex flex-col gap-[6px]">
                 <span className="fldlbl">{t('apiKeys.expiresLabel')}</span>
-                <select
-                  className="dsinput-field"
+                <FieldSelect
+                  ariaLabel={t('apiKeys.expiresLabel')}
                   value={expiresInDays === 'keep' ? 'keep' : expiresInDays === null ? 'never' : String(expiresInDays)}
-                  onChange={(e) =>
-                    setExpiresInDays(
-                      e.target.value === 'keep' ? 'keep' : e.target.value === 'never' ? null : Number(e.target.value)
-                    )
-                  }
-                >
-                  {editing && <option value="keep">{expiryText(editing.expiresAt, t)}</option>}
-                  {EXPIRY_OPTIONS.map((o) => (
-                    <option key={String(o.days)} value={o.days === null ? 'never' : String(o.days)}>
-                      {o.days === null
-                        ? t('apiKeys.never')
-                        : o.days === 365
-                          ? t('apiKeys.oneYear')
-                          : t('apiKeys.days', { count: o.days })}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setExpiresInDays(v === 'keep' ? 'keep' : v === 'never' ? null : Number(v))}
+                  options={[
+                    ...(editing ? [{ value: 'keep', label: expiryText(editing.expiresAt, t) }] : []),
+                    ...EXPIRY_OPTIONS.map((o) => ({
+                      value: o.days === null ? 'never' : String(o.days),
+                      label:
+                        o.days === null
+                          ? t('apiKeys.never')
+                          : o.days === 365
+                            ? t('apiKeys.oneYear')
+                            : t('apiKeys.days', { count: o.days })
+                    }))
+                  ]}
+                />
               </div>
             </div>
             {err && (
@@ -598,10 +677,12 @@ function ApiKeyFormModal({
 
 // ── regenerate: confirm, then the new plaintext once ─────────────────────────
 function RegenerateApiKeyModal({
+  source,
   apiKey,
   onClose,
   onRegenerated
 }: {
+  source: ApiKeySource
   apiKey: UserApiKeyDto
   onClose: () => void
   onRegenerated: () => void
@@ -616,7 +697,7 @@ function RegenerateApiKeyModal({
     setBusy(true)
     setErr(null)
     try {
-      setMinted(await regenerateMyApiKey(apiKey.id))
+      setMinted(await source.regenerate(apiKey.id))
       onRegenerated()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -680,10 +761,12 @@ function RegenerateApiKeyModal({
 
 // ── revoke confirm ────────────────────────────────────────────────────────────
 function RevokeApiKeyModal({
+  source,
   apiKey,
   onClose,
   onRevoked
 }: {
+  source: ApiKeySource
   apiKey: UserApiKeyDto
   onClose: () => void
   onRevoked: () => void
@@ -697,7 +780,7 @@ function RevokeApiKeyModal({
     setBusy(true)
     setErr(null)
     try {
-      await revokeMyApiKey(apiKey.id)
+      await source.revoke(apiKey.id)
       onRevoked()
       onClose()
     } catch (e) {

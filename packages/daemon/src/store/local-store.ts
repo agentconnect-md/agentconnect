@@ -20,6 +20,8 @@ import {
   type DecisionRuntimeTarget,
   type DecisionModelEvaluationRecord,
   type DecisionModelEvaluationRecordDetail,
+  type DecisionEvaluationRecord,
+  type DecisionEvaluationRecordDetail,
   type DreamInfo,
   type ExternalSessionOrigin,
   type QuotedMessage,
@@ -637,6 +639,8 @@ export interface DecisionModelEvaluationRow {
   bodiesStrippedAt: number | null
 }
 
+export type DecisionApiGateEvaluationRow = DecisionModelEvaluationRow
+
 /** The step-1 row a delivery was recorded at (message-intake.md §3): the verdict's position. */
 export interface ChannelRecordRef {
   seq: number
@@ -1230,6 +1234,21 @@ const DECISION_SCHEMA = `
       );
       CREATE INDEX IF NOT EXISTS decision_model_evaluation_agent ON decision_model_evaluation (orgId, agentId, seq);
       CREATE INDEX IF NOT EXISTS decision_model_evaluation_decision ON decision_model_evaluation (orgId, agentId, decisionId, seq);
+      CREATE TABLE IF NOT EXISTS decision_api_gate_evaluation (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        orgId TEXT NOT NULL,
+        agentId TEXT NOT NULL,
+        protocol TEXT NOT NULL,
+        messageId TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        decisionId TEXT NOT NULL,
+        summaryJson TEXT NOT NULL,
+        detailJson TEXT,
+        bodiesStrippedAt INTEGER,
+        UNIQUE (agentId, messageId)
+      );
+      CREATE INDEX IF NOT EXISTS decision_api_gate_evaluation_lane ON decision_api_gate_evaluation (orgId, agentId, protocol, seq);
+      CREATE INDEX IF NOT EXISTS decision_api_gate_evaluation_decision ON decision_api_gate_evaluation (orgId, agentId, protocol, decisionId, seq);
       CREATE TABLE IF NOT EXISTS decision_release (
         orgId TEXT NOT NULL,
         channel TEXT NOT NULL,
@@ -1240,7 +1259,7 @@ const DECISION_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 33
+export const SCHEMA_VERSION = 34
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1621,7 +1640,26 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       if (typeof decisionId === 'string')
         await db.query('UPDATE decision_model_evaluation SET decisionId = ? WHERE seq = ?', [decisionId, row.seq])
     }
-  }
+  },
+  // v34 records each chat API gate verdict (shared-bot-relay.md §10.4).
+  async (db) =>
+    await db.exec(`CREATE TABLE IF NOT EXISTS decision_api_gate_evaluation (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      orgId TEXT NOT NULL,
+      agentId TEXT NOT NULL,
+      protocol TEXT NOT NULL,
+      messageId TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      decisionId TEXT NOT NULL,
+      summaryJson TEXT NOT NULL,
+      detailJson TEXT,
+      bodiesStrippedAt INTEGER,
+      UNIQUE (agentId, messageId)
+    );
+    CREATE INDEX IF NOT EXISTS decision_api_gate_evaluation_lane
+      ON decision_api_gate_evaluation (orgId, agentId, protocol, seq);
+    CREATE INDEX IF NOT EXISTS decision_api_gate_evaluation_decision
+      ON decision_api_gate_evaluation (orgId, agentId, protocol, decisionId, seq);`)
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -4713,6 +4751,15 @@ export class LocalStore {
     ).map((row) => this.dreamFromRow(row))
   }
 
+  /** Every terminal dream of the agent that can still hold store staging, uncapped. */
+  async retirableDreams(agentId: string): Promise<DreamInfo[]> {
+    return (
+      (await this.db
+        .prepare("SELECT * FROM dreams WHERE agentId = ? AND status IN ('completed', 'failed', 'canceled')")
+        .all(agentId)) as Record<string, unknown>[]
+    ).map((row) => this.dreamFromRow(row))
+  }
+
   /** Every dream id of the agent, whatever its status: each names a host that no session row does. */
   async dreamIdsForAgent(agentId: string): Promise<string[]> {
     const rows = (await this.db.prepare('SELECT dreamId FROM dreams WHERE agentId = ?').all(agentId)) as Array<{
@@ -6258,7 +6305,7 @@ export class LocalStore {
     summary: Omit<DecisionModelEvaluationRecord, 'seq' | 'title' | 'detailsExpired'>,
     detail: Pick<
       DecisionModelEvaluationRecordDetail,
-      'selection' | 'question' | 'input' | 'fullAnswer' | 'chain' | 'rawRequest' | 'rawResponse'
+      'selection' | 'question' | 'input' | 'fullAnswer' | 'chain' | 'steps' | 'rawRequest' | 'rawResponse'
     >,
     now: number
   ): Promise<void> {
@@ -6321,6 +6368,89 @@ export class LocalStore {
           WHERE newer.orgId = decision_model_evaluation.orgId
             AND newer.agentId = decision_model_evaluation.agentId
             AND newer.seq > decision_model_evaluation.seq) >= @kept)`
+      )
+      .run({
+        now,
+        cutoff: now - DECISION_BODY_RETENTION_MS,
+        kept: DECISION_BODY_RETAINED_VERDICTS
+      })
+    return Number(result.changes)
+  }
+
+  async saveDecisionApiGateEvaluation(
+    agentId: string,
+    protocol: string,
+    messageId: string,
+    summary: Omit<DecisionEvaluationRecord, 'seq' | 'title' | 'detailsExpired'>,
+    detail: Pick<
+      DecisionEvaluationRecordDetail,
+      'snapshot' | 'input' | 'fullAnswer' | 'chain' | 'steps' | 'rawRequest' | 'rawResponse'
+    >,
+    now: number
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO decision_api_gate_evaluation
+      (orgId, agentId, protocol, messageId, createdAt, decisionId, summaryJson, detailJson)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        this.orgForRead(agentId, undefined),
+        agentId,
+        protocol,
+        messageId,
+        now,
+        summary.decisionId,
+        JSON.stringify(summary),
+        JSON.stringify(detail)
+      )
+  }
+
+  async listDecisionApiGateEvaluations(
+    orgId: string,
+    agentId: string,
+    protocol: string,
+    before: number | undefined,
+    limit: number,
+    decisionId?: string
+  ): Promise<DecisionApiGateEvaluationRow[]> {
+    const params: unknown[] = [this.orgForRead(agentId, orgId), agentId, protocol, before ?? Number.MAX_SAFE_INTEGER]
+    const decisionFilter = decisionId ? ' AND decisionId = ?' : ''
+    if (decisionId) params.push(decisionId)
+    return (await this.db
+      .prepare(
+        `SELECT seq, summaryJson, detailJson, bodiesStrippedAt
+      FROM decision_api_gate_evaluation WHERE orgId = ? AND agentId = ? AND protocol = ? AND seq < ?${decisionFilter}
+      ORDER BY seq DESC LIMIT ?`
+      )
+      .all(...params, limit)) as DecisionApiGateEvaluationRow[]
+  }
+
+  async getDecisionApiGateEvaluation(
+    orgId: string,
+    agentId: string,
+    protocol: string,
+    seq: number
+  ): Promise<DecisionApiGateEvaluationRow | undefined> {
+    return (await this.db
+      .prepare(
+        `SELECT seq, summaryJson, detailJson, bodiesStrippedAt
+      FROM decision_api_gate_evaluation WHERE orgId = ? AND agentId = ? AND protocol = ? AND seq = ?`
+      )
+      .get(this.orgForRead(agentId, orgId), agentId, protocol, seq)) as DecisionApiGateEvaluationRow | undefined
+  }
+
+  async stripDecisionApiGateEvaluationBodies(now: number): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE decision_api_gate_evaluation
+      SET detailJson = NULL, bodiesStrippedAt = @now
+      WHERE detailJson IS NOT NULL AND (createdAt < @cutoff OR
+        (SELECT COUNT(*) FROM decision_api_gate_evaluation newer
+          WHERE newer.orgId = decision_api_gate_evaluation.orgId
+            AND newer.agentId = decision_api_gate_evaluation.agentId
+            AND newer.protocol = decision_api_gate_evaluation.protocol
+            AND newer.seq > decision_api_gate_evaluation.seq) >= @kept)`
       )
       .run({
         now,

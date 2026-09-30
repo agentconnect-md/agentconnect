@@ -74,6 +74,8 @@ export interface CommandChromeSurface<TMsg, TInfo> {
    *  the shared numbered text list. Omitted entirely by platforms with no
    *  interactive cards. */
   selectCard?(conn: unknown, msg: TMsg, ctx: CommandChromeContext, card: SelectCardSpec): boolean
+  /** Post core's out-of-turn notice (gated conversation, cut turn) where the connection is not a reply connection; no `thread` is top level. */
+  notice?(conn: unknown, channel: string, thread: string | undefined, text: string): Promise<void>
 }
 
 /**

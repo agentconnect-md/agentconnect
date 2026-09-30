@@ -1,16 +1,17 @@
-// Google Chat's relay ingress plugin (google-chat-integration.md §2, §4): a pure HTTP decoder — no `start`, a no-op
-// `stop`, no `egress` facet and no secret on the relay; Google signs each callback and the daemon owns every write.
+// Google Chat's relay ingress plugin (google-chat-integration.md §2, §4, §11): a pure HTTP decoder of add-on requests with no secret on the relay.
 import { createHash, randomUUID } from 'node:crypto'
 import {
+  googleChatEventObjectOf,
+  googleChatPayloadOf,
   googleChatTenantKey,
   normalizeGoogleChatEvent,
-  type GoogleChatEvent,
   type GoogleChatEventResult,
   type GoogleChatInteraction
 } from '@agentconnect.md/message'
 import {
   GOOGLE_CHAT_ELICIT_FUNCTION,
   GOOGLE_CHAT_PLATFORM,
+  googleChatEventsUrl,
   type RcDeploymentConfig,
   type RdMsgPlatformAction,
   type WireGoogleChatCardAction
@@ -26,27 +27,28 @@ import {
   provenAppUserName,
   type VerifiedGoogleChatDelivery
 } from './http-ingest.js'
+import { googleChatHelp, googleChatWelcome } from './help.js'
 import { registerGoogleChatHttpIngress } from './http-ingress.js'
-import { GoogleChatCertificateStore, bearerToken, unverifiedAudience } from './token.js'
+import { GoogleChatTokenVerifier, bearerToken, unverifiedProjectNumber } from './token.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
 import type { DemuxHints, HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from '../contract.js'
 
 export interface GoogleChatIngressPluginDeps {
-  /** The HTTP layer that fetches Google's certificate map; tests pass a fake. Defaults to the global fetch. */
+  /** The HTTP layer that fetches Google's signing keys; tests pass a fake. Defaults to the global fetch. */
   fetch?: typeof fetch
 }
 
 export type GoogleChatIngressPlugin = RelayPlatformIngressPlugin<GoogleChatHttpIngest, VerifiedGoogleChatDelivery> & {
-  /** The platform-wide certificate cache, exposed for inspection. */
-  readonly certificates: GoogleChatCertificateStore
+  /** The platform-wide token verifier over Google's signing keys, exposed for inspection. */
+  readonly verifier: GoogleChatTokenVerifier
 }
 
 type ClassifiedResult = Exclude<GoogleChatEventResult, { kind: 'invalid' }>
 
-/** How long a card click waits on the daemon before the relay answers Google anyway; Chat allows 30 s. */
+/** How long a button click waits on the daemon before the relay answers Google anyway; Chat allows 30 s. */
 const CARD_ACTION_FORWARD_TIMEOUT_MS = 10_000
 
-/** A card click's dedup identity: one click is one event, so its content is its identity. */
+/** A button click's dedup identity: one click is one event, so its content is its identity. */
 export function googleChatActionMsgId(botId: string, interaction: GoogleChatInteraction, eventTime?: string): string {
   const digest = createHash('sha256')
     .update(JSON.stringify({ v: 1, botId, eventTime, interaction }))
@@ -102,7 +104,7 @@ async function forwardElicitClick(
 /** The deployment app's anchor id: not a UUID, so no CP row can ever carry it. */
 export const GOOGLE_CHAT_ANCHOR_BOT_ID = 'deployment:googlechat:anchor'
 
-/** The anchor the CP's snapshot names (§10.4): an app-only entry for the deployment audience that routes nothing and answers the unclaimed. */
+/** The anchor the CP's snapshot names (§10.4): an app-only entry for the deployment app that routes nothing and answers the unclaimed. */
 export function googleChatAnchorAssignment(snapshot: RcDeploymentConfig | undefined): BotAssignment[] {
   const anchor = snapshot?.googleChatAnchor
   if (!anchor) return []
@@ -120,45 +122,44 @@ export function googleChatAnchorAssignment(snapshot: RcDeploymentConfig | undefi
   ]
 }
 
-// An unclaimed tenant's answer (§10.4): the welcome card on an add, the claim prompt on a message, nothing otherwise or without a tenant.
+// An unclaimed tenant's answer (§10.4): the welcome card on an add, the authorization prompt on a message, help that says to connect first, nothing otherwise or without a tenant.
 function unclaimedAnswer(
   ingest: GoogleChatHttpIngest,
   claimUrl: string,
-  event: GoogleChatEvent,
   result: ClassifiedResult,
   nowMs: number
 ): { body: unknown; tenant: string } | undefined {
   if (result.kind === 'ignored' || result.kind === 'unsupported' || result.tenant === undefined) return undefined
   const tenant = result.tenant
+  if (result.kind === 'help') return { body: googleChatHelp({ unclaimed: true }), tenant }
   const iat = Math.floor(nowMs / 1000)
-  if (event.type === 'ADDED_TO_SPACE') {
-    const added = result.kind === 'message' || result.kind === 'membership' ? result.membership : undefined
-    if (!added) return undefined
+  if (result.kind === 'membership' && result.membership.change === 'added') {
+    const added = result.membership
     const kind = added.isDm ? 'dm' : 'space'
-    const state = { v: 1, app: ingest.audience, space: added.channel, kind, tenant, iat } as const
+    const state = { v: 1, app: ingest.projectNumber, space: added.channel, kind, tenant, iat } as const
     return { body: googleChatWelcomeCard(claimUrl, state), tenant }
   }
   if (result.kind !== 'message') return undefined
   const body = googleChatClaimPrompt(claimUrl, {
     v: 1,
-    app: ingest.audience,
+    app: ingest.projectNumber,
     space: result.message.channel,
     user: result.message.sender.id,
     kind: result.message.isDm ? 'dm' : 'space',
     tenant,
-    ...(result.configCompleteRedirectUrl ? { redirect: result.configCompleteRedirectUrl } : {}),
+    ...(result.configCompleteRedirectUri ? { redirect: result.configCompleteRedirectUri } : {}),
     iat
   })
   return { body, tenant }
 }
 
 export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps = {}): GoogleChatIngressPlugin {
-  const certificates = new GoogleChatCertificateStore((input, init) => (deps.fetch ?? fetch)(input, init))
+  const verifier = new GoogleChatTokenVerifier((input, init) => (deps.fetch ?? fetch)(input, init))
   const unclaimed = new UnclaimedTenantMemo()
   const refused = new UnclaimedTenantMemo()
   return {
     platformId: GOOGLE_CHAT_PLATFORM,
-    certificates,
+    verifier,
 
     // `POST /googlechat/events`, the path the Setup Server publishes; pinned by route-mounts.test.ts.
     installRoutes: registerGoogleChatHttpIngress,
@@ -166,7 +167,7 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
     deploymentAssignments: googleChatAnchorAssignment,
 
     buildIngest(a: BotAssignment, host: RelayIngressHost): GoogleChatHttpIngest | undefined {
-      // No Google secret here, the audience is the check; a row cannot be a customer and the anchor, nor own-fenced and either.
+      // No Google secret here, the signed token is the check; a row cannot be a customer and the anchor, nor own-fenced and either.
       const multiTenant = a.tenantIds !== undefined || a.claimUrl !== undefined
       if (
         !a.apiAppId ||
@@ -177,12 +178,18 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
         host.log.warn(`relay-ingress(${a.botId}): incomplete Google Chat assignment`)
         return undefined
       }
-      certificates.log ??= host.log
+      verifier.log ??= host.log
+      // Read per request, so a snapshot that names the origin after this ingest was built still applies.
+      const eventsUrl = (): string | undefined => {
+        const origin = host.publicRelayUrl()
+        return origin ? googleChatEventsUrl(origin) : undefined
+      }
       return new GoogleChatHttpIngest(
         a.botId,
         a.apiAppId,
         a.botUserId,
-        certificates,
+        verifier,
+        eventsUrl,
         a.credentialRevision,
         a.tenantIds,
         a.claimUrl,
@@ -191,17 +198,20 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
     },
 
     extractDemuxHints(_rawBody: Buffer, body: unknown, headers): DemuxHints {
-      // The unverified `aud` picks the candidate app and the unverified tenant key its row (§10.4); `verify` decides.
-      const appId = unverifiedAudience(headers.authorization)
+      // The token's unverified project number picks the candidate app and the unverified tenant key its row (§10.4); `verify` decides.
+      const appId = unverifiedProjectNumber(headers.authorization)
       const tenantId = googleChatTenantKey(body)
       return { ...(appId ? { appId } : {}), ...(tenantId ? { tenantId } : {}) }
     },
 
     async verify(ingest, _rawBody, body, headers, now): Promise<VerifiedGoogleChatDelivery | undefined> {
       const token = bearerToken(headers.authorization)
-      if (!token || typeof body !== 'object' || body === null || Array.isArray(body)) return undefined
-      const claims = await ingest.certificates.verify(token, ingest.audience, now)
-      return claims ? { event: body as GoogleChatEvent, traceId: randomUUID() } : undefined
+      const event = googleChatEventObjectOf(body)
+      // The token's audience is the relay's own events URL, so nothing verifies until the CP's snapshot names it.
+      const eventsUrl = ingest.eventsUrl()
+      if (!token || !event || !eventsUrl) return undefined
+      const claims = await ingest.verifier.verify(token, { projectNumber: ingest.projectNumber, eventsUrl }, now)
+      return claims ? { event, traceId: randomUUID() } : undefined
     },
 
     async handle(ingest, verified, host): Promise<HandledDelivery> {
@@ -225,10 +235,10 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
       // The anchor serves no tenant (§10.4): what core routed to it is unclaimed, answered in the body, never forwarded, reported, or marked.
       if (ingest.claimUrl !== undefined) {
         const now = host.clock.now()
-        const answer = unclaimedAnswer(ingest, ingest.claimUrl, event, result, now)
+        const answer = unclaimedAnswer(ingest, ingest.claimUrl, result, now)
         if (!answer) return {}
-        if (unclaimed.first(`${ingest.audience}\0${answer.tenant}`, now))
-          host.log.info(`relay-ingress(${botId}): answering an unclaimed Google Chat tenant with the claim prompt`)
+        if (unclaimed.first(`${ingest.projectNumber}\0${answer.tenant}`, now))
+          host.log.info(`relay-ingress(${botId}): answering an unclaimed Google Chat tenant in the body`)
         return { syncResponse: answer.body }
       }
       // The own-tenant fence (§10.3): a foreign customer's Space gets a 200 Google never retries; a learned key is reported.
@@ -245,20 +255,21 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
         host.dedupMark(googleChatDedupKey(botId, googleChatDedupId(event)))
         return {}
       }
-      // An elicitation card's click goes to the daemon that posted it; the welcome card's has nothing left to do here.
+      // An elicitation card's click goes to the daemon that posted it; any other click has nothing left to do here.
       if (result.kind === 'interaction') {
         if (result.interaction.function === GOOGLE_CHAT_ELICIT_FUNCTION)
-          await forwardElicitClick(host, botId, result.interaction, event.eventTime)
+          await forwardElicitClick(host, botId, result.interaction, event.chat?.eventTime)
         return {}
       }
-      // Both remaining kinds may carry a membership change; a message-bearing add reports it before forwarding.
-      if (result.membership) {
-        host.reportChannels({
-          botId,
-          channels: ingest.observeMembership(result.membership, event.space?.displayName)
-        })
+      // `/help` is answered here, in the body, without a daemon.
+      if (result.kind === 'help') return { syncResponse: googleChatHelp() }
+      if (result.kind === 'membership') {
+        const displayName = googleChatPayloadOf(event)?.space?.displayName
+        const name = typeof displayName === 'string' ? displayName : undefined
+        host.reportChannels({ botId, channels: ingest.observeMembership(result.membership, name) })
+        // An add is welcomed in the conversation it happened in (§10.7); a removal answers nothing.
+        return result.membership.change === 'added' ? { syncResponse: googleChatWelcome(result.membership.isDm) } : {}
       }
-      if (result.kind === 'membership') return {}
       // Google delivers a Space message only to the apps it mentions or adds, and a DM is addressed by nature: the
       // trusted cause rides the payload, so the relay treats the delivery as an address before the identity is known.
       const message = { ...result.message, trigger: result.message.isDm ? ('dm' as const) : ('mention' as const) }

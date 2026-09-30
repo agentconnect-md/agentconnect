@@ -17,12 +17,12 @@ import {
   type SharedBotDecisionRouting
 } from '@agentconnect.md/protocol'
 import { canonicalJson } from '../decisions/bundle.js'
-import { rawAnswerFields, type DecisionEvaluationInput } from '../decisions/evaluator.js'
+import { ChainRawBodies, type DecisionEvaluationInput } from '../decisions/evaluator.js'
 import { DEFAULT_DECISION_GATE_LIMITS } from '../decisions/gate.js'
 import { largestDecisionRequest, type DecisionStateBudget, type DecisionStateResult } from '../decisions/state.js'
 import type { ChannelRecordRef, DecisionVerdictRow, LocalStore } from '../store/local-store.js'
 import { buildCodeHostDecisionState, loadCodeHostDecisionContext } from './decision-state.js'
-import type { PullRequestContext } from './pull-context.js'
+import type { PullContextTimings, PullRequestContext } from './pull-context.js'
 
 /** A code-host routing's verdict subject (code-host-decisions.md §5 step 4). */
 export const hookRouterSubject = (routingId: string): string => `hook-router:${routingId}`
@@ -74,7 +74,7 @@ export interface HookRouterHost {
   ownerFence(): string
   /** The routing this host applies now, re-read after the provider call so a mid-call edit is never missed. */
   currentProjection(agentId: string, routingId: string): HookRoutingProjection | undefined
-  log: { warn(message: string): void }
+  log: { warn(message: string): void; info?(message: string): void }
 }
 
 export const DEFAULT_HOOK_ROUTER_LIMITS = {
@@ -193,14 +193,17 @@ export class HookRouter {
     const fence = this.host.ownerFence()
     let config = frozen
     let trace: DecisionChainTrace = []
-    const unavailable = (reason: string, raw?: { raw?: string; request?: string }) =>
+    const timing: HookRouteTiming = { startedAt: this.host.now() }
+    const unavailable = (reason: string, raw?: { bodies: ChainRawBodies }) =>
       this.finish(row, config, config.candidates, 'unavailable', {
         evaluated: true,
         unavailableReason: reason,
+        timing,
         ...(config.routing.steps?.length ? { chain: trace, usage: decisionChainUsage(trace) } : {}),
         ...raw
       })
     let built: DecisionStateResult | undefined
+    let pullTimings: PullContextTimings | undefined
     const deadline = AbortSignal.timeout(Math.max(0, row.deadlineAt - this.host.now()))
     try {
       const context = await loadCodeHostDecisionContext({
@@ -210,6 +213,7 @@ export class HookRouter {
         pullRequest: (signal) => this.host.pullRequestContext(msg, signal),
         signal: deadline
       })
+      pullTimings = context?.pullRequest?.timings
       built = context
         ? buildCodeHostDecisionState(
             context,
@@ -219,16 +223,18 @@ export class HookRouter {
     } catch {
       built = undefined
     }
+    timing.contextMs = this.host.now() - timing.startedAt
+    timing.pull = pullTimings
     if (deadline.aborted || this.host.now() >= row.deadlineAt) return await unavailable('timeout')
     if (!built || built.unsupported) return await unavailable('unsupported_input')
     if (!(await store.beginDecisionEvaluation(row.seq, row.subject, fence, JSON.stringify(built.state))))
       return await this.awaitExisting((await store.getDecisionVerdict(row.seq, row.subject)) ?? row)
-    let raw: string | undefined
-    let request: string | undefined
+    const bodies = new ChainRawBodies()
     let evaluation: DecisionEvaluation
     const definitions = new Map(config.definitions?.map((d) => [d.id, d]))
     const definitionOf = (id: string) => (id === config.decisionId ? config : definitions.get(id))
     const answers = new Map<string, { question: DecisionQuestion; answer: DecisionAnswer }>()
+    const evaluationStartedAt = this.host.now()
     try {
       const result = await runDecisionChain<DecisionRoutingStep>({
         root: config.routing,
@@ -245,16 +251,7 @@ export class HookRouter {
               decision: { providerId: decision.providerId, model: decision.model, question: decision.question },
               state: built.state,
               deadlineAt: row.deadlineAt,
-              ...(index === 0
-                ? {
-                    onRawRequest: (text: string) => {
-                      request = text
-                    },
-                    onRawResponse: (text: string) => {
-                      raw = text
-                    }
-                  }
-                : {})
+              ...bodies.hooks(index)
             },
             signal
           )
@@ -279,9 +276,11 @@ export class HookRouter {
       }
     } catch (err) {
       this.host.log.warn(`hook-router: evaluation failed: ${(err as Error).message}`)
-      return await unavailable('provider', { raw, request })
+      timing.evaluateMs = this.host.now() - evaluationStartedAt
+      return await unavailable('provider', { bodies })
     }
-    if (evaluation.status === 'unavailable') return await unavailable(evaluation.reason, { raw, request })
+    timing.evaluateMs = this.host.now() - evaluationStartedAt
+    if (evaluation.status === 'unavailable') return await unavailable(evaluation.reason, { bodies })
     const current = this.host.currentProjection(row.agentId, config.routingId)
     const decisionChanged =
       !current ||
@@ -300,7 +299,7 @@ export class HookRouter {
     try {
       match = matchDecisionRouting(config.question, config.routing, evaluation.answer, undefined, answers)
     } catch {
-      return await unavailable('invalid_response', { raw, request })
+      return await unavailable('invalid_response', { bodies })
     }
     const answered = {
       evaluated: true,
@@ -311,8 +310,8 @@ export class HookRouter {
       model: evaluation.model,
       usage: decisionChainUsage(trace),
       ...(config.routing.steps?.length ? { chain: trace } : {}),
-      raw,
-      request
+      bodies,
+      timing
     }
     // An unmatched branch contributes every candidate only when Otherwise asks for them.
     if (match.usedOtherwise && config.routing.otherwise.type === 'default_agent')
@@ -343,15 +342,15 @@ export class HookRouter {
       usedOtherwise?: boolean
       model?: string
       usage?: { inputTokens: number; outputTokens: number }
-      raw?: string
-      request?: string
+      bodies?: ChainRawBodies
+      timing?: HookRouteTiming
     }
   ): Promise<HookRouteOutcome> {
     const store = this.host.store()
     const fence = this.host.ownerFence()
     const targets: HookRouteTarget[] = selected.map((c) => ({ hookId: c.hookId, agentId: c.agentId, reason }))
     const disposition = extra.unavailableReason !== undefined ? 'unavailable' : targets.length > 0 ? 'match' : 'skip'
-    const answerJson: HookRouteAnswer & ReturnType<typeof rawAnswerFields> = {
+    const answerJson: HookRouteAnswer & ReturnType<ChainRawBodies['fields']> = {
       ...(extra.answer ? { answer: extra.answer } : {}),
       ...(extra.chain ? { chain: extra.chain } : {}),
       matchedKeys: extra.matchedKeys ?? [],
@@ -359,9 +358,11 @@ export class HookRouter {
       usedOtherwise: extra.usedOtherwise ?? false,
       evaluated: extra.evaluated,
       routeReason: reason,
-      ...rawAnswerFields(extra.raw, extra.request)
+      ...extra.bodies?.fields()
     }
     const settledAt = this.host.now()
+    if (extra.timing)
+      this.host.log.info?.(hookRouteTimingLine(row, disposition, extra.unavailableReason, extra.timing, settledAt))
     const won = await store.settleDecisionVerdict(row.seq, row.subject, fence, {
       disposition,
       ...(extra.unavailableReason !== undefined ? { unavailableReason: extra.unavailableReason } : {}),
@@ -419,6 +420,31 @@ export class HookRouter {
       unavailableReason: 'timeout'
     })
   }
+}
+
+/** Where an evaluation's time went; the verdict's answer is cleared with its session, so this is logged. */
+interface HookRouteTiming {
+  startedAt: number
+  contextMs?: number
+  pull?: PullContextTimings
+  evaluateMs?: number
+}
+
+function hookRouteTimingLine(
+  row: DecisionVerdictRow,
+  disposition: string,
+  reason: string | undefined,
+  timing: HookRouteTiming,
+  settledAt: number
+): string {
+  const p = timing.pull
+  const pull = p
+    ? ` (token=${p.tokenMs ?? '-'} metadata=${p.metadataMs ?? '-'} files=${p.filesMs ?? '-'} commits=${p.commitsMs ?? '-'})`
+    : ''
+  return (
+    `${row.subject} seq=${row.seq} ${disposition}${reason ? `/${reason}` : ''}` +
+    ` context=${timing.contextMs ?? '-'}ms${pull} evaluate=${timing.evaluateMs ?? '-'}ms total=${settledAt - row.createdAt}ms`
+  )
 }
 
 function dedupeCandidates(candidates: readonly RdHookRouteCandidate[]): RdHookRouteCandidate[] {

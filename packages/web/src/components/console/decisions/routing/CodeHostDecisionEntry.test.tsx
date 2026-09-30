@@ -356,7 +356,7 @@ describe('CodeHostDecisionEntry', () => {
     mocks.fetchCodeHostRouting.mockResolvedValue(dto(prScope, { config: routed, status: 'needs_review' }))
     await render()
     const pill = all('button').find((node) => node.textContent?.trim() === 'Needs a response')
-    expect(pill?.getAttribute('title')).toBe(
+    expect(pill?.getAttribute('aria-label')).toBe(
       'By decision · Needs a response · Needs review. Click to review the rules.'
     )
     await click(pill)

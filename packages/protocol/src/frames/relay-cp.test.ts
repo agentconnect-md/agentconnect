@@ -12,6 +12,7 @@ import {
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   RETRYABLE_HOOK_DELIVERY_REASONS,
   isRetryableHookDeliveryReason,
+  AGENT_CHAT_ID_MAX_CHARS,
   RcVerify,
   RcVerifyResult,
   RcDaemonRevoke,
@@ -120,6 +121,23 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(authOk({ ...anchor, claimUrl: 'http://console.example.test/googlechat/claim' }).ok).toBe(false)
   })
 
+  it('carries the relay pool’s public origin as an http(s) URL only', () => {
+    const authOk = (publicRelayUrl: unknown) =>
+      decodeRelayCpFrame(
+        envelope('rc/auth/ok', {
+          heartbeatSec: 15,
+          serverTime: '2026-08-05T00:00:00.000Z',
+          deploymentConfig: { revision: 0, publicRelayUrl }
+        })
+      )
+    const decoded = authOk('https://relay.example.test')
+    if (!decoded.ok || decoded.frame.type !== 'rc/auth/ok') throw new Error('expected rc/auth/ok')
+    expect(decoded.frame.payload.deploymentConfig?.publicRelayUrl).toBe('https://relay.example.test')
+    expect(authOk('http://localhost:8090').ok).toBe(true)
+    expect(authOk('wss://relay.example.test').ok).toBe(false)
+    expect(authOk('not a url').ok).toBe(false)
+  })
+
   it('decodes rc/heartbeat (empty payload)', () => {
     const r = decodeRelayCpFrame(envelope('rc/heartbeat', {}))
     expect(r.ok).toBe(true)
@@ -166,25 +184,13 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(RcVerifyResult.safeParse({ ok: false }).success).toBe(true)
   })
 
-  // The minting key's permission rides the verdict (daemon-api-key-auth.md §6). The field is optional and the object is not strict, so a relay ahead of its CP reads none, and a relay behind its CP drops the key it does not know instead of refusing the frame.
-  it('rc/verify/ok carries the minting key’s permission and tolerates a peer on either side of it', () => {
-    const base = {
-      ok: true,
-      agentId: AGENT_ID,
-      daemonId: DAEMON_ID,
-      conversationId: '33333333-3333-4333-8333-333333333333'
-    }
-    const confined = RcVerifyResult.safeParse({ ...base, permission: 'agent:chat' })
-    expect(confined.success).toBe(true)
-    expect(confined.success && confined.data.permission).toBe('agent:chat')
-    // An older CP omits it.
-    const plain = RcVerifyResult.safeParse(base)
-    expect(plain.success && plain.data.permission).toBeUndefined()
-    // An older relay strips a field it has never heard of rather than failing the verdict.
-    const newer = RcVerifyResult.safeParse({ ...base, futureField: 'x' })
-    expect(newer.success).toBe(true)
-    expect(newer.success && 'futureField' in newer.data).toBe(false)
-    expect(RcVerifyResult.safeParse({ ...base, permission: '' }).success).toBe(false)
+  // An API key on the agent chat API names its agent and the caller's chat id, which the CP maps to a conversation (shared-bot-relay.md §10.4).
+  it('rc/verify accepts an agent chat key with its agent and a bounded chat id', () => {
+    const key = { kind: 'agent-chat-key', credential: 'k', agentId: AGENT_ID, chatId: 'chat-1' }
+    expect(RcVerify.safeParse(key).success).toBe(true)
+    expect(RcVerify.safeParse({ ...key, agentId: 'not-a-uuid' }).success).toBe(false)
+    expect(RcVerify.safeParse({ ...key, chatId: '' }).success).toBe(false)
+    expect(RcVerify.safeParse({ ...key, chatId: 'x'.repeat(AGENT_CHAT_ID_MAX_CHARS + 1) }).success).toBe(false)
   })
 
   it('round-trips webchat verification results with and without remote-MCP entitlement', () => {

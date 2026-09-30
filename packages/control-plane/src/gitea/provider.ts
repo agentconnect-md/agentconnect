@@ -169,7 +169,7 @@ export const giteaCodeHostProvider: CodeHostProviderModule = {
     convergeManagedRepository: (deps, orgId, repoId, onError) => {
       const gitea = deps.gitea
       if (!gitea || repoId === null) return
-      void gitea.provisioner.convergeRepository(orgId, repoId).catch(onError)
+      return gitea.provisioner.convergeRepository(orgId, repoId).catch(onError)
     }
   },
   routing: {

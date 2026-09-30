@@ -10,7 +10,7 @@ import type {
 } from '../codehost/turn-final.js'
 import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import { GithubFinalPoster } from './poster.js'
-import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext } from '../codehost/pull-context.js'
+import { PULL_CONTEXT_COMMIT_LIMIT, readPullRequestContext, webhookPullRevision } from '../codehost/pull-context.js'
 import { PULL_CONTEXT_FILE_LIMIT, restPullRequestFile } from '../codehost/pull-files.js'
 
 /** The deployment's App speaks to github.com alone, so this root is not a per-turn fact. */
@@ -115,7 +115,8 @@ export const githubTurnFinal: CodeHostTurnFinal<'github'> = {
         commitMessagePath: ['commit', 'message'],
         files: `${path}/files?per_page=${PULL_CONTEXT_FILE_LIMIT}&page=1`,
         fileCountPath: ['changed_files'],
-        file: restPullRequestFile
+        file: restPullRequestFile,
+        revision: webhookPullRevision(source)
       },
       signal
     )

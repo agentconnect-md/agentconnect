@@ -225,8 +225,10 @@ interface DreamRecord {
 **Pipeline** (one job at a time per agent; a second trigger while
 `pending|running` is rejected):
 
-1. **Snapshot.** Copy `<agent-root>/memory/` (excluding `.history`) into
-   `memory-dreams/<dreamId>/input/`; record `snapshotDigest`.
+1. **Snapshot.** Read `<agent-root>/memory/` (excluding `.history`) and record
+   `snapshotDigest`. The snapshot is written into `memory-dreams/<dreamId>/input/`
+   together with the transcripts only in step 3, once the extraction host has
+   proven a read-only mode.
 2. **Gather signal.** Pull the relevant sessions' transcripts for this agent from
    the daemon store. The window is sized **automatically** (no operator config):
    the sessions with activity since the last successful dream — each one's
@@ -254,10 +256,13 @@ interface DreamRecord {
    policy prompt — not a hard pre-filter — keeps a person's private/personal
    conversation from becoming shared organization knowledge.
 3. **Dream.** Run an isolated ACP session on the agent's runtime host through
-   the shared extraction-session helper (§8): temp cwd, read-only / plan
-   permission mode when the runtime offers one, dream system prompt (§5),
-   snapshot + transcripts as untrusted prompt data. Collect the streamed text
-   exactly as distillation does.
+   the shared extraction-session helper (§8): cwd `input/`, a verified read-only
+   / plan permission mode (a runtime without one fails the dream before any
+   input is written), dream system prompt (§5), snapshot + transcripts as
+   untrusted data. Collect the streamed text exactly as distillation does. The
+   transcripts (`input/sessions/`) are removed as soon as the extraction ends:
+   staging sits where the agent's own sessions can read it, and nothing after
+   extraction needs them.
 4. **Validate & stage.** The store proposal is already on disk: the extraction
    session's `writeMemory`/`readMemory` are bound to `memory-dreams/<dreamId>/`
    as their store, so every topic file went through the same write path a turn
@@ -273,7 +278,8 @@ interface DreamRecord {
    does a run that wrote no topic file while the live store had some: the store
    is what the model wrote, so writing nothing is no proposal at all, not an
    empty one — completing it would let adoption install an index-only store over
-   a live one. The staging of a run that never completes is dropped.
+   a live one. The staging of a run that never completes is dropped, `input/`
+   included — a failed, canceled, or interrupted dream leaves nothing behind.
 5. **Finish.** Mark `completed`; emit `memory.dream.completed` on the
    evaluation-events channel (alongside the existing `memory.capture.*`
    events). If `autoAdopt` is set, run §6 adoption for the store — never for
@@ -281,6 +287,20 @@ interface DreamRecord {
 
 Cancel moves `pending|running → canceled` and aborts the ACP prompt (same
 cancellation path as a turn).
+
+A runtime whose reported catalog offers no read-only or plan mode can never
+pass the extraction gate, so its scheduled ticks are skipped without a dream
+record and the console locks the dreaming switch off; before a catalog is
+reported, the schedule runs and the gate decides.
+
+Turning dreaming off — `dreaming.enabled: false`, or a provider other than
+`managed` — cancels the dream in flight and retires every `completed`,
+`failed`, or `canceled` dream: its store staging is removed, then the row is
+marked `discarded`, so a removal that fails is retried. The duty holder runs
+this on the live change, at boot, and when it takes an agent over, since the
+change may have landed while no daemon held the agent. An agent with nothing
+to retire is not woken. Unreviewed skill and organization candidates keep
+their own lifecycle (§7).
 
 ## 5. The dream prompt
 
@@ -444,14 +464,21 @@ channel is observed, not required — the policy rides `_meta.systemPrompt` when
 runtime has one, otherwise it is prepended inline to the turn, so runtimes without
 that channel (Codex, OpenCode) distill too instead of silently no-op'ing.
 
-> **Residual risk (owner-accepted P2, tracked in #658).** Unlike a dream,
-> distillation writes to shared live memory **unreviewed** and runs on the agent's
-> **warm host** (full tool credentials), not a dedicated `excludeAgentToolCredentials`
-> host. On the untrusted-channel (inline-policy) path the policy and the turn share
-> user-message priority, so a prompt injection could write poisoned facts, or read a
-> warm-host credential and re-encode it into a "memory" (read-only blocks writes, not
-> reads). #658 will give that path the dream's credential-isolated host; the
-> trusted-channel path is unchanged.
+> **Accepted residual risk (#658).** Distillation writes to its selected live memory
+> scope without content review and may reuse the agent's warm host with its tool
+> credentials. On the inline-policy path, policy and turn text share user-message
+> priority: prompt injection may poison memory or re-encode a readable credential
+> into memory. Read-only/plan mode and literal-value masking do not eliminate those
+> risks.
+>
+> This is an accepted trade-off under the [execution trust model](architecture.md#91-execution-trust-model)
+> and [agent secret contract](../product-conventions.md#agent-secret-environment-variables).
+> [Agent-scoped memory is shared across users](../product-conventions.md#memory-backend-selection);
+> disable memory where that sharing is unsuitable. A dedicated credential-isolated
+> distillation host and mandatory review/quarantine are not planned. This decision
+> accepts the remaining risk; it does not claim a security fix. Execution and memory
+> scope boundaries, the verified read-only gate, and the dream host's existing
+> `excludeAgentToolCredentials` mitigation still apply.
 
 Concrete unification points:
 

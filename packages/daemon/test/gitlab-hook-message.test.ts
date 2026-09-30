@@ -112,6 +112,7 @@ describe('gitlab hook normalization (§12.3)', () => {
     expect(standing).toContain('`glab`, another CLI, a connector, or a direct API call')
     expect(standing).toContain('structured `submitCodeReview` tool')
     expect(standing).toContain('REQUEST_CHANGES works only while a user has requested the project service account')
+    expect(standing).toContain('If an approval reviewer refuses a `submitCodeReview` call')
     expect(text).not.toContain('# GitLab')
     expect(text).not.toContain('submitCodeReview')
   })
@@ -261,6 +262,7 @@ describe('gitlab hook normalization (§12.3)', () => {
     const review = buildHookText(mr())
     expect(review).toContain('opens a review generation for the current merge-request revision')
     expect(review).toContain('record the verdict through `submitCodeReview`')
+    expect(review).toContain('Requested action: review this revision and publish the verdict')
     expect(review).toContain('APPROVE + pass')
     expect(review).toContain('REQUEST_CHANGES + fail')
     // One short line: the review rules and the reviewer-record caveat are standing, not per turn.

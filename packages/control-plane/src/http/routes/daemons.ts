@@ -426,6 +426,7 @@ export function daemonRoutes(deps: HttpDeps) {
     r.post(
       '/daemons/token',
       {
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Daemons],
           summary: 'Issue a daemon enrollment token',

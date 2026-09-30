@@ -65,7 +65,9 @@ export const WebchatAck = z.object({
       'integration_delivery_failed',
       // The daemon owns this agent but its runtime would not start — distinct from `no_agent`,
       // which says no daemon serves it at all. Only this one carries `detail`.
-      'start_failed'
+      'start_failed',
+      // The API turn's Decision gate answered no (shared-bot-relay.md §10.4).
+      'declined'
     ])
     .optional(),
   // One bounded, path-free line naming the fault, so the client can state the cause instead of
@@ -467,6 +469,13 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     requestId: z.string().min(1).max(200),
     outcome: z.enum(['accepted', 'dismissed', 'cancelled', 'completed']),
     label: z.string().optional()
+  }),
+  // A runtime approval handed to an API caller first (shared-bot-relay.md §10.4), answered by `permission_choice`.
+  z.object({
+    kind: z.literal('permission'),
+    requestId: z.string().uuid(),
+    tool: z.string().max(240),
+    detail: z.string().max(240)
   }),
   // An MCP App opened (webchat-mcp-apps.md §5). A new KIND rather than a field on something
   // existing, and the skew that follows is the closed one: a relay or browser predating it fails

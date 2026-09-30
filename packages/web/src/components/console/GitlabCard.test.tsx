@@ -106,9 +106,9 @@ const CONNECTION: GitlabConnectionDto = {
   accessExpiresAt: null,
   assignedProjects: 0,
   instanceUrl: 'https://gitlab.com',
-  instanceVersion: '18.11.0-ee',
+  instanceVersion: '19.1.0-ee',
   instanceVersionSupported: true,
-  instanceVersionFloor: '18.11',
+  instanceVersionFloor: '19.1',
   createdAt: '2026-08-01T00:00:00.000Z'
 }
 
@@ -428,7 +428,7 @@ describe('GitlabCard', () => {
     const SELF_MANAGED = {
       ...CONNECTION,
       instanceUrl: 'https://gitlab.example.test:8443/gitlab',
-      instanceVersion: '18.11.4-ee'
+      instanceVersion: '19.1.4-ee'
     }
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [SELF_MANAGED] })
     mocks.fetchProjects.mockResolvedValue([BINDING])
@@ -437,7 +437,7 @@ describe('GitlabCard', () => {
 
     // The whole URL, prefix and port included, because the card has room for it exactly once.
     expect(instanceHint()!.getAttribute('title')).toBe(
-      'https://gitlab.example.test:8443/gitlab \u00b7 GitLab 18.11.4-ee'
+      'https://gitlab.example.test:8443/gitlab \u00b7 GitLab 19.1.4-ee'
     )
     expect(host.textContent).not.toContain('gitlab.com')
     // The chip link keeps the prefix: every path on that instance lives under it.
@@ -463,20 +463,20 @@ describe('GitlabCard', () => {
     }
     expect(host.querySelectorAll('[data-gitlab-instance]')).toHaveLength(1)
     // And the floor warning is the instance's, so two stuck identities do not print it twice.
-    expect(host.textContent!.match(/below 18\.11/g)).toHaveLength(1)
+    expect(host.textContent!.match(/below 19\.1/g)).toHaveLength(1)
   })
 
   it('keeps a supported version off the card body and in the instance hint (\u00a724.2)', async () => {
     mocks.fetchConnections.mockResolvedValue({
       enabled: true,
-      connections: [{ ...CONNECTION, instanceVersion: '18.11.4-ee', instanceVersionSupported: true }]
+      connections: [{ ...CONNECTION, instanceVersion: '19.1.4-ee', instanceVersionSupported: true }]
     })
     await render()
     // Nothing to act on, so it takes no line of the card at all.
-    expect(host.textContent).not.toContain('GitLab 18.11.4-ee')
-    expect(host.textContent).not.toContain('below 18.11')
+    expect(host.textContent).not.toContain('GitLab 19.1.4-ee')
+    expect(host.textContent).not.toContain('below 19.1')
     // Still one hover away for an operator, on the header that already names the instance.
-    expect(instanceHint()!.getAttribute('title')).toBe('https://gitlab.com \u00b7 GitLab 18.11.4-ee')
+    expect(instanceHint()!.getAttribute('title')).toBe('https://gitlab.com \u00b7 GitLab 19.1.4-ee')
   })
 
   it('says what a below-floor instance still serves (\u00a724.2)', async () => {
@@ -486,9 +486,9 @@ describe('GitlabCard', () => {
     })
     await render()
     expect(host.textContent).toContain('GitLab 18.4.1')
-    expect(host.textContent).toContain('below 18.11')
+    expect(host.textContent).toContain('below 19.1')
     // Bounded degradation, said plainly: what is already set up keeps working.
-    expect(host.textContent).toContain('keep working until their credentials expire')
+    expect(host.textContent).toContain('Existing credentials remain available until they expire')
   })
 
   it('says nothing about a version the deployment has not observed yet', async () => {

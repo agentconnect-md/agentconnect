@@ -24,6 +24,7 @@
  * channel (protocol-versioned in-band; not an HTTP route on this server). Health
  * is dropped via the `skipList`; the WS endpoint never registers as a route
  * here. The Swagger-UI's own asset routes are skipped too.
+ * A route whose config sets `interactiveOnly` (see `auth.ts`) is left out as well.
  *
  * OpenAPI 3.1 (not Swagger 2.0 / OpenAPI 3.0): zod v4 emits JSON Schema in the
  * draft-2020-12 dialect, of which OpenAPI 3.1 is a superset — so the DTOs
@@ -97,13 +98,11 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
     name: Tag.MemberSets,
     description: 'Named sets of daemons an agent’s duty may be claimed within — the failover unit.'
   },
-  { name: Tag.DaemonKeys, description: 'A daemon’s API keys (issue, list, revoke).' },
   {
     name: Tag.ProviderKeys,
     description:
       'Organization provider credentials. Owners may save or remove keys; all members may read configuration status. Values are write-only.'
   },
-  { name: Tag.ApiKeys, description: 'Your personal API keys — create, list, revoke.' },
   { name: Tag.Agents, description: 'Agent definitions — CRUD and connect/launch.' },
   { name: Tag.Workspace, description: 'Read an agent’s daemon-local workspace (files, git status/pull).' },
   { name: Tag.Sessions, description: 'Conversation sessions and their message history.' },
@@ -243,6 +242,7 @@ function rekeyPaths<T extends { paths?: Record<string, unknown> }>(doc: T, prefi
  * instance, after `installZod` and BEFORE the route plugins register.
  */
 export function installOpenapi(app: FastifyInstance, opts: OpenapiOptions = {}): void {
+  const zodTransform = createJsonSchemaTransform({ skipList: SKIP_LIST })
   void app.register(fastifySwagger, {
     openapi: {
       openapi: '3.1.0',
@@ -271,7 +271,11 @@ export function installOpenapi(app: FastifyInstance, opts: OpenapiOptions = {}):
       // name via `Tag.*`; an operation with no tag falls into a nameless group.
       tags: [...TAG_DESCRIPTIONS]
     },
-    transform: createJsonSchemaTransform({ skipList: SKIP_LIST }),
+    // A route only an interactive sign-in may call is not part of the API a client can use.
+    transform: (input) =>
+      input.route.config?.interactiveOnly
+        ? { schema: { ...input.schema, hide: true }, url: input.url }
+        : zodTransform(input),
     // Backfill prefix path params (`{orgId}`) the per-route zod schemas omit —
     // otherwise the spec fails OpenAPI 3.1 validation — then key the paths the
     // way a gateway exposes them. See the helpers above.

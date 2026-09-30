@@ -20,11 +20,16 @@ import {
   type ResolvedDecisionBundle,
   type ResolvedDecisionGate
 } from './bundle.js'
-import { rawAnswerFields, type DecisionEvaluationInput } from './evaluator.js'
+import { ChainRawBodies, type DecisionEvaluationInput } from './evaluator.js'
 import type { DecisionEvidence, DecisionUnavailableReason } from './evidence.js'
 import { DecisionLaneRuntime, laneId, verdictKey, type Lane } from './lanes.js'
 import { defaultDecisionGateMetrics, type DecisionGateMetrics } from './metrics.js'
-import { buildDecisionState, largestDecisionRequest, type DecisionStateBudget } from './state.js'
+import {
+  buildDecisionState,
+  largestDecisionRequest,
+  type DecisionAgentContext,
+  type DecisionStateBudget
+} from './state.js'
 
 export const DEFAULT_DECISION_GATE_LIMITS = {
   deadlineMs: 5_000,
@@ -81,6 +86,8 @@ export interface DecisionGateHost {
   servesAgent(agentId: string): boolean
   participates(agentId: string, msg: NormalizedMessage): Promise<boolean>
   release(request: DecisionReleaseRequest): Promise<DecisionReleaseResult>
+  /** The gated agent as its Decision sees it; absent when the agent is not loaded here. */
+  agentContext?(agentId: string): DecisionAgentContext | undefined
   log: { debug(message: string): void; info(message: string): void; warn(message: string): void }
   metrics?: DecisionGateMetrics
 }
@@ -431,6 +438,7 @@ export class DecisionGate {
         const budget = largestDecisionRequest<DecisionStateBudget>([config, ...(config.definitions ?? [])])
         built = window.current
           ? buildDecisionState({
+              ...(this.host.agentContext?.(c.agentId) ? { agent: this.host.agentContext(c.agentId)! } : {}),
               current: window.current,
               history: window.history,
               addressing: {
@@ -459,8 +467,7 @@ export class DecisionGate {
         return
       }
       if (!(await store.beginDecisionEvaluation(row.seq, row.subject, fence, JSON.stringify(built.state)))) return
-      let raw: string | undefined
-      let request: string | undefined
+      const bodies = new ChainRawBodies()
       const definitions = new Map((config.definitions ?? []).map((definition) => [definition.id, definition]))
       const definitionOf = (id: string) => (id === config.decisionId ? config : definitions.get(id)!)
       let match = { matched: false, matchedKeys: [] as string[] }
@@ -478,12 +485,7 @@ export class DecisionGate {
               decision: definitionOf(step.decisionId),
               state: built.state,
               deadlineAt: row.deadlineAt,
-              onRawRequest: (text) => {
-                if (index === 0) request = text
-              },
-              onRawResponse: (text) => {
-                if (index === 0) raw = text
-              }
+              ...bodies.hooks(index)
             },
             signal
           ),
@@ -499,7 +501,7 @@ export class DecisionGate {
         await settle('unavailable', {
           reason: evaluation.reason,
           usage: decisionChainUsage(trace),
-          answerJson: JSON.stringify({ ...chain, ...rawAnswerFields(raw, request) })
+          answerJson: JSON.stringify({ ...chain, ...bodies.fields() })
         })
         return
       }
@@ -508,7 +510,7 @@ export class DecisionGate {
           answer: evaluation.answer,
           ...chain,
           matchedKeys: match.matchedKeys,
-          ...rawAnswerFields(raw, request)
+          ...bodies.fields()
         }),
         model: evaluation.model,
         usage: decisionChainUsage(trace)

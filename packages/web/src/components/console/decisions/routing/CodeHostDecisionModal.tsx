@@ -18,6 +18,7 @@ import {
 import type { RosterAgent } from '@/lib/decisions/routing-roster'
 import { codeHostRoutingSubject, useCodeHostRoutingActions } from '@/lib/decisions/code-host-routing'
 import type { CodeHostRoutingDto } from '@/lib/api'
+import { CodeHostRoutingTry } from './CodeHostRoutingTry'
 import { RoutingChainFields } from './RoutingChainFields'
 import { Note, routingSaveError, saveErrorText } from './RoutingFields'
 
@@ -43,7 +44,7 @@ export function CodeHostDecisionModal({
   const tDecisions = useTranslations('Decisions')
   const { orgPath, myRole } = useOrgs()
   const canWrite = myRole !== 'viewer'
-  const { decisions, loading } = useDecisionsPrototype()
+  const { api, decisions, loading } = useDecisionsPrototype()
   const { save: saveRouting } = useCodeHostRoutingActions()
   const repo = routing.repoFullName
   const subject = codeHostRoutingSubject(routing)
@@ -56,6 +57,7 @@ export function CodeHostDecisionModal({
       : { enabled: true, decisionId: null, rules: [], otherwise: 'default_agent', channelIds: [], removals: {} }
   )
   const [helpOpen, setHelpOpen] = useState(false)
+  const [tryOpen, setTryOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<unknown>(null)
   const decision = draft.decisionId ? (decisions.find((entry) => entry.id === draft.decisionId) ?? null) : null
@@ -73,6 +75,8 @@ export function CodeHostDecisionModal({
       ? serverError.issues.map((issue) => ({ path: configRelative(issue.path), message: issue.message }))
       : []
   const canSave = canWrite && !saving && !!decision && localIssues.length === 0
+  // Try runs against the live evaluation host; the mock console has none for a repository.
+  const tryConfig = canWrite && api.mode === 'live' && localIssues.length === 0 ? draftConfig(draft) : null
 
   useEffect(() => {
     if (saving) return
@@ -163,15 +167,28 @@ export function CodeHostDecisionModal({
           />
 
           {decision && (
-            <button
-              type="button"
-              className="lnk self-start gap-[6px] text-[11.5px] font-medium"
-              aria-expanded={helpOpen}
-              onClick={() => setHelpOpen((open) => !open)}
-            >
-              <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-              {tDecisions('binding.howThisWorks')}
-            </button>
+            <div className="flex flex-wrap items-center gap-[14px]">
+              <button
+                type="button"
+                className="lnk gap-[6px] text-[11.5px] font-medium"
+                aria-expanded={helpOpen}
+                onClick={() => setHelpOpen((open) => !open)}
+              >
+                <Icon name={helpOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                {tDecisions('binding.howThisWorks')}
+              </button>
+              {tryConfig && (
+                <button
+                  type="button"
+                  className="lnk gap-[6px] text-[11.5px] font-medium"
+                  aria-expanded={tryOpen}
+                  onClick={() => setTryOpen((open) => !open)}
+                >
+                  <Icon name={tryOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                  {tDecisions('binding.tryMessage')}
+                </button>
+              )}
+            </div>
           )}
           {decision && helpOpen && (
             <div className="flex flex-col gap-1">
@@ -181,6 +198,16 @@ export function CodeHostDecisionModal({
               <Note icon="at-sign">{tc('mentionsSkip')}</Note>
               <Note icon="users">{tc('otherwiseEveryAgent', { subject })}</Note>
             </div>
+          )}
+          {decision && tryConfig && (
+            <CodeHostRoutingTry
+              routing={routing}
+              draft={draft}
+              config={tryConfig}
+              decision={decision}
+              agents={agents}
+              open={tryOpen}
+            />
           )}
 
           {serverError && (

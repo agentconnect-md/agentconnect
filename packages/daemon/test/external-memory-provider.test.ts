@@ -185,8 +185,6 @@ describe('ExternalMemoryProvider', () => {
     let current = binding(connectionB)
     const dispatcher = createMemoryProvider({
       memoryHomePortsFor: () => localMemoryHome(new LocalMemoryFs('/tmp/agent')),
-      agentDirByAgent: () => '/tmp/agent',
-      runtimeFor: () => undefined,
       providerKindFor: () => 'external',
       externalBindingFor: () => current,
       externalDeps: h.deps

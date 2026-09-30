@@ -19,7 +19,7 @@ import type {
   ElicitCard,
   ElicitOutcome
 } from '@agentconnect.md/protocol'
-import { elicitFormBlockId } from '@agentconnect.md/protocol'
+import { API_CALLER_ANSWER_PROTOCOLS, API_CALLER_ANSWER_TIMEOUT_MS, elicitFormBlockId } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
 import type { LocalStore } from '../store/local-store.js'
@@ -72,9 +72,9 @@ import type { ElicitKind, ElicitSurface, ElicitTarget } from '../slack/render.js
 import { consolePermissionOptions, editorDecisionOption } from './editor-options.js'
 import { slackThreadUrl } from '../platforms/slack/permalink.js'
 import { slackAgentIdentityOptions } from '../platforms/slack/turn-output.js'
-import { turnChromeFor } from '../platforms/turn-chrome.js'
+import { turnChromeFor, type NoticeMarkup } from '../platforms/turn-chrome.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
-import { buildElicitDeclinedNotice } from './elicit-notice.js'
+import { buildElicitDeclinedNotice, defuseNoticeText } from './elicit-notice.js'
 import { elicitCardPayload, elicitRowBody, elicitUnrenderablePayload, elicitUrlCardPayload } from './elicit-record.js'
 import { formatErr } from '../daemon/text.js'
 import {
@@ -115,6 +115,8 @@ export interface PermissionCoreHost {
   evalHooks(): DaemonEvaluationHooks
   /** The live extraction turn on this key, if any: only its bound bridge tools may be granted (#2091). */
   memoryExtraction(turnKey: string): MemoryExtractionTurn | undefined
+  /** End a turn as its caller's cancel would. */
+  cancelTurn(p: Pending): Promise<void>
 }
 
 /** What the permission path knows about a live extraction turn: the bridge calls it has issued so far. */
@@ -341,6 +343,19 @@ interface EditorPermissionEntry {
   notify?: DmNotice
 }
 
+/** One runtime approval handed to an API caller (shared-bot-relay.md §10.4); an editor sees it only when the caller allows what it may not. */
+interface CallerApproval {
+  owner: HostKey
+  sessionId: string
+  conversationId: string
+  answer(allow: boolean, mayAllow: boolean): void
+  /** The turn ended unanswered. */
+  cancel(): void
+}
+
+/** An API turn whose caller is handed the agent's questions: the webchat context a protocol that carries them set up. */
+type CallerTurn = Pending & { webchat: NonNullable<Pending['webchat']> }
+
 interface EditorElicitationEntry {
   kind: 'elicitation'
   owner: HostKey
@@ -357,6 +372,8 @@ export class PermissionCoordinator {
    *  settles a request must wait for the row it settles to exist. */
   private readonly recordedWrites = new Map<string, Promise<unknown>>()
   private pendingEditorPermissions = new Map<string, EditorPermissionEntry | EditorElicitationEntry>()
+  /** Runtime approvals handed to an API caller, keyed by the id its answer names. */
+  private readonly pendingCallerApprovals = new Map<string, CallerApproval>()
 
   private pendingChatPermissions = new Map<
     string,
@@ -560,7 +577,87 @@ export class PermissionCoordinator {
     for (const pending of this.pendingChatPermissions.values()) if (mine(pending)) return true
     for (const pending of this.pendingEditorPermissions.values()) if (mine(pending)) return true
     for (const pending of this.pendingElicits.values()) if (mine(pending)) return true
+    for (const pending of this.pendingCallerApprovals.values()) if (mine(pending)) return true
     return false
+  }
+
+  /** Whether this turn's caller answers the agent's questions: an API turn over a protocol whose stream carries them. */
+  private callerAnswers(p: Pending): p is CallerTurn {
+    const wc = p.webchat
+    return wc?.apiProtocol !== undefined && !wc.continuation && API_CALLER_ANSWER_PROTOCOLS.has(wc.apiProtocol)
+  }
+
+  /** Whether an API caller in this conversation still holds a question the turn waits on. */
+  awaitsApiCaller(conversationId: string): boolean {
+    for (const c of this.pendingCallerApprovals.values()) if (c.conversationId === conversationId) return true
+    for (const e of this.pendingElicits.values())
+      if (e.surface === 'webchat' && e.wc.conversationId === conversationId && e.wc.apiProtocol !== undefined)
+        return true
+    return false
+  }
+
+  /** Cancel the turn when its caller still has not answered once the deadline passes. */
+  private armCallerDeadline(p: Pending, stillPending: () => boolean): void {
+    this.host.clock().setTimeout(() => {
+      if (!stillPending()) return
+      this.host.log().info(`API caller left a question unanswered in "${p.plan.sessionKey}"; cancelling the turn`)
+      void this.host
+        .cancelTurn(p)
+        .catch((err) => this.host.log().warn(`unanswered API turn not cancelled: ${formatErr(err)}`))
+    }, API_CALLER_ANSWER_TIMEOUT_MS)
+  }
+
+  /** Hand one runtime approval to the API caller; a refusal settles it, an allow the caller may not make waits for an editor. */
+  private async askCaller<T>(
+    p: CallerTurn,
+    sessionId: string,
+    parts: ApprovalRequestParts,
+    settle: { allow: () => T; deny: () => T; escalate: () => Promise<T>; cancelled: T }
+  ): Promise<T> {
+    const requestId = randomUUID()
+    const wc = p.webchat
+    let resolve!: (res: T | Promise<T>) => void
+    const result = new Promise<T>((r) => (resolve = r))
+    const done = (res: () => T | Promise<T>): void => {
+      if (!this.pendingCallerApprovals.delete(requestId)) return
+      resolve(res())
+    }
+    this.pendingCallerApprovals.set(requestId, {
+      owner: p.hostKey,
+      sessionId,
+      conversationId: wc.conversationId,
+      answer: (allow, mayAllow) => done(!allow ? settle.deny : mayAllow ? settle.allow : settle.escalate),
+      cancel: () => done(() => settle.cancelled)
+    })
+    try {
+      wc.sink.output({
+        conversationId: wc.conversationId,
+        turnId: wc.turnId,
+        index: wc.index++,
+        event: { kind: 'permission', requestId, tool: parts.tool, detail: parts.detail }
+      })
+    } catch (err) {
+      this.pendingCallerApprovals.delete(requestId)
+      this.host.log().warn(`API approval not delivered for "${p.plan.sessionKey}": ${formatErr(err)}`)
+      return settle.cancelled
+    }
+    this.armCallerDeadline(p, () => this.pendingCallerApprovals.has(requestId))
+    return await this.trackHumanApprovalWait(p, result)
+  }
+
+  /** An API caller's answer to a runtime approval it was handed, confined to its own conversation. */
+  handleCallerPermissionChoice(a: {
+    requestId: string
+    allow: boolean
+    mayAllow: boolean
+    conversationId: string
+    actor?: InteractionActor
+  }): void {
+    const pending = this.pendingCallerApprovals.get(a.requestId)
+    if (!pending || pending.conversationId !== a.conversationId) return
+    const verb = !a.allow ? 'denied' : a.mayAllow ? 'allowed' : 'referred to an Agent editor'
+    this.host.logSessionAction(`permission:${verb} (API caller)`, pending.sessionId, a.actor)
+    pending.answer(a.allow, a.mayAllow)
   }
 
   private async awaitEditorPermission(
@@ -726,8 +823,9 @@ export class PermissionCoordinator {
 
   /** Say in the channel that a too-long option list was declined; every surface, the console included, shares the cap (#1969). */
   private noticePermissionOptionsUnrenderable(p: Pending, params: RequestPermissionRequest): void {
-    const text =
-      `:lock: The agent asked for permission to run ${permToolLabel(params)} with more options ` +
+    // The webchat copy joins the agent's Markdown reply; a chat copy is read as its surface's notice markup.
+    const notice = (markup?: NoticeMarkup) =>
+      `:lock: The agent asked for permission to run ${defuseNoticeText(permToolLabel(params), markup)} with more options ` +
       `than any surface here can show (${params.options.length}), so it was declined. Nothing was allowed.`
     try {
       // Said on whichever surface this turn HAS, exactly as the editor path's own notice is: a
@@ -737,10 +835,11 @@ export class PermissionCoordinator {
           conversationId: p.webchat.conversationId,
           turnId: p.webchat.turnId,
           index: p.webchat.index++,
-          event: { kind: 'message', text }
+          event: { kind: 'message', text: notice('markdown') }
         })
       }
-      if ((!p.webchat || p.webchat.continuation) && p.conn) this.host.enqueueApply(p, { kind: 'notice', text })
+      if ((!p.webchat || p.webchat.continuation) && p.conn)
+        this.host.enqueueApply(p, { kind: 'notice', text: notice(turnChromeFor(p.plan.platform).noticeMarkup) })
     } catch (err) {
       this.host.log().warn(`permission option notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
     }
@@ -1283,6 +1382,8 @@ export class PermissionCoordinator {
 
   async releaseEditorPermissions(owner: HostKey, sessionId: string): Promise<void> {
     const agentId = hostKeyAgentId(owner)
+    for (const caller of this.pendingCallerApprovals.values())
+      if (caller.owner === owner && caller.sessionId === sessionId) caller.cancel()
     for (const [id, pending] of this.pendingEditorPermissions) {
       if (pending.owner !== owner || pending.sessionId !== sessionId) continue
       this.pendingEditorPermissions.delete(id)
@@ -1432,6 +1533,21 @@ export class PermissionCoordinator {
       this.noticePermissionOptionsUnrenderable(p, params)
       return { outcome: { outcome: 'cancelled' } }
     }
+    // An API caller decides first: its refusal stands, and only an allow it may not make reaches an Agent editor.
+    if (this.callerAnswers(p)) {
+      const option = (...kinds: string[]) =>
+        kinds.map((kind) => params.options.find((o) => o.kind === kind)).find((o) => o !== undefined)
+      const select = (o: { optionId: string } | undefined): RequestPermissionResponse => {
+        this.permissionEvaluationDetails.set(evaluationParams, { reason: 'api_caller' })
+        return o ? { outcome: { outcome: 'selected', optionId: o.optionId } } : { outcome: { outcome: 'cancelled' } }
+      }
+      return await this.askCaller(p, sessionId, permissionRequestParts(params), {
+        allow: () => select(option('allow_once', 'allow_always')),
+        deny: () => select(option('reject_once', 'reject_always')),
+        escalate: () => this.awaitEditorPermission(agentId, sessionId, params, evaluationParams, p),
+        cancelled: { outcome: { outcome: 'cancelled' } }
+      })
+    }
     const chatApprovalEnabled =
       this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true &&
       turnChromeFor(p.plan.platform).chatInputCards === true &&
@@ -1499,6 +1615,14 @@ export class PermissionCoordinator {
     // never infer trust from the human-facing elicitation message.
     if (isBuiltinSystemToolElicitation(params, p.builtinSystemToolCallIds)) return { action: 'accept' }
     const isApproval = isMcpToolApprovalElicitation(params)
+    if (isApproval && this.callerAnswers(p)) {
+      return await this.askCaller<CreateElicitationResponse>(p, sessionId, elicitationApprovalParts(params), {
+        allow: () => ({ action: 'accept' }),
+        deny: () => ({ action: 'decline' }),
+        escalate: () => this.awaitEditorElicitation(agentId, sessionId, params, p),
+        cancelled: { action: 'cancel' }
+      })
+    }
     if (isApproval) {
       const chatApprovalEnabled =
         this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true &&
@@ -1851,6 +1975,7 @@ export class PermissionCoordinator {
       this.host.log().warn(`webchat elicitation card not delivered for "${p.plan.sessionKey}": ${formatErr(err)}`)
       return undefined
     }
+    if (this.callerAnswers(p)) this.armCallerDeadline(p, () => this.pendingElicits.has(requestId))
     return await result
   }
 
@@ -1903,6 +2028,7 @@ export class PermissionCoordinator {
       this.host.log().warn(`webchat consent card not delivered for "${p.plan.sessionKey}": ${formatErr(err)}`)
       return undefined
     }
+    if (this.callerAnswers(p)) this.armCallerDeadline(p, () => this.pendingElicits.has(requestId))
     return await result
   }
 

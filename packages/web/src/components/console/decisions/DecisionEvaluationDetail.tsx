@@ -7,6 +7,7 @@ import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { errorParts } from '@/lib/decisions/binding'
 import { answerText, cancelReasonKey, latencyText, OUTCOME_BADGE, outcomeTone } from '@/lib/decisions/evaluations'
+import { chainStepResult, useChainStep } from '@/lib/decisions/chain-step'
 import { modelLine } from '@/lib/decisions/model-result'
 import { matchDecisionCondition } from '@agentconnect.md/protocol/decision'
 import type {
@@ -60,7 +61,8 @@ export function DecisionEvaluationDetail({
   /** The list row, shown while the detail loads and kept when it fails. */
   summary: DecisionEvaluationRecord | null
   decisionName: (decisionId: string) => string
-  onBack: () => void
+  /** Back to the list; a detail opened on its own, such as a Try's, has none. */
+  onBack?: () => void
 }) {
   const t = useTranslations('Decisions')
   const locale = useLocale()
@@ -74,10 +76,16 @@ export function DecisionEvaluationDetail({
     snapshot && detail?.fullAnswer
       ? matchDecisionCondition(snapshot.question, snapshot.condition, detail.fullAnswer)
       : null
+  const { index: stepIndex, step, selector } = useChainStep(seq, detail?.chain, detail?.steps)
+  const instructions = step
+    ? { question: step.question, model: `${step.providerId} / ${step.model}` }
+    : snapshot
+      ? { question: snapshot.question, model: `${snapshot.providerId} / ${snapshot.model}` }
+      : null
 
   return (
     <div className="flex flex-col gap-[14px] px-[18px] py-4" data-testid="evaluation-detail">
-      <BackLink onClick={onBack} />
+      {onBack && <BackLink onClick={onBack} />}
       <DetailTitle title={record?.title} />
       {record && (
         <div className="flex flex-wrap items-center gap-2">
@@ -120,8 +128,10 @@ export function DecisionEvaluationDetail({
       <DecisionChainResults
         chain={detail?.chain}
         names={detail?.chain?.map((step) => ({ id: step.decisionId, name: decisionName(step.decisionId) }))}
+        {...selector}
       />
-      {record && (
+      {step && <DecisionModelResult {...chainStepResult(step, detail!.chain![stepIndex]!)} expired={expired} />}
+      {record && !step && (
         <DecisionModelResult
           question={snapshot?.question ?? null}
           answer={detail?.fullAnswer ?? null}
@@ -139,17 +149,30 @@ export function DecisionEvaluationDetail({
           {...(detail && detail.rawResponse !== undefined ? { rawResponse: detail.rawResponse } : {})}
         />
       )}
-      {snapshot && (
+      {instructions && (
         <Section title={t('evaluations.detail.instructions')}>
           <span className="font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-primary)">
-            {snapshot.question.instructions}
+            {instructions.question.instructions}
           </span>
-          <Row label={t('evaluations.sheet.questionType')} value={t(`types.${snapshot.question.type}`)} />
-          <Row label={t('model')} value={`${snapshot.providerId} / ${snapshot.model}`} />
+          <Row label={t('evaluations.sheet.questionType')} value={t(`types.${instructions.question.type}`)} />
+          <Row label={t('model')} value={instructions.model} />
         </Section>
       )}
       {detail?.input && (
         <Section title={t('evaluations.detail.context')}>
+          {detail.input.agent && (
+            <>
+              <span className="font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
+                {t('evaluations.sheet.agent')}
+              </span>
+              <span className="font-sans text-[12.5px] font-medium leading-normal">{detail.input.agent.name}</span>
+              {detail.input.agent.description && (
+                <span className="whitespace-pre-wrap font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                  {detail.input.agent.description}
+                </span>
+              )}
+            </>
+          )}
           <span className="font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
             {t('evaluations.sheet.input')}
           </span>

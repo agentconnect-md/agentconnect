@@ -6,10 +6,12 @@ import { tmpdir } from 'node:os'
 import {
   AcpHost,
   claudeSessionMeta,
+  isOAuthRefreshContention,
   shouldForwardUpdateDuringLoad,
   turnFailureCode,
   turnFailureReason
 } from '../src/acp/acp-host.js'
+import { RuntimeSessionFailure, sessionFailureFromMeta } from '../src/acp/session-failure.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
@@ -77,6 +79,62 @@ describe('AcpHost (against a fake ACP agent)', () => {
     host.forgetSession(sessionId)
     expect(host.sessionCwd(sessionId)).toBeUndefined()
     await host.stop()
+  })
+
+  it.each([
+    { category: 'service', actions: ['retry'], code: 'turn_failed' },
+    { category: 'access', actions: ['login'], code: 'provider_auth_required' },
+    { category: 'limit', actions: [], code: 'provider_quota_exhausted' },
+    { category: 'limit', actions: ['new_session'], code: 'turn_failed' }
+  ])(
+    'rejects a typed $category failure returned as end_turn, then permits recovery',
+    async ({ category, actions, code }) => {
+      const onUpdate = vi.fn()
+      const failure = {
+        id: 'turn-1:error',
+        revision: 1,
+        severity: 'error',
+        category,
+        title: 'Provider unavailable',
+        actions
+      }
+      const host = new AcpHost(
+        { command: process.execPath, args: [fakeAgent], env: [] },
+        { onUpdate, env: { AC_FIRST_PROMPT_FAILURE: JSON.stringify(failure) } }
+      )
+      await host.start()
+      try {
+        const sid = await host.newSession('/tmp')
+        const error = await host.prompt(sid, [{ type: 'text', text: 'review' }]).catch((err: unknown) => err)
+        expect(error).toBeInstanceOf(RuntimeSessionFailure)
+        expect(error).toMatchObject({ message: failure.title, retryable: actions.includes('retry') })
+        expect(turnFailureCode(error)).toBe(code)
+        expect(onUpdate).not.toHaveBeenCalled()
+        await expect(host.prompt(sid, [{ type: 'text', text: 'review' }])).resolves.toMatchObject({
+          stopReason: 'end_turn'
+        })
+      } finally {
+        await host.stop()
+      }
+    }
+  )
+
+  it('does not turn an informational warning or unrelated metadata into a terminal failure', () => {
+    expect(sessionFailureFromMeta(undefined)).toBeUndefined()
+    expect(sessionFailureFromMeta({ quota: { token_count: null } })).toBeUndefined()
+    expect(
+      sessionFailureFromMeta({ jetbrains: { air: { version: 1, sessionFailure: { severity: 'error' } } } })
+    ).toBeUndefined()
+    expect(
+      sessionFailureFromMeta({
+        jetbrains: {
+          air: {
+            version: 1,
+            sessionFailure: { severity: 'warning', category: 'connection', title: 'Reconnecting', actions: [] }
+          }
+        }
+      })
+    ).toBeUndefined()
   })
 
   it('clamps session mcpServers to [] for a runtime that rejects them, and only then', async () => {
@@ -742,6 +800,20 @@ describe('turnFailureCode (normalized non-actionable provider failures)', () => 
       { code: -32603 }
     )
     expect(turnFailureCode(error)).toBe('provider_auth_required')
+  })
+
+  it('recognizes Claude Code refresh-lock contention as transient, not a dead login', () => {
+    const error = Object.assign(
+      new Error(
+        'Internal error: Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again'
+      ),
+      { code: -32603, data: { errorKind: 'authentication_failed' } }
+    )
+    expect(isOAuthRefreshContention(error)).toBe(true)
+    expect(turnFailureCode(error)).toBe('turn_failed')
+    expect(
+      isOAuthRefreshContention(new Error('Failed to authenticate: OAuth session expired and could not be refreshed'))
+    ).toBe(false)
   })
 
   it('classifies a revoked refresh token as provider_auth_required', () => {

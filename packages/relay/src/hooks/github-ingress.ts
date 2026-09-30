@@ -25,7 +25,7 @@ import type { HookTable } from './hook-table.js'
 import { githubRuleByHookId, githubRulesForEvent } from './github-installation.js'
 import type { HookRateLimiter } from './rate-limit.js'
 import { dispatchHookFire, noticeDelivery } from './ingress.js'
-import { GITHUB_ROUTED_THREAD_EVENTS, GITHUB_ROUTING } from './github-routing.js'
+import { GITHUB_ROUTED_THREAD_EVENTS, GITHUB_ROUTING, githubEventFamily, githubRuleFamilies } from './github-routing.js'
 import { createCodeHostRouter } from './code-host-routing.js'
 import { hookSnapshotForDelivery } from './hook-snapshot.js'
 import { verifySha256Header } from './signature.js'
@@ -1197,13 +1197,16 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       const routeScopes = router.routeScopes
 
       if (cleanupEvent) {
-        // Cleanup is maintenance: fan out to every hook the installation may address; the daemon no-ops without a session.
+        // Cleanup is maintenance for the thread family's hooks the installation may address; the daemon no-ops without a session.
+        const family = githubEventFamily(ctx)
         for (const rule of rules) {
           if (
             rule.kind === 'github' &&
             rule.github &&
             ctx.installationId &&
-            rule.github.installationIds.includes(ctx.installationId)
+            rule.github.installationIds.includes(ctx.installationId) &&
+            family !== undefined &&
+            githubRuleFamilies(rule.github).has(family)
           ) {
             dispatchRule(rule)
           }

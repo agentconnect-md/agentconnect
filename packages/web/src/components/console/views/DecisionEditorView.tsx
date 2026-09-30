@@ -2,7 +2,7 @@
 
 // The reusable question and standalone preview; consumers own their conditions.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
@@ -11,13 +11,14 @@ import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-import { groupPlacementValue, poolLabel, POOL_PLACEMENT } from '@/lib/data'
+import { agentLabel, groupPlacementValue, poolLabel, POOL_PLACEMENT } from '@/lib/data'
 import { useDecisionProviders, useDecisionsPrototype } from '@/lib/decisions/provider'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { DecisionModelSelect } from '@/components/console/decisions/DecisionModelSelect'
 import { DecisionUsageList } from '@/components/console/decisions/DecisionUsageList'
-import { DecisionRecentEvaluations } from '@/components/console/decisions/DecisionRecentEvaluations'
+import { DecisionUsedIn } from '@/components/console/decisions/DecisionUsedIn'
+import { useDecisionPlaceEditors } from '@/components/console/decisions/useDecisionPlaceEditors'
 import { decisionInUse } from '@/lib/decisions/binding'
 import { decisionExample } from '@/lib/decisions/examples'
 import { decisionUsageHref } from '@/lib/decisions/usage-links'
@@ -303,6 +304,15 @@ function DecisionEditor() {
       ? gated.filter((usage) => decisionConditionNeedsReview(definition.question, questionFrom(draft), usage.when))
       : []
   const usages = usageState.usages
+  // A place edited from the Used in card re-reads the usages, so its rule chip shows what was saved.
+  const refreshUsages = useCallback(() => {
+    if (!id) return
+    void api.getDecision(id).then(
+      (detail) => setUsageState({ status: 'ready', usages: detail.usages }),
+      () => undefined
+    )
+  }, [api, id])
+  const placeEditors = useDecisionPlaceEditors({ usages, onChanged: refreshUsages })
   const usageNames = [...usages.map((usage) => usage.label), ...gated.map((usage) => usage.channelName)].join(', ')
   const hrefFor = (usage: DecisionUsage) => decisionUsageHref(usage, orgPath, integrations)
   // A place is known by its integration's platform, its bot's, its code host, or its agent's own icon.
@@ -317,7 +327,7 @@ function DecisionEditor() {
             : undefined
     if (platform) return <PlatformMark platform={platform} fillPct={100} />
     const agent =
-      usage.kind === 'model_selection' || usage.kind === 'agent_tool'
+      usage.kind === 'model_selection' || usage.kind === 'agent_tool' || usage.kind === 'api_gate'
         ? agents.find((row) => row.id === usage.id)
         : undefined
     // A runtime mark renders nothing until the registry loads, so the card's own glyph stands in until then.
@@ -892,7 +902,7 @@ function DecisionEditor() {
           </fieldset>
 
           {id && definition && (
-            <DecisionRecentEvaluations
+            <DecisionUsedIn
               decisionId={id}
               question={definition.question}
               usages={usages}
@@ -902,8 +912,15 @@ function DecisionEditor() {
               inUse={refusedInUse}
               hrefFor={hrefFor}
               markFor={markFor}
+              agentName={(agentId) => {
+                const agent = agents.find((row) => row.id === agentId)
+                return agent && agentLabel(agent)
+              }}
+              canEdit={placeEditors.editable}
+              onEdit={placeEditors.edit}
             />
           )}
+          {placeEditors.editors}
         </div>
 
         <div className="flex min-w-0 flex-col gap-4 desktop:sticky desktop:top-4">

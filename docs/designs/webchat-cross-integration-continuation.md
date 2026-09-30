@@ -668,18 +668,28 @@ it @-mentions. A message that mentions nobody goes to every continuable member. 
 the message does not address receive nothing: hook-origin member sessions are
 independent of each other, so there is no transcript-only `context` copy.
 
-**No new token, route, or row.** The console still mints the representative's
-session-targeted token (§6.2). A hook-origin session's `platform/tenantScope/channel/thread`
-already names its conversation, so `rc/verify` expands the verdict there:
+**No new route or row.** The console still mints the representative's session-targeted
+token (§6.2). A hook-origin session's `platform/tenantScope/channel/thread` already names
+its conversation, so that mint also selects the conversation's peers.
 
-- it reads the conversation's current session per agent (`listConversationMembers`);
-- it keeps each other member whose session is org-visible, un-purged, and served by a
-  READY dispatch daemon that advertises both continuation bits;
-- it adds each kept member as a participant carrying its own
-  `RcWebchatParticipant.targetSessionId`.
+- **Mint.** It reads the caller's visible current session per agent
+  (`listConversationMembers`). It keeps each other member that passes the same gates the
+  detail read's `canContinue` applies: `canContinueSession` with provider access, un-purged
+  content, `canView` on the agent, and `resolveContinuationHost`. The kept members go into
+  the token as `conversationPeers`, each with its proven private owner.
+- **Verify.** `rc/verify` re-checks each claimed peer the way it re-checks the target:
+  - same conversation and org;
+  - un-purged content;
+  - private owner unchanged;
+  - served by a READY dispatch daemon that advertises both continuation bits.
 
-A private member stays out, because mint proved only the target's owner. A chat-origin
-target never expands: its mirror (§5.2) would post one line to the thread once per member.
+  Each peer that still passes becomes a participant carrying its own
+  `RcWebchatParticipant.targetSessionId`. A peer that drifted is left out rather than
+  failing the token.
+
+A member that joins later becomes addressable on the next mint, which happens at most one
+token TTL later. A chat-origin target never expands: its mirror (§5.2) would post one line
+to the thread once per member.
 
 **Relay.** A participant's own `targetSessionId` wins over the connection's, and
 `selectTurnTargets` with its shared `post {postId, at}` is unchanged. Neither user-turn

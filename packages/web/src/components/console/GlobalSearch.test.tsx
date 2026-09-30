@@ -140,6 +140,7 @@ describe('SEARCH_PAGES index', () => {
       '/settings#environment',
       '/settings#members',
       '/settings#invite-links',
+      '/settings#service-accounts',
       '/profile'
     ])
   })

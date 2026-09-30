@@ -33,6 +33,7 @@ import {
   type SettingsField,
   type SettingsValues
 } from '@/components/console/memory-config-schema'
+import { Scrim } from '@/components/console/Scrim'
 
 type CardTranslator = ReturnType<typeof useTranslations<'Knowledge.memoryConnections'>>
 type DialogTranslator = ReturnType<typeof useTranslations<'Knowledge.memoryConnections.dialog'>>
@@ -294,7 +295,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
       )}
 
       {creating && (
-        <div className="scrim">
+        <Scrim onEscape={() => setCreating(null)}>
           <div className="modal max-w-[640px]">
             <CreateMemoryConnectionModal
               installations={installations}
@@ -307,10 +308,10 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
               }}
             />
           </div>
-        </div>
+        </Scrim>
       )}
       {editing && (
-        <div className="scrim">
+        <Scrim onEscape={() => setEditing(null)}>
           <div className="modal max-w-[600px]">
             <EditMemoryConnectionModal
               connection={editing}
@@ -322,7 +323,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
               }}
             />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

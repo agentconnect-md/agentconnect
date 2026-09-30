@@ -17,7 +17,6 @@
  */
 import { createHmac } from 'node:crypto'
 import { SignJWT, jwtVerify } from 'jose'
-import { isAgentLevelPermission, type AgentLevelPermission } from '../domain/api-key-permission.js'
 
 /** The identity a minted webchat token attests (authz already checked at mint time). */
 export interface WebchatTokenClaims {
@@ -31,8 +30,29 @@ export interface WebchatTokenClaims {
   conversationId: string
   /** Exact private-session owner proven by the mint-time identity expansion. */
   privateSessionOwnerIdentity?: string
-  /** The minting key's agent-level permission (daemon-api-key-auth.md §6); absent for a console or full-key mint. */
-  permission?: AgentLevelPermission
+  /** A hook target's merged-conversation peers mint authorized (#2500), each with its proven private owner. */
+  conversationPeers?: ConversationPeerClaim[]
+}
+
+/** One peer session a hook continuation token may also address. */
+export interface ConversationPeerClaim {
+  sessionId: string
+  privateOwnerIdentity?: string
+}
+
+const MAX_CONVERSATION_PEERS = 16
+
+/** Parses the peer claim, dropping the whole list when any entry is malformed. */
+function conversationPeersOf(raw: unknown): ConversationPeerClaim[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_CONVERSATION_PEERS) return undefined
+  const peers: ConversationPeerClaim[] = []
+  for (const entry of raw as unknown[]) {
+    const { sessionId, privateOwnerIdentity } = (entry ?? {}) as Record<string, unknown>
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return undefined
+    if (privateOwnerIdentity !== undefined && typeof privateOwnerIdentity !== 'string') return undefined
+    peers.push({ sessionId, ...(typeof privateOwnerIdentity === 'string' ? { privateOwnerIdentity } : {}) })
+  }
+  return peers
 }
 
 /** A minted token and the instant its `exp` claim names. */
@@ -71,7 +91,7 @@ export class WebchatTokenService {
       ...(claims.privateSessionOwnerIdentity
         ? { privateSessionOwnerIdentity: claims.privateSessionOwnerIdentity }
         : {}),
-      ...(claims.permission ? { permission: claims.permission } : {})
+      ...(claims.conversationPeers?.length ? { conversationPeers: claims.conversationPeers } : {})
     })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(claims.userId)
@@ -85,8 +105,9 @@ export class WebchatTokenService {
   async verify(token: string): Promise<WebchatTokenClaims | null> {
     try {
       const { payload } = await jwtVerify(token, this.key, { algorithms: ['HS256'] })
-      const { sub, user, userPicture, agentId, orgId, conversationId, privateSessionOwnerIdentity, permission } =
+      const { sub, user, userPicture, agentId, orgId, conversationId, privateSessionOwnerIdentity, conversationPeers } =
         payload as Record<string, unknown>
+      const peers = conversationPeersOf(conversationPeers)
       if (
         typeof sub !== 'string' ||
         typeof agentId !== 'string' ||
@@ -104,7 +125,7 @@ export class WebchatTokenService {
         orgId,
         conversationId: conversationId.toLowerCase(),
         ...(typeof privateSessionOwnerIdentity === 'string' ? { privateSessionOwnerIdentity } : {}),
-        ...(isAgentLevelPermission(permission) ? { permission } : {})
+        ...(peers ? { conversationPeers: peers } : {})
       }
     } catch {
       return null // bad signature / expired / malformed

@@ -6,7 +6,9 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -691,6 +693,128 @@ describe('Linux shared runtime login', () => {
       expect(readFileSync(join(sharedAuth, 'user'), 'utf8')).toBe('refreshed-login')
     }
   )
+
+  const kimiLaunch = (scopeDir: string, cwd: string, daemonRoot: string, hostHome: string) =>
+    prepareRuntimeLaunch({
+      runtimeId: 'kimi',
+      runtime: { command: './kimi', args: ['acp'], env: [] },
+      scopeDir,
+      cwd,
+      daemonRoot,
+      agentsRoot: join(daemonRoot, 'agents'),
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+  const kimiLogin = (expiresAt: number) =>
+    JSON.stringify({ access_token: 'synthetic', refresh_token: 'synthetic', expires_at: expiresAt })
+
+  it('shares the rotating Kimi Code login directory instead of copying it', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const hostKimi = join(hostHome, '.kimi-code')
+    const sharedDir = join(hostKimi, 'credentials')
+    mkdirSync(sharedDir, { recursive: true })
+    writeFileSync(
+      join(hostKimi, 'config.toml'),
+      '[providers."managed:kimi-code".oauth]\nstorage = "file"\nkey = "oauth/kimi-code-env-example"\n'
+    )
+    writeFileSync(join(sharedDir, 'kimi-code-env-example.json'), kimiLogin(1))
+
+    const launch = kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)
+
+    const privateDir = join(scopeDir, 'home', '.kimi-code', 'credentials')
+    expect(lstatSync(privateDir).isSymbolicLink()).toBe(true)
+    expect(realpathSync(privateDir)).toBe(realpathSync(sharedDir))
+    expect(readFileSync(join(scopeDir, 'home', '.kimi-code', 'config.toml'), 'utf8')).toContain('kimi-code-env-example')
+    expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(realpathSync(sharedDir))
+    // A refresh inside the private HOME rotates the host's copy, so the host login stays valid.
+    writeFileSync(join(privateDir, 'kimi-code-env-example.json'), kimiLogin(2))
+    expect(readFileSync(join(sharedDir, 'kimi-code-env-example.json'), 'utf8')).toBe(kimiLogin(2))
+  })
+
+  it('relaunches Kimi Code against the same private HOME through its validated credentials link', () => {
+    const { root, daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const hostKimi = join(hostHome, '.kimi-code')
+    const sharedDir = join(hostKimi, 'credentials')
+    mkdirSync(sharedDir, { recursive: true })
+    // One ref resolves to a host file, the other names a login the host has not written yet.
+    writeFileSync(
+      join(hostKimi, 'config.toml'),
+      [
+        '[providers."managed:kimi-code".oauth]',
+        'storage = "file"',
+        'key = "oauth/kimi-code-env-example"',
+        '[services.search.oauth]',
+        'storage = "file"',
+        'key = "oauth/kimi-code-env-pending"'
+      ].join('\n')
+    )
+    writeFileSync(join(sharedDir, 'kimi-code-env-example.json'), kimiLogin(1))
+
+    kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)
+    kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)
+
+    const privateDir = join(scopeDir, 'home', '.kimi-code', 'credentials')
+    expect(realpathSync(privateDir)).toBe(realpathSync(sharedDir))
+    expect(readFileSync(join(privateDir, 'kimi-code-env-example.json'), 'utf8')).toBe(kimiLogin(1))
+
+    // A link redirected anywhere but the host directory is still refused on the next launch.
+    const elsewhere = join(root, 'elsewhere')
+    mkdirSync(elsewhere)
+    renameSync(privateDir, `${privateDir}.moved`)
+    symlinkSync(elsewhere, privateDir)
+    expect(() => kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)).toThrow(/points outside host credentials/)
+  })
+
+  it('folds a copy-seeded private Kimi login into the host, keeping the later expiry', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const sharedDir = join(hostHome, '.kimi-code', 'credentials')
+    const privateDir = join(scopeDir, 'home', '.kimi-code', 'credentials')
+    mkdirSync(sharedDir, { recursive: true })
+    mkdirSync(join(privateDir, 'mcp'), { recursive: true })
+    // The host was logged out by a rotation the private copy won; the private record is the live one.
+    writeFileSync(join(sharedDir, 'kimi-code-env-example.json'), kimiLogin(0))
+    writeFileSync(join(privateDir, 'kimi-code-env-example.json'), kimiLogin(5))
+    writeFileSync(join(sharedDir, 'kimi-code.json'), kimiLogin(9))
+    writeFileSync(join(privateDir, 'kimi-code.json'), kimiLogin(3))
+    writeFileSync(join(privateDir, 'mcp', 'server.json'), '{}')
+
+    kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)
+
+    expect(lstatSync(privateDir).isSymbolicLink()).toBe(true)
+    expect(readFileSync(join(sharedDir, 'kimi-code-env-example.json'), 'utf8')).toBe(kimiLogin(5))
+    expect(readFileSync(join(sharedDir, 'kimi-code.json'), 'utf8')).toBe(kimiLogin(9))
+    expect(readFileSync(join(sharedDir, 'mcp', 'server.json'), 'utf8')).toBe('{}')
+  })
+
+  it('never follows a link the runtime planted in the shared Kimi credentials directory', () => {
+    const { root, daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const sharedDir = join(hostHome, '.kimi-code', 'credentials')
+    const privateDir = join(scopeDir, 'home', '.kimi-code', 'credentials')
+    const outside = join(root, 'outside')
+    mkdirSync(sharedDir, { recursive: true })
+    mkdirSync(outside)
+    mkdirSync(join(privateDir, 'mcp'), { recursive: true })
+    writeFileSync(join(privateDir, 'mcp', 'planted.json'), '{}')
+    symlinkSync(outside, join(sharedDir, 'mcp'))
+
+    expect(() => kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)).toThrow(/not a real directory/)
+    expect(existsSync(join(outside, 'planted.json'))).toBe(false)
+  })
+
+  it('refuses to pick between divergent Kimi logins it cannot order', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const sharedDir = join(hostHome, '.kimi-code', 'credentials')
+    const privateDir = join(scopeDir, 'home', '.kimi-code', 'credentials')
+    mkdirSync(sharedDir, { recursive: true })
+    mkdirSync(privateDir, { recursive: true })
+    writeFileSync(join(sharedDir, 'kimi-code.json'), 'host-login')
+    writeFileSync(join(privateDir, 'kimi-code.json'), 'private-login')
+
+    expect(() => kimiLaunch(scopeDir, cwd, daemonRoot, hostHome)).toThrow(/conflicting kimi credentials/)
+    expect(readFileSync(join(sharedDir, 'kimi-code.json'), 'utf8')).toBe('host-login')
+  })
 
   it('migrates an existing private Qoder login when the host has none', () => {
     const { daemonRoot, hostHome, scopeDir, cwd } = fixture()

@@ -42,7 +42,7 @@ import { LinearApiClient } from '../platforms/linear/api.js'
 import { LinearTokenService } from '../platforms/linear/token-service.js'
 import { linearConnectRoutes, linearOauthCallbackRoutes } from '../platforms/linear/routes.js'
 import { createGoogleChatCpProvider } from '../platforms/googlechat/provider.js'
-import { googleChatKeyRoutes } from '../platforms/googlechat/routes.js'
+import { googleChatAppRoutes, googleChatKeyRoutes } from '../platforms/googlechat/routes.js'
 import { googleChatClaimRoutes } from '../platforms/googlechat/claim.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
@@ -90,6 +90,7 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
       'POST /bots/:id/linear/reconnect',
       'POST /bots/:id/linear/disconnect'
     ],
+    googleChatAppRoutesPlugin: ['GET /integrations/googlechat/app'],
     googleChatKeyRoutesPlugin: ['PUT /bots/:id/googlechat/key'],
     googleChatClaimRoutesPlugin: ['POST /integrations/googlechat/claim']
   },
@@ -186,7 +187,11 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
     }),
     createGoogleChatCpProvider({
       installRoutes: {
-        org: [googleChatKeyRoutes(deps, GOOGLE_CHAT_SEAMS), googleChatClaimRoutes(deps, GOOGLE_CHAT_SEAMS)],
+        org: [
+          googleChatAppRoutes(GOOGLE_CHAT_SEAMS),
+          googleChatKeyRoutes(deps, GOOGLE_CHAT_SEAMS),
+          googleChatClaimRoutes(deps, GOOGLE_CHAT_SEAMS)
+        ],
         publicCallback: []
       }
     })

@@ -43,6 +43,8 @@ const KEYS = [
   'HELP_DOCS_URL',
   'HELP_RELEASES_URL',
   'HELP_SUPPORT_URL',
+  // The deployed release tag (chart image.tag); unset ⇒ the release baked into this build.
+  'RELEASE_VERSION',
   'OTEL_WEB_ENABLED',
   'OTEL_WEB_TRACES_ENDPOINT',
   'OTEL_WEB_SERVICE_NAME',

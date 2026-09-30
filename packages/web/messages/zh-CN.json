@@ -252,7 +252,9 @@
       "regenerateTitle": "重新生成 API 密钥",
       "regenerateBody": "将换成新的值。当前值立即失效；名称、权限、Agent 和过期时间保持不变。",
       "regenerating": "生成中…",
-      "regeneratedTitle": "API 密钥已重新生成"
+      "regeneratedTitle": "API 密钥已重新生成",
+      "owner": "所有者",
+      "serviceAccount": "服务账号"
     },
     "social": {
       "title": "登录方式",
@@ -458,7 +460,9 @@
       "loadMore": "加载更多",
       "diffTooLarge": "差异过大，无法完整发送，目前仅显示开头；请打开文件查看其余内容。",
       "diffTruncated": "差异行数超过查看器显示上限，目前仅显示开头。",
-      "malformedDiff": "此差异的一部分以原始内容显示，其分块不是双向格式（通常是合并冲突）。统计仅覆盖可读取的部分。"
+      "malformedDiff": "此差异的一部分以原始内容显示，其分块不是双向格式（通常是合并冲突）。统计仅覆盖可读取的部分。",
+      "preview": "预览",
+      "code": "代码"
     },
     "list": {
       "allAgents": "所有 Agent",
@@ -859,8 +863,10 @@
     "actions": {
       "account": "账户",
       "createOrganization": "创建组织",
+      "theme": "主题",
       "lightMode": "浅色模式",
       "darkMode": "深色模式",
+      "systemMode": "跟随系统",
       "signOut": "退出登录",
       "yourProfile": "个人资料",
       "search": "搜索",
@@ -869,6 +875,7 @@
       "collapseSidebar": "收起侧边栏",
       "switchLight": "切换到浅色主题",
       "switchDark": "切换到深色主题",
+      "switchSystem": "跟随系统主题",
       "toggleTheme": "切换主题",
       "add": "添加",
       "addAgent": "添加 Agent",
@@ -1426,6 +1433,7 @@
         "leaveConfirm": "确定要离开{space}吗？{platform} Bot无法只离开一个{noun}——它会离开整个服务器，其中的所有{nounPlural}都会从列表中消失。重新邀请即可撤销。"
       },
       "directMessages": "私信",
+      "openIn": "在 {platform} 中打开 {name}",
       "ownerChange": {
         "title": "要更改此团队的默认Agent吗？",
         "body": "{owner}是私有Agent，只有成为{room}的默认Agent才能在那里工作。该团队中的实时会话仍可停止，但它不会再次响应这些会话。新的提及或委派会使用新的默认Agent开启会话。",
@@ -1485,6 +1493,7 @@
       "connectGitea": "连接 Gitea",
       "cancel": "取消",
       "openRepository": "在 Gitea 中打开 {repo}",
+      "openProject": "在 GitLab 中打开 {project}",
       "working": "处理中…",
       "repairRepository": "修复此仓库",
       "rotateSecret": "轮换 Webhook 签名密钥",
@@ -1523,7 +1532,7 @@
       "gitlab": "GitLab",
       "connectGitlab": "连接 GitLab",
       "connectMyAccount": "连接我的账户",
-      "gitlabVersionRequirement": "设置新项目和机器人需要 {version} 或更高版本。已经设置的项目会继续工作，直到凭据过期。",
+      "gitlabVersionRequirement": "设置项目和机器人需要 GitLab {version} 或更高版本。现有凭据在过期前仍可使用，但 webhook 投递可能停止。",
       "gitlabNotEnabled": "此部署未启用 GitLab，尚未配置 GitLab 应用。",
       "gitlabNotConnectedHint": "请连接一个对项目拥有 Maintainer 或 Owner 权限的 GitLab 账户。添加触发器或 Agent 工作区时即可选择项目，AgentConnect 会在那里设置项目机器人和 Webhook。",
       "reconnectNeeded": "需要重新连接",
@@ -1912,41 +1921,51 @@
           "create": "在 Google Cloud 中配置一个 Chat 应用",
           "existing": "一个未使用的 Google Chat 应用"
         }
+      },
+      "api": {
+        "protocol": "协议",
+        "aiSdkUiDescription": "通过 AI SDK UI 消息流对话，配合 useChat hook 使用。",
+        "agUiDescription": "通过 AG-UI 事件流对话，配合 HttpAgent 或 CopilotKit 使用。",
+        "acp2Description": "Agent Client Protocol v2，面向编辑器和 Agent 客户端。",
+        "soon": "即将推出",
+        "added": "已添加",
+        "docs": "文档",
+        "add": "添加 API",
+        "adding": "添加中…"
       }
+    },
+    "api": {
+      "title": "API",
+      "remove": "移除",
+      "quickstart": "快速开始",
+      "removeTitle": "移除 API",
+      "removeConfirm": "移除",
+      "removing": "移除中…",
+      "removeBody": "{agent} 将不再接受 API 调用。覆盖它的密钥对其他 Agent 仍然有效。",
+      "docs": "文档",
+      "close": "关闭",
+      "chatEndpoint": "对话",
+      "copy": "复制",
+      "copySnippet": "复制代码",
+      "examples": "示例",
+      "tabs": {
+        "curl": "curl",
+        "node": "Node",
+        "browser": "浏览器"
+      },
+      "keys": "Agent 对话密钥",
+      "createKey": "创建密钥",
+      "keysLoading": "正在加载密钥…",
+      "noKeys": "还没有能调用这个 Agent 的 Agent 对话密钥。",
+      "me": "我",
+      "allAgents": "全部 Agent",
+      "done": "完成"
     }
   },
   "Agents": {
     "description": "运行在 Daemon 上的 AI Agent。点击任意 Agent 查看其会话。",
     "addAgent": "添加 Agent",
     "add": "添加",
-    "apiPanel": {
-      "organizationLoadError": "无法加载 API 访问所需的组织信息。",
-      "loading": "正在加载 API 配置…",
-      "relayNotConfigured": "尚未配置 Relay 端点",
-      "buildDescription": "基于 <agent>{agent}</agent> 构建：生成短期凭据，然后通过 Relay 流式运行。",
-      "authentication": "身份验证",
-      "apiKeyDescription": "为 {organization} 使用个人 API 密钥。它会以你的身份访问此组织，创建后只显示一次。",
-      "connectionEndpoints": "连接端点",
-      "post": "POST",
-      "webSocketMethod": "WSS",
-      "streaming": "流式",
-      "copied": "已复制",
-      "copyMintEndpoint": "复制 Mint 端点",
-      "mintEndpointCopied": "Mint 端点已复制",
-      "copyWebSocketEndpoint": "复制 WebSocket 端点",
-      "webSocketEndpointCopied": "WebSocket 端点已复制",
-      "connect": "连接",
-      "copy": "复制",
-      "streamEvents": "流式事件",
-      "serverToClient": "服务器 → 客户端",
-      "events": {
-        "ready": "Socket 已接受，携带控制平面分配的 conversationId。",
-        "ack": "消息已送达 Agent，携带 turnId。",
-        "output": "回复分块：output.event 可以是 message、thinking、tool_call 或 tool_update。",
-        "done": "回合已完成，包含 done.stopReason 和 done.usage（Tokens / 费用）。",
-        "error": "传递失败，例如 Agent 没有在线 Daemon。"
-      }
-    },
     "workspaceScope": {
       "defaultBranch": "HEAD",
       "workspaceCheckout": "工作区检出：{name}",
@@ -2849,7 +2868,7 @@
         "inControlPlaneHelp": "Control Plane 会保存记忆文件，因此 Agent 可跟随到任意 Daemon，无需依赖某台机器在线。",
         "movingToControlPlane": "正在将记忆移动到 Control Plane…",
         "externalDescription": "由所有者审核的外部插件；请在下方准确配置可以召回和捕获的内容。",
-        "nativeDescription": "Runtime 自带的记忆（Claude / Codex），隔离在 Agent 根目录下。",
+        "nativeDescription": "Runtime 自带的记忆（Claude / Codex），保存在它自己的目录里。",
         "noneDescription": "不会加载或保存持久记忆。",
         "managedDescription": "我们为 Agent 维护的记忆目录。",
         "autoDistillLabel": "每轮对话后自动提炼长期事实（会额外调用一次模型）。",
@@ -2895,7 +2914,7 @@
         "autoAccept": "自动采纳：{state}",
         "agentScope": "Agent 范围",
         "channelScope": "频道范围",
-        "nativeSummary": "Runtime 原生记忆 · Agent 范围",
+        "nativeSummary": "Runtime 原生记忆",
         "connectionNamed": "连接 {id}",
         "noConnection": "无连接",
         "recallEveryTurn": "每轮都检索",
@@ -2952,17 +2971,6 @@
         "unknownTimezone": "{human} · “{timezone}”不是已知的 IANA 时区",
         "nextRun": "{human} · 下次运行 {next}（{timezone}）",
         "daemonTimezone": "{human} · 使用 Daemon 主机时区"
-      },
-      "nativeMemory": {
-        "rendering": "正在渲染…",
-        "retry": "重试",
-        "noMemory": "暂无记忆。",
-        "memoryFilePath": "记忆文件路径",
-        "newMemoryFileName": "新记忆文件名",
-        "addFile": "添加文件",
-        "edit": "编辑",
-        "listError": "无法列出记忆，所属 Daemon 可能已离线。",
-        "readError": "无法读取文件，所属 Daemon 可能已离线。"
       },
       "toolsDialog": {
         "wrongOrganization": "此 Agent 属于其他组织。",
@@ -4281,6 +4289,30 @@
       "copied": "已复制",
       "copy": "复制"
     },
+    "serviceAccounts": {
+      "title": "服务账号",
+      "new": "新建账号",
+      "empty": "还没有服务账号",
+      "loadError": "无法加载服务账号。",
+      "keys": "密钥",
+      "keysTitle": "{name} 的密钥",
+      "createTitle": "新建服务账号",
+      "editTitle": "编辑服务账号",
+      "name": "名称",
+      "namePlaceholder": "docs-bot",
+      "displayName": "显示名称",
+      "role": "角色",
+      "invalidName": "只能使用小写字母、数字和单个连字符。",
+      "create": "创建",
+      "creating": "创建中…",
+      "save": "保存",
+      "saving": "保存中…",
+      "cancel": "取消",
+      "delete": "删除",
+      "deleting": "删除中…",
+      "deleteTitle": "删除服务账号",
+      "deleteBody": "将删除 {name} 及其全部密钥。"
+    },
     "environment": {
       "title": "变量与密钥",
       "add": "添加",
@@ -4443,30 +4475,25 @@
         "shared_bot_routing": "共享 Bot 路由",
         "code_host_routing": "仓库路由",
         "agent_tool": "Agent 工具",
-        "model_selection": "模型选择"
+        "model_selection": "模型选择",
+        "api_gate": "对话 API 门控"
       },
       "needsReview": "需要复核",
       "ok": "正常",
       "hidden": "{count, plural, other {另有 # 处你无权查看}}",
       "hiddenUnknown": "被你无权查看的项目使用"
     },
-    "recentBySource": {
-      "title": "近期评估",
-      "loading": "正在加载评估记录…",
-      "chainHistory": "此来源从决策链的首个步骤开始记录评估。",
-      "noSources": "此 Decision 当前没有记录评估的使用入口。",
-      "empty": "此来源近期没有评估记录。",
-      "upgrade": "升级此来源的评估节点后，才能按 Decision 筛选。",
-      "error": "无法加载此来源的评估记录。",
-      "retry": "重试",
-      "usedIn": "用于 {count, plural, other {# 处}}",
-      "all": "全部",
-      "settings": "设置",
-      "openPanel": "打开面板",
-      "notRecorded": "此处不记录评估。",
-      "emptyAll": "近期还没有评估记录。",
+    "usedIn": {
+      "title": "使用处",
+      "place": "位置",
+      "rule": "规则",
+      "day": "24 小时",
+      "edit": "编辑 {place}",
+      "history": "{place} 的近期评估",
+      "hidden": "你无权查看此处的评估记录。",
+      "error": "无法加载此处的评估记录。",
       "partialError": "{count, plural, other {有 # 处无法加载。}}",
-      "hidden": "你无权查看此处的评估记录。"
+      "retry": "重试"
     },
     "errors": {
       "name": "保存前请先为决策命名。",
@@ -4493,6 +4520,7 @@
     },
     "binding": {
       "decision": "决策",
+      "statusLabel": "状态",
       "selectDecision": "选择决策…",
       "pickDecision": "请选择一个决策。",
       "decisionRemoved": "决策已删除",
@@ -4504,6 +4532,7 @@
       "triggerCondition": "触发条件",
       "helpMentions": "@提及不会跳过决策；它只决定可以被触发的 Agent 是这一个。",
       "helpHistory": "最近的对话历史会自动包含在内，包括没有触发 Agent 的消息。",
+      "helpApiText": "只判断这次调用本身的消息，不包含会话里更早的消息。",
       "helpUnavailable": "如果评估不可用，符合条件的消息会继续交给该 Agent。",
       "add": "添加决策",
       "addTitle": "Agent 回复前先用决策评估每条消息",
@@ -4512,6 +4541,10 @@
       "rulesTitle": "<name>{channel}</name> · 按决策规则",
       "rulesTitleBare": "按决策规则",
       "rulesSubtitle": "决定 <name>{agent}</name> 何时在此频道回复",
+      "rulesSubtitleApi": "决定 <name>{agent}</name> 何时回应通过此 API 的调用",
+      "applyAll": "应用到所有频道",
+      "applyAllConfirm": "把这些规则应用到该 Bot 的全部 {count} 个频道？这些频道已有的规则会被替换。",
+      "applyAllFailed": "{count, plural, other {# 个频道}}保存失败（{names}）：{message}",
       "close": "关闭",
       "noDecisions": "还没有决策。新建一个来评估这里的消息。",
       "hiddenDecision": "你无权查看的决策",
@@ -4600,9 +4633,6 @@
     },
     "providerModel": "提供方 · 模型",
     "gateTry": {
-      "placeholder": "在此频道试一条消息…",
-      "senderLabel": "历史消息 {index} 的发送者",
-      "historyLabel": "历史消息 {index}",
       "wouldSkip": "将跳过",
       "notApplied": "未应用",
       "notAppliedBody": {
@@ -4616,7 +4646,14 @@
       "triggersAgent": "将触发 {agent}",
       "stale": "本次运行后草稿已更改，请重新运行。",
       "offline": "没有已连接的守护进程服务此会话，无法运行预览。请在其重新连接后重试。",
-      "failed": "无法运行预览。{message}"
+      "failed": "无法运行预览。{message}",
+      "api": {
+        "offline": "没有连接中的 daemon 在服务这个 agent，预览无法运行。请在它重新连接后再试。",
+        "unavailableBody": "评估不可用。{reason} 这次调用仍会由 {agent} 回答，这不算拒绝。",
+        "unsupported": "服务这个 agent 的 daemon 还不能预览这个 gate。请升级它，本次没有进行评估。",
+        "admits": "{agent} 会回答这次调用",
+        "refuses": "这次调用会被拒绝"
+      }
     },
     "evaluations": {
       "toggle": "最近评估",
@@ -4627,6 +4664,12 @@
         "empty": "暂无评估。此仓库中被判断的新 Issue 和变更请求会显示在这里。",
         "offline": "负责评估此仓库路由的守护进程未连接，暂时无法读取最近评估。",
         "unsupported": "请升级负责评估此仓库路由的守护进程以查看最近评估。"
+      },
+      "api": {
+        "empty": "暂无评估。此 API 被判断的调用会显示在这里。",
+        "offline": "没有已连接的守护进程服务此 agent，暂时无法读取最近评估。",
+        "unsupported": "请升级服务此 agent 的守护进程以查看此 API 的最近评估。",
+        "retention": "详情保留 24 小时，或保留此 API 最近 20 条评估；之后只保留摘要。"
       },
       "error": "无法加载最近评估。{message}",
       "loadMore": "加载更多",
@@ -4685,6 +4728,7 @@
         "usageValue": "输入 {input} · 输出 {output}",
         "decision": "评估时的决策",
         "questionType": "问题类型",
+        "agent": "Agent",
         "input": "被评估的消息",
         "noHistory": "未包含更早的消息。",
         "historyOmitted": "{count, plural, other {另有 # 条更早的消息未显示}}",
@@ -4716,6 +4760,7 @@
         "inRange": "在区间内",
         "threshold": "≥ {value}",
         "answer": "回答",
+        "confidence": "置信度",
         "tokens": "输入 {input} · 输出 {output} tokens",
         "expired": "保留策略已移除完整分布，只剩摘要回答。",
         "status": {
@@ -4957,7 +5002,6 @@
         "otherwiseEveryAgent": "{subject, select, pull_request {没有规则匹配时，和未使用决策时一样，由所有 Agent 审阅该 PR。} merge_request {没有规则匹配时，和未使用决策时一样，由所有 Agent 审阅该 MR。} other {没有规则匹配时，和未使用决策时一样，由所有 Agent 处理该 Issue。}}",
         "add": "添加决策",
         "addTitle": "{subject, select, pull_request {每个 PR 都会交给所有 agent。添加 decision 后，每次更新都由它挑选 reviewer，各行改为任意更新时触发。} merge_request {每个 MR 都会交给所有 agent。添加 decision 后，每次更新都由它挑选 reviewer，各行改为任意更新时触发。} other {每个 issue 都会交给所有 agent。添加 decision 后，每次更新都由它挑选 agent，各行改为任意更新时触发。}}",
-        "pillTitle": "By decision · {name}。{subject, select, pull_request {PR} merge_request {MR} other {issue}} 的每次更新都会评估，由 decision 选择处理的 agent。点击编辑规则。",
         "pillStatusTitle": "按决策 · {name} · {status}。点击查看规则。",
         "statusBody": {
           "needs_review": "{decision} 已更改，这些规则不再匹配它的答案。在你重新保存规则之前，此仓库的新 {subject, select, pull_request {Pull request} merge_request {Merge request} other {Issue}} 会被暂缓。",
@@ -4968,7 +5012,17 @@
         "hidden": "你无法查看的决策",
         "forbidden": "你的角色无法修改该仓库的路由：需要对关注该仓库的每个 agent 都有编辑权限。",
         "hiddenAgent": "你无权查看的 agent",
-        "triggerLocked": "由 decision 决定：每次更新都会评估，本行自己的触发方式不再生效。"
+        "triggerLocked": "由 decision 决定：每次更新都会评估，本行自己的触发方式不再生效。",
+        "try": {
+          "notAppliedBody": {
+            "paused": "路由已暂停，所有 agent 都会像没有 decision 时一样接收这个事件。本次没有进行评估。",
+            "needs_review": "已保存的规则需要复查，路由已关闭。修复后再试。本次没有进行评估。",
+            "unsupported": "评估主机的 daemon 还不能预览 decision。请升级它，本次没有进行评估。"
+          },
+          "unavailableBody": "评估不可用：{reason} 所有 agent 都会像没有 decision 时一样接收这个事件，这不算跳过。",
+          "agents": "Agent",
+          "noAgent": "没有 agent 接收这个事件"
+        }
       }
     },
     "chain": {
@@ -4982,6 +5036,56 @@
       "trigger": "触发",
       "skip": "跳过",
       "resetCondition": "重新设置条件"
+    },
+    "tryState": {
+      "sample": "示例 state",
+      "editor": "示例编辑方式",
+      "fields": "字段",
+      "raw": "Raw JSON",
+      "rawLabel": "示例 state 的 JSON",
+      "bound": "由这里填写，不来自示例：{keys}",
+      "currentSender": "当前消息的发送者 id",
+      "currentText": "当前消息",
+      "currentPlaceholder": "要判断的消息",
+      "historySender": "历史消息 {index} 的发送者 id",
+      "historyText": "历史消息 {index}",
+      "addHistory": "添加一条历史消息",
+      "removeHistory": "删除历史消息 {index}",
+      "addAgent": "向 {field} 添加 agent",
+      "addAgentShort": "agent",
+      "removeAgent": "移除 {agent}",
+      "eventName": "事件名",
+      "eventAction": "事件动作",
+      "subjectKind": "主题类型",
+      "subjectNumber": "主题编号",
+      "subjectState": "主题状态",
+      "subjectTitle": "主题标题",
+      "subjectAuthor": "主题作者 login",
+      "subjectLabels": "主题标签，用逗号分隔",
+      "subjectDraft": "草稿",
+      "subjectBody": "主题正文",
+      "commitMessages": "提交信息",
+      "addFile": "添加一个改动文件",
+      "removeFile": "删除 {path}",
+      "filePath": "文件 {index} 的路径",
+      "fileStatus": "文件 {index} 的状态",
+      "fileAdditions": "文件 {index} 的新增行数",
+      "fileDeletions": "文件 {index} 的删除行数",
+      "fileDiff": "文件 {index} 的 diff",
+      "showDiff": "编辑 diff（{lines, plural, other {# 行}}）",
+      "addDiff": "添加 diff",
+      "stale": "本次运行后草稿或示例已更改，请重新运行。",
+      "failed": "无法运行预览。{message}",
+      "details": "详情",
+      "detailsTitle": "试运行详情",
+      "detailsSubtitle": "本次运行不会记录到最近评估",
+      "detailsClose": "关闭试运行详情",
+      "errors": {
+        "json": "不是有效的 JSON：{message}",
+        "shape": "示例必须是一个 JSON 对象。",
+        "bound": "“{key}” 由这里填写，不来自示例，请删除。",
+        "schema": "{path}：{message}"
+      }
     }
   },
   "ProviderKeys": {
@@ -5451,6 +5555,11 @@
     "googlechat": {
       "checking": "正在检查这个部署…",
       "relayRequired": "Google Chat 只通过 HTTPS 回调投递，因此需要一个公开的回调地址。请管理员配置后再在这里连接应用。",
+      "marketplace": {
+        "install": "从 Google Workspace Marketplace 安装",
+        "next": "安装后，在 Google Chat 中给该应用发消息，即可连接这个组织。",
+        "useOwn": "改用你自己的 Google Chat 应用"
+      },
       "prerequisites": {
         "title": "开始之前",
         "account": "一个能配置 Chat 应用的 Google Workspace 账号",
@@ -5462,12 +5571,17 @@
       "configure": {
         "title": "配置 Chat 应用",
         "endpoint": "HTTP 端点 URL",
-        "audience": "身份验证受众",
+        "appType": "应用类型",
+        "appTypeValue": "Google Workspace 插件；已有的 Chat 应用请先转换",
+        "connection": "连接设置",
+        "connectionValue": "HTTP 端点 URL，所有触发器使用同一个 URL",
         "functionality": "功能",
         "receiveDms": "接收 1:1 消息",
         "joinSpaces": "加入空间和群组对话",
         "visibility": "可见性",
         "visibilityValue": "可以使用该应用的人员和群组",
+        "commands": "命令",
+        "commandsValue": "一个名为 /help 的斜杠命令，说明填写“Show how to use this app”，命令 ID 填 1；任何未占用的 ID 都可以",
         "copy": "复制",
         "copied": "已复制"
       },

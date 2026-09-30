@@ -236,6 +236,8 @@ export interface RelayIngressHost {
    *  assignment is NOT guaranteed to carry `botUserId` (a manual-paste bot's
    *  CP row learns it from this very report). */
   reportBotUserId(botId: string, botUserId: string): void
+  /** The relay pool's public origin as the CP's deployment snapshot last named it: a provider that signs for its callback URL is checked against it. */
+  publicRelayUrl(): string | undefined
   /** Event-identity dedup — CORE owns the bounded, TTL'd table; the PLUGIN
    *  mints the identity (it derives from parsed envelope semantics, §8) and
    *  carries it on its verified product into `handle`. True ⇒ already seen
@@ -352,7 +354,7 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
    * this per candidate; the plugin owns the cryptography (HMAC window, AES
    * decrypt, token compare) — and hands back the DECRYPTED result exactly once,
    * so handling never re-derives it. A platform whose proof is a provider-signed
-   * token checked against fetched certificates (Google Chat) answers with a
+   * token checked against fetched signing keys (Google Chat) answers with a
    * promise; core awaits either form.
    */
   verify(

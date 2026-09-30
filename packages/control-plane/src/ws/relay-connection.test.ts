@@ -6,6 +6,7 @@ import {
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   PULL_REQUEST_FEEDBACK_FEATURE,
+  CODEHOST_FEEDBACK_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
@@ -97,8 +98,10 @@ function build(
     auth?: Pick<RelayAuthService, 'authenticate' | 'verifyDaemonKey' | 'heartbeatSec'> &
       Partial<Pick<RelayAuthService, 'verifyDaemonToken'>>
     verifyWebchatToken?: (token: string) => Promise<RcVerifyResult>
+    verifyAgentChatKey?: (req: { credential: string; agentId: string; chatId: string }) => Promise<RcVerifyResult>
     authorizeGithubComment?: (req: RcGithubCommentAuthz) => Promise<boolean>
     authorizeGithubRerequest?: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
+    onCodeHostFeedback?: ConstructorParameters<typeof RelayConnection>[1]['onCodeHostFeedback']
     onPullRequestFeedback?: ConstructorParameters<typeof RelayConnection>[1]['onPullRequestFeedback']
     deploymentConfig?: ConstructorParameters<typeof RelayConnection>[1]['deploymentConfig']
     onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
@@ -139,6 +142,8 @@ function build(
   const transport = new FakeServerTransport()
   const verifyWebchatToken =
     over.verifyWebchatToken ?? vi.fn(async () => ({ ok: false, reason: 'not tested' }) as RcVerifyResult)
+  const verifyAgentChatKey =
+    over.verifyAgentChatKey ?? vi.fn(async () => ({ ok: false, reason: 'not tested' }) as RcVerifyResult)
   const authorizeGithubComment = over.authorizeGithubComment ?? vi.fn(async () => false)
   const authorizeGithubRerequest = over.authorizeGithubRerequest ?? vi.fn(async () => ({ allowed: false as const }))
   const onPullRequestFeedback = over.onPullRequestFeedback ?? vi.fn(async () => false)
@@ -161,8 +166,10 @@ function build(
     threadLookup: vi.fn(async (m) => ({ ...m, target: null, participants: [] })),
     onGithubInstallation: vi.fn(async () => {}),
     onPullRequestFeedback,
+    onCodeHostFeedback: over.onCodeHostFeedback,
     relayReg,
     verifyWebchatToken,
+    verifyAgentChatKey,
     authorizeGithubComment,
     authorizeGithubRerequest,
     authorizeCodeHostMembership: vi.fn(async () => false)
@@ -215,8 +222,6 @@ function buildWebchatVerifier(
     conversationRow?: { targetSessionId: string | null } | null
     /** Target session row for the continuation branch. */
     sessionById?: Record<string, Awaited<ReturnType<WebchatVerificationDeps['sessions']['getUnscoped']>>>
-    /** The target's merged-conversation members (default: none). */
-    conversationMembers?: Awaited<ReturnType<NonNullable<WebchatVerificationDeps['conversationMembers']>>>
     /** Members of a shared-store set, by set id (default: none). */
     sharedStoreMembersBySet?: Record<string, string[]>
     /** The placement resolver (default: placement alone — no duty ledger, no live members). */
@@ -286,8 +291,8 @@ function buildWebchatVerifier(
         participants: async () => over.participants ?? [],
         target: async () => (over.conversationRow === undefined ? { targetSessionId: null } : over.conversationRow)
       },
+      apiEntries: { listForAgent: async () => [] },
       sessions: { getUnscoped: async (id) => over.sessionById?.[id] ?? null },
-      conversationMembers: async () => over.conversationMembers ?? [],
       memberSets: { sharedStoreMemberIdsOf: async (setId) => over.sharedStoreMembersBySet?.[setId] ?? [] },
       orgs: { roleOf: async () => (over.role === undefined ? 'collaborator' : over.role) },
       placement: over.placement ?? PLACEMENT_ONLY,
@@ -402,7 +407,12 @@ describe('RelayConnection FSM', () => {
     expect(upsertByName).toHaveBeenCalledWith('pod-0', 'wss://pod-0.example.test', new Date(NOW), [])
     expect(transport.lastRep('rc/registered')!.payload).toEqual({
       relayId: RELAY_ID,
-      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE, BOT_CREDENTIAL_CHECK_FEATURE, BOT_TENANT_FEATURE]
+      serverFeatures: [
+        CODEHOST_FEEDBACK_FEATURE,
+        PULL_REQUEST_FEEDBACK_FEATURE,
+        BOT_CREDENTIAL_CHECK_FEATURE,
+        BOT_TENANT_FEATURE
+      ]
     })
     expect(conn.state).toBe('READY')
     expect(conn.relayId).toBe(RELAY_ID)
@@ -547,6 +557,7 @@ describe('RelayConnection FSM', () => {
       onGithubInstallation: vi.fn(async () => {}),
       relayReg,
       verifyWebchatToken,
+      verifyAgentChatKey: vi.fn(async () => ({ ok: false, reason: 'not tested' }) as RcVerifyResult),
       authorizeGithubComment: vi.fn(async () => false),
       authorizeGithubRerequest: vi.fn(async () => ({ allowed: false as const })),
       authorizeCodeHostMembership: vi.fn(async () => false)
@@ -839,6 +850,23 @@ describe('RelayConnection FSM', () => {
     expect(transport.lastRep('rc/verify/ok')!.payload).toMatchObject({ ok: true })
   })
 
+  it('rc/verify(agent-chat-key) hands the key, agent and chat id to its verifier', async () => {
+    const verifyAgentChatKey = vi.fn(async () => ({ ok: true, conversationId: '55555555-5555-4555-8555-555555555555' }))
+    const { transport } = build({ verifyAgentChatKey })
+    await toReady(transport)
+    const req = {
+      kind: 'agent-chat-key',
+      credential: 'api-key',
+      agentId: '33333333-3333-4333-8333-333333333333',
+      chatId: 'chat-1'
+    }
+    transport.feed('rc/verify', req)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(verifyAgentChatKey).toHaveBeenCalledWith(req)
+    expect(transport.lastRep('rc/verify/ok')!.payload).toMatchObject({ ok: true })
+  })
+
   it('rc/verify → retryable error (not a link close) when verify throws', async () => {
     const { transport } = build({
       auth: {
@@ -931,6 +959,32 @@ describe('RelayConnection FSM', () => {
     expect(transport.lastRep('error')).toMatchObject({ corr: req.id, payload: { code: 'INTERNAL', retryable: true } })
     expect(transport.lastRep('rc/github-rerequest/ok')).toBeUndefined()
     expect(conn.state).toBe('READY')
+  })
+
+  it('returns the linked author only after durable code-host feedback admission', async () => {
+    const onCodeHostFeedback = vi.fn(async () => ({ accepted: true, authorAgentIds: [WEBCHAT_AGENT_ID] }))
+    const { transport } = build({ onCodeHostFeedback })
+    await toReady(transport, [CODEHOST_FEEDBACK_FEATURE])
+    const signal = {
+      provider: 'gitea',
+      orgId: 'example-org',
+      bindingId: RELAY_ID,
+      host: 'https://gitea.example.test',
+      deliveryKey: 'delivery-feedback',
+      repoId: '123',
+      pullNumber: 12,
+      kind: 'comment',
+      actorId: '7'
+    } as const
+    const request = buildRelayCpFrame('rc/codehost-feedback', signal)
+    transport.feedFrame(request)
+    await vi.waitFor(() =>
+      expect(transport.lastRep('rc/codehost-feedback/ok')).toMatchObject({
+        corr: request.id,
+        payload: { accepted: true, authorAgentIds: [WEBCHAT_AGENT_ID] }
+      })
+    )
+    expect(onCodeHostFeedback).toHaveBeenCalledWith(signal)
   })
 
   it('persists PR feedback and acknowledges the correlated relay request', async () => {
@@ -1181,29 +1235,35 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     const OFFLINE_PEER = '88888888-8888-4888-8888-888888888888'
     const OFFLINE_DAEMON = '99999999-9999-4999-8999-999999999999'
     const HOOK_FEATURES = [...CONTINUATION_FEATURES, WEBCHAT_HOOK_CONTINUATION_FEATURE]
-    const peer = (id: string, agentId: string, over: Record<string, unknown> = {}) => ({
-      id,
-      agentId,
-      daemonId: WEBCHAT_DAEMON_ID,
-      contentSetId: null,
-      visibility: 'org',
-      contentPurgedAt: null,
+    const onPullRequest = { platform: 'hook', channel: 'github:42', thread: '1552' }
+    const peer = (agentId: string, over: Record<string, unknown> = {}) => ({
+      ...targetSession({ agentId, ...onPullRequest }),
+      ...onPullRequest,
       ...over
     })
-    const hookTarget = (over: Parameters<typeof buildWebchatVerifier>[0] = {}) =>
+    // Mint ran the full continuation and agent-visibility gates (#2500); verify only re-checks what can drift.
+    const hookTarget = (
+      peers: Array<{ sessionId: string; privateOwnerIdentity?: string }>,
+      sessions: Record<string, ReturnType<typeof peer>>,
+      over: Parameters<typeof buildWebchatVerifier>[0] = {}
+    ) =>
       buildWebchatVerifier({
-        conversationRow: { targetSessionId: TARGET_SESSION_ID },
-        sessionById: {
-          [TARGET_SESSION_ID]: { ...targetSession({ platform: 'hook' }), channel: 'github:42', thread: '1552' }
+        tokenClaims: {
+          userId: 'user-1',
+          user: 'user@example.test',
+          agentId: WEBCHAT_AGENT_ID,
+          orgId: 'org-1',
+          conversationId: WEBCHAT_CONVERSATION_ID,
+          conversationPeers: peers
         },
+        conversationRow: { targetSessionId: TARGET_SESSION_ID },
+        sessionById: { [TARGET_SESSION_ID]: peer(WEBCHAT_AGENT_ID), ...sessions },
         daemonFeatures: HOOK_FEATURES,
         ...over
       })
 
-    it('adds each continuable peer with its own target, after the primary', async () => {
-      const h = hookTarget({
-        conversationMembers: [peer(TARGET_SESSION_ID, WEBCHAT_AGENT_ID), peer('peer-session', PEER)]
-      })
+    it('adds each peer mint authorized with its own target, after the primary', async () => {
+      const h = hookTarget([{ sessionId: 'peer-session' }], { 'peer-session': peer(PEER) })
       await expect(h.verifier('t')).resolves.toMatchObject({
         ok: true,
         targetSessionId: TARGET_SESSION_ID,
@@ -1214,30 +1274,60 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
       })
     })
 
-    it('leaves out a private, purged, or offline peer', async () => {
-      const h = hookTarget({
-        conversationMembers: [
-          peer('private-session', PEER, { visibility: 'private' }),
-          peer('purged-session', PEER, { contentPurgedAt: new Date() }),
-          peer('offline-session', OFFLINE_PEER)
+    it('leaves out a peer that drifted, moved conversation, lost its owner, or went offline', async () => {
+      const h = hookTarget(
+        [
+          { sessionId: 'purged-session' },
+          { sessionId: 'other-pr-session' },
+          { sessionId: 'private-session', privateOwnerIdentity: 'github:1' },
+          { sessionId: 'offline-session' }
         ],
-        agentById: {
-          [OFFLINE_PEER]: {
-            id: AgentId(OFFLINE_PEER),
-            orgId: 'org-1',
-            placementKind: 'daemon',
-            setId: null,
-            daemonId: OFFLINE_DAEMON
-          }
+        {
+          'purged-session': peer(PEER, { contentPurgedAt: new Date() }),
+          'other-pr-session': peer(PEER, { thread: '1553' }),
+          'private-session': peer(PEER, { visibility: 'private', ownerIdentity: 'github:2' }),
+          'offline-session': peer(OFFLINE_PEER)
         },
-        daemonById: { [OFFLINE_DAEMON]: { state: 'OFFLINE', features: HOOK_FEATURES } }
-      })
+        {
+          agentById: {
+            [OFFLINE_PEER]: {
+              id: AgentId(OFFLINE_PEER),
+              orgId: 'org-1',
+              placementKind: 'daemon',
+              setId: null,
+              daemonId: OFFLINE_DAEMON
+            }
+          },
+          daemonById: { [OFFLINE_DAEMON]: { state: 'OFFLINE', features: HOOK_FEATURES } }
+        }
+      )
       const result = await h.verifier('t')
       expect(result.participants).toEqual([{ agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true }])
     })
 
+    it('keeps a private peer whose owner mint proved', async () => {
+      const h = hookTarget([{ sessionId: 'private-session', privateOwnerIdentity: 'github:1' }], {
+        'private-session': peer(PEER, { visibility: 'private', ownerIdentity: 'github:1' })
+      })
+      const result = await h.verifier('t')
+      expect(result.participants?.map((p) => p.targetSessionId)).toEqual([undefined, 'private-session'])
+    })
+
     it('never expands a chat-origin target, whose mirror would post one line per member', async () => {
-      const h = targeted({}, { conversationMembers: [peer('peer-session', PEER)] })
+      const h = targeted(
+        {},
+        {
+          tokenClaims: {
+            userId: 'user-1',
+            user: 'user@example.test',
+            agentId: WEBCHAT_AGENT_ID,
+            orgId: 'org-1',
+            conversationId: WEBCHAT_CONVERSATION_ID,
+            conversationPeers: [{ sessionId: 'peer-session' }]
+          },
+          sessionById: { [TARGET_SESSION_ID]: targetSession(), 'peer-session': targetSession({ agentId: PEER }) }
+        }
+      )
       const result = await h.verifier('t')
       expect(result.participants).toHaveLength(1)
     })

@@ -1,4 +1,5 @@
 /** §7 desired-events union: exactly what the enabled gitea hooks on a repository need, comments over-subscribed, compared by subset. */
+import { parseGiteaVersion } from './version.js'
 import { describe, expect, it } from 'vitest'
 import { giteaWebhookEventsHash, giteaWebhookEventsMissing, unionGiteaWebhookEvents } from './webhook-events.js'
 
@@ -18,6 +19,18 @@ describe('unionGiteaWebhookEvents', () => {
     expect(unionGiteaWebhookEvents([hook({ enabled: false })], REPO)).toBeNull()
     expect(unionGiteaWebhookEvents([hook({ kind: 'gitlab' })], REPO)).toBeNull()
     expect(unionGiteaWebhookEvents([hook({ repoId: 1n })], REPO)).toBeNull()
+  })
+
+  it('subscribes triggerless reviews at the floor and native CI only on verified Gitea versions', () => {
+    const baseline = ['issue_comment', 'pull_request_comment', 'pull_request_review']
+    for (const version of ['1.23.0', '1.24.0', '15.0.0+gitea-1.22.0']) {
+      expect(unionGiteaWebhookEvents([], REPO, true, parseGiteaVersion(version))).toEqual(baseline)
+    }
+    expect(unionGiteaWebhookEvents([], REPO, true, parseGiteaVersion('1.25.0'))).toEqual([
+      ...baseline,
+      'status',
+      'workflow_run'
+    ])
   })
 
   it('subscribes the issue family with its comment umbrella', () => {

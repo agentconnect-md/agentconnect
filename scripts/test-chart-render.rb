@@ -137,6 +137,10 @@ abort("clone origins must be one comma-separated value, got #{git_origins.inspec
   abort("#{setting} must be refused beside a model-credential Secret") if refused_status.success?
   abort("refusal for #{setting} must say why:\n#{refused}") unless refused.include?(expected)
 end
+# The CP keeps connection and control state per process, so a second replica must be refused.
+_, replicas_refused, replicas_status = Open3.capture3(*command, '--set', 'controlPlane.replicas=2')
+abort('controlPlane.replicas above 1 must be refused') if replicas_status.success?
+abort("refusal for controlPlane.replicas must say why:\n#{replicas_refused}") unless replicas_refused.include?('controlPlane.replicas above 1')
 readiness = container['readinessProbe'] || abort('daemon pool member must have a readiness probe')
 abort('readiness probe must GET /readyz on the readiness port') unless readiness['httpGet'] == { 'path' => '/readyz', 'port' => 8081 }
 abort('readiness probe timings must match #1056') unless readiness.reject { |key, _| key == 'httpGet' } == {
@@ -547,7 +551,7 @@ relay_route = public_documents.find { |doc| doc['kind'] == 'HTTPRoute' && doc.di
 relay_paths = relay_route.dig('spec', 'rules').flat_map { |rule| rule['matches'].to_a }.map { |match| match.dig('path', 'value') }
 # Every HTTP ingress path the relay registry mounts; a path the route omits falls through to
 # the web catch-all (or the gateway 404) and that platform's ingress silently receives nothing.
-%w[/mcp /memory /webchat /webhooks/in /webhooks/github /webhooks/gitlab /webhooks/gitea /slack/events /slack/interactions /feishu/events /linear/events /googlechat/events /ai-sdk/chat].each do |path|
+%w[/mcp /memory /webchat /webhooks/in /webhooks/github /webhooks/gitlab /webhooks/gitea /slack/events /slack/interactions /feishu/events /linear/events /googlechat/events /ai-sdk/agents /ag-ui/agents].each do |path|
   abort("relay route must forward #{path}") unless relay_paths.include?(path)
 end
 

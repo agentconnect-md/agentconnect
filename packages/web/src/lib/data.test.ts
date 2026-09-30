@@ -17,6 +17,7 @@ import {
   modelLabel,
   modelTooltip,
   permissionModeChoicesFor,
+  runtimeCanDream,
   preferredModelFor,
   PLAYGROUND_CHANNEL_FILTER,
   resolvedPermissionMode,
@@ -334,6 +335,22 @@ describe('fastModeAvailableFor', () => {
     expect(fastModeAvailableFor('claude', undefined)).toBe(true)
     expect(fastModeAvailableFor('claude', { id: 'opus' })).toBe(true)
     expect(fastModeAvailableFor('opencode', undefined)).toBe(false)
+  })
+})
+
+describe('runtimeCanDream', () => {
+  const catalog = (modes?: string[]) => ({
+    models: [],
+    ...(modes ? { permissionModes: modes.map((value) => ({ value })) } : {}),
+    source: 'acp' as const,
+    observedAt: '2026-09-28T00:00:00.000Z'
+  })
+  it('needs a read-only or plan mode once the catalog is reported, and assumes it before', () => {
+    expect(runtimeCanDream(undefined)).toBe(true)
+    expect(runtimeCanDream(catalog(['default', 'read-only']))).toBe(true)
+    expect(runtimeCanDream(catalog(['default', 'plan']))).toBe(true)
+    expect(runtimeCanDream(catalog(['default', 'full-access']))).toBe(false)
+    expect(runtimeCanDream(catalog())).toBe(false)
   })
 })
 

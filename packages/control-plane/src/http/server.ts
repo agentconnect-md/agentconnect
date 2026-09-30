@@ -32,6 +32,7 @@ import { keyRoutes } from './routes/keys.js'
 import { agentRoutes } from './routes/agents.js'
 import { agentRepoRoutes } from './routes/agent-repos.js'
 import { webchatTokenRoutes } from './routes/webchat-token.js'
+import { agentApiRoutes } from './routes/agent-api.js'
 import { webchatMcpOperationRoutes } from './routes/webchat-mcp-operations.js'
 import { integrationRoutes } from './routes/integrations.js'
 import { botRoutes } from './routes/bots.js'
@@ -58,6 +59,7 @@ import { agentIconRoutes } from './routes/agent-icon.js'
 import { orgIconRoutes } from './routes/org-icon.js'
 import { iconUploadRoutes } from './routes/icon-upload.js'
 import { memberRoutes } from './routes/members.js'
+import { serviceAccountRoutes } from './routes/service-accounts.js'
 import { orgInviteAcceptRoutes, orgInviteLinkRoutes } from './routes/org-invite-links.js'
 import { meRoutes } from './routes/me.js'
 import { meSocialIdentityRoutes } from './routes/me-social-identities.js'
@@ -252,6 +254,9 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
         message: 'an organization needs at least one owner'
       })
     }
+    if ((err as { code?: string }).code === 'SERVICE_ACCOUNT_NOT_ADDABLE') {
+      return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: (err as Error).message })
+    }
     if ((err as { code?: string }).code === 'RESOURCE_AUDIENCE_EMPTY') {
       return reply.code(409).send({
         error: 'Conflict',
@@ -347,6 +352,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(agentRoutes(deps))
           await scope.register(agentRepoRoutes(deps))
           await scope.register(webchatTokenRoutes(deps))
+          await scope.register(agentApiRoutes(deps))
           await scope.register(webchatMcpOperationRoutes(deps))
           await scope.register(integrationRoutes(deps))
           // Org-scoped platform routes from the registry (§9 `installRoutes('org')`):
@@ -370,6 +376,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(connectorRoutes(deps))
           await scope.register(memoryConnectionRoutes(deps))
           await scope.register(memberRoutes(deps))
+          await scope.register(serviceAccountRoutes(deps))
           await scope.register(orgInviteLinkRoutes(deps))
           await scope.register(cronRoutes(deps))
           await scope.register(hookRoutes(deps))

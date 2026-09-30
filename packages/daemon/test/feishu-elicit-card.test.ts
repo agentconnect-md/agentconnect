@@ -22,6 +22,7 @@ import {
   FEISHU_ELICIT_SURFACE,
   buildFeishuElicitButtons,
   buildFeishuElicitForm,
+  buildFeishuElicitSettled,
   feishuElicitValue,
   feishuUsesForm,
   parseFeishuElicit
@@ -228,6 +229,27 @@ async function raise(h: Harness, req: CreateElicitationRequest): Promise<{ reque
   return { requestId, result }
 }
 
+// #1809: a CardKit `markdown` element honours `[label](url)`, so the agent's question is a `plain_text` div on every card.
+describe('the agent’s question on a Feishu card never becomes a link', () => {
+  const SPOOF = '[Approve in Feishu](https://evil.test/steal)'
+  const question = (card: any) => elements(card)[0]
+
+  it('on the one-tap card, the form card and the settled card', () => {
+    const params = { ...form(BRANCH), message: SPOOF } as CreateElicitationRequest
+    for (const card of [
+      buildFeishuElicitButtons(REQUEST_ID, SPOOF, [{ label: 'main' }]),
+      buildFeishuElicitForm(REQUEST_ID, params, elicitForm(params, FEISHU_ELICIT_SURFACE)!)!,
+      buildFeishuElicitSettled(SPOOF, '✅ main')
+    ]) {
+      expect(elements(card).some((e: any) => e.tag === 'markdown')).toBe(false)
+      expect(question(card)).toEqual({
+        tag: 'div',
+        text: { tag: 'plain_text', content: expect.stringContaining(SPOOF) }
+      })
+    }
+  })
+})
+
 describe('a Feishu turn posts an elicitation card and settles it in place', () => {
   it('answers a lone single-select with one tap, and rewrites the card with the answer', async () => {
     const h = feishuTurn()
@@ -238,7 +260,7 @@ describe('a Feishu turn posts an elicitation card and settles it in place', () =
     await h.daemon.permissions.handleElicitCardTap({ requestId, token: elicitOptionToken(1) })
     await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
     expect(h.edits[0]!.messageId).toBe('om_4242')
-    expect(elements(h.edits[0]!.card)[0].content).toBe('💬 Which branch should I cut from?\n✅ develop')
+    expect(elements(h.edits[0]!.card)[0].text.content).toBe('💬 Which branch should I cut from?\n✅ develop')
     // Nothing is left to press on an answered card.
     expect(elements(h.edits[0]!.card)).toHaveLength(1)
   })
@@ -256,7 +278,7 @@ describe('a Feishu turn posts an elicitation card and settles it in place', () =
       action: 'accept',
       content: { checks: ['lint', 'test'], note: 'ship' }
     })
-    expect(elements(h.edits.at(-1)!.card)[0].content).toContain('Checks: lint, test')
+    expect(elements(h.edits.at(-1)!.card)[0].text.content).toContain('Checks: lint, test')
   })
 
   it('reads a single-select control as the one value it holds, list or not', async () => {
@@ -294,7 +316,7 @@ describe('a Feishu turn posts an elicitation card and settles it in place', () =
     const { requestId, result } = await raise(h, form(CHECKS, ['checks']))
     await h.daemon.permissions.handleElicitCardTap({ requestId, token: null })
     await expect(result).resolves.toEqual({ action: 'decline' })
-    expect(elements(h.edits.at(-1)!.card)[0].content).toContain('Dismissed')
+    expect(elements(h.edits.at(-1)!.card)[0].text.content).toContain('Dismissed')
   })
 
   it('anchors the card into the turn thread when the turn has one', async () => {
@@ -323,6 +345,6 @@ describe('a Feishu turn posts an elicitation card and settles it in place', () =
     const { result } = await raise(h, form(CHECKS, ['checks']))
     await h.daemon.permissions.releaseElicits('agent-1', 's1')
     await expect(result).resolves.toEqual({ action: 'cancel' })
-    expect(elements(h.edits.at(-1)!.card)[0].content).toContain('Cancelled')
+    expect(elements(h.edits.at(-1)!.card)[0].text.content).toContain('Cancelled')
   })
 })

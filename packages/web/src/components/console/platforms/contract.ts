@@ -611,6 +611,18 @@ export interface WebChannelListSemantics {
    * kind-driven `@` markers already lead them.
    */
   RowName?: ComponentType<{ name: string; channelKey?: string; url?: string }>
+  /** The page a conversation opens on the platform, built from ids its row and bot already carry; a row's own reported `url` wins. Absent ⇒ no link. */
+  conversationUrl?(row: ConversationLinkInput): string | undefined
+}
+
+/** What a conversation link is built from: the row's platform ids plus its bot's workspace and cloud. */
+export interface ConversationLinkInput {
+  channelId: string
+  spaceId?: string
+  kind?: 'channel' | 'im' | 'mpim'
+  /** The bot's platform workspace — Slack's "T…" team id. */
+  workspaceId?: string | null
+  feishuRegion?: 'feishu' | 'lark' | null
 }
 
 /** Message keys platform modules may hand back to the channel-list host. The

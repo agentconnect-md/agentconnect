@@ -45,6 +45,7 @@ import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { FakeClock, WireError } from '@agentconnect.md/connection'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
+import { RuntimeSessionFailure } from '../src/acp/session-failure.js'
 
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
 const workspaces = new WorkspaceManager()
@@ -744,6 +745,76 @@ describe('Daemon rd/msg hook fires', () => {
     expect(cp.hookReports[0]).toMatchObject({ status: 'success' })
     expect(cp.hookReports[0]!.reason).toBeUndefined()
     await daemon.stop()
+  })
+
+  it('keeps the original review authority and completion report across an automatic prompt retry', async () => {
+    const clock = new FakeClock()
+    const schedule = vi.spyOn(clock, 'setTimeout')
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory, clock })
+    await daemon.start()
+    const cp = { ...fakeCpClient(), startHook: vi.fn(async () => ({ accepted: true })) }
+    ;(daemon as any).cpClient = cp
+    const authorities: unknown[] = []
+    const reply = host.prompt.getMockImplementation()!
+    host.prompt.mockImplementation(async (sid) => {
+      const active = [...(daemon as any).activeGithubTurnMeta.values()][0]
+      authorities.push(active)
+      if (authorities.length === 1)
+        throw new RuntimeSessionFailure({
+          category: 'service',
+          title: 'Provider temporarily unavailable',
+          actions: ['retry']
+        })
+      return reply(sid)
+    })
+    try {
+      await (daemon as any).handleRelayMsg(
+        fire({
+          event: 'pull_request:opened',
+          configRevision: '1',
+          dispatchRevision: '1',
+          dispatchDaemonId: (daemon as any).cfg.daemonId,
+          reviewPolicy: 'full',
+          reportingMode: 'check',
+          gateMode: 'informational',
+          github: {
+            repoId: '123',
+            repoFullName: 'example-org/example-repo',
+            sourceInstallationId: '456',
+            subjectKind: 'pull_request',
+            pullNumber: 42,
+            headSha: 'a'.repeat(40),
+            baseSha: 'b'.repeat(40),
+            reportSha: 'a'.repeat(40)
+          },
+          context: {
+            source: 'github',
+            event: 'pull_request',
+            action: 'opened',
+            repo: 'example-org/example-repo',
+            number: 42,
+            truncated: false
+          }
+        }),
+        () => {}
+      )
+      await vi.waitFor(() => expect(schedule).toHaveBeenCalledWith(expect.any(Function), 5_000), WAIT)
+      expect(cp.hookReports).toHaveLength(0)
+      clock.advance(5_000)
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(authorities).toHaveLength(2)
+      expect(authorities[0]).toMatchObject({
+        hook: { hookId: HOOK_ID, deliveryKey: 'd-1' },
+        expectedHeadSha: 'a'.repeat(40)
+      })
+      expect(authorities[1]).toBe(authorities[0])
+      expect(host.prompt.mock.calls[1]).toEqual(host.prompt.mock.calls[0])
+      expect(cp.startHook).toHaveBeenCalledOnce()
+      expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'd-1', status: 'success' })
+    } finally {
+      await daemon.stop()
+    }
   })
 
   it.each([
@@ -4435,6 +4506,8 @@ describe('buildHookMessage', () => {
       expect(standing).toContain('Other GitHub tools are for READ-only inspection')
       expect(standing).toContain('structured `submitCodeReview` tool')
       expect(standing).toContain('`Verdict amendment available` block may change that sealed verdict')
+      expect(standing).toContain('If an approval reviewer refuses a `submitCodeReview` call')
+      expect(standing).toContain('re-requesting the review retries it')
       expect(standing).toContain('replyGithubReviewThreads')
       expect(standing).toContain('never infer a finding from another checkout')
       // The per-turn text names THIS delivery and repeats only the ownership clause.
@@ -4442,6 +4515,7 @@ describe('buildHookMessage', () => {
       expect(withThread).toContain('Reply to this GitHub conversation on acme/infra#42')
       expect(withThread).toContain('Formal GitHub review submission is unavailable for this delivery')
       expect(withThread).toContain('The daemon owns the reply; post nothing yourself.')
+      expect(withThread).not.toContain('Requested action:')
       expect(withThread).not.toContain('submitCodeReview')
       expect(withThread).not.toContain('READ-only inspection')
       expect(withThread).not.toContain('# GitHub')
@@ -4782,7 +4856,7 @@ describe('buildHookMessage', () => {
     it('requires a formal verdict for an authorized explicit PR review mention', async () => {
       const text = buildHookText(
         ghFire(
-          { event: 'issue_comment', action: 'created' },
+          { event: 'issue_comment', action: 'created', bodyExcerpt: '@reviewer please review' },
           {
             reviewPolicy: 'full',
             github: {
@@ -4798,6 +4872,10 @@ describe('buildHookMessage', () => {
       )
       expect(text).toContain('opens a review generation for the current PR revision')
       expect(text).toContain('use APPROVE + pass when it passes')
+      // The trusted header states publication is the task before the untrusted body.
+      const requestedAt = text.indexOf('Requested action: review this revision and publish the verdict')
+      expect(requestedAt).toBeGreaterThan(-1)
+      expect(requestedAt).toBeLessThan(text.indexOf(UNTRUSTED_CONTENT_BEGIN))
     })
 
     it.each([
@@ -4846,6 +4924,7 @@ describe('buildHookMessage', () => {
       expect(text).not.toContain('use APPROVE + pass when it passes')
       expect(text).toContain('Formal GitHub review submission is unavailable for this delivery')
       expect(text).not.toContain('submitCodeReview')
+      expect(text).not.toContain('Requested action:')
     })
 
     it('a body quoting the delimiters cannot close the fence (delimiter lines are defanged)', async () => {

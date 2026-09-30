@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
+  AgentApiProtocol,
   CodeHostRoutingFamily,
   CodeHostRoutingProvider,
   DECISION_PREVIEW_V1_FEATURE,
@@ -9,7 +10,12 @@ import {
   DecisionDraft,
   DecisionEvaluation,
   DecisionPreviewRequest,
+  DecisionUsageRules,
+  DecisionUsageTarget,
+  decisionChainIds,
+  gateUsageRules,
   modelSelectionDecisionIds,
+  modelUsageRules,
   supportsDecision,
   type DecisionDefinition
 } from '@agentconnect.md/protocol'
@@ -43,7 +49,7 @@ const DefinitionDto = z.object({
 })
 const IdParam = z.object({ id: z.string().uuid() })
 const UsageDto = z.object({
-  kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool', 'model_selection', 'code_host_routing']),
+  kind: z.enum(['gate', 'shared_bot_routing', 'agent_tool', 'model_selection', 'code_host_routing', 'api_gate']),
   id: z.string(),
   label: z.string(),
   rootDecisionId: z.string().optional(),
@@ -52,7 +58,12 @@ const UsageDto = z.object({
   // kind=code_host_routing: the routed repository scope.
   provider: CodeHostRoutingProvider.optional(),
   repoId: z.string().optional(),
-  family: CodeHostRoutingFamily.optional()
+  family: CodeHostRoutingFamily.optional(),
+  // kind=api_gate: the agent's chat API the gate sits on.
+  protocol: AgentApiProtocol.optional(),
+  // This Decision's step at the place; absent for an agent tool.
+  rules: DecisionUsageRules.shape.rules.optional(),
+  otherwise: DecisionUsageTarget.optional()
 })
 const DecisionInUseDto = ErrorDto.extend({ usages: z.array(UsageDto), hiddenUsageCount: z.number().int() })
 const ReadinessDto = z.object({
@@ -143,7 +154,8 @@ export function decisionRoutes(deps: HttpDeps) {
       label: `#${u.channelName ?? u.channelId} · ${u.agentName}`,
       rootDecisionId: u.rootDecisionId,
       integrationId: u.integrationId,
-      channelId: u.channelId
+      channelId: u.channelId,
+      ...u.rules
     })
     // Shared-bot routers on these Decisions, visible when the caller can see at least one of the bot's agents.
     const routingUsages = async (req: FastifyRequest, decisionIds?: readonly string[]) => {
@@ -156,7 +168,8 @@ export function decisionRoutes(deps: HttpDeps) {
       kind: 'shared_bot_routing' as const,
       id: u.botId,
       label: u.botName,
-      rootDecisionId: u.rootDecisionId
+      rootDecisionId: u.rootDecisionId,
+      ...u.rules
     })
     // Code-host routings on these Decisions, visible when the caller can see one of the scope's members or targets.
     const codeHostUsages = async (req: FastifyRequest, decisionIds?: readonly string[]) => {
@@ -172,7 +185,8 @@ export function decisionRoutes(deps: HttpDeps) {
       rootDecisionId: u.rootDecisionId,
       provider: u.provider,
       repoId: u.repoId.toString(),
-      family: u.family
+      family: u.family,
+      ...u.rules
     })
     // Distinct conversations, counted across sibling rows the same way as the visible set.
     const conversationCount = (usages: readonly DecisionChannelUsage[]) =>
@@ -184,14 +198,31 @@ export function decisionRoutes(deps: HttpDeps) {
           kind: 'model_selection' as const,
           id: agent.id,
           label: agent.displayName ?? agent.name,
-          rootDecisionId: agent.modelSelection!.decisionId
+          rootDecisionId: agent.modelSelection!.decisionId,
+          ...modelUsageRules(agent.modelSelection!, decisionId, {
+            runtime: agent.runtime ?? '',
+            model: agent.model ?? ''
+          })
         })),
         ...(agent.decisionIds ?? []).map((decisionId) => ({
           decisionId,
           kind: 'agent_tool' as const,
           id: agent.id,
           label: agent.displayName ?? agent.name
-        }))
+        })),
+        ...Object.entries(agent.apiGates ?? {}).flatMap(([protocol, gate]) =>
+          gate
+            ? decisionChainIds(gate).map((decisionId) => ({
+                decisionId,
+                kind: 'api_gate' as const,
+                id: agent.id,
+                label: agent.displayName ?? agent.name,
+                rootDecisionId: gate.decisionId,
+                protocol: protocol as AgentApiProtocol,
+                ...gateUsageRules(gate, decisionId)
+              }))
+            : []
+        )
       ])
     const agentUsages = async (req: FastifyRequest) =>
       agentReferences(await deps.repos.agent.list(orgOf(req), ctxOf(req)))
@@ -399,6 +430,14 @@ export function decisionRoutes(deps: HttpDeps) {
           await deps.hookRouting
             .reconcile(scope)
             .catch((err: unknown) => req.log.warn({ err }, 'decision converge: code-host routing reconcile failed'))
+        }
+        // A chat API gate carries the Decision in its agent's spec; an unreachable daemon catches up on reconnect.
+        for (const agentId of result.consumerAgentIds) {
+          const agent = await deps.repos.agent.get(orgOf(req), agentId)
+          if (agent)
+            await deps.agentDelivery.upsert(agent, (err) =>
+              req.log.warn({ err, agentId }, 'decision converge: API gate agent upsert failed')
+            )
         }
         return dto(result.decision, req)
       }

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { FakeClock } from './cp/fake-clock.js'
+import { RuntimeSessionFailure } from '../src/acp/session-failure.js'
 
 /**
  * Live-turn auth signal (issue: claude-agent-acp initializes, opens sessions,
@@ -186,6 +188,171 @@ describe('live-turn runtime auth signal', () => {
       // The successful turn still completes and clears the mark.
       await (daemon as any).dispatch('bot-a', dm('200', 'q2'), 'int-a')
       expect((daemon as any).runtimeFacts.profileFor('claude').authRequired).toBeUndefined()
+    } finally {
+      await daemon.stop()
+    }
+  })
+})
+
+describe('runtime prompt recovery', () => {
+  const contended = () =>
+    Object.assign(
+      new Error(
+        'Internal error: Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again'
+      ),
+      { code: -32603 }
+    )
+
+  async function start(prompt: (sessionId: string) => Promise<{ stopReason: string }>) {
+    const clock = new FakeClock()
+    let sessions = 0
+    let emitUpdate!: (sessionId: string, update: unknown) => void
+    const fakeHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => `acp-${++sessions}`),
+      prompt: vi.fn(prompt),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      clock,
+      hostFactory: (_agent, onUpdate) => {
+        emitUpdate = onUpdate
+        return fakeHost as any
+      }
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    return { daemon, clock, fakeHost, emitUpdate: (sid: string, update: unknown) => emitUpdate(sid, update) }
+  }
+
+  // The daemon arms its own 60 s timers too, so wait for the retry's timer on top of those.
+  async function advanceWhenArmed(clock: FakeClock, ms: number, before: number): Promise<void> {
+    await vi.waitFor(() => expect(clock.pending().filter((t) => t === ms).length).toBeGreaterThan(before))
+    clock.advance(ms)
+  }
+
+  const armed = (clock: FakeClock) => clock.pending().filter((t) => t === 60_000).length
+
+  const recoverable = () =>
+    new RuntimeSessionFailure({ category: 'service', title: 'Provider temporarily unavailable', actions: ['retry'] })
+
+  it('reports failure after one automatic retry is exhausted', async () => {
+    const { daemon, clock, fakeHost } = await start(async () => {
+      throw recoverable()
+    })
+    try {
+      const before = clock.pending().filter((t) => t === 5_000).length
+      const turn = (daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')
+      const settled = expect(turn).rejects.toThrow('Provider temporarily unavailable')
+      await advanceWhenArmed(clock, 5_000, before)
+      await settled
+      expect(fakeHost.prompt).toHaveBeenCalledTimes(2)
+      expect(fakeHost.prompt.mock.calls[1]).toEqual(fakeHost.prompt.mock.calls[0])
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it.each(['tool', 'tool_update', 'answer', 'request'] as const)(
+    'does not retry after %s makes replay inappropriate',
+    async (boundary) => {
+      const { daemon, fakeHost, emitUpdate } = await start(async (sid) => {
+        if (boundary === 'tool' || boundary === 'tool_update')
+          emitUpdate(sid, {
+            sessionUpdate: boundary === 'tool' ? 'tool_call' : 'tool_call_update',
+            toolCallId: 't1',
+            title: 'Write file',
+            kind: 'edit',
+            status: 'completed'
+          })
+        if (boundary === 'answer')
+          emitUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Partial answer' } })
+        throw boundary === 'request'
+          ? new RuntimeSessionFailure({ category: 'request', title: 'Invalid model', actions: [] })
+          : recoverable()
+      })
+      try {
+        await expect((daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')).rejects.toBeInstanceOf(
+          RuntimeSessionFailure
+        )
+        expect(fakeHost.prompt).toHaveBeenCalledOnce()
+      } finally {
+        await daemon.stop()
+      }
+    }
+  )
+
+  it('does not restart a turn cancelled during retry backoff', async () => {
+    const { daemon, clock, fakeHost } = await start(async () => {
+      throw recoverable()
+    })
+    try {
+      const before = clock.pending().filter((t) => t === 5_000).length
+      const turn = (daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')
+      await vi.waitFor(() => expect(clock.pending().filter((t) => t === 5_000).length).toBeGreaterThan(before))
+      const pending = [...(daemon as any).pending.values()][0] as any
+      await (daemon as any).interruptTurn('bot-a', pending.plan.sessionKey, 'cancel', pending.acpSessionId)
+      clock.advance(5_000)
+      await turn
+      expect(fakeHost.prompt).toHaveBeenCalledOnce()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('resends the prompt once after a minute when nothing ran yet', async () => {
+    const outcomes = [contended, () => ({ stopReason: 'end_turn' })]
+    const { daemon, clock, fakeHost } = await start(async () => {
+      const next = outcomes.shift()!()
+      if (next instanceof Error) throw next
+      return next
+    })
+    try {
+      const before = armed(clock)
+      const turn = (daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')
+      await advanceWhenArmed(clock, 60_000, before)
+      await turn
+      expect(fakeHost.prompt).toHaveBeenCalledTimes(2)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('surfaces the failure when the retry is contended again', async () => {
+    const { daemon, clock, fakeHost } = await start(async () => {
+      throw contended()
+    })
+    try {
+      const before = armed(clock)
+      const turn = (daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')
+      const settled = expect(turn).rejects.toThrow(/another Claude Code process/)
+      await advanceWhenArmed(clock, 60_000, before)
+      await settled
+      expect(fakeHost.prompt).toHaveBeenCalledTimes(2)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('does not resend a prompt whose tool call is still queued behind slower updates', async () => {
+    const ref: { daemon?: any } = {}
+    const { daemon, fakeHost } = await start(async (sessionId) => {
+      const turn = [...ref.daemon.pending.values()].find((p: any) => p.acpSessionId === sessionId)
+      const queued = new Promise((resolve) => setTimeout(resolve, 20)).then(() => {
+        turn.promptRanTool = true
+      })
+      ref.daemon.acpUpdateChains.set(`${turn.hostKey}\u001f${sessionId}`, queued)
+      throw contended()
+    })
+    ref.daemon = daemon
+    try {
+      await expect((daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')).rejects.toThrow(
+        /another Claude Code process/
+      )
+      expect(fakeHost.prompt).toHaveBeenCalledTimes(1)
     } finally {
       await daemon.stop()
     }

@@ -1,6 +1,7 @@
 // Google Chat's public callback route (google-chat-integration.md §4): the HTTP answer IS the admission verdict.
 import type { FastifyInstance } from 'fastify'
 import { GOOGLE_CHAT_EVENTS_PATH, GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
+import { googleChatEventObjectOf } from '@agentconnect.md/message'
 import { GOOGLE_CHAT_BODY_LIMIT } from './http-ingest.js'
 import type { HandledDelivery, RelayIngressRouteDeps } from '../contract.js'
 
@@ -26,7 +27,7 @@ function settleWithin(work: Promise<HandledDelivery | undefined>, deadlineMs: nu
   })
 }
 
-// A JSON object with a string `type` is the least an interaction event can be; anything else is not Google's.
+// An add-on `EventObject` with its `chat` object is the least a delivery can be (§11.3).
 function parseEventBody(rawBody: Buffer): Record<string, unknown> | undefined {
   let body: unknown
   try {
@@ -34,8 +35,7 @@ function parseEventBody(rawBody: Buffer): Record<string, unknown> | undefined {
   } catch {
     return undefined
   }
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) return undefined
-  return typeof (body as { type?: unknown }).type === 'string' ? (body as Record<string, unknown>) : undefined
+  return googleChatEventObjectOf(body) as Record<string, unknown> | undefined
 }
 
 /** Mount the route; `deadlineMs` is the admission deadline, overridden only by tests that exercise its expiry. */
@@ -69,7 +69,7 @@ export function registerGoogleChatHttpIngress(
       if (!outcome.handled) return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 })
       if (outcome.handled.admission?.disposition === 'retry')
         return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503 })
-      // An unclaimed tenant's welcome card or claim prompt (§10.4) rides the 200 body; every other answer is empty.
+      // An unclaimed tenant's welcome card or authorization prompt (§10.4) rides the 200 body; every other answer is empty.
       return reply.code(200).send(outcome.handled.syncResponse ?? {})
     })
   })

@@ -2161,6 +2161,8 @@ export const GiteaConnectionDto = z.object({
   /** What the instance last reported through this connection; null until first contact. */
   instanceVersion: z.string().nullable(),
   instanceVersionSupported: z.boolean().nullable(),
+  /** The product that version names (§3), so the console draws its mark; `gitea` until first contact. */
+  instanceProduct: z.enum(['gitea', 'forgejo']),
   /** The `MAJOR.MINOR` floor this deployment enforces, so the console names it. */
   instanceVersionFloor: z.string(),
   /** The token scopes the connect step verifies (§4.1); the console shows them beside the input. */
@@ -2549,31 +2551,40 @@ export const MintedUserKeyDto = z.object({
   ...ApiKeyPermissionFields
 })
 
+const KeyMintFields = {
+  name: z.string().trim().min(1).max(120).optional(),
+  // Bounded fixed lifetime, or `null` for a non-expiring key. The UI defaults to 90.
+  expiresInDays: z.number().int().min(1).max(365).nullable().default(90),
+  permission: ApiKeyPermissionDto.default('full'),
+  // Required for an agent-level permission (`all`, or agent ids in the key's org); rejected for `full` and `read`, which cover every agent.
+  agents: z.union([z.literal('all'), z.array(z.string().uuid()).min(1).max(200)]).optional()
+}
+
+function refineKeySelection(body: { permission: string; agents?: unknown }, ctx: z.RefinementCtx): void {
+  const agentLevel = body.permission === 'agent:chat'
+  if (agentLevel && body.agents === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['agents'],
+      message: `agents is required for the ${body.permission} permission`
+    })
+  }
+  if (!agentLevel && body.agents !== undefined) {
+    ctx.addIssue({ code: 'custom', path: ['agents'], message: `agents applies only to an agent-level permission` })
+  }
+}
+
 /** `POST /me/keys` body — mint a personal key in ONE of the caller's orgs. The
  *  key then acts as the caller, with their role, in that org. */
 export const CreateUserKeyBody = z
   .object({
     orgId: z.string().min(1), // must be an org the caller is a member of (verified in the route)
-    name: z.string().trim().min(1).max(120).optional(),
-    // Bounded fixed lifetime, or `null` for a non-expiring key. The UI defaults to 90.
-    expiresInDays: z.number().int().min(1).max(365).nullable().default(90),
-    permission: ApiKeyPermissionDto.default('full'),
-    // Required for an agent-level permission (`all`, or agent ids in the key's org); rejected for `full` and `read`, which cover every agent.
-    agents: z.union([z.literal('all'), z.array(z.string().uuid()).min(1).max(200)]).optional()
+    ...KeyMintFields
   })
-  .superRefine((body, ctx) => {
-    const agentLevel = body.permission === 'agent:chat'
-    if (agentLevel && body.agents === undefined) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['agents'],
-        message: `agents is required for the ${body.permission} permission`
-      })
-    }
-    if (!agentLevel && body.agents !== undefined) {
-      ctx.addIssue({ code: 'custom', path: ['agents'], message: `agents applies only to an agent-level permission` })
-    }
-  })
+  .superRefine(refineKeySelection)
+
+/** `POST /service-accounts/:id/keys` body — the `/me/keys` mint without `orgId`, which the path fixes. */
+export const CreateServiceAccountKeyBody = z.object(KeyMintFields).superRefine(refineKeySelection)
 
 /** `PATCH /me/keys/:id` body — settings only, never the secret; `name: null` clears; the route judges `agents` against the permission after the edit. */
 export const UpdateUserKeyBody = z
@@ -2623,6 +2634,42 @@ export const MemberRemovalPreviewDto = z.object({
 export const UpdateMemberBody = z.object({
   role: MemberRole
 })
+
+/** A service account is never an owner (daemon-api-key-auth.md §6). */
+export const ServiceAccountRole = z.enum(['collaborator', 'viewer'])
+
+/** One service account; `name` is fixed because it is part of `email`. */
+export const ServiceAccountDto = z.object({
+  userId: z.string(),
+  name: z.string(),
+  email: z.string(),
+  displayName: z.string(),
+  role: ServiceAccountRole,
+  createdAt: z.string() // ISO-8601
+})
+export const ServiceAccountListDto = z.array(ServiceAccountDto)
+
+/** `POST /service-accounts` — `name` becomes the fixed address `<name>-<6 random>@sa.agentconnect.md`. */
+export const CreateServiceAccountBody = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(23)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'lowercase letters, digits, and single hyphens'),
+  role: ServiceAccountRole.default('collaborator')
+})
+
+/** `PATCH /service-accounts/:id` — the display name and role; the name is fixed. */
+export const UpdateServiceAccountBody = z
+  .object({
+    displayName: z.string().trim().min(1).max(120).optional(),
+    role: ServiceAccountRole.optional()
+  })
+  .refine((body) => Object.values(body).some((v) => v !== undefined), { message: 'nothing to change' })
+
+/** `…/service-accounts/:id/keys/:keyId` path params. */
+export const ServiceAccountKeyParam = z.object({ id: z.string(), keyId: z.string() })
 
 /** `POST /members` — add a member directly by email (owner-only; no email sent).
  *  An unknown address becomes an invited user row, claimed on first SSO sign-in. */

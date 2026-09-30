@@ -23,6 +23,7 @@ import { useConsoleData } from '@/lib/data-context'
 import type { WebBotSettingsFragments } from '../contract'
 import { linearApi } from './api'
 import { useLinearConnect } from './connect'
+import { Scrim } from '@/components/console/Scrim'
 
 interface LinearCardState {
   /** The workspace whose reconnect round trip is open, if any. */
@@ -238,11 +239,11 @@ function LinearCardNotice({ bot }: { bot: BotDto }) {
         </div>
       )}
       {disconnecting && (
-        <div className="scrim" onClick={() => card.askDisconnect(null)}>
+        <Scrim onEscape={() => card.askDisconnect(null)} onClick={() => card.askDisconnect(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <DisconnectWorkspaceModal bot={bot} onClose={() => card.askDisconnect(null)} />
           </div>
-        </div>
+        </Scrim>
       )}
     </>
   )

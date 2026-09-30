@@ -1,7 +1,9 @@
 import {
   matchDecisionCondition,
+  type ApiGateTryState,
   type DecisionCondition,
   type DecisionEvaluation,
+  type DecisionEvaluationAgent,
   type DecisionPreviewSample,
   type DecisionQuestion
 } from '@agentconnect.md/protocol'
@@ -12,7 +14,7 @@ export const PREVIEW_SENDER = 'preview-user'
 /** A Gate Try sample in the live state shape the daemon builds (decisions.md §8.2), with synthetic ids. */
 export function gateSampleState(
   sample: DecisionPreviewSample,
-  target: { agentId: string; conversationName?: string }
+  target: { agentId: string; conversationName?: string; agent?: DecisionEvaluationAgent }
 ): Record<string, unknown> {
   const history = sample.history.map((entry, index) => ({
     id: `preview-${index + 1}`,
@@ -21,6 +23,7 @@ export function gateSampleState(
     threadId: null
   }))
   return {
+    ...(target.agent ? { agent: target.agent } : {}),
     currentMessage: {
       id: `preview-${history.length + 1}`,
       sender: { id: sample.currentMessage.sender ?? PREVIEW_SENDER },
@@ -64,4 +67,17 @@ export function gatePreviewOutcome(
       evaluation: { status: 'unavailable', reason: 'invalid_response' }
     }
   }
+}
+
+const API_GATE_TEXT_MAX_BYTES = 8 * 1024
+
+/** An API gate Try in the state the daemon's API gate builds: the call's text, cut to 8 KiB, and no history. */
+export function apiGateSampleState(sample: ApiGateTryState, agent: DecisionEvaluationAgent): Record<string, unknown> {
+  const text = sample.currentMessage.text
+  const bytes = new TextEncoder().encode(text)
+  const content =
+    bytes.length <= API_GATE_TEXT_MAX_BYTES
+      ? text
+      : new TextDecoder().decode(bytes.subarray(0, API_GATE_TEXT_MAX_BYTES)).replace(/\uFFFD$/, '')
+  return { source: 'chat', agent, currentMessage: { text: content }, history: [], truncated: content !== text }
 }

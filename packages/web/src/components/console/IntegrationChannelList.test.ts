@@ -11,7 +11,8 @@ import {
   rowLabel,
   rowLabelParts,
   rowMenuAction,
-  rowName
+  rowName,
+  rowUrl
 } from './IntegrationChannelList'
 import type { IntegrationChannelRow, IntegrationRow } from '@/lib/data'
 
@@ -431,6 +432,62 @@ describe('rowName', () => {
   it('never renames a direct row — its label is a person, with no handle and no page', () => {
     expect(rowName('im', 'linear')).toBeUndefined()
     expect(rowName('mpim', 'linear')).toBeUndefined()
+  })
+})
+
+describe('rowUrl', () => {
+  const row = (over: Partial<IntegrationChannelRow>): IntegrationChannelRow => ({
+    channelId: 'C0EXAMPLE',
+    name: 'general',
+    trigger: 'mention',
+    ...over
+  })
+
+  it('opens a Slack conversation of any kind under the bot workspace, and nowhere without one', () => {
+    const bot = { workspaceId: 'T0EXAMPLE' }
+    expect(rowUrl(row({}), 'slack', bot)).toBe('https://app.slack.com/client/T0EXAMPLE/C0EXAMPLE')
+    expect(rowUrl(row({ channelId: 'D0EXAMPLE', kind: 'im' }), 'slack', bot)).toBe(
+      'https://app.slack.com/client/T0EXAMPLE/D0EXAMPLE'
+    )
+    expect(rowUrl(row({}), 'slack', undefined)).toBeUndefined()
+  })
+
+  it('opens a Discord channel under its server and a DM under @me', () => {
+    const channel = row({ channelId: '200000000000000002', spaceId: '100000000000000001' })
+    expect(rowUrl(channel, 'discord', undefined)).toBe(
+      'https://discord.com/channels/100000000000000001/200000000000000002'
+    )
+    expect(rowUrl(row({ channelId: '300000000000000003', kind: 'im' }), 'discord', undefined)).toBe(
+      'https://discord.com/channels/@me/300000000000000003'
+    )
+    // A channel whose server has not resolved yet has no page to open.
+    expect(rowUrl(row({ channelId: '200000000000000002' }), 'discord', undefined)).toBeUndefined()
+  })
+
+  it('opens a Google Chat space by room and a DM by dm', () => {
+    expect(rowUrl(row({ channelId: 'spaces/AAAAexample' }), 'googlechat', undefined)).toBe(
+      'https://chat.google.com/room/AAAAexample'
+    )
+    expect(rowUrl(row({ channelId: 'spaces/BBBBexample', kind: 'im' }), 'googlechat', undefined)).toBe(
+      'https://chat.google.com/dm/BBBBexample'
+    )
+  })
+
+  it('opens a Lark group on the bot cloud, Feishu when the bot predates the region axis', () => {
+    const group = row({ channelId: 'oc_example' })
+    expect(rowUrl(group, 'feishu', { feishuRegion: 'lark' })).toBe(
+      'https://applink.larksuite.com/client/chat/open?openChatId=oc_example'
+    )
+    expect(rowUrl(group, 'feishu', { feishuRegion: null })).toBe(
+      'https://applink.feishu.cn/client/chat/open?openChatId=oc_example'
+    )
+    expect(rowUrl(row({ channelId: 'oc_example', kind: 'im' }), 'feishu', undefined)).toBeUndefined()
+  })
+
+  it('prefers the page the daemon reported, and links nothing on a platform without pages', () => {
+    const team = row({ channelId: 'team-1', url: 'https://linear.example.test/acme/team/ENG' })
+    expect(rowUrl(team, 'linear', undefined)).toBe('https://linear.example.test/acme/team/ENG')
+    expect(rowUrl(row({ channelId: '-100123' }), 'telegram', undefined)).toBeUndefined()
   })
 })
 

@@ -370,6 +370,7 @@ export class CpClient {
       decisionEvaluator: deps.decisionEvaluator,
       decisionEvaluations: deps.decisionEvaluations,
       decisionModelEvaluations: deps.decisionModelEvaluations,
+      decisionApiGateEvaluations: deps.decisionApiGateEvaluations,
       localSkillsReader: deps.localSkillsReader,
       runtimeCommandsReader: deps.runtimeCommandsReader,
       gitMessagePasses: new GitMessagePasses(),

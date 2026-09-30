@@ -7,9 +7,10 @@
 // `overflow-hidden`, which cut an in-row menu after its first option, and the flyout also
 // flips above the trigger near the bottom of the viewport instead of running off it.
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
+import { useHoverCard } from '@/components/ui/HoverCard'
 import { AgentIconView } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { DecisionChip } from './decisions/DecisionChip'
@@ -30,6 +31,8 @@ export interface DispatchRouting {
   name: string | null
   active: boolean
   canStop: boolean
+  /** The routed Decision's card: its rules, shown on hover while routing owns the row. */
+  hover?: ReactNode
   onOpen: () => void
   /** Leave routing for plain dispatch, handing the row to `agentId` when one was picked. */
   onStop: (agentId?: string) => void
@@ -43,11 +46,13 @@ const MENU_ROW_HEIGHT = 34
 export function RoutingEntry({
   name,
   canStop,
+  hover,
   onOpen,
   onStop
 }: {
   name: string | null
   canStop: boolean
+  hover?: ReactNode
   onOpen: () => void
   onStop: () => void
 }) {
@@ -57,8 +62,9 @@ export function RoutingEntry({
     <DecisionChip
       name={name}
       fill
-      label={name === null ? t('add') : undefined}
-      title={name === null ? t('addTitle') : t('editRouting')}
+      label={name === null ? t('add') : `${t('editRouting')}: ${name}`}
+      title={name === null ? t('addTitle') : hover ? undefined : t('editRouting')}
+      hover={name === null ? undefined : hover}
       onOpen={onOpen}
       remove={canStop && myRole !== 'viewer' ? { label: t('stop'), onClick: onStop } : undefined}
     />
@@ -82,8 +88,10 @@ export function DefaultDispatchPicker({
   const t = useTranslations('Common.defaultDispatch')
   const tDispatch = useTranslations('Integrations.channelList.dispatch')
   const [saving, setSaving] = useState(false)
+  const card = useHoverCard({ interactive: true })
   const active = options.find((o) => o.id === activeId) ?? options[0]
   const routed = routing?.active === true
+  const routedHover = routed ? routing?.hover : undefined
   const routingName = routing?.name ?? tDispatch('routingFallback')
   const pick = (id: string) => {
     if (disabled || saving) return
@@ -105,14 +113,21 @@ export function DefaultDispatchPicker({
         trigger={({ open, menuId, toggle }) => (
           <button
             type="button"
-            onClick={() => !disabled && toggle()}
+            {...(routedHover ? card.triggerProps : {})}
+            onClick={() => {
+              card.hide()
+              if (!disabled) toggle()
+            }}
             aria-haspopup="menu"
             aria-expanded={open}
             aria-controls={open ? menuId : undefined}
+            aria-label={routed ? tDispatch('routedButton', { name: routingName }) : undefined}
             title={
-              routed
-                ? tDispatch('routedButton', { name: routingName })
-                : t('title', { name: active?.name ?? t('none') })
+              routedHover
+                ? undefined
+                : routed
+                  ? tDispatch('routedButton', { name: routingName })
+                  : t('title', { name: active?.name ?? t('none') })
             }
             className={`flex items-center gap-2 rounded-[7px] border-0 bg-transparent px-[5px] py-1 hover:bg-(--surface-hover) ${
               disabled ? 'cursor-default' : 'cursor-pointer'
@@ -172,6 +187,7 @@ export function DefaultDispatchPicker({
                   <RoutingEntry
                     name={routed ? routingName : null}
                     canStop={routing.canStop}
+                    hover={routing.hover}
                     onOpen={() => {
                       close()
                       routing.onOpen()
@@ -187,6 +203,7 @@ export function DefaultDispatchPicker({
           </>
         )}
       </AnchoredFlyout>
+      {routedHover && card.card(routedHover)}
     </span>
   )
 }

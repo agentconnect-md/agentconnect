@@ -21,14 +21,14 @@ the picture it draws.
 
 ### Core architecture
 
-- [architecture.md](designs/architecture.md) — The anchor: bridging messaging platforms to agent execution, the CP-off-the-hot-path invariant, and the deployment shapes.
+- [architecture.md](designs/architecture.md) — The anchor: bridging messaging platforms to agent execution, the daemon/relay data-plane boundary, and the deployment shapes.
 - [system-detailed-design.md](designs/system-detailed-design.md) — Components, technology choices, and the interfaces between them.
 - [daemon-detailed-design.md](designs/daemon-detailed-design.md) — The daemon: CLI, configuration, lifecycle, platform integration, CP interaction.
 - [control-plane-implementation.md](designs/control-plane-implementation.md) — The Control Plane: composition root, persistence, and the HTTP/WS edges.
 - [cli-daemon-split.md](designs/cli-daemon-split.md) — Why `agentconnect` and `agentconnect-daemon` are separate bins, and the contract between them.
 - [daemon-cp-ws-protocol.md](designs/daemon-cp-ws-protocol.md) — The daemon ↔ CP WebSocket wire specification.
 - [api-versioning.md](designs/api-versioning.md) — The REST `/api/v1` versioning policy.
-- [high-availability.md](designs/high-availability.md) — HA design principles and the graceful-degradation contract.
+- [high-availability.md](designs/high-availability.md) — The availability contract and proposed active-active CP replication for uninterrupted business traffic during CP-only upgrades.
 
 ### Chat platforms and ingress
 
@@ -60,6 +60,7 @@ the picture it draws.
 
 - [webhook-triggers-and-github-events.md](designs/webhook-triggers-and-github-events.md) — General webhook triggers: mapping one inbound delivery to one agent turn.
 - [github-app-git-credentials.md](designs/github-app-git-credentials.md) — GitHub App repository selection and credential-free git on daemons.
+- [codehost-pr-feedback.md](designs/codehost-pr-feedback.md) — Continuing the author session after GitHub, GitLab or Gitea review and CI feedback.
 - [github-pr-review-checks.md](designs/github-pr-review-checks.md) — Formal GitHub PR reviews and durable informational Checks.
 - [gitlab-com-integration.md](designs/gitlab-com-integration.md) — The GitLab integration end to end.
 - [gitea-integration.md](designs/gitea-integration.md) — The Gitea integration: one bot token per organization over the GitLab skeleton.

@@ -13,6 +13,7 @@ import {
   ChannelDecisionBinding,
   decisionChainIds,
   DecisionBundleDefinition,
+  gateUsageRules,
   type Platform,
   type FeishuRegion
 } from '@agentconnect.md/protocol'
@@ -1281,7 +1282,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
           agentId: AgentId(r.integration.agentId),
           botId: BotId(r.integration.botId),
           channelId: r.channelId,
-          channelName: r.name
+          channelName: r.name,
+          rules: gate?.type === 'gate' ? gateUsageRules(gate, id) : null
         }))
     })
   }

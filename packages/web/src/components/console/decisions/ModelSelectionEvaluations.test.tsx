@@ -71,3 +71,42 @@ it('lists recent selections and opens one in place', async () => {
   expect(document.body.querySelector('h3')?.textContent).toBe('PR #42: Fix the parser')
   expect(document.body.querySelector('li')).toBeNull()
 })
+
+it('shows the frozen instructions of the step selected in the chain', async () => {
+  const root = { type: 'boolean' as const, instructions: 'Is it complex?', criteria: { true: 'Yes', false: 'No' } }
+  const child = { type: 'boolean' as const, instructions: 'Is it urgent?', criteria: { true: 'Yes', false: 'No' } }
+  const answer = { type: 'boolean' as const, value: true, probability: 0.9 }
+  const usage = { inputTokens: 1, outputTokens: 1 }
+  api.fetchAgentModelEvaluations.mockResolvedValue({ items: [{ ...record, detailsExpired: false }], nextCursor: null })
+  api.fetchAgentModelEvaluation.mockResolvedValue({
+    ...record,
+    detailsExpired: false,
+    selection: null,
+    question: root,
+    input: null,
+    fullAnswer: answer,
+    chain: [
+      {
+        stepId: '',
+        decisionId: record.decisionId,
+        evaluation: { status: 'answered', answer, model: 'model-small', usage }
+      },
+      { stepId: 'urgent', decisionId: 'child', evaluation: { status: 'answered', answer, model: 'model-child', usage } }
+    ],
+    steps: [
+      { stepId: '', decisionId: record.decisionId, providerId: 'typesafe', model: 'model-small', question: root },
+      { stepId: 'urgent', decisionId: 'child', providerId: 'typesafe', model: 'model-child', question: child }
+    ],
+    rawRequest: null,
+    rawResponse: null
+  })
+  await render(true)
+  await act(async () => document.body.querySelector<HTMLButtonElement>('li button')!.click())
+  await act(async () => {})
+  expect(document.body.textContent).toContain('Is it complex?')
+  const steps = [...document.body.querySelectorAll<HTMLButtonElement>('ol[aria-label] button')]
+  await act(async () => steps[1]!.click())
+  expect(document.body.textContent).toContain('Is it urgent?')
+  expect(document.body.textContent).toContain('typesafe / model-child')
+  expect(document.body.textContent).not.toContain('Is it complex?')
+})

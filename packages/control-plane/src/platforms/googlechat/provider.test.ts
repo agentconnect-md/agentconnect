@@ -482,6 +482,15 @@ describe('wire projections', () => {
     })
   })
 
+  it('names the relay’s events URL for its card buttons when the relay pool has a public origin (§11.5)', async () => {
+    const served = createGoogleChatCpProvider({ publicRelayUrl: 'https://relay.example.test' })
+    const config = await served.projectIntegrationConfig(integration(), bot(), CORE, secrets)
+    expect(IntegrationGoogleChatConfig.parse(config)).toMatchObject({
+      eventsUrl: 'https://relay.example.test/googlechat/events'
+    })
+    expect(await provider.projectIntegrationConfig(integration(), bot(), CORE, secrets)).not.toHaveProperty('eventsUrl')
+  })
+
   it('withholds the integration from a row that lacks its app identity', async () => {
     expect(
       await provider.projectIntegrationConfig(integration(), bot({ externalAppId: null }), CORE, secrets)

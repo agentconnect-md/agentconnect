@@ -22,6 +22,7 @@ import type {
   ExternalMemoryConnectionRepo,
   WebchatConversationRepo,
   LaunchRepo,
+  UserRepo,
   OrganizationKnowledgeRepo,
   BotRepo,
   GithubInstallationRepo,
@@ -60,7 +61,8 @@ import type { AgentId, BotId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
 import type { SlackSessionAccessService } from '../http/slack-session-access.js'
 import type { SessionAccessWarmer } from '../http/session-access-warmer.js'
-import type { SessionPullRequestFeedbackService } from '../github/session-pull-request-feedback.service.js'
+import type { SessionPullRequestFeedbackService } from '../codehost/session-pull-request-feedback.service.js'
+import type { CodeHostFeedbackService } from '../codehost/feedback.service.js'
 
 /** The two CP facts an `integration/revoked` report needs beyond the repositories. */
 export interface SocketBotRevocation {
@@ -102,6 +104,8 @@ export interface DaemonWsDeps {
   webchatRemoteMcp?: Pick<WebchatRemoteMcpService, 'issue' | 'accept' | 'revoke'>
   /** Resolves Web API launch provenance for the same classification (§4.4). */
   launch?: LaunchRepo
+  /** Tells a service-account owner apart for the same classification; absent ⇒ every owner reads as a person. */
+  user?: Pick<UserRepo, 'isServiceAccount'>
   /** Pushes the CP-confirmed capture gate to the owning daemon (§5.1); absent ⇒
    *  daemons converge on their next register snapshot instead. */
   visibilityPush?: SessionVisibilityPushService
@@ -111,6 +115,7 @@ export interface DaemonWsDeps {
   httpBotDaemonOffline?: (daemonId: string) => Promise<void>
   /** Persists exact-session PR capture obligations and drains durable PR feedback after daemon readiness. */
   pullRequestFeedback?: Pick<SessionPullRequestFeedbackService, 'trackSession' | 'kick'>
+  codeHostFeedback?: Pick<CodeHostFeedbackService, 'outputPublished'>
   /** Publishes persisted session milestones to the WebUI SSE feed. */
   events: SessionEventSink
   /** Ownership check for the `integration/channels` EVT (integration → daemon scope). */

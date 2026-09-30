@@ -26,6 +26,7 @@ import {
   GITLAB_DEFAULT_INSTANCE_URL,
   GITLAB_PROJECT_STATE,
   gitlabProfileUrl,
+  gitlabProjectUrl,
   gitlabStateReasonText,
   gitlabWebhookBadge
 } from '@/lib/gitlab-projects'
@@ -43,6 +44,7 @@ import {
   type GitlabOrgAccountDto,
   type GitlabProjectBindingDto
 } from '@/lib/api'
+import { Scrim } from '@/components/console/Scrim'
 
 /** Machine-readable CP refusals the card says better itself (all takeover, today). */
 const REFUSAL: Record<string, string> = {
@@ -100,6 +102,7 @@ function orphanBindings(
  *  holds is removed where it is used, not from under the bot. */
 function ProjectRow({
   binding,
+  instanceUrl,
   canWrite,
   busy,
   stuck,
@@ -109,6 +112,7 @@ function ProjectRow({
   onTransfer
 }: {
   binding: GitlabProjectBindingDto
+  instanceUrl: string
   canWrite: boolean
   busy: boolean
   stuck: boolean
@@ -127,7 +131,15 @@ function ProjectRow({
     <div className="row grid-cols-[minmax(0,1fr)_auto] items-center gap-[11px]" data-gitlab-project={binding.id}>
       <div className="min-w-0">
         <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
-          <span className="mono min-w-0 truncate text-[12.5px]">{binding.projectPath}</span>
+          <a
+            href={gitlabProjectUrl(instanceUrl, binding.projectPath)}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t('openProject', { project: binding.projectPath })}
+            className="mono min-w-0 truncate text-[12.5px] no-underline hover:underline"
+          >
+            {binding.projectPath}
+          </a>
           <span className={`badge ${GITLAB_PROJECT_STATE[binding.state].badge}`}>
             {GITLAB_PROJECT_STATE[binding.state].label}
           </span>
@@ -730,7 +742,13 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               })}
               {open &&
                 wanting.map((binding) => (
-                  <ProjectRow key={binding.id} binding={binding} indented {...projectActions(binding, false)} />
+                  <ProjectRow
+                    key={binding.id}
+                    binding={binding}
+                    instanceUrl={instanceUrl}
+                    indented
+                    {...projectActions(binding, false)}
+                  />
                 ))}
             </div>
           )
@@ -746,7 +764,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
             </span>
           </div>
           {orphans.map((binding) => (
-            <ProjectRow key={binding.id} binding={binding} {...projectActions(binding)} />
+            <ProjectRow key={binding.id} binding={binding} instanceUrl={instanceUrl} {...projectActions(binding)} />
           ))}
         </div>
       )}
@@ -756,7 +774,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
       )}
 
       {pending && (
-        <div className="scrim" onClick={() => setPending(null)}>
+        <Scrim onEscape={() => setPending(null)} onClick={() => setPending(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
               title={pending.remove ? ct('removeConnection') : ct('disconnectGitlab')}
@@ -772,11 +790,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => release(pending.target)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
 
       {taking && (
-        <div className="scrim" onClick={() => setTaking(null)}>
+        <Scrim onEscape={() => setTaking(null)} onClick={() => setTaking(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
               title={ct('takeOverProject')}
@@ -789,11 +807,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => takeOver(taking)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
 
       {takingBot && (
-        <div className="scrim" onClick={() => setTakingBot(null)}>
+        <Scrim onEscape={() => setTakingBot(null)} onClick={() => setTakingBot(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
               title={ct('takeOverProjectAdministration')}
@@ -806,11 +824,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => takeOverBot(takingBot.bindingIds)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
 
       {blocked && (
-        <div className="scrim" onClick={() => setBlocked(null)}>
+        <Scrim onEscape={() => setBlocked(null)} onClick={() => setBlocked(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
               title={ct('removeProject')}
@@ -819,11 +837,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               onClose={() => setBlocked(null)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
 
       {removing && (
-        <div className="scrim" onClick={() => setRemoving(null)}>
+        <Scrim onEscape={() => setRemoving(null)} onClick={() => setRemoving(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <ConfirmGitlab
               title={ct('removeProject')}
@@ -835,7 +853,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               onConfirm={() => remove(removing)}
             />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )

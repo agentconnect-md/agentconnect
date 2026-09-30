@@ -17,6 +17,7 @@ import { Button, Icon, Toggle } from '@/components/ui'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { useModal } from '@/components/console/ModalProvider'
 import { DefaultDispatchPicker } from '@/components/console/DefaultDispatchPicker'
+import { BotRoutingHover } from '@/components/console/decisions/routing/BotRoutingHover'
 import {
   DecisionRoutingModal,
   clearRoutingResume,
@@ -30,7 +31,7 @@ import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import { creatorLabel, type BotDto, type MeDto } from '@/lib/api'
 import { agentLabel, isDirectConversation, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
-import { roomGlyph, roomPlural, rowLabelParts, rowName } from '@/components/console/IntegrationChannelList'
+import { ConversationName, roomGlyph, roomPlural, rowLabelParts } from '@/components/console/IntegrationChannelList'
 import { RevokedMarkDot } from '@/components/console/IntegrationMarks'
 import {
   botCardCopy,
@@ -50,6 +51,7 @@ import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import GithubCard from '@/components/console/GithubCard'
 import GiteaCard from '@/components/console/GiteaCard'
 import GitlabCard from '@/components/console/GitlabCard'
+import { Scrim } from '@/components/console/Scrim'
 
 // The free-bot sub-line shows where the bot came from without repeating
 // historical usage metadata in the list row.
@@ -234,11 +236,11 @@ export default function IntegrationsView() {
       </Section>
 
       {deletingBot && (
-        <div className="scrim" onClick={() => setDeletingBot(null)}>
+        <Scrim onEscape={() => setDeletingBot(null)} onClick={() => setDeletingBot(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <DeleteBotModal bot={deletingBot} onClose={() => setDeletingBot(null)} />
           </div>
-        </div>
+        </Scrim>
       )}
     </div>
   )
@@ -644,7 +646,6 @@ function BotsCard({
                           const glyph = roomGlyph(c.kind, b.platform)
                           const glyphIcon =
                             glyph === '@@' ? 'users' : glyph === '@' ? 'at-sign' : glyph === '#' ? 'hash' : null
-                          const Name = rowName(c.kind, b.platform)
                           return (
                             <Fragment key={c.channelId}>
                               {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
@@ -674,11 +675,7 @@ function BotsCard({
                                     :{' '}
                                   </span>
                                   <span className="flex min-w-0 items-baseline gap-[6px] truncate">
-                                    {Name ? (
-                                      <Name name={label.name} channelKey={c.key} url={c.url} />
-                                    ) : (
-                                      <span className="min-w-0 truncate">{label.name}</span>
-                                    )}
+                                    <ConversationName row={c.row} name={label.name} platform={b.platform} bot={b} />
                                     {label.hint && (
                                       <span className="flex-none text-(--text-tertiary)">{label.hint}</span>
                                     )}
@@ -705,6 +702,12 @@ function BotsCard({
                                             name: c.decisionName,
                                             active: c.routed,
                                             canStop: canWrite,
+                                            hover: (
+                                              <BotRoutingHover
+                                                botId={b.id}
+                                                name={c.decisionName ?? t('channelList.dispatch.routingFallback')}
+                                              />
+                                            ),
                                             onOpen: () =>
                                               setRoutingRow({ botId: b.id, channelId: c.channelId, name: c.name }),
                                             onStop: (agentId?: string) => {
@@ -741,7 +744,14 @@ function BotsCard({
                                   integrationId: canWrite ? (c.integrationId ?? undefined) : undefined,
                                   row: c.row,
                                   agentName: owner(ownerId)?.label ?? '',
-                                  padX: 12
+                                  padX: 12,
+                                  siblings: {
+                                    platform: b.platform,
+                                    rows: channels.map((other) => ({
+                                      integrationId: canWrite ? (other.integrationId ?? undefined) : undefined,
+                                      row: other.row
+                                    }))
+                                  }
                                 })}
                             </Fragment>
                           )

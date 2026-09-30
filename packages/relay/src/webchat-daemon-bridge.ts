@@ -114,17 +114,28 @@ export async function deliverWebchatMsg(
   deps: WebchatDaemonDeps,
   target: WebchatDaemonTarget,
   rdMsg: RdMsgWebchat,
-  participant: WebchatParticipant | undefined
+  participant: WebchatParticipant | undefined,
+  capability?: string
 ): Promise<{ ack: RdAck } & WebchatDaemonTarget> {
+  // A daemon that did not advertise `capability` cannot decode the op, so it is refused here rather than sent.
+  const send = (c: RelayDaemonConnection): Promise<RdAck> =>
+    capability && !c.supports(capability)
+      ? Promise.resolve({
+          msgId: rdMsg.msgId,
+          accepted: false,
+          reason: 'unsupported',
+          detail: "the agent's daemon must be upgraded to take this API"
+        })
+      : c.sendMsg(rdMsg)
   let { daemonId, conn } = target
-  let ack = await conn.sendMsg(rdMsg)
+  let ack = await send(conn)
   if (!ack.accepted && ack.reason === RD_ACK_NOT_HOLDER && ack.holderDaemonId) {
     const holder = deps.daemonConnFor(ack.holderDaemonId)
     if (holder) {
       deps.log.info(`webchat: re-routing ${rdMsg.agentId} to duty holder ${ack.holderDaemonId}`)
       daemonId = ack.holderDaemonId
       conn = holder
-      ack = await holder.sendMsg(rdMsg)
+      ack = await send(holder)
     }
   }
   // The member that answered is serving the agent now, so the next op goes direct.

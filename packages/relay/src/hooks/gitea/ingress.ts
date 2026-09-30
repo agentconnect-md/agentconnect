@@ -1,7 +1,10 @@
 /** Gitea ingress (`POST /webhooks/gitea`, gitea-integration.md §7, §8): per-rule `X-Gitea-Signature` verification before matching, uniform 404, no replay window (durable msgId dedup absorbs retries); the payload is never logged. */
+import { giteaFeedback } from '../codehost-feedback.js'
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
+  type RcCodeHostFeedback,
+  type RcCodeHostFeedbackResult,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   type GiteaHookMetadata,
   type RcCodeHostDelivery,
@@ -23,6 +26,7 @@ import {
   buildGiteaContext,
   buildTrustedGiteaMetadata,
   giteaMentionCandidates,
+  giteaRuleFamilies,
   giteaRuleIsSummoned,
   giteaRuleVerdict,
   giteaSessionKey,
@@ -36,6 +40,7 @@ import {
 export const GITEA_BODY_LIMIT = 1024 * 1024
 
 export interface GiteaIngressDeps {
+  reportFeedback?: (signal: RcCodeHostFeedback) => Promise<RcCodeHostFeedbackResult>
   table: HookTable
   /** Late-bound: the rd/* server exists only after `listen()` (routes register before). */
   daemons: () => Pick<RelayDaemonServer, 'get'> | undefined
@@ -93,13 +98,21 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
       const repoId = payload.repository?.id
       if (repoId === undefined || !Number.isSafeInteger(repoId)) return notFound(reply)
       const rules = deps.table.getByCodeHostRepo('gitea', String(repoId))
-      if (rules.length === 0) return notFound(reply)
+      const watch = deps.table.getFeedbackWatch('gitea', String(repoId))
+      if (rules.length === 0 && !watch) return notFound(reply)
 
       const deliveryHeader = headerString(req.headers['x-gitea-delivery'])
       const signature = headerString(req.headers['x-gitea-signature'])
       if (!deliveryHeader || !signature) return notFound(reply)
       // Hex HMAC-SHA256 over the raw body (§16); mid-rotation either key verifies, and which one did is what the CP promotes on (§7).
-      const verifiedWith = verifiedGiteaKey(rules, raw, signature)
+      const watchVerified =
+        watch &&
+        (verifyHexHmacSha256(watch.watch.signingKey, raw, signature)
+          ? 'current'
+          : watch.watch.nextSigningKey && verifyHexHmacSha256(watch.watch.nextSigningKey, raw, signature)
+            ? 'next'
+            : null)
+      const verifiedWith = watchVerified || verifiedGiteaKey(rules, raw, signature)
       if (!verifiedWith) return notFound(reply)
 
       const deliveryKey = deliveryHeader.slice(0, 200)
@@ -116,12 +129,25 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
       const eventType = headerString(req.headers['x-gitea-event-type'])
       if (!eventType) return reply.code(202).send({ deliveryKey })
 
+      const authorAgentIds = new Set<string>()
+      const feedback = watchVerified && watch ? giteaFeedback(watch, deliveryKey, eventType, payload) : undefined
+      if (feedback) {
+        try {
+          const result = await deps.reportFeedback?.(feedback)
+          if (!result?.accepted) return reply.code(503).send({ error: 'Feedback unavailable' })
+          for (const id of result.authorAgentIds) authorAgentIds.add(id)
+        } catch {
+          return reply.code(503).send({ error: 'Feedback unavailable' })
+        }
+      }
+
       const cleanup = giteaThreadWorktreeCleanup(eventType, payload)
       if (cleanup) {
         // Maintenance cleanup (§8): relay-authored, never a turn, and past the actor gate so no worktree leaks.
         const { event: cleanupEvent, kind, index: cleanupIndex } = cleanup
+        const family = kind === 'issue' ? 'issues' : 'merge_request'
         for (const rule of rules) {
-          if (rule.kind !== 'gitea' || !rule.gitea) continue
+          if (rule.kind !== 'gitea' || !rule.gitea || !giteaRuleFamilies(rule).has(family)) continue
           const gitea: GiteaHookMetadata = {
             repoId: rule.gitea.repoId,
             ...(rule.gitea.host !== undefined ? { host: rule.gitea.host } : {}),
@@ -141,7 +167,7 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
             gitea,
             context: buildGiteaContext(payload, {
               eventAction: cleanupEvent,
-              family: kind === 'issue' ? 'issues' : 'merge_request',
+              family,
               labels: [],
               mentionText: undefined,
               index: cleanupIndex
@@ -203,6 +229,7 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
       })
 
       const dispatchRule = (rule: RcHookAssign, notice?: RdHookNotice): void => {
+        if (authorAgentIds.has(rule.agentId)) return
         // A notice is a fixed post, never routed; a routed rule spends the budget only when selected.
         const routed = notice === undefined && router.routed(rule)
         if (!routed && !deps.limiter.allow(rule.hookId)) {

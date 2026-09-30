@@ -68,7 +68,9 @@ export const PLATFORMS: readonly PlatformTile[] = [
   // exists is deliberately absent: a tile that opens nothing is worse than no tile.
   ...PICKABLE_CODE_HOST_PROVIDERS.map((provider) => ({ key: provider, label: CODE_HOST_PROJECTION[provider].label })),
   // The generic trigger closes the row: chat platforms and code hosts are the named products.
-  { key: 'webhook', label: 'Webhook' }
+  { key: 'webhook', label: 'Webhook' },
+  // The agent's chat APIs, one entry per protocol; not a trigger, but it lives in the same Workflow group.
+  { key: 'api', label: 'API' }
 ]
 
 /** The core trigger kinds — every picker choice that is NOT a registry platform.
@@ -109,7 +111,8 @@ export const INTEGRATION_BLURB: Record<string, string> = {
   // One row per code host the picker offers, read from the table above — which stays total over the
   // providers, so a host cannot reach the picker unblurbed.
   ...Object.fromEntries(PICKABLE_CODE_HOST_PROVIDERS.map((provider) => [provider, CODE_HOST_BLURB[provider]])),
-  webhook: 'Trigger by posting a URL'
+  webhook: 'Trigger by posting a URL',
+  api: 'Chat over an API'
 }
 
 /** One tab of the Settings → Bots card: a platform, or one cloud of a platform

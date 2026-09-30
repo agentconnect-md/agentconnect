@@ -89,6 +89,12 @@ full diagnostic stays in the daemon log.
 A runtime that failed to start because its own installation is incomplete is repaired
 and retried automatically before the agent is reported as unavailable at all.
 
+A runtime-reported terminal failure is a failed turn even when its prompt response says
+`end_turn`. When the runtime explicitly offers a retry and no tool or answer has started,
+the daemon retries once after five seconds within the same admitted task. A review keeps
+its original review authority throughout that retry. A second failure, a failure after
+work began, or a failure requiring user action is reported without another automatic attempt.
+
 ## Moving an agent from an unavailable daemon
 
 A normal agent move is the safe default and uses a hard cutover. The current daemon
@@ -213,7 +219,9 @@ workspace preparation; checkout and skills installation use the workspace label.
 The console replaces one live wait line below the agent's name. Slack keeps its native
 working indicator: its lifecycle API accepts a state, not phase text. Other chat
 platforms post no startup message, because it would stay in the conversation's history
-even when the turn ends silently; their typing indicator is the only wait signal. A
+even when the turn ends silently; their typing indicator is the only wait signal. Google
+Chat has none, so its wait signal is the turn's placeholder (see "A trigger is
+acknowledged before it is answered"), which names no phase and never outlives the turn. A
 code-host turn adds no startup comment. Status publication is best-effort and never
 holds up initialization.
 
@@ -271,6 +279,16 @@ the write is refused — the app lacks the scope, the API fails, the turn shows 
 indicator — does the reaction fall back in, so a Slack turn never shows neither.
 A typing hint is not an indicator in this sense: it acknowledges nothing, so
 Telegram and Discord react as before.
+
+Google Chat has neither: an app can react only with user authentication, and it has
+no typing indicator. There the acknowledgement is one placeholder message in the
+turn's conversation, posted only once the turn has shown nothing for two seconds, and
+it becomes the answer — the first text, or a failure notice, replaces it in place.
+Unlike a reaction it is swapped for the outcome, because a "working on it" line must
+not outlive the work: a turn that ends silently on purpose, or is cancelled, withdraws
+it; one that ends with no text says in its place that it finished without a reply; and
+a turn cut to run again leaves it for that run to take over. A turn that answers within
+two seconds never shows one.
 
 The reaction is an acknowledgement, not a status: it is placed once and never
 taken back or swapped for an outcome. That is deliberate — it records that the
@@ -953,9 +971,11 @@ an incidental spawn detail:
   off-switch or that the harness has no persistent memory of its own. Unknown behavior
   fails closed; `none` must never silently mean "AgentConnect memory is off, but the
   harness may still remember."
-- `native` may be offered only after both the harness's per-agent storage redirect and
-  the console read/write root are verified. Redirecting a whole runtime home is not
-  sufficient when that home also contains shared auth or unrelated state.
+- `native` may be offered only after the harness's memory location is verified. It never
+  redirects runtime directories, because a runtime home also holds the login: under the
+  Host strategy the agent shares the host's runtime home and memory with every Host agent
+  on that daemon, and under a sandbox the memory stays in the agent's private HOME. The
+  console does not show native memory.
 
 The single source of truth is
 [`memory/runtime/capabilities.ts`](../packages/daemon/src/memory/runtime/capabilities.ts). Match a known
@@ -1327,6 +1347,13 @@ An App-backed workspace follows a GitHub repository rename without treating it a
 workspace replacement. Its displayed repository and existing checkout origin converge
 to the canonical new name while the branch, working subdirectory, and local files stay
 in place.
+
+For an isolated session with one open PR in its managed writable primary
+repository, GitLab and Gitea feedback resumes that author session. No review
+Trigger is required. The agent inspects current review and CI state and keeps
+fixes on the existing branch. This association never guesses a session from a
+shared checkout, a fork, or an additional workspace root. Provider event support
+and delivery rules are documented in [Pull-request feedback continuation](designs/codehost-pr-feedback.md).
 
 ## Agent secret environment variables
 

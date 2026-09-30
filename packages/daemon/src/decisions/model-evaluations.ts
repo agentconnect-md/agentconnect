@@ -9,6 +9,7 @@ import {
   type DecisionModelEvaluationReply
 } from '@agentconnect.md/protocol'
 import type { LocalStore, DecisionModelEvaluationRow } from '../store/local-store.js'
+import { dropStepRaw } from './chain-steps.js'
 import { DecisionEvaluationScopeError } from './evaluations.js'
 import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
 
@@ -100,15 +101,20 @@ export class DecisionModelEvaluationReader {
       input: kept.input ?? null,
       fullAnswer: kept.fullAnswer ?? null,
       ...(kept.chain ? { chain: kept.chain } : {}),
+      ...(req.includeSteps && kept.steps ? { steps: kept.steps } : {}),
       rawRequest: kept.rawRequest ?? null,
       rawResponse: kept.rawResponse ?? null
     })
     if (!parsed.success) return { evaluation: null }
     const detail = parsed.data
+    const fits = () => bytes({ evaluation: detail }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES
+    dropStepRaw(detail.steps, fits)
     for (const key of ['rawRequest', 'rawResponse', 'input', 'selection', 'chain'] as const) {
-      if (bytes({ evaluation: detail }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES) break
-      if (key === 'chain') delete detail.chain
-      else (detail as Record<string, unknown>)[key] = null
+      if (fits()) break
+      if (key === 'chain') {
+        delete detail.steps
+        delete detail.chain
+      } else (detail as Record<string, unknown>)[key] = null
     }
     return { evaluation: bytes({ evaluation: detail }) <= DECISION_EVALUATION_DETAIL_MAX_BYTES ? detail : null }
   }

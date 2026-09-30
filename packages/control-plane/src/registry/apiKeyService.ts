@@ -60,6 +60,12 @@ function toMinted(r: ApiKeyRecord, token: string): MintedKeyView {
   }
 }
 
+// The audit actor is whoever acted, else the key's own user; an owner managing a service account's key passes itself.
+const actorOf = (actor: string | undefined, keyUser: string | null) => {
+  const id = actor ?? keyUser
+  return id ? { actorUserId: id } : {}
+}
+
 export class ApiKeyService implements ApiKeyAdmin {
   constructor(
     private readonly codec: ApiKeyCodec,
@@ -137,14 +143,14 @@ export class ApiKeyService implements ApiKeyAdmin {
     return rows.map(toView)
   }
 
-  async revoke(apiKeyId: string, reason: string): Promise<ApiKeyView> {
+  async revoke(apiKeyId: string, reason: string, opts: { actorUserId?: string } = {}): Promise<ApiKeyView> {
     const rec = await this.apiKeys.revoke(apiKeyId, reason, new Date(this.clock.now()))
     void this.audit
       .append({
         kind: 'api_key_revoke',
         ...(rec.orgId ? { orgId: rec.orgId } : {}), // relay keys are org-less
         ...(rec.daemonId ? { daemonId: rec.daemonId } : {}),
-        ...(rec.userId ? { actorUserId: rec.userId } : {}),
+        ...actorOf(opts.actorUserId, rec.userId),
         details: { apiKeyId: rec.id, reason }
       })
       .catch(() => {})
@@ -158,8 +164,11 @@ export class ApiKeyService implements ApiKeyAdmin {
     expiresInDays?: number | null
     permission?: ApiKeyPermission
     agents?: 'all' | readonly string[]
+    createdByUserId?: string
   }): Promise<MintedKeyView> {
     const orgId = OrgId(input.orgId)
+    // An owner minting a service account's key is the actor; otherwise the user mints their own.
+    const actorUserId = input.createdByUserId ?? input.userId
     const permission: ApiKeyPermission = input.permission ?? 'full'
     // The selection is stored only for an agent-level permission; `full` and `read` reach every agent regardless.
     const selection = isAgentLevelPermission(permission)
@@ -183,13 +192,13 @@ export class ApiKeyService implements ApiKeyAdmin {
       permission,
       ...selection,
       expiresAt,
-      createdByUserId: input.userId
+      createdByUserId: actorUserId
     })
     void this.audit
       .append({
         kind: 'api_key_create',
         orgId,
-        actorUserId: input.userId,
+        actorUserId,
         details: { apiKeyId: rec.id, displayTail: rec.displayTail, principalType: 'user', permission }
       })
       .catch(() => {})
@@ -203,7 +212,8 @@ export class ApiKeyService implements ApiKeyAdmin {
       expiresInDays?: number | null
       permission?: ApiKeyPermission
       agents?: 'all' | readonly string[]
-    }
+    },
+    opts: { actorUserId?: string } = {}
   ): Promise<ApiKeyView> {
     // Same shape as the mint body: a day count from now, or `null` for a non-expiring key; absent leaves it alone.
     const expiresAt =
@@ -230,7 +240,7 @@ export class ApiKeyService implements ApiKeyAdmin {
       .append({
         kind: 'api_key_update',
         ...(rec.orgId ? { orgId: rec.orgId } : {}),
-        ...(rec.userId ? { actorUserId: rec.userId } : {}),
+        ...actorOf(opts.actorUserId, rec.userId),
         details: {
           apiKeyId: rec.id,
           displayTail: rec.displayTail,
@@ -242,14 +252,14 @@ export class ApiKeyService implements ApiKeyAdmin {
     return toView(rec)
   }
 
-  async regenerate(apiKeyId: string): Promise<MintedKeyView> {
+  async regenerate(apiKeyId: string, opts: { actorUserId?: string } = {}): Promise<MintedKeyView> {
     const minted = this.codec.mint()
     const rec = await this.apiKeys.replaceSecret(apiKeyId, { hash: minted.hash, displayTail: minted.displayTail })
     void this.audit
       .append({
         kind: 'api_key_rotate',
         ...(rec.orgId ? { orgId: rec.orgId } : {}),
-        ...(rec.userId ? { actorUserId: rec.userId } : {}),
+        ...actorOf(opts.actorUserId, rec.userId),
         details: { apiKeyId: rec.id, displayTail: rec.displayTail }
       })
       .catch(() => {})

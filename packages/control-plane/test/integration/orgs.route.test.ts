@@ -184,6 +184,28 @@ describe('POST /orgs', () => {
     }
   })
 
+  it('refuses a request authenticated by an API key; a signed-in caller still creates', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const minted = await app.inject({ method: 'POST', url: '/api/v1/me/keys', payload: { orgId: DEFAULT_ORG_ID } })
+      const { apiKey } = minted.json() as { apiKey: string }
+      const byKey = await app.inject({
+        method: 'POST',
+        url: '/api/v1/orgs',
+        headers: { authorization: `Bearer ${apiKey}` },
+        payload: { slug: 'key-made' }
+      })
+      expect(byKey.statusCode).toBe(403)
+      expect((byKey.json() as { message: string }).message).toBe('interactive sign-in required')
+      expect(await prisma.org.findUnique({ where: { slug: 'key-made' } })).toBeNull()
+
+      const signedIn = await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { slug: 'key-made' } })
+      expect(signedIn.statusCode).toBe(201)
+    } finally {
+      await close()
+    }
+  })
+
   it('omitting (or blanking) the display name is allowed → name comes back null', async () => {
     const { app, close } = buildHttpApp(prisma)
     try {
@@ -656,6 +678,29 @@ describe('DELETE /orgs/:orgId', () => {
     try {
       const res = await app.inject({ method: 'DELETE', url: `/api/v1/orgs/${other.id}` })
       expect(res.statusCode).toBe(403)
+    } finally {
+      await close()
+    }
+  })
+
+  it('refuses a request authenticated by an API key, even the owner’s', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const created = (await (
+        await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { slug: 'key-proof' } })
+      ).json()) as OrgBody
+      const minted = await app.inject({ method: 'POST', url: '/api/v1/me/keys', payload: { orgId: created.id } })
+      const { apiKey } = minted.json() as { apiKey: string }
+
+      const byKey = await app.inject({
+        method: 'DELETE',
+        url: `/api/v1/orgs/${created.id}`,
+        headers: { authorization: `Bearer ${apiKey}` }
+      })
+      expect(byKey.statusCode).toBe(403)
+      expect(await prisma.org.findUnique({ where: { id: created.id } })).not.toBeNull()
+
+      expect((await app.inject({ method: 'DELETE', url: `/api/v1/orgs/${created.id}` })).statusCode).toBe(204)
     } finally {
       await close()
     }

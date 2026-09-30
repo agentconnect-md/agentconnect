@@ -18,7 +18,7 @@ owning daemon. The Control Plane remains responsible only for orchestration.
 
 The direct consequences are:
 
-- The center is not on the hot path of any user message.
+- Live platform message bodies and ACP update streams stay on the daemon/relay data plane. Some admission steps and turn operations require CP control RPCs; their recovery requirements are defined in [high-availability.md](high-availability.md).
 - The agent's driver protocol (ACP) is **owned by the daemon and never crosses the Control Plane**: self-hosted, over a local connection with no network hop; in the pool, over one in-cluster dial to the sandbox pod (§3.1).
 - Each daemon is a self-contained "message processing + agent execution" unit that can scale and tolerate failures independently.
 
@@ -33,20 +33,20 @@ below that hold in only one mode are marked; everything unmarked holds in both.
 
 ### Goals
 
-- Keep the Control Plane off the messaging hot path. The control connection
-  carries orchestration and telemetry plus bounded, authorized, on-demand reads
-  of daemon-local data for the Web UI; those reads are not persisted by the
+- Keep live message transport and ACP streams on the data plane. The control
+  connection carries orchestration, admission RPCs and telemetry plus bounded,
+  authorized BFF reads and workspace writes; their content is not persisted by the
   Control Plane.
 - Keep direct platform integrations and agent execution owned by the daemon,
   using the relay only for ingress that requires a stable public callback or
   browser endpoint.
 - Allow daemons to scale horizontally and independently, so one daemon failure does not affect other daemons.
 - Run multiple agents on one daemon, with a separate ACP adapter for each agent type.
-- Allow established sessions to continue sending, receiving, and executing on their daemons while the Control Plane is temporarily unavailable (degraded availability).
+- Allow established sessions to continue within their [authority lifetimes](high-availability.md#authority-lifetimes) during CP outages; all member-set daemons self-fence at `T_fence` after the last confirmed renewal ([duty leases](k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7)).
 
 ### Non-Goals
 
-- This design does not introduce a message queue or event bus. Either may be an evolution path for future high-throughput scenarios.
+- This design does not introduce a message-body queue. The proposed [CP replication design](high-availability.md#active-active-control-plane) coordinates control metadata through PostgreSQL; live messages and ACP streams retain their data-plane paths.
 - This design does not change the protocol between agents and models; all agents use ACP.
 - This design does not solve strongly consistent coordination across daemons. See the open questions in §13.
 
@@ -109,7 +109,8 @@ AgentConnect Cloud runs the second mode; the first is what an OSS or
 bring-your-own-machine deployment runs. Both dial out to the same Control Plane
 over the same control WebSocket, and in neither does live message content or an
 ACP update stream cross the Control Plane. Everything in §5 through §8 and §10
-through §11 is about that shared data plane and holds in both.
+through §11 describes that shared data plane; duty-governed members additionally
+have the renewal/self-fence boundary described in the availability contract.
 
 The mode-specific designs are
 [k8s-daemon-pool.md](k8s-daemon-pool.md) (duty ledger, membership, placement),
@@ -129,7 +130,7 @@ Its responsibilities are deliberately narrow:
 - **Registry/Auth**: daemon registration and health, routing policies, and authentication policies.
 - **Web UI**: configuration, editing, and runtime monitoring.
 
-**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. Even when the Control Plane is temporarily unavailable, **established sessions continue sending, receiving, and executing on their daemons** (degraded availability).
+**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. During CP outages, established work is limited by its [authority lifetimes](high-availability.md#authority-lifetimes) and CP-dependent operations. See the [member-set failure model](k8s-daemon-pool.md#13-failure-model-d13) and the proposed [CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget).
 
 ### 4.2 daemon
 
@@ -172,7 +173,7 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 - Dedicated-bot ingress connects directly to the daemon.
 - Slack and Lark / Feishu HTTP callbacks, GitHub and generic webhooks, and webchat ingress enter through the relay pool, which forwards the normalized request to the owning daemon.
 - Outbound platform traffic is sent directly by the daemon.
-- Neither ingress model puts the Control Plane on the message hot path. See [shared-bot-relay.md](shared-bot-relay.md).
+- Both models keep live message bodies on the daemon/relay data plane; some admission steps require CP control RPCs (§6.2). See [shared-bot-relay.md](shared-bot-relay.md).
 
 ### 5.2 Control Plane ↔ daemon: WebSocket (Control and Bounded Read-Back)
 
@@ -217,7 +218,7 @@ The Control Plane is not part of either live content path. It supplies control-p
 configuration and authorization metadata, but platform messages and ACP output do not
 traverse it.
 
-### 6.2 Orchestration Flow (Decoupled from Messages)
+### 6.2 Orchestration Flow (Control RPCs)
 
 ```
 daemon ←→ Control Plane (WebSocket)
@@ -226,7 +227,11 @@ daemon ←→ Control Plane (WebSocket)
   - daemon reports: runtime status, usage, health
 ```
 
-Orchestration happens on the control plane and **never blocks or enters** the path of a user message.
+Live platform message bodies and ACP update streams stay on the daemon/relay
+data plane. Some admission steps (`duty/claim`, `rc/thread-lookup`, `hook/start`)
+and turn operations require CP control RPCs; the proposed bounded recovery
+contract is in [high-availability.md](high-availability.md#planned-rollout-and-reconnect-budget).
+Today those dependencies can fail during a control disconnect.
 
 ---
 
@@ -237,7 +242,7 @@ The Control Plane achieves "orchestration without touching messages" over the co
 - **Session ownership**: decide which daemon is responsible for a workspace or session. The daemon then takes over that session's platform traffic itself.
 - **Agent lifecycle**: instruct a daemon to start or stop a particular type of agent (Claude or Codex).
 - **Scaling and placement**: make agent- and session-level placement and scaling decisions from the load and health reported by daemons. It does not start or stop daemon processes.
-- **Degraded semantics**: if the Control Plane is unavailable, daemons keep existing sessions running. New-session assignment and scaling pause, then catch up after recovery.
+- **Degraded semantics**: during CP outages, local work continues within its authority lifetime; CP-dependent requests can fail. New placement and scaling pause. The proposed HA rollout adds bounded request recovery without extending duty fences.
 
 ---
 
@@ -245,7 +250,7 @@ The Control Plane achieves "orchestration without touching messages" over the co
 
 - **Multiple agents per daemon**: one daemon runs multiple agents concurrently, each driven by an independent ACP adapter (`claude-agent-acp` or `codex-acp`).
 - **Multiple daemons**: every daemon has the same topology and platform-integration capabilities; the Control Plane orchestrates how they share sessions and load.
-- **Horizontal scaling**: adding a daemon adds throughput. With no central hot path, scaling is approximately linear.
+- **Horizontal scaling**: execution capacity grows with daemons; admission and control capacity must scale with it.
 
 ---
 
@@ -335,12 +340,12 @@ host to run sandboxed.
 
 ## 11. Failures and Recovery
 
-| Failure                | Impact                                      | Behavior                                                                                                                                                                                                                                                                                      |
-| ---------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Control Plane outage   | Orchestration pauses                        | **Existing sessions continue on their daemons**; new assignments and scaling pause, then catch up after recovery                                                                                                                                                                              |
-| One daemon fails       | Sessions owned by that daemon are disrupted | The failure domain is isolated; the Control Plane detects the failure and reassigns sessions to another daemon                                                                                                                                                                                |
-| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries itself and reports an alert                                                                                                                                                                                                                                  |
-| Agent runtime crashes  | One agent task fails                        | The daemon reclaims the exited host and the next message re-spawns the runtime: a new child process self-hosted, a new process inside the agent's existing sandbox in the pool. A fresh sandbox generation happens only when the pod or its channel was lost, not on an ordinary runtime exit |
+| Failure                | Impact                                            | Behavior                                                                                                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Control Plane outage   | Orchestration and CP-dependent calls are affected | Existing local work is limited by authority lifetimes; duty-governed work stops at `T_fence` without confirmed renewal                                                                                                                                                                        |
+| One daemon fails       | Work owned by that daemon is disrupted            | Other daemons continue; member-set duties may be reassigned under their fences. Existing sessions are not transparently migrated by the unwired watchdog                                                                                                                                      |
+| Platform adapter fails | Traffic for that platform is affected             | The daemon reconnects or retries itself and reports an alert                                                                                                                                                                                                                                  |
+| Agent runtime crashes  | One agent task fails                              | The daemon reclaims the exited host and the next message re-spawns the runtime: a new child process self-hosted, a new process inside the agent's existing sandbox in the pool. A fresh sandbox generation happens only when the pod or its channel was lost, not on an ordinary runtime exit |
 
 ---
 
@@ -348,11 +353,11 @@ host to run sandboxed.
 
 ### Advantages
 
-- **No central hot path**: messages do not pass through the Control Plane, so the center is neither a throughput bottleneck nor a single point of failure.
-- **Low latency**: the message loop stays inside the daemon and its ACP call is local or one in-cluster hop, never a round trip through a center.
+- **Direct message transport**: live platform message bodies and ACP update streams stay on the daemon/relay data plane; admission and turn control dependencies follow §6.2.
+- **Local agent transport**: the daemon's ACP call is local or one in-cluster hop. Admission and some turn operations can additionally await CP control RPCs.
 - **Strong failure isolation**: one daemon failure affects only its sessions, producing a small blast radius.
 - **Near-linear scaling**: adding daemons adds throughput without a central bottleneck.
-- **Degradable control plane**: established sessions keep running while the Control Plane is unavailable.
+- **Degradable control plane**: local work can continue through CP outages within the authority and dependency bounds above.
 - **Proximity deployment**: daemons can run near their users or platforms to reduce cross-region latency.
 
 ### Drawbacks
@@ -368,4 +373,4 @@ host to run sandboxed.
 ## 13. Open Questions and Future Work
 
 1. **Session affinity and routing tables**: how should the Control Plane routing table coordinate with local daemon routing? How can session migration (rebalancing) avoid disruption?
-2. **High-throughput evolution**: introduce a Gateway + Message Bus between daemons and the Control Plane, fully separating the control and data planes, as an upgrade path for higher-throughput and multi-tenant scenarios.
+2. **CP replication**: implement the [active-active design](high-availability.md#active-active-control-plane) using PostgreSQL for shared control coordination while preserving the existing message data plane.

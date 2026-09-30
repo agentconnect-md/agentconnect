@@ -80,7 +80,7 @@ export function probeFailureIsConnectivity(status: GoogleChatProbeStatus | Googl
   return status === 'unreachable' || status === 'google_unavailable'
 }
 
-/** The numeric Project number from the Google Cloud dashboard; it is also the Chat token audience (§2). */
+/** The numeric Project number from the Google Cloud dashboard; it names the add-on service account that signs the app's requests (§11.2). */
 export function isGoogleCloudProjectNumber(value: string): boolean {
   return /^[1-9]\d{0,19}$/.test(value)
 }

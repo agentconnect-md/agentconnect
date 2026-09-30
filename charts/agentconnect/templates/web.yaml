@@ -38,6 +38,9 @@ spec:
             # immutable public runtime snapshot for browser auth/provider config.
             - name: CP_INTERNAL_URL
               value: {{ printf "http://%s-control-plane:%v/api/v1" (include "agentconnect.fullname" .) .Values.controlPlane.port | quote }}
+            # The release this install runs — the help menu's version label and release-notes link.
+            - name: RELEASE_VERSION
+              value: {{ include "agentconnect.imageTag" . | quote }}
             # Browser → CP API base, injected into window.__AC_ENV at runtime so the
             # image isn't pinned to a CP at build time. SUBDOMAIN mode (top-level
             # `apiHost` set) ⇒ https://<apiHost>/v1 (cross-origin; the api HTTPRoute
@@ -80,7 +83,7 @@ spec:
             {{- if .Values.features.billing }}{{- $flags = append $flags "billing" }}{{- end }}
             {{- if .Values.features.gitUrl }}{{- $flags = append $flags "git-url" }}{{- end }}
             {{- if .Values.features.qq }}{{- $flags = append $flags "qq" }}{{- end }}
-            {{- if .Values.features.googleChat }}{{- $flags = append $flags "google-chat" }}{{- end }}
+            {{- if .Values.features.googleChatDeploymentApp }}{{- $flags = append $flags "google-chat-deployment-app" }}{{- end }}
             {{- if .Values.features.repositoryDecision }}{{- $flags = append $flags "repository-decision" }}{{- end }}
             {{- with $flags }}
             # Assembled from the features block — the values file flips one knob per feature

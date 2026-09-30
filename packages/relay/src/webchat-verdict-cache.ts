@@ -1,8 +1,8 @@
-// Per-instance cache of `rc/verify(webchat-token)` verdicts, keyed by the token's hash until its `exp` (shared-bot-relay.md §10.4).
+// Per-instance cache of `rc/verify` verdicts for webchat tokens and agent chat keys, each kept until its own expiry (shared-bot-relay.md §10.4).
 import { createHash } from 'node:crypto'
 import type { RcVerifyResult } from '@agentconnect.md/protocol'
 
-// Bounds memory under a flood of distinct valid tokens; each lives at most five minutes anyway.
+// Bounds memory under a flood of distinct valid credentials; each entry lives minutes at most anyway.
 const MAX_ENTRIES = 10_000
 
 interface Entry {
@@ -26,17 +26,20 @@ export function webchatTokenExpiryMs(token: string): number | undefined {
   }
 }
 
-export class WebchatVerdictCache {
+/** Keyed by the hash of the verified arguments; `expiresAt` dates each verdict, and every entry of one cache shares a lifetime. */
+export class WebchatVerdictCache<A extends string[] = [token: string]> {
   private readonly entries = new Map<string, Entry>()
 
   constructor(
-    private readonly verifyWithCp: (token: string) => Promise<RcVerifyResult>,
-    private readonly now: () => number = Date.now
+    private readonly verifyWithCp: (...args: A) => Promise<RcVerifyResult>,
+    private readonly now: () => number = Date.now,
+    private readonly expiresAt: (args: A, verifiedAtMs: number) => number | undefined = (args) =>
+      webchatTokenExpiryMs(args[0]!)
   ) {}
 
-  /** The cached verdict while the token is live, else the CP's; failures and throws are never cached. */
-  async verify(token: string): Promise<WebchatVerdict> {
-    const key = createHash('sha256').update(token).digest('hex')
+  /** The cached verdict while it is live, else the CP's; failures and throws are never cached. */
+  async verify(...args: A): Promise<WebchatVerdict> {
+    const key = createHash('sha256').update(args.join('\0')).digest('hex')
     const hit = this.entries.get(key)
     if (hit) {
       if (hit.expiresAtMs > this.now()) return { ...structuredClone(hit.verdict), verifiedAtMs: hit.verifiedAtMs }
@@ -44,8 +47,8 @@ export class WebchatVerdictCache {
     }
     // Dated before the round trip: the CP reads the roster before its own awaits, so completion order must not rank verdicts.
     const verifiedAtMs = this.now()
-    const verdict = await this.verifyWithCp(token)
-    const expiresAtMs = webchatTokenExpiryMs(token)
+    const verdict = await this.verifyWithCp(...args)
+    const expiresAtMs = this.expiresAt(args, verifiedAtMs)
     if (verdict.ok && expiresAtMs !== undefined && expiresAtMs > verifiedAtMs) {
       this.sweep()
       this.entries.set(key, { verdict: structuredClone(verdict), expiresAtMs, verifiedAtMs })
@@ -59,7 +62,7 @@ export class WebchatVerdictCache {
 
   private sweep(): void {
     const now = this.now()
-    // Every token has the same TTL, so insertion order is close to expiry order: drop from the front until one is live.
+    // Entries share a lifetime, so insertion order is close to expiry order: drop from the front until one is live.
     for (const [key, entry] of this.entries) {
       if (entry.expiresAtMs > now) break
       this.entries.delete(key)

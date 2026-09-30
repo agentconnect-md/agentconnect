@@ -22,6 +22,7 @@ import {
   isSetPlacementKind,
   MOCK_MODE,
   MOCK_PREFIX,
+  runtimeCanDream,
   runtimeLabel,
   selectedModelId,
   status,
@@ -39,6 +40,7 @@ import {
   createGiteaHook,
   createGitlabHook,
   creatorLabel,
+  fetchAgentApiEntries,
   fetchAgentHooks,
   fetchAgentInstallations,
   fetchAgentRepos,
@@ -69,11 +71,11 @@ import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentDecisionsCard } from '@/components/console/AgentDecisionsCard'
 import { DecisionModelLabel } from '@/components/console/decisions/DecisionModelLabel'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
-import { ruleSummaries } from '@/components/console/decisions/rule-summary'
 import { useCodeHostRowRouting } from '@/components/console/decisions/routing/useCodeHostRowRouting'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
+import { AgentApiCard } from '@/components/console/AgentApiCard'
 import { RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import { TriggerSelect } from '@/components/console/TriggerSelect'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
@@ -116,7 +118,7 @@ import {
   type GtFamily,
   type GtTriggerMode
 } from '@/lib/gitea-events'
-import { giteaInstanceHost } from '@/lib/gitea-repositories'
+import { giteaInstanceHost, giteaRepositoryUrl } from '@/lib/gitea-repositories'
 import {
   GL_TRIGGER_MODES,
   GL_TRIGGER_PILL,
@@ -134,7 +136,7 @@ import {
   type GlFamily,
   type GlTriggerMode
 } from '@/lib/gitlab-events'
-import { gitlabInstanceHost } from '@/lib/gitlab-projects'
+import { gitlabInstanceHost, gitlabProjectUrl } from '@/lib/gitlab-projects'
 import { orderedGiteaHookRows, orderedGithubHookRows, orderedGitlabHookRows } from '@/lib/code-host-hook-groups'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
@@ -177,6 +179,7 @@ import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { CODE_HOST_PROJECTION, codeHostRecord } from '@/lib/code-hosts'
 import { githubHookScope, githubHookScopeKey } from '@/lib/github-hook-scope'
+import { EscapeLayer } from '@/components/console/Scrim'
 
 type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'tools'
 const HOOK_REFRESH_MS = 30_000
@@ -282,6 +285,16 @@ export default function AgentDetailView() {
   )
 }
 
+/** A watched repository's name, linking to its page on the code host when that page is known. */
+function RepoName({ name, url, className }: { name: string; url: string | null; className: string }) {
+  if (!url) return <span className={className}>{name}</span>
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" className={`${className} hover:underline`}>
+      {name}
+    </a>
+  )
+}
+
 function AgentDetail() {
   const t = useTranslations('Agents.detail')
   const decisionsPrototype = useOptionalDecisionsPrototype()
@@ -371,6 +384,11 @@ function AgentDetail() {
   })
   const agentHooks = agentHooksData ?? []
   const hooksLoadError = agentHooksData === undefined && hooksError
+  const { data: apiEntriesData, mutate: mutateApiEntries } = useSWR(
+    consoleKeys.agentApi(activeOrg?.id, id),
+    ([, orgId, , agentId]) => fetchAgentApiEntries(agentId, orgId)
+  )
+  const apiEntries = apiEntriesData ?? []
   // Each code host renders as ONE group with a row per watched repository or
   // project (design); webhooks stay flat rows.
   const webhookHooks = agentHooks.filter((h) => h.kind === 'webhook')
@@ -416,6 +434,13 @@ function AgentDetail() {
     fetchGiteaConnections().then((result) => result.connections)
   )
   const giteaInstanceUrl = giteaConnectionsData?.[0]?.instanceUrl ?? null
+  // A watched repository's page on its host, once the host is known.
+  const repoPageUrl = (host: 'github' | 'gitlab' | 'gitea', repo: string | null): string | null => {
+    if (!repo) return null
+    if (host === 'github') return `https://github.com/${repo}`
+    if (host === 'gitlab') return gitlabInstanceUrl ? gitlabProjectUrl(gitlabInstanceUrl, repo) : null
+    return giteaInstanceUrl ? giteaRepositoryUrl(giteaInstanceUrl, repo) : null
+  }
 
   // Authorization provenance for the unauthorized-watch badge (multi-repo
   // design §web 3): numeric repo ids first, names only for rolling legacy rows.
@@ -922,8 +947,9 @@ function AgentDetail() {
     <DecisionModelLabel
       size={14}
       name={selectedDecision?.name ?? t('modelByDecision')}
-      rules={ruleSummaries(da.modelSelection, selectedDecision?.question)}
-      fallback={selectedModelId(capabilitySource, da.runtime, da.model) || da.model || da.runtime}
+      selection={da.modelSelection}
+      question={selectedDecision?.question}
+      fallback={{ runtime: da.runtime, model: selectedModelId(capabilitySource, da.runtime, da.model) || da.model }}
       decisionHref={selectedDecision && orgPath(`/decisions/${encodeURIComponent(selectedDecision.id)}`)}
       evaluations={modelEvaluationsTarget(da)}
     />
@@ -968,7 +994,7 @@ function AgentDetail() {
   const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []
   // Webhook triggers share the Integrations card (the Add modal offers both);
   // `agentHooks` is fetched per-agent above.
-  const hasInt = agentInts.length > 0 || agentHooks.length > 0
+  const hasInt = agentInts.length > 0 || agentHooks.length > 0 || apiEntries.length > 0
   // Match the list's enabled, distinct hook-kind summary. Use the agent snapshot
   // only until this page's live hook query resolves; hook mutations revalidate
   // that query immediately, keeping the header and Integrations card in sync.
@@ -976,7 +1002,10 @@ function AgentDetail() {
     agentHooksData === undefined
       ? (da.hookKinds ?? [])
       : [...new Set(agentHooks.filter((hook) => hook.enabled).map((hook) => hook.kind))]
-  const hasIntegrationMarks = agentInts.length > 0 || integrationHookKinds.length > 0
+  // The API card counts as an integration too, marked by its protocol glyph.
+  const markIntegrations =
+    apiEntries.length > 0 ? [...agentInts, { id: 'api', platform: 'api', revoked: false }] : agentInts
+  const hasIntegrationMarks = markIntegrations.length > 0 || integrationHookKinds.length > 0
   const sessionCount = MOCK_MODE ? getSessions(da.id).length : agentSessionTotal
   // Icon upload is available only when the object store is configured (org flag) — the
   // picker hides Upload otherwise. On success the CP has persisted the new icon; refetch.
@@ -1090,7 +1119,7 @@ function AgentDetail() {
               </span>
             )}
             {hasIntegrationMarks ? (
-              <IntegrationMarks integrations={agentInts} hookKinds={integrationHookKinds} />
+              <IntegrationMarks integrations={markIntegrations} hookKinds={integrationHookKinds} />
             ) : (
               <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-semibold leading-normal text-(--amber-500)">
                 <Icon name="triangle-alert" size={14} />
@@ -1844,9 +1873,11 @@ function AgentDetail() {
                       <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
                         {first && (
                           <span className="flex min-w-0 items-center gap-2">
-                            <span className="mono min-w-0 truncate text-[13px] font-semibold">
-                              {h.repoFullName ?? h.name}
-                            </span>
+                            <RepoName
+                              name={h.repoFullName ?? h.name}
+                              url={repoPageUrl('github', h.repoFullName)}
+                              className="mono min-w-0 truncate text-[13px] font-semibold"
+                            />
                             {/* The repo's first row offers what it does not watch yet — same + menu as desktop. */}
                             {addFamilies.length > 0 && (
                               <RowMoreMenu
@@ -1915,9 +1946,11 @@ function AgentDetail() {
                       <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
                         {first && (
                           <span className="flex min-w-0 items-center gap-2">
-                            <span className="mono min-w-0 truncate text-[13px] font-semibold">
-                              {h.repoFullName ?? h.name}
-                            </span>
+                            <RepoName
+                              name={h.repoFullName ?? h.name}
+                              url={repoPageUrl('gitlab', h.repoFullName)}
+                              className="mono min-w-0 truncate text-[13px] font-semibold"
+                            />
                             {/* The project's first row offers what it does not watch yet — same + menu as desktop. */}
                             {addFamilies.length > 0 && (
                               <RowMoreMenu
@@ -1987,9 +2020,11 @@ function AgentDetail() {
                       <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
                         {first && (
                           <span className="flex min-w-0 items-center gap-2">
-                            <span className="mono min-w-0 truncate text-[13px] font-semibold">
-                              {h.repoFullName ?? h.name}
-                            </span>
+                            <RepoName
+                              name={h.repoFullName ?? h.name}
+                              url={repoPageUrl('gitea', h.repoFullName)}
+                              className="mono min-w-0 truncate text-[13px] font-semibold"
+                            />
                             {/* The repository's first row offers what it does not watch yet — same + menu as desktop. */}
                             {addFamilies.length > 0 && (
                               <RowMoreMenu
@@ -2040,6 +2075,15 @@ function AgentDetail() {
                       )}
                     </div>
                   ))}
+                  {apiEntries.length > 0 && (
+                    <AgentApiCard
+                      agent={da}
+                      entries={apiEntries}
+                      mobile
+                      divided={agentInts.length + agentHooks.length > 0}
+                      onChanged={() => void mutateApiEntries()}
+                    />
+                  )}
                 </div>
                 <div className="hidden flex-col gap-3 px-4 py-[14px] desktop:flex">
                   {agentInts.map((g, i) => {
@@ -2197,9 +2241,11 @@ function AgentDetail() {
                                       color="var(--text-tertiary)"
                                       className="flex-none"
                                     />
-                                    <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
-                                      {h.repoFullName ?? h.name}
-                                    </span>
+                                    <RepoName
+                                      name={h.repoFullName ?? h.name}
+                                      url={repoPageUrl('github', h.repoFullName)}
+                                      className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)"
+                                    />
                                   </>
                                 ) : null}
                                 {/* The repo's first row offers what it does not watch yet — a + menu, so new subjects just add items. */}
@@ -2350,9 +2396,11 @@ function AgentDetail() {
                                       color="var(--text-tertiary)"
                                       className="flex-none"
                                     />
-                                    <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
-                                      {h.repoFullName ?? h.name}
-                                    </span>
+                                    <RepoName
+                                      name={h.repoFullName ?? h.name}
+                                      url={repoPageUrl('gitlab', h.repoFullName)}
+                                      className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)"
+                                    />
                                   </>
                                 ) : null}
                                 {/* The project's first row offers what it does not watch yet — a + menu, so new subjects just add items. */}
@@ -2502,9 +2550,11 @@ function AgentDetail() {
                                       color="var(--text-tertiary)"
                                       className="flex-none"
                                     />
-                                    <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
-                                      {h.repoFullName ?? h.name}
-                                    </span>
+                                    <RepoName
+                                      name={h.repoFullName ?? h.name}
+                                      url={repoPageUrl('gitea', h.repoFullName)}
+                                      className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)"
+                                    />
                                   </>
                                 ) : null}
                                 {/* The repository's first row offers what it does not watch yet. */}
@@ -2611,6 +2661,14 @@ function AgentDetail() {
                       </div>
                     </div>
                   )}
+                  {apiEntries.length > 0 && (
+                    <AgentApiCard
+                      agent={da}
+                      entries={apiEntries}
+                      mobile={false}
+                      onChanged={() => void mutateApiEntries()}
+                    />
+                  )}
                 </div>
               </>
             ) : hooksLoadError ? (
@@ -2644,15 +2702,9 @@ function AgentDetail() {
                           title={available ? INTEGRATION_BLURB[p.key] : 'Not supported by this daemon'}
                           onClick={available ? () => openModal('integration', da, { platform: p.key }) : undefined}
                         >
-                          {p.key === 'github' ? (
-                            <span className="flex h-[26px] w-[26px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
-                              <GithubMark />
-                            </span>
-                          ) : (
-                            <span className="flex h-[26px] w-[26px] flex-none items-center justify-center">
-                              <PlatformMark platform={p.key} fillPct={100} />
-                            </span>
-                          )}
+                          <span className="flex h-[26px] w-[26px] flex-none items-center justify-center">
+                            <PlatformMark platform={p.key} fillPct={100} />
+                          </span>
                           {/* Mobile tiles are icon-only; the name stays for screen readers. */}
                           {p.key === 'feishu' ? (
                             <>
@@ -2800,6 +2852,9 @@ function AgentDetail() {
           memoryHome={da.memoryHome}
           memoryHomeMigration={da.memoryHomeMigration}
           memoryDreaming={da.memoryDreaming}
+          canDream={runtimeCanDream(
+            capabilitySource?.runtimeModels.find((r) => r.runtime === da.runtime)?.modelCatalog
+          )}
           memoryConnectionId={da.memoryConnectionId}
           memoryRecall={da.memoryRecall}
           memoryCaptureMode={da.memoryCaptureMode}
@@ -2876,6 +2931,7 @@ function AgentDetail() {
           onClick={closeReviewSettings}
           className="fixed inset-0 z-50 flex items-end bg-[rgba(17,22,29,.5)] backdrop-blur-[2px] desktop:items-center desktop:justify-center desktop:p-6"
         >
+          <EscapeLayer onEscape={closeReviewSettings} />
           <div
             role="dialog"
             aria-modal="true"
@@ -3170,8 +3226,9 @@ function HookRunsPanel({ hookId, sessionHref }: { hookId: string; sessionHref: (
           >
             <span className={`h-[7px] w-[7px] flex-none rounded-full ${HOOK_RUN_DOT[r.status]}`} />
             <span className="flex min-w-0 flex-1 items-center gap-2">
+              {/* Name the event the delivery carried; the provider's delivery id stays in the tooltip. */}
               <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)" title={r.deliveryKey}>
-                {r.deliveryKey}
+                {r.event ?? r.deliveryKey}
               </span>
               {r.sessionId && (
                 <Link href={sessionHref(r.sessionId)} className="lnk flex-none whitespace-nowrap text-[11.5px]">

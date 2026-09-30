@@ -74,6 +74,7 @@ const CONNECTION = {
   instanceUrl: 'https://gitea.example.test',
   instanceVersion: '1.24.0',
   instanceVersionSupported: true,
+  instanceProduct: 'gitea',
   instanceVersionFloor: '1.23',
   requiredScopes: ['read:user', 'write:repository', 'write:issue', 'read:organization'],
   lastVerifiedAt: null,

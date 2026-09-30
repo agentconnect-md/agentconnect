@@ -12,6 +12,7 @@
  * (daemon-api-key-auth.md §8) — permissions are per-org, so every key names an org.
  * These routes are identity-scoped (no `/orgs/:orgId` prefix); the create body
  * carries the target org, verified against the caller's membership.
+ * Every route is `interactiveOnly`, so no key can list, mint, edit or revoke keys.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -81,13 +82,14 @@ export function meKeyRoutes(deps: HttpDeps) {
       '/me/keys',
       {
         preHandler: app.humanAuth,
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.ApiKeys],
           summary: 'List your API keys',
           description:
             'Your active personal API keys across every organization you belong to, never exposing the secret or its hash.',
           operationId: 'listMyApiKeys',
-          response: { 200: UserApiKeyListDto }
+          response: { 200: UserApiKeyListDto, 403: ErrorDto }
         }
       },
       async (req) => {
@@ -100,6 +102,7 @@ export function meKeyRoutes(deps: HttpDeps) {
       '/me/keys',
       {
         preHandler: app.humanAuth,
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.ApiKeys],
           summary: 'Create an API key',
@@ -111,13 +114,6 @@ export function meKeyRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        // A personal key must not be able to mint more keys — a leaked key can't
-        // self-propagate new credentials (it can only ever act, then be revoked).
-        if (req.apiKeyId) {
-          return reply
-            .code(403)
-            .send({ error: 'Forbidden', statusCode: 403, message: 'API keys cannot create API keys' })
-        }
         // The target org must be one the caller actually belongs to — otherwise it
         // isn't theirs to mint against (reads as absent, like any foreign org).
         const role = await deps.repos.org.roleOf(req.body.orgId, req.principal!.userId)
@@ -151,6 +147,7 @@ export function meKeyRoutes(deps: HttpDeps) {
       '/me/keys/:id',
       {
         preHandler: app.humanAuth,
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.ApiKeys],
           summary: 'Edit an API key',
@@ -163,10 +160,6 @@ export function meKeyRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        // Same rule as minting: a leaked key must not be able to widen or extend itself.
-        if (req.apiKeyId) {
-          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'API keys cannot edit API keys' })
-        }
         const target = await findOwned(req, req.params.id)
         if (!target) return notFound(reply, 'key not found')
         if (target.revokedAt) {
@@ -198,6 +191,7 @@ export function meKeyRoutes(deps: HttpDeps) {
       '/me/keys/:id/regenerate',
       {
         preHandler: app.humanAuth,
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.ApiKeys],
           summary: 'Regenerate an API key',
@@ -209,11 +203,6 @@ export function meKeyRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        if (req.apiKeyId) {
-          return reply
-            .code(403)
-            .send({ error: 'Forbidden', statusCode: 403, message: 'API keys cannot regenerate API keys' })
-        }
         const target = await findOwned(req, req.params.id)
         if (!target) return notFound(reply, 'key not found')
         if (target.revokedAt) {
@@ -235,6 +224,7 @@ export function meKeyRoutes(deps: HttpDeps) {
       '/me/keys/:id',
       {
         preHandler: app.humanAuth,
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.ApiKeys],
           summary: 'Revoke an API key',
@@ -242,7 +232,7 @@ export function meKeyRoutes(deps: HttpDeps) {
             'Revokes one of your own API keys as a kill switch; the next request presenting it is rejected. A key id that isn’t yours reads as absent (404).',
           operationId: 'revokeMyApiKey',
           params: IdParam,
-          response: { 200: UserApiKeyDto, 404: ErrorDto }
+          response: { 200: UserApiKeyDto, 403: ErrorDto, 404: ErrorDto }
         }
       },
       async (req, reply) => {

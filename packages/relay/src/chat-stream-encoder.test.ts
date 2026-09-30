@@ -128,9 +128,6 @@ describe('UiMessageStreamEncoder', () => {
       e.output(out(undefined, { model: 'model-a', contextUsed: 10 })),
       e.output(out({ kind: 'message', text: 'draft' })),
       e.output(out({ kind: 'superseded', generation: 1 })),
-      e.output(
-        out({ kind: 'elicitation', requestId: 'r1', message: 'Pick one', options: [{ value: 'a', label: 'A' }] })
-      ),
       e.output(out({ kind: 'elicitation_resolved', requestId: 'r1', outcome: 'dismissed' })),
       e.output(out({ kind: 'app_resolved', appId: 'app-1', outcome: 'closed' })),
       e.done(done())
@@ -139,6 +136,57 @@ describe('UiMessageStreamEncoder', () => {
     expect(errors).toEqual([])
     expect(message.parts).toMatchObject([{ type: 'step-start' }, { type: 'text', text: 'draft' }])
     expect(message.parts).toHaveLength(2)
+  })
+
+  it('hands out the first question as a dynamic tool call, ends the stream on it, and writes nothing after', async () => {
+    const encoder = new UiMessageStreamEncoder(TURN)
+    const question = out({
+      kind: 'elicitation',
+      requestId: 'r1',
+      message: 'Pick one',
+      options: [{ value: 'a', label: 'A' }]
+    })
+    const wire = [
+      encoder.open(),
+      encoder.output(out({ kind: 'message', text: 'One moment.' })),
+      encoder.output(question),
+      encoder.output(out({ kind: 'message', text: 'never streamed' })),
+      encoder.output(out({ kind: 'permission', requestId: TURN, tool: 'Bash', detail: 'ls' }))
+    ].join('')
+    expect(encoder.awaitingCaller).toBe(true)
+    const { message, chunks, errors } = await decode(wire)
+    expect(errors).toEqual([])
+    expect(chunks.at(-1)).toEqual({ type: 'finish', finishReason: 'tool-calls' })
+    expect(message.parts).toMatchObject([
+      { type: 'step-start' },
+      { type: 'text', text: 'One moment.', state: 'done' },
+      {
+        type: 'dynamic-tool',
+        toolName: 'agentconnect_ask',
+        toolCallId: 'r1',
+        state: 'input-available',
+        input: { message: 'Pick one', options: [{ value: 'a', label: 'A' }] },
+        callProviderMetadata: { agentconnect: { turnId: TURN, index: question.index } }
+      }
+    ])
+    expect(message.parts).toHaveLength(3)
+  })
+
+  it('hands out a runtime approval as an approval request on its own tool call', async () => {
+    const wire = encode((e) => [
+      e.open(),
+      e.output(out({ kind: 'permission', requestId: TURN, tool: 'Bash', detail: 'ls' }))
+    ])
+    const { message, errors } = await decode(wire)
+    expect(errors).toEqual([])
+    expect(message.parts.at(-1)).toMatchObject({
+      type: 'dynamic-tool',
+      toolName: 'agentconnect_approval',
+      toolCallId: TURN,
+      state: 'approval-requested',
+      input: { tool: 'Bash', detail: 'ls' },
+      approval: { id: TURN }
+    })
   })
 
   it('ends a failed turn with an error part carrying the reason, and no finish', async () => {

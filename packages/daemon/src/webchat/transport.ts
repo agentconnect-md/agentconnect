@@ -176,7 +176,8 @@ export class WebchatTransport {
     mentions?: string[],
     post?: { postId: string; at: number },
     requestedWorktree?: boolean,
-    steer?: boolean
+    steer?: boolean,
+    apiProtocol?: string
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
@@ -295,6 +296,7 @@ export class WebchatTransport {
     )
     // Broadcast the reconciliation post daemon-wide so a cold attach through another relay receives it.
     stream.postSink = (p) => this.host.sendWebchatPost(p)
+    if (apiProtocol !== undefined) stream.apiProtocol = apiProtocol
     // Observed-inbound analogue for webchat (turn-final refresh, §5.4): record the user message at
     // ADMISSION so an in-flight generation sees it at the final fence; the identical later append
     // from SessionManager.handle dedups in place on (channel, ts).
@@ -625,6 +627,7 @@ export class WebchatTransport {
       agentId,
       conversationId,
       turnId,
+      origin: transport,
       transport,
       ...(runtime ? { runtime } : {}),
       ...(worktree !== undefined ? { worktree } : {}),
@@ -715,6 +718,7 @@ export class WebchatTransport {
       stream.lastOutputIndex = Math.max(stream.lastOutputIndex, normalized.output.index)
     }
     if (!stream.replayDisabled) this.bufferWebchatStreamEvent(stream, normalized)
+    if (stream.origin !== stream.transport) this.deliverWebchatStreamEvent(stream.origin, normalized)
     this.deliverWebchatStreamEvent(stream.transport, normalized)
     if (normalized.kind === 'done') {
       stream.completedAt = this.host.now()
@@ -796,9 +800,7 @@ export class WebchatTransport {
       return { accepted: false, turnId: stream.turnId, reason: 'stream_cursor_invalid' }
     }
 
-    // Rebind first: outputs produced after this synchronous replay leave through
-    // the same new relay connection. Replay bypasses the stable buffering wrapper
-    // so retained frames are not inserted twice.
+    // Rebind before the unbuffered replay so later outputs follow it; the origin keeps receiving too.
     stream.transport = transport
     for (const buffered of stream.replay) {
       if (buffered.event.kind === 'output' && buffered.event.output.index <= afterIndex) continue

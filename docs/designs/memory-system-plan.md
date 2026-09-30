@@ -20,8 +20,8 @@ provider lifecycle.
 - The Control Plane proxies memory administration. Managed memory with
   `home: control-plane` is the curated-content exception: its home authority
   persists memory bodies, history, and atomic mutation receipts.
-- Runtime-native memory must be isolated per agent or explicitly disabled so
-  two memory systems do not run concurrently.
+- Runtime-native memory runs only under the `native` backend and is disabled
+  under every other one, so two memory systems never run concurrently.
 - Agent-facing tools expose a stable AgentConnect contract rather than
   backend-specific APIs.
 - File paths, record scopes, recall budgets, and capture timing are enforced by
@@ -34,7 +34,7 @@ Each agent selects one provider:
 | Provider       | Behavior                                                                                          |
 | -------------- | ------------------------------------------------------------------------------------------------- |
 | **`managed`**  | AgentConnect owns Markdown memory, exposes common entries, and retains file compatibility tools.  |
-| **`native`**   | The runtime owns memory; the daemon redirects its memory/configuration directory into agent root. |
+| **`native`**   | The runtime owns memory in its own directories; the daemon neither moves nor shows it.            |
 | **`external`** | A registered memory plugin supplies per-turn recall and capture through the canonical plugin ABI. |
 | **`none`**     | Persistent memory is disabled, including verified runtime-native memory mechanisms.               |
 
@@ -86,10 +86,11 @@ The provider supplies spawn-time environment overrides:
 
 - `managed`, `external`, and `none` disable verified runtime-native memory
   features to avoid duplicate or unintended persistence.
-- `native` redirects the supported runtime's memory/configuration directories
-  into the agent root.
-- Unsupported combinations fail closed instead of silently falling back to a
-  host-global memory directory.
+- `native` adds nothing, so the runtime keeps its memory where the launch keeps
+  its state: the host's runtime home under the Host strategy, the private HOME
+  under a sandbox.
+- `none`, `external`, and `native` fail closed on a runtime whose memory
+  behavior is unverified.
 
 Managed memory is runtime-neutral. It supplies standing context through prompt
 injection and exposes common entry tools through the daemon-owned MCP server,
@@ -141,7 +142,7 @@ legacy hand-authored indexes have an explicit preservation path.
 ## 6. Security and Privacy Boundaries
 
 - Memory bodies belong to the configured managed home (daemon-local or Control
-  Plane), the isolated native runtime store, or the selected external backend.
+  Plane), the runtime's own native store, or the selected external backend.
 - Provider configuration contains references and non-secret settings only.
   Credentials use the platform secret store and are never returned in read
   DTOs.

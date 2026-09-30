@@ -8,6 +8,32 @@
  */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
 
+export interface GitlabFeedbackPull {
+  iid: number
+  state: string
+  source_branch: string
+  source_project_id: number
+  target_project_id: number
+  sha: string
+}
+
+export async function gitlabFeedbackPulls(
+  token: string,
+  projectId: bigint,
+  query: { branch?: string; number?: number },
+  client: GitlabApiClient
+): Promise<GitlabFeedbackPull[]> {
+  const root = `/projects/${projectId}/merge_requests`
+  const pulls =
+    query.number !== undefined
+      ? [await gitlabRequest<GitlabFeedbackPull>(`${root}/${query.number}`, { auth: token, client })]
+      : await gitlabPagedGet<GitlabFeedbackPull>(
+          `${root}?state=opened${query.branch ? `&source_branch=${encodeURIComponent(query.branch)}` : ''}`,
+          { auth: token, client }
+        )
+  return pulls.filter((pull) => pull.state === 'opened' && String(pull.target_project_id) === String(projectId))
+}
+
 export type GitlabErrorCode = 'AUTH_REQUIRED' | 'RATE_LIMITED' | 'NOT_FOUND' | 'INTERNAL'
 
 /** GitLab call failure, pre-mapped for route/service handling. */
@@ -765,6 +791,7 @@ export interface GitlabWebhook {
 }
 
 export interface GitlabWebhookEvents {
+  pipeline_events?: boolean
   push_events: boolean
   issues_events: boolean
   merge_requests_events: boolean

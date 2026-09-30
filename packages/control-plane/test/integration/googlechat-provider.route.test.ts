@@ -219,7 +219,7 @@ describe('the deployment app is claimed, never installed per agent (§3, §10.4)
     expect(await prisma.bot.count({ where: { platform: 'googlechat' } })).toBe(0)
   })
 
-  it('never assigns a tenantless row of the deployment app’s project to the relay, where the anchor owns its audience', async () => {
+  it('never assigns a tenantless row of the deployment app’s project to the relay, where the anchor owns its project', async () => {
     const agentId = await placedAgent()
     const { app, relaySends, relay } = harness()
     // An organization's own install of the project, made before the project became the deployment app.

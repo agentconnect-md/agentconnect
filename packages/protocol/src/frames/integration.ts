@@ -150,12 +150,17 @@ export type IntegrationLinearConfig = z.infer<typeof IntegrationLinearConfig>
 // The Google Chat payload (google-chat-integration.md §3): relay-terminated ingress, so the daemon gets egress material only.
 export const IntegrationGoogleChatConfig = z.object({
   projectId: z.string().min(1), // Google Cloud project ID of the Chat app
-  projectNumber: z.string().regex(/^[1-9]\d{0,19}$/), // numeric project number, the app's identity and token audience
+  projectNumber: z.string().regex(/^[1-9]\d{0,19}$/), // numeric project number, the app's identity
   serviceAccountKey: z.string().min(1), // service-account key JSON for chat.bot calls (plaintext — never log)
   // A claimed customer row's tenant keys (§10.3): the daemon lists and writes only inside them; empty for the anchor, which serves none.
   tenantIds: z.array(z.string().min(1)).optional(),
   // A single-tenant row's own keys, recorded from its traffic: Spaces are fenced by its customer, DMs are its own organization's.
-  ownTenantIds: z.array(z.string().min(1)).optional()
+  ownTenantIds: z.array(z.string().min(1)).optional(),
+  // The relay's public events URL, which every card button names as its function (§11.5); no card is built without it.
+  eventsUrl: z
+    .string()
+    .url({ protocol: /^https?$/ })
+    .optional()
 })
 export type IntegrationGoogleChatConfig = z.infer<typeof IntegrationGoogleChatConfig>
 

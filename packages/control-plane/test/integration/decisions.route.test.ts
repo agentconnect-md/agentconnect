@@ -106,7 +106,17 @@ describe('Decision management and standalone preview', () => {
     expect((await patch(editor, { modelSelection })).statusCode).toBe(200)
     expect((await patch(editor, { decisionIds: [id] })).statusCode).toBe(403)
     expect((await owner.app.inject({ method: 'GET', url: `${BASE}/${id}` })).json().usages).toEqual([
-      expect.objectContaining({ kind: 'model_selection', id: agentId })
+      expect.objectContaining({
+        kind: 'model_selection',
+        id: agentId,
+        rules: [
+          {
+            when: { type: 'boolean', values: [true] },
+            then: { type: 'model', runtime: 'claude', model: 'model-capable' }
+          }
+        ],
+        otherwise: { type: 'model', runtime: expect.any(String), model: 'model-standard' }
+      })
     ])
     expect((await editor.app.inject({ method: 'GET', url: `${url}/decisions` })).json()).toEqual([])
     const retained = (

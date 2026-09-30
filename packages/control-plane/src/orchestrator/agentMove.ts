@@ -26,6 +26,7 @@ import {
   type AgentAdditionalInstallation,
   type AgentAdditionalRepo,
   type AgentSkillEntry,
+  type AgentApiGateProjections,
   type HookRoutingProjection,
   type ManagedSkillEntry,
   type CronUpsert,
@@ -168,6 +169,8 @@ interface MoveBundle {
   gitlabHook: boolean
   /** The code-host routings the agent hosts, pinned so activation ships them to the target. */
   hookRoutings?: HookRoutingProjection[]
+  /** The chat API gates with their Decisions, pinned so activation never clears them on the target. */
+  apiGates: AgentApiGateProjections
 }
 
 interface ActivationSnapshot {
@@ -885,7 +888,8 @@ export class AgentMoveService {
       organizationEnvironment,
       { additionalRepos, additionalInstallations },
       gitlabHook,
-      hookRoutings
+      hookRoutings,
+      apiGates
     ] = await Promise.all([
       this.deps.integrations.listForAgent(agent.id),
       this.deps.crons.listForAgent(agent.id),
@@ -895,7 +899,8 @@ export class AgentMoveService {
       this.deps.specs.organizationEnvironmentOf(agent),
       this.deps.specs.workspaceGrantsOf(agent),
       this.deps.specs.gitlabHookOf(agent),
-      this.deps.specs.hookRoutingsOf(agent)
+      this.deps.specs.hookRoutingsOf(agent),
+      this.deps.specs.apiGatesOf(agent)
     ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
@@ -935,7 +940,8 @@ export class AgentMoveService {
       additionalRepos,
       additionalInstallations,
       gitlabHook,
-      ...(hookRoutings !== undefined ? { hookRoutings } : {})
+      ...(hookRoutings !== undefined ? { hookRoutings } : {}),
+      apiGates
     }
   }
 
@@ -955,7 +961,8 @@ export class AgentMoveService {
         bundle.gitlabHook,
         false,
         bundle.hookRoutings,
-        bundle.additionalInstallations
+        bundle.additionalInstallations,
+        bundle.apiGates
       ),
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons

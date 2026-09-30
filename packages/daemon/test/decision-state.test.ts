@@ -41,6 +41,26 @@ const bytes = (state: Record<string, unknown>): number =>
   Buffer.byteLength(decisionRequestBody({ decision: { model: 'jev-1.13.0', question }, state }), 'utf8')
 
 describe('buildDecisionState', () => {
+  it('names the agent it decides for beside the message, and keeps it when history is trimmed', () => {
+    const agent = { name: 'Docs bot', description: 'Answers questions about the product docs.' }
+    const history = Array.from({ length: 12 }, (_, i) => row(i + 1, { text: 'z'.repeat(4_000) }))
+    const built = buildDecisionState({
+      source: 'chat',
+      agent,
+      current: row(20),
+      history: [...history].reverse(),
+      addressing: { mentions: [], target: { agentId: 'bot-a', via: 'implicit' } },
+      full: false,
+      rootMissing: false,
+      question,
+      model: 'jev-1.13.0'
+    })
+    if (built.unsupported) throw new Error('Expected a state')
+    expect(Object.keys(built.state).slice(0, 3)).toEqual(['source', 'agent', 'currentMessage'])
+    expect(built.state.agent).toEqual(agent)
+    expect(built.omittedMessages).toBeGreaterThan(0)
+  })
+
   it('presents history oldest-first with the current message outside it', () => {
     const result = build(row(4), [row(1), row(2), row(3)])
     if (result.unsupported) throw new Error('unsupported')

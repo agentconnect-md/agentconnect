@@ -11,6 +11,8 @@
  */
 import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
+  AgentApiGates,
+  AgentApiProtocol,
   AuthReq,
   ProviderKeyProvider,
   SetProviderKeyInput,
@@ -174,6 +176,7 @@ export type AuditKind =
   | 'api_key_update'
   | 'api_key_revoke'
   | 'mcp_tool_call'
+  | 'agent_api_change'
 
 // ───────────────────────────────────────────────────────────────────────────
 // DaemonRepo (C4) — fleet registry & fencing root (§3.3)
@@ -791,6 +794,7 @@ export interface UpdateAgentInput {
   mcpServers?: string[] | null // replaced wholesale when provided; null clears
   decisionIds?: string[] | null // replaced wholesale; null clears
   modelSelection?: AgentModelSelection | null
+  apiGates?: AgentApiGates | null // replaced wholesale; null or {} clears
   repositorySelector?: AgentRepositorySelector | null // null clears
   skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
   managedSkills?: string[] | null // accepted managed_skill ids; replaced wholesale when provided; null clears
@@ -837,6 +841,7 @@ export interface AgentRecord {
   mcpServers: string[] // from runtimeOverrides.mcpServers ([] when unset ⇒ none attached)
   decisionIds?: string[] // from runtimeOverrides.decisionIds; absent means none
   modelSelection?: AgentModelSelection
+  apiGates?: AgentApiGates // from runtimeOverrides.apiGates: the Decision gate on each chat API the agent added
   repositorySelector?: AgentRepositorySelector // from the repositorySelector* columns; absent means none
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
@@ -1634,7 +1639,13 @@ export interface SessionRepo {
 export interface PullRequestWakeRecord {
   deliveryKey: string
   orgId: OrgId
-  installationId: bigint
+  installationId: bigint | null
+  provider?: CodeHostProvider
+  bindingId?: string
+  host?: string
+  headSha?: string
+  sourceAgentId?: string
+  sourceSessionId?: string
   repoId: bigint
   repoFullName: string
   pullNumber: number
@@ -1662,11 +1673,34 @@ export interface SessionPullRequestFeedbackRepo {
     orgId: OrgId
     repoId: bigint
     repoFullName: string
-    installationId: bigint
+    installationId: bigint | null
+    provider?: CodeHostProvider
+    bindingId?: string
+    host?: string
     pullNumber: number
   }): Promise<boolean>
   /** Dirty one PR wake, at most once per delivery key: a redelivered key is a no-op. */
-  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, signalAt: Date, nextAttemptAt: Date): Promise<void>
+  enqueue(
+    orgId: OrgId,
+    signal: Omit<PullRequestFeedbackSignal, 'installationId'> & {
+      installationId?: string
+      provider?: CodeHostProvider
+      bindingId?: string
+      host?: string
+      headSha?: string
+      sourceAgentId?: string
+      sourceSessionId?: string
+    },
+    signalAt: Date,
+    nextAttemptAt: Date
+  ): Promise<void>
+  owner(
+    orgId: OrgId,
+    provider: CodeHostProvider,
+    bindingId: string,
+    repoId: bigint,
+    pullNumber: number
+  ): Promise<{ agentId: AgentId; sessionId: SessionId } | null>
   /** Cross-process lease for the next due wake that already has a proven session owner. */
   claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null>
   /** Clear only the delivery key that was accepted; a concurrent newer wake remains dirty. */
@@ -1705,12 +1739,37 @@ export interface WebchatResumeBinding {
   currentSessionIds: Array<SessionId | null>
 }
 
+/** A chat API the agent accepts calls on, as its Integrations tab lists it (shared-bot-relay.md §10.4). */
+export interface AgentApiEntryRecord {
+  agentId: AgentId
+  protocol: AgentApiProtocol
+  createdByUserId: string | null
+  createdAt: Date
+}
+
+/** The chat APIs each agent accepts calls on; an absent row refuses that API. */
+export interface AgentApiEntryRepo {
+  listForAgent(agentId: AgentId): Promise<AgentApiEntryRecord[]>
+  /** Idempotent: an existing entry is returned unchanged, with `created: false`. */
+  enable(
+    agentId: AgentId,
+    protocol: AgentApiProtocol,
+    createdByUserId: string | null
+  ): Promise<{ entry: AgentApiEntryRecord; created: boolean }>
+  /** False when there was no such entry. */
+  disable(agentId: AgentId, protocol: AgentApiProtocol): Promise<boolean>
+}
+
 export interface WebchatConversationRepo {
   /** Register a server-allocated conversation before its first relay dial.
    *  `binding.agentId` is the PRIMARY; `memberAgentIds` are the remaining
    *  roster picks in order (webchat-multi-agents.md §3.1 — the roster is fixed
    *  at creation). Conversation + participant rows commit atomically. */
   create(binding: WebchatConversationBinding, memberAgentIds?: AgentId[]): Promise<void>
+  /** Create a single-agent conversation under a caller-derived id unless it exists, converging when two first turns race. */
+  ensure(binding: WebchatConversationBinding, apiKeyId: string): Promise<void>
+  /** The name of the API key that opened each of these conversations through the agent chat API, org-fenced; console conversations are absent. */
+  apiKeyNames(orgId: OrgId, conversationIds: readonly string[]): Promise<Map<string, string>>
   /** The conversation's full roster (primary first, then pick order). Empty
    *  for an unknown conversation — callers fail closed. Org-fenced
    *  (org-scoped-data-layer.md §3): a cross-org conversation id yields the same
@@ -3730,6 +3789,7 @@ export interface GitlabProjectBindingRepo {
   /** Case-insensitive lookup by the CURRENT namespaced path, any lifecycle state —
    *  the §6 derivation's entry point for a URL-addressed managed project. */
   byProjectPath(orgId: string, projectPath: string): Promise<GitlabProjectBindingRecord | null>
+  listAll(): Promise<GitlabProjectBindingRecord[]>
   listForOrg(orgId: string): Promise<GitlabProjectBindingRecord[]>
   /** How many bindings each connection still administers, keyed by connection id
    *  (§7.1): a connection with any is not released and cannot be removed. */
@@ -4113,6 +4173,7 @@ export interface GiteaRepositoryBindingRepo {
   byRepo(orgId: string, repoId: bigint): Promise<GiteaRepositoryBindingRecord | null>
   /** Case-insensitive lookup by the CURRENT owner/repo path, any lifecycle state. */
   byRepoPath(orgId: string, repoPath: string): Promise<GiteaRepositoryBindingRecord | null>
+  listAll(): Promise<GiteaRepositoryBindingRecord[]>
   listForOrg(orgId: string): Promise<GiteaRepositoryBindingRecord[]>
   listForConnection(orgId: string, connectionId: string): Promise<GiteaRepositoryBindingRecord[]>
   update(
@@ -5460,6 +5521,7 @@ export interface DecisionChannelUsage {
   botId: BotId
   channelId: string
   channelName: string | null
+  rules: import('@agentconnect.md/protocol').DecisionUsageRules | null
 }
 
 /** One conversation addressed the way a session key addresses it, not by integration. */
@@ -5615,6 +5677,22 @@ export interface OrgMemberRecord {
   joinedAt: Date
 }
 
+/** A service account is never an owner (daemon-api-key-auth.md §6). */
+export type ServiceAccountRole = Exclude<OrgMemberRole, 'owner'>
+
+/** Domain of every service account's fixed address. */
+export const SERVICE_ACCOUNT_EMAIL_DOMAIN = 'sa.agentconnect.md'
+
+export interface ServiceAccountRecord {
+  userId: string
+  /** Chosen at creation and fixed, since it is part of the address. */
+  name: string
+  email: string
+  displayName: string
+  role: ServiceAccountRole
+  createdAt: Date
+}
+
 // Reusable typed judgments; consumers own their bindings.
 export interface DecisionRepo {
   listForAgent(
@@ -5637,6 +5715,8 @@ export interface DecisionRepo {
     actor: ViewCtx
   ): Promise<{
     decision: import('@agentconnect.md/protocol').DecisionDefinition
+    /** Every agent whose chat API gate uses this Decision; each is bumped in the same tx, its spec carrying the Decision. */
+    consumerAgentIds: AgentId[]
     /** Every integration with a gate on this Decision; incompatible gates are marked Needs review in the same tx. */
     consumerIntegrationIds: IntegrationId[]
     /** Every bot whose router uses this Decision; incompatible routers are marked Needs review in the same tx. */
@@ -5673,6 +5753,7 @@ export interface BotDecisionRoutingUsage {
   botId: BotId
   botName: string
   agentIds: AgentId[]
+  rules: import('@agentconnect.md/protocol').DecisionUsageRules | null
 }
 
 export interface BotDecisionRoutingRepo {
@@ -5725,6 +5806,7 @@ export interface CodeHostDecisionRoutingUsage {
   repoFullName: string
   family: import('@agentconnect.md/protocol').CodeHostRoutingFamily
   agentIds: AgentId[]
+  rules: import('@agentconnect.md/protocol').DecisionUsageRules | null
 }
 
 export interface CodeHostDecisionRoutingRepo {
@@ -5916,6 +5998,28 @@ export interface UserRepo {
 
   /** Attach a known user to an org. */
   addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void>
+
+  /** The org's service accounts, oldest first (daemon-api-key-auth.md §6). */
+  listServiceAccounts(orgId: string): Promise<ServiceAccountRecord[]>
+
+  /** One of the org's service accounts; null for any other user id. */
+  getServiceAccount(orgId: string, userId: string): Promise<ServiceAccountRecord | null>
+
+  /** Create a service account and its one membership; its address is `<name>-<6 random>@sa.agentconnect.md`. */
+  createServiceAccount(orgId: string, input: { name: string; role: ServiceAccountRole }): Promise<ServiceAccountRecord>
+
+  /** Edit a service account's display name or role; throws `OrgMembershipMissing` for any other user id. */
+  updateServiceAccount(
+    orgId: string,
+    userId: string,
+    patch: { displayName?: string; role?: ServiceAccountRole }
+  ): Promise<ServiceAccountRecord>
+
+  /** Remove a service account with the acting owner as repair member, then delete its user row, in one transaction. */
+  deleteServiceAccount(orgId: string, userId: string, actingUserId: string): Promise<void>
+
+  /** Whether `userId` names a service account; false for an unknown id. */
+  isServiceAccount(userId: string): Promise<boolean>
 
   /** The caller's own profile (`GET /me`); null when the row is gone. */
   getProfile(userId: string): Promise<UserProfileRecord | null>

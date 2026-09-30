@@ -1,7 +1,7 @@
 // The one thing the viewer header states about a file that is not measured from its bytes: what language it is. A wrong name is worse than none, so an unmapped extension has to answer null.
 
 import { describe, expect, it } from 'vitest'
-import { langForName, languageLabel } from './highlight'
+import { langForName, languageLabel, splitHtmlLines } from './highlight'
 
 describe('languageLabel', () => {
   it('names the language a mapped extension highlights as', () => {
@@ -33,5 +33,31 @@ describe('languageLabel', () => {
     expect(languageLabel('notes.wat')).toBeNull()
     expect(languageLabel('LICENSE')).toBeNull()
     expect(languageLabel('archive.tar.zst')).toBeNull()
+  })
+})
+
+describe('splitHtmlLines', () => {
+  it('gives each line its own balanced markup, reopening a span that crosses a newline', () => {
+    expect(splitHtmlLines('<span class="c">/* a\nb */</span> x\ny')).toEqual([
+      '<span class="c">/* a</span>',
+      '<span class="c">b */</span> x',
+      'y'
+    ])
+  })
+
+  it('takes CRLF as one line break and leaves no carriage return behind', () => {
+    expect(splitHtmlLines('<span class="c">a\r\nb</span>\r\nc')).toEqual([
+      '<span class="c">a</span>',
+      '<span class="c">b</span>',
+      'c'
+    ])
+  })
+
+  it('keeps nested spans and a trailing empty line', () => {
+    expect(splitHtmlLines('<b class="k"><i>a\nb</i></b>\n')).toEqual([
+      '<b class="k"><i>a</i></b>',
+      '<b class="k"><i>b</i></b>',
+      ''
+    ])
   })
 })

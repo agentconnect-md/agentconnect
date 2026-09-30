@@ -104,6 +104,48 @@ async function seedMoveDaemons(): Promise<void> {
 }
 
 describe('PUT /agents/:id/daemon', () => {
+  it('carries a chat API gate and its Decision into the target activation', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy()
+    running = buildHttpApp(prisma, undefined, live, control as unknown as ControlSender)
+    const decision = (
+      await running.app.inject({
+        method: 'POST',
+        url: `${ORG}/decisions`,
+        payload: {
+          name: 'On topic',
+          providerId: 'typesafe',
+          model: 'jev-1.13.0',
+          visibility: 'org',
+          sharedWith: [],
+          question: {
+            type: 'boolean',
+            instructions: 'Is it about the product?',
+            criteria: { true: 'Yes', false: 'No' }
+          }
+        }
+      })
+    ).json() as { id: string }
+    const gate = { type: 'gate', decisionId: decision.id, when: { type: 'boolean', values: [true] } }
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { runtimeOverrides: { apiGates: { 'ai-sdk-ui': gate } } }
+    })
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    // A bare projection would ship `apiGates: {}` and clear the gate on the target.
+    expect(control.activations.at(-1)?.spec.apiGates).toMatchObject({
+      'ai-sdk-ui': { gate, definitions: [{ id: decision.id }] }
+    })
+  })
+
   it('cold-moves the full dependent bundle and repairs an idempotent retry', async () => {
     await seedMoveDaemons()
     const agentId = randomUUID()

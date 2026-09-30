@@ -13,6 +13,10 @@
  * daemon-facing `rd/hello` handler calls to delegate credential checks to the CP.
  */
 import {
+  CODEHOST_FEEDBACK_FEATURE,
+  type RcCodeHostFeedback,
+  type RcCodeHostFeedbackResult,
+  type RcCodeHostFeedbackWatch,
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
@@ -132,8 +136,8 @@ export interface RelayCpClientDeps {
   onRoutes?: (r: RcRoutes) => void
   onAssign?: (a: RcAssign) => void
   onParticipantAssign?: (a: RcParticipantAssign) => void
-  /** Called on a CP `rc/hook-assign` EVT — upsert one compiled hook rule
-   *  (webhook-triggers doc). The rule carries `hmacSecret` — NEVER log it. */
+  /** Feedback subscriptions and hook rules carry signing keys; never log their payloads. */
+  onFeedbackWatch?: (watch: RcCodeHostFeedbackWatch) => void
   onHookAssign?: (rule: RcHookAssign) => void
   /** Called on a CP `rc/hook-remove` EVT — drop one hook rule. */
   onHookRemove?: (hookId: string) => void
@@ -150,8 +154,7 @@ export interface RelayCpClientDeps {
   onMemoryConnectionUnassign?: (a: RcMemoryConnectionUnassign) => void
   /** Called once the relay reaches READY on each (re)connect. */
   onReady?: () => void
-  /** First authenticated deployment snapshot in this process. Later reconnects
-   *  deliberately do not hot-reload it; an operator restart applies changes. */
+  /** First authenticated snapshot of a stored deployment document in this process; later reconnects never hot-reload it. */
   onDeploymentConfig?: (config: RcDeploymentConfig) => void
   /** Every connection's deployment snapshot, undefined when the CP sent none, for state that must follow the CP's current configuration. */
   onDeploymentSnapshot?: (config: RcDeploymentConfig | undefined) => void
@@ -253,7 +256,11 @@ export class RelayCpClient {
    *
    * `daemonId` is forwarded unverified; CP requires it to match the reviewed install identity.
    */
-  async verify(kind: RcVerify['kind'], credential: string, daemonId?: string): Promise<RcVerifyResult> {
+  async verify(
+    kind: Exclude<RcVerify['kind'], 'agent-chat-key'>,
+    credential: string,
+    daemonId?: string
+  ): Promise<RcVerifyResult> {
     if (this.state !== 'READY' || !this.transport) {
       throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
     }
@@ -264,6 +271,20 @@ export class RelayCpClient {
           ? { kind, credential, ...(daemonId ? { daemonId } : {}) }
           : { kind, credential }
     const rep = await this.sendRequest(buildRelayCpFrame('rc/verify', request))
+    if (rep.type !== 'rc/verify/ok') {
+      throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
+    }
+    return rep.payload
+  }
+
+  /** An API key on the agent chat API, with the agent it names and the caller's chat id (§10.4); throws like {@link verify}. */
+  async verifyAgentChatKey(credential: string, agentId: string, chatId: string): Promise<RcVerifyResult> {
+    if (this.state !== 'READY' || !this.transport) {
+      throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
+    }
+    const rep = await this.sendRequest(
+      buildRelayCpFrame('rc/verify', { kind: 'agent-chat-key', credential, agentId, chatId })
+    )
     if (rep.type !== 'rc/verify/ok') {
       throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
     }
@@ -400,7 +421,18 @@ export class RelayCpClient {
     this.transport.send(JSON.stringify(buildRelayCpFrame('rc/github-installation', poke)))
   }
 
-  /** Persist body-free PR feedback before the webhook response lets GitHub retire the delivery. */
+  /** Persist feedback coordinates before acknowledging the provider webhook. */
+  async reportCodeHostFeedback(signal: RcCodeHostFeedback): Promise<RcCodeHostFeedbackResult> {
+    if (this.state !== 'READY' || !this.serverFeatures.has(CODEHOST_FEEDBACK_FEATURE))
+      throw new WireError('INTERNAL', 'code host feedback is unavailable', true)
+    const rep = await this.sendRequest(buildRelayCpFrame('rc/codehost-feedback', signal), {
+      maxTries: 1,
+      ackTimeoutMs: 30_000
+    })
+    if (rep.type !== 'rc/codehost-feedback/ok') throw new WireError('INTERNAL', 'unexpected feedback response', true)
+    return rep.payload
+  }
+
   async reportPullRequestFeedback(signal: RcPullRequestFeedback): Promise<boolean> {
     if (this.state !== 'READY' || !this.transport) {
       throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
@@ -611,7 +643,8 @@ export class RelayCpClient {
     const ok = authOk.payload as RcAuthOk
     if (!this.deploymentConfigDecided) {
       this.deploymentConfigDecided = true
-      if (ok.deploymentConfig) this.deps.onDeploymentConfig?.(ok.deploymentConfig)
+      // Revision 0 means the CP stores no document, so the startup environment keeps what it set.
+      if (ok.deploymentConfig && ok.deploymentConfig.revision > 0) this.deps.onDeploymentConfig?.(ok.deploymentConfig)
     }
     this.deps.onDeploymentSnapshot?.(ok.deploymentConfig)
 
@@ -635,6 +668,7 @@ export class RelayCpClient {
           GITLAB_COM_V1_FEATURE,
           GITLAB_INSTANCE_V1_FEATURE,
           PULL_REQUEST_FEEDBACK_FEATURE,
+          CODEHOST_FEEDBACK_FEATURE,
           GITEA_V1_FEATURE,
           // This relay arbitrates `decision` routes as human-only candidates and forwards their decisionId.
           DECISION_TRIGGER_V1_FEATURE,
@@ -737,6 +771,10 @@ export class RelayCpClient {
       }
       case 'rc/participant-assign': {
         this.deps.onParticipantAssign?.(frame.payload as RcParticipantAssign)
+        return
+      }
+      case 'rc/codehost-feedback-watch': {
+        this.deps.onFeedbackWatch?.(frame.payload as RcCodeHostFeedbackWatch)
         return
       }
       case 'rc/hook-assign': {

@@ -180,6 +180,9 @@ describe('DecisionEvaluationsDrawer', () => {
     await click(rows()[0])
     const view = detail()!
     expect(view.textContent).toContain('Our invoice charged us twice this month.')
+    // The agent the Decision decided for, as its state named it.
+    expect(view.textContent).toContain('Support bot')
+    expect(view.textContent).toContain('Answers billing and account questions for customers.')
     expect(view.textContent).toContain('U-customer')
     expect(view.textContent).toContain('Someone from billing will reply shortly.')
     expect(view.textContent).toContain('Does currentMessage need a response')
@@ -191,6 +194,7 @@ describe('DecisionEvaluationsDrawer', () => {
     expect(bars[0]!.textContent).toContain('✓ triggers')
     expect(bars[1]!.textContent).not.toContain('✓ triggers')
     expect(result.textContent).toContain('412 in · 3 out tokens')
+    expect(result.textContent).not.toContain('Confidence')
     const raw = [...result.querySelectorAll('details')]
     expect(raw.map((block) => block.querySelector('summary')?.textContent)).toEqual([
       expect.stringContaining('Raw request'),
@@ -199,6 +203,93 @@ describe('DecisionEvaluationsDrawer', () => {
     expect(raw[0]!.querySelector('pre')?.textContent).toContain('"type": "noul"')
     expect(raw[0]!.querySelector('pre')?.textContent).toContain('Our invoice charged us twice this month.')
     expect(raw[1]!.querySelector('pre')?.textContent).toContain('"noul": 0.86')
+  })
+
+  it('switches the model result and instructions to the chain step picked above it', async () => {
+    const api = decisionMock.createDecisionMockApi()
+    const getEvaluation = api.getEvaluation.bind(api)
+    api.getEvaluation = async (ref, seq) => {
+      const base = await getEvaluation(ref, seq)
+      const question = {
+        type: 'choice' as const,
+        instructions: 'Is this a support request?',
+        criteria: { support: 'Needs support', other: 'Anything else' }
+      }
+      return {
+        ...base,
+        chain: [
+          {
+            stepId: '',
+            decisionId: base.decisionId,
+            evaluation: {
+              status: 'answered' as const,
+              answer: base.fullAnswer!,
+              model: 'jev-root',
+              usage: { inputTokens: 412, outputTokens: 3 }
+            }
+          },
+          {
+            stepId: 'step-2',
+            decisionId: 'decision-child',
+            evaluation: {
+              status: 'answered' as const,
+              answer: {
+                type: 'choice' as const,
+                value: 'other',
+                probabilities: { support: 0.2, other: 0.8 },
+                confidence: 0.8
+              },
+              model: 'jev-child',
+              usage: { inputTokens: 90, outputTokens: 5 }
+            }
+          }
+        ],
+        steps: [
+          {
+            stepId: '',
+            decisionId: base.decisionId,
+            providerId: 'typesafe',
+            model: 'jev-root',
+            question: base.snapshot!.question
+          },
+          {
+            stepId: 'step-2',
+            decisionId: 'decision-child',
+            providerId: 'typesafe',
+            model: 'jev-child',
+            question,
+            condition: { type: 'choice' as const, thresholds: { support: 0.5 } },
+            rawRequest: { text: '{"child":"request"}', truncated: false },
+            rawResponse: null
+          }
+        ]
+      }
+    }
+    await render(api)
+    await click(rows()[0])
+    const view = detail()!
+    const steps = [...view.querySelectorAll<HTMLButtonElement>('ol[aria-label] button')]
+    expect(steps).toHaveLength(2)
+    // Each step's answer carries its confidence, as the Result row does.
+    expect(steps[1]!.textContent).toContain('other · 80%')
+    expect(steps[0]!.getAttribute('aria-pressed')).toBe('true')
+    expect(view.querySelector('[data-testid="model-result"]')!.textContent).toContain('86%')
+
+    await click(steps[1])
+    expect(steps[1]!.getAttribute('aria-pressed')).toBe('true')
+    const result = view.querySelector('[data-testid="model-result"]')!
+    const bars = [...result.querySelectorAll('li')]
+    expect(bars.map((bar) => bar.querySelector('div > span')?.textContent)).toEqual(['support', 'other'])
+    expect(bars[0]!.textContent).toContain('≥ 50%')
+    expect(bars[1]!.getAttribute('data-chosen')).toBe('true')
+    expect(result.textContent).not.toContain('✓ triggers')
+    expect(result.textContent).toContain('90 in · 5 out tokens')
+    // Jev's confidence is shown apart from the answer; a Boolean answer has none.
+    expect(result.textContent).toContain('Answer other')
+    expect(result.textContent).toContain('Confidence 80%')
+    expect(result.querySelector('details pre')?.textContent).toContain('"child": "request"')
+    expect(view.textContent).toContain('Is this a support request?')
+    expect(view.textContent).toContain('typesafe / jev-child')
   })
 
   it('draws choice thresholds and marks nothing as triggering for a skipped answer', async () => {

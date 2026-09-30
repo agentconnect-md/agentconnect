@@ -1,4 +1,4 @@
-import type { DecisionQuestion } from '@agentconnect.md/protocol'
+import { decisionAgentContext, type DecisionEvaluationAgent, type DecisionQuestion } from '@agentconnect.md/protocol'
 import { transcriptQuoted, type ChannelTextRow } from '../store/local-store.js'
 import { DECISION_REQUEST_MAX_BYTES, decisionRequestBody } from './evaluator.js'
 
@@ -8,8 +8,14 @@ const BYTES_PER_TOKEN = 4
 /** decisions.md §8.1: one history entry's text cap; the current message is never truncated. */
 export const DECISION_HISTORY_ENTRY_MAX_BYTES = 16 * 1024
 
+/** What a Decision knows of the agent it decides for (decisions.md §8.2). */
+export type DecisionAgentContext = DecisionEvaluationAgent
+export { decisionAgentContext }
+
 export interface DecisionStateInput {
   source?: 'chat'
+  /** The one agent this evaluation decides for; a router choosing among several has none. */
+  agent?: DecisionAgentContext
   current: ChannelTextRow
   /** Newest-first, as `LocalStore.decisionWindow` returns it. */
   history: readonly ChannelTextRow[]
@@ -154,6 +160,7 @@ export function buildDecisionState(input: DecisionStateInput): DecisionStateResu
   return fitDecisionState(
     {
       ...(input.source ? { source: input.source } : {}),
+      ...(input.agent ? { agent: input.agent } : {}),
       currentMessage: current,
       history: candidates.reverse(),
       conversation: input.conversation ?? {},

@@ -85,6 +85,7 @@ export function orgRoutes(deps: HttpDeps) {
       '/orgs',
       {
         preHandler: app.humanAuth,
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Organizations],
           summary: 'Create an organization',
@@ -217,6 +218,7 @@ export function orgScopedRoutes(deps: HttpDeps) {
     r.delete(
       '/',
       {
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Organizations],
           summary: 'Delete the organization',

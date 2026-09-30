@@ -41,6 +41,14 @@ function absoluteConfiguredPath(raw: string, env: NodeJS.ProcessEnv, label: stri
   return resolve(expanded)
 }
 
+/** Kimi Code's login directory: every `credentials/<name>.json` slot plus MCP OAuth under `mcp/`. */
+export function resolveKimiCredentialDir(env: NodeJS.ProcessEnv): string {
+  return join(
+    absoluteConfiguredPath(env.KIMI_CODE_HOME || join(hostHome(env), '.kimi-code'), env, 'host KIMI_CODE_HOME'),
+    'credentials'
+  )
+}
+
 export function resolveClaudeConfigSources(env: NodeJS.ProcessEnv): {
   configDir: string
   globalConfigFile: string

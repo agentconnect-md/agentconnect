@@ -21,6 +21,7 @@ import type { LinearAction, LinearConverger } from '../platforms/linear/turn-out
 import type { QQAction, QQConverger } from '../platforms/qq/turn-output.js'
 import type { GoogleChatAction, GoogleChatConverger } from '../platforms/googlechat/turn-output.js'
 import type { PlatformConnection } from '../platforms/connection-reconciler.js'
+import type { TurnAcknowledgement } from '../platforms/turn-output.js'
 import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
@@ -343,6 +344,8 @@ export interface QueueEntry {
   cancelledReason?: TurnInterruptReason
   /** A newer turn took this conversation's Slack status slot over: teardown leaves it alone. */
   displacedByNewerTurn?: boolean
+  /** The acknowledgement its surface posted at turn start, and the egress lease held until runLoop ends it. */
+  acknowledgement?: { handle: TurnAcknowledgement; release: () => void }
   /** Settles when dispatch() finishes this placed entry's admission bookkeeping: 'run' to
    *  start it, 'drop' when a late rejection withdrew it. The runner awaits this before
    *  starting a shifted entry, so a rejected caller's turn can never already be running. */
@@ -634,6 +637,8 @@ export interface Pending {
   /** True only while a `session/prompt` for this turn is awaiting the runtime — the window a
    *  same-session arrival can be steered into instead of queued. */
   promptInFlight?: boolean
+  /** Whether this admitted turn has started a tool call; later prompts must not retry past that point. */
+  promptRanTool?: boolean
   /** Last proof the runtime is alive on this turn (prompt sent, any update, a human's answer) — the stall watchdog's input (#1915). */
   runtimeActivityAt?: number
   /** `_session/steering` calls this turn has absorbed, bounded by MAX_STEERS_PER_TURN. */

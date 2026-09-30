@@ -35,6 +35,7 @@ vi.mock('@/lib/data', () => ({
   MOCK_MODE: false,
   agentLabel: (a: { name: string; displayName?: string }) => a.displayName || a.name
 }))
+vi.mock('@/components/marks', () => ({ AgentIconView: () => null }))
 vi.mock('@/lib/api', () => ({
   fetchMyApiKeys: vi.fn(async () => mocks.keys),
   createMyApiKey: mocks.createMyApiKey,
@@ -116,12 +117,17 @@ async function type(input: HTMLInputElement, value: string): Promise<void> {
   })
 }
 
-async function choose(selectIndex: number, value: string): Promise<void> {
-  const select = document.querySelectorAll('select')[selectIndex]!
+const field = (label: string) => document.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement
+
+/** Open the field's dropdown and pick the option that reads `option`. */
+async function choose(label: string, option: string): Promise<void> {
   await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!
-    setter.call(select, value)
-    select.dispatchEvent(new Event('change', { bubbles: true }))
+    field(label).click()
+  })
+  const item = [...document.querySelectorAll('[role="menuitemradio"]')].find((b) => b.textContent === option)
+  expect(item, option).toBeTruthy()
+  await act(async () => {
+    ;(item as HTMLButtonElement).click()
   })
 }
 
@@ -177,10 +183,10 @@ describe('ApiKeysCard permissions', () => {
   it('offers the agent selection under Agent chat and sends the chosen agents of the chosen org', async () => {
     await render()
     await click('New key')
-    // Selects: organization, permission, expiry — then the agents scope once Agent chat is chosen.
-    await choose(1, 'agent:chat')
+    // The agents scope appears once Agent chat is chosen.
+    await choose('Permission', 'Agent chat')
     expect(host!.textContent).toContain('All agents')
-    await choose(2, 'selected')
+    await choose('Agents', 'Selected agents')
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0))
     })
@@ -207,7 +213,7 @@ describe('ApiKeysCard permissions', () => {
   it('sends every agent when the scope stays on All agents', async () => {
     await render()
     await click('New key')
-    await choose(1, 'agent:chat')
+    await choose('Permission', 'Agent chat')
     await click('Create')
     expect(mocks.createMyApiKey).toHaveBeenCalledWith({
       orgId: 'o1',
@@ -224,12 +230,10 @@ describe('ApiKeysCard edit and regenerate', () => {
     await render()
     await click('Edit')
     // The dialog opens on the key's own values: org fixed, name filled, expiry kept, permission Full access.
-    const selects = document.querySelectorAll('select')
-    expect((selects[0] as HTMLSelectElement).disabled).toBe(true)
-    expect((selects[0] as HTMLSelectElement).value).toBe('o1')
-    expect((document.querySelector('input.dsinput-field') as HTMLInputElement).value).toBe('before')
-    expect((selects[2] as HTMLSelectElement).value).toBe('keep')
-    expect(host!.textContent).toContain('expires 2026-12-01T00:00:00.000Z')
+    expect(field('Organization').disabled).toBe(true)
+    expect(field('Organization').textContent).toBe('Acme')
+    expect((document.querySelector('input.inp') as HTMLInputElement).value).toBe('before')
+    expect(field('Expires').textContent).toBe('expires 2026-12-01T00:00:00.000Z')
 
     // Nothing changed: Save just closes, no request.
     await clickLast('Save')
@@ -237,9 +241,9 @@ describe('ApiKeysCard edit and regenerate', () => {
     expect(host!.textContent).not.toContain('Edit API key')
 
     await click('Edit')
-    await type(document.querySelector('input.dsinput-field') as HTMLInputElement, 'after')
-    await choose(2, '30')
-    await choose(1, 'read')
+    await type(document.querySelector('input.inp') as HTMLInputElement, 'after')
+    await choose('Expires', '30 days')
+    await choose('Permission', 'Read-only')
     await clickLast('Save')
     expect(mocks.updateMyApiKey).toHaveBeenCalledWith('k1', { name: 'after', expiresInDays: 30, permission: 'read' })
   })
@@ -248,8 +252,8 @@ describe('ApiKeysCard edit and regenerate', () => {
     mocks.keys = [key({ id: 'k1' })]
     await render()
     await click('Edit')
-    await choose(1, 'agent:chat')
-    await choose(2, 'selected')
+    await choose('Permission', 'Agent chat')
+    await choose('Agents', 'Selected agents')
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0))
     })
@@ -282,7 +286,7 @@ describe('ApiKeysCard edit and regenerate', () => {
     })
     const checked = [...document.querySelectorAll('input[type="checkbox"]')] as HTMLInputElement[]
     expect(checked.map((b) => b.checked)).toEqual([true, false])
-    await choose(2, 'all')
+    await choose('Agents', 'All agents')
     await clickLast('Save')
     expect(mocks.updateMyApiKey).toHaveBeenCalledWith('k2', { agents: 'all' })
   })

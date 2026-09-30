@@ -6,6 +6,8 @@
  */
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
 import type { Clock } from '../../src/domain/clock.js'
+import { ownsFeedbackWorkspace } from '../../src/codehost/feedback.service.js'
+import { parseGiteaVersion } from '../../src/gitea/version.js'
 import { OrgId } from '../../src/domain/ids.js'
 import { GiteaBindingService } from '../../src/gitea/binding.service.js'
 import { GiteaConnectionService } from '../../src/gitea/connection.service.js'
@@ -91,8 +93,17 @@ export function buildGiteaSeam(
     catalog: new PgCodeHostRepositoryRepo(prisma),
     clock,
     publicRelayUrl: opts.publicRelayUrl ?? 'https://relay.example.test',
-    desiredWebhookEvents: async (orgId, repoId) =>
-      unionGiteaWebhookEvents(await hookRepo.listForOrgKind(OrgId(orgId), 'gitea'), repoId),
+    desiredWebhookEvents: async (orgId, repoId) => {
+      const binding = await bindings.byRepo(orgId, repoId)
+      const connection = binding ? await connectionRepo.get(orgId, binding.connectionId) : null
+      const agents = await new PgAgentRepo(prisma).list(OrgId(orgId))
+      return unionGiteaWebhookEvents(
+        await hookRepo.listForOrgKind(OrgId(orgId), 'gitea'),
+        repoId,
+        agents.some((agent) => ownsFeedbackWorkspace(agent, 'gitea', repoId)),
+        parseGiteaVersion(connection?.instanceVersion)
+      )
+    },
     syncWorkspacePaths: async (orgId, repoId, repoPath, cloneUrl) => {
       await new PgAgentRepo(prisma).refreshCodeHostRepositoryPath(OrgId(orgId), 'gitea', repoId, repoPath, cloneUrl)
     },

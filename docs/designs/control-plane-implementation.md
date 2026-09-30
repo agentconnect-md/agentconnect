@@ -39,7 +39,7 @@ graph TD
     HTTP["http/ — C2 BFF (Fastify REST + SSE)"]
     WS["ws/ — daemon socket EDGE (server side of protocol)"]
     PORTS["ports.ts — cross-component port interfaces"]
-    ORCH["orchestrator/ — C3 placement · routing · fencing · watchdog"]
+    ORCH["orchestrator/ — C3 placement · routing · fencing"]
     REG["registry/ — C4 daemon auth · register · health"]
     SEC["secrets/ — C5 lease broker (ref only, no plaintext)"]
     PERS["persistence/ — C6 Prisma repos (METADATA ONLY)"]
@@ -115,7 +115,7 @@ packages/control-plane/src/
 │       ├── index.ts          # FrameRouter: type → handler dispatch table
 │       ├── auth.ts           # auth → auth/ok   (epoch mint, resume verdict)
 │       ├── register.ts       # register → register/ok  (reconcile snapshot + drop set)
-│       ├── heartbeat.ts      # heartbeat  (watchdog feed)
+│       ├── heartbeat.ts      # heartbeat liveness and duty renewal
 │       ├── event-session.ts  # event/session metadata convergence
 │       ├── runtime-profile.ts
 │       ├── hook-start.ts     # hook metadata barrier
@@ -126,7 +126,7 @@ packages/control-plane/src/
 │   ├── placement.ts          # Placement: pick daemon for a sessionKey; reconcile; rebalance
 │   ├── outbound.ts           # ControlSender: issues epoch/launch-fenced C→D frames
 │   ├── fencing.ts            # checkEpoch/checkLaunch — pure predicates
-│   ├── watchdog.ts           # missed-heartbeat → freeze → reassignGrace → rebalance (Clock)
+│   ├── watchdog.ts           # unwired missed-heartbeat timer model (Clock)
 │   └── epoch.ts              # epoch and routing-fence helpers
 │
 ├── registry/                 # ─── C4: daemon register / health / token ───────────────
@@ -245,7 +245,7 @@ export interface Orchestrator {
   onLaunched(daemonId: DaemonId, ev: AgentLaunched): void
   onDrained(daemonId: DaemonId, done: DrainDone): void
   onHeartbeat(daemonId: DaemonId, hb: Heartbeat): void
-  onDaemonUnreachable(daemonId: DaemonId): void // watchdog → freeze, reassign after grace
+  onDaemonUnreachable(daemonId: DaemonId): void // unwired watchdog hook
 }
 
 /** C4 — Registry & Auth. */
@@ -382,7 +382,7 @@ model Membership {
 ### 3.3 `Daemon` — fleet registry & fencing root
 
 C4. One row per install. It holds the **`sessionEpoch` fencing root**
-(protocol §3.1), capabilities (§3.3), liveness for the watchdog (§2.2), and
+(protocol §3.1), capabilities (§3.3), liveness observations (§2.2), and
 credential **references** (never plaintext). Onboarding inserts the row in
 `provisioned` status with `sessionEpoch = 0`; successful authentication bumps
 the epoch, registration records host/capability facts, heartbeat updates
@@ -408,14 +408,14 @@ model Daemon {
   // ── fencing root ──
   sessionEpoch   BigInt       @default(0) @db.BigInt                // bumped each successful (re)auth
   routingEpoch   BigInt       @default(0) @db.BigInt                // version of THIS daemon's assignment set
-  // liveness / watchdog
+  // liveness observations
   status         DaemonStatus @default(provisioned)
   health         HealthState  @default(ok)
   load           Json?        @db.JsonB                             // Heartbeat.load {cpu,mem,agents}
   activeSessions Int          @default(0)
   degradedScopes String[]     @default([])                          // Heartbeat.degradedScopes
-  lastSeenAt     DateTime?    @db.Timestamptz(6)                    // drives watchdog
-  unreachableAt  DateTime?    @db.Timestamptz(6)                    // reassignGrace clock origin
+  lastSeenAt     DateTime?    @db.Timestamptz(6)                    // last confirmed heartbeat
+  unreachableAt  DateTime?    @db.Timestamptz(6)                    // legacy watchdog-model timestamp
   createdAt      DateTime     @default(now()) @db.Timestamptz(6)
   updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
   org            Org          @relation(fields: [orgId], references: [id], onDelete: Restrict)
@@ -789,7 +789,15 @@ export class InMemoryDaemonStub implements Transport {
 
 ### 4.3 Connection registry (derived in-memory index)
 
-`ConnectionRegistry` is the index the orchestrator queries to place sessions and the watchdog walks to find stale daemons. It is **derived state** — authoritative routing lives in C6 — but it is what every hot lookup hits. Map key everywhere is `sessionKeyStr = ${platform}:${channel}:${thread ?? "-"}` (`domain/sessionKey.ts`).
+`ConnectionRegistry` is the local socket index used by control dispatch and liveness reads. It is **derived state**; persisted routing lives in C6. The separate watchdog model is not wired in production (§4.9). Session keys use `${platform}:${channel}:${thread ?? "-"}` (`domain/sessionKey.ts`).
+
+This index is process-local in the current implementation. The proposed
+[active-active CP contract](high-availability.md#connection-ownership-and-forwarding)
+keeps local socket ownership behind these ports and adds a shared connection
+directory plus authenticated forwarding. Under that proposed contract, local
+absence must no longer determine
+cluster-wide liveness, deletion safety, or control delivery. The same boundary
+applies to relay connections and the session-event sink.
 
 ```ts
 // src/ws/registry.ts
@@ -816,7 +824,7 @@ export class ConnectionRegistry {
   releaseSession(key: SessionKey): void
   remove(id: string): void
   reachableDaemons(): DaemonConnState[] // placement candidate pool
-  staleSince(deadline: number): DaemonConnState[] // lastBeatAt < deadline — watchdog
+  staleSince(deadline: number): DaemonConnState[] // helper for the unwired watchdog model
 }
 ```
 
@@ -832,7 +840,7 @@ stateDiagram-v2
   AUTHENTICATING --> CLOSED : bad token → close 4401
   REGISTERING --> READY : register → register/ok (reconcile snapshot)
   READY --> DRAINING : daemon/drain issued
-  READY --> CLOSED : socket drop (registry marks unreachable; watchdog grace)
+  READY --> CLOSED : socket drop and local registry cleanup
   DRAINING --> CLOSED : drain/done or deadline
   CLOSED --> [*]
 ```
@@ -967,7 +975,7 @@ export const handleRegister: Handler = async (f, conn, d) => {
 
 `Orchestrator.reconcile` (in `orchestrator/placement.ts`): load C6 rows `WHERE daemon_id = did` → desired `assignments`/`crons`/`leases`; `drop = localState − desired`; re-issue the **same** `routingEpoch` if nothing changed (reconnect is convergence, not replay).
 
-`handleHeartbeat` updates `load`/`health`/`degradedScopes` in the registry and feeds the watchdog (`lastBeatAt = clock.now()`); the WS-level `pong` also calls `watchdog.beat(daemonId)`.
+`handleHeartbeat` records liveness, load and health and runs the duty exchange. The production path does not wire `watchdog.beat`; the timer model in §4.9 must not be treated as a live reassignment service.
 
 ### 4.7 Outbound control (C→D) — `ControlSender` (the single fencing site)
 
@@ -986,9 +994,14 @@ on the daemon's ingress path.
   `STALE_LAUNCH`; `Placement.onStaleLaunch` refreshes `currentLaunch` before
   retrying an applicable control (§4.4).
 
-### 4.9 Watchdog: missed heartbeats → freeze → reassignGrace → rebalance
+### 4.9 Watchdog model (not wired in production)
 
-Two-phase exactly per §2.2/§7. **Freeze** on `3×HEARTBEAT_SEC` of missed pongs+heartbeats (surface in dashboard, no reassignment), then **rebalance** only after `REASSIGN_GRACE_SEC`. Combined with `sessionEpoch` fencing this guarantees no two daemons serve one session across the gap. All timing is `Clock`-driven → fully testable by advancing the fake clock.
+The class below exists, but the current production container constructs it
+without wiring its timers. Its local grace period is not an operational HA
+guarantee; the proposed [shared-liveness contract](high-availability.md#connection-ownership-and-forwarding)
+must preserve placement and duty fences before authorizing reassignment.
+
+This model freezes on `3×HEARTBEAT_SEC` of missed pongs and heartbeats, then considers rebalance after `REASSIGN_GRACE_SEC`. The grace alone cannot prove that a former holder has stopped serving; resource fencing remains necessary. Its `Clock`-driven timers are testable by advancing the fake clock.
 
 ```ts
 // src/orchestrator/watchdog.ts
@@ -1026,13 +1039,17 @@ export class Watchdog {
 
 ### 4.10 Degrade / local-autonomy reconnect resync
 
-On socket drop (`onClose`), the CP freezes assignments, marks the daemon
-unreachable, and starts the watchdog grace period. The daemon keeps serving
-from its local cache while the CP withholds reassignment. On reconnect,
-`AuthReq.resume = { lastEpoch }`; an accepted resume retains the current view,
-while a rejected resume falls back to a full `register` reconciliation.
-`rebalanceFrom` assigns released sessions only after `drain/done` or the
-deadline, preventing a double-assignment window.
+On socket drop, the current CP rejects in-flight requests and removes the
+registry entry only if that socket still owns it. It queues approval cleanup
+on a process-local chain and reconverges HTTP-bot routes; it does not start a
+watchdog grace timer. Reconnect increments `sessionEpoch`; `resume.accepted`
+is always false and registration performs a full reconciliation.
+
+The proposed [HA contract](high-availability.md#connection-ownership-and-forwarding)
+replaces local-only cleanup/visibility with shared ownership fencing and
+preserves healthy routes through a control handoff. Daemon execution remains
+subject to [authority lifetimes](high-availability.md#authority-lifetimes);
+a transport epoch or local timeout alone never proves a resource was released.
 
 ### 4.11 Placement — the only reader/writer of the routing table
 

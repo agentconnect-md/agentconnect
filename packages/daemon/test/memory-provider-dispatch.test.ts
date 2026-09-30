@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RuntimeDef } from '../src/config/config-schema.js'
@@ -10,9 +10,8 @@ import {
   MemoryProviderUnavailableError,
   type MemoryProviderKind
 } from '../src/memory/provider.js'
-import { MEMORY_INDEX, MemoryConflictError, MemoryPathError } from '../src/memory/store.js'
+import { MEMORY_INDEX } from '../src/memory/store.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
-import { isNativeRuntimeSupported, nativeRuntimeEnv } from '../src/memory/runtime/native.js'
 import { localMemoryHome } from '../src/memory/home.js'
 
 function newDir(): string {
@@ -27,28 +26,8 @@ const grok: RuntimeDef = {
 } as unknown as RuntimeDef
 const other: RuntimeDef = { command: 'npx', args: ['gemini-acp'], env: [] } as unknown as RuntimeDef
 
-describe('native-memory: runtime env levers', () => {
-  it('claude → CLAUDE_CONFIG_DIR under the agent root; no disable flag', () => {
-    expect(isNativeRuntimeSupported(claude)).toBe(true)
-    const env = nativeRuntimeEnv(claude, '/agents/bot-a')
-    expect(env).toEqual({ CLAUDE_CONFIG_DIR: join('/agents/bot-a', '.claude') })
-    expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined()
-  })
-
-  it('codex → CODEX_HOME under the agent root', () => {
-    expect(isNativeRuntimeSupported(codex)).toBe(true)
-    expect(nativeRuntimeEnv(codex, '/agents/bot-a')).toEqual({ CODEX_HOME: join('/agents/bot-a', '.codex') })
-  })
-
-  it('an unregistered runtime is not supported for native', () => {
-    expect(isNativeRuntimeSupported(other)).toBe(false)
-    expect(nativeRuntimeEnv(other, '/agents/bot-a')).toEqual({})
-  })
-})
-
 describe('memoryProviderFor (spawn-time provider + env)', () => {
   const agent = (provider: MemoryProviderKind | undefined, runtime = 'claude') => ({
-    dir: '/agents/bot-a',
     runtime,
     ...(provider ? { memory: { provider } } : {})
   })
@@ -68,10 +47,10 @@ describe('memoryProviderFor (spawn-time provider + env)', () => {
     expect(memoryProviderFor(agent(undefined), claude).runtimeEnv()).toEqual({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' })
   })
 
-  it('native+claude redirects CLAUDE_CONFIG_DIR under the agent root', () => {
-    expect(memoryProviderFor(agent('native'), claude).runtimeEnv()).toEqual({
-      CLAUDE_CONFIG_DIR: join('/agents/bot-a', '.claude')
-    })
+  // A host launch keeps the host's own runtime directories and login (#2668), and native memory must stay on.
+  it('native adds neither a directory redirect nor an off-switch', () => {
+    expect(memoryProviderFor(agent('native'), claude).runtimeEnv()).toEqual({})
+    expect(memoryProviderFor(agent('native', 'codex'), codex).runtimeEnv()).toEqual({})
   })
 
   it('none disables runtime-native memory without enabling a daemon store', () => {
@@ -125,16 +104,13 @@ describe('memoryProviderFor (spawn-time provider + env)', () => {
 })
 
 describe('DispatchingMemoryProvider (per-agent routing)', () => {
-  // Three agents: managed, native-claude, and explicitly memoryless.
+  // Three agents: managed, native, and explicitly memoryless.
   const roots: Record<string, string> = {}
   const kinds: Record<string, MemoryProviderKind> = { 'bot-m': 'managed', 'bot-n': 'native', 'bot-0': 'none' }
-  const runtimes: Record<string, RuntimeDef> = { 'bot-m': claude, 'bot-n': claude, 'bot-0': claude }
   function provider() {
     return createMemoryProvider({
       memoryHomePortsFor: (id) =>
         roots[id] === undefined ? undefined : localMemoryHome(new LocalMemoryFs(roots[id]!)),
-      agentDirByAgent: (id) => roots[id],
-      runtimeFor: (id) => runtimes[id],
       providerKindFor: (id) => kinds[id] ?? 'managed'
     })
   }
@@ -153,57 +129,16 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
     expect(p.adminSurfaceForAgent('bot-m')?.shape).toBe('files')
   })
 
-  it('native agent: NO tools, ensure/inject are no-ops, list reads the runtime memory dir', async () => {
-    const root = newDir()
-    roots['bot-n'] = root
+  it('native agent: no tools, injection, or console surface', async () => {
     const p = provider()
-    expect(p.toolsForAgent('bot-n')).toEqual([]) // runtime owns its memory
-    await p.ensure({ agentId: 'bot-n' }, 'bot-n') // no-op, must not throw
-    expect(await p.standingContextAtSessionStart({ agentId: 'bot-n' })).toBe('') // don't double-inject
-    expect(p.adminSurfaceForAgent('bot-n')?.shape).toBe('files')
-    // Seed a claude-style native memory file and confirm list/read surface it.
-    const memDir = join(root, '.claude', 'projects', 'ws-abc', 'memory')
-    mkdirSync(memDir, { recursive: true })
-    writeFileSync(join(memDir, 'MEMORY.md'), '# native index')
-    const files = await p.list({ agentId: 'bot-n' })
-    expect(files.some((f) => f.name.endsWith('MEMORY.md'))).toBe(true)
-    const nativeFile = files.find((f) => f.name.endsWith('MEMORY.md'))!
-    const read = await p.read({ agentId: 'bot-n' }, nativeFile.name)
-    expect(read.content).toBe('# native index')
-    await expect(p.write({ agentId: 'bot-n' }, nativeFile.name, '# stale write', 'stale')).rejects.toBeInstanceOf(
-      MemoryConflictError
-    )
-    await expect(
-      p.write({ agentId: 'bot-n' }, nativeFile.name, '# current write', nativeFile.mtime)
-    ).resolves.toMatchObject({ ok: true, path: nativeFile.name })
-  })
-
-  it('native write rejects a symlinked parent that leaves the agent root', async () => {
-    const root = newDir()
-    roots['bot-n'] = root
-    const nativeParent = join(root, '.claude', 'projects', 'ws-abc')
-    const outside = newDir()
-    mkdirSync(nativeParent, { recursive: true })
-    symlinkSync(outside, join(nativeParent, 'memory'))
-
-    await expect(provider().write({ agentId: 'bot-n' }, 'ws-abc/memory/MEMORY.md', '# escaped')).rejects.toBeInstanceOf(
-      MemoryPathError
-    )
-    expect(existsSync(join(outside, 'MEMORY.md'))).toBe(false)
-  })
-
-  it('native read rejects a symlinked parent that leaves the agent root', async () => {
-    const root = newDir()
-    roots['bot-n'] = root
-    const nativeParent = join(root, '.claude', 'projects', 'ws-abc')
-    const outside = newDir()
-    mkdirSync(nativeParent, { recursive: true })
-    writeFileSync(join(outside, 'MEMORY.md'), 'PRIVATE-KEY')
-    symlinkSync(outside, join(nativeParent, 'memory'))
-
-    await expect(provider().read({ agentId: 'bot-n' }, 'ws-abc/memory/MEMORY.md')).rejects.toBeInstanceOf(
-      MemoryPathError
-    )
+    const scope = { agentId: 'bot-n' }
+    expect(p.toolsForAgent('bot-n')).toEqual([])
+    await p.ensure(scope, 'bot-n')
+    expect(await p.standingContextAtSessionStart(scope)).toBe('')
+    expect(p.adminSurfaceForAgent('bot-n')).toBeNull()
+    expect(await p.list(scope)).toEqual([])
+    await expect(p.read(scope, MEMORY_INDEX)).rejects.toThrow('native memory is not exposed')
+    await expect(p.write(scope, MEMORY_INDEX, '# nope')).rejects.toThrow('native memory is not exposed')
   })
 
   it('none: no tools, store, injection, or writes', async () => {

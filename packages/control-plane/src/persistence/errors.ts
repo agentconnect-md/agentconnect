@@ -458,6 +458,16 @@ export class OrgOwnerRequired extends Error {
   }
 }
 
+/** Adding a member by email reached a service account, which belongs to exactly one organization. */
+export class ServiceAccountNotAddable extends Error {
+  readonly code = 'SERVICE_ACCOUNT_NOT_ADDABLE' as const
+
+  constructor() {
+    super('this address belongs to a service account and cannot be added as a member')
+    this.name = 'ServiceAccountNotAddable'
+  }
+}
+
 /** A non-admin account reached the org creation quota; the message states the ceiling, never who is exempt. */
 export class OrgCreationLimitReached extends Error {
   readonly code = 'ORG_CREATION_LIMIT_REACHED' as const

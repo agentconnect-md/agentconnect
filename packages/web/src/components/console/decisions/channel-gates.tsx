@@ -4,11 +4,12 @@
 
 import type { ReactNode } from 'react'
 import { useConsoleData } from '@/lib/data-context'
-import type { IntegrationChannelRow } from '@/lib/data'
+import { isDirectConversation, type IntegrationChannelRow } from '@/lib/data'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { gateStatus, savedGateOf, type SavedGate } from '@/lib/decisions/binding'
+import type { ChannelDecisionGate } from '@agentconnect.md/protocol/decision'
 import { channelListSemantics } from '@/components/console/platforms/registry'
-import { DecisionBindingStrip, DecisionGateEntry } from './DecisionBindingStrip'
+import { DecisionBindingStrip, DecisionGateEntry, editDraftFor } from './DecisionBindingStrip'
 
 /** A row's trigger choice; `decision` saves only with its gate, through the rules modal. */
 export type GateTrigger = IntegrationChannelRow['trigger'] | 'decision'
@@ -103,19 +104,76 @@ export function useChannelGates() {
     integrationId,
     row,
     agentName,
-    padX
+    padX,
+    siblings,
+    modalOnly = false
   }: {
     botId: string | undefined
     integrationId: string | undefined
     row: IntegrationChannelRow
     agentName: string
     padX: number
+    /** Render only the rules modal while a draft is open, never the status under a row. */
+    modalOnly?: boolean
+    /** Every conversation of the same bot, for Apply to all; each writes through its own integration. */
+    siblings?: {
+      platform: string | undefined
+      rows: { integrationId: string | undefined; row: IntegrationChannelRow }[]
+    }
   }): ReactNode => {
     if (!decisions) return null
     const key = bindingKey(botId, row)
     const saved = savedGate(botId, row)
     if (!drafts[key] && !saved) return null
     const gate = mockGate(botId, row)
+    const write = (
+      target: { integrationId: string | undefined; row: IntegrationChannelRow },
+      next: ChannelDecisionGate
+    ) =>
+      mode === 'mock'
+        ? Promise.resolve(
+            decisions.setGate(bindingKey(botId, target.row), {
+              ...next,
+              channelName: labelOf(target.row),
+              needsReview: false
+            })
+          )
+        : setChannelDecision(target.integrationId!, target.row.channelId, next)
+    // Every channel (not a DM) the platform offers By decision in and the viewer can write, each once.
+    const targets = (siblings?.rows ?? []).filter(
+      (target, at, all) =>
+        !!target.integrationId &&
+        !isDirectConversation(target.row.kind) &&
+        offers(siblings!.platform, target.row) &&
+        all.findIndex((other) => other.row.channelId === target.row.channelId) === at
+    )
+    // A DM's rules stay its own, so the bulk action starts only from a channel.
+    const applyAll =
+      integrationId &&
+      !isDirectConversation(row.kind) &&
+      targets.some((target) => target.row.channelId !== row.channelId)
+        ? {
+            count: targets.length + (targets.some((target) => target.row.channelId === row.channelId) ? 0 : 1),
+            onApply: async (next: ChannelDecisionGate) => {
+              const all = [
+                { integrationId, row },
+                ...targets.filter((target) => target.row.channelId !== row.channelId)
+              ]
+              // One at a time, so a refusal names what failed and the rest still land.
+              const failed: string[] = []
+              let cause: unknown = null
+              for (const target of all) {
+                try {
+                  await write(target, next)
+                } catch (error) {
+                  failed.push(labelOf(target.row))
+                  cause ??= error
+                }
+              }
+              return { failed, cause }
+            }
+          }
+        : undefined
     return (
       <DecisionBindingStrip
         bindingKey={key}
@@ -127,22 +185,41 @@ export function useChannelGates() {
         saved={saved}
         savedName={mode === 'live' ? (row.decision?.name ?? null) : undefined}
         status={
-          !saved ? null : mode === 'live' ? gateStatus(row.decision) : gate?.needsReview ? 'needs_review' : 'ready'
+          !saved || modalOnly
+            ? null
+            : mode === 'live'
+              ? gateStatus(row.decision)
+              : gate?.needsReview
+                ? 'needs_review'
+                : 'ready'
         }
-        onSave={(next) =>
-          mode === 'mock'
-            ? Promise.resolve(
-                decisions.setGate(key, {
-                  ...next,
-                  channelName: labelOf(row),
-                  needsReview: false
-                })
-              )
-            : setChannelDecision(integrationId!, row.channelId, next)
-        }
+        {...(applyAll ? { applyAll } : {})}
+        onSave={(next) => write({ integrationId, row }, next)}
       />
     )
   }
 
-  return { decisions, offered, bindingKey, rowTrigger, busy, pickTrigger, decisionTriggers, offers, entry, strip }
+  /** Open a saved gate's rules modal, as its pill does; false when the row has none. */
+  const edit = (botId: string | undefined, row: IntegrationChannelRow): boolean => {
+    const saved = savedGate(botId, row)
+    if (!decisions || !saved) return false
+    const decision = decisions.decisions.find((entry) => entry.id === saved.decisionId) ?? null
+    decisions.setBindingDraft(bindingKey(botId, row), (current) => current ?? editDraftFor(saved, decision))
+    return true
+  }
+
+  return {
+    decisions,
+    offered,
+    bindingKey,
+    saved: savedGate,
+    rowTrigger,
+    busy,
+    pickTrigger,
+    decisionTriggers,
+    offers,
+    entry,
+    strip,
+    edit
+  }
 }

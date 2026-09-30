@@ -12,6 +12,7 @@ import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
+import { ownsFeedbackWorkspace } from '../../codehost/feedback.service.js'
 import { OrgId } from '../../domain/ids.js'
 import { Tag } from '../plugins/openapi.js'
 import { GITEA_REQUIRED_TOKEN_SCOPES, GiteaConnectDenied } from '../../gitea/connection.service.js'
@@ -27,7 +28,7 @@ import {
 import { REPOSITORY_IN_USE_REASON } from '../../gitea/binding-state.js'
 import { collectGiteaReferences, describeGiteaReferences } from '../../gitea/references.js'
 import { unionGiteaWebhookEvents } from '../../gitea/webhook-events.js'
-import { GITEA_MINIMUM_VERSION_LABEL, parseGiteaVersion } from '../../gitea/version.js'
+import { parseGiteaVersion } from '../../gitea/version.js'
 import {
   ConnectGiteaBody,
   CreateGiteaRepositoryBody,
@@ -59,7 +60,7 @@ const ERROR_NAMES = {
 
 type GiteaWebhookState = GiteaRepositoryBindingDtoT['webhookState']
 
-/** The managed webhook's state (§7); a repository no enabled trigger points at wants no ingress. */
+/** A webhook is needed by enabled triggers or a writable primary workspace. */
 function webhookStateOf(r: GiteaRepositoryBindingRecord, wanted: boolean): GiteaWebhookState {
   if (!wanted) return 'not_needed'
   if (r.webhookId !== null) return 'installed'
@@ -99,7 +100,9 @@ function connectionToDto(
     instanceUrl,
     instanceVersion: r.instanceVersion,
     instanceVersionSupported: r.instanceVersion !== null ? parseGiteaVersion(r.instanceVersion).supported : null,
-    instanceVersionFloor: GITEA_MINIMUM_VERSION_LABEL,
+    // The product the instance reported and its floor; Gitea's until first contact.
+    instanceProduct: parseGiteaVersion(r.instanceVersion).product,
+    instanceVersionFloor: parseGiteaVersion(r.instanceVersion).floor,
     requiredScopes: [...GITEA_REQUIRED_TOKEN_SCOPES],
     lastVerifiedAt: r.lastVerifiedAt ? r.lastVerifiedAt.toISOString() : null,
     createdAt: r.createdAt.toISOString()
@@ -148,7 +151,13 @@ export function giteaRoutes(deps: HttpDeps) {
     // Whether a repository wants ingress, from the same authority the provisioner converges against.
     const webhookWanted = async (orgId: string): Promise<(repoId: bigint) => boolean> => {
       const hooks = await deps.repos.hook.listForOrgKind(OrgId(orgId), 'gitea')
-      return (repoId) => unionGiteaWebhookEvents(hooks, repoId) !== null
+      const agents = await deps.repos.agent.list(OrgId(orgId))
+      return (repoId) =>
+        unionGiteaWebhookEvents(
+          hooks,
+          repoId,
+          agents.some((agent) => ownsFeedbackWorkspace(agent, 'gitea', repoId))
+        ) !== null
     }
     const connectionDto = async (orgId: string, record: GiteaConnectionRecord): Promise<GiteaConnectionDtoT> =>
       connectionToDto(
@@ -164,7 +173,7 @@ export function giteaRoutes(deps: HttpDeps) {
           tags: [Tag.Gitea],
           summary: 'Connect Gitea with a bot token',
           description:
-            'Verifies a bot user’s personal access token against the instance (§4.1): reads the user, applies the 1.23 floor, probes the required scopes (read:user, write:repository, write:issue, read:organization), refuses a bot already serving another connection on this deployment and a second connection in this organization, then seals the token. The token is write-only and never returned.',
+            'Verifies a bot user’s personal access token against the instance (§4.1): reads the user, applies the version floor (Gitea 1.23, Forgejo 15), probes the required scopes (read:user, write:repository, write:issue, read:organization), refuses a bot already serving another connection on this deployment and a second connection in this organization, then seals the token. The token is write-only and never returned.',
           operationId: 'connectGitea',
           body: ConnectGiteaBody,
           response: { 200: GiteaConnectionDto, 400: ErrorDto, 403: ErrorDto, 409: ErrorDto, 502: ErrorDto }

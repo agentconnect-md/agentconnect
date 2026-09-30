@@ -245,6 +245,21 @@ describe('POST /bots/:id/decision-routing/preview', () => {
       conversation: { name: 'general' },
       addressing: { mentions: [], constraint: { eligibleAgentIds: [], participantAgentIds: [] } }
     })
+    // The run as the bot's Recent evaluations detail reads it.
+    expect(res.json().detail).toMatchObject({
+      channel: 'C1',
+      title: 'Invoice API fails',
+      outcome: 'routed',
+      evaluated: true,
+      matchedRuleIds: ['r-billing', 'r-tech'],
+      targets: [
+        { agentId: a.agentId, effect: 'selected', disposition: 'admitted', reason: null },
+        { agentId: b.agentId, effect: 'selected', disposition: 'admitted', reason: null }
+      ],
+      snapshot: { routing: config, defaultAgentId: a.agentId },
+      constraint: [],
+      input: { currentMessage: { text: 'Invoice API fails' }, history: [{ sender: { id: 'U1' }, text: 'Hello?' }] }
+    })
     expect(await writes()).toBe(before)
   })
 
@@ -323,7 +338,8 @@ describe('POST /bots/:id/decision-routing/preview', () => {
         reason: 'provider',
         fallback: 'default',
         targets: [{ agentId: a.agentId, effect: 'fallback_default' }]
-      }
+      },
+      detail: { outcome: 'fallback', reason: 'provider', answer: null }
     })
   })
 
