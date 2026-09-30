@@ -1532,7 +1532,7 @@
       "gitlab": "GitLab",
       "connectGitlab": "连接 GitLab",
       "connectMyAccount": "连接我的账户",
-      "gitlabVersionRequirement": "设置新项目和机器人需要 {version} 或更高版本。已经设置的项目会继续工作，直到凭据过期。",
+      "gitlabVersionRequirement": "设置项目和机器人需要 GitLab {version} 或更高版本。现有凭据在过期前仍可使用，但 webhook 投递可能停止。",
       "gitlabNotEnabled": "此部署未启用 GitLab，尚未配置 GitLab 应用。",
       "gitlabNotConnectedHint": "请连接一个对项目拥有 Maintainer 或 Owner 权限的 GitLab 账户。添加触发器或 Agent 工作区时即可选择项目，AgentConnect 会在那里设置项目机器人和 Webhook。",
       "reconnectNeeded": "需要重新连接",

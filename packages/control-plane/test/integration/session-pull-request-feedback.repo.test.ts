@@ -205,6 +205,45 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     ).toMatchObject({ sessionId, deliveryKey: null, nextAttemptAt: null })
   })
 
+  it.each(['human-first', 'human-last', 'concurrent'] as const)(
+    'preserves independent feedback when coalescing before association: %s',
+    async (order) => {
+      const repo = new PgSessionPullRequestFeedbackRepo(prisma)
+      const sessionId = randomUUID()
+      await seedEligibleSession(sessionId)
+      const human = signal('human', 77)
+      const pinned = {
+        ...signal('review', 77),
+        headSha: 'old-head',
+        sourceAgentId: AGENT_ID,
+        sourceSessionId: sessionId
+      }
+      const signals = order === 'human-last' ? [pinned, human] : [human, pinned]
+      if (order === 'concurrent') {
+        await Promise.all(signals.map((value) => repo.enqueue(ORG_ID, value, NOW, NOW)))
+      } else {
+        for (const value of signals) await repo.enqueue(ORG_ID, value, NOW, NOW)
+      }
+      await expect(link(repo, sessionId, 77)).resolves.toBe(true)
+      const owner = randomUUID()
+      const until = new Date(NOW.getTime() + 60_000)
+      const mixed = await repo.claimNext(owner, NOW, until)
+      expect(mixed).toMatchObject({ sessionId })
+      expect(mixed?.headSha).toBeUndefined()
+      expect(mixed?.sourceAgentId).toBeUndefined()
+      expect(mixed?.sourceSessionId).toBeUndefined()
+      await repo.complete(mixed!, owner)
+
+      // A completed batch must not remove the next batch's head or author fences.
+      await repo.enqueue(ORG_ID, { ...pinned, deliveryKey: 'next-review', headSha: 'new-head' }, NOW, NOW)
+      expect(await repo.claimNext(owner, NOW, until)).toMatchObject({
+        headSha: 'new-head',
+        sourceAgentId: AGENT_ID,
+        sourceSessionId: sessionId
+      })
+    }
+  )
+
   it('never re-dirties a PR for a redelivered key, even after its wake was admitted', async () => {
     const repo = new PgSessionPullRequestFeedbackRepo(prisma)
     const sessionId = randomUUID()

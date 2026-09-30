@@ -110,7 +110,7 @@ export class FakeGitlab {
       accessLevel: options.accessLevel ?? 50,
       namespaceKind: options.namespaceKind ?? 'group',
       baseUrl: options.baseUrl ?? 'https://gitlab.com',
-      version: options.version ?? '18.11.0-ee',
+      version: options.version ?? '19.1.0-ee',
       ...options
     }
     this.version = this.opts.version

@@ -1532,7 +1532,7 @@
       "gitlab": "GitLab",
       "connectGitlab": "Connect GitLab",
       "connectMyAccount": "Connect my account",
-      "gitlabVersionRequirement": "Setting up new projects and bots needs {version} or later. Projects already set up keep working until their credentials expire.",
+      "gitlabVersionRequirement": "Setting up projects and bots requires GitLab {version} or later. Existing credentials remain available until they expire, but webhook delivery may stop.",
       "gitlabNotEnabled": "Not enabled on this deployment — no GitLab application is configured.",
       "gitlabNotConnectedHint": "Connect a GitLab account with Maintainer or Owner access to your projects. You then pick a project when you add a trigger or an agent workspace, and AgentConnect sets up its project bot and webhook there.",
       "reconnectNeeded": "reconnect needed",

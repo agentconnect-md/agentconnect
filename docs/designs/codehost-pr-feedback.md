@@ -29,7 +29,7 @@ migration. Relay registration replays the current subscriptions.
 
 | Provider                    | Feedback admitted                                                                        |
 | --------------------------- | ---------------------------------------------------------------------------------------- |
-| GitLab                      | Human MR notes and diff comments; failed pipelines for the current source SHA            |
+| GitLab 19.1+                | Human MR notes and diff comments; failed pipelines for the current source SHA            |
 | Gitea 1.23+ and Forgejo 15+ | Human PR comments and reviews with content, or a changes-requested verdict               |
 | Gitea 1.25+                 | Also failed commit statuses and failed completed Actions runs for the current source SHA |
 
@@ -58,6 +58,11 @@ Delivery receipts are scoped per provider, binding, repository and PR, so one
 failed commit shared by multiple PRs can notify each author without a redelivery
 duplicating their turns. Claim leases and durable daemon admission handle
 reconnects and retries.
+
+Coalescing preserves independent reasons to wake: an unpinned comment remains
+eligible if a CI signal's SHA becomes stale, and mixed authors cannot turn the
+whole batch into a self-wake. Completed batches do not weaken later events'
+head or author checks.
 
 Before dispatch, the Control Plane rechecks current workspace write authority,
 the live binding and host, the open PR, and the source SHA when the signal has

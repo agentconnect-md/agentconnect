@@ -2204,11 +2204,10 @@ IDs, tokens, and signing secrets.
 
 > Status: **Implemented** — the N0–N4 sequence in §24.6 is merged. Everything
 > above was pinned to GitLab.com; this section removes the pin. Scope:
-> **GitLab Self-Managed 18.11 or later, one instance per deployment** — a
+> **GitLab Self-Managed 19.1 or later, one instance per deployment** — a
 > deployment connects to GitLab.com or to one self-managed instance, never
 > both. GitLab Dedicated, plain HTTP, mTLS, SSH remotes, and instances below
-> the floor stay outside the contract. Platform assumptions verified
-> 2026-08-23. Operator-facing setup is
+> the floor stay outside the contract. Operator-facing setup is
 > https://docs.agentconnect.md/docs/deployment-and-configuration#gitlab, and
 > the user-facing page is https://docs.agentconnect.md/docs/gitlab.
 
@@ -2252,21 +2251,25 @@ repository claim's uniqueness key `(provider, externalId)` is only unique
 within one instance. Revisit for a customer with two instances they intend to
 keep; the claim-key migration is the first pull request then.
 
-### 24.2 The 18.11 Floor
+### 24.2 The 19.1 Floor
 
-Service accounts became generally available on every tier, Community Edition
-included, at 18.11; below it the Free-tier answer hides behind instance
-feature flags the API does not report. Enforcement is two-stage: the Setup
+Service accounts reached the EE Free tier in 18.11; that release's CE API
+still lacks them. The binding also requires Standard Webhooks signing:
+`signing_token` arrived in 19.0 behind a feature flag and became generally
+available in 19.1. GitLab 18.11 silently ignores that field when creating a
+hook, so provisioning succeeds while the relay rejects every unsigned event.
+The supported floor is therefore **19.1**, whose service-account API is also
+available in CE. Enforcement is two-stage: the Setup
 Server issues an unauthenticated `GET /api/v4/version` when the URL is saved
 — a healthy API root answers `401`, proving DNS, TLS trust, and shape, the
 things that fail more often than the version — and the Control Plane parses
 the authenticated version at first credentialed contact, recording it on the
-deployment and refreshing it on reconciliation. Below the floor, or
-unparseable (fail closed), the connection is refused with
+deployment and refreshing it on reconciliation. Below the floor, or an
+unparseable version (fail closed), the connection is refused with
 `instance_version_unsupported` before provisioning begins. The floor gates
-provisioning, not runtime: an instance downgraded under live bindings keeps
-serving existing sessions until credentials expire, the bounded degradation
-of Section 19.1.
+provisioning, not runtime: existing credentials remain available until they
+expire, but a downgrade can stop webhook delivery when the instance no longer
+supports signing. Established sessions can still run independently of ingress.
 
 Only URL shape blocks a Setup Server save; unreachability and an untrusted
 chain warn, because the Setup Server and the Control Plane need not share a
@@ -2311,7 +2314,7 @@ A deployment-wide instance-administrator credential (a PAT with `api` +
 rejected: it crosses the organization boundary every other GitLab credential
 respects, and it is a single point of provisioning failure with no
 self-healing. Project service accounts were also rejected despite being the
-one shape a Free/CE project Maintainer can create without any setting: the
+one shape a Free-tier project Maintainer can create without any setting: the
 shipped identity is one account per (organization, agent, top-level group)
 following the agent across the root's projects, and a project service
 account cannot follow its agent anywhere.

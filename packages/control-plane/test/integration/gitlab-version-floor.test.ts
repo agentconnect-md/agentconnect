@@ -1,11 +1,4 @@
-/**
- * The 18.11 instance version floor (gitlab-com-integration.md §24.2) end to end
- * over real Postgres: a below-floor instance is refused at the first
- * credentialed call with nothing provisioned, an at-floor one connects and
- * provisions normally, and an instance that downgrades under a live binding
- * converges on refusing NEW provisioning while everything already provisioned
- * is left exactly as it was.
- */
+// Real Postgres verifies the GitLab 19.1 gate and credential preservation after a downgrade (§24.2).
 import { describe, expect, it, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
@@ -40,8 +33,8 @@ const INSTANCE = 'https://gitlab.example.test'
 const PROJECT = 4455667n
 /** A second project, so "new provisioning" can be asked for after a downgrade. */
 const OTHER_PROJECT = 4455668n
-const AT_FLOOR = '18.11.0-ee'
-const BELOW_FLOOR = '18.10.9-ee'
+const AT_FLOOR = '19.1.0-ee'
+const BELOW_FLOOR = '19.0.9-ee'
 // Real-time clock whose pending timers die with the test — see fakes/tracked-clock.ts.
 const clock = trackedTestClock()
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)

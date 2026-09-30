@@ -183,18 +183,22 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
           signalAt,
           nextAttemptAt
         },
-        update: {}
+        // Take the row's write lock before combining independently valid feedback.
+        update: { repoFullName: signal.repoFullName }
       })
       if (row.deliveryKey === signal.deliveryKey) return
+      const pending = row.deliveryKey !== null
+      const sameSource =
+        row.sourceAgentId === (signal.sourceAgentId ?? null) && row.sourceSessionId === (signal.sourceSessionId ?? null)
       await tx.sessionPullRequest.updateMany({
         where: { ...key, OR: [{ deliveryKey: null }, { deliveryKey: { not: signal.deliveryKey } }] },
         data: {
           installationId,
           repoFullName: signal.repoFullName,
           host: signal.host,
-          headSha: signal.headSha ?? null,
-          sourceAgentId: signal.sourceAgentId ?? null,
-          sourceSessionId: signal.sourceSessionId ?? null,
+          headSha: pending && row.headSha === null ? null : (signal.headSha ?? null),
+          sourceAgentId: pending && !sameSource ? null : (signal.sourceAgentId ?? null),
+          sourceSessionId: pending && !sameSource ? null : (signal.sourceSessionId ?? null),
           deliveryKey: signal.deliveryKey,
           signalAt,
           nextAttemptAt
