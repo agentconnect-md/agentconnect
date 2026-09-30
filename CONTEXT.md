@@ -49,3 +49,21 @@ conversation's activation gate and a shared bot's router are the first two.
 **Evaluation host** — for a conversation whose routing is judged once for several candidate
 agents, the one daemon that performs that judgment and then distributes the result. An internal
 execution role, not an agent and not a user-facing choice.
+
+## Workspace materialization
+
+**Source** — upstream content a workspace or a skill is built from: a Git repository, or a
+non-Git file collection. It can always be fetched again from where it lives.
+
+**Source Cache** — the cluster's evictable copy of Sources, held so a new pod need not fetch them
+whole from upstream. Emptying it makes the next start slower and never loses anything.
+_Avoid_: repo cache, download cache (when it means both kinds of stored content)
+
+**Workspace Snapshot** — a durable capture of workspace content that exists nowhere upstream:
+files an agent or user produced, including uncommitted changes. Losing one loses work.
+_Avoid_: backup, cache
+
+**Source resolution** — the trusted step that turns a Source's ref into the exact revision to
+use, performed with the requesting agent's own access. A successful resolution is also the proof
+that the agent may read that Source's cached content.
+_Avoid_: ref lookup, access check (as separate concepts)
