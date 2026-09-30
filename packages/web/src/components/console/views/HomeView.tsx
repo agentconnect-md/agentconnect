@@ -631,17 +631,10 @@ export default function HomeView() {
               </>
             )}
           </div>
-          {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
-            instead of wrapping into a second toolbar line. Except with a
-            multi-agent roster: those chips are unbounded in count, so no amount
-            of truncation bounds one line — let that case wrap. */}
-          <div
-            className={
-              multi
-                ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
-                : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
-            }
-          >
+          {/* Wraps: a roster's chips are unbounded in count, and on phones even one
+            agent + model + isolation do not fit one line legibly — pills still
+            truncate (min-w-0) when a single one is wider than the line. */}
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             {agent ? (
               <>
                 {multi ? (
