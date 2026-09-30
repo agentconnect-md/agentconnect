@@ -20,7 +20,8 @@ import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 import {
   PgAgentMemoryFileRepo,
-  PgAgentMemoryHistoryRepo
+  PgAgentMemoryHistoryRepo,
+  PgAgentMemoryStoreOperationRepo
 } from '../../src/persistence/repositories/agent-memory.repo.js'
 import { AgentMemoryStoreService } from '../../src/agent-memory/store.service.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
@@ -43,7 +44,11 @@ function deps(): DaemonWsDeps {
     log: { error: vi.fn() },
     agent: new PgAgentRepo(prisma),
     placementResolver: new PlacementResolver({ duties: new PgDutyGroupRepo(prisma), clock: systemClock }),
-    agentMemoryStore: new AgentMemoryStoreService(new PgAgentMemoryFileRepo(prisma), clock),
+    agentMemoryStore: new AgentMemoryStoreService(
+      new PgAgentMemoryFileRepo(prisma),
+      clock,
+      new PgAgentMemoryStoreOperationRepo(prisma)
+    ),
     agentMemoryHistory: new PgAgentMemoryHistoryRepo(prisma)
   } as unknown as DaemonWsDeps
 }
@@ -55,7 +60,8 @@ async function store(
   daemonId: string,
   agentId: string,
   op: MemoryFsPayload,
-  orgId: string = DEFAULT_ORG_ID
+  orgId: string = DEFAULT_ORG_ID,
+  operationId?: string
 ): Promise<Answer> {
   const frame = {
     v: 1,
@@ -63,7 +69,7 @@ async function store(
     ts: new Date().toISOString(),
     type: 'memory/store',
     orgId,
-    payload: { agentId, op }
+    payload: { agentId, op, ...(operationId ? { operationId } : {}) }
   } as AnyFrame
   const replyTo = vi.fn()
   const sendError = vi.fn()
@@ -466,6 +472,53 @@ describe('memory/store — the op set over the table', () => {
     ).toEqual({
       size: 256_000
     })
+  })
+})
+
+describe('memory/store — operation ids', () => {
+  const append = (content: string, create: boolean): MemoryFsPayload => ({
+    op: 'memory-append',
+    root: 'memory',
+    rel: '.agentconnect-memory-11111111-1111-4111-8111-111111111111.tmp',
+    content,
+    create
+  })
+
+  it('answers a write re-sent under its operation id with the first reply instead of applying it twice', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await seedHomedAgent({ daemonId: DAEMON })
+    const first = randomUUID()
+    const second = randomUUID()
+    expect(await store(DAEMON, agentId, append('abc', true), DEFAULT_ORG_ID, first)).toEqual({
+      reply: { ok: true, value: { size: 3 } }
+    })
+    expect(await store(DAEMON, agentId, append('def', false), DEFAULT_ORG_ID, second)).toEqual({
+      reply: { ok: true, value: { size: 6 } }
+    })
+    // The reply to the second append was lost in a handoff; its re-send changes nothing.
+    expect(await store(DAEMON, agentId, append('def', false), DEFAULT_ORG_ID, second)).toEqual({
+      reply: { ok: true, value: { size: 6 } }
+    })
+    const rows = await prisma.agentMemoryFile.findMany({ where: { agentId } })
+    expect(rows.map((row) => Buffer.from(row.content).toString('utf8'))).toEqual(['abcdef'])
+  })
+
+  it('refuses an operation id reused for a different write', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await seedHomedAgent({ daemonId: DAEMON })
+    const operationId = randomUUID()
+    await store(DAEMON, agentId, append('abc', true), DEFAULT_ORG_ID, operationId)
+    const answer = await store(DAEMON, agentId, append('xyz', false), DEFAULT_ORG_ID, operationId)
+    expect(answer).toMatchObject({ reply: { ok: false, refusal: { kind: 'conflict' } } })
+  })
+
+  it('sweeps operation records once a re-send can no longer arrive', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await seedHomedAgent({ daemonId: DAEMON })
+    await store(DAEMON, agentId, append('abc', true), DEFAULT_ORG_ID, randomUUID())
+    const operations = new PgAgentMemoryStoreOperationRepo(prisma)
+    expect(await operations.sweep(new Date(clock.now()), 100)).toBe(0)
+    expect(await operations.sweep(new Date(clock.now() + 1), 100)).toBe(1)
   })
 })
 

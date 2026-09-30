@@ -1,7 +1,7 @@
 // Deletes the staged rows an abandoned `memory-append` sequence left (memory-evolution.md §3.2.1) once no live write can be building them.
 // `commit` and `rm` clear their own; this Clock-driven loop takes the rest. Armed by `startBackground()`, never in tests.
 import type { Clock, TimerHandle } from '../domain/clock.js'
-import type { AgentMemoryFileRepo } from '../persistence/ports.js'
+import type { AgentMemoryFileRepo, AgentMemoryStoreOperationRepo } from '../persistence/ports.js'
 
 /** A staged row older than this is abandoned: a whole-file write is two round trips, each under 30 s. */
 export const MEMORY_STAGING_MAX_AGE_MS = 60 * 60 * 1000
@@ -26,7 +26,9 @@ export class AgentMemoryStagingSweeper {
       maxAgeMs: MEMORY_STAGING_MAX_AGE_MS,
       intervalMs: MEMORY_STAGING_SWEEP_INTERVAL_MS,
       limit: MEMORY_STAGING_SWEEP_LIMIT
-    }
+    },
+    // Operation records outlive the daemon's 30-second write budget by the same hour a staged row does.
+    private readonly operations?: Pick<AgentMemoryStoreOperationRepo, 'sweep'>
   ) {}
 
   /** Arm the periodic sweep. Idempotent — a second call re-arms from now. */
@@ -61,6 +63,12 @@ export class AgentMemoryStagingSweeper {
       const swept = await this.repo.sweepStaged(before, this.cfg.limit)
       if (swept > 0)
         this.log?.info({ swept, before: before.toISOString() }, 'memory-staging-sweeper: removed abandoned staged rows')
+      const records = (await this.operations?.sweep(before, this.cfg.limit)) ?? 0
+      if (records > 0)
+        this.log?.info(
+          { records, before: before.toISOString() },
+          'memory-staging-sweeper: removed old operation records'
+        )
     } catch (err) {
       this.log?.error({ err }, 'memory-staging-sweeper: sweep failed')
     } finally {

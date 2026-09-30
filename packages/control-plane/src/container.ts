@@ -127,6 +127,7 @@ import {
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo,
   PgAgentMemoryFileRepo,
+  PgAgentMemoryStoreOperationRepo,
   PgAgentMemoryHistoryRepo,
   PgThreadAffinityStore,
   PgSlackInstallStore,
@@ -498,6 +499,7 @@ export function buildContainer(
     externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, secretCipher),
     // The `control-plane` memory home (memory-evolution.md §3.2.1): both own their transactions.
     agentMemoryFile: new PgAgentMemoryFileRepo(prisma),
+    agentMemoryStoreOperation: new PgAgentMemoryStoreOperationRepo(prisma),
     agentMemoryHistory: new PgAgentMemoryHistoryRepo(prisma),
     // Owns its transactions: every external-memory check-then-write pair runs
     // under the advisory mutation scopes, so it stays serialized across CP
@@ -2046,8 +2048,14 @@ export function buildContainer(
   // The `control-plane` memory home's op set, and the sweep behind the staged rows an abandoned append
   // sequence leaves (memory-evolution.md §3.2.1); the sweep is armed only by `startBackground()`.
   const agentMemoryTransaction = new AgentMemoryTransactionService(new PgAgentMemoryTransactionRepo(prisma), clock)
-  const agentMemoryStore = new AgentMemoryStoreService(repos.agentMemoryFile, clock)
-  const agentMemoryStagingSweeper = new AgentMemoryStagingSweeper(repos.agentMemoryFile, clock, http.log)
+  const agentMemoryStore = new AgentMemoryStoreService(repos.agentMemoryFile, clock, repos.agentMemoryStoreOperation)
+  const agentMemoryStagingSweeper = new AgentMemoryStagingSweeper(
+    repos.agentMemoryFile,
+    clock,
+    http.log,
+    undefined,
+    repos.agentMemoryStoreOperation
+  )
 
   // Durable one-time assertion recovery. Invocation rows are reaped before
   // expired delegations so a parent is never removed while cached/recoverable

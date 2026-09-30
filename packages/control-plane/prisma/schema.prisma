@@ -131,6 +131,7 @@ model Org {
   codeHostReviewOutcomes    CodeHostReviewAttemptOutcome[]
   agentMemoryFiles          AgentMemoryFile[]
   agentMemoryMutations      AgentMemoryMutation[]
+  agentMemoryStoreOperations AgentMemoryStoreOperation[]
   agentMemoryHistory        AgentMemoryHistory[]
 
   @@index([createdByUserId])
@@ -978,6 +979,7 @@ model Agent {
   organizationEnvironmentAssignments OrganizationEnvironmentAssignment[]
   memoryFiles           AgentMemoryFile[]
   memoryMutations       AgentMemoryMutation[]
+  memoryStoreOperations AgentMemoryStoreOperation[]
   memoryHistory         AgentMemoryHistory[]
   hostedHookRoutings    CodeHostDecisionRouting[]
 
@@ -4104,6 +4106,22 @@ model AgentMemoryHistory {
   @@index([agentId, root, path, at])
   @@index([orgId])
   @@map("agent_memory_history")
+}
+
+// The reply to each `memory/store` write sent with an operation id, so a re-send across a CP handoff is answered, not re-applied.
+model AgentMemoryStoreOperation {
+  agentId String @db.Uuid
+  operationId String @db.Uuid
+  orgId String
+  requestHash String
+  reply Json
+  createdAt DateTime @db.Timestamptz(3)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  @@id([agentId, operationId])
+  @@index([createdAt])
+  @@index([orgId])
+  @@map("agent_memory_store_operation")
 }
 
 // Durable, body-free receipts; history retention cannot erase whether a mutation already committed.

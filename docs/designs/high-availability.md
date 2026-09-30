@@ -171,7 +171,9 @@ failing to produce it. MCP bindings and hook rules still lack per-resource
 revisions, so a stale replayed assign can revive an entry removed during that
 replay. Relay readiness follows its CP link. Daemon turn-path requests wait up to 10 seconds for a replacement link,
 only within 30 seconds of a READY link dropping; idempotent reads are re-sent
-once over the new link, and `memory/store` still lacks operation IDs. Relay
+once over the new link, and so are memory transactions and `memory/store`
+writes, which a CP advertising `agent-memory-store-operation-id-v1` applies at
+most once per operation ID. Relay
 credential checks and thread lookups also wait up to 10 seconds, and each is
 re-sent once over a replaced link. After a `1012` close of a READY link,
 daemons and relays redial every 250-500 ms with a 1-second handshake cap for
