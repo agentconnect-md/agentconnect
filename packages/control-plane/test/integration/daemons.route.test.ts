@@ -1295,6 +1295,50 @@ describe('lifecycle op closure on register→READY', () => {
       })
     ).sessionEpoch
 
+  const BOOT_A = 'b0b0b0b0-0000-4000-8000-00000000000a'
+  const BOOT_B = 'b0b0b0b0-0000-4000-8000-00000000000b'
+
+  it('completes a restart only when a different boot registers, not on a same-boot reconnect', async () => {
+    await seedDaemon() // epoch 1
+    const ops = new PgDaemonLifecycleOpRepo(prisma)
+    const registry = makeRegistry(ops)
+    await registry.upsertOnRegister(DaemonId(DAEMON), { ...REG, bootId: BOOT_A })
+    const { spy } = controlSpy({ accepted: true })
+    running = buildHttpApp(prisma, undefined, LIVE, spy)
+    expect((await running.app.inject({ method: 'POST', url: `${ORG}/daemons/${DAEMON}/restart` })).statusCode).toBe(202)
+    expect((await ops.pendingForDaemon(DaemonId(DAEMON)))?.commandBootId).toBe(BOOT_A)
+
+    // The same process reconnects, as it does across a CP restart: a newer epoch, the same boot.
+    await reauth('0.4.2')
+    await registry.upsertOnRegister(DaemonId(DAEMON), { ...REG, bootId: BOOT_A })
+    await registry.settleLifecycleOpOnReady(DaemonId(DAEMON))
+    expect((await ops.pendingForDaemon(DaemonId(DAEMON)))?.op).toBe('restart')
+
+    // The relaunched process registers under a new boot.
+    await reauth('0.4.2')
+    await registry.upsertOnRegister(DaemonId(DAEMON), { ...REG, bootId: BOOT_B })
+    await registry.settleLifecycleOpOnReady(DaemonId(DAEMON))
+    expect((await ops.latestForDaemon(DaemonId(DAEMON)))?.status).toBe('succeeded')
+  })
+
+  it('completes a restart relaunched onto a daemon version that reports no boot', async () => {
+    await seedDaemon() // epoch 1
+    const ops = new PgDaemonLifecycleOpRepo(prisma)
+    const registry = makeRegistry(ops)
+    const op = await ops.open({
+      daemonId: DaemonId(DAEMON),
+      op: 'restart',
+      commandEpoch: 1n,
+      commandBootId: BOOT_A,
+      deadline: future()
+    })
+    await ops.markAccepted(op.id, new Date(), 1n)
+    await reauth('0.4.1')
+    await registry.upsertOnRegister(DaemonId(DAEMON), REG)
+    await registry.settleLifecycleOpOnReady(DaemonId(DAEMON))
+    expect((await ops.latestForDaemon(DaemonId(DAEMON)))?.status).toBe('succeeded')
+  })
+
   it('does NOT settle on upsertOnRegister alone — only the post-reconcile READY step settles', async () => {
     // The register handler persists the register (upsertOnRegister) BEFORE reconcile, and
     // only calls settleLifecycleOpOnReady after reconcile succeeds. So a reconcile that

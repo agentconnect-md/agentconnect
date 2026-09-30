@@ -258,8 +258,9 @@ requests such as `executor/prepare` across owner changes.
 
 Connection epochs identify transports, not daemon boots. Placement, duty terms,
 launch IDs, and resource revisions retain their own fences. In particular,
-restart completion must use a reported daemon boot identity, not a higher
-`sessionEpoch`; the current lifecycle settlement needs that correction.
+restart completion uses the boot identity a daemon reports at registration,
+not a higher `sessionEpoch`; only a daemon too old to report one falls back to
+the epoch.
 
 ### Owner failure and database loss
 

@@ -362,6 +362,8 @@ export interface DaemonRegistry {
   /** Close a pending CP-commanded restart/upgrade op once the daemon has ACTUALLY
    *  reached READY (called post-reconcile, cli-daemon-split.md §7). Best-effort. */
   settleLifecycleOpOnReady(daemonId: DaemonId): Promise<void>
+  /** The boot identity of the daemon process that last registered; null for an older daemon. */
+  currentBootId(daemonId: DaemonId): Promise<string | null>
   recordHeartbeat(daemonId: DaemonId, hb: Heartbeat): Promise<void>
   /** Refresh a member's hosted-session count from the `liveCount` of an `executor/prepare` reply the CP relayed. */
   recordHostedSessions(daemonId: DaemonId, hostedSessions: number): Promise<void>

@@ -225,6 +225,8 @@ export interface CpClientDeps
   host: string
   /** Rollout generation (pod-template hash) — a pool member's; absent for a local daemon. */
   generation?: string
+  /** This process's boot identity, the same on every reconnect of one process. */
+  bootId?: string
   heartbeatDefaultMs: number
   maxAgents: number
   capabilities: () => RegisterReq['capabilities']
@@ -620,6 +622,7 @@ export class CpClient {
     const register = buildEnvelope('register', {
       host: this.deps.host,
       ...(this.deps.generation ? { generation: this.deps.generation } : {}),
+      ...(this.deps.bootId ? { bootId: this.deps.bootId } : {}),
       capabilities: registerCapabilities,
       maxAgents: this.deps.maxAgents,
       localState: this.deps.localState()

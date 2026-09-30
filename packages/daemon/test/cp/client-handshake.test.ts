@@ -279,6 +279,29 @@ describe('CpClient handshake', () => {
     await client.stop()
   })
 
+  it('reports its process boot on register, so the CP can tell a relaunch from a reconnect', async () => {
+    const t = new FakeTransport()
+    const bootId = 'b0b0b0b0-0000-4000-8000-00000000000a'
+    const client = new CpClient(makeDeps(t, { bootId }))
+    client.start()
+    await tick()
+    const auth = t.lastSent()
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'auth/ok',
+          { daemonId: DAEMON_ID, sessionEpoch: 1, heartbeatSec: 20, serverTime: '2026-06-26T00:00:00.000Z' },
+          { corr: auth.id }
+        )
+      )
+    )
+    await tick()
+    const reg = t.lastSent()
+    expect(reg.type).toBe('register')
+    expect(reg.payload.bootId).toBe(bootId)
+    await client.stop()
+  })
+
   it('queues controls after register/ok until snapshot convergence and drains them FIFO before READY', async () => {
     const t = new FakeTransport()
     const prematureAgentId = '33333333-3333-4333-8333-333333333333'

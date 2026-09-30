@@ -24,6 +24,8 @@ export const RegisterReq = z.object({
   // Only the newest live generation of a member set may claim vacated duty groups; absent for
   // local daemons and older pods, which the rule never excludes.
   generation: z.string().min(1).max(128).optional(),
+  // Fresh on every daemon process start: a restart completes only when a different boot registers (high-availability.md).
+  bootId: z.string().uuid().optional(),
   // An OBSERVER connection: the `reconcile --once` CronJob, which authenticates with the same
   // projected pool identity but serves nothing. The CP admits the identity and answers reads, but
   // enrolls it in no member set, so the duty ledger can never grant it anything (k8s-daemon-pool.md §4).

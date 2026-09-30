@@ -141,7 +141,13 @@ export class DaemonRegistryService implements DaemonRegistry {
   async upsertOnRegister(daemonId: DaemonId, req: RegisterReq): Promise<void> {
     await this.daemons.applyRegister(
       daemonId,
-      { host: req.host, capabilities: req.capabilities, maxAgents: req.maxAgents, generation: req.generation },
+      {
+        host: req.host,
+        capabilities: req.capabilities,
+        maxAgents: req.maxAgents,
+        generation: req.generation,
+        bootId: req.bootId
+      },
       new Date(this.clock.now())
     )
   }
@@ -157,19 +163,7 @@ export class DaemonRegistryService implements DaemonRegistry {
     await this.daemons.setCapabilities(daemonId, capabilities)
   }
 
-  /**
-   * Close any pending restart/upgrade op for a daemon that has *actually* reached READY
-   * (cli-daemon-split.md §7). This is deliberately SEPARATE from {@link upsertOnRegister}
-   * and called only after reconcile succeeds and the connection transitions READY — so a
-   * registration that fails mid-way never records the op as succeeded (the same-connection
-   * READY invariant, design §4.6).
-   *
-   * A `restart` closes on any READY re-registration within the deadline. An `upgrade`
-   * closes only once the daemon's reported `agentVersion` reaches the target — an
-   * old-version reconnect (a failed install, or a relaunch of the prior bundle) keeps the
-   * op pending until the target lands or the deadline lapses. A deadline already past
-   * closes the op `failed`. Best-effort: a settle failure never blocks register.
-   */
+  /** Close a pending restart/upgrade once its daemon is READY again (cli-daemon-split.md §7): a restart needs a new boot, an upgrade the target version, and a lapsed deadline fails it. */
   async settleLifecycleOpOnReady(daemonId: DaemonId): Promise<void> {
     const op = await this.lifecycleOps.pendingForDaemon(daemonId)
     if (!op) return
@@ -186,14 +180,18 @@ export class DaemonRegistryService implements DaemonRegistry {
     // trust domain resolves the row without an org (org-scoped-data-layer.md §4).
     const daemon = await this.daemons.getUnscoped(daemonId)
     if (!daemon) return
-    // Require a re-auth since the command was sent (STRICTLY greater sessionEpoch): a
-    // same-epoch duplicate register is the same connection, not the daemon coming back
-    // from a drain + relaunch. This is the "later READY from that command" gate.
+    // A same-epoch duplicate register is the same connection, not the daemon coming back.
     if (daemon.sessionEpoch <= op.commandEpoch) return
+    // A newer epoch alone is also a reconnect of the same process, such as across a CP restart; a known boot must change.
+    if (op.op === 'restart' && op.commandBootId && daemon.bootId === op.commandBootId) return
     // An upgrade must additionally have reached the target version; an old-version relaunch
     // keeps the op pending until the target lands or the deadline lapses.
     if (op.op === 'upgrade' && daemon.agentVersion !== op.targetVersion) return
     await this.lifecycleOps.settle(op.id, 'succeeded', null, now)
+  }
+
+  async currentBootId(daemonId: DaemonId): Promise<string | null> {
+    return (await this.daemons.getUnscoped(daemonId))?.bootId ?? null
   }
 
   async recordHeartbeat(daemonId: DaemonId, hb: Heartbeat): Promise<void> {

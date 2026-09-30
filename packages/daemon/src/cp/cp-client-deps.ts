@@ -7,6 +7,7 @@ import type { MemoryProvider } from '../memory/provider.js'
 // The `CpClientDeps` literal the daemon hands `CpClient`, hoisted out of `Daemon.startCpClient`.
 // Construction order is load-bearing (the workspace resolvers feed the file, git and skills seams),
 // so `buildCpClientDeps` is the single wiring site and keeps it verbatim.
+import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -66,6 +67,9 @@ import type { MemoryHomePorts } from '../memory/home.js'
 import type { DreamRunner } from '../dream/runner.js'
 import type { ExecutorFacet } from '../execution/executor-facet.js'
 import type { CodeHostNoteProjector } from '../gitlab/note-projection.js'
+
+/** One per daemon process, so the CP can tell a restarted daemon from the same process reconnecting. */
+const PROCESS_BOOT_ID = randomUUID()
 
 /** The credentials, identity and logging this connection is built from, plus its single-point writes. */
 export interface CpClientConnectionHost {
@@ -269,6 +273,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // The deployment side sets this from the pod-template-hash label; the ledger's rollout barrier
     // lets only the newest live generation of the set claim vacated groups. Unset locally.
     generation: process.env[POD_TEMPLATE_HASH_ENV]?.trim() || undefined,
+    bootId: PROCESS_BOOT_ID,
     heartbeatDefaultMs: host.heartbeatDefaultMs(),
     maxAgents: host.maxAgents(),
     capabilities: () => {

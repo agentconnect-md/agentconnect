@@ -198,6 +198,8 @@ export interface RegisterReqInput {
   maxAgents: RegisterReq['maxAgents']
   /** Rollout generation (pod-template hash); absent ⇒ stored null. */
   generation?: RegisterReq['generation']
+  /** The registering process's boot identity; absent ⇒ stored null. */
+  bootId?: RegisterReq['bootId']
 }
 
 export interface DaemonRecord {
@@ -214,6 +216,8 @@ export interface DaemonRecord {
   maxAgents: number
   sessionEpoch: bigint
   routingEpoch: bigint
+  /** The boot identity of the process that last registered; null for an older daemon. */
+  bootId?: string | null
   status: DaemonStatus
   health: HealthState
   /** Last reported `Heartbeat.load` {cpu,mem,agents}; null before the first beat. */
@@ -363,6 +367,8 @@ export interface OpenLifecycleOpInput {
   /** The daemon `sessionEpoch` at command-send time. The op settles only on a READY at a
    *  STRICTLY GREATER epoch (a re-auth after drain+relaunch), never a same-epoch reconnect. */
   commandEpoch: bigint
+  /** The daemon boot a restart is sent to; the op then settles only once a different boot registers. */
+  commandBootId?: string
   /** When a still-`pending` op is considered failed (drain + relaunch budget). */
   deadline: Date
 }
@@ -376,6 +382,7 @@ export interface DaemonLifecycleOpRecord {
   status: DaemonLifecycleOpStatus
   phase: DaemonLifecyclePhase | null
   commandEpoch: bigint
+  commandBootId?: string | null
   /** Set once the daemon ACKs `accepted:true` — the op is "armed". A READY before this
    *  must not settle it (the command hadn't been accepted/executed yet). */
   acceptedAt: Date | null
