@@ -167,10 +167,13 @@ not yet satisfy this section; increasing `replicas` alone is insufficient.
 Relay reconnect replay is also incomplete: MCP and hook replay is additive,
 while memory bindings are cleared before asynchronous replay. Neither is the
 atomic replacement snapshot required below. Relay readiness follows its CP
-link, and relay verification and lookup requests still fail immediately on a
-drop. Daemon turn-path requests wait up to 10 seconds for a replacement link,
+link. Daemon turn-path requests wait up to 10 seconds for a replacement link,
 only within 30 seconds of a READY link dropping; idempotent reads are re-sent
-once over the new link, and `memory/store` still lacks operation IDs.
+once over the new link, and `memory/store` still lacks operation IDs. Relay
+credential checks and thread lookups also wait up to 10 seconds, and each is
+re-sent once over a replaced link. After a `1012` close of a READY link,
+daemons and relays redial every 250-500 ms with a 1-second handshake cap for
+10 seconds before ordinary backoff resumes.
 
 ### Connection ownership and forwarding
 

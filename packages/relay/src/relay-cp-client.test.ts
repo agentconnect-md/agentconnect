@@ -138,17 +138,18 @@ async function handshakeToReady(
 function makeReconnectingClient(over: Partial<RelayCpClientDeps> = {}) {
   const clock = new FakeClock()
   const transports: FakeTransport[] = []
+  const connect = vi.fn(async (_opts?: { handshakeTimeoutMs?: number }) => {
+    const transport = new FakeTransport()
+    transports.push(transport)
+    return transport
+  })
   const client = new RelayCpClient({
     auth: { method: 'token', credential: TOKEN },
     name: 'relay-0',
     daemonUrl: 'wss://relay-0.example',
     heartbeatDefaultMs: 15_000,
     clock,
-    connect: async () => {
-      const transport = new FakeTransport()
-      transports.push(transport)
-      return transport
-    },
+    connect,
     log: silentLog,
     jitter: () => 0,
     ...over
@@ -161,7 +162,7 @@ function makeReconnectingClient(over: Partial<RelayCpClientDeps> = {}) {
     await completeHandshake(next)
     return next
   }
-  return { client, clock, transports, reconnect }
+  return { client, clock, transports, connect, reconnect }
 }
 
 function makeClient(over: Partial<RelayCpClientDeps> = {}) {
@@ -983,5 +984,69 @@ describe('RelayCpClient lookups across a CP handoff', () => {
       buildRelayCpFrame('rc/thread-lookup/ok', { ...lookup, target: null, participants: [] }, { corr: req.id })
     )
     await expect(pending).resolves.toMatchObject({ target: null })
+  })
+})
+
+describe('RelayCpClient redial after a planned CP restart', () => {
+  async function readyClient() {
+    const harness = makeReconnectingClient()
+    harness.client.start()
+    await flush()
+    await completeHandshake(harness.transports[0]!)
+    expect(harness.client.state).toBe('READY')
+    return harness
+  }
+
+  it('redials fast with a capped handshake and does not escalate while the handoff window lasts', async () => {
+    const { clock, transports, connect } = await readyClient()
+    expect(connect.mock.calls[0]).toEqual([undefined])
+    transports[0]!.simulateClose(1012)
+    clock.advance(249)
+    await flush()
+    expect(connect).toHaveBeenCalledTimes(1)
+    clock.advance(1)
+    await flush()
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(connect.mock.calls[1]).toEqual([{ handshakeTimeoutMs: 1000 }])
+    // A redial that lands on the retiring pod fails; the next one still comes 250 ms later.
+    transports[1]!.simulateClose(1006)
+    await flush()
+    clock.advance(250)
+    await flush()
+    expect(connect).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps ordinary backoff for a drop that is not a planned restart', async () => {
+    const { clock, transports, connect } = await readyClient()
+    transports[0]!.simulateClose(1006)
+    clock.advance(999)
+    await flush()
+    expect(connect).toHaveBeenCalledTimes(1)
+    clock.advance(1)
+    await flush()
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(connect.mock.calls[1]).toEqual([undefined])
+  })
+
+  it('resumes ordinary backoff once the handoff window has passed', async () => {
+    const { clock, transports, connect } = await readyClient()
+    transports[0]!.simulateClose(1012)
+    while (clock.now() < 10_000) {
+      clock.advance(250)
+      await flush()
+      transports.at(-1)!.simulateClose(1006)
+      await flush()
+    }
+    const caps = connect.mock.calls.flatMap(([opts]) => (opts?.handshakeTimeoutMs ? [opts.handshakeTimeoutMs] : []))
+    expect(Math.max(...caps)).toBe(1000)
+    expect(Math.min(...caps)).toBe(250) // the last redial inside the window gets only what is left of it
+    const dials = connect.mock.calls.length
+    clock.advance(999)
+    await flush()
+    expect(connect).toHaveBeenCalledTimes(dials)
+    clock.advance(1)
+    await flush()
+    expect(connect).toHaveBeenCalledTimes(dials + 1)
+    expect(connect.mock.calls.at(-1)).toEqual([undefined])
   })
 })

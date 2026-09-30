@@ -128,7 +128,8 @@ async function main(): Promise<void> {
     daemonUrl: config.DAEMON_DIAL_URL,
     heartbeatDefaultMs: config.HEARTBEAT_DEFAULT_MS,
     clock: systemClock,
-    connect: () => ClientTransport.dial(wsOrigin, { subprotocol: RELAY_CP_SUBPROTOCOL, path: RELAY_WS_PATH }),
+    connect: (opts) =>
+      ClientTransport.dial(wsOrigin, { subprotocol: RELAY_CP_SUBPROTOCOL, path: RELAY_WS_PATH, ...opts }),
     log,
     onRegistered: (id) => log.info(`relay: registered with CP as ${id}`),
     onDeploymentConfig: (snapshot) => {
