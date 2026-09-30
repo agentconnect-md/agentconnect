@@ -1,9 +1,8 @@
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { bakePreset, presetCandidates, withSearchDisabled } from '../../../docker/runtime-sandbox/bake-dsh-preset.mjs'
+import { bakeRegistryBundle, withSearchDisabled } from '../../../docker/runtime-sandbox/bake-dsh-preset.mjs'
 import { AcpRunner } from '../src/shim/acp-runner.js'
 import {
   DSH_WEB_SEARCH_POD_ENV,
@@ -14,11 +13,7 @@ import {
 } from '../src/shim/dsh-preset.js'
 import { SANDBOX_DSH_PRESET_ID } from '../src/shim/sandbox-paths.js'
 
-// dsh offers `web_search` from the AGENT PRESET, and the harness's search provider ignores
-// $DEEPSEEK_BASE_URL — it takes $DEEPSEEK_API_KEY to api.deepseek.com itself, so a pod carrying a
-// gateway key answers every search with an invalid-key error. The image bakes a copy of the shipped
-// preset with the tool deregistered and the shim seeds it, which is the only supported way to drop
-// a preset row: the host-plane patch layer cannot reach into a preset subtree.
+// The image disables the preset tool because gateway credentials cannot authenticate DeepSeek web search.
 
 const STANDARD_ROW = [
   '- id: tool-todo',
@@ -36,120 +31,62 @@ const STANDARD_ROW = [
   ''
 ].join('\n')
 
-describe('baking the no-search preset', () => {
-  it('inserts search: false into the tool-web row and leaves every other row alone', () => {
-    const baked = withSearchDisabled(STANDARD_ROW)
-    expect(baked).toContain('  config:\n    search: false\n    fetch: false')
-    // The comment above the row, and the rows around it, survive: a re-emitted YAML document would
-    // drop exactly the comments that explain what each row is for.
-    expect(baked).toContain('# The `web` service stays in the host composition')
-    expect(baked.match(/search: false/g)).toHaveLength(1)
-    expect(baked).toContain('- id: tool-presentation')
+const STANDARD_PRESET = [
+  '- insert:',
+  '    - id: preset-standard',
+  "      name: '@deepseek-ai/dsh-agent-preset'",
+  '      config:',
+  '        id: standard',
+  '        plugins:',
+  ...STANDARD_ROW.split('\n').map((line) => (line ? `          ${line}` : ''))
+].join('\n')
+
+describe('baking the no-search bundle', () => {
+  it('disables the nested tool without changing other settings, comments, or expressions', () => {
+    const source = STANDARD_PRESET.replace('fetch: false', 'fetch: !!js true')
+    const baked = withSearchDisabled(source)
+    expect(baked).toBe(source.replace('fetch: !!js true', 'search: false\n              fetch: !!js true'))
+    expect(withSearchDisabled(baked)).toBe(baked)
   })
 
-  it('gives a row with no config block one', () => {
-    const text = ['- id: tool-web', "  name: '@deepseek-ai/dsh-tool-web'", ''].join('\n')
-    expect(withSearchDisabled(text)).toBe(
-      ['- id: tool-web', "  name: '@deepseek-ai/dsh-tool-web'", '  config:', '    search: false', ''].join('\n')
-    )
-  })
-
-  it('is idempotent when the row already disables search', () => {
-    const once = withSearchDisabled(STANDARD_ROW)
-    expect(withSearchDisabled(once)).toBe(once)
-  })
-
-  // Each of these means the build is guessing at an upstream shape it no longer recognizes, and a
-  // guess here ships a preset that quietly still has the tool.
-  it('fails the build when the row is missing, duplicated, or deliberately enables search', () => {
-    expect(() => withSearchDisabled('- id: tool-todo\n  name: my-todo\n')).toThrow(/exactly one/)
-    expect(() => withSearchDisabled(`${STANDARD_ROW}${STANDARD_ROW}`)).toThrow(/exactly one/)
-    expect(() => withSearchDisabled(STANDARD_ROW.replace('fetch: false', 'search: true'))).toThrow(
+  it('fails the build when the tool is missing, duplicated, or explicitly enables search', () => {
+    expect(() => withSearchDisabled('- id: tool-todo\n')).toThrow(/exactly one/)
+    expect(() => withSearchDisabled(`${STANDARD_PRESET}${STANDARD_PRESET}`)).toThrow(/exactly one/)
+    expect(() => withSearchDisabled(STANDARD_PRESET.replace('fetch: false', 'search: true'))).toThrow(
       /upstream intent changed/
     )
   })
-})
 
-describe('finding the preset the adapter ships', () => {
-  // A separate harness takes precedence over the adapter's nested or vendored copy.
-  it('tries both hoisted layouts before the one nested under the adapter', () => {
-    const [hoisted, currentHoisted, nested] = presetCandidates('/n')
-    expect(hoisted).toBe(join('/n', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'standard'))
-    expect(currentHoisted).toBe(join('/n', '@deepseek-ai', 'dsh-agent-presets', 'presets', 'standard'))
-    expect(nested).toBe(
-      join(
-        '/n',
-        '@openma',
-        'deepseek-harness-acp',
-        'node_modules',
-        '@deepseek-ai',
-        'dsh',
-        'config',
-        'agent-presets',
-        'standard'
-      )
-    )
-  })
-
-  it('bakes from a nested legacy install', () => {
-    const root = mkdtempSync(join(tmpdir(), 'ac-dsh-root-'))
-    try {
-      const source = join(
-        root,
-        '@openma',
-        'deepseek-harness-acp',
-        'node_modules',
-        '@deepseek-ai',
-        'dsh',
-        'config',
-        'agent-presets',
-        'standard'
-      )
-      mkdirSync(source, { recursive: true })
-      writeFileSync(join(source, 'agent.cordis.yml'), STANDARD_ROW)
-      const target = join(root, 'out', SANDBOX_DSH_PRESET_ID)
-      expect(readFileSync(bakePreset(target, root), 'utf8')).toContain('search: false')
-      expect(readFileSync(join(target, 'preset.yml'), 'utf8')).toContain('name: ')
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  // These Linux image archive fixtures use tar commands that Windows Git tar misreads as remote drive-letter paths.
-  it.skipIf(process.platform === 'win32').each(['dsh/config/agent-presets', 'dsh-agent-presets/presets'])(
-    'bakes the standard preset from a vendored %s archive',
-    (layout) => {
-      const root = mkdtempSync(join(tmpdir(), 'ac-dsh-archive-'))
+  // This Linux image bundle uses a directory symlink, which requires extra privileges on Windows.
+  it.skipIf(process.platform === 'win32')(
+    'keeps the shipped presets and selects a no-search copy from the installed runtime',
+    () => {
+      const root = mkdtempSync(join(tmpdir(), 'ac-dsh-bundle-'))
       try {
-        const staging = join(root, 'staging')
-        const source = join(staging, 'node_modules', '@deepseek-ai', layout, 'standard')
-        mkdirSync(source, { recursive: true })
-        writeFileSync(join(source, 'agent.cordis.yml'), STANDARD_ROW)
-        writeFileSync(join(source, 'plugin.js'), 'export const name = "preset-plugin"\n')
-        const modules = join(root, 'installed')
-        const vendor = join(modules, '@openma', 'deepseek-harness-acp', 'vendor')
-        mkdirSync(vendor, { recursive: true })
-        writeFileSync(join(vendor, 'runtime.json'), JSON.stringify({ archive: 'dsh-runtime.tgz' }))
-        execFileSync('tar', ['-czf', join(vendor, 'dsh-runtime.tgz'), '-C', staging, 'node_modules'])
-        const target = join(root, 'out', SANDBOX_DSH_PRESET_ID)
-        expect(readFileSync(bakePreset(target, modules), 'utf8')).toContain('search: false')
-        expect(readFileSync(join(target, 'plugin.js'), 'utf8')).toBe('export const name = "preset-plugin"\n')
+        const cache = join(root, 'cache')
+        const modules = join(cache, 'runtime', 'node_modules')
+        const presets = join(modules, '@deepseek-ai', 'dsh-web-app', 'presets')
+        mkdirSync(presets, { recursive: true })
+        const shipped = ['standard', 'ptc', 'minimal', 'cordis'].map((name) => {
+          const text = STANDARD_PRESET.replaceAll('standard', name)
+          writeFileSync(join(presets, `${name}.patch.yml`), text)
+          return text
+        })
+        const target = join(root, SANDBOX_DSH_PRESET_ID)
+        const patch = readFileSync(bakeRegistryBundle(target, cache), 'utf8')
+        for (const preset of shipped) expect(patch).toContain(preset)
+        expect(patch).toContain('default: standard-no-search')
+        expect(patch).toContain('id: preset-standard-no-search')
+        expect(patch.match(/search: false/g)).toHaveLength(1)
+        expect(JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')).dsh.bundle.patch).toBe('cordis.patch.yml')
+        expect(realpathSync(join(target, 'node_modules'))).toBe(realpathSync(modules))
+        expect(seedDshPreset({ env: {}, podEnv: {}, source: target })).toBe(target)
+        expect(seedDshPreset({ env: {}, podEnv: { [DSH_WEB_SEARCH_POD_ENV]: 'on' }, source: target })).toBeUndefined()
       } finally {
         rmSync(root, { recursive: true, force: true })
       }
     }
   )
-
-  it('names every path it tried when no layout has one', () => {
-    const empty = mkdtempSync(join(tmpdir(), 'ac-dsh-empty-'))
-    try {
-      expect(() => bakePreset(join(empty, 'out'), empty)).toThrow(
-        /no shipped standard preset: tried .*deepseek-harness-acp/
-      )
-    } finally {
-      rmSync(empty, { recursive: true, force: true })
-    }
-  })
 })
 
 describe('reading the pod switch', () => {
@@ -207,7 +144,7 @@ describe('seeding the sandbox $DSH_HOME', () => {
     home = join(root, 'agent')
     mkdirSync(source, { recursive: true })
     mkdirSync(home, { recursive: true })
-    writeFileSync(join(source, 'agent.cordis.yml'), withSearchDisabled(STANDARD_ROW))
+    writeFileSync(join(source, 'agent.cordis.yml'), STANDARD_ROW.replace('fetch: false', 'search: false'))
     writeFileSync(join(source, 'preset.yml'), 'name: Standard (no web search)\n')
   })
 
@@ -255,12 +192,42 @@ describe('seeding the sandbox $DSH_HOME', () => {
     expect(warnings[0]).toContain('unseeded')
   })
 
+  it('passes the current image bundle to the DeepSeek child', async () => {
+    const bundle = join(root, 'bundle')
+    mkdirSync(bundle)
+    writeFileSync(join(bundle, 'package.json'), '{}')
+    writeFileSync(join(bundle, 'cordis.patch.yml'), '')
+    const chunks: string[] = []
+    let onExit: (() => void) | undefined
+    const exited = new Promise<void>((resolve) => (onExit = resolve))
+    const runner = new AcpRunner({
+      emit: (event) => {
+        if (event.kind === 'chunk') chunks.push(Buffer.from(event.data, 'base64').toString('utf8'))
+        if (event.kind === 'exit') onExit?.()
+      },
+      podEnv: { HOME: home },
+      dshPresetSource: bundle,
+      resolveCommand: () => process.execPath
+    })
+    try {
+      await runner.apply({
+        op: 'open',
+        command: 'dsh-acp',
+        args: ['-e', 'process.stdout.write(JSON.stringify(process.argv.slice(1)))', '--'],
+        env: {}
+      })
+      await exited
+      expect(JSON.parse(chunks.join(''))).toEqual(['--bundle', bundle])
+      expect(existsSync(join(home, '.dsh'))).toBe(false)
+    } finally {
+      await runner.close(1_000)
+    }
+  })
+
   it('seeds for the DeepSeek runtime and for no other', async () => {
     const openOf = (runner: AcpRunner): ((payload: unknown) => Promise<void>) =>
       (runner as unknown as { open(payload: unknown): Promise<void> }).open.bind(runner)
-    // One runner per open: a runner that already holds a child refuses the next open outright. Both
-    // resolve to a real no-op binary — the seed keys on the REQUESTED command, so what runs is
-    // irrelevant, and a command that does not exist would fail this file on the spawn instead.
+    // Each runner gets one child; preset selection uses the requested command before resolution.
     const runnerFor = (): AcpRunner =>
       new AcpRunner({
         emit: () => {},

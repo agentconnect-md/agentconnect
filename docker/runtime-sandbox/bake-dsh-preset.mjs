@@ -1,30 +1,8 @@
 #!/usr/bin/env node
-// Bake a no-search DeepSeek preset or bundle from the runtime installed in this image.
-import { execFileSync } from 'node:child_process'
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync
-} from 'node:fs'
-import { tmpdir } from 'node:os'
+// Bake a no-search DeepSeek bundle from the runtime installed in this image.
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-
-// Copy the preset the adapter mounts when a caller names none.
-const SOURCE_PRESET = 'standard'
-// dsh 0.1.2 moved the shipped presets from the meta package into the roster package.
-const SHIPPED_PRESETS = [
-  join('@deepseek-ai', 'dsh', 'config', 'agent-presets', SOURCE_PRESET),
-  join('@deepseek-ai', 'dsh-agent-presets', 'presets', SOURCE_PRESET)
-]
-// The adapter vendors dsh for installations without a separate harness.
-const ADAPTER_PACKAGE = join('@openma', 'deepseek-harness-acp')
 
 // Deregister web_search as text so the preset's !!js expressions and comments survive.
 export function withSearchDisabled(text) {
@@ -90,80 +68,11 @@ export function bakeRegistryBundle(target, cacheDir) {
   return join(target, 'cordis.patch.yml')
 }
 
-// Omit order so the copied preset stays distinct from its source.
-export function presetMetadata(source) {
-  return [
-    'name: Standard (no web search)',
-    `description: "The shipped ${source} composition with web_search deregistered — a sandbox reaches ` +
-      `DeepSeek through the deployment's gateway key, which the search provider's own endpoint rejects."`,
-    ''
-  ].join('\n')
-}
-
-/** The global npm prefix's module root, which is where the Dockerfile installs the runtimes. */
-function moduleRoot() {
-  const configured = process.env.AC_NODE_MODULES_ROOT
-  if (configured) return configured
-  return execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim()
-}
-
-// Prefer a separately installed harness, then the adapter's nested install, over its vendored archive.
-export function presetCandidates(root) {
-  return [root, join(root, ADAPTER_PACKAGE, 'node_modules')].flatMap((modules) =>
-    SHIPPED_PRESETS.map((preset) => join(modules, preset))
-  )
-}
-
-function shippedPreset(root, staging) {
-  const installed = presetCandidates(root).find((dir) => existsSync(dir))
-  if (installed) return installed
-
-  const adapter = join(root, ADAPTER_PACKAGE)
-  const manifest = join(adapter, 'vendor', 'runtime.json')
-  if (!existsSync(manifest)) {
-    throw new Error(`no shipped ${SOURCE_PRESET} preset: tried ${[...presetCandidates(root), manifest].join(', ')}`)
-  }
-  const archive = join(adapter, 'vendor', JSON.parse(readFileSync(manifest, 'utf8')).archive)
-  if (!existsSync(archive)) throw new Error(`vendored runtime manifest names a missing archive: ${archive}`)
-  // Match POSIX archive members before extracting only the shipped preset directory.
-  const members = new Set(
-    execFileSync('tar', ['-tzf', archive], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
-      .split('\n')
-      .map((member) => member.replace(/^\.\//, '').replace(/\/$/, ''))
-  )
-  const member = SHIPPED_PRESETS.map((preset) => join('node_modules', preset).replaceAll('\\', '/')).find((candidate) =>
-    members.has(`${candidate}/agent.cordis.yml`)
-  )
-  if (!member) throw new Error(`vendored runtime ${archive} ships no ${SOURCE_PRESET} preset`)
-  execFileSync('tar', ['-xzf', archive, '-C', staging, member], { stdio: ['ignore', 'ignore', 'inherit'] })
-  const extracted = join(staging, member)
-  if (!existsSync(extracted)) throw new Error(`vendored runtime ${archive} ships no ${member}`)
-  return extracted
-}
-
-/** Copy the shipped preset into `target` and deregister the tool. Returns the composition path. */
-export function bakePreset(target, root = moduleRoot()) {
-  const staging = mkdtempSync(join(tmpdir(), 'ac-dsh-preset-'))
-  try {
-    const source = shippedPreset(root, staging)
-    rmSync(target, { recursive: true, force: true })
-    mkdirSync(target, { recursive: true })
-    // Preserve the preset's relative plugin files and skill directories.
-    cpSync(source, target, { recursive: true, dereference: true })
-    const composition = join(target, 'agent.cordis.yml')
-    writeFileSync(composition, withSearchDisabled(readFileSync(composition, 'utf8')))
-    writeFileSync(join(target, 'preset.yml'), presetMetadata(SOURCE_PRESET))
-    return composition
-  } finally {
-    rmSync(staging, { recursive: true, force: true })
-  }
-}
-
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const target = process.argv[2]
   if (!target) throw new Error('usage: bake-dsh-preset.mjs <output dir>')
-  const composition = process.env.DSH_ACP_CACHE_DIR
-    ? bakeRegistryBundle(target, process.env.DSH_ACP_CACHE_DIR)
-    : bakePreset(target)
-  process.stderr.write(`dsh preset baked from shipped ${SOURCE_PRESET} to ${composition}\n`)
+  const cacheDir = process.env.DSH_ACP_CACHE_DIR
+  if (!cacheDir) throw new Error('DSH_ACP_CACHE_DIR must name the unpacked DeepSeek runtime')
+  const composition = bakeRegistryBundle(target, cacheDir)
+  process.stderr.write(`dsh preset baked from shipped standard to ${composition}\n`)
 }
