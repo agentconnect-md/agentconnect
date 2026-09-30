@@ -72,18 +72,12 @@ COPY . .
 
 RUN pnpm --filter "@agentconnect.md/control-plane" prisma:generate
 
-# protocol + observability → control-plane (topological).
-# Prisma was generated above; skip the control-plane package's prebuild hook.
+# Build the dependency closure once; Prisma was generated above.
 RUN pnpm --config.enable-pre-post-scripts=false \
-  --filter "@agentconnect.md/protocol" \
-  --filter "@agentconnect.md/observability" \
-  --filter "@agentconnect.md/connection" \
-  --filter "@agentconnect.md/k8s-client" \
-  --filter "@agentconnect.md/control-plane" \
-  -r build
+  --filter "@agentconnect.md/control-plane..." build:package
 
 # Bundle the Setup Server and its runtime dependencies.
-RUN pnpm --filter "@agentconnect.md/setup" build
+RUN pnpm --filter "@agentconnect.md/setup" build:package
 
 # Materialize the same portable production bundle used by the other plain Node
 # services. The pnpm hook removes Prisma's build-only optional peers while
@@ -130,14 +124,8 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 
 COPY . .
 
-# protocol → activation-policy / message / connection / observability → relay (topological).
-RUN pnpm --filter "@agentconnect.md/protocol" \
-  --filter "@agentconnect.md/activation-policy" \
-  --filter "@agentconnect.md/message" \
-  --filter "@agentconnect.md/connection" \
-  --filter "@agentconnect.md/observability" \
-  --filter "@agentconnect.md/relay" \
-  -r build
+# Build the relay and its dependency closure once.
+RUN pnpm --filter "@agentconnect.md/relay..." build:package
 
 # Materialize a portable production-only package. Per-command workspace
 # injection includes the built protocol/connection packages without changing
@@ -176,14 +164,8 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 
 COPY . .
 
-# protocol → activation-policy / message / connection / observability → daemon (topological).
-RUN pnpm --filter "@agentconnect.md/protocol" \
-  --filter "@agentconnect.md/activation-policy" \
-  --filter "@agentconnect.md/message" \
-  --filter "@agentconnect.md/connection" \
-  --filter "@agentconnect.md/observability" \
-  --filter "@agentconnect.md/daemon" \
-  -r build
+# Build the daemon and its dependency closure once.
+RUN pnpm --filter "@agentconnect.md/daemon..." build:package
 
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm --config.inject-workspace-packages=true \
@@ -256,8 +238,7 @@ ENV NEXT_PUBLIC_CP_URL=/cp/api/v1 \
   BUILD_TIME=$BUILD_TIME
 # Keep the runtime copy stable when an application has no public assets yet.
 RUN mkdir -p packages/web/public \
-  && pnpm --filter "@agentconnect.md/protocol" build \
-  && pnpm --filter "@agentconnect.md/web" build
+  && pnpm --filter "@agentconnect.md/web..." build:package
 
 # ───────────────────────────── web: runtime ─────────────────────────────────
 FROM node:24-bookworm-slim AS web
@@ -287,9 +268,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 COPY . .
 
 # protocol → memory-plugin-mem0 (topological).
-RUN pnpm --filter "@agentconnect.md/protocol" \
-  --filter "@agentconnect.md/memory-plugin-mem0" \
-  -r build
+RUN pnpm --filter "@agentconnect.md/memory-plugin-mem0..." build:package
 
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm --config.inject-workspace-packages=true \

@@ -20,7 +20,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm --filter \"{.}...\" build:package",
+    "build:package": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
     "prepack": "pnpm run build",

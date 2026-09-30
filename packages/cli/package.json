@@ -24,7 +24,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "pnpm --filter '{.}^...' build && tsdown && node scripts/assert-self-contained.mjs",
+    "build": "pnpm --filter \"{.}...\" build:package",
+    "build:package": "tsdown && node scripts/assert-self-contained.mjs",
     "clean": "rm -rf dist",
     "prepack": "pnpm run build",
     "test": "vitest run",

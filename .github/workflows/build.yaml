@@ -122,14 +122,21 @@ jobs:
         if: inputs.create_release
         with:
           version: 11.19.0
-          cache: true
       - uses: actions/setup-node@v7
         if: inputs.create_release
         with:
           node-version-file: .nvmrc
-      - name: Install
+      - name: Restore release dependencies
         if: inputs.create_release
-        run: pnpm install --frozen-lockfile
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/release-pnpm-store
+          key: ${{ runner.os }}-release-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-release-pnpm-
+      # The workspace root's production dependencies are the release toolchain only.
+      - name: Install release dependencies
+        if: inputs.create_release
+        run: pnpm --filter agentconnect install --prod --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/release-pnpm-store"
       - name: Semantic Release
         if: inputs.create_release
         id: release

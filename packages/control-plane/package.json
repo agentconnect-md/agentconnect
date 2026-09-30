@@ -80,8 +80,9 @@
     "src"
   ],
   "scripts": {
-    "prebuild": "pnpm run prisma:generate",
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm --filter \"{.}...\" build:package",
+    "prebuild:package": "pnpm run prisma:generate",
+    "build:package": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "db:seed:example": "prisma db execute --file prisma/seed-example.sql",
     "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",

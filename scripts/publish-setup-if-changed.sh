@@ -47,16 +47,11 @@ fi
 
 if [ "$MODE" = prepare ]; then
   cd "$REPO_ROOT"
-  # `<pkg>...` is the control plane AND its workspace dependencies, built in topological
-  # order. It replaced a hand-written list of those dependencies, which is a list that
-  # silently rots: tsc resolves a workspace import through the dependency's BUILT types,
-  # so the first release after the cluster provisioner started importing `k8s-client`
-  # failed the whole run with TS2307 — the dependency was real, it just never got built
-  # here. Nothing to keep in sync now; pnpm reads the dependency graph itself.
-  pnpm --filter "@agentconnect.md/control-plane..." build
+  # Build the control plane and its dependency closure once before bundling Setup.
+  pnpm --filter "@agentconnect.md/control-plane..." build:package
   cd "$REPO_ROOT/packages/setup"
   pnpm exec json -I -f package.json -e "this.version='$VALUE'"
-  pnpm run build
+  pnpm run build:package
   pnpm exec json -I -f package.json -e 'this.dependencies={}'
   exit 0
 fi

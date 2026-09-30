@@ -37,7 +37,7 @@ COPY packages/message packages/message
 COPY packages/observability packages/observability
 COPY packages/daemon packages/daemon
 # Build workspace dependencies first so the shim bundle cannot leave them external.
-RUN pnpm --filter "@agentconnect.md/daemon^..." build \
+RUN pnpm --filter "@agentconnect.md/daemon^..." build:package \
   && pnpm --filter @agentconnect.md/daemon run build:shim
 
 # Set immutable modes before copying the small payload into either final image.

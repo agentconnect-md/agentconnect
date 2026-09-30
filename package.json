@@ -5,7 +5,7 @@
   "description": "Multi-agent platform bridging IM platforms to AI coding agents",
   "license": "Apache-2.0",
   "scripts": {
-    "build": "pnpm -r build",
+    "build": "pnpm -r build:package",
     "clean": "pnpm -r clean",
     "dev": "pnpm -r --parallel dev",
     "eval:addons": "pnpm --filter @agentconnect.md/daemon build && node evals/run-addons.mjs",
@@ -28,12 +28,15 @@
     "typecheck": "pnpm -r typecheck",
     "typecheck:ci": "pnpm --filter '!@agentconnect.md/web' --config.enable-pre-post-scripts=false -r typecheck"
   },
+  "dependencies": {
+    "@semantic-release/github": "^12.0.10",
+    "conventional-changelog-conventionalcommits": "^9.3.1",
+    "semantic-release": "^25.0.8"
+  },
   "devDependencies": {
     "@formatjs/icu-messageformat-parser": "^3.5.20",
-    "@semantic-release/github": "^12.0.10",
     "@types/node": "^24.13.6",
     "@typescript-eslint/parser": "^8.70.1",
-    "conventional-changelog-conventionalcommits": "^9.3.1",
     "eslint": "^10.11.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-import-resolver-typescript": "^4.4.5",
@@ -44,7 +47,6 @@
     "prettier-package-json": "^2.8.0",
     "prettier-plugin-sh": "^0.19.0",
     "promptfoo": "0.123.1",
-    "semantic-release": "^25.0.8",
     "semver": "^7.8.5",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.70.1",

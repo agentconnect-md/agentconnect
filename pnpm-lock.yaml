@@ -13,22 +13,26 @@ pnpmfileChecksum: sha256-yhrtow4uYXdBwgBbzJFJ4wA8s3O9UECr9QpwYpWeDfE=
 importers:
 
   .:
+    dependencies:
+      '@semantic-release/github':
+        specifier: ^12.0.10
+        version: 12.0.10(semantic-release@25.0.9(supports-color@7.2.0)(typescript@6.0.3))(supports-color@7.2.0)
+      conventional-changelog-conventionalcommits:
+        specifier: ^9.3.1
+        version: 9.3.1
+      semantic-release:
+        specifier: ^25.0.8
+        version: 25.0.9(supports-color@7.2.0)(typescript@6.0.3)
     devDependencies:
       '@formatjs/icu-messageformat-parser':
         specifier: ^3.5.20
         version: 3.5.20
-      '@semantic-release/github':
-        specifier: ^12.0.10
-        version: 12.0.10(semantic-release@25.0.9(supports-color@7.2.0)(typescript@6.0.3))(supports-color@7.2.0)
       '@types/node':
         specifier: ^24.13.6
         version: 24.13.6
       '@typescript-eslint/parser':
         specifier: ^8.70.1
         version: 8.70.1(eslint@10.11.0(jiti@2.7.0)(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3)
-      conventional-changelog-conventionalcommits:
-        specifier: ^9.3.1
-        version: 9.3.1
       eslint:
         specifier: ^10.11.0
         version: 10.11.0(jiti@2.7.0)(supports-color@7.2.0)
@@ -59,9 +63,6 @@ importers:
       promptfoo:
         specifier: 0.123.1
         version: 0.123.1(@aws-sdk/credential-provider-node@3.972.83)(@aws-sdk/credential-providers@3.1137.0)(@cfworker/json-schema@4.1.1)(@electric-sql/pglite@0.4.3)(@prisma/client@7.10.0)(@smithy/hash-node@4.5.2)(@smithy/signature-v4@5.7.3)(@swc/helpers@0.5.23)(@types/json-schema@7.0.15)(@types/node@24.13.6)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(mysql2@3.24.4(@types/node@24.13.6))(pg@8.23.0)(playwright-core@1.63.0)(postgres@3.4.7)(prisma@7.10.0(@types/node@24.13.6)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(better-sqlite3@11.10.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3))(socks@2.8.10)(supports-color@7.2.0)
-      semantic-release:
-        specifier: ^25.0.8
-        version: 25.0.9(supports-color@7.2.0)(typescript@6.0.3)
       semver:
         specifier: ^7.8.5
         version: 7.8.5

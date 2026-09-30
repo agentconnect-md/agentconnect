@@ -10,7 +10,8 @@
     "src"
   ],
   "scripts": {
-    "build": "next build",
+    "build": "pnpm --filter \"{.}...\" build:package",
+    "build:package": "next build",
     "clean": "rm -rf .next",
     "dev": "next dev",
     "i18n:check": "node ../../scripts/check-i18n.mjs",

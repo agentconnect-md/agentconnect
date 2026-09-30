@@ -26,7 +26,8 @@
     "src"
   ],
   "scripts": {
-    "build": "pnpm --filter '{.}^...' build && tsc -p tsconfig.json",
+    "build": "pnpm --filter \"{.}...\" build:package",
+    "build:package": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "prepack": "pnpm run build",
     "test": "vitest run",

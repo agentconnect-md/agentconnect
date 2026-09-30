@@ -176,7 +176,7 @@ Requires **Node >= 24.12.0** (`.nvmrc` = 24.12.0) and **pnpm 11**.
 ```bash
 pnpm install
 pnpm dev       # run all packages in parallel (-r --parallel dev)
-pnpm build     # pnpm -r build
+pnpm build     # pnpm -r build:package
 pnpm typecheck # type-check all packages
 pnpm lint      # eslint .   (lint:fix to autofix)
 pnpm format    # prettier --write .   (format:check to verify)

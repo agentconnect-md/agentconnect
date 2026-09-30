@@ -22,7 +22,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "pnpm --filter '{.}^...' build && tsc -p tsconfig.json",
+    "build": "pnpm --filter \"{.}...\" build:package",
+    "build:package": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "dev": "tsx watch src/cli.ts",
     "prepack": "pnpm run build",

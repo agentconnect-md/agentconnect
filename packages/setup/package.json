@@ -21,7 +21,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown && node scripts/assert-self-contained.mjs",
+    "build": "pnpm --filter \"{.}...\" build:package",
+    "build:package": "tsdown && node scripts/assert-self-contained.mjs",
     "clean": "rm -rf dist",
     "dev": "tsx watch --conditions=development src/index.ts",
     "prepack": "pnpm run build",
