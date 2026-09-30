@@ -2319,7 +2319,14 @@ export const AgentRepoAuthDto = z.object({
   access: RepoAccessDto,
   materialize: RepoMaterializationDto,
   createdBy: z.string().nullable(), // app_user id (member directory resolves display)
-  createdAt: z.string() // ISO-8601
+  createdAt: z.string(), // ISO-8601
+  /** Set while re-attestation finds the member who vouched for the grant below its tier; the grant is not honored meanwhile. */
+  stale: z
+    .object({
+      since: z.string(), // ISO-8601
+      reason: z.enum(['access_lost', 'identity_unlinked', 'attester_removed'])
+    })
+    .nullable()
 })
 export const AgentRepoAuthListDto = z.array(AgentRepoAuthDto)
 export type AgentRepoAuthDtoT = z.infer<typeof AgentRepoAuthDto>

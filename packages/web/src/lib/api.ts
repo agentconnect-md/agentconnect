@@ -6343,7 +6343,12 @@ export interface AgentRepoAuthDto {
   materialize?: RepoMaterialize
   createdBy: string | null // authorizer's userId (resolved to a name / "You" in the UI); null for key-created
   createdAt: string // ISO-8601
+  /** Set while the member who vouched for the grant fails re-attestation; absent on an older CP. */
+  stale?: { since: string; reason: RepoGrantStaleReason } | null
 }
+
+/** Why re-attestation suspended a grant. */
+export type RepoGrantStaleReason = 'access_lost' | 'identity_unlinked' | 'attester_removed'
 
 /** Which host a grant row names — an older CP omits the field and means GitHub. */
 export function repoAuthProvider(row: AgentRepoAuthDto): CodeHostProvider {

@@ -80,6 +80,7 @@ import { HookRedeliveryReconciler } from './orchestrator/hookRedeliveryReconcile
 import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-identity.js'
 import { GithubRepoIdentityService } from './github/repo-identity.js'
 import { GithubUserAuthzService } from './github/user-authz.js'
+import { RepositoryGrantReattestor, strictRepoAccessLookups } from './github/repository-grant-reattestor.js'
 import { type Clock, systemClock } from './domain/clock.js'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
 import { ClusterDaemonIdentityService, ClusterWorkloadIdentityService, loadClusterAccess } from './cluster/index.js'
@@ -2114,6 +2115,42 @@ export function buildContainer(
       )
     : undefined
 
+  // Re-attests repository grants wherever creation attests them (the per-user GitHub gate); armed only by startBackground().
+  const repositoryGrantReattestor =
+    github && githubUserAuthz && logtoIdentity
+      ? new RepositoryGrantReattestor(
+          {
+            grants: repos.agentRepoAuth,
+            installations: repos.githubInstallation,
+            github,
+            // The creation gate's check, over lookups that keep a credential failure an error rather than "no access".
+            authz: new GithubUserAuthzService({
+              identity: logtoIdentity,
+              github: strictRepoAccessLookups(github),
+              users: repos.user,
+              clock
+            }),
+            audit: repos.audit,
+            reproject: async (orgId, agentId) => {
+              const agent = await repos.agent.get(orgId, agentId)
+              if (!agent) return
+              await agentDelivery.upsert(agent, (err, daemonId) => {
+                if (err instanceof NoConnection)
+                  http.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
+                else http.log.warn({ err, agentId, daemonId }, 'grant re-attestation: spec reconcile failed')
+              })
+            },
+            clock,
+            log: http.log
+          },
+          {
+            intervalMs: config.REPO_GRANT_REATTEST_INTERVAL_SEC * 1000,
+            reattestAfterMs: config.REPO_GRANT_REATTEST_AFTER_SEC * 1000,
+            batch: config.REPO_GRANT_REATTEST_BATCH
+          }
+        )
+      : undefined
+
   // One-time preset backfill (preset-agents.md §3.2): existing orgs receive the
   // `agentconnect` general preset; the preset_agent row is the per-org marker, so
   // the sweep converges to a no-op after its first complete run.
@@ -2916,6 +2953,7 @@ export function buildContainer(
       githubRunReporter?.start()
       giteaStatusReporter.start()
       hookRedeliveryReconciler?.start()
+      repositoryGrantReattestor?.start()
       mcpOauthRefresher.start()
       gitlabRotator?.start()
       gitlabRetirementSweeper?.start()
@@ -2942,6 +2980,7 @@ export function buildContainer(
       githubRunReporter?.stop()
       giteaStatusReporter.stop()
       hookRedeliveryReconciler?.stop()
+      repositoryGrantReattestor?.stop()
       mcpOauthRefresher.stop()
       gitlabRotator?.stop()
       gitlabRetirementSweeper?.stop()

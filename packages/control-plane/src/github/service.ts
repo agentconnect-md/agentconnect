@@ -22,10 +22,14 @@ import type {
   AgentInstallationAuthorizationRepo,
   AgentRecord,
   AgentRepo,
+  AgentRepoAuthorizationRecord,
   AgentRepoAuthorizationRepo,
   RepoAccess,
+  RepoGrantStaleReason,
   SkillSourceRepo
 } from '../persistence/ports.js'
+import { isHonoredRepoGrant } from '../persistence/ports.js'
+import { STALE_REASON_TEXT } from './repository-grant-reattestor.js'
 import { githubRequest, githubRequestPage, mintAppJwt, GithubApiError, type FetchLike, type GithubPage } from './api.js'
 import { githubAppBotIdentity, type GithubAppConfig } from './config.js'
 import {
@@ -140,6 +144,23 @@ const NOT_COVERED_BY_INSTALLATION = 'is not covered by the installation — give
 
 function notAuthorizedForAgent(repoFullName: string, installationGrantable: boolean): string {
   return `${repoFullName} ${NOT_AUTHORIZED_FOR_AGENT}${installationGrantable ? OR_AUTHORIZE_ITS_INSTALLATION : ''}`
+}
+
+// A stale grant is listed but not honored, so its refusal says why instead of asking for a grant that exists.
+function staleGrantRefusal(repoFullName: string, reason: RepoGrantStaleReason): string {
+  return `${repoFullName}'s authorization for this agent is suspended because ${STALE_REASON_TEXT[reason]} — a member with that access can raise it, or revoke and authorize it again`
+}
+
+/** The refusal for a repository nothing honored authorizes: a stale row that names it says so. */
+function repoRefusal(
+  repoFullName: string,
+  installationGrantable: boolean,
+  stale: AgentRepoAuthorizationRecord | undefined
+): GitCredDeniedError {
+  const message = stale?.stale
+    ? staleGrantRefusal(repoFullName, stale.stale.reason)
+    : notAuthorizedForAgent(repoFullName, installationGrantable)
+  return new GitCredDeniedError(message, 'SCOPE_DENIED', false)
 }
 
 type RepoPageLookup = { ins: GithubInstallationRecord; page: number; perPage: number }
@@ -864,9 +885,11 @@ export class GithubService {
     }
 
     // Grants are provider-qualified: a GitLab project sharing this numeric id is a different repository.
-    const auth = (await this.deps.repoAuths?.listForAgent(agent.id))?.find(
+    const row = (await this.deps.repoAuths?.listForAgent(agent.id))?.find(
       (row) => row.provider === 'github' && row.repoId === repoId
     )
+    // A stale row carries no authority; an installation grant still may.
+    const auth = row && isHonoredRepoGrant(row) ? row : undefined
     if (!auth) {
       // The ref above resolved through this very installation, which is the coverage proof an installation grant needs.
       const grant =
@@ -877,11 +900,7 @@ export class GithubService {
         await this.refreshGrantLogin(grant, installation)
         return { kind: 'installation', repoId, repoFullName: ref.fullName, access: grant.access, installation }
       }
-      throw new GitCredDeniedError(
-        notAuthorizedForAgent(repoFullName, opts.installationGrants !== false),
-        'SCOPE_DENIED',
-        false
-      )
+      throw repoRefusal(repoFullName, opts.installationGrants !== false, row)
     }
     if (auth.repoFullName !== ref.fullName) {
       await this.deps.repoAuths?.updateFullName(auth.id, ref.fullName).catch(() => {})
@@ -1107,9 +1126,9 @@ export class GithubService {
       }
     }
 
-    const grants = ((await this.deps.repoAuths?.listForAgent(agent.id)) ?? []).filter(
-      (row) => row.provider === 'github'
-    )
+    const rows = ((await this.deps.repoAuths?.listForAgent(agent.id)) ?? []).filter((row) => row.provider === 'github')
+    // A stale row carries no authority, but it still justifies the probe that lets its refusal say why.
+    const grants = rows.filter(isHonoredRepoGrant)
     const exact = grants.find((row) => row.repoFullName.toLowerCase() === repoFullName.toLowerCase())
     // A private skill source the agent enables is a read grant on its repository
     // (shared-skills.md §3). Consulted only when no explicit row matches: an
@@ -1120,9 +1139,7 @@ export class GithubService {
         : await resolvePrivateSkillSourceRepos(agent, this.deps.skillSources).catch(() => [])
     const skillExact = skillRepos.find((row) => row.repoFullName.toLowerCase() === repoFullName.toLowerCase())
     // Never probe an unrelated owner merely because the daemon named it: a same-owner row, or a grant on its live installation, justifies it.
-    const renameCandidates = grants.filter(
-      (row) => row.repoFullName.split('/')[0]?.toLowerCase() === owner.toLowerCase()
-    )
+    const renameCandidates = rows.filter((row) => row.repoFullName.split('/')[0]?.toLowerCase() === owner.toLowerCase())
     const skillRenameCandidates = skillRepos.filter(
       (row) => row.repoFullName.split('/')[0]?.toLowerCase() === owner.toLowerCase()
     )
@@ -1199,7 +1216,11 @@ export class GithubService {
         await this.refreshGrantLogin(grant, installation)
         return { kind: 'installation', repoId: ref.repoId, repoFullName, access: grant.access, installation }
       }
-      throw new GitCredDeniedError(notAuthorizedForAgent(repoFullName, true), 'SCOPE_DENIED', false)
+      throw repoRefusal(
+        repoFullName,
+        true,
+        rows.find((row) => row.repoId === ref.repoId)
+      )
     }
     if (renamed.repoFullName !== ref.fullName) {
       await this.deps.repoAuths?.updateFullName(renamed.id, ref.fullName).catch(() => {})

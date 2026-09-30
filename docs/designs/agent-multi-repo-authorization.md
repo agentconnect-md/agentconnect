@@ -17,6 +17,10 @@
 > grant from **Authorize repository**'s GitHub picker, and counts covered repositories as authorized in
 > the GitHub hook editor and on the agent page.
 >
+> **Re-attestation** is implemented: the Control Plane re-runs decision 8's
+> check against each GitHub row's attester on a schedule and suspends a row
+> whose attester lost the access its tier needs (see Re-attestation).
+>
 > Scratch workspaces use the same explicit repository allowlist and have no
 > implicit repository. Converting a scratch workspace to GitHub makes the target
 > repository the implicit workspace authority and removes any redundant
@@ -233,12 +237,18 @@ model AgentRepoAuthorization {
   materialize     RepoMaterialization @default(always) // how a session stands in the repository
   createdByUserId String?           // Audit: who granted it and was attested
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  attestedByUserId     String?               // who vouched for the current tier; re-attestation re-checks them
+  attestationCheckedAt DateTime?             // when re-attestation last examined the row
+  staleSince           DateTime?             // set while the attester fails the check
+  staleReason          RepoGrantStaleReason? // access_lost | identity_unlinked | attester_removed
 
-  agent     Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  agent      Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  createdBy  User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  attestedBy User? @relation(fields: [attestedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([agentId, provider, repoId])
   @@index([agentId])
+  @@index([provider, attestationCheckedAt])
   @@map("agent_repo_authorization")
 }
 
@@ -411,7 +421,7 @@ Implement in `http/routes/agents.ts` or a new `agent-repos.ts`:
 
 | Route                                                   | Gate                                                            | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /orgs/:orgId/agents/:agentId/repos`                | Agent `canView`, otherwise 404                                  | List `repoFullName`, access, creator, and creation time.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `GET /orgs/:orgId/agents/:agentId/repos`                | Agent `canView`, otherwise 404                                  | List `repoFullName`, access, creator, creation time, and `stale` (see Re-attestation).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `POST /orgs/:orgId/agents/:agentId/repos`               | `denyViewerWrite` + agent `canEdit`                             | Body `{ owner, repo, access, materialize? }` (`materialize` defaults to `always`; `decision` needs the agent's `repositorySelector`, else 409 `REPOSITORY_SELECTOR_MISSING`, and the agent's daemon, or every ready member of its group or the pool, advertising `repo-selector-v1`, else 409 `DAEMON_FEATURE_MISSING`; the same rule applies to the gitlab and gitea arms). Require a live installation claimed by the organization, resolve `repoId`, run decision 8 identity attestation, and enforce unique `(agentId, repoId)`. A GitHub App workspace cannot explicitly reauthorize its implicit repository. Scratch may authorize any covered repository. A manual GitHub workspace may explicitly authorize only its own workspace repository for Control Plane-owned review and Checks.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `DELETE /orgs/:orgId/agents/:agentId/repos/:id`         | Same                                                            | Delete and audit. A previously minted token remains valid until expiration, at most one hour, matching git-credential revocation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `PATCH /orgs/:orgId/agents/:agentId/repos/:repoAuthId`  | Same                                                            | Body `{ access?, materialize? }`, at least one present (an empty body is 400). Access permits only monotonic `read -> comment -> write`; downgrade returns 409 and requires delete plus regrant to make review and Check cleanup explicit. `materialize` moves freely between `always`, `decision` and `on-demand` (moving to `decision` has the create route's preconditions, 409 otherwise, checked before the tier) and, because it is projected, advances the agent's config revision and re-pushes the spec; an access-only change does neither. Leaving `always` retires the root in place once the daemon honors the field ([multi-repository-workspaces.md](multi-repository-workspaces.md), decision 13). When both fields are sent, access is applied first, so a denied tier leaves the row untouched. Re-run identity attestation, requiring write for write, require a live owner installation, and audit `agent_repo_change` (the create and change payloads carry `materialize`; a change also carries `previousMaterialize`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -440,6 +450,53 @@ itself and may report Checks at the grant's `write` tier. Revoking the grant is
 are retired only through the row
 ([webhook-triggers-and-github-events.md](webhook-triggers-and-github-events.md),
 Installation-Wide Rows).
+
+### Re-attestation
+
+Creating a repository row or raising its tier attests the acting member
+(decision 8). `RepositoryGrantReattestor` (`github/repository-grant-reattestor.ts`)
+repeats that check on a schedule, so a grant does not outlive its attester's
+GitHub access.
+
+- **Who is checked.** Each row records `attestedByUserId`: the creator, replaced
+  by whoever raises the tier. A row whose attester's account was deleted is
+  stale at once, without a GitHub call.
+- **The check.** `GithubUserAuthzService.assertAccess`, the creation gate
+  itself, at the tier's need: `read` and `comment` need read, `write` needs
+  write. The sweep's instance reads GitHub with the strict error policy of
+  comment authorization, so only a missing subject reads as no access, and a
+  credential or upstream failure stays an error.
+- **Verdicts.** Held clears the marker. `USER_NO_ACCESS` marks the row stale
+  with `access_lost`, and `GITHUB_IDENTITY_REQUIRED` with `identity_unlinked`. A
+  verdict lands only while the row's attester and tier are still the ones
+  checked. An owner with no live installation, or a repository that no longer
+  resolves to the row's id, is skipped, because the mint gate already denies
+  both. An upstream failure stops the sweep: nothing is marked, and the next
+  sweep resumes.
+- **What stale means.** The row stays, listed with `stale: { since, reason }`,
+  and nothing honors it. Minting by name and by id, and so reviews, auto-merge
+  and Checks, the spec's `additionalRepos`, the repository selector's roster,
+  and the hook watch gate all read it as absent; existing triggers keep firing
+  like a grandfathered out-of-bound hook. An installation grant on the owner
+  still applies at its own tier. A refusal names the suspension and its reason
+  instead of asking for a grant that exists. Nothing is deleted or lowered:
+  lowering would skip the Check cleanup that revoking performs, which is why
+  downgrades stay explicit.
+- **Recovery.** A later sweep that finds the attester's access clears the
+  marker. A member who holds the needed permission can raise the tier, which
+  makes them the attester and clears it. Revoking and authorizing again also
+  works. Either flip advances the agent's config revision, re-pushes its spec,
+  and audits `agent_repo_change`.
+- **Budget.** One sweep every `REPO_GRANT_REATTEST_INTERVAL_SEC` (default 600),
+  at most `REPO_GRANT_REATTEST_BATCH` (default 25) grants, each re-checked once
+  its last check is older than `REPO_GRANT_REATTEST_AFTER_SEC` (default 86400).
+  A check costs three installation-token reads. The sweep claims one grant at a
+  time with `FOR UPDATE SKIP LOCKED` and stamps its check time first, so
+  replicas take different grants and a grant whose check fails rotates to the
+  back instead of pinning the queue.
+- **Scope.** GitHub rows, and only where the per-user gate is configured, as at
+  creation. A GitLab or Gitea row is vouched for by its managed binding, and an
+  installation grant has no per-repository attestation (decision 10).
 
 ## Daemon
 
@@ -574,6 +631,9 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
      row presses neither. It only raises: **Read only** is disabled on a row
      above it, its tooltip saying to revoke and authorize again, as the route
      requires.
+   - On both surfaces a row re-attestation suspended carries a **Suspended**
+     badge after its name, the reason in its tooltip. The hook editor and the
+     agent page count such a row as unauthorized, as the Control Plane does.
    - "Authorize repository" reuses the installation/repository picker and list
      filtering, offers access options defaulting to read, describes each level,
      warns on write blast radius, and reuses `/access` preflight. Beside access it
@@ -753,6 +813,13 @@ fails with "not covered by the installation" and the hint to authorize it.
   returning un-retiring it; the roster reply bounded and ordered; the helper and
   wrapper denial output without the daemon-unreachable line and without running
   `gh`.
+- **Re-attestation:** the loop's cadence on a fake clock; held, lost-access,
+  unlinked-identity and removed-attester verdicts; an unreachable host marking
+  nothing and stopping the sweep; the claim order and stamp, the verdict fence
+  on attester and tier, and the revision bump on a flip, against Postgres; a
+  stale row refused by both resolvers, left out of the spec, offered through an
+  installation grant's roster, refused as a new hook target, and honored again
+  by a raise.
 
 ## Open questions
 
@@ -763,14 +830,11 @@ fails with "not covered by the installation" and the hint to authorize it.
    workspace submodules, offer candidates, and persist rows after operator
    confirmation. This design supplies the mechanism; only nomination UI is
    missing.
-3. **Periodic re-attestation:** if a grant creator loses repository access,
-   automatically downgrade or alert. The Control Plane already has the check;
-   only scheduling is missing.
-4. **Per-repository minting observability:** decide whether authorization hit
+3. **Per-repository minting observability:** decide whether authorization hit
    rate and repository-level `SCOPE_DENIED` belong in
    `heartbeat.degradedScopes` or only in logs, alongside the broader
    git-credential observability design.
-5. **Group-level grants on other hosts:** a GitLab group or Gitea organization
+4. **Group-level grants on other hosts:** a GitLab group or Gitea organization
    is the natural analogue of an installation grant. The table already carries
    `provider`; the resolver and the console surface are what a second host
    would add.

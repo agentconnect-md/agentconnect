@@ -208,6 +208,7 @@ model User {
   modifiedHooks                    HookDef[]                  @relation("HookModifiedBy")
   addedTrustedActors               CodeHostTrustedActor[]     @relation("CodeHostTrustedActorAddedBy")
   createdRepoAuths                 AgentRepoAuthorization[]   @relation("AgentRepoAuthCreatedBy")
+  attestedRepoAuths                AgentRepoAuthorization[]   @relation("AgentRepoAuthAttestedBy")
   createdInstallationAuths         AgentInstallationAuthorization[] @relation("AgentInstallationAuthCreatedBy")
   gitlabConnections                GitlabConnection[]         @relation("GitlabConnectionUser")
   githubRepoIdentity               GithubRepoIdentity?
@@ -1087,13 +1088,29 @@ model AgentRepoAuthorization {
   materialize RepoMaterialization @default(always) // projected beside the entry; a change re-projects the spec
   createdByUserId String? // audit: who authorized (the identity-assertion subject)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
+  /// Who vouched for the current tier: the creator, or whoever last raised it; re-attestation re-checks this member.
+  attestedByUserId String?
+  /// When re-attestation last examined the row (null = never); the sweep takes the oldest first.
+  attestationCheckedAt DateTime? @db.Timestamptz(6)
+  /// Set while the attester fails the access check; the grant is not honored meanwhile.
+  staleSince DateTime? @db.Timestamptz(6)
+  staleReason RepoGrantStaleReason?
 
-  agent     Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  createdBy User? @relation("AgentRepoAuthCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  agent      Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  createdBy  User? @relation("AgentRepoAuthCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  attestedBy User? @relation("AgentRepoAuthAttestedBy", fields: [attestedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([agentId, provider, repoId])
   @@index([agentId])
+  @@index([provider, attestationCheckedAt])
   @@map("agent_repo_authorization")
+}
+
+/// Why re-attestation stopped honoring a repository grant (agent-multi-repo-authorization.md, Re-attestation).
+enum RepoGrantStaleReason {
+  access_lost // the attester no longer holds the permission the tier needs
+  identity_unlinked // the attester has no linked GitHub identity to check
+  attester_removed // the attester's account was deleted
 }
 
 /// Agent access to every repository a GitHub App installation covers, at one tier (agent-multi-repo-authorization.md decision 10).

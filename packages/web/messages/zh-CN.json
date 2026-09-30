@@ -1631,6 +1631,12 @@
         "readWrite": "读写",
         "accessFor": "{name} 的访问权限",
         "lowerAccessRevoke": "要降低权限，请撤销后重新授权",
+        "grantSuspended": "已暂停",
+        "grantSuspendedReason": {
+          "access_lost": "授权它的成员在 GitHub 上已没有这个权限",
+          "identity_unlinked": "授权它的成员已不再关联 GitHub 账号",
+          "attester_removed": "授权它的成员账号已不存在"
+        },
         "githubWriteAccess": "推送、创建 PR 并运行 GitHub Actions",
         "repositoryAccess": "仓库访问权限",
         "selectRepositoryFirst": "请先选择仓库",

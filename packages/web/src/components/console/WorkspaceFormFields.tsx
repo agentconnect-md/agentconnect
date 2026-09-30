@@ -11,7 +11,7 @@ import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-h
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { GITEA_REPOSITORY_STATE, giteaChoiceSelectable, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
-import type { RepoAccess, RepoMaterialize } from '@/lib/api'
+import type { RepoAccess, RepoGrantStaleReason, RepoMaterialize } from '@/lib/api'
 import type { RepositoryDecisionBlock } from '@/lib/repository-selector'
 
 // The TILE the user types through, not what is stored (git-workspace-model.md §7):
@@ -67,6 +67,28 @@ const ACCESS_TOGGLE = [
   { value: 'read', icon: 'eye', label: 'readOnly' },
   { value: 'write', icon: 'pencil', label: 'readWrite' }
 ] as const satisfies readonly { value: WorkspaceRepoAccess; icon: string; label: string }[]
+
+/** A grant re-attestation suspended, named in its row with the reason on hover; `compact` keeps a narrow row's name readable. */
+export function RepositoryGrantSuspendedBadge({
+  reason,
+  compact = false
+}: {
+  reason: RepoGrantStaleReason
+  compact?: boolean
+}) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
+  return (
+    <span
+      role={compact ? 'img' : undefined}
+      aria-label={compact ? t('grantSuspended') : undefined}
+      className="badge flex-none bg-(--status-paused-soft) text-(--amber-500)"
+      title={t(`grantSuspendedReason.${reason}`)}
+    >
+      <Icon name="triangle-alert" size={11} />
+      {!compact && t('grantSuspended')}
+    </span>
+  )
+}
 
 /** A list row's access as a two-segment toggle that only raises; a legacy `comment` row presses neither segment. */
 export function RepositoryAccessToggle({

@@ -1,19 +1,4 @@
-/**
- * PgAgentRepoAuthorizationRepo — explicit repository grants per agent
- * (issue #457, agent-multi-repo-authorization.md; gitlab-com-integration.md §8.3).
- *
- * Metadata only (repo identity + access tier); no token material ever lands
- * here. Rows are hard-deleted on revoke — unlike installations there is no
- * provenance pointer into this table, and an already-minted token surviving
- * to its ≤1h expiry is the documented revocation window.
- *
- * `repoId`, `repoFullName` and `materialize` are projected onto
- * `AgentSpec.workspace.additionalRepos` (multi-repository-workspaces.md decisions 2
- * and 13), so every writer that changes any of them bumps the owning agent's
- * `configRevision` in the SAME transaction. Without it the daemon receives new spec
- * content at the applied revision and refuses it as an invariant violation —
- * permanently, on every reconnect. `access` stays off the spec, so it does not bump.
- */
+// Explicit repository grants (agent-multi-repo-authorization.md): a write to a projected field — id, name, materialize, staleness — bumps the agent's configRevision in the same transaction, or the daemon refuses the spec.
 import type {
   AgentRepoAuthorization,
   PrismaClient,
@@ -27,9 +12,11 @@ import type {
   AgentRepoAuthorizationRecord,
   AgentRepoAuthorizationRepo,
   RepoAccess,
+  RepoGrantAttestationSubject,
+  RepoGrantStaleReason,
   RepoMaterialization
 } from '../ports.js'
-import { AgentId, type OrgId } from '../../domain/ids.js'
+import { AgentId, OrgId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockHookReviewAgentRepoScope } from '../review-projection-lock.js'
 import { AgentWorkspaceRepoConflict } from '../errors.js'
@@ -63,7 +50,9 @@ function toRecord(r: Row): AgentRepoAuthorizationRecord {
     createdAt: r.createdAt,
     createdBy: r.createdBy
       ? { userId: r.createdBy.id, displayName: r.createdBy.displayName, email: r.createdBy.email }
-      : null
+      : null,
+    attestedByUserId: r.attestedByUserId,
+    stale: r.staleSince && r.staleReason ? { since: r.staleSince, reason: r.staleReason as RepoGrantStaleReason } : null
   }
 }
 
@@ -83,6 +72,7 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
     access: RepoAccess
     materialize?: RepoMaterialization
     createdByUserId?: string
+    attestedAt?: Date
   }): Promise<AgentRepoAuthorizationRecord> {
     return this.transaction(async (tx) => {
       // Linearize with lazy workspace-id repair. If create wins first, repair
@@ -108,7 +98,10 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
           repoFullName: input.repoFullName,
           access: input.access,
           materialize: toDbMaterialization(input.materialize ?? 'always'),
-          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
+          ...(input.createdByUserId
+            ? { createdByUserId: input.createdByUserId, attestedByUserId: input.createdByUserId }
+            : {}),
+          ...(input.attestedAt ? { attestationCheckedAt: input.attestedAt } : {})
         },
         include: withCreator
       })
@@ -145,12 +138,102 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
   }
 
   // Raise-only at the write: the tier condition is re-read after a concurrent raise commits, so a stale request is a no-op.
-  async updateAccess(id: string, access: RepoAccess): Promise<AgentRepoAuthorizationRecord | null> {
-    await this.db.agentRepoAuthorization.updateMany({
-      where: { id, access: { in: RAISABLE_FROM[access] } },
-      data: { access }
+  async updateAccess(
+    id: string,
+    access: RepoAccess,
+    attestation?: { userId: string; at: Date }
+  ): Promise<AgentRepoAuthorizationRecord | null> {
+    if (!attestation) {
+      await this.db.agentRepoAuthorization.updateMany({
+        where: { id, access: { in: RAISABLE_FROM[access] } },
+        data: { access }
+      })
+      return this.get(id)
+    }
+    return this.transaction(async (tx) => {
+      const before = await tx.agentRepoAuthorization.findUnique({
+        where: { id },
+        select: { agentId: true, staleSince: true }
+      })
+      // The raiser vouched for the new tier, which covers every lower one, so a stale grant is honored again.
+      const raised = await tx.agentRepoAuthorization.updateMany({
+        where: { id, access: { in: RAISABLE_FROM[access] } },
+        data: {
+          access,
+          attestedByUserId: attestation.userId,
+          attestationCheckedAt: attestation.at,
+          staleSince: null,
+          staleReason: null
+        }
+      })
+      // Staleness is projected (a stale grant leaves the spec), so honoring it again advances the revision.
+      if (raised.count > 0 && before?.staleSince) await bumpAgentConfigRevisions(tx, [before.agentId])
+      const row = await tx.agentRepoAuthorization.findUnique({ where: { id }, include: withCreator })
+      return row ? toRecord(row) : null
     })
-    return this.get(id)
+  }
+
+  async claimDueForReattestation(
+    provider: CodeHostProvider,
+    checkedBefore: Date,
+    now: Date
+  ): Promise<(AgentRepoAuthorizationRecord & { orgId: OrgId }) | null> {
+    // SKIP LOCKED: concurrent sweeps take different rows; stamping first rotates a row back even when its check fails.
+    const claimed = await this.db.$queryRaw<{ id: string }[]>(Prisma.sql`
+      WITH picked AS (
+        SELECT id FROM "agent_repo_authorization"
+        WHERE "provider" = ${provider}
+          AND ("attestationCheckedAt" IS NULL OR "attestationCheckedAt" < ${checkedBefore})
+        ORDER BY "attestationCheckedAt" ASC NULLS FIRST, "createdAt" ASC, id ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE "agent_repo_authorization" g SET "attestationCheckedAt" = ${now}
+      FROM picked WHERE g.id = picked.id
+      RETURNING g.id
+    `)
+    const id = claimed[0]?.id
+    if (!id) return null
+    const row = await this.db.agentRepoAuthorization.findUnique({
+      where: { id },
+      include: { ...withCreator, agent: { select: { orgId: true } } }
+    })
+    return row ? { ...toRecord(row), orgId: OrgId(row.agent.orgId) } : null
+  }
+
+  async recordAttestation(
+    id: string,
+    subject: RepoGrantAttestationSubject,
+    verdict: RepoGrantStaleReason | null,
+    at: Date
+  ): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      // A raise or a new attester since the check makes the verdict moot, so it lands only while both still hold.
+      const checked = { id, attestedByUserId: subject.attestedByUserId, access: subject.access }
+      let flipped
+      if (verdict === null) {
+        flipped = await tx.agentRepoAuthorization.updateMany({
+          where: { ...checked, staleSince: { not: null } },
+          data: { staleSince: null, staleReason: null }
+        })
+      } else {
+        flipped = await tx.agentRepoAuthorization.updateMany({
+          where: { ...checked, staleSince: null },
+          data: { staleSince: at, staleReason: verdict }
+        })
+        // Already stale: keep when it went stale, refresh only why.
+        if (flipped.count === 0) {
+          await tx.agentRepoAuthorization.updateMany({
+            where: { ...checked, staleReason: { not: verdict } },
+            data: { staleReason: verdict }
+          })
+        }
+      }
+      if (flipped.count === 0) return false
+      const row = await tx.agentRepoAuthorization.findUnique({ where: { id }, select: { agentId: true } })
+      if (row) await bumpAgentConfigRevisions(tx, [row.agentId])
+      return true
+    })
   }
 
   async updateMaterialize(id: string, materialize: RepoMaterialization): Promise<AgentRepoAuthorizationRecord | null> {

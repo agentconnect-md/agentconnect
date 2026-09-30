@@ -31,6 +31,7 @@ import EditWorkspaceModal from '@/components/console/modals/EditWorkspaceModal'
 import {
   INSTALLATION_MATERIALIZE_OPTIONS,
   RepositoryAccessToggle,
+  RepositoryGrantSuspendedBadge,
   RepositoryMaterializeSelect,
   type WorkspaceMode
 } from '@/components/console/WorkspaceFormFields'
@@ -433,6 +434,7 @@ function RepositoryAccessMenu({
                     {row.repoFullName}
                   </span>
                 )}
+                {row.stale && <RepositoryGrantSuspendedBadge reason={row.stale.reason} compact />}
                 <RepositoryAccessToggle
                   value={row.access}
                   name={row.repoFullName}

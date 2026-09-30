@@ -13,6 +13,7 @@ import type {
   GithubInstallationRecord,
   GithubInstallationRepo
 } from '../persistence/ports.js'
+import { isHonoredRepoGrant } from '../persistence/ports.js'
 import type { GithubService } from './service.js'
 
 const PAGE_SIZE = 100
@@ -58,8 +59,10 @@ export class RepoCandidatesService {
         return ins ? [this.roster(ins)] : []
       })
     )
-    // A repository with its own row follows that row, and the workspace repository is always present.
-    const excluded = new Set(rows.filter((row) => row.provider === 'github').map((row) => row.repoId.toString()))
+    // A repository with its own honored row follows that row, and the workspace repository is always present.
+    const excluded = new Set(
+      rows.filter((row) => row.provider === 'github' && isHonoredRepoGrant(row)).map((row) => row.repoId.toString())
+    )
     const workspace = agent.workspace
     if (workspace.mode === 'git' && workspace.credential?.provider === 'github' && agent.workspaceRepoId !== undefined)
       excluded.add(agent.workspaceRepoId.toString())

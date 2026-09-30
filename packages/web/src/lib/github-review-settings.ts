@@ -129,6 +129,7 @@ export function effectiveRepoAccess(input: {
     repoId?: string
     repoFullName: string
     access: 'read' | 'comment' | 'write'
+    stale?: object | null
   }>
   /** An explicit row keeps its own tier; a grant counts only when no row matches (decision 10). */
   installationGrants?: ReadonlyArray<{ accountLogin: string; access: 'read' | 'comment' | 'write' }>
@@ -143,7 +144,9 @@ export function effectiveRepoAccess(input: {
     // write on the CP, so preserve that safe compatibility interpretation.
     return input.workspace.gitAccess ?? 'write'
   }
-  const explicit = findGithubRepoAuthorization(input.authorizations, input.repoId, input.repoFullName)
+  // A suspended row authorizes nothing, as on the control plane; an installation grant still may.
+  const honored = input.authorizations.filter((row) => !row.stale)
+  const explicit = findGithubRepoAuthorization(honored, input.repoId, input.repoFullName)
   return explicit?.access ?? installationGrantAccess(input.repoFullName, input.installationGrants)
 }
 

@@ -43,6 +43,7 @@ import type {
   OrganizationKnowledgeRepo,
   SkillSourceRepo
 } from '../persistence/ports.js'
+import { isHonoredRepoGrant } from '../persistence/ports.js'
 import { AgentId, OrgId } from '../domain/ids.js'
 import { gitlabManagedProjectPath } from '../domain/git-host.js'
 import { codeHostProviders } from '../codehost/registry.js'
@@ -236,7 +237,9 @@ export class AgentSpecAssembler {
    *  Pinned into the move {@link MoveBundle} for the same reason as skills. */
   async additionalReposOf(a: Pick<AgentRecord, 'id'>): Promise<AgentAdditionalRepo[]> {
     const rows = (await this.agentRepoAuth?.listForAgent(a.id)) ?? []
+    // A stale grant is neither cloned nor offered to the selector until it is honored again.
     return rows
+      .filter(isHonoredRepoGrant)
       .map((row) => ({
         repoFullName: row.repoFullName,
         repoId: row.repoId.toString(),

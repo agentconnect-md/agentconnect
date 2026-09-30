@@ -89,11 +89,11 @@ const unused = () => Promise.reject(new Error('not used by this test'))
 
 /** Only `listForAgent` participates in the projection; the writers stay inert. */
 function repoAuthWith(
-  rows: Array<[fullName: string, repoId: bigint, materialize?: 'always' | 'on-demand']>
+  rows: Array<[fullName: string, repoId: bigint, materialize?: 'always' | 'on-demand', stale?: boolean]>
 ): AgentRepoAuthorizationRepo {
   return {
     listForAgent: async (agentId) =>
-      rows.map(([repoFullName, repoId, materialize], index) => ({
+      rows.map(([repoFullName, repoId, materialize, stale], index) => ({
         id: `auth-${index}`,
         agentId,
         provider: 'github' as const,
@@ -102,7 +102,9 @@ function repoAuthWith(
         access: 'read' as const,
         materialize: materialize ?? ('always' as const),
         createdAt: new Date('2026-01-01T00:00:00Z'),
-        createdBy: null
+        createdBy: null,
+        attestedByUserId: null,
+        stale: stale ? { since: new Date('2026-02-01T00:00:00Z'), reason: 'access_lost' as const } : null
       })),
     create: unused,
     listForRepository: unused,
@@ -111,7 +113,9 @@ function repoAuthWith(
     updateMaterialize: unused,
     updateFullName: unused,
     remove: unused,
-    removeWithReviewProjectionCleanup: unused
+    removeWithReviewProjectionCleanup: unused,
+    claimDueForReattestation: unused,
+    recordAttestation: unused
   }
 }
 
@@ -308,6 +312,21 @@ describe('AgentSpecAssembler', () => {
       mode: 'git',
       additionalRepos: [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
     })
+  })
+
+  it('leaves a stale grant out of the projection so it is neither cloned nor offered to the selector', async () => {
+    const specs = assemblerWith(
+      repoAuthWith([
+        ['example-co/shared-library', 815n],
+        ['example-co/lost-access', 816n, 'always', true]
+      ])
+    )
+
+    const spec = await specs.assemble(AGENT)
+
+    expect(spec.workspace?.additionalRepos).toEqual([
+      { repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github', materialize: 'always' }
+    ])
   })
 
   it('projects an empty list for an agent with no grants, and with no allowlist dependency at all', async () => {

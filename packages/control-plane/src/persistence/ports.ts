@@ -4442,6 +4442,9 @@ export type RepoAccess = 'read' | 'comment' | 'write'
 /** The wire spelling; the Prisma enum maps `on_demand` to this value. */
 export type RepoMaterialization = 'always' | 'decision' | 'on-demand'
 
+/** Why re-attestation stopped honoring a grant (agent-multi-repo-authorization.md, Re-attestation). */
+export type RepoGrantStaleReason = 'access_lost' | 'identity_unlinked' | 'attester_removed'
+
 export interface AgentRepoAuthorizationRecord {
   id: string
   agentId: AgentId
@@ -4452,6 +4455,19 @@ export interface AgentRepoAuthorizationRecord {
   materialize: RepoMaterialization // how a session stands in the repository (multi-repository-workspaces.md decision 13)
   createdAt: Date
   createdBy: AgentCreator | null // audit: who authorized (identity-assertion subject)
+  attestedByUserId: string | null // who vouched for the current tier; re-attestation re-checks this member
+  stale: { since: Date; reason: RepoGrantStaleReason } | null // set while the attester fails the check
+}
+
+/** A stale grant carries no authority: every mint, spec projection and gate reads it as absent. */
+export function isHonoredRepoGrant(row: Pick<AgentRepoAuthorizationRecord, 'stale'>): boolean {
+  return !row.stale
+}
+
+/** The attester and tier one re-attestation checked; its verdict applies only while both still hold. */
+export interface RepoGrantAttestationSubject {
+  attestedByUserId: string | null
+  access: RepoAccess
 }
 
 export interface AgentRepoAuthorizationRepo {
@@ -4466,15 +4482,33 @@ export interface AgentRepoAuthorizationRepo {
     repoFullName: string
     access: RepoAccess
     materialize?: RepoMaterialization // absent ⇒ always
-    createdByUserId?: string
+    createdByUserId?: string // also the first attester
+    attestedAt?: Date // when the creator's access was checked; absent ⇒ never checked
   }): Promise<AgentRepoAuthorizationRecord>
   get(id: string): Promise<AgentRepoAuthorizationRecord | null>
-  /** The agent's grants — the console card AND the mint-gate read (viewer-free). */
+  /** The agent's grants, stale ones included — the console card AND the mint-gate read (viewer-free). */
   listForAgent(agentId: AgentId): Promise<AgentRepoAuthorizationRecord[]>
   /** Every grant in the organization over one numeric repository — who still consumes a binding (gitea-integration.md §6). */
   listForRepository(orgId: OrgId, provider: CodeHostProvider, repoId: bigint): Promise<AgentRepoAuthorizationRecord[]>
-  /** Raise a grant's capability tier after the caller's GitHub access is re-checked; a tier at or above `access` is left as is. */
-  updateAccess(id: string, access: RepoAccess): Promise<AgentRepoAuthorizationRecord | null>
+  /** Raise a grant's tier; with `attestation` the caller becomes the attester and a stale grant is honored again. */
+  updateAccess(
+    id: string,
+    access: RepoAccess,
+    attestation?: { userId: string; at: Date }
+  ): Promise<AgentRepoAuthorizationRecord | null>
+  /** Take the grant whose last re-attestation is oldest and before `checkedBefore`, stamping it checked at `now`. */
+  claimDueForReattestation(
+    provider: CodeHostProvider,
+    checkedBefore: Date,
+    now: Date
+  ): Promise<(AgentRepoAuthorizationRecord & { orgId: OrgId }) | null>
+  /** Record a verdict (null = held) for `subject`; true when the grant's honored state flipped and the spec was advanced. */
+  recordAttestation(
+    id: string,
+    subject: RepoGrantAttestationSubject,
+    verdict: RepoGrantStaleReason | null,
+    at: Date
+  ): Promise<boolean>
   /** Change how sessions stand in the repository; projected, so it advances the agent's config revision. */
   updateMaterialize(id: string, materialize: RepoMaterialization): Promise<AgentRepoAuthorizationRecord | null>
   /** Best-effort display refresh when the mint gate detects a rename (repoId match

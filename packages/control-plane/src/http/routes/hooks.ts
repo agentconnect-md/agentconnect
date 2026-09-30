@@ -17,6 +17,7 @@ import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import {
+  isHonoredRepoGrant,
   isSyntheticEmail,
   type AgentRecord,
   type GiteaBindingState,
@@ -355,9 +356,10 @@ export function hookRoutes(deps: HttpDeps) {
         status: 409,
         message: `${repoFullName} is not authorized for this agent — authorize the ${subject} for it, or make it the agent's workspace ${subject}, then create the trigger`
       } as const
+      // A stale row authorizes no new trigger, as it mints no credential.
       const explicitlyGranted = async () =>
         (await deps.repos.agentRepoAuth.listForAgent(agent.id)).some(
-          (row) => row.provider === provider && row.repoId === repoId
+          (row) => row.provider === provider && row.repoId === repoId && isHonoredRepoGrant(row)
         )
       // After the rows (decision 10): the caller resolved `repoFullName` through its owner's live installation, the coverage proof.
       const installationGranted = async (): Promise<boolean> => {

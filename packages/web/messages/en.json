@@ -1631,6 +1631,12 @@
         "readWrite": "Read & write",
         "accessFor": "Access for {name}",
         "lowerAccessRevoke": "Revoke and authorize again to lower access",
+        "grantSuspended": "Suspended",
+        "grantSuspendedReason": {
+          "access_lost": "The member who authorized it no longer has this access on GitHub",
+          "identity_unlinked": "The member who authorized it no longer has a linked GitHub account",
+          "attester_removed": "The member who authorized it no longer has an account"
+        },
         "githubWriteAccess": "Push, open PRs & run GitHub Actions",
         "repositoryAccess": "Repository access",
         "selectRepositoryFirst": "Select repository first",

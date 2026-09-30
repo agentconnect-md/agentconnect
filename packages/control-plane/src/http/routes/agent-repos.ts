@@ -86,7 +86,8 @@ function toDto(r: AgentRepoAuthorizationRecord): AgentRepoAuthDtoT {
     access: r.access,
     materialize: r.materialize,
     createdBy: r.createdBy && !isSyntheticEmail(r.createdBy.email) ? r.createdBy.userId : null,
-    createdAt: r.createdAt.toISOString()
+    createdAt: r.createdAt.toISOString(),
+    stale: r.stale ? { since: r.stale.since.toISOString(), reason: r.stale.reason } : null
   }
 }
 
@@ -356,7 +357,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List an agent’s repository authorizations',
           description:
-            'Explicit code-host repository grants for this agent, each with its access tier and `materialize` choice (`always` clones it as a secondary workspace root, `on-demand` grants credentials only). An App-backed workspace repo is implicit and not listed; scratch workspaces may grant any covered repository, while a manual GitHub workspace may explicitly grant only its own repo for review/check effects. Gated by the agent’s visibility.',
+            'Explicit code-host repository grants for this agent, each with its access tier and `materialize` choice (`always` clones it as a secondary workspace root, `on-demand` grants credentials only). An App-backed workspace repo is implicit and not listed; scratch workspaces may grant any covered repository, while a manual GitHub workspace may explicitly grant only its own repo for review/check effects. A GitHub grant whose authorizer no longer passes the periodic access re-check is listed with `stale` and is not honored until it passes again or is raised by a member who holds the access. Gated by the agent’s visibility.',
           operationId: 'listAgentRepoAuthorizations',
           params: z.object({ agentId: z.string() }),
           response: { 200: AgentRepoAuthListDto, 404: ErrorDto }
@@ -498,7 +499,9 @@ export function agentRepoRoutes(deps: HttpDeps) {
             repoFullName: ref.fullName,
             access: req.body.access,
             materialize: req.body.materialize,
-            ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+            ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
+            // Re-attestation's clock starts at the check just made; an unchecked grant is due at once.
+            ...(deps.githubUserAuthz ? { attestedAt: new Date(deps.clock.now()) } : {})
           })
           void deps.repos.audit
             .append({
@@ -553,7 +556,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update a repository authorization',
           description:
-            'Raise an existing repository grant to a stronger access tier after re-checking the caller’s matching GitHub permission, change how the repository is materialized (`materialize`: `always`, `decision` or `on-demand`; `decision` needs the agent’s `repositorySelector` and daemons serving the agent that advertise `repo-selector-v1`, else 409 with `REPOSITORY_SELECTOR_MISSING` or `DAEMON_FEATURE_MISSING`), or both. At least one field is required. Downgrades still require revoke and reauthorize so review-check cleanup remains explicit; `materialize` moves freely and re-projects the agent’s spec.',
+            'Raise an existing repository grant to a stronger access tier after re-checking the caller’s matching GitHub permission, change how the repository is materialized (`materialize`: `always`, `decision` or `on-demand`; `decision` needs the agent’s `repositorySelector` and daemons serving the agent that advertise `repo-selector-v1`, else 409 with `REPOSITORY_SELECTOR_MISSING` or `DAEMON_FEATURE_MISSING`), or both. At least one field is required. Downgrades still require revoke and reauthorize so review-check cleanup remains explicit; `materialize` moves freely and re-projects the agent’s spec. Raising a GitHub grant makes the caller its attester, which also honors a `stale` grant again.',
           operationId: 'updateAgentRepoAuthorization',
           params: AgentRepoAuthParam,
           body: UpdateAgentRepoAuthBody,
@@ -586,9 +589,8 @@ export function agentRepoRoutes(deps: HttpDeps) {
           })
         }
         let dto = toDto(row)
-        // Access first: a denied tier leaves the row untouched. What raising a tier means
-        // is the host's — a re-checked GitHub permission, or a raised project role on the
-        // grant's own §7.2 account.
+        let reproject = false
+        // Access first, so a denied tier leaves the row untouched; what raising a tier means is the host's.
         if (req.body.access !== undefined && req.body.access !== row.access) {
           const upgraded = await codeHosts[row.provider].upgradeRepoAuthorization({
             deps,
@@ -602,6 +604,8 @@ export function agentRepoRoutes(deps: HttpDeps) {
           })
           if (!upgraded) return
           dto = upgraded
+          // The raiser's attestation honors a stale grant again, which returns it to the spec.
+          reproject = Boolean(row.stale) && !upgraded.stale
         }
         // Materialization is projected onto the spec, so the repo bumps the revision and the agent is re-pushed.
         if (req.body.materialize !== undefined && req.body.materialize !== row.materialize) {
@@ -626,9 +630,10 @@ export function agentRepoRoutes(deps: HttpDeps) {
               }
             })
             .catch(() => {})
-          await replicateUpsert(agent)
+          reproject = true
           dto = toDto(updated)
         }
+        if (reproject) await replicateUpsert(agent)
         return dto
       }
     )

@@ -188,7 +188,14 @@ export const githubCodeHostProvider: CodeHostProviderModule = {
           access === 'write' ? 'write' : 'read'
         )
       }
-      const updated = await deps.repos.agentRepoAuth.updateAccess(row.id, access)
+      // The raiser vouched for the new tier, so re-attestation re-checks them from here on.
+      const updated = await deps.repos.agentRepoAuth.updateAccess(
+        row.id,
+        access,
+        deps.githubUserAuthz && req.principal
+          ? { userId: req.principal.userId, at: new Date(deps.clock.now()) }
+          : undefined
+      )
       if (!updated) {
         void reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
         return undefined

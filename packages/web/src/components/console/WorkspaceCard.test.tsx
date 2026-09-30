@@ -295,6 +295,21 @@ describe('repository dropdown', () => {
     expect(menu()?.textContent).toContain('No additional repositories authorized.')
   })
 
+  it('marks a suspended repository in its row, with the reason on hover', async () => {
+    repos.rows = [
+      repo({ stale: { since: '2026-09-20T00:00:00.000Z', reason: 'access_lost' } }),
+      repo({ id: 'r2', repoFullName: 'example-org/docs', stale: null })
+    ]
+    await render(agent({ mode: 'scratch' }))
+    await open()
+
+    // The dropdown is narrow, so the marker is an icon that keeps the repository name readable.
+    const marker = within('[data-repository-authorization="r1"]')?.querySelector('[role="img"][aria-label="Suspended"]')
+    expect(marker?.getAttribute('title')).toBe('The member who authorized it no longer has this access on GitHub')
+    expect(within('[data-repository-authorization="r1"]')?.textContent).toContain('example-org/tools')
+    expect(within('[data-repository-authorization="r2"]')?.querySelector('[aria-label="Suspended"]')).toBeNull()
+  })
+
   it('raises a repository’s access with an access-only PATCH, and ignores the pressed segment', async () => {
     repos.rows = [repo()]
     mocks.updateAgentRepo.mockResolvedValue(repo({ access: 'write' }))
