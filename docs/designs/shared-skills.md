@@ -151,6 +151,11 @@ Implementation anchors:
 
 ## 3. Shape of a skill source
 
+> **Relocated by [source-cache.md](source-cache.md) (proposed).** From its P3,
+> the GitHub-only host restriction below is superseded: a source's identity is an
+> address plus `credential?` (GitHub, GitLab, or anonymous on any host), per
+> source-cache.md §5 and §11. The rest of this section is unchanged.
+
 One Git source is a credential-free remote repository definition plus an
 optional ref, subdirectory, and skill selection. The daemon first acquires it
 through its hardened Git path and gives the CLI only a private local snapshot:
@@ -513,6 +518,13 @@ effect while an old host still holds kernel write access.
 
 ### 6.2 Command
 
+> **Relocated by [source-cache.md](source-cache.md) (proposed).** On a pool
+> member whose shim advertises `skill-git-in-pod-v1`, Git acquisition moves from
+> the daemon's GitHub archive path into the pod (source-cache.md §6.1, §8). The
+> bounded no-follow snapshot, its limits, and the rejection of links and special
+> files carry over unchanged: the staged checkout reaches the CLI only through
+> it. Self-hosted daemons and older shims keep the path below.
+
 Build an ordered plan: Git entries from `agent.skills`, verified managed-cache
 directories, then accepted agent-local Dream directories. Later sources win a
 same-path collision, preserving accepted-local > managed > Git precedence.
@@ -717,6 +729,12 @@ The implemented surface follows `McpServersCard`:
   of 768 pixels and below.
 
 ## 8. Security and trust boundaries
+
+> **Relocated by [source-cache.md](source-cache.md) (proposed).** For the in-pod
+> path, the credential bullet below is replaced by source-cache.md §8: a private
+> skill repository's scoped read token is minted to the pod's `gitcred` only
+> during a skill reconcile window, and the Source Cache's own boundaries are in
+> its §6.
 
 - **A skill is a prompt-injection surface:** imported content enters agent
   context and can drive tool calls. Import and update are therefore

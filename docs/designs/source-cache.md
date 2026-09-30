@@ -29,9 +29,13 @@ pod ([k8s-daemon-pool.md](k8s-daemon-pool.md) "One pod per session",
 [git-workspace-model.md](git-workspace-model.md) §11). Two things are then
 repeated from scratch on every conversation:
 
-- **The workspace clone.** `cloneInSandbox` runs `git clone --branch <b>
---single-branch` in the pod through `ShimGitRunner`, against the upstream
-  remote, with nothing reused between pods.
+- **The workspace clone.** An isolated session's own pod clones its roots with
+  `cloneSessionRootAt`: a blobless partial clone
+  ([git-workspace-model.md](git-workspace-model.md) §11), that is
+  `--filter=blob:none --no-checkout` on one branch, whose checkout then fetches
+  the tip's blobs lazily. The agent pod's primary checkout uses
+  `cloneInSandbox`, a full `--single-branch` clone. Both run in the pod through
+  `ShimGitRunner` against the upstream remote, with nothing reused between pods.
 - **The skill install.** The daemon acquires each Git skill source through the
   GitHub REST API (identity check, commit resolution, archive redirect, whole
   repository tarball), extracts it in a temporary directory, hashes and uploads
@@ -80,18 +84,24 @@ Non-goals:
 
 ## 3. Current state this builds on
 
-| Fact                                                                                                       | Where                                                           |
-| ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| The workspace clone already runs in the pod, through the shim                                              | `workspace-manager.ts` `cloneInSandbox`, `k8s/runtime-plane.ts` |
-| Git in the pod gets credentials on demand from the daemon through the `gitcred` tunnel; nothing long-lived | `shim/git-credential.ts`, `shim/tunnel.ts` (`gitcred`, `mcp`)   |
-| GitHub and GitLab scoped tokens are already minted by the CP                                               | `gitlab/gitcred.service.ts`, `gitcred/glab-token-client.ts`     |
-| The runtime image bundles `skills@1.5.21`; the shim runs it in a per-source offline cell                   | `shim/skill-handler.ts`, `skills/skills-cli-cell.ts`            |
-| Cluster skill ledgers are keyed by (agent, SandboxClaim UID)                                               | `daemon.ts` `reconcileClusterSkills`, `local-store.ts`          |
-| The pool's durable store is the data-plane Postgres                                                        | [cloud-data-plane-postgres.md](cloud-data-plane-postgres.md)    |
-| Skill preview already degrades to `resolvable:false` (whole-source enablement only)                        | `control-plane/src/http/routes/skill-sources.ts`                |
+| Fact                                                                                                       | Where                                                                                   |
+| ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| The workspace clone already runs in the pod, through the shim                                              | `workspace-manager.ts` `cloneSessionRootAt` (blobless), `cloneInSandbox` (full)         |
+| On a pool member the daemon spawns no Git; every workspace Git crosses the shim's closed subcommand list   | [git-workspace-model.md](git-workspace-model.md) §11, `workspace/git-command-policy.ts` |
+| Git in the pod gets credentials on demand from the daemon through the `gitcred` tunnel; nothing long-lived | `shim/git-credential.ts`, `shim/tunnel.ts` (`gitcred`, `mcp`)                           |
+| GitHub and GitLab scoped tokens are already minted by the CP                                               | `gitlab/gitcred.service.ts`, `gitcred/glab-token-client.ts`                             |
+| The runtime image bundles `skills@1.5.21`; the shim runs it in a per-source offline cell                   | `shim/skill-handler.ts`, `skills/skills-cli-cell.ts`                                    |
+| Cluster skill ledgers are keyed by (agent, SandboxClaim UID)                                               | `daemon.ts` `reconcileClusterSkills`, `local-store.ts`                                  |
+| The pool's durable store is the data-plane Postgres                                                        | [cloud-data-plane-postgres.md](cloud-data-plane-postgres.md)                            |
+| Skill preview already degrades to `resolvable:false` (whole-source enablement only)                        | `control-plane/src/http/routes/skill-sources.ts`                                        |
 
 Git has a native bundle bootstrap since 2.38: `git clone --bundle-uri=<url>
 <remote>` downloads a bundle, then fetches whatever is missing from the remote.
+`git bundle create <file> --filter=blob:none <ref>` writes a v3 bundle that
+records its filter (`@filter=blob:none`); a blobless `--bundle-uri` clone accepts
+it, `git fsck` passes on the result, and a checkout fetches only the blobs it
+needs. With `GIT_NO_LAZY_FETCH=1` a filtered bundle is written from a partial
+clone without fetching anything (verified on Git 2.54).
 The daemon image is `node:24-bookworm-slim` (Git 2.39). The runtime sandbox image
 is built separately and its Git version must be confirmed (section 14).
 
@@ -101,8 +111,8 @@ One bucket (or one prefix of a bucket) per install:
 
 ```
 <prefix>/
-  src/<org>/<urlHash>/refs/<refHash>/latest          pointer: JSON { bundle, commit, bytes, createdAt }
-  src/<org>/<urlHash>/bundles/<uuid>.bundle          immutable Git bundle, exactly one ref
+  src/<org>/<urlHash>/refs/<refHash>/<shape>/latest  pointer: JSON { bundle, commit, bytes, createdAt }
+  src/<org>/<urlHash>/bundles/<uuid>.bundle          immutable Git bundle, exactly one ref, one shape
   files/<org>/<sha256>.tar                           reserved: digest-addressed file collection
   snapshots/…                                        reserved: Workspace Snapshot (not this design)
 ```
@@ -116,6 +126,12 @@ One bucket (or one prefix of a bucket) per install:
   branches of one repository, or a skill tracking `release` beside a workspace on
   `main`, never evict each other's pointer. Shared history is stored once per
   ref; bundle lists are a later optimization, not a v1 format.
+- `shape` is the bundle's object filter: `blobless` (`--filter=blob:none`:
+  every commit and tree, no blobs) or `full`. A reader only takes a pointer of
+  its own clone's shape. Session pods and skills read and write `blobless`; the
+  agent pod's full primary clone reads and writes `full`. A blobless bundle
+  saves the history download; the tip's blobs still come from the origin at
+  checkout, which is the blobless clone's behavior today.
 - Every key is **org-scoped**. A popular public repository is stored once per
   org. That duplication buys a blast radius confined to one org and removes any
   "is this repository public" branch from the key.
@@ -126,34 +142,46 @@ One bucket (or one prefix of a bucket) per install:
 ## 5. Source resolution
 
 Source resolution turns a Source's ref into the exact commit to use, with the
-requesting agent's own access. It always runs on the daemon, touches only
-metadata, and a success is the authorization to read that Source's cache entries.
-A cache hit is never served without it.
+requesting agent's own access, and a success is the authorization to read that
+Source's cache entries. A cache hit is never served without it. It touches only
+metadata.
 
-Resolvers are per host, beside the existing code-host seam:
+A Source's identity follows the workspace model
+([git-workspace-model.md](git-workspace-model.md) §2–§3): a full cloneable
+address plus `credential?`, where absent means anonymous and a code host is a
+credential variant (`{ provider: 'github' }` | `{ provider: 'gitlab',
+projectId }`), never a new source kind. A credentialed Source references its
+`CodeHostRepository` ([gitlab-com-integration.md](gitlab-com-integration.md)
+§8.1), whose provider-qualified numeric id is the anti-replacement identity.
+Resolution is a member of that seam, `CodeHostRepository.resolveRef`, not a
+per-host table in this design:
 
-| Host        | Resolution                                                                        | Anti-replacement                              |
-| ----------- | --------------------------------------------------------------------------------- | --------------------------------------------- |
-| GitHub      | The existing REST path: numeric identity check + commit lookup, conditional (304) | Numeric repository id, as today               |
-| GitLab      | Project API: project id + ref → commit                                            | Numeric project id                            |
-| Other hosts | `git ls-remote <url> <ref>`, anonymous                                            | None: trusted by URL, and the console says so |
+| Source               | Resolution runs                         | How                                                           | Anti-replacement                   |
+| -------------------- | --------------------------------------- | ------------------------------------------------------------- | ---------------------------------- |
+| `credential: github` | Daemon, `CodeHostRepository.resolveRef` | The existing REST identity check + commit lookup, conditional | Numeric repository id              |
+| `credential: gitlab` | Daemon, `CodeHostRepository.resolveRef` | Project API: project id + ref → commit                        | Numeric project id                 |
+| Anonymous (any host) | In the owning pod, `git ls-remote`      | Shim exec (section 6.1)                                       | None: trusted by URL, console says |
+
+The daemon makes no network request to a user-typed Git URL: an anonymous
+Source is resolved by the pod that will fetch it, so a member serving many
+organizations never contacts an arbitrary host. An anonymous GitHub address
+still passes the anonymous REST identity check when it names github.com, as
+today.
 
 Result caching:
 
-- **Public Source:** shared across agents for 60 s, as `GitSkillRefTracker` does
-  today. A public repository needs no proof of access.
-- **Private Source:** keyed by (agent, Source, ref) for 60 s. Revoked upstream
-  access therefore stops cache reads within 60 s, the same order as today's
-  tracker TTL.
-- Whether a Source is private is recorded at admission (GitHub, GitLab). Sources
-  on other hosts are public by definition in this design.
+- **Anonymous Source:** shared across agents for 60 s, as `GitSkillRefTracker`
+  does today. Anonymous content needs no proof of access.
+- **Credentialed Source:** keyed by (agent, Source, ref) for 60 s. Revoked
+  upstream access therefore stops cache reads within 60 s, the same order as
+  today's tracker TTL.
 
 On failure:
 
 - A Source that was installed before keeps its installed commit, as today — but
   **no GET URL is issued for it**, because the failure may be exactly a revoked
   grant. The pod uses what its volume already holds or fetches upstream; if that
-  also fails, the Source is skipped by name.
+  also fails, the Source is skipped with a reason code (section 11).
 - A Source that was never installed is skipped for this preparation.
 
 A pinned ref (a commit SHA) still resolves: resolution proves access and the
@@ -167,7 +195,7 @@ because nothing in the cache decides what a reader ends up with:
 1. **Content addressing.** Git verifies every object's hash on clone and fetch. A
    bundle can add objects; it cannot change what a commit id names.
 2. **Resolution decides the revision.** The commit a reader wants comes from
-   Source resolution on the daemon (skills) or from the origin fetch that
+   Source resolution (skills) or from the origin fetch that
    `--bundle-uri` always performs (workspace). A bundle never decides which
    commit is used.
 3. **Readers verify, and always keep a clean origin retry.** A skill reader
@@ -193,22 +221,45 @@ What a hostile pod can still do: write a useless, incomplete, or oversized bundl
 an older valid bundle of the same ref (costs a larger origin fetch, never wrong
 content).
 
+### 6.1 Where each Git operation runs
+
+A pool member spawns no Git; the process that spawns Git is the only one whose
+check is a control ([git-workspace-model.md](git-workspace-model.md) §11). Each
+operation this design adds is placed against that rule:
+
+| Operation                                                                                | Path                                      | Inventory change and why it is a control                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace clone with `--bundle-uri`                                                      | Shim `exec`                               | `clone` is admitted. New per-subcommand rule: `--bundle-uri` is accepted only with an `https://` value, so the flag cannot read pod-local or cluster-internal files                                                                                                                                                                                                   |
+| Workspace retry without the bundle                                                       | Shim `exec`                               | None: the same admitted `clone`                                                                                                                                                                                                                                                                                                                                       |
+| Workspace write-back bundle                                                              | Shim `exec`                               | Narrow widening: `bundle` is admitted only as `bundle create <file> --filter=blob:none <ref>` (or without the filter for the `full` shape), with `<file>` inside the shim's staging root and `GIT_NO_LAZY_FETCH=1`; `unbundle`, `verify` and `list-heads` stay refused                                                                                                |
+| Anonymous resolution                                                                     | Shim `exec`                               | None: `ls-remote` is admitted                                                                                                                                                                                                                                                                                                                                         |
+| Skill acquisition: clone, fetch, subdirectory checkout, `fsck`, retry, write-back bundle | Shim-internal, inside the skill reconcile | Not the exec channel. The shim spawns Git itself with argv it composes from validated plan fields (origin policy on the URL, ref / SHA / subdirectory syntax), under the same refused-argument rules as `exec`, in a private staging directory; nothing the daemon sends is passed as free argv, and the runtime cannot invoke the operation. `fsck` exists only here |
+
+**Acquisition hardening carries over.** A staged skill subdirectory reaches the
+CLI cell only through the existing bounded no-follow snapshot
+(`inspectLocalSkillSource` with the Git snapshot limits): links and special files
+are rejected, file, byte and path limits apply, and `.git` never enters the
+snapshot ([shared-skills.md](shared-skills.md) §6.2). The pod replaces the
+daemon's archive acquisition; it does not replace the snapshot.
+
 **Known boundary.** Git skill bytes no longer pass through the daemon, so the
 receipt digests in the cluster skill ledger are computed by the shim, not checked
 against digests the daemon computed. On an isolated pod the install completes
 before any runtime starts. On the shared agent pod a same-UID runtime could race
 the install's temporary directory; that runtime can rewrite its own installed
-skills anyway, and integrity against the agent's own runtime is not a guarantee
-of this system ([shared-skills.md](shared-skills.md) §8 "Authority-domain runtime
+skills anyway. The same applies to an anonymous Source's commit, which that pod
+resolves. Integrity against the agent's own runtime is not a guarantee of this
+system ([shared-skills.md](shared-skills.md) §8 "Authority-domain runtime
 trust").
 
 ## 7. Workspace flow
 
-An optional bundle argument, a clean retry, and one follow-up:
+An optional bundle argument, a clean retry, and one follow-up. The clone keeps
+its shape: a session root stays blobless, the agent pod's primary stays full.
 
 1. The daemon prepares the workspace as today. When a Source Cache is configured
-   and `latest` exists for (org, repository, branch), the clone instruction gains
-   `--bundle-uri=<presigned GET of the bundle>`.
+   and `latest` exists for (org, repository, branch, the clone's shape), the
+   clone instruction gains `--bundle-uri=<presigned GET of the bundle>`.
 2. The pod clones; Git downloads the bundle, fetches the remainder from the
    origin with the usual `gitcred` credential, and checks out the branch head the
    origin reports.
@@ -216,12 +267,14 @@ An optional bundle argument, a clean retry, and one follow-up:
    unbundle, fetch, connectivity, or checkout — the shim empties the checkout
    directory (object database included) and runs the same clone once without
    `--bundle-uri`. Only that second attempt's failure is an origin failure, and
-   only it reaches `cloneInSandbox`'s existing clear-and-rethrow path. The first
+   only it reaches the existing clear-and-rethrow path (`cloneSessionRootAt`,
+   `cloneInSandbox`). The first
    failure is reported as a cache fallback (metric, and the bundle key in the
    log) and the pointer is not trusted again by this preparation.
 4. The shim reports a write-back candidate when the clone missed the cache, the
-   origin fetch after the bundle exceeded a delta threshold (default: 5,000
-   objects or 50 MiB), or the bundle is older than 7 days (section 9).
+   clone's origin fetch after the bundle exceeded a delta threshold (default:
+   5,000 objects or 50 MiB; the checkout's lazy blob fetch is not counted), or
+   the bundle is older than 7 days (section 9).
 
 A resumed pod whose volume already holds the checkout is untouched: it pulls as
 today and uses no cache.
@@ -235,7 +288,8 @@ to a workspace preparation that hits the cache.
 
 A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
 
-1. The daemon resolves every Git skill Source (section 5), concurrently, and
+1. Every Git skill Source is resolved (section 5), concurrently: credentialed
+   ones on the daemon, anonymous ones by `ls-remote` in this pod. The daemon then
    sends the shim one reconcile plan: for each Git Source its URL, ref, planned
    commit, subdirectory, selections, and a GET URL when a pointer exists; managed
    and Dream sources are uploaded exactly as today.
@@ -245,10 +299,11 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
    pod no runtime is running yet; on the agent pod the residual exposure is the
    unselected content of an enabled repository for the token's lifetime.
 3. For each Git Source the shim, in a private temporary directory:
-   - clones with `--bundle-uri` when a URL was given, `--no-checkout`, full
-     history (not shallow: a bundle written from a shallow repository omits the
-     shallow boundary and yields a repository that fails `fsck`, so it can never
-     serve as a clone base);
+   - clones blobless (`--filter=blob:none --no-checkout`), with `--bundle-uri`
+     when a URL was given, so a skill shares the `blobless` pointer with the
+     repository's session workspaces. Never shallow: a bundle written from a
+     shallow repository omits the shallow boundary and yields a repository that
+     fails `fsck`, so it can never serve as a clone base;
    - when the bundle lacks the planned commit: for a tracked ref, fetches that
      ref and requires it to equal the planned commit, else skips the Source for
      this run (the ref moved after resolution; the next preparation re-resolves);
@@ -259,8 +314,9 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
    - on any failure of a bundled attempt, or when the imported repository is
      not `fsck`-clean, discards the staging directory and repeats this step once
      without the bundle (the retry contract, section 7);
-   - checks out only the subdirectory at the planned commit into a staging
-     directory and drops `.git`.
+   - checks out only the subdirectory at the planned commit, which fetches only
+     that subtree's blobs, and passes it through the bounded no-follow snapshot
+     (section 6.1); `.git` is dropped.
 4. The shim runs the same per-source offline CLI cell on each staged directory,
    merges the Git candidates with the uploaded managed and Dream candidates in
    source order, and publishes through the existing ledger and mutation helper.
@@ -277,9 +333,9 @@ uploads. This decision does not depend on whether a bucket is configured.
 Write-back is asynchronous and best-effort; the runtime may start before it
 finishes, and a failure is a log line and a metric.
 
-1. The shim's reply lists candidates: (Source, ref, bundle size, bundle
-   SHA-256). It creates the bundle with `git bundle create <file> <ref>` from the
-   full, non-shallow clone.
+1. The shim's reply lists candidates: (Source, ref, shape, bundle size, bundle
+   SHA-256). It creates the bundle in its staging root from the clone it just
+   made, of that clone's shape (section 6.1), never from a shallow repository.
 2. **Reserve before signing.** In one transaction the daemon checks the
    per-bundle cap and inserts a `pending` row for a fresh
    `bundles/<uuid>.bundle` carrying the declared size and an expiry (the PUT
@@ -288,13 +344,14 @@ finishes, and a failure is a log line and a metric.
    quota (section 10). The org's usage row is locked for the check, so two pool
    members cannot both admit the last 2 GiB. A refused reservation means no
    write-back.
-3. Only then does the daemon sign the PUT: the declared `Content-Length` and the
-   object tag `ac-cache=pending` are both part of the signature, so the store
-   rejects any other length and the pod cannot omit or change the tag.
+3. Only then does the daemon sign the PUT: the declared `Content-Length`, the
+   declared SHA-256 (`x-amz-checksum-sha256`), and the object tag
+   `ac-cache=pending` are all part of the signature, so the store rejects any
+   other length or content and the pod cannot omit or change the tag.
 4. The daemon sends a `writeback` shim operation carrying the URL. The shim
    uploads from its own process (the URL never appears on a command line).
 5. On the shim's reply the daemon `HEAD`s the object, requires the reserved
-   length, marks the row `committed`, retags the object `ac-cache=live`, and
+   length and the signed checksum, marks the row `committed`, retags the object `ac-cache=live`, and
    replaces `latest` with a conditional write (`If-Match` on the ETag it read).
    Losing that race is dropped silently and the new bundle is marked
    unreferenced: any valid bundle of the ref is an acceptable pointer target. On
@@ -345,8 +402,17 @@ Lifecycle tagging: every bundle carries `ac-cache=pending`, `live`, or
 `unreferenced`. The upload signs `pending`; commit retags `live`; the sweep
 retags `unreferenced` when a bundle's pointer moves or is deleted. Lifecycle
 rules filter only on `pending` (2 days) and `unreferenced` (7 days), so a bundle
-is never collected while a pointer names it. A pod still downloading an old
-bundle through a URL issued before the pointer moved has 7 days of grace.
+is never collected while a pointer names it. S3 expiration counts from object
+creation, not from tagging, so a bundle older than 7 days is collectable as soon
+as it is retagged; the sweep therefore retags a bundle only once the pointer has
+not named it for longer than the GET lifetime (5 min), after which no URL issued
+for it is still valid.
+
+**Who runs the sweep.** Every pool member, idempotently. The sweep is not agent
+work and holds no duty: each pass claims due rows with `FOR UPDATE SKIP LOCKED`,
+and every object-store step it takes (retag, delete, `HEAD`) is safe to repeat,
+so two members never double-count and a member that dies mid-pass leaves rows the
+next pass finishes.
 
 ## 11. Non-GitHub Sources
 
@@ -368,13 +434,18 @@ bundle through a URL issued before the pointer moved has 7 days of grace.
   Preview answers `resolvable:false`, so the console offers whole-source
   enablement or a manual skill filter, which the UI already supports.
 - Whether the Source works is learned at the first reconcile in a pod. The
-  daemon reports each skipped Source's name and reason to the CP as agent skill
-  status metadata (no content), and the console shows the latest failure beside
-  the Source.
+  daemon reports each skipped Source to the CP as agent skill status metadata:
+  the Source's name and an enumerated reason code — `resolution_failed`,
+  `access_denied`, `ref_moved`, `commit_unavailable`, `sha_fetch_refused`,
+  `fetch_failed`, `limits_exceeded`, `cli_failed` — never Git's or the CLI's raw
+  output. The console shows the latest code beside the Source; detail stays in
+  the member's log.
 
-The `AgentSkillEntry` wire shape gains a host-neutral identity (`host`, optional
-numeric `repoId`, `private`) in place of the GitHub-only `githubRepoId`; the old
-field stays readable during migration.
+The `AgentSkillEntry` wire shape follows section 5: the full address, ref,
+subdirectory and selections, plus `credential?` as in the workspace contract and
+the `CodeHostRepository` reference for a credentialed Source. `githubRepoId`
+stays decodable during migration, as the workspace contract's `github` and
+`gitlab` arms do ([git-workspace-model.md](git-workspace-model.md) §8).
 
 ## 12. Configuration and degradation
 
@@ -400,8 +471,11 @@ Session startup never depends on the object store.
   selections, optional GET URL) beside the existing uploaded sources; the reply
   keeps its receipts and `skipped` list and gains write-back candidates.
 - **Workspace clone:** the existing clone instruction accepts an optional bundle
-  URL, passed as `--bundle-uri`. Any image whose Git is ≥ 2.38 benefits without a
-  shim capability.
+  URL, passed as `--bundle-uri`. It needs the new `https://`-only rule for that
+  flag in the exec inventory, so it ships with shims that carry the rule; any
+  such image whose Git is ≥ 2.38 benefits.
+- **Exec inventory:** the `--bundle-uri` rule and the narrow `bundle create`
+  admission (section 6.1).
 - **`writeback` operation:** (Source or workspace, ref, local bundle handle,
   presigned PUT URL) → (uploaded bytes, SHA-256).
 - **Credential window:** `gitcred` issuance for skill repositories is admitted
@@ -417,27 +491,31 @@ Each phase ships and rolls back alone.
   `source_cache_object` table, `--bundle-uri` on the workspace clone, workspace
   write-back, the lifecycle sweep, metrics (hit, miss, fallback, write-back,
   bytes).
-- **P2 — skills in the pod.** Per-host resolvers, the credential window,
+- **P2 — skills in the pod.** `CodeHostRepository.resolveRef`, in-pod anonymous
+  resolution, the credential window,
   `skill-git-in-pod-v1` and the in-pod Git skill install, skill write-back.
   Images without the capability keep the daemon-acquisition path, including its
   daemon-local cache (#2697), which is removed once those images age out.
-- **P3 — non-GitHub admission.** Host-neutral skill identity on the wire, GitLab
+- **P3 — non-GitHub admission.** `credential?` skill identity on the wire, GitLab
   admission and preview, arbitrary-host public Sources, skipped-Source status in
   the console.
 
-Before P1: confirm the runtime image's Git version (≥ 2.38), and which
-S3-compatible stores the chart supports for conditional writes, signed
-`Content-Length` and `x-amz-tagging` on presigned PUTs, and tag-filtered
-lifecycle rules (AWS S3 and MinIO at least).
+Before P1: confirm the runtime image's Git version (≥ 2.38 for `--bundle-uri`;
+filtered bundles and `GIT_NO_LAZY_FETCH` need a recent Git and should be pinned
+by the image test), and which S3-compatible stores the chart supports for
+conditional writes, signed `Content-Length`, `x-amz-checksum-sha256` and
+`x-amz-tagging` on presigned PUTs, and tag-filtered lifecycle rules (AWS S3 and
+MinIO at least).
 
 ## 15. Change index
 
-| Package       | Change                                                                                                                                                 |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| daemon        | Source Cache client and signer, per-host resolvers, `workspace-manager.ts` clone bundle URL, reconcile plan and write-back in `reconcileSandboxSkills` |
-| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, `writeback` operation, credential window in the `gitcred` tunnel                              |
-| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect                                                  |
-| protocol      | Host-neutral `AgentSkillEntry` identity; shim capability and operation schemas                                                                         |
-| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source status                                             |
-| web           | Non-GitHub import form and the per-Source failure display                                                                                              |
-| chart         | `sourceCache.*` values, member credentials, bucket lifecycle rule template                                                                             |
+| Package       | Change                                                                                                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef`, `workspace-manager.ts` clone bundle URL, reconcile plan and write-back in `reconcileSandboxSkills`                                          |
+| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, `writeback` operation, credential window in the `gitcred` tunnel, the `--bundle-uri` and `bundle create` rules in `workspace/git-command-policy.ts` |
+| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect                                                                                                        |
+| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                              |
+| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                             |
+| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                    |
+| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                    |
+| chart         | `sourceCache.*` values, member credentials, bucket lifecycle rule template                                                                                                                                   |
