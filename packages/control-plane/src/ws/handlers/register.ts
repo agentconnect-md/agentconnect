@@ -26,6 +26,7 @@ import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
+  CRON_REPORT_ACK_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
@@ -138,6 +139,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       SESSION_METADATA_ACK_FEATURE,
       SESSION_PURGE_FEATURE,
       SESSION_VISIBILITY_FEATURE,
+      // high-availability.md: this CP ACKs a terminal cron outcome, so the daemon keeps it until then.
+      CRON_REPORT_ACK_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE,
       AGENT_EXISTS_FEATURE,
       // k8s-daemon-pool.md §4: …and says WHERE a surviving agent is placed, so the pool's

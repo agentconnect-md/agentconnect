@@ -52,6 +52,7 @@ import type { LoadedAgent } from '../agents/load-agents.js'
 import type { LocalStore, SessionRecord } from '../store/local-store.js'
 import type { ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
 import type { SessionMetadataOutbox } from '../store/session-metadata-outbox.js'
+import type { CronReportOutbox } from '../store/cron-report-outbox.js'
 import type { WebchatMcpRevocations } from '../webchat/mcp-revocations.js'
 import type { WorkspaceManager } from '../workspace/workspace-manager.js'
 import type { K8sRuntimePlane } from '../k8s/runtime-plane.js'
@@ -134,6 +135,7 @@ export interface CpClientReadyHost {
   /** Re-assert every live approval wait: the CP cleared them when this daemon dropped (slack-approval-dm.md §7). */
   replayApprovalActivity(): void
   sessionMetadataOutbox(): SessionMetadataOutbox
+  cronReportOutbox(): CronReportOutbox
   webchatMcpRevocations(): WebchatMcpRevocations
   drainSessionPurges(): Promise<void>
   effectiveAgents(): LoadedAgent[]
@@ -335,6 +337,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // was unreachable (or before it advertised the feature) left the deleted
       // sessions' metadata rows unmarked; this is the only side that still knows.
       void host.drainSessionPurges()
+      // ...and every terminal cron outcome the CP has not ACKed, such as a completion that raced the drop.
+      void host.cronReportOutbox().drainReports()
       // ...and each CP cron's stored last-run stamp — fires while the CP was
       // unreachable would otherwise never land (latest-wins upsert, so
       // re-asserting an already-known stamp is a no-op).

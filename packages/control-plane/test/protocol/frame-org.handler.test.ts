@@ -62,6 +62,7 @@ const ORG_SCOPED: Array<{ type: FrameType; payload: unknown }> = [
   { type: 'event/session-activity', payload: { sessionId: 's1', agentId: AGENT, revision: '1', ts: now() } },
   { type: 'event/session-purged', payload: { agentId: AGENT, sessionIds: ['s1'], reason: 'retention', ts: now() } },
   { type: 'cron/report', payload: { cronId: randomUUID(), agentId: AGENT, firedAt: now() } },
+  { type: 'cron/report-sync', payload: { cronId: randomUUID(), agentId: AGENT, firedAt: now(), status: 'success' } },
   { type: 'channel/agents', payload: { platform: 'slack', requesterAgentId: AGENT } },
   { type: 'gitcred/request', payload: { agentId: AGENT } },
   { type: 'repo-candidates/request', payload: { agentId: AGENT } },

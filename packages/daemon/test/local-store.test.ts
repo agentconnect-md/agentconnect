@@ -4158,3 +4158,38 @@ describe.skipIf(pg)('the v23 → v24 channel-record migration', () => {
     check.close()
   })
 })
+
+describe('the cron report outbox', () => {
+  const outcome = (agentId: string, firedAt: string) => ({
+    cronId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    agentId,
+    firedAt,
+    status: 'success' as const
+  })
+
+  it('holds one row per run, oldest first, until the run is acknowledged', async () => {
+    const s = await store()
+    const first = outcome('agent-a', '2026-09-30T09:00:00.000Z')
+    const second = outcome('agent-a', '2026-09-30T10:00:00.000Z')
+    await s.queueCronReport(first, 1_000)
+    await s.queueCronReport(second, 2_000)
+    await s.queueCronReport({ ...first, durationMs: 5 }, 3_000)
+    const rows = await s.pendingCronReports(10, [])
+    expect(rows.map((row) => row.firedAt)).toEqual([first.firedAt, second.firedAt])
+    expect(rows[0]).toMatchObject({ agentId: 'agent-a', cronId: first.cronId })
+    expect(JSON.parse(rows[0]!.report)).toEqual({ ...first, durationMs: 5 })
+
+    await s.acknowledgeCronReport('agent-a', first.cronId, first.firedAt)
+    expect((await s.pendingCronReports(10, [])).map((row) => row.firedAt)).toEqual([second.firedAt])
+    await s.close()
+  })
+
+  it('answers a pool member only for the agents it serves', async () => {
+    const [a, b] = await sharedMembers('member-a', 'member-b')
+    await a.queueCronReport(outcome('agent-a', '2026-09-30T09:00:00.000Z'), 1_000)
+    await a.queueCronReport(outcome('agent-b', '2026-09-30T09:00:00.000Z'), 1_000)
+    expect((await b.pendingCronReports(10, ['agent-b'])).map((row) => row.agentId)).toEqual(['agent-b'])
+    expect(await b.pendingCronReports(10, [])).toEqual([])
+    await a.close()
+  })
+})

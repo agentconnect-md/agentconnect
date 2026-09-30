@@ -1631,8 +1631,11 @@ describe('Daemon session lifecycle (#118)', () => {
       updateBlocks: vi.fn(async () => {})
     })
     const emitCronReport = vi.fn()
+    const syncCronReport = vi.fn(async () => 'acknowledged' as const)
     ;(daemon as any).cpClient = {
+      state: 'READY',
       emitCronReport,
+      syncCronReport,
       emitEventSession: vi.fn(),
       emitUsageReport: vi.fn(),
       stop: vi.fn(async () => {})
@@ -1669,7 +1672,13 @@ describe('Daemon session lifecycle (#118)', () => {
 
     blocked.release()
     await run
-    expect(emitCronReport.mock.calls[2]![0]).toMatchObject({ status: 'success', sessionId: outward })
+    // The close is the one report held until the CP acknowledges it.
+    await vi.waitFor(
+      () =>
+        expect(syncCronReport).toHaveBeenCalledWith(expect.objectContaining({ status: 'success', sessionId: outward })),
+      WAIT
+    )
+    expect(emitCronReport).toHaveBeenCalledTimes(2)
     await daemon.stop()
   })
 

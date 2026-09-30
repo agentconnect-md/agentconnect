@@ -555,11 +555,11 @@ not retried and that peer/version cannot pass the continuity gate. Queues and
 deadlines are bounded; overload has a typed outcome, never a false acceptance.
 
 The acknowledged `event/session-sync` outbox remains the session-metadata
-mechanism. `cron/report` completion and `usage/report` are currently best-effort:
-reconnect restates cron fire stamps, not completion, and usage has no guaranteed
-reconnect replay. Step 3 must preserve terminal cron outcomes across handoff
-through acknowledged, deduplicated reporting; usage gaps remain observable
-telemetry gaps rather than a claim that all reports are durable.
+mechanism. Terminal cron outcomes use the same pattern: the daemon keeps each
+run's completion in a local outbox and sends it as `cron/report-sync`, releasing
+it on the ACK, and the CP's `(cronId, firedAt)` upsert deduplicates a re-send.
+`usage/report` stays best-effort with no guaranteed reconnect replay; usage gaps
+remain observable telemetry gaps rather than a claim that all reports are durable.
 Reconnection must converge unchanged configuration without restarting agents or
 platform connections. All member-set duties retain self-fence on a prolonged
 outage; standalone daemons retain their local-autonomy behavior.

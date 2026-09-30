@@ -141,6 +141,15 @@ export const STORE_RETENTION_RULES: readonly StoreRetentionRule[] = [
     horizonMs: DEFAULT_STORE_HORIZON_MS
   },
   {
+    // No lease: whichever member serves the agent sends it, and the CP's upsert absorbs a duplicate.
+    id: 'cron-report',
+    table: 'cron_report_outbox',
+    key: ['agentId', 'cronId', 'firedAt'],
+    clock: 'queuedAt',
+    agentColumn: 'agentId',
+    horizonMs: DEFAULT_STORE_HORIZON_MS
+  },
+  {
     // 30 days, unchanged from the ad-hoc prune this replaced: a receipt is the only record
     // that a transcript was deleted, so it outlives the other outboxes on purpose.
     id: 'session-purge',

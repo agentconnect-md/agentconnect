@@ -8,7 +8,7 @@
  *  - Latest-wins: an older `firedAt` (reconnect re-assert, out-of-order
  *    delivery) never regresses the stored stamp; a newer one advances it.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
@@ -18,7 +18,7 @@ import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { systemClock } from '../../src/domain/clock.js'
-import { handleCronReport } from '../../src/ws/handlers/index.js'
+import { handleCronReport, handleCronReportSync } from '../../src/ws/handlers/index.js'
 import { AgentId, CronId, OrgId } from '../../src/domain/ids.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
@@ -191,5 +191,82 @@ describe('cron/report EVT → lastRunAt convergence', () => {
     expect((await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId)))!.lastRunAt).toEqual(
       new Date('2026-07-03T10:00:00.000Z')
     )
+  })
+})
+
+/** Dispatch a hand-built `cron/report-sync` REQ through the real handler and return its replies. */
+async function syncReport(
+  daemonId: string,
+  cronId: string,
+  agentId: string,
+  opts: { orgId?: string; cron?: PgCronRepo } = { orgId: DEFAULT_ORG_ID }
+): Promise<Array<{ type: string; payload: unknown }>> {
+  const frame = {
+    v: 1,
+    id: randomUUID(),
+    ts: new Date().toISOString(),
+    type: 'cron/report-sync',
+    ...(opts.orgId ? { orgId: opts.orgId } : {}),
+    payload: { cronId, agentId, firedAt: '2026-07-03T09:00:00.000Z', status: 'success', durationMs: 4200 }
+  } as AnyFrame
+  const replies: Array<{ type: string; payload: unknown }> = []
+  const conn = {
+    daemonId,
+    replyTo: (_frame: AnyFrame, type: string, payload: unknown) => replies.push({ type, payload }),
+    sendError: (_id: string, code: string, message: string, retryable: boolean) =>
+      replies.push({ type: 'error', payload: { code, message, retryable } })
+  } as unknown as DaemonConnection
+  const deps = {
+    cron: opts.cron ?? new PgCronRepo(prisma),
+    agent: new PgAgentRepo(prisma),
+    placementResolver: new PlacementResolver({ duties: new PgDutyGroupRepo(prisma), clock: systemClock }),
+    log: { error: vi.fn() }
+  } as unknown as DaemonWsDeps
+  await handleCronReportSync(frame, conn, deps)
+  return replies
+}
+
+describe('cron/report-sync REQ → acknowledged terminal outcome', () => {
+  it('ACKs a terminal outcome only after persisting it', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const cronId = await seedCron(agentId)
+
+    expect(await syncReport(DAEMON, cronId, agentId)).toEqual([{ type: 'ack', payload: { ok: true } }])
+    expect((await new PgCronRepo(prisma).listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId)))[0]).toMatchObject({
+      status: 'success',
+      durationMs: 4200
+    })
+  })
+
+  it('ACKs a report it drops as foreign, so the daemon releases it instead of retrying', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, OTHER_DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const cronId = await seedCron(agentId)
+
+    expect(await syncReport(OTHER_DAEMON, cronId, agentId)).toEqual([{ type: 'ack', payload: { ok: true } }])
+    expect(await new PgCronRepo(prisma).listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId))).toEqual([])
+  })
+
+  it('refuses retryably when the outcome fails to persist', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const cronId = await seedCron(agentId)
+    const cron = new PgCronRepo(prisma)
+    vi.spyOn(cron, 'recordReport').mockRejectedValueOnce(new Error('database unavailable'))
+
+    expect(await syncReport(DAEMON, cronId, agentId, { orgId: DEFAULT_ORG_ID, cron })).toEqual([
+      { type: 'error', payload: { code: 'INTERNAL', message: 'cron report failed to persist', retryable: true } }
+    ])
+  })
+
+  it('refuses a report that names no organization, permanently', async () => {
+    expect(await syncReport(DAEMON, randomUUID(), randomUUID(), {})).toEqual([
+      { type: 'error', payload: { code: 'SCOPE_DENIED', message: 'organization is required', retryable: false } }
+    ])
   })
 })

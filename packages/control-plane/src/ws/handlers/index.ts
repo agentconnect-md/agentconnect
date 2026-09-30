@@ -36,7 +36,7 @@ import { handleMemoryConnections } from './memory-connections.js'
 import { handleUsageReport } from './usage-report.js'
 import { handleIntegrationChannels } from './integration-channels.js'
 import { handleIntegrationRevoked } from './integration-revoked.js'
-import { handleCronReport } from './cron-report.js'
+import { handleCronReport, handleCronReportSync } from './cron-report.js'
 import { handleDutyRelease } from './duty-release.js'
 import { handleDutyClaim } from './duty-claim.js'
 import { handleDutyFetch } from './duty-fetch.js'
@@ -98,6 +98,7 @@ export class FrameRouter {
       'integration/channels': handleIntegrationChannels,
       'integration/revoked': handleIntegrationRevoked,
       'cron/report': handleCronReport,
+      'cron/report-sync': handleCronReportSync,
       'duty/release': handleDutyRelease,
       'duty/claim': handleDutyClaim,
       'duty/fetch': handleDutyFetch,
@@ -166,6 +167,7 @@ export {
   handleIntegrationChannels,
   handleIntegrationRevoked,
   handleCronReport,
+  handleCronReportSync,
   handleHookReport,
   handleHookStart,
   handleApprovalRoute,

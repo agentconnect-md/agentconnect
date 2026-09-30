@@ -117,6 +117,7 @@ import {
   MAX_FRAME_BYTES,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
+  CRON_REPORT_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -918,6 +919,17 @@ export class CpClient {
   emitCronReport(report: CronReport): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
     this.transport?.send(encode(this.scopedFrame('cron/report', report)))
+  }
+
+  /** Persist one terminal CP-cron outcome (D→C `cron/report-sync` REQ → `ack`); the outbox row is released only after it resolves. */
+  async syncCronReport(report: CronReport): Promise<'acknowledged' | 'unsupported'> {
+    this.requireReady('cron/report-sync')
+    if (!this.supportsServerFeature(CRON_REPORT_ACK_FEATURE)) return 'unsupported'
+    const rep = await this.request('cron/report-sync', report)
+    if (rep.type !== 'ack' || rep.payload.ok !== true) {
+      throw new WireError('INTERNAL', `expected cron/report-sync ack, got ${rep.type}`, false)
+    }
+    return 'acknowledged'
   }
 
   /**

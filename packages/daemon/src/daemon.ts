@@ -700,6 +700,7 @@ import { DATA_PLANE_CONFIG_PATH } from './store/postgres-config.js'
 import type { EvaluationCapabilityProfile } from './evaluation/events.js'
 import { DaemonEvaluationHooks, type DaemonEvaluationHost } from './evaluation/daemon-hooks.js'
 import { SessionMetadataOutbox, type SessionMetadataHost } from './store/session-metadata-outbox.js'
+import { CronReportOutbox } from './store/cron-report-outbox.js'
 import type {
   DeliveryHandle,
   DeliveryRejectionReason,
@@ -1781,6 +1782,7 @@ export class Daemon {
   // The durable session-metadata outbox (store/session-metadata-outbox.ts); owns its
   // own drain promise and retry timer behind the delegates below.
   private readonly sessionMetadataOutbox: SessionMetadataOutbox
+  private readonly cronReportOutbox: CronReportOutbox
   // Observed-channel discovery/retraction (platforms/observed-channels-sync.ts).
   private readonly observedChannelsSync: ObservedChannelsSync
   private readonly webchatTransport: WebchatTransport
@@ -1973,6 +1975,15 @@ export class Daemon {
     this.k8sProbeOnDemand = this.k8s && configuredRuntimeProbeOnDemand(process.env)
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
+    this.cronReportOutbox = new CronReportOutbox({
+      store: () => this.store,
+      cpClient: () => this.cpClient,
+      clock: () => this.clock,
+      servedAgentIds: () => this.sessionMetadataOutbox.servedAgentIds(),
+      draining: () => this.draining,
+      warn: (message) => this.log.warn(message),
+      debug: (message) => this.log.debug(message)
+    })
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
     this.connections = new ConnectionReconciler(this.connectionReconcilerHost())
     this.webchatTransport = new WebchatTransport(this.webchatHost())
@@ -12045,6 +12056,7 @@ export class Daemon {
       syncOrchestrationDeadlines: () => this.collab.syncOrchestrationDeadlines(),
       catchUpMissedSchedules: (agentIds) => this.catchUpMissedSchedules(agentIds),
       drainSessionPurges: () => this.drainSessionPurges(),
+      drainCronReports: () => this.cronReportOutbox.drainReports(),
       replayGainedSessionMetadata: (agentIds) => this.sessionMetadataOutbox.replayGainedSessionMetadata(agentIds),
       pendingInboxReplayAgents: () => this.pendingInboxReplayAgents,
       // After the registry write, not at the grant: admission is asynchronous and a grant is not held until it settles.
@@ -22964,6 +22976,7 @@ export class Daemon {
       replayCredentialRevocations: () => this.connections.replayCredentialRevocations(),
       replayApprovalActivity: () => this.permissions.replayApprovalActivity(),
       sessionMetadataOutbox: () => this.sessionMetadataOutbox,
+      cronReportOutbox: () => this.cronReportOutbox,
       webchatMcpRevocations: () => this.webchatMcpRevocations,
       drainSessionPurges: () => this.drainSessionPurges(),
       effectiveAgents: () => this.effectiveAgents(),
@@ -23300,7 +23313,10 @@ export class Daemon {
     update: Omit<CronReport, 'cronId' | 'agentId' | 'firedAt'> = {}
   ): void {
     if (msg.source !== 'cron' || !msg.cronRun) return
-    this.cpClient?.emitCronReport({ ...msg.cronRun, agentId, ...update })
+    const report = { ...msg.cronRun, agentId, ...update }
+    // A terminal outcome is held until the CP ACKs it; fire and session progress stay best-effort.
+    if (update.status) void this.cronReportOutbox.record(report)
+    else this.cpClient?.emitCronReport(report)
   }
 
   /** Console "Run now" (`cron/run` REQ): fire one CP cron immediately. The fire
@@ -24006,6 +24022,7 @@ export class Daemon {
       this.hookReportRetryTimer = undefined
     }
     this.sessionMetadataOutbox.dispose()
+    this.cronReportOutbox.dispose()
     // Clear any live orchestration deadline timers so they don't hold the process open
     // (the durable `orchestration.deadline` epoch re-arms them on the next startup).
     for (const t of this.collab.orchestrationDeadlines.values()) this.clock.clearTimeout(t)
@@ -24060,6 +24077,7 @@ export class Daemon {
     this.shutdownDutyDrain = undefined
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     await Promise.resolve(this.sessionMetadataOutbox.inFlightDrain()).catch((e) => errors.push(e))
+    await Promise.resolve(this.cronReportOutbox.inFlightDrain()).catch((e) => errors.push(e))
     // Nothing here can emit after this point; hand any claim this member still holds back.
     await this.sessionMetadataOutbox.releaseOwnedSessionMetadata()
     // The closed CP transport cannot admit another lifecycle frame. Drain every

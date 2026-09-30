@@ -17,6 +17,7 @@ import {
   ManagedMemoryHome,
   QuotedMessageSchema,
   SessionImageAttachment as SessionImageAttachmentSchema,
+  type CronReport,
   type DecisionRuntimeTarget,
   type DecisionModelEvaluationRecord,
   type DecisionModelEvaluationRecordDetail,
@@ -857,6 +858,14 @@ export interface SessionPurgeRow {
   sessionId: string
   reason: string
   purgedAt: number
+}
+
+/** One CP cron run's unacknowledged terminal outcome; `report` is the JSON `cron/report` payload. */
+export interface CronReportOutboxRow {
+  agentId: string
+  cronId: string
+  firedAt: string
+  report: string
 }
 
 /** One latest-wins session metadata snapshot awaiting the CP's commit ACK. */
@@ -2005,6 +2014,16 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS dream_runs (
         agentId TEXT PRIMARY KEY, lastRunAt INTEGER NOT NULL, definition TEXT
       );
+      -- A CP cron run's terminal outcome, held until the CP ACKs it so a disconnect cannot lose it.
+      CREATE TABLE IF NOT EXISTS cron_report_outbox (
+        agentId TEXT NOT NULL,
+        cronId TEXT NOT NULL,
+        firedAt TEXT NOT NULL,
+        report TEXT NOT NULL,
+        queuedAt INTEGER NOT NULL,
+        PRIMARY KEY (agentId, cronId, firedAt)
+      );
+      CREATE INDEX IF NOT EXISTS cron_report_outbox_fifo ON cron_report_outbox (queuedAt);
       -- §6.9 #353 durable inbox: an ADMITTED-but-QUEUED message persisted BEFORE the
       -- admission ACK, so a hard kill / agent move can't lose a message the caller was
       -- already told delivered:true. Replayed FIFO-by-sessionKey on startup and removed
@@ -6995,6 +7014,41 @@ export class LocalStore {
    *  name must start from no evidence rather than inherit the deleted schedule's last run. */
   async deleteCronRun(key: string): Promise<void> {
     await this.db.prepare('DELETE FROM cron_runs WHERE key = ?').run(key)
+  }
+
+  /** Hold a CP cron run's terminal outcome until the CP ACKs it; the same run replaces its own row. */
+  async queueCronReport(report: CronReport, queuedAt: number): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO cron_report_outbox (agentId, cronId, firedAt, report, queuedAt)
+         VALUES (@agentId, @cronId, @firedAt, @report, @queuedAt)
+         ON CONFLICT(agentId, cronId, firedAt) DO UPDATE SET report=excluded.report`
+      )
+      .run({
+        agentId: report.agentId,
+        cronId: report.cronId,
+        firedAt: report.firedAt,
+        report: JSON.stringify(report),
+        queuedAt
+      })
+  }
+
+  /** The oldest outcomes still owed; a shared pool store answers only for the agents this member serves. */
+  async pendingCronReports(limit: number, agentIds: readonly string[]): Promise<CronReportOutboxRow[]> {
+    const scope = idScope('agentId', this.shared ? agentIds : undefined)
+    return (await this.db
+      .prepare(
+        `SELECT agentId, cronId, firedAt, report FROM cron_report_outbox
+         WHERE 1 = 1${scope.sql} ORDER BY queuedAt ASC LIMIT @limit`
+      )
+      .all({ limit, ...scope.params })) as unknown as CronReportOutboxRow[]
+  }
+
+  /** Release one run's outcome: the CP ACKed it, or it can never accept it. */
+  async acknowledgeCronReport(agentId: string, cronId: string, firedAt: string): Promise<void> {
+    await this.db
+      .prepare('DELETE FROM cron_report_outbox WHERE agentId = ? AND cronId = ? AND firedAt = ?')
+      .run(agentId, cronId, firedAt)
   }
 
   /** Stamp a dream-schedule fire (one row per agent), under the definition that fired. */

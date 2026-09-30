@@ -1451,13 +1451,20 @@ describe('daemon durable inbox', () => {
     expect(after.prompt.mock.calls[0]![1]).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining('scheduled work') })])
     )
-    const emitCronReport = vi.fn()
-    ;(second as any).cpClient = { emitCronReport, emitEventSession: vi.fn(), emitUsageReport: vi.fn(), stop: vi.fn() }
+    const syncCronReport = vi.fn(async () => 'acknowledged' as const)
+    ;(second as any).cpClient = {
+      state: 'READY',
+      emitCronReport: vi.fn(),
+      syncCronReport,
+      emitEventSession: vi.fn(),
+      emitUsageReport: vi.fn(),
+      stop: vi.fn()
+    }
     finishPrompt()
     const outward = (await (second as any).store.getSession(key)).sessionId
     await vi.waitFor(
       () =>
-        expect(emitCronReport).toHaveBeenCalledWith(
+        expect(syncCronReport).toHaveBeenCalledWith(
           expect.objectContaining({ cronId, firedAt, status: 'success', sessionId: outward })
         ),
       WAIT
