@@ -2564,7 +2564,11 @@ export function buildContainer(
     config: {
       HEARTBEAT_SEC: config.HEARTBEAT_SEC,
       ACK_TIMEOUT_MS: config.ACK_TIMEOUT_MS,
-      WS_PATH: config.WS_PATH
+      WS_PATH: config.WS_PATH,
+      DATABASE_POOL_MAX: config.DATABASE_POOL_MAX,
+      ...(config.DAEMON_HANDSHAKE_CONCURRENCY
+        ? { DAEMON_HANDSHAKE_CONCURRENCY: config.DAEMON_HANDSHAKE_CONCURRENCY }
+        : {})
     }
   }
 

@@ -49,7 +49,7 @@ import { DaemonAuthService } from '../../src/registry/authService.js'
 import { DaemonRegistryService } from '../../src/registry/registryService.js'
 import { ConnectionRegistry } from '../../src/ws/registry.js'
 import { createDaemonWsServer } from '../../src/ws/gateway.js'
-import type { DaemonWsDeps } from '../../src/ws/deps.js'
+import type { DaemonWsDeps, WsConfig } from '../../src/ws/deps.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { SessionUsageWriter } from '../../src/usage/writer.js'
 import { systemClock } from '../../src/domain/clock.js'
@@ -81,7 +81,7 @@ const PLATFORMS = buildCpPlatformRegistry([
   createLinearCpProvider({})
 ])
 
-export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
+export function buildDaemonApp(prisma: PrismaClient, opts: { wsConfig?: Partial<WsConfig> } = {}): DaemonApp {
   const clock = systemClock
   const app = Fastify({ logger: false })
   app.get('/health', async () => ({ status: 'ok' }))
@@ -177,7 +177,7 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
       hook: repos.hook,
       relayRoster: async () => [],
       clock,
-      config: { HEARTBEAT_SEC: 15, ACK_TIMEOUT_MS: 5000, WS_PATH }
+      config: { HEARTBEAT_SEC: 15, ACK_TIMEOUT_MS: 5000, WS_PATH, ...opts.wsConfig }
     })
   }
 

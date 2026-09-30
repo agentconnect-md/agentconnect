@@ -21,6 +21,7 @@ import { WsTransport } from './transport.js'
 import { DaemonConnection } from './connection.js'
 import { FrameRouter } from './handlers/index.js'
 import { attachKeepalive } from './keepalive.js'
+import { HandshakeGate, handshakeLimit } from './handshake-gate.js'
 import type { DaemonWsDeps } from './deps.js'
 
 export const SUBPROTOCOL = 'agentconnect.v1'
@@ -48,6 +49,9 @@ export function createDaemonWsServer(app: FastifyInstance, deps: DaemonWsServerD
   // heartbeat, so a daemon that has genuinely gone quiet still gets a couple of
   // heartbeat windows before a ping sweep touches it.
   const trackAlive = attachKeepalive(wss, deps.config.HEARTBEAT_SEC * 2 * 1000)
+  const gate = new HandshakeGate(handshakeLimit(deps.config))
+  let refused = 0
+  let refusedSince = 0
 
   app.server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     let pathname: string
@@ -71,10 +75,26 @@ export function createDaemonWsServer(app: FastifyInstance, deps: DaemonWsServerD
       return
     }
 
+    // Past the limit, refuse before any database work; the daemon's redial retries, and 503 is what it already expects.
+    const release = gate.tryAcquire()
+    if (!release) {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\n\r\n')
+      socket.destroy()
+      refused++
+      const now = Date.now()
+      if (now - refusedSince >= 10_000) {
+        deps.log.warn?.({ refused, limit: gate.limit }, 'daemon handshake limit reached — refusing upgrades with 503')
+        refused = 0
+        refusedSince = now
+      }
+      return
+    }
+    socket.once('close', release)
+
     wss.handleUpgrade(req, socket, head, (raw: WebSocket) => {
       trackAlive(raw) // arm the ping/pong liveness sweep for this socket
       const remoteAddr = req.socket.remoteAddress ?? 'unknown'
-      new DaemonConnection(new WsTransport(raw, remoteAddr), deps, router).start()
+      new DaemonConnection(new WsTransport(raw, remoteAddr), deps, router, release).start()
     })
   })
 

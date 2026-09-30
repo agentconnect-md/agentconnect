@@ -33,7 +33,18 @@ import { FencingState, checkFencing } from '../orchestrator/fencing.js'
 import { ProtocolError } from '../domain/errors.js'
 
 export class DaemonConnection implements ConnChannel {
-  state: LifecycleState = 'CONNECTING'
+  private lifecycle: LifecycleState = 'CONNECTING'
+
+  get state(): LifecycleState {
+    return this.lifecycle
+  }
+
+  set state(next: LifecycleState) {
+    this.lifecycle = next
+    // The handshake ends when the FSM leaves auth/register, READY or closed; the gateway frees its slot here.
+    if (next !== 'CONNECTING' && next !== 'AUTHENTICATING' && next !== 'REGISTERING') this.onHandshakeDone?.()
+  }
+
   daemonId = '' // set on auth/ok; "" until then (ConnChannel requires a string)
   /** Auth-scoped org; null for an install-wide pool member. */
   orgId: string | null = null
@@ -50,7 +61,8 @@ export class DaemonConnection implements ConnChannel {
   constructor(
     readonly transport: Transport,
     private readonly deps: DaemonWsDeps,
-    private readonly router: FrameRouter
+    private readonly router: FrameRouter,
+    private readonly onHandshakeDone?: () => void
   ) {
     this.correlator = new ReqRep(deps.clock, deps.config.ACK_TIMEOUT_MS)
   }

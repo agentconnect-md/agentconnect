@@ -15,6 +15,13 @@ describe('loadBootstrapConfig', () => {
       SECRET_CIPHER: 'none'
     })
   })
+
+  it('sizes the database pool before the client is built, above pg default of 10', () => {
+    const url = 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect'
+    expect(loadBootstrapConfig({ DATABASE_URL: url }).DATABASE_POOL_MAX).toBe(20)
+    expect(loadBootstrapConfig({ DATABASE_URL: url, DATABASE_POOL_MAX: '40' }).DATABASE_POOL_MAX).toBe(40)
+    expect(() => loadBootstrapConfig({ DATABASE_URL: url, DATABASE_POOL_MAX: '0' })).toThrow()
+  })
 })
 
 describe('loadConfig', () => {

@@ -191,6 +191,17 @@ it without that gap. A drain left waiting through the restart does not: the
 budget counts the replacement once it is Ready, so the drain can evict the old
 pod inside the `minReadySeconds` window kept for Gateway discovery.
 
+A daemon handshake (`auth` through `register/ok`) costs about 50 database round
+trips. With pg's own pool of 10 connections, a CP on test completed about 75
+handshakes a second against its remote database at every load step. A storm of
+2,000 simultaneous redials left half of them failing after 21 seconds, and the
+CP's background work failed with them for want of a connection. The pool is now
+`DATABASE_POOL_MAX` (default 20), and a CP admits at most
+`DAEMON_HANDSHAKE_CONCURRENCY` handshakes at once (default three quarters of the
+pool). It refuses the rest at the upgrade with a retryable 503, so a storm
+waits at the socket edge instead of on the pool. That rate still bounds how
+many peers the reconnect budget below can cover.
+
 ### Connection ownership and forwarding
 
 Keep one CP control connection per daemon or relay. Its socket remains local to
