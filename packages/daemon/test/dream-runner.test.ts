@@ -688,10 +688,7 @@ describe('DreamRunner pipeline', () => {
   })
 
   it('cancel-wins when it lands during staging: no completed status, staging removed', async () => {
-    // onStaged fires right after the staging writes, standing in for a cancel
-    // that lands mid-staging. The post-stage recheck must honor it. The closure
-    // reads `runner` only when invoked (after the const is initialized), so the
-    // forward self-reference is safe.
+    // Cancel after staging writes so the post-stage recheck must preserve cancellation.
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     await ensureMemory(local(dir), 'bot')
     await writeWithSidecar(local(dir), 'prefs.md', '- seed\n', undefined, 'tool')
@@ -712,16 +709,10 @@ describe('DreamRunner pipeline', () => {
       log: silent
     })
     const started = await runner.start('a1', { trigger: 'manual' })
-    const done = await settle(store, started.dreamId)
-    expect(done.status).toBe('canceled') // NOT overwritten to completed
-    // The staging removal in run() runs a tick after the status flips settle()
-    // observes; poll until it lands (stagedFiles tolerates the concurrent rm).
-    let staged = await runner.stagedFiles('a1', started.dreamId)
-    for (let i = 0; i < 50 && staged !== null; i++) {
-      await new Promise((r) => setTimeout(r, 5))
-      staged = await runner.stagedFiles('a1', started.dreamId)
-    }
-    expect(staged).toBeNull() // partial output dropped
+    // The canceled status precedes cleanup; inspect staging only after the run has settled.
+    await vi.waitFor(() => expect(runner.inFlight('a1')).toBe(false), WAIT)
+    expect(store.dreams.get(started.dreamId)?.status).toBe('canceled')
+    expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull()
   })
 
   it('cancel during extraction wins: the late output is never staged', async () => {
