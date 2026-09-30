@@ -489,7 +489,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
     // relay's rd/* wire, wired through RelayManager.onRelayMsg.
     clock: systemClock,
-    connect: () => ClientTransport.dial(url, { subprotocol: CP_SUBPROTOCOL, path: CP_WS_PATH }),
+    connect: (opts) => ClientTransport.dial(url, { subprotocol: CP_SUBPROTOCOL, path: CP_WS_PATH, ...opts }),
     log: host.log()
   }
 }

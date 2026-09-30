@@ -161,6 +161,10 @@ const CP_HANDOFF_WINDOW_MS = 30_000
 const CREDENTIAL_TOTAL_BUDGET_MS = 13_000
 /** The shortest ack window a turn-path send gets after waiting, so a late link still gets one real try. */
 const MIN_TURN_SEND_MS = 2_000
+/** After a planned CP restart (1012), redials wait only this plus jitter and never escalate within the handoff window. */
+const HANDOFF_REDIAL_BASE_MS = 250
+/** Per-attempt handshake cap for those redials, so one landing on a dying pod cannot eat the handoff budget. */
+const HANDOFF_REDIAL_HANDSHAKE_MS = 1_000
 const BACKOFF_BASE_MS = 1000
 const BACKOFF_CAP_MS = 30000
 // No-split invariant `T_reassign > T_fence`. The CP frees a lease at `renewedAt + leaseMs` and tells the member
@@ -260,8 +264,8 @@ export interface CpClientDeps
   // webchat content no longer rides this control WS (milestone A4) — the daemon serves
   // webchat over the relay's rd/* wire (RelayClient / Daemon.handleRelayMsg) instead.
   clock: Clock
-  /** Dial factory — production passes `() => ClientTransport.dial(url)`; tests inject a fake. */
-  connect: () => Promise<Transport>
+  /** Dial factory — production passes `ClientTransport.dial(url, ...)`; a handoff redial caps its handshake. */
+  connect: (opts?: { handshakeTimeoutMs?: number }) => Promise<Transport>
   log: Logger
   /** Backoff jitter in [0,1); defaults to Math.random. Injected as `() => 0` in tests. */
   jitter?: () => number
@@ -301,6 +305,8 @@ export class CpClient {
   private linkGeneration = 0
   /** When the last READY link dropped; waiting applies only inside the handoff window that follows. */
   private droppedAt?: number
+  /** Until when redials run on the fast, non-escalating handoff cadence after a planned 1012 close. */
+  private handoffRedialUntil?: number
   private serverFeatures = new Set<string>()
   private readonly providerCredentials = new Map<string, { expiresAt: number; reply: ProviderCredentialsReply }>()
   private providerCredentialEpoch = 0
@@ -463,7 +469,12 @@ export class CpClient {
     this.state = 'CONNECTING'
     let t: Transport | undefined
     try {
-      const connected = await this.deps.connect()
+      const handoffLeft = this.handoffRedialLeft()
+      const connected = await this.deps.connect(
+        handoffLeft > 0
+          ? { handshakeTimeoutMs: Math.max(HANDOFF_REDIAL_BASE_MS, Math.min(HANDOFF_REDIAL_HANDSHAKE_MS, handoffLeft)) }
+          : undefined
+      )
       t = connected
       if (this.stopped || this.fatal) {
         // stop() (or a fatal close) raced the dial — drop the fresh socket unused.
@@ -493,10 +504,23 @@ export class CpClient {
     }
   }
 
+  private handoffRedialLeft(): number {
+    return this.handoffRedialUntil === undefined ? 0 : Math.max(0, this.handoffRedialUntil - this.deps.clock.now())
+  }
+
   private scheduleReconnect(): void {
     if (this.stopped || this.fatal) return
     if (this.reconnectTimer !== undefined) return // one in flight
     const jitter = this.deps.jitter ?? Math.random
+    if (this.handoffRedialLeft() > 0) {
+      // A planned handoff: redial fast and do not escalate; ordinary backoff resumes after the window.
+      const delay = HANDOFF_REDIAL_BASE_MS + Math.floor(jitter() * HANDOFF_REDIAL_BASE_MS)
+      this.reconnectTimer = this.deps.clock.setTimeout(() => {
+        this.reconnectTimer = undefined
+        this.beginConnect()
+      }, delay)
+      return
+    }
     const base = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** this.attempt)
     // Exponential backoff with additive jitter in [0, base), clamped so no delay
     // ever exceeds the cap (jitter()=0 → exactly base).
@@ -633,6 +657,7 @@ export class CpClient {
       throw new Error(`control-plane handshake left client in ${this.state}`)
     }
     this.droppedAt = undefined
+    this.handoffRedialUntil = undefined
     this.linkGeneration++
     this.releaseReadyWaiters(true)
     // Reconcile runs (awaited) while REGISTERING and may change the daemon's
@@ -1763,6 +1788,7 @@ export class CpClient {
       return
     }
     if (wasConnected) this.droppedAt = this.deps.clock.now()
+    if (wasConnected && code === 1012) this.handoffRedialUntil = this.deps.clock.now() + CP_HANDOFF_WAIT_MS
     this.state = 'DEGRADED'
     this.scheduleReconnect()
   }

@@ -52,7 +52,7 @@ function harness() {
     log: silent,
     jitter: () => 0
   } as unknown as CpClientDeps
-  return { clock, transports, client: new CpClient(deps) }
+  return { clock, transports, connect, client: new CpClient(deps) }
 }
 
 async function handshake(t: FakeTransport, epoch: number): Promise<void> {
@@ -211,5 +211,46 @@ describe('CpClient turn-path requests across a CP handoff', () => {
     expect(settled).toBe(false)
     await client.stop()
     await expect(outcome).resolves.toMatchObject({ message: expect.stringMatching(/control plane unreachable/) })
+  })
+})
+
+describe('CpClient redial after a planned CP restart', () => {
+  it('redials fast with a capped handshake and does not escalate while the handoff window lasts', async () => {
+    const { clock, transports, connect } = await readyHarness()
+    expect(connect.mock.calls[0]).toEqual([undefined])
+    transports[0]!.simulateClose(1012, 'restarting')
+    expect(clock.pending()).toContain(250)
+    clock.advance(250)
+    await tick()
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(connect.mock.calls[1]).toEqual([{ handshakeTimeoutMs: 1000 }])
+    transports[1]!.simulateClose(1006, 'refused')
+    await tick()
+    expect(clock.pending()).toContain(250)
+    expect(clock.pending()).not.toContain(2000)
+  })
+
+  it('keeps ordinary backoff for a drop that is not a planned restart', async () => {
+    const { clock, transports } = await readyHarness()
+    transports[0]!.simulateClose(1006, 'gone')
+    expect(clock.pending()).toContain(1000)
+    expect(clock.pending()).not.toContain(250)
+  })
+
+  it('resumes ordinary backoff once the handoff window has passed', async () => {
+    const { clock, transports, connect } = await readyHarness()
+    transports[0]!.simulateClose(1012, 'restarting')
+    while (clock.now() < 10_000) {
+      clock.advance(250)
+      await tick()
+      transports.at(-1)!.simulateClose(1006, 'refused')
+      await tick()
+    }
+    const dials = connect.mock.calls.length
+    expect(clock.pending()).toContain(1000)
+    clock.advance(1000)
+    await tick()
+    expect(connect).toHaveBeenCalledTimes(dials + 1)
+    expect(connect.mock.calls.at(-1)).toEqual([undefined])
   })
 })
