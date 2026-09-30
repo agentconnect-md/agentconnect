@@ -1072,7 +1072,12 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
             {mobileSheet === 'help' && (
               <MobileHelpSheet
                 authOn={authOn}
+                isOwner={activeOrg?.role === 'owner'}
                 help={help}
+                onGettingStarted={() => {
+                  closeSheets()
+                  openGettingStarted()
+                }}
                 onConnectAi={() => {
                   closeSheets()
                   setConnectAiOpen(true)
@@ -1231,8 +1236,8 @@ function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
 
 // Mobile-only full-screen drawer (design "Mobile navigation", 3b), opened from the
 // app bar's menu button: the rail's destinations at phone size plus everything the
-// rail's brand row and footer hold on desktop — search, the getting-started re-entry,
-// and in the footer the account button (→ account sheet), the bell, and help.
+// rail's brand row and footer hold on desktop — search, and in the footer the
+// account button (→ account sheet), the bell, and help.
 function MobileDrawer({
   barePath,
   authOn,
@@ -1297,31 +1302,16 @@ function MobileDrawer({
         {NAV_GROUPS.map((g) => g.filter(navVisible)).map((group, groupIndex) => (
           <Fragment key={group[0]?.href ?? groupIndex}>
             {groupIndex > 0 && <div className="navsep" />}
-            {group.map((item, index) => (
-              <Fragment key={item.href}>
-                <Link
-                  href={orgPath(item.href)}
-                  className={isActive(barePath, item.href) ? 'navitem on' : 'navitem'}
-                  onClick={onClose}
-                >
-                  <Icon name={item.icon} size={20} />
-                  <span>{navLabel(item.href, item.label)}</span>
-                </Link>
-                {/* Getting started sits right under the landing row (design); owner-only, like the checklist. */}
-                {groupIndex === 0 && index === 0 && activeOrg?.role === 'owner' && (
-                  <button
-                    type="button"
-                    className="navitem"
-                    onClick={() => {
-                      onClose()
-                      openGettingStarted()
-                    }}
-                  >
-                    <Icon name="rocket" size={20} />
-                    <span>{t('help.gettingStarted')}</span>
-                  </button>
-                )}
-              </Fragment>
+            {group.map((item) => (
+              <Link
+                key={item.href}
+                href={orgPath(item.href)}
+                className={isActive(barePath, item.href) ? 'navitem on' : 'navitem'}
+                onClick={onClose}
+              >
+                <Icon name={item.icon} size={20} />
+                <span>{navLabel(item.href, item.label)}</span>
+              </Link>
             ))}
           </Fragment>
         ))}
@@ -1529,17 +1519,21 @@ function MobileAccountSheet({
   )
 }
 
-// Mobile help sheet, over the drawer: the rail-footer help menu's links. Keyboard
-// shortcuts stay desktop-only; Getting started is a drawer row instead.
+// Mobile help sheet, over the drawer: the rail-footer help menu, minus the
+// keyboard shortcuts, which stay desktop-only.
 function MobileHelpSheet({
   authOn,
+  isOwner,
   help,
+  onGettingStarted,
   onConnectAi,
   onNavigate,
   onClose
 }: {
   authOn: boolean
+  isOwner: boolean
   help: ReturnType<typeof resolveHelpLinks>
+  onGettingStarted: () => void
   onConnectAi: () => void
   onNavigate: () => void
   onClose: () => void
@@ -1551,6 +1545,13 @@ function MobileHelpSheet({
       <div className="msheet" onClick={(e) => e.stopPropagation()}>
         <div className="msheet-handle" />
         <div className="msheet-eyebrow">{t('help.menu')}</div>
+        {/* The phone way back to a skipped checklist; owner-only, like the checklist itself. */}
+        {isOwner && (
+          <button type="button" className="msheet-row" onClick={onGettingStarted}>
+            <Icon name="rocket" size={20} color="var(--text-tertiary)" />
+            <span>{t('help.gettingStarted')}</span>
+          </button>
+        )}
         <button type="button" className="msheet-row" onClick={onConnectAi}>
           <SiModelcontextprotocol size={20} className="flex-none text-(--text-tertiary)" aria-hidden />
           <span>{t('help.connectAi')}</span>
