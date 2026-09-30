@@ -232,6 +232,11 @@ describe('workspace source row', () => {
     expect(html(agent({ ...GITHUB_APP, branch: 'release/next' }))).toContain('>release/next<')
   })
 
+  it('offers the sync button only to someone who can edit the agent', () => {
+    expect(html(agent(GITHUB_APP), HEADER)).toContain('lucide-refresh-cw')
+    expect(html(agent(GITHUB_APP, { canEdit: false }), HEADER)).not.toContain('lucide-refresh-cw')
+  })
+
   it('names no bot on a GitLab workspace source line', () => {
     const markup = html(agent(GITLAB))
     expect(markup).not.toContain('pushes as')

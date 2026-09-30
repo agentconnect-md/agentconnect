@@ -270,7 +270,7 @@ export function WorkspaceCard({
             {header.status.label}
           </span>
         )}
-        {isGit && header?.onPull && (
+        {isGit && canEdit && header?.onPull && (
           <button
             type="button"
             className={`iconbtn h-6 w-6 flex-none ${header.pulling ? 'pointer-events-none opacity-50' : ''}`}

@@ -5296,10 +5296,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // Workspace sync: pin the configured branch to its remote and check it out on the owning daemon. A
-    // refused sync (offline remote, a local commit the remote lacks, an edit it would rewrite) is data
-    // (`ok:false` + `detail`); the daemon's "agent is working here" refusal is a 409 like every other
-    // console git write, and only an offline daemon → 503.
+    // Workspace sync: a git write (editors only); a refused sync is data, a busy checkout 409, an offline daemon 503.
     r.post(
       '/agents/:id/workspace/gitpull',
       {
@@ -5307,18 +5304,20 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Sync the workspace',
           description:
-            'Sync the checkout to its configured remote branch on the owning daemon: fetch, point the local branch at the remote tip and check it out, carrying uncommitted edits and never merging. A refused sync (a local commit the remote lacks, an edit it would rewrite) is data (ok:false + detail); 409 when the agent is working in the checkout, 503 only when the daemon is offline. Pass repo to sync one of the agent’s authorized additional repositories instead of its primary workspace.',
+            'Sync the checkout to its configured remote branch on the owning daemon: fetch, point the local branch at the remote tip and check it out, carrying uncommitted edits and never merging. Requires edit access to the agent. A refused sync (a local commit the remote lacks, an edit it would rewrite) is data (ok:false + detail); 409 when the agent is working in the checkout, 503 only when the daemon is offline. Pass repo to sync one of the agent’s authorized additional repositories instead of its primary workspace.',
           operationId: 'pullAgentWorkspace',
           params: IdParam,
           querystring: WorkspaceRepoScopeQueryDto,
-          response: { 200: WorkspaceGitPullDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: WorkspaceGitPullDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        // Route through getOrgAgent (org boundary + canView) — a bare repo.get here
-        // would let a non-viewer trigger a pull on a restricted / cross-org agent.
+        if (denyViewerWrite(req, reply)) return
         const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!canEdit(agent, ctxOf(req))) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        }
         if (!(await canReadWorkspaceRepoScope(agent, req.query.repo))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
         }
@@ -5342,10 +5341,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    /** The chain every console git write shares: the READ chain plus the generic write gates,
-     *  because no git- or workspace-scoped action exists — "may mutate this agent's workspace" is
-     *  spelled `denyViewerWrite` + `canEdit`, as for the file editor. Deliberately NOT `gitpull`'s
-     *  shape, which gates a mutation on `canView` alone. null ⇒ replied; nothing reached the daemon. */
+    /** The READ chain plus the `denyViewerWrite` + `canEdit` gates every console git write shares; null ⇒ replied, nothing reached the daemon. */
     const gitWriteTarget = async (
       req: FastifyRequest,
       reply: FastifyReply,

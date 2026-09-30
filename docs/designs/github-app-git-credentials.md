@@ -169,7 +169,8 @@ stale until a network fetch succeeds.
    access is checked per user when identity attestation is enabled.** Resource
    visibility closes the content plane: list/get returns 404 for restricted
    agents; session fan-out is filtered; workspace files/gitstatus/gitpull are
-   gated by organization + `canView`; webchat token minting returns 404; and
+   gated by organization + `canView`, and gitpull also by edit access; webchat
+   token minting returns 404; and
    unauthorized SSE items are discarded. Only the organization-owner role widens
    restricted-resource visibility (resource-visibility.md §1, owner exception); no
    role widens repository access. The repository picker filters unauthorized private

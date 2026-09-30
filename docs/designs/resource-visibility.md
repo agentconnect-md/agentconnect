@@ -220,6 +220,8 @@ The following are the Console's read and referenced-write paths.
   from a nonexistent ID to avoid a presence oracle.
 - Workspace `gitstatus`, `gitpull`, and file routes all resolve through
   `getOrgAgent`, enforcing both organization boundary and visibility.
+  `gitpull` rewrites the checkout, so like the other git writes it also
+  requires `denyViewerWrite` and `canEdit`.
 
 ### 5.2 Daemon: `DaemonRegistryService`, not `DaemonRepo.list`
 

@@ -22,6 +22,8 @@ import type {
   WorkspaceGitCommitResult,
   WorkspaceGitMessageReq,
   WorkspaceGitMessageResult,
+  WorkspaceGitPullReq,
+  WorkspaceGitPullResult,
   WorkspaceGitPushReq,
   WorkspaceGitPushResult,
   WorkspaceGitStageReq,
@@ -52,19 +54,27 @@ afterEach(async () => {
   await Promise.all(opened.splice(0).map((app) => app.close()))
 })
 
-/** The five write seams under test, recording every forwarded REQ. */
+/** The five write seams under test plus the workspace sync, recording every forwarded REQ. */
 class GitWriteSpy {
   stageCalls: Array<{ daemonId: string; req: WorkspaceGitStageReq }> = []
   unstageCalls: Array<{ daemonId: string; req: WorkspaceGitStageReq }> = []
   commitCalls: Array<{ daemonId: string; req: WorkspaceGitCommitReq }> = []
   pushCalls: Array<{ daemonId: string; req: WorkspaceGitPushReq }> = []
   messageCalls: Array<{ daemonId: string; req: WorkspaceGitMessageReq }> = []
+  pullCalls: Array<{ daemonId: string; req: WorkspaceGitPullReq }> = []
   /** Set to make the next write fail the way a daemon `error` frame would. */
   failure: Error | null = null
 
-  /** Every forwarded REQ across all five seams — what "zero daemon calls" is measured on. */
+  /** Every forwarded REQ across every seam — what "zero daemon calls" is measured on. */
   get all(): unknown[] {
-    return [...this.stageCalls, ...this.unstageCalls, ...this.commitCalls, ...this.pushCalls, ...this.messageCalls]
+    return [
+      ...this.stageCalls,
+      ...this.unstageCalls,
+      ...this.commitCalls,
+      ...this.pushCalls,
+      ...this.messageCalls,
+      ...this.pullCalls
+    ]
   }
 
   private throwIfArmed(): void {
@@ -117,6 +127,12 @@ class GitWriteSpy {
     this.messageCalls.push({ daemonId, req })
     this.throwIfArmed()
     return { agentId: req.agentId, ok: true, message: 'feat(dock): stage files from the git panel' }
+  }
+
+  async workspaceGitPull(daemonId: string, req: WorkspaceGitPullReq): Promise<WorkspaceGitPullResult> {
+    this.pullCalls.push({ daemonId, req })
+    this.throwIfArmed()
+    return { agentId: req.agentId, isRepo: true, ok: true, detail: 'Already up to date.' }
   }
 }
 
@@ -192,6 +208,24 @@ describe('POST /agents/:id/workspace/git{stage,unstage,commit,push,message} — 
       expect(res.json(), route.name).toMatchObject({ message: 'viewers are read-only' })
     }
     expect(control.all).toHaveLength(0)
+  })
+
+  it('refuses the workspace sync to a viewer before any daemon I/O, and still forwards it for a collaborator', async () => {
+    await seedWriteAgent()
+    const viewer = await makeUser(`gw-pull-viewer-${randomUUID()}`, 'viewer')
+    const collaborator = await makeUser(`gw-pull-collab-${randomUUID()}`, 'collaborator')
+    const control = new GitWriteSpy()
+    const pull = (userId: string) =>
+      app(control, userId).app.inject({ method: 'POST', url: `${ORG}/agents/${AGENT}/workspace/gitpull` })
+
+    const refused = await pull(viewer)
+    expect(refused.statusCode).toBe(403)
+    expect(refused.json()).toMatchObject({ message: 'viewers are read-only' })
+    expect(control.all).toHaveLength(0)
+
+    const synced = await pull(collaborator)
+    expect(synced.statusCode).toBe(200)
+    expect(control.pullCalls).toEqual([{ daemonId: DAEMON, req: { agentId: AGENT } }])
   })
 
   it('reads a restricted agent and a foreign org’s agent as absent on every route', async () => {
