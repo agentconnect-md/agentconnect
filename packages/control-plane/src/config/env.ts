@@ -43,7 +43,7 @@ const CoreConfigShape = {
   // pg pool behind Prisma; pg's own default of 10 held daemon handshakes to ~75/s against a database on another host.
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).default(20),
   WS_PATH: z.string().default('/daemon/ws'),
-  // Daemon handshakes admitted at once; the rest get a retryable 503. Unset: three quarters of DATABASE_POOL_MAX.
+  // Daemon auth/register steps run at once; a further auth gets a retryable RATE_LIMITED. Unset: three quarters of DATABASE_POOL_MAX.
   DAEMON_HANDSHAKE_CONCURRENCY: z.coerce.number().int().min(1).optional(),
   HEARTBEAT_SEC: z.coerce.number().int().default(15), // → AuthOk.heartbeatSec (protocol §2.2)
   MISSED_BEATS: z.coerce.number().int().default(3), // freeze after 3×heartbeat

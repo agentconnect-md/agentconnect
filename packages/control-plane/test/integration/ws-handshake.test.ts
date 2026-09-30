@@ -150,54 +150,32 @@ describe('ws gateway — real socket handshake over agentconnect.v1', () => {
     expect([4400, 1006]).toContain(closeCode)
   })
 
-  it('refuses upgrades past the handshake limit with a retryable 503 and admits again once a slot frees', async () => {
+  it('holds no handshake slot for a socket that has not sent auth', async () => {
     const app = buildDaemonApp(prisma, { wsConfig: { DAEMON_HANDSHAKE_CONCURRENCY: 1 } })
     running = app
     const address = await app.listen()
     const token = await app.mintToken(DAEMON)
     const url = `${address.replace(/^http/, 'ws')}/daemon/ws`
     const opened: WebSocket[] = []
-    const upgradeStatus = (): Promise<number> =>
-      new Promise((resolve) => {
-        const ws = new WebSocket(url, SUBPROTOCOL)
-        opened.push(ws)
-        ws.once('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0))
-        ws.once('open', () => {
-          ws.close()
-          resolve(101)
-        })
-      })
-
     try {
-      // An upgraded socket that has not finished its handshake holds the only slot.
-      const holder = await dial(url, SUBPROTOCOL)
-      opened.push(holder)
-      expect(await upgradeStatus()).toBe(503)
-
-      // Reaching READY frees it.
-      sendFrame(holder, 'auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' })
-      await nextFrame(holder, 'auth/ok')
-      sendFrame(holder, 'register', {
+      // Idle sockets past the limit are neither refused nor able to keep a daemon from its handshake.
+      for (let i = 0; i < 3; i++) opened.push(await dial(url, SUBPROTOCOL))
+      const ws = await dial(url, SUBPROTOCOL)
+      opened.push(ws)
+      sendFrame(ws, 'auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' })
+      await nextFrame(ws, 'auth/ok')
+      sendFrame(ws, 'register', {
         host: 'host-1',
         capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true },
         maxAgents: 4,
         localState: { assignments: [], crons: [], leases: [] }
       })
-      await nextFrame(holder, 'register/ok')
-      const waiting = await dial(url, SUBPROTOCOL)
-      opened.push(waiting)
-      expect(await upgradeStatus()).toBe(503)
-
-      // So does a socket that closes before its handshake ends.
-      waiting.close()
-      let status = 0
-      for (let i = 0; i < 20 && status !== 101; i++) {
-        status = await upgradeStatus()
-        if (status !== 101) await new Promise((r) => setTimeout(r, 50))
-      }
-      expect(status).toBe(101)
+      await nextFrame(ws, 'register/ok')
     } finally {
-      for (const ws of opened) ws.terminate()
+      for (const ws of opened) {
+        ws.on('error', () => {})
+        ws.terminate()
+      }
     }
   })
 })

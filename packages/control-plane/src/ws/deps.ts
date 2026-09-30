@@ -80,7 +80,7 @@ export interface WsConfig {
   WS_PATH?: string
   /** The database pool the handshake limit is sized against (pg's default of 10 when absent). */
   DATABASE_POOL_MAX?: number
-  /** Daemon handshakes admitted at once; defaults to three quarters of the pool. */
+  /** Daemon auth/register steps run at once; defaults to three quarters of the pool. */
   DAEMON_HANDSHAKE_CONCURRENCY?: number
 }
 

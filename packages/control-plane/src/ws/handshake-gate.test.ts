@@ -1,13 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HandshakeGate, handshakeLimit } from './handshake-gate.js'
 
+afterEach(() => {
+  vi.useRealTimers()
+})
+
 describe('HandshakeGate', () => {
-  it('admits up to its limit and refuses the rest until a slot is released', () => {
+  it('admits auth steps up to its limit and refuses the rest until a slot is released', () => {
     const gate = new HandshakeGate(2)
     const first = gate.tryAcquire()
-    const second = gate.tryAcquire()
-    expect(first).toBeDefined()
-    expect(second).toBeDefined()
+    expect(gate.tryAcquire()).toBeDefined()
     expect(gate.tryAcquire()).toBeUndefined()
 
     first!()
@@ -15,16 +17,57 @@ describe('HandshakeGate', () => {
     expect(gate.tryAcquire()).toBeDefined()
   })
 
+  it('queues a register step instead of refusing it, and hands it the next free slot', async () => {
+    const gate = new HandshakeGate(1)
+    const held = gate.tryAcquire()!
+    let granted = false
+    const register = gate.acquire().then((release) => {
+      granted = true
+      return release
+    })
+    await Promise.resolve()
+    expect(granted).toBe(false)
+    expect(gate.waiting).toBe(1)
+
+    held()
+    const release = await register
+    expect(gate.size).toBe(1)
+    expect(gate.waiting).toBe(0)
+    release()
+    expect(gate.size).toBe(0)
+  })
+
+  it('refuses a new auth step while a register step waits, so a daemon past auth goes first', () => {
+    const gate = new HandshakeGate(1)
+    const held = gate.tryAcquire()!
+    void gate.acquire()
+    held()
+    expect(gate.size).toBe(1)
+    expect(gate.tryAcquire()).toBeUndefined()
+  })
+
   it('frees a slot once however many times its release runs', () => {
     const gate = new HandshakeGate(1)
     const release = gate.tryAcquire()!
-    const other = new HandshakeGate(1).tryAcquire()!
     release()
     release()
-    other()
     expect(gate.size).toBe(0)
     expect(gate.tryAcquire()).toBeDefined()
     expect(gate.tryAcquire()).toBeUndefined()
+  })
+
+  it('reports refusals at most once every ten seconds, with the count since the last report', () => {
+    vi.useFakeTimers({ now: 1_000_000 })
+    const report = vi.fn()
+    const gate = new HandshakeGate(1, report)
+    gate.tryAcquire()
+    gate.tryAcquire()
+    gate.tryAcquire()
+    expect(report.mock.calls).toEqual([[1]])
+
+    vi.setSystemTime(1_010_000)
+    gate.tryAcquire()
+    expect(report.mock.calls).toEqual([[1], [2]])
   })
 })
 

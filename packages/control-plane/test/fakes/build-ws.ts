@@ -80,6 +80,7 @@ import { PgLinearTokenStore } from '../../src/persistence/repositories/linear.re
 import { AgentDelivery } from '../../src/orchestrator/agentDelivery.js'
 import { convergeIntegrationGating } from '../../src/orchestrator/integrationPush.js'
 import type { FetchLike } from '../../src/github/api.js'
+import type { HandshakeGate } from '../../src/ws/handshake-gate.js'
 
 /** The deployment Linear app this harness composes — a test seeds a bot identity matching it. */
 export const TEST_LINEAR_APP = {
@@ -130,6 +131,8 @@ export interface HarnessOpts {
   dutyLease?: Partial<DutyLeaseConfig>
   /** The §24.1 GitLab host axis this control plane serves; absent ⇒ GitLab unconfigured. */
   gitlabBaseUrl?: string
+  /** The handshake gate every connection shares, as the gateway passes one; absent ⇒ ungated. */
+  handshakes?: HandshakeGate
 }
 
 /** One compiled hook rule as the relay would receive it — the routing projection under test. */
@@ -436,7 +439,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
       return minted.token
     },
     connect: (stub = new InMemoryDaemonStub()) => {
-      const conn = new DaemonConnection(stub, deps, router)
+      const conn = new DaemonConnection(stub, deps, router, opts.handshakes)
       conn.start()
       return { conn, stub }
     }
