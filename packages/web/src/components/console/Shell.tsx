@@ -30,7 +30,7 @@ import GettingStarted, { openGettingStarted } from './GettingStarted'
 import { GlobalSearch } from './GlobalSearch'
 import { TooltipLayer } from './Tooltip'
 import { SearchOpenContext } from './search-open'
-import { LoadingState, LogoMark, OrgIconView, Wordmark } from '@/components/marks'
+import { LoadingState, LogoMark, OrgIconView } from '@/components/marks'
 import LanguageSwitcher, { LanguageSubmenu } from '@/components/LanguageSwitcher'
 import { MenuSubmenu } from '@/components/MenuSubmenu'
 import { Avatar, Icon } from '@/components/ui'
@@ -1276,7 +1276,14 @@ function MobileDrawer({
         >
           <Icon name="x" size={20} />
         </button>
-        <Wordmark height={22} inverse />
+        {/* The rail's brand row, verbatim, so the two chromes share one wordmark. */}
+        <span className="flex items-center gap-[10px] select-none">
+          <LogoMark size={24} />
+          <span className="font-sans text-[16px] font-semibold leading-normal tracking-[-.02em] text-white">
+            {t('brandAgent')}
+            <span className="text-(--magenta-300)">{t('brandConnect')}</span>
+          </span>
+        </span>
       </div>
       <button
         type="button"
