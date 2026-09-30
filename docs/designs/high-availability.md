@@ -177,7 +177,10 @@ most once per operation ID. Relay
 credential checks and thread lookups also wait up to 10 seconds, and each is
 re-sent once over a replaced link. After a `1012` close of a READY link,
 daemons and relays redial every 250-500 ms with a 1-second handshake cap for
-10 seconds before ordinary backoff resumes.
+10 seconds before ordinary backoff resumes. The CP readiness probe runs every
+2 seconds from 1 second after start, so a replacement is listed within about
+2 seconds of listening; this matters most when a pod is evicted and no surge
+replacement is already ready.
 
 ### Connection ownership and forwarding
 
@@ -327,8 +330,9 @@ socket timers. Include a frozen process or packet loss without FIN in the drill.
 Endpoint withdrawal runs concurrently with detection; planned retirement waits
 for it before release. Budget at most 5 seconds from a failed renewal/readiness
 probe through load-balancer propagation, inside the 10-second detection/release
-window. Step 3 must configure and measure that path; today's 10-second probe
-with the default failure threshold cannot meet it. On a fault, the release
+window. Step 3 must configure and measure that path; today's CP probe keeps a
+failing replica listed for about 20 seconds (ten misses at a 2-second period)
+and cannot meet it. On a fault, the release
 deadline wins if withdrawal is late. A redial into a still-listed CP gets a
 retryable refusal or a timeout: both use capped jitter without increasing
 backoff inside the handoff deadline. Only those handoff redials use an initial

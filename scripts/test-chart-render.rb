@@ -427,6 +427,10 @@ abort('control plane must carry the daemon-pool switch') unless cp_env['DAEMON_P
 # CLUSTER_EXECUTION_ENABLED / POOL_NAMESPACE keys nor the envelope seed envs may come back.
 abort('control plane must not render the retired POOL_NAMESPACE') if cp_env.key?('POOL_NAMESPACE')
 abort('control plane must not render retired CLUSTER_* envs') if cp_env.keys.any? { |k| k.start_with?('CLUSTER_') }
+# A replacement CP must take traffic seconds after it listens, and a single replica stay listed through a DB blip.
+abort('control-plane readiness probe timings changed') unless cp_container['readinessProbe'].reject { |key, _| key == 'httpGet' } == {
+  'initialDelaySeconds' => 1, 'periodSeconds' => 2, 'failureThreshold' => 10
+}
 
 # An install with the switch off must not grow a single cluster-scoped object just because the
 # chart carries them: in-cluster daemons are the only thing that presents a projected token,

@@ -257,16 +257,14 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-          # readiness = "should this pod get traffic?" — /readyz pings the DB and
-          # goes 503 the moment SIGTERM lands (before the WS drain), so a rolling
-          # update removes the pod from the Service endpoints while it can still
-          # finish in-flight requests.
+          # /readyz: DB ping, 503 from SIGTERM. A 2s period lists a new pod seconds after it listens; 10 misses (~20s) ride out a DB blip.
           readinessProbe:
             httpGet:
               path: /readyz
               port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            failureThreshold: 10
           # liveness = "is the process alive?" — /livez is static and NEVER gated by
           # shutdown, so the kubelet won't restart a pod that is merely draining.
           livenessProbe:
