@@ -168,6 +168,25 @@ describe('CpClient turn-path requests across a CP handoff', () => {
     expect(sentOf(transports[1]!, 'memory/store')).toHaveLength(0)
   })
 
+  it('re-sends a duty claim that was in flight when the link closed, once, over the replaced link', async () => {
+    const { clock, transports, client } = await readyHarness()
+    const pending = client.claimDuty(AGENT)
+    await tick()
+    expect(sentOf(transports[0]!, 'duty/claim')).toHaveLength(1)
+    transports[0]!.simulateClose(1012, 'restarting')
+    await tick()
+    clock.advance(1000)
+    await tick()
+    await handshake(transports[1]!, 2)
+    const [resent] = sentOf(transports[1]!, 'duty/claim')
+    expect(resent).toBeDefined()
+    const holder = '33333333-3333-4333-8333-333333333333'
+    transports[1]!.pushInbound(
+      JSON.stringify(buildEnvelope('duty/claim/ok', { granted: false, holder }, { corr: resent!.id }))
+    )
+    await expect(pending).resolves.toEqual({ granted: false, holder })
+  })
+
   it('fails fast when the link never came up, so a startup without a CP stays local-first', async () => {
     const { client } = harness()
     client.start()

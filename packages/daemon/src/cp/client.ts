@@ -1260,9 +1260,9 @@ export class CpClient {
     this.forgetLeaseDeadlines(groupIds)
   }
 
-  /** `duty/claim`: the activation rendezvous for a trigger that landed here, never re-sent because a repeat reads as held. */
+  /** `duty/claim`: the activation rendezvous for a trigger that landed here; the CP refreshes a repeat by the holder, so it is re-sent once over a replaced link. */
   async claimDuty(agentId: string): Promise<DutyClaimOk> {
-    const rep = await this.turnPathRequest('duty/claim', TURN_PATH_BUDGET_MS, false, (budgetMs) =>
+    const rep = await this.turnPathRequest('duty/claim', TURN_PATH_BUDGET_MS, true, (budgetMs) =>
       this.budgetedRequest('duty/claim', { agentId }, budgetMs)
     )
     if (rep.type !== 'duty/claim/ok') {
