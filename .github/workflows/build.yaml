@@ -3,7 +3,7 @@ name: Build & Publish Artifacts
 # Publishes service, pool-runtime, and full daemon-runtime images to GHCR at each release tag.
 # Stable releases also move `:latest`, release candidates `:rc`.
 #
-# Called by publish.yaml after versioning; npm and images publish concurrently in the same Release run.
+# Release versioning and preparation share one job, followed by parallel npm, image, and chart publication.
 # Manual image rebuilds select an existing release tag; npm retries stay in Release for its OIDC identity.
 #
 # Per-component effective versions: most releases don't touch every component,
@@ -63,13 +63,19 @@ on:
   workflow_call:
     inputs:
       version:
-        description: 'Release tag produced by semantic-release'
-        required: true
+        description: 'Existing release tag to rebuild'
         type: string
-      publish_npm:
-        description: 'Build and publish changed npm packages alongside the images'
+        default: ''
+      create_release:
+        description: 'Create a release and publish changed npm packages alongside the images and chart'
         type: boolean
         default: false
+      build_test_summary:
+        type: string
+        default: ''
+      integration_test_summary:
+        type: string
+        default: ''
   workflow_dispatch:
 
 concurrency:
@@ -81,10 +87,12 @@ env:
 
 jobs:
   prepare:
-    name: Prepare image builds
+    name: Release & Prepare
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      issues: write
+      pull-requests: write
       packages: read
     outputs:
       version: ${{ steps.meta.outputs.version }}
@@ -98,13 +106,55 @@ jobs:
       mem0Backend: ${{ steps.build-matrix.outputs.mem0Backend }}
       daemon: ${{ steps.build-matrix.outputs.daemon }}
     steps:
-      # Reusable calls receive the tag semantic-release just published. Manual
-      # runs still derive it from the selected ref and reject branch refs, which
-      # would otherwise mint a mutable image tag such as `main`.
+      - name: Mint GitHub App token
+        if: inputs.create_release
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      # Keep the triggering commit unless explicitly rebuilding an existing release tag.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.version }}
+      - uses: pnpm/action-setup@v6
+        if: inputs.create_release
+        with:
+          version: 11.19.0
+          cache: true
+      - uses: actions/setup-node@v7
+        if: inputs.create_release
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        if: inputs.create_release
+        run: pnpm install --frozen-lockfile
+      - name: Semantic Release
+        if: inputs.create_release
+        id: release
+        run: pnpm exec semantic-release
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+      - name: Append Unit Test summary
+        if: ${{ !cancelled() && inputs.build_test_summary != '' }}
+        env:
+          TEST_SUMMARY: ${{ inputs.build_test_summary }}
+        run: printf '\n---\n\n%s\n' "$TEST_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+      - name: Append integration test summary
+        if: ${{ !cancelled() && inputs.integration_test_summary != '' }}
+        env:
+          TEST_SUMMARY: ${{ inputs.integration_test_summary }}
+        run: printf '\n---\n\n%s\n' "$TEST_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+
+      # A no-release result skips publication; manual rebuilds still require a release tag.
       - name: Resolve release version
+        if: ${{ !inputs.create_release || steps.release.outputs.version != '' }}
         id: meta
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version || inputs.version }}
         run: |
           version="$RELEASE_VERSION"
           if [ -z "$version" ]; then
@@ -125,27 +175,16 @@ jobs:
             *)   echo "latest=true"  >> "$GITHUB_OUTPUT" ;;
           esac
 
-      # Full history + tags: the effective-version walk below diffs stable tags
-      # pairwise. This repo is small; the extra clone cost on rc builds is noise.
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-          ref: ${{ inputs.version || github.ref }}
-
-      # Per-component effective versions on this tag's channel (see the
-      # header): a component whose inputs didn't change since the channel's
-      # previous release keeps that older tag; only changed components build.
-      # The runtime images get no version here — their legs decide by content
-      # against the channel's previous tag, which this step also emits.
+      # Service versions follow path changes; runtime legs compare content against the previous channel tag.
       - name: Resolve per-component effective versions
+        if: steps.meta.outputs.version != ''
         id: components
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: bash scripts/component-versions.sh "$VERSION" | tee -a "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
+        if: steps.meta.outputs.version != ''
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -153,6 +192,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Buildx
+        if: steps.meta.outputs.version != ''
         id: buildx
         continue-on-error: true
         uses: docker/setup-buildx-action@v4
@@ -161,11 +201,9 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
 
-      # Effective versions derived from Git are candidates until their manifests
-      # resolve in GHCR. If a prior release failed before pushing one, rebuild the
-      # unchanged inputs at this release and report the current version downstream.
-      # The matrix is never empty: the runtime legs run at every release.
+      # Rebuild missing effective images at this version; runtime legs always keep the matrix nonempty.
       - name: Select required image builds
+        if: steps.meta.outputs.version != ''
         id: build-matrix
         shell: bash
         env:
@@ -271,7 +309,7 @@ jobs:
   publish-npm:
     name: Publish npm packages
     needs: prepare
-    if: inputs.publish_npm
+    if: inputs.create_release && needs.prepare.outputs.version != ''
     runs-on: ubuntu-latest
     # Serialize npm retries with other release runs on the same channel.
     concurrency:
@@ -305,6 +343,7 @@ jobs:
   build-images:
     name: Build & push ${{ matrix.target }}
     needs: prepare
+    if: needs.prepare.outputs.version != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -634,18 +673,11 @@ jobs:
             docker buildx imagetools create -t "${REGISTRY}/${OWNER}/${comp}:rc" "${REGISTRY}/${OWNER}/${comp}:${VERSION}"
           done
 
-  # The Helm chart rides the same release train as the images: chart version = the release
-  # with the `v` stripped (OCI/SemVer form), appVersion = the release tag (the image-tag
-  # form its templates default to). Gated on the built images but NOT on `finalize`: it reads
-  # nothing that job produces, so the two run side by side instead of costing every release a
-  # serial job. The trade is narrow — while `finalize` runs, a chart pulled straight from the
-  # registry names this release's tag on components whose alias has yet to land, and nothing
-  # consumes it that way: the dispatch below is this workflow's only signal and awaits both.
+  # Chart publication needs only the release tag; notification waits until its images are ready.
   publish-chart:
     name: Publish Helm chart
-    needs:
-      - prepare
-      - build-images
+    needs: prepare
+    if: needs.prepare.outputs.version != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -682,7 +714,7 @@ jobs:
       - publish-npm
     if: >-
       ${{ !cancelled() && needs.finalize.result == 'success' && needs.publish-chart.result == 'success'
-          && (!inputs.publish_npm || needs.publish-npm.result == 'success') }}
+          && (!inputs.create_release || needs.publish-npm.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve workflow repository

@@ -31,8 +31,9 @@ jobs:
       pull-requests: write
       packages: write
       id-token: write
-    uses: ./.github/workflows/publish.yaml
+    uses: ./.github/workflows/build.yaml
     with:
+      create_release: true
       build_test_summary: ${{ needs.test.outputs.build_test_summary }}
       integration_test_summary: ${{ needs.test.outputs.integration_test_summary }}
     secrets: inherit

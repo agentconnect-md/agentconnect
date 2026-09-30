@@ -25,24 +25,23 @@ test('release tags and release records cannot trigger another workflow run', () 
       assert.equal(events.push.tags, undefined, name)
     }
   }
-  assert.deepEqual(Object.keys(workflows['publish.yaml'].on), ['workflow_call'])
   assert.deepEqual(Object.keys(workflows['build.yaml'].on), ['workflow_call', 'workflow_dispatch'])
 })
 
-test('npm and image builds run alongside each other and both gate notification', () => {
+test('one release/prepare job starts npm, images, and chart in parallel and all gate notification', () => {
   const release = workflows['release.yaml'].jobs.release
-  assert.equal(release.uses, './.github/workflows/publish.yaml')
+  assert.equal(release.uses, './.github/workflows/build.yaml')
+  assert.equal(release.with.create_release, true)
   assert.equal(release.concurrency['cancel-in-progress'], false)
   assert.equal(release.permissions['id-token'], 'write')
-  const publish = workflows['publish.yaml'].jobs
-  assert.equal(publish.artifacts.needs, 'version')
-  assert.equal(publish.artifacts.with.publish_npm, true)
-  assert.equal(publish.artifacts.permissions['id-token'], 'write')
   const jobs = workflows['build.yaml'].jobs
-  assert.equal(jobs['publish-npm'].needs, 'prepare')
-  assert.equal(jobs['build-images'].needs, 'prepare')
-  assert.ok(jobs['notify-workflow'].needs.includes('publish-npm'))
-  assert.ok(jobs['notify-workflow'].needs.includes('finalize'))
+  assert.ok(jobs.prepare.steps.some((step) => step.id === 'release' && step.run === 'pnpm exec semantic-release'))
+  assert.match(jobs.prepare.steps.find((step) => step.id === 'meta').if, /steps\.release\.outputs\.version != ''/)
+  for (const name of ['publish-npm', 'build-images', 'publish-chart']) {
+    assert.equal(jobs[name].needs, 'prepare')
+    assert.match(jobs[name].if, /needs\.prepare\.outputs\.version != ''/)
+  }
+  assert.deepEqual(jobs['notify-workflow'].needs, ['finalize', 'publish-chart', 'publish-npm'])
   assert.match(jobs['notify-workflow'].if, /needs\.publish-npm\.result == 'success'/)
   assert.equal(jobs['publish-npm'].permissions['id-token'], 'write')
 })
