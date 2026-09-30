@@ -20,6 +20,8 @@ import { MemoryFsClient, settleMemoryFs, type MemoryFsRequester } from '../shim/
 /** The slice of the CP connection this home rides: the legal-state gate, feature negotiation, the one request pair. */
 export interface CpMemoryStoreLink {
   connected(): boolean
+  /** Resolve true once the link is back within the connection's handoff wait; absent means never wait. */
+  waitConnected?(): Promise<boolean>
   supportsServerFeature(feature: string): boolean
   memoryTransaction?(req: MemoryTransactionReq): Promise<MemoryTransactionResult>
   memoryStore(req: MemoryStoreReq): Promise<MemoryFsReply>
@@ -37,7 +39,8 @@ export function joinTreeRoot(root: string, rel: string): string {
 export function cpMemoryFsRequester(link: CpMemoryStoreLink, agentId: string): MemoryFsRequester {
   const home = `agent "${agentId}" keeps its memory in the Control Plane, which`
   return async (op) => {
-    if (!link.connected()) throw new MemoryHomeUnavailableError('connection', `${home} is unreachable`)
+    if (!link.connected() && !(await link.waitConnected?.()))
+      throw new MemoryHomeUnavailableError('connection', `${home} is unreachable`)
     if (!link.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {
       throw new MemoryHomeUnavailableError('feature', `${home} does not serve the memory store`)
     }
@@ -133,7 +136,7 @@ export class CpMemoryFs extends MemoryFsClient {
     if (!this.link.memoryTransaction || !this.link.supportsServerFeature(MEMORY_TRANSACTION_V1_FEATURE))
       return undefined
     return async (request) => {
-      if (!this.link.connected())
+      if (!this.link.connected() && !(await this.link.waitConnected?.()))
         throw new MemoryHomeUnavailableError('connection', 'the memory transaction home is unreachable')
       if (!this.link.memoryTransaction || !this.link.supportsServerFeature(MEMORY_TRANSACTION_V1_FEATURE))
         throw new MemoryHomeUnavailableError('feature', 'the memory home no longer supports transactions')

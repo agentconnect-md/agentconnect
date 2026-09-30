@@ -1598,17 +1598,19 @@ describe('CpClient memory/store (D→C REQ)', () => {
     expect(stores()).toHaveLength(1)
   })
 
-  it('fails fast off the legal states instead of queueing on a dead socket', async () => {
-    const { client, t } = await readyClient({}, ['agent-memory-store-v1'])
+  it('waits out a dropped link instead of queueing on the dead socket, then fails retryable', async () => {
+    const { client, t, clock } = await readyClient({}, ['agent-memory-store-v1'])
     expect(client.connected()).toBe(true)
     t.simulateClose(1006, 'gone')
     await tick()
     expect(client.connected()).toBe(false)
-    await expect(client.memoryStore({ agentId: CRON_AGENT_ID, op })).rejects.toMatchObject({
-      code: 'INTERNAL',
-      retryable: true
-    })
-    expect(t.sent).toHaveLength(0)
+    const outcome = client.memoryStore({ agentId: CRON_AGENT_ID, op }).catch((err: unknown) => err)
+    for (let elapsed = 0; elapsed < 12_000; elapsed += 1000) {
+      clock.advance(1000)
+      await tick()
+    }
+    await expect(outcome).resolves.toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(t.sent.filter((text) => JSON.parse(text).type === 'memory/store')).toHaveLength(0)
   })
 })
 
