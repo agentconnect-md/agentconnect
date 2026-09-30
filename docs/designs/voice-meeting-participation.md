@@ -310,13 +310,13 @@ the Control Plane sees configuration and body-free telemetry.
 interface SpeechToText {
   // A live stream: PCM frames in, utterances out. `speaker` is the platform's identity
   // where the transport separates speakers, else the provider's diarization label.
-  stream(opts: { sampleRate; language?; speaker? }): SttStream;
+  stream(opts: { sampleRate; language?; speaker? }): SttStream
   // One file: the voice-note path. Returns text plus segments with timing.
-  transcribe(bytes: Buffer, mimeType: string, opts?): Promise<Transcript>;
+  transcribe(bytes: Buffer, mimeType: string, opts?): Promise<Transcript>
 }
 interface TextToSpeech {
   // Text in, audio frames out, with a cancel for barge-in.
-  synthesize(text: string, opts: { voice?; language? }): TtsStream;
+  synthesize(text: string, opts: { voice?; language? }): TtsStream
 }
 ```
 
@@ -335,19 +335,19 @@ platform that has one:
 
 ```ts
 interface VoiceRoomDriver {
-  join(target: VoiceTarget, signal): Promise<VoiceRoom>;
+  join(target: VoiceTarget, signal): Promise<VoiceRoom>
 }
 interface VoiceRoom {
-  readonly id: string;
-  readonly participants: ReadonlyMap<string, { name; isBot }>;
+  readonly id: string
+  readonly participants: ReadonlyMap<string, { name; isBot }>
   // One decoded PCM stream per speaker where the transport separates them (Discord); one
   // mixed stream with provider speaker labels otherwise (meeting providers).
-  audioIn: AsyncIterable<{ speaker?: string; pcm: Buffer; at: number }>;
-  speak(audio: TtsStream): Promise<void>; // resolves when played or cancelled
-  cancelSpeech(): void;
-  leave(): Promise<void>;
-  onParticipants(cb): void;
-  onEnded(cb): void;
+  audioIn: AsyncIterable<{ speaker?: string; pcm: Buffer; at: number }>
+  speak(audio: TtsStream): Promise<void> // resolves when played or cancelled
+  cancelSpeech(): void
+  leave(): Promise<void>
+  onParticipants(cb): void
+  onEnded(cb): void
 }
 ```
 
