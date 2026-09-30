@@ -122,8 +122,9 @@ One bucket (or one prefix of a bucket) per install:
   - `anon`, with `repo` the SHA-256 of the canonical remote URL (lower-cased
     host, credentials, query and fragment stripped, trailing `.git` removed,
     standard SSH spellings rewritten to their HTTPS authority). Written only from
-    a clone that fetched with no credential, so an entry holds nothing an
-    anonymous fetch of that URL could not return.
+    a clone the daemon instructed without a credential. An honest writer thus
+    stores only what an anonymous fetch of that URL returns; what a hostile
+    writer can add is bounded in the next bullet.
   - `cred`, with `repo` the provider-qualified numeric id (`github:<repoId>`,
     `gitlab:<projectId>`) of the Source's `CodeHostRepository`. Written only from
     a credentialed clone, and readable only after `resolveRef` succeeded on the
