@@ -461,7 +461,7 @@ controlPlane:
   # This protects public browser callbacks from a transient no-healthy-upstream
   # response during a single-replica rollout.
   minReadySeconds: 15
-  # true adds a minAvailable:1 PDB: a node drain then waits for a rollout restart to move the CP without an API gap (README "Node maintenance").
+  # true adds a minAvailable:1 PDB so a drain cannot evict the CP; move it with a completed rollout restart first (README "Node maintenance").
   podDisruptionBudget: false
   port: 8080
   # Non-secret env for the Fastify app (agentconnect-md/agentconnect,

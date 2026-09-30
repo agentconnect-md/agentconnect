@@ -259,7 +259,7 @@ spec:
       targetPort: http
 {{- if .Values.controlPlane.podDisruptionBudget }}
 ---
-# At one replica this blocks every voluntary eviction, so a node drain waits for a rollout restart to move the CP.
+# At one replica this blocks every voluntary eviction; move the CP with a completed rollout restart before draining its node.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

@@ -104,15 +104,21 @@ pinning) is the [AgentConnect OSS guide](https://www.agentconnect.md/docs/self-h
 
 The Control Plane runs as one replica, and it also serves the API. Evicting its pod, as a
 node drain does, leaves the API unavailable until the replacement is ready — several
-seconds. A rolling update has no such gap, because its replacement is ready before the old
-pod stops.
+seconds. A rolling update has no such gap: its replacement is ready, and has had
+`controlPlane.minReadySeconds` for the Gateway to find it, before the old pod stops.
 
-Set `controlPlane.podDisruptionBudget=true` to turn drains into that rolling update. The
-drain then stops at the Control Plane pod; move it first, and the drain proceeds:
+Set `controlPlane.podDisruptionBudget=true` so a drain cannot evict the Control Plane pod,
+and move the pod with a rolling update before draining its node:
 
 ```bash
+kubectl cordon <node>
 kubectl -n agentconnect rollout restart deployment/agentconnect-control-plane
+kubectl -n agentconnect rollout status deployment/agentconnect-control-plane
+kubectl drain <node> --ignore-daemonsets
 ```
 
-The cordoned node takes no new pods, so the replacement starts elsewhere. Leave the budget
-off where nobody can act on a drain that is waiting.
+Cordoning first makes the replacement start on another node, and waiting for the rollout to
+finish keeps the old pod serving through that settling window. If a drain is already waiting
+on the Control Plane pod, stop it before the restart: the budget counts the replacement as
+available as soon as it is Ready, so a waiting drain would evict the old pod before the
+window ends. Leave the budget off where nobody can act on a drain that is waiting.

@@ -185,8 +185,11 @@ daemons and relays redial every 250-500 ms with a 1-second handshake cap for
 replacement is already ready. Migrations run in a pre-install/pre-upgrade hook
 Job, so a replacement pod starts without them. An evicted pod stops serving the
 API at once, so a single-replica eviction leaves the API down until the
-replacement is ready; the optional `controlPlane.podDisruptionBudget` makes a
-node drain wait for a rollout restart, which has no such gap.
+replacement is ready. The optional `controlPlane.podDisruptionBudget` stops a
+drain from evicting the pod; a rollout restart completed before the drain moves
+it without that gap. A drain left waiting through the restart does not: the
+budget counts the replacement once it is Ready, so the drain can evict the old
+pod inside the `minReadySeconds` window kept for Gateway discovery.
 
 ### Connection ownership and forwarding
 
