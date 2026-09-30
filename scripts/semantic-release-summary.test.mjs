@@ -9,15 +9,7 @@ import { success } from './semantic-release-summary.js'
 
 test('release summary writes commit-derived notes literally', async (t) => {
   assert.ok(releaseConfig.plugins.includes('./scripts/semantic-release-summary.js'))
-  const daemonPublisher = releaseConfig.plugins.find(
-    (plugin) => Array.isArray(plugin) && plugin[1]?.prepareCmd?.includes('publish-daemon-if-changed')
-  )
-  assert.ok(daemonPublisher)
-  assert.equal(daemonPublisher[1].successCmd, undefined)
-  const setupPublisher = releaseConfig.plugins.find(
-    (plugin) => Array.isArray(plugin) && plugin[1]?.prepareCmd?.includes('publish-setup-if-changed')
-  )
-  assert.ok(setupPublisher)
+  assert.ok(releaseConfig.plugins.every((plugin) => !Array.isArray(plugin) || plugin[0] !== '@semantic-release/exec'))
 
   const dir = await mkdtemp(join(tmpdir(), 'agentconnect-release-summary-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
@@ -42,6 +34,6 @@ test('release summary writes commit-derived notes literally', async (t) => {
   )
 
   assert.equal(await readFile(outputPath, 'utf8'), 'version=v1.2.3\n')
-  assert.equal(await readFile(summaryPath, 'utf8'), `### 🚀 Released v1.2.3\n\n${notes}\n`)
+  assert.equal(await readFile(summaryPath, 'utf8'), `### 🚀 Release v1.2.3\n\n${notes}\n`)
   await assert.rejects(readFile(markerPath), { code: 'ENOENT' })
 })

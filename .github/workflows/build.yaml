@@ -1,12 +1,10 @@
-name: Build & Push Images
+name: Build & Publish Artifacts
 
 # Publishes service, pool-runtime, and full daemon-runtime images to GHCR at each release tag.
 # Stable releases also move `:latest`, release candidates `:rc`.
 #
-# Called by release.yaml after semantic-release publishes a version, so image
-# publication appears in the same Release run. Plain pushes that don't produce
-# a release don't call this workflow. Manual rebuild: workflow_dispatch, picking
-# a vX.Y.Z(-rc.N) tag as the ref.
+# Called by publish.yaml after versioning; npm and images publish concurrently in the same Release run.
+# Manual image rebuilds select an existing release tag; npm retries stay in Release for its OIDC identity.
 #
 # Per-component effective versions: most releases don't touch every component,
 # and a component whose build inputs are unchanged since the previous release
@@ -68,11 +66,15 @@ on:
         description: 'Release tag produced by semantic-release'
         required: true
         type: string
+      publish_npm:
+        description: 'Build and publish changed npm packages alongside the images'
+        type: boolean
+        default: false
   workflow_dispatch:
 
 concurrency:
-  group: build-${{ inputs.version || github.ref }}
-  cancel-in-progress: true
+  group: build-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -265,6 +267,40 @@ jobs:
           ' "$bake_config")"
 
           echo "matrix=$(jq -cn --argjson include "$matrix" '{include: $include}')" >> "$GITHUB_OUTPUT"
+
+  publish-npm:
+    name: Publish npm packages
+    needs: prepare
+    if: inputs.publish_npm
+    runs-on: ubuntu-latest
+    # Serialize npm retries with other release runs on the same channel.
+    concurrency:
+      group: npm-${{ contains(needs.prepare.outputs.version, '-') && 'rc' || 'latest' }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.version }}
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.19.0
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          registry-url: 'https://registry.npmjs.org'
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build and publish changed packages
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.version }}
+        run: node scripts/publish-npm.mjs "$RELEASE_TAG"
 
   build-images:
     name: Build & push ${{ matrix.target }}
@@ -643,6 +679,10 @@ jobs:
     needs:
       - finalize
       - publish-chart
+      - publish-npm
+    if: >-
+      ${{ !cancelled() && needs.finalize.result == 'success' && needs.publish-chart.result == 'success'
+          && (!inputs.publish_npm || needs.publish-npm.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve workflow repository

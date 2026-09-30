@@ -1,6 +1,5 @@
 #!/bin/sh
-# Publish @agentconnect.md/setup only when its self-contained bundle inputs
-# changed on the current release channel.
+# publish-npm.mjs passes the last published npm tag, the next version or dist-tag, and prepare|publish.
 set -eu
 
 LAST_TAG="${1:-}"

@@ -5,6 +5,6 @@ export async function success(_pluginConfig, { env, nextRelease }) {
     await appendFile(env.GITHUB_OUTPUT, `version=${nextRelease.gitTag}\n`)
   }
   if (env.GITHUB_STEP_SUMMARY) {
-    await appendFile(env.GITHUB_STEP_SUMMARY, `### 🚀 Released ${nextRelease.gitTag}\n\n${nextRelease.notes}\n`)
+    await appendFile(env.GITHUB_STEP_SUMMARY, `### 🚀 Release ${nextRelease.gitTag}\n\n${nextRelease.notes}\n`)
   }
 }
