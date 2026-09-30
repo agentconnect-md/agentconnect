@@ -6,6 +6,9 @@ metadata:
     {{- include "agentconnect.labels" . | nindent 4 }}
     {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "control-plane") | nindent 4 }}
 spec:
+  {{- if gt (int .Values.controlPlane.replicas) 1 }}
+  {{- fail "controlPlane.replicas above 1 is not supported: the Control Plane still keeps connection and control state per process (docs/designs/high-availability.md)" }}
+  {{- end }}
   replicas: {{ .Values.controlPlane.replicas }}
   # Kubernetes treats readiness as immediately available by default. Keep the
   # new endpoint stable long enough for Gateway/Envoy discovery before it may

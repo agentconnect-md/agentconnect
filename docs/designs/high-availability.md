@@ -680,8 +680,8 @@ Implement in three bounded steps, keeping steady-state replication disabled
 until all three pass:
 
 1. Shared connection ownership, fencing, forwarding, and cluster-wide liveness.
-   Gate replica counts above one in the chart until all three steps pass; that
-   protective guard can ship before the shared directory.
+   The chart already refuses `controlPlane.replicas` above one; lift that guard
+   only after all three steps pass.
 2. Recoverable broadcasts, cross-CP SSE, mutation gates, and background/cache
    audit. Preserve existing durable implementations instead of replacing them.
 3. Request drain, bounded reconnect waiting, truthful daemon status,

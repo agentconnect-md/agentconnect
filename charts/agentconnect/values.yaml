@@ -454,6 +454,7 @@ controlPlane:
         memory: 64Mi
       limits:
         memory: 128Mi
+  # The chart refuses more than 1 until the active-active Control Plane design ships.
   replicas: 1
   # Keep a newly Ready CP in the Service endpoints long enough for Gateway
   # endpoint discovery to converge before the rollout removes the old pod.
