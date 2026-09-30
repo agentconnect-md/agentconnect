@@ -24,7 +24,8 @@ import {
   type RdAck,
   type RdHookNotice,
   type RdHookRouting,
-  type RdMsgHook
+  type RdMsgHook,
+  type ReviewCheckout
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
@@ -73,6 +74,7 @@ import {
   type CodeHostTurnFinalHost
 } from '../codehost/turn-final.js'
 import { GithubReviewClient, type GithubReviewEffect } from './review.js'
+import { classifyReviewCheckoutFailure } from './review-checkout.js'
 
 /** Dispatch options this seam needs; a subset of the daemon's own. */
 export interface GithubHookDispatchOptions {
@@ -183,6 +185,9 @@ export class GithubReviewOrchestrator {
   private get turnFinalHost(): CodeHostTurnFinalHost {
     return this.host.turnFinal
   }
+
+  /** How this turn's formal-review workspace was prepared, handed from preparation to the start barrier that reports it. */
+  private readonly reviewCheckouts = new WeakMap<QueueEntry, ReviewCheckout>()
 
   constructor(private readonly host: GithubReviewHost) {}
 
@@ -690,6 +695,7 @@ export class GithubReviewOrchestrator {
     // A secondary root reviews like the primary with the root swapped (decision 6); no root at all is the revision-only fallback's case.
     const reviewRoot = this.reviewRootFor(agent, github)
     if (reviewRoot === undefined) {
+      this.reviewCheckouts.set(entry, { outcome: 'degraded', reason: 'no_review_root' })
       return useRevisionOnlyWorkspace()
     }
 
@@ -721,10 +727,13 @@ export class GithubReviewOrchestrator {
             ? ' Additional repositories are available as separate directories at their default branches for reference only; the reviewed revision is the working directory.'
             : '')
       )
+      this.reviewCheckouts.set(entry, { outcome: 'exact' })
       return { workspaceIsolation: 'session', forceWorkspaceIsolation: true, preparedWorkspaceCwd }
     } catch (err) {
+      const reason = classifyReviewCheckoutFailure(err)
+      this.reviewCheckouts.set(entry, { outcome: 'degraded', reason })
       this.log.warn(
-        `github review: exact checkout unavailable; continuing with trusted revision only (${formatErrWithCauses(err)})`
+        `github review: exact checkout unavailable (${reason}); continuing with trusted revision only (${formatErrWithCauses(err)})`
       )
       return useRevisionOnlyWorkspace()
     }
@@ -761,6 +770,7 @@ export class GithubReviewOrchestrator {
     if (!trusted.headSha || !trusted.baseSha || trusted.pullNumber === undefined) return undefined
     const client = this.host.cpClient()
     if (!client) return undefined
+    const reviewCheckout = this.reviewCheckouts.get(entry)
     const payload = {
       hookId: hook.hookId,
       agentId: hook.agentId,
@@ -770,7 +780,8 @@ export class GithubReviewOrchestrator {
       sessionId: (await this.host.outwardSessionId(hook.agentId, sessionId)) ?? sessionId,
       ...(hook.event ? { event: hook.event } : {}),
       github: { ...trusted, reportSha: trusted.reportSha ?? trusted.headSha },
-      ...snapshot
+      ...snapshot,
+      ...(reviewCheckout ? { reviewCheckout } : {})
     }
     let started: Awaited<ReturnType<CpClient['startHook']>> | undefined
     for (let attempt = 0; attempt < 3 && !started; attempt += 1) {
