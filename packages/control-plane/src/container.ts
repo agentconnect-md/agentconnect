@@ -2809,9 +2809,10 @@ export function buildContainer(
         http.log.error({ err, botId: m.botId }, 'relay: bot-channels snapshot failed')
       }
     },
-    // A closed relay socket shrinks the connected roster — re-stamp §14.3 notice
-    // authorities on the survivors (fire-and-forget; errors logged).
+    // A closed relay shrinks the roster — re-stamp §14.3 notice authorities on the survivors (fire-and-forget).
     onRelayGone: () => {
+      // A retiring CP's own drain closes every relay; the replacement re-places bots when each re-registers.
+      if (readiness.isShuttingDown()) return
       void httpBot
         .reconcileAll()
         .catch((err) => http.log.error({ err }, 'relay: HTTP-bot reconcile on disconnect failed'))

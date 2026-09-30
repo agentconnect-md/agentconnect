@@ -15,10 +15,10 @@
  *
  * Runs against real Testcontainers Postgres (the handshake mints a real epoch).
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
-import { isFrame, type AnyFrame } from '@agentconnect.md/protocol'
+import { isFrame, RELAY_CP_SUBPROTOCOL, type AnyFrame } from '@agentconnect.md/protocol'
 
 import { prisma } from '../setup.db.js'
 import { buildApp, type App } from '../../src/app.js'
@@ -26,16 +26,19 @@ import { AppConfigSchema, type AppConfig } from '../../src/config/env.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { MemorySecretsProvider } from '../../src/secrets/providers/memory.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
+import { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const DAEMON = 'abababab-abab-4bab-8bab-abababababab'
 const SUBPROTOCOL = 'agentconnect.v1'
 const API_KEY_PEPPER = 'drain-api-key-pepper-0123456789abcdef'
+const RELAY_TOKEN = 'drain-relay-shared-secret-0123456789ab' // ≥32, dot-free
 
 function drainConfig(): AppConfig {
   return AppConfigSchema.parse({
     DATABASE_URL: 'postgresql://drain/ignored', // prisma is injected; URL unused
     API_KEY_PEPPER,
+    RELAY_TOKEN,
     SECRETS_PROVIDER: 'memory',
     WS_PATH: '/daemon/ws',
     HEARTBEAT_SEC: 15
@@ -45,11 +48,12 @@ function drainConfig(): AppConfig {
 let running: App | undefined
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await running?.shutdown()
   running = undefined
 })
 
-async function start(): Promise<{ app: App; wsUrl: string; token: string }> {
+async function start(): Promise<{ app: App; wsUrl: string; relayUrl: string; token: string }> {
   const config = drainConfig()
   const app = buildApp({
     prisma,
@@ -75,11 +79,12 @@ async function start(): Promise<{ app: App; wsUrl: string; token: string }> {
     }
   })
 
-  return { app, wsUrl: `${address.replace(/^http/, 'ws')}${config.WS_PATH}`, token: minted.token }
+  const base = address.replace(/^http/, 'ws')
+  return { app, wsUrl: `${base}${config.WS_PATH}`, relayUrl: `${base}${config.RELAY_WS_PATH}`, token: minted.token }
 }
 
-function dial(url: string): Promise<WebSocket> {
-  const ws = new WebSocket(url, SUBPROTOCOL)
+function dial(url: string, protocol = SUBPROTOCOL): Promise<WebSocket> {
+  const ws = new WebSocket(url, protocol)
   return new Promise((resolve, reject) => {
     ws.once('open', () => resolve(ws))
     ws.once('error', reject)
@@ -193,5 +198,23 @@ describe('graceful shutdown with connected WS clients', () => {
     await withDeadline(app.http.close(), 8000, 'http.close after drain')
     await withDeadline(app.shutdown(), 8000, 'shutdown after drain')
     running = undefined
+  }, 20000)
+
+  it('skips the relay-disconnect bot reconcile for relays its own drain closes', async () => {
+    const { app, relayUrl } = await start()
+    const relayWs = await dial(relayUrl, RELAY_CP_SUBPROTOCOL)
+    sendFrame(relayWs, 'rc/auth', { method: 'token', credential: RELAY_TOKEN })
+    await nextFrame(relayWs, 'rc/auth/ok')
+    sendFrame(relayWs, 'rc/register', { name: 'drain-relay', daemonUrl: 'https://relay.example.test' })
+    await nextFrame(relayWs, 'rc/registered')
+    // Registration starts its own reconcile in the tick that sends `rc/registered`, so the spy sees only later calls.
+    const reconcile = vi.spyOn(HttpBotOrchestrator.prototype, 'reconcileAll')
+    const relayClose = closeCode(relayWs)
+
+    app.beginShutdown()
+    await withDeadline(app.drainWs(), 8000, 'drainWs')
+
+    expect(await withDeadline(relayClose, 2000, 'relay close code')).toBe(1012)
+    expect(reconcile).not.toHaveBeenCalled()
   }, 20000)
 })
