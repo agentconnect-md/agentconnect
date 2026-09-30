@@ -198,7 +198,7 @@ export const PROFILES: Profile[] = [
     registryId: 'opencode',
     memory: {
       runtime: runtime('./opencode'),
-      expected: { managed: true, none: false, native: false }
+      expected: { managed: true, none: true, native: false }
     },
     scenario: {
       agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: true } },

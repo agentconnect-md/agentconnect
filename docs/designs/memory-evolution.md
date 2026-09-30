@@ -970,6 +970,15 @@ runtime secretly retain another persistent copy. See the complete product
 invariant in
 [`product-conventions.md`](../product-conventions.md#runtime-memory-provider-compatibility).
 
+OpenCode v1.18.32 supports `managed`, `none`, and admitted `external` memory without an
+environment override; `native` remains unavailable. Its [ACP session creation](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/acp/service.ts)
+and [instruction loading](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/session/instruction.ts)
+have no automatic cross-session memory store. Session history and compaction stay
+session-scoped. Project rules, explicitly requested workspace files, and installed
+plugins remain runtime configuration: the older-model [memory-file prompt](https://github.com/anomalyco/opencode/blob/v1.18.32/packages/opencode/src/session/prompt/beast.txt)
+is a workspace-file convention, not an automatically loaded native store. `none`
+does not block ordinary file tools or remove user-installed memory plugins.
+
 ## 7. Explicit Non-Goals
 
 - **Embeddings + vector database + semantic retrieval** inside managed memory:

@@ -65,6 +65,22 @@ describe('memoryProviderFor (spawn-time provider + env)', () => {
     expect(() => memoryProviderFor(agent('none'), other).runtimeEnv()).toThrow(MemoryProviderUnavailableError)
   })
 
+  it.each([
+    ['opencode', 'custom-wrapper', ['serve-acp']],
+    ['my-opencode', './opencode', ['acp']],
+    ['my-opencode', 'C:\\Tools\\opencode.exe', ['acp']],
+    ['my-opencode', 'npx', ['-y', 'opencode-ai@1.18.32', 'acp']]
+  ])('allows none memory for %s via %s without replacing provider config', (runtimeId, command, args) => {
+    const runtime = { command, args, env: [] } as unknown as RuntimeDef
+    const env = {
+      OPENCODE_CONFIG_CONTENT: '{"enabled_providers":["deepseek"],"model":"deepseek/deepseek-chat"}',
+      DEEPSEEK_API_KEY: 'test-provider-key'
+    }
+    const before = { ...env }
+    expect(memoryProviderFor(agent('none', runtimeId), runtime, env).runtimeEnv()).toEqual({})
+    expect(env).toEqual(before)
+  })
+
   it('keeps invalid runtime config on the provider-unavailable error surface', () => {
     expect(() => memoryProviderFor(agent('none'), codex, { CODEX_CONFIG: 'not-json' }).runtimeEnv()).toThrow(
       MemoryProviderUnavailableError
