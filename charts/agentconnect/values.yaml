@@ -261,8 +261,8 @@ daemonPool:
   # Install-wide model credentials, referenced BY NAME like every other secret here — the chart
   # never holds the value. Create the Secret with one entry per variable the daemon reads:
   # `<PREFIX>MODEL_TOKEN` and `<PREFIX>MODEL_BASE_URL`, where PREFIX is `ANTHROPIC_` (claude),
-  # `OPENAI_` (codex), `DEEPSEEK_`, or empty for the shared fallback of those recognized runtimes
-  # and OpenCode. Other ACP runtimes need `runtimeEnvironment` below. A token
+  # `OPENAI_` (codex), `DEEPSEEK_`, or empty for the shared fallback of those recognized runtimes.
+  # OpenCode reuses these three provider pairs; other ACP runtimes need `runtimeEnvironment` below. A token
   # with no base URL is a plain provider key on that provider's own endpoint; a base URL with no
   # token aims a runtime at an endpoint that issues its own credential. Every entry is optional,
   # so the Secret names only the providers this install pays for and may land in either order

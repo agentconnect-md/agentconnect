@@ -39,12 +39,16 @@ Every value is documented inline in [values.yaml](values.yaml) — it is the ref
 The chart holds no secret values: it references namespace Secrets by name. Configure
 install-wide model API keys through a Secret, or add organization keys later in the console.
 
-The pool uses `runtime-sandbox` by default. To run the additional ACP runtimes in
-the published full image, set `daemonPool.runtime.repository` to
+The pool uses `runtime-sandbox` by default, with Claude Code, Codex, DeepSeek Harness,
+and OpenCode. To run additional ACP runtimes such as Qwen Code, set
+`daemonPool.runtime.repository` to
 `ghcr.io/agentconnect-md/runtime-sandbox-full`. The chart keeps the selected
 release tag; `daemonPool.runtime.image` remains available for an exact image pin.
-For Qwen Code, OpenCode, or another ACP runtime, map its API-key and endpoint variables
-from a Secret with `daemonPool.runtimeEnvironment.runtimes`. The mapping reaches both
+OpenCode reuses the Anthropic, OpenAI, and DeepSeek pairs from
+`daemonPool.modelCredentials` or `modelEgress.clients`, so existing provider configuration
+needs no separate OpenCode mapping. For Qwen Code, other providers, or additional settings,
+map the runtime's environment variables from a Secret with
+`daemonPool.runtimeEnvironment.runtimes`. The mapping reaches both
 the pool's model probe and agent sessions. See the
 [Kubernetes runtime authentication guide](https://www.agentconnect.md/docs/self-hosting/kubernetes/runtime-authentication).
 
