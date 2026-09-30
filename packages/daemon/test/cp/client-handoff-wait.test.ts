@@ -214,6 +214,32 @@ describe('CpClient turn-path requests across a CP handoff', () => {
   })
 })
 
+describe('CpClient turn-path deadlines', () => {
+  it('spends the handoff wait out of the request budget instead of adding it on top', async () => {
+    const { clock, transports, client } = await readyHarness()
+    transports[0]!.simulateClose(1006, 'gone')
+    let settled = false
+    const outcome = client
+      .channelAgents({ platform: 'slack', requesterAgentId: AGENT })
+      .catch((err: unknown) => err)
+      .finally(() => (settled = true))
+    // The replacement link takes 9 of the 10 seconds a request waits for one.
+    for (let elapsed = 0; elapsed < 9_000; elapsed += 1000) {
+      clock.advance(1000)
+      await tick()
+    }
+    await handshake(transports.at(-1)!, 2)
+    expect(sentOf(transports.at(-1)!, 'channel/agents')).toHaveLength(1)
+    // Unanswered, it gives up with the 25 seconds it had before the wait existed, not 25 more.
+    for (let elapsed = 9_000; elapsed < 24_000; elapsed += 500) {
+      clock.advance(500)
+      await tick()
+    }
+    expect(settled).toBe(true)
+    await expect(outcome).resolves.toBeInstanceOf(Error)
+  })
+})
+
 describe('CpClient redial after a planned CP restart', () => {
   it('redials fast with a capped handshake and does not escalate while the handoff window lasts', async () => {
     const { clock, transports, connect } = await readyHarness()

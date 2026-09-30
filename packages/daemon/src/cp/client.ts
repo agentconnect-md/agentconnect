@@ -152,6 +152,8 @@ import type { Logger } from '../log.js'
 export { CP_SUBPROTOCOL, CP_WS_PATH } from '@agentconnect.md/protocol'
 
 const ACK_TIMEOUT_MS = 5000
+/** The correlator's default five-try budget: what a wrapped turn-path request had in total before it waited out a handoff. */
+const TURN_PATH_BUDGET_MS = 5 * ACK_TIMEOUT_MS
 /** One deadline for a `memory/store` op, the shim carrier's per-op timeout; there is never a second send. */
 const MEMORY_STORE_TIMEOUT_MS = 30_000
 /** How long a turn-path request waits for a reconnecting control link; a planned CP handoff takes seconds. */
@@ -957,8 +959,8 @@ export class CpClient {
 
   /** Durable start barrier for an accepted hook turn; the gitlab arm is organization-scoped (§17.2). */
   async startHook(payload: HookStart, orgId?: string): Promise<HookStartOk> {
-    const rep = await this.turnPathRequest('hook/start', CP_HANDOFF_WAIT_MS + MIN_TURN_SEND_MS, false, () =>
-      this.request('hook/start', payload, orgId)
+    const rep = await this.turnPathRequest('hook/start', TURN_PATH_BUDGET_MS, false, (budgetMs) =>
+      this.budgetedRequest('hook/start', payload, budgetMs, orgId)
     )
     if (rep.type !== 'hook/start/ok') {
       throw new WireError('INTERNAL', `expected hook/start/ok, got ${rep.type}`, false)
@@ -1036,11 +1038,8 @@ export class CpClient {
     payload: CodeHostReviewLeaseRenew,
     orgId?: string
   ): Promise<CodeHostReviewLeaseRenewed> {
-    const rep = await this.turnPathRequest(
-      'codehost/review-lease-renew',
-      CP_HANDOFF_WAIT_MS + MIN_TURN_SEND_MS,
-      true,
-      () => this.request('codehost/review-lease-renew', payload, orgId)
+    const rep = await this.turnPathRequest('codehost/review-lease-renew', TURN_PATH_BUDGET_MS, true, (budgetMs) =>
+      this.budgetedRequest('codehost/review-lease-renew', payload, budgetMs, orgId)
     )
     if (rep.type !== 'codehost/review-lease-renew/ok') {
       throw new WireError('INTERNAL', `expected codehost/review-lease-renew/ok, got ${rep.type}`, false)
@@ -1155,6 +1154,16 @@ export class CpClient {
     return this.correlator.request(frame, (e) => this.transport!.send(e))
   }
 
+  /** A request whose retransmits fit in `budgetMs`, so time spent waiting out a handoff comes out of the caller's deadline. */
+  private budgetedRequest(type: string, payload: unknown, budgetMs: number, explicitOrgId?: string): Promise<AnyFrame> {
+    const ackTimeoutMs = Math.min(ACK_TIMEOUT_MS, budgetMs)
+    const frame = this.scopedFrame(type, payload, explicitOrgId)
+    return this.correlator.request(frame, (e) => this.transport!.send(e), {
+      ackTimeoutMs,
+      maxTries: Math.max(1, Math.floor(budgetMs / ackTimeoutMs))
+    })
+  }
+
   /** Request a short-lived git credential: waits out a CP handoff, one send per link, inside the helper's IPC timeout. */
   async requestGitCred(payload: GitCredRequest): Promise<GitCredGrant> {
     const rep = await this.turnPathRequest('gitcred/request', CREDENTIAL_TOTAL_BUDGET_MS, true, (ackTimeoutMs) =>
@@ -1250,8 +1259,8 @@ export class CpClient {
 
   /** `duty/claim`: the activation rendezvous for a trigger that landed here, never re-sent because a repeat reads as held. */
   async claimDuty(agentId: string): Promise<DutyClaimOk> {
-    const rep = await this.turnPathRequest('duty/claim', CP_HANDOFF_WAIT_MS + MIN_TURN_SEND_MS, false, () =>
-      this.request('duty/claim', { agentId })
+    const rep = await this.turnPathRequest('duty/claim', TURN_PATH_BUDGET_MS, false, (budgetMs) =>
+      this.budgetedRequest('duty/claim', { agentId }, budgetMs)
     )
     if (rep.type !== 'duty/claim/ok') {
       throw new WireError('INTERNAL', `expected duty/claim/ok, got ${rep.type}`, false)
@@ -1397,8 +1406,8 @@ export class CpClient {
 
   /** `channel/agents`: this agent's callable peers, waiting out a CP handoff; the caller negotiates the org-wide form. */
   async channelAgents(payload: ChannelAgentsReq): Promise<ChannelAgentsOk> {
-    const rep = await this.turnPathRequest('channel/agents', CP_HANDOFF_WAIT_MS + MIN_TURN_SEND_MS, true, () =>
-      this.correlator.request(this.scopedFrame('channel/agents', payload), (e) => this.transport!.send(e))
+    const rep = await this.turnPathRequest('channel/agents', TURN_PATH_BUDGET_MS, true, (budgetMs) =>
+      this.budgetedRequest('channel/agents', payload, budgetMs)
     )
     if (rep.type !== 'channel/agents/ok') {
       throw new WireError('INTERNAL', `expected channel/agents/ok, got ${rep.type}`, false)
@@ -1430,8 +1439,8 @@ export class CpClient {
     if (!this.supportsServerFeature(ORGANIZATION_KNOWLEDGE_FEATURE)) {
       throw new WireError('INTERNAL', 'control plane does not support organization knowledge', false)
     }
-    const rep = await this.turnPathRequest('knowledge/search', CP_HANDOFF_WAIT_MS + MIN_TURN_SEND_MS, true, () =>
-      this.request('knowledge/search', payload)
+    const rep = await this.turnPathRequest('knowledge/search', TURN_PATH_BUDGET_MS, true, (budgetMs) =>
+      this.budgetedRequest('knowledge/search', payload, budgetMs)
     )
     if (rep.type !== 'knowledge/search/ok') {
       throw new WireError('INTERNAL', `expected knowledge/search/ok, got ${rep.type}`, false)
