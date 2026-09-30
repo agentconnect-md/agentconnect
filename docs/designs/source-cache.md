@@ -170,10 +170,16 @@ because nothing in the cache decides what a reader ends up with:
    Source resolution on the daemon (skills) or from the origin fetch that
    `--bundle-uri` always performs (workspace). A bundle never decides which
    commit is used.
-3. **Readers verify.** A skill reader requires the planned commit to be present
-   and `git fsck`-clean after import. A workspace reader relies on Git's own
-   connectivity check: `--bundle-uri` discards a bundle that fails it and clones
-   from the origin instead.
+3. **Readers verify, and always keep a clean origin retry.** A skill reader
+   requires the planned commit to be present and `git fsck`-clean after import.
+   Git's bundle bootstrap is not a fallback: a bundle that advertises the right
+   ref but omits objects the commit needs makes `git clone --bundle-uri` fail
+   (`unable to parse commit`, "Clone succeeded, but checkout failed"; reproduced
+   on 2.39 and 2.54) even though the origin is healthy. So every cached
+   acquisition, workspace or skill, that fails for any reason discards its whole
+   staging checkout and object database and retries **once without the bundle**
+   before any origin error is surfaced (the retry contract, section 7). A
+   poisoned bundle then costs one wasted download, never a failed session.
 4. **No bucket credentials in pods.** The pool daemon holds the only S3
    credentials (IRSA / Workload Identity preferred; a static key Secret
    otherwise). A pod only ever receives presigned URLs, each for one key, one
@@ -182,9 +188,10 @@ because nothing in the cache decides what a reader ends up with:
    daemon initiates (section 9). No tunnel exposes a signing endpoint, so the
    runtime process in the pod cannot request a URL for another key.
 
-What a hostile pod can still do: write a useless or oversized bundle (bounded by
-section 10), or move a pointer to an older valid bundle of the same ref (costs a
-larger origin fetch, never wrong content).
+What a hostile pod can still do: write a useless, incomplete, or oversized bundle
+(bounded by section 10, and survived by the retry contract), or move a pointer to
+an older valid bundle of the same ref (costs a larger origin fetch, never wrong
+content).
 
 **Known boundary.** Git skill bytes no longer pass through the daemon, so the
 receipt digests in the cluster skill ledger are computed by the shim, not checked
@@ -197,7 +204,7 @@ trust").
 
 ## 7. Workspace flow
 
-Unchanged except for one argument and one follow-up:
+An optional bundle argument, a clean retry, and one follow-up:
 
 1. The daemon prepares the workspace as today. When a Source Cache is configured
    and `latest` exists for (org, repository, branch), the clone instruction gains
@@ -205,7 +212,14 @@ Unchanged except for one argument and one follow-up:
 2. The pod clones; Git downloads the bundle, fetches the remainder from the
    origin with the usual `gitcred` credential, and checks out the branch head the
    origin reports.
-3. The shim reports a write-back candidate when the clone missed the cache, the
+3. **Retry contract.** If the bundled clone fails at any step — download,
+   unbundle, fetch, connectivity, or checkout — the shim empties the checkout
+   directory (object database included) and runs the same clone once without
+   `--bundle-uri`. Only that second attempt's failure is an origin failure, and
+   only it reaches `cloneInSandbox`'s existing clear-and-rethrow path. The first
+   failure is reported as a cache fallback (metric, and the bundle key in the
+   log) and the pointer is not trusted again by this preparation.
+4. The shim reports a write-back candidate when the clone missed the cache, the
    origin fetch after the bundle exceeded a delta threshold (default: 5,000
    objects or 50 MiB), or the bundle is older than 7 days (section 9).
 
@@ -233,8 +247,8 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
 3. For each Git Source the shim, in a private temporary directory:
    - clones with `--bundle-uri` when a URL was given, `--no-checkout`, full
      history (not shallow: a bundle written from a shallow repository omits the
-     shallow boundary and yields a repository that fails `fsck`, and
-     `--bundle-uri` discards it);
+     shallow boundary and yields a repository that fails `fsck`, so it can never
+     serve as a clone base);
    - when the bundle lacks the planned commit: for a tracked ref, fetches that
      ref and requires it to equal the planned commit, else skips the Source for
      this run (the ref moved after resolution; the next preparation re-resolves);
@@ -242,6 +256,9 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
      (`uploadpack.allowReachableSHA1InWant` is off by default outside GitHub and
      GitLab) fetches all branches and tags and looks for the commit, else skips
      the Source with that reason;
+   - on any failure of a bundled attempt, or when the imported repository is
+     not `fsck`-clean, discards the staging directory and repeats this step once
+     without the bundle (the retry contract, section 7);
    - checks out only the subdirectory at the planned commit into a staging
      directory and drops `.git`.
 4. The shim runs the same per-source offline CLI cell on each staged directory,
@@ -263,17 +280,35 @@ finishes, and a failure is a log line and a metric.
 1. The shim's reply lists candidates: (Source, ref, bundle size, bundle
    SHA-256). It creates the bundle with `git bundle create <file> <ref>` from the
    full, non-shallow clone.
-2. The daemon checks the per-bundle cap and the org quota (section 10). If both
-   pass, it signs a PUT for a fresh `bundles/<uuid>.bundle` with the declared
-   `Content-Length` included in the signature, so the store rejects any other
-   length.
-3. The daemon sends a `writeback` shim operation carrying the URL. The shim
+2. **Reserve before signing.** In one transaction the daemon checks the
+   per-bundle cap and inserts a `pending` row for a fresh
+   `bundles/<uuid>.bundle` carrying the declared size and an expiry (the PUT
+   lifetime plus a grace, default 1 h), admitted only if the org's committed
+   bytes plus every unexpired `pending` reservation plus this one stay within the
+   quota (section 10). The org's usage row is locked for the check, so two pool
+   members cannot both admit the last 2 GiB. A refused reservation means no
+   write-back.
+3. Only then does the daemon sign the PUT: the declared `Content-Length` and the
+   object tag `ac-cache=pending` are both part of the signature, so the store
+   rejects any other length and the pod cannot omit or change the tag.
+4. The daemon sends a `writeback` shim operation carrying the URL. The shim
    uploads from its own process (the URL never appears on a command line).
-4. The daemon records the object in Postgres, then replaces `latest` with a
-   conditional write (`If-Match` on the ETag it read). Losing that race is
-   dropped silently: any valid bundle of the ref is an acceptable pointer target.
-   On a store without conditional writes the replacement is last-writer-wins,
-   which is equally safe and only occasionally regresses to an older bundle.
+5. On the shim's reply the daemon `HEAD`s the object, requires the reserved
+   length, marks the row `committed`, retags the object `ac-cache=live`, and
+   replaces `latest` with a conditional write (`If-Match` on the ETag it read).
+   Losing that race is dropped silently and the new bundle is marked
+   unreferenced: any valid bundle of the ref is an acceptable pointer target. On
+   a store without conditional writes the replacement is last-writer-wins, which
+   is equally safe and only occasionally regresses to an older bundle.
+
+**Abandoned uploads.** An upload the store accepted but no reply confirmed —
+the pod died, the channel dropped, the member restarted — keeps its `pending`
+row. The sweep (section 10) takes every expired `pending` row, `HEAD`s its key,
+deletes the object if present, and deletes the row, which releases the
+reservation. Independently of the database, the lifecycle rule expires any
+object still tagged `ac-cache=pending` after 2 days, so an upload whose row was
+lost is collected too. No object reaches the bucket without either a row or a
+`pending` tag.
 
 The GET URL passed to `git clone` is visible to other processes in a shared pod
 through `/proc/<pid>/cmdline`. It reads one bundle for a few minutes and is only
@@ -284,28 +319,34 @@ the agent could not already read.
 
 Defaults, all Helm values:
 
-| Limit          | Default | Enforcement                                                              |
-| -------------- | ------- | ------------------------------------------------------------------------ |
-| Bundle size    | 2 GiB   | The daemon refuses to sign; the store enforces the signed length         |
-| Org total      | 20 GiB  | The daemon refuses to sign a PUT past the org's recorded usage           |
-| Unreferenced   | 7 days  | Bucket lifecycle rule on `src/**/bundles/` objects no pointer references |
-| Unread pointer | 30 days | Daemon background sweep deletes the pointer; lifecycle then collects     |
+| Limit                 | Default | Enforcement                                                                   |
+| --------------------- | ------- | ----------------------------------------------------------------------------- |
+| Bundle size           | 2 GiB   | The daemon refuses to reserve; the store enforces the signed length           |
+| Org total             | 20 GiB  | Committed bytes plus unexpired reservations, checked under the org's row lock |
+| Pending reservation   | 1 h     | Sweep deletes the object and the row, releasing the reservation               |
+| Pending-tagged object | 2 days  | Bucket lifecycle rule on `ac-cache=pending`, independent of the database      |
+| Unreferenced          | 7 days  | Bucket lifecycle rule on `ac-cache=unreferenced`                              |
+| Unread pointer        | 30 days | Daemon background sweep deletes the pointer; lifecycle then collects          |
 
 A bundle over the cap is not written, and that repository keeps cloning from the
 origin.
 
 Accounting lives in the data-plane Postgres, in a new pool-store table
-`source_cache_object`: org, key, kind (`bundle` | `pointer`), bytes, repository
-URL hash, ref hash, created and last-read timestamps, and whether a pointer
-references it. The write path inserts; GET issuance updates last-read; the sweep
-reads it. The table is org-scoped like every pool table
+`source_cache_object`: org, key, kind (`bundle` | `pointer`), state (`pending` |
+`committed`), bytes (reserved or actual), repository URL hash, ref hash, created,
+expiry and last-read timestamps, and whether a pointer references it, plus a
+per-org usage row that reservations lock. Reservation inserts a `pending` row;
+commit flips it; GET issuance updates last-read; the sweep reads and deletes. The
+table is org-scoped like every pool table
 ([k8s-daemon-pool.md](k8s-daemon-pool.md) §11). The bucket is never listed to
 compute usage.
 
-Lifecycle tagging: the sweep marks a bundle unreferenced with an object tag when
-its pointer moves or is deleted, and the lifecycle rule filters on that tag, so a
-bundle is never collected while a pointer names it. A pod still downloading an
-old bundle through a URL issued before the pointer moved has 7 days of grace.
+Lifecycle tagging: every bundle carries `ac-cache=pending`, `live`, or
+`unreferenced`. The upload signs `pending`; commit retags `live`; the sweep
+retags `unreferenced` when a bundle's pointer moves or is deleted. Lifecycle
+rules filter only on `pending` (2 days) and `unreferenced` (7 days), so a bundle
+is never collected while a pointer names it. A pod still downloading an old
+bundle through a URL issued before the pointer moved has 7 days of grace.
 
 ## 11. Non-GitHub Sources
 
@@ -345,7 +386,8 @@ section 10. Only pool members receive them.
 | Condition                                     | Behavior                                                   |
 | --------------------------------------------- | ---------------------------------------------------------- |
 | No bucket configured                          | No URLs issued; pods clone from upstream (the OSS default) |
-| Signing, GET, or bundle verification fails    | Treated as a miss for that Source; origin fetch; metric    |
+| Signing fails                                 | Treated as a miss for that Source; origin fetch; metric    |
+| Any bundled attempt fails                     | Clean retry without the bundle (section 7); metric         |
 | Write-back fails, quota exceeded, or over cap | Nothing written; logged; the session is unaffected         |
 | Resolution fails                              | Section 5                                                  |
 
@@ -385,7 +427,8 @@ Each phase ships and rolls back alone.
 
 Before P1: confirm the runtime image's Git version (≥ 2.38), and which
 S3-compatible stores the chart supports for conditional writes, signed
-`Content-Length`, and tag-filtered lifecycle rules (AWS S3 and MinIO at least).
+`Content-Length` and `x-amz-tagging` on presigned PUTs, and tag-filtered
+lifecycle rules (AWS S3 and MinIO at least).
 
 ## 15. Change index
 
