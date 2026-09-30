@@ -204,6 +204,37 @@ describe('mergeConversation', () => {
     expect(merged.filter((m) => m.row.text === 'both of you')).toHaveLength(1)
   })
 
+  describe('a hook fire delivered to several agents', () => {
+    const HOOK_A = '11111111-1111-4111-8111-111111111111'
+    const HOOK_B = '22222222-2222-4222-8222-222222222222'
+    const fire = (hookId: string, over: Partial<SessionMessageDto> = {}) =>
+      row({ sender: 'github:frozen', ts: `1790000000000|${hookId}:delivery-1`, text: 'Opened PR #7', ...over })
+
+    it('renders once across the agents whose hooks it fired, a Decision host copy included', () => {
+      const merged = mergeConversation([
+        src(A, 'hook', [fire(HOOK_A)]),
+        src(B, 'hook', [fire(HOOK_B, { ts: `1790000000000|${HOOK_B}:delivery-1:route` })])
+      ])
+      expect(merged.filter((m) => m.row.text === 'Opened PR #7')).toHaveLength(1)
+    })
+
+    it('keeps fires of different deliveries, times, or texts apart', () => {
+      const merged = mergeConversation([
+        src(A, 'hook', [fire(HOOK_A), fire(HOOK_A, { ts: `1790000000500|${HOOK_A}:delivery-2` })]),
+        src(B, 'hook', [
+          fire(HOOK_B, { ts: `1790000000000|${HOOK_B}:delivery-2` }),
+          fire(HOOK_B, { ts: `1790000009999|${HOOK_B}:delivery-1` }),
+          fire(HOOK_B, { text: 'Opened PR #7 (edited)' })
+        ])
+      ])
+      expect(merged).toHaveLength(5)
+    })
+
+    it('leaves a hook row whose ts is not a fire stamp alone', () => {
+      expect(duplicateIdentity('hook', row({ ts: '1790000000000', text: 'console line' }))).toBeNull()
+    })
+  })
+
   it('keeps both copies when the platform id is one no module claims', () => {
     // The blast radius of the fall-through removal, end to end: two sources of
     // an unrecognized platform carrying the same Slack-shaped ts used to

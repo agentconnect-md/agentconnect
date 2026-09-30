@@ -405,6 +405,14 @@ member when it mentions nobody. Placeholder "Message everyone…". See
 [webchat-cross-integration-continuation.md](webchat-cross-integration-continuation.md)
 §10. Every copy of the line carries one `postId`, so the merge renders it once.
 
+A provider event that fires several agents' hooks is also one message. Each agent's
+session records its own trigger row, and that row's `ts` is
+`<firedAt ms>|<hookId>:<deliveryKey>`, ending in `:route` on a Decision host copy. The
+relay mints `firedAt` once per delivery, and `deliveryKey` is the provider's delivery
+id, so the merge's duplicate identity for a `hook` text row keeps those two, drops the
+hook id, and adds the sender and the text. The trigger then renders once. A row whose
+`ts` is not a fire stamp keeps no identity.
+
 ## 9. Conversations and session lineage (parent/child)
 
 Sessions carry a second graph besides the conversation: **lineage** —
