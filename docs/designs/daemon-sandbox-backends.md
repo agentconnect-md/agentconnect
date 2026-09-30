@@ -661,6 +661,23 @@ workspace configuration. SRT keeps native authentication. Amp ACP 0.9.0 and the
 native CLI were checked with synthetic credentials; an authenticated model/tool
 turn remains a release acceptance task.
 
+Kimi Code projects nonempty literal `api_key` values from the active
+`.kimi-code/config.toml`, honoring `KIMI_CODE_HOME`. Only supported model
+providers with explicit HTTPS `base_url` values authorize injection; unknown
+protocols, OAuth/registry-backed providers, unresolved routes and service-only
+keys retain placeholders without injection. Repeated values share a binding;
+matching copies in seeded files are replaced before guest access. Environment-only
+credentials, `api_key_env`, provider `env` bags and arbitrary header credentials
+are outside this path. This is static API-key protection, not OAuth shielding.
+The native OAuth credentials directory remains shared and writable for refresh.
+
+Retained plaintext API configuration or changed credential identities requires a
+new session; existing data is not migrated or deleted. Guest settings survive
+resume, but cannot authorize new destinations. Native Kimi Code 2.1.1 accepted
+file keys and placeholders through ACP and sent them as Bearer headers to a
+synthetic local endpoint. Real provider TLS/model/tool turns inside a VM remain
+unverified.
+
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and
 existing private logins are preserved. Without a DeepSeek key, normal seeding is

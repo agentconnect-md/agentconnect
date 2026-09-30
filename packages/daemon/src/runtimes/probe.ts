@@ -203,11 +203,14 @@ function kimiCredentialFiles(root: string): SeededCredentialFile[] {
   } catch {
     // No readable config: only the default slot.
   }
-  return [...names].map((name) => ({
-    path: join('credentials', `${name}.json`),
-    format: 'oauth',
-    provider: 'kimi-code'
-  }))
+  return [
+    { path: 'config.toml', format: 'kimi-config' },
+    ...[...names].map<SeededCredentialFile>((name) => ({
+      path: join('credentials', `${name}.json`),
+      format: 'oauth',
+      provider: 'kimi-code'
+    }))
+  ]
 }
 
 export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {

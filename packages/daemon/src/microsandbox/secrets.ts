@@ -15,6 +15,7 @@ import { prepareGrokSecrets } from './grok-secrets.js'
 import { prepareQwenSecrets } from './qwen-secrets.js'
 import { prepareOmpSecrets } from './omp-secrets.js'
 import { prepareAmpSecrets } from './amp-secrets.js'
+import { prepareKimiSecrets } from './kimi-secrets.js'
 import { replaceEnvironmentSecrets } from './secret-values.js'
 
 export interface MicrosandboxSecret {
@@ -52,7 +53,8 @@ const CREDENTIAL_PREPARERS = new Map<string, CredentialPreparer>([
   ['grok-build', { prepare: prepareGrokSecrets, env: hashed('AC_GROK_API') }],
   ['qwen-code', { prepare: prepareQwenSecrets, env: hashed('AC_QWEN_API') }],
   ['omp', { prepare: prepareOmpSecrets, env: hashed('AC_OMP_API') }],
-  ['amp-acp', { prepare: prepareAmpSecrets, env: hashed('AC_AMP_API') }]
+  ['amp-acp', { prepare: prepareAmpSecrets, env: hashed('AC_AMP_API') }],
+  ['kimi', { prepare: prepareKimiSecrets, env: hashed('AC_KIMI_API') }]
 ])
 
 function preparerFor(runtimeId: string, runtime: RuntimeDef | undefined): CredentialPreparer | undefined {

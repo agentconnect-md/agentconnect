@@ -5,7 +5,7 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { objectFromJson } from '../runtimes/codex-config.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
-import { grokConfigApiKeys, MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
+import { fileConfigApiKeys, MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
 import { replaceSecretValue } from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
@@ -46,7 +46,7 @@ function allowedHost(endpoint: unknown): string[] {
 }
 
 function apiKeys(data: Record<string, unknown>, toml: boolean) {
-  if (toml) return grokConfigApiKeys(data)
+  if (toml) return fileConfigApiKeys(data)
   return Object.entries(data).flatMap(([scope, raw]) => {
     const auth = object(raw)
     return auth.auth_mode === 'api_key' && typeof auth.key === 'string' && auth.key.trim()

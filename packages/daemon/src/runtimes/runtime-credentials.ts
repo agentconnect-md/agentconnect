@@ -434,7 +434,11 @@ function prepareKimiCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredential
   const sharedDir = ensureOwnedDirectory(resolveKimiCredentialDir(env), 'host kimi credentials directory')
   const declared = runtimeStateLocations('kimi', env)
     .filter((location) => location.destination === '.kimi-code')
-    .flatMap((location) => (location.credentialFiles ?? []).map((file) => join('.kimi-code', file.path)))
+    .flatMap((location) =>
+      (location.credentialFiles ?? [])
+        .filter((file) => file.format === 'oauth')
+        .map((file) => join('.kimi-code', file.path))
+    )
   const hosted = readdirSync(sharedDir).map((name) => join('.kimi-code', 'credentials', name))
   return {
     env: {},
