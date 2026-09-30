@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { continuableOrigin, originKindOf, WEBCHAT_MULTI_AGENT_FEATURE } from '@agentconnect.md/protocol'
 import type { SessionMetaRecord } from '../../persistence/ports.js'
-import type { ConversationPeerClaim } from '../../registry/webchatToken.js'
+import { MAX_CONVERSATION_PEERS, type ConversationPeerClaim } from '../../registry/webchatToken.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, SessionId, type OrgId } from '../../domain/ids.js'
@@ -86,6 +86,8 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       const agentsById = new Map(orgAgents.map((a) => [a.id as string, a]))
       const peers: ConversationPeerClaim[] = []
       for (const m of members) {
+        // Newest first, so a conversation larger than a verdict can carry keeps its most recently active members.
+        if (peers.length >= MAX_CONVERSATION_PEERS) break
         if (!canContinueSession(m, ctx, access.identitySet, access.externalAccess)) continue
         if (m.contentPurgedAt || !continuableOrigin(m.platform ?? '')) continue
         const peerAgent = agentsById.get(m.agentId)

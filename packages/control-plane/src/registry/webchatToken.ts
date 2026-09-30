@@ -40,7 +40,8 @@ export interface ConversationPeerClaim {
   privateOwnerIdentity?: string
 }
 
-const MAX_CONVERSATION_PEERS = 16
+/** A verdict carries at most 16 participants (`RcVerifyResult.participants`) and the target takes one, so mint caps the peers here too. */
+export const MAX_CONVERSATION_PEERS = 15
 
 /** Parses the peer claim, dropping the whole list when any entry is malformed. */
 function conversationPeersOf(raw: unknown): ConversationPeerClaim[] | undefined {

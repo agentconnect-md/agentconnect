@@ -1315,6 +1315,33 @@ describe('webchat session-continuation mint + verify', () => {
     relayWs.close()
     daemonWs.close()
   })
+
+  it('caps the peers a mint carries so the verdict never exceeds its participant limit', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const { ws: relayWs } = await openRelay(base, 'pod-cont-7', 'wss://pod-cont-7.example.test', CONTINUATION)
+    const daemonWs = await connectDaemonReady(base, [...CONTINUATION, WEBCHAT_HOOK_CONTINUATION_FEATURE])
+    const pullRequest = { daemonId: DAEMON, platform: 'hook', channel: 'github:1310543401', thread: '1552' }
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedSessionMeta(prisma, HOOK_SESSION_ID, AGENT, pullRequest)
+    for (let i = 0; i < 17; i++) {
+      const peer = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+      await seedAgent(prisma, peer, { daemonId: DAEMON })
+      await seedSessionMeta(prisma, `acp-continuation-hook-peer-${i}`, peer, pullRequest)
+    }
+
+    const minted = await mintSessionToken(app, HOOK_SESSION_ID)
+    sendFrame(relayWs, 'rc/verify', {
+      kind: 'webchat-token',
+      credential: (minted.json() as { token: string }).token,
+      conversationBinding: 'v1'
+    })
+    const verdict = (await nextFrame(relayWs, 'rc/verify/ok')).payload as RcVerifyResult
+    expect(verdict.ok).toBe(true)
+    expect(verdict.participants).toHaveLength(16)
+
+    relayWs.close()
+    daemonWs.close()
+  })
 })
 
 // The relay gates its new credential signals on the advertised feature; an older relay's revocation still lands.
