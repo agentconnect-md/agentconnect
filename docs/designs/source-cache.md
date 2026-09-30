@@ -111,16 +111,29 @@ One bucket (or one prefix of a bucket) per install:
 
 ```
 <prefix>/
-  src/<org>/<urlHash>/refs/<refHash>/<shape>/latest  pointer: JSON { bundle, commit, bytes, createdAt }
-  src/<org>/<urlHash>/bundles/<uuid>.bundle          immutable Git bundle, exactly one ref, one shape
+  src/<org>/<class>/<repo>/refs/<refHash>/<shape>/latest   pointer: JSON { bundle, commit, bytes, createdAt }
+  src/<org>/<class>/<repo>/bundles/<uuid>.bundle           immutable Git bundle, exactly one ref, one shape
   files/<org>/<sha256>.tar                           reserved: digest-addressed file collection
   snapshots/…                                        reserved: Workspace Snapshot (not this design)
 ```
 
-- `urlHash` is the SHA-256 of the canonical remote URL: lower-cased host,
-  credentials, query and fragment stripped, trailing `.git` removed, standard SSH
-  spellings rewritten to their HTTPS authority. The cache identifies a repository
-  by URL only; anti-replacement is an admission and resolution concern (section 5).
+- `class` is the **access class** of the clone that wrote the entry, and a
+  reader only ever takes entries of its own class:
+  - `anon`, with `repo` the SHA-256 of the canonical remote URL (lower-cased
+    host, credentials, query and fragment stripped, trailing `.git` removed,
+    standard SSH spellings rewritten to their HTTPS authority). Written only from
+    a clone that fetched with no credential, so an entry holds nothing an
+    anonymous fetch of that URL could not return.
+  - `cred`, with `repo` the provider-qualified numeric id (`github:<repoId>`,
+    `gitlab:<projectId>`) of the Source's `CodeHostRepository`. Written only from
+    a credentialed clone, and readable only after `resolveRef` succeeded on the
+    daemon for the reading agent (section 5).
+- An anonymous declaration of a private URL therefore never sees a credentialed
+  agent's bundle: the two live under different classes and different
+  identities. A hostile credentialed pod can write into the `anon` entry of its
+  own URL, but only content its own agent can read, and a reader cannot be
+  harmed by it (section 6). Anti-replacement stays an admission and resolution
+  concern (section 5).
 - `refHash` is the SHA-256 of the full ref name (`refs/heads/main`). A pointer per
   (repository, ref) matches the single-branch clone: two agents on different
   branches of one repository, or a skill tracking `release` beside a workspace on
@@ -134,7 +147,8 @@ One bucket (or one prefix of a bucket) per install:
   checkout, which is the blobless clone's behavior today.
 - Every key is **org-scoped**. A popular public repository is stored once per
   org. That duplication buys a blast radius confined to one org and removes any
-  "is this repository public" branch from the key.
+  "is this repository public" judgment from the key: the class records how the
+  entry was fetched, not what anyone believes about the repository.
 - Bundles are **immutable** and never overwritten; only `latest` moves.
 - Source Cache lifecycle rules and access policy apply to `src/` (and later
   `files/`) only. Nothing in this design may match `snapshots/`.
@@ -142,9 +156,10 @@ One bucket (or one prefix of a bucket) per install:
 ## 5. Source resolution
 
 Source resolution turns a Source's ref into the exact commit to use, with the
-requesting agent's own access, and a success is the authorization to read that
-Source's cache entries. A cache hit is never served without it. It touches only
-metadata.
+requesting agent's own access. For a credentialed Source a success is the
+authorization to read that Source's `cred` entries, and no `cred` GET is issued
+without it. An `anon` entry needs no authorization by construction (section 4).
+Resolution touches only metadata.
 
 A Source's identity follows the workspace model
 ([git-workspace-model.md](git-workspace-model.md) §2–§3): a full cloneable
@@ -170,11 +185,16 @@ today.
 
 Result caching:
 
-- **Anonymous Source:** shared across agents for 60 s, as `GitSkillRefTracker`
-  does today. Anonymous content needs no proof of access.
-- **Credentialed Source:** keyed by (agent, Source, ref) for 60 s. Revoked
-  upstream access therefore stops cache reads within 60 s, the same order as
-  today's tracker TTL.
+- **Only trusted results are shared.** A result the daemon computed itself —
+  `resolveRef`, or the anonymous REST check for a github.com address — may be
+  cached for 60 s, as `GitSkillRefTracker` does today: across agents for an
+  anonymous github.com Source, and per (agent, Source, ref) for a credentialed
+  one, so revoked upstream access stops `cred` reads within 60 s.
+- **A pod's `ls-remote` answer is never shared.** It is used only by the
+  preparation of the pod that produced it and is not cached, not coalesced with
+  another pod's in-flight resolution, and never becomes another agent's planned
+  commit. An untrusted pod can mislead only its own agent, which the known
+  boundary (section 6.1) already allows.
 
 On failure:
 
@@ -231,6 +251,7 @@ operation this design adds is placed against that rule:
 | ---------------------------------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Workspace clone with `--bundle-uri`                                                      | Shim `exec`                               | `clone` is admitted. New per-subcommand rule: `--bundle-uri` is accepted only with an `https://` value, so the flag cannot read pod-local or cluster-internal files                                                                                                                                                                                                   |
 | Workspace retry without the bundle                                                       | Shim `exec`                               | None: the same admitted `clone`                                                                                                                                                                                                                                                                                                                                       |
+| Removing `refs/bundles/*` after a clone                                                  | Shim `exec`                               | None: `update-ref -d` is admitted                                                                                                                                                                                                                                                                                                                                     |
 | Workspace write-back bundle                                                              | Shim `exec`                               | Narrow widening: `bundle` is admitted only as `bundle create <file> --filter=blob:none <ref>` (or without the filter for the `full` shape), with `<file>` inside the shim's staging root and `GIT_NO_LAZY_FETCH=1`; `unbundle`, `verify` and `list-heads` stay refused                                                                                                |
 | Anonymous resolution                                                                     | Shim `exec`                               | None: `ls-remote` is admitted                                                                                                                                                                                                                                                                                                                                         |
 | Skill acquisition: clone, fetch, subdirectory checkout, `fsck`, retry, write-back bundle | Shim-internal, inside the skill reconcile | Not the exec channel. The shim spawns Git itself with argv it composes from validated plan fields (origin policy on the URL, ref / SHA / subdirectory syntax), under the same refused-argument rules as `exec`, in a private staging directory; nothing the daemon sends is passed as free argv, and the runtime cannot invoke the operation. `fsck` exists only here |
@@ -262,7 +283,11 @@ its shape: a session root stays blobless, the agent pod's primary stays full.
    clone instruction gains `--bundle-uri=<presigned GET of the bundle>`.
 2. The pod clones; Git downloads the bundle, fetches the remainder from the
    origin with the usual `gitcred` credential, and checks out the branch head the
-   origin reports.
+   origin reports. A bundle's own refs land under `refs/bundles/*` and never
+   reach the checkout (verified: a foreign bundle advertising a different
+   `main` leaves `refs/heads/main` and `origin/main` at the origin's commit), and
+   the shim deletes them with `update-ref -d` right after the clone so no
+   bundle-supplied commit stays reachable by name in the workspace.
 3. **Retry contract.** If the bundled clone fails at any step — download,
    unbundle, fetch, connectivity, or checkout — the shim empties the checkout
    directory (object database included) and runs the same clone once without
@@ -280,9 +305,11 @@ A resumed pod whose volume already holds the checkout is untouched: it pulls as
 today and uses no cache.
 
 Workspace resolution: the workspace keeps using the origin as its authority for
-the branch head. When a GET URL is issued for a private repository, the daemon
-first performs Source resolution (section 5), which adds one metadata round trip
-to a workspace preparation that hits the cache.
+the branch head. The GET URL's class follows the workspace's own
+`credential?`: an anonymous workspace reads only `anon`; a credentialed one reads
+only `cred`, and the daemon first performs `resolveRef` for that agent (section
+5), which adds one metadata round trip to a credentialed preparation that hits
+the cache. Write-back lands in the class the clone was fetched under.
 
 ## 8. Skill flow
 
@@ -291,8 +318,12 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
 1. Every Git skill Source is resolved (section 5), concurrently: credentialed
    ones on the daemon, anonymous ones by `ls-remote` in this pod. The daemon then
    sends the shim one reconcile plan: for each Git Source its URL, ref, planned
-   commit, subdirectory, selections, and a GET URL when a pointer exists; managed
-   and Dream sources are uploaded exactly as today.
+   commit, subdirectory, selections, and a GET URL when a pointer of the
+   Source's own access class exists (section 4); managed and Dream sources are
+   uploaded exactly as today. The planned commit is always either a trusted
+   daemon result or this pod's own `ls-remote` answer (section 5), never a value
+   another pod supplied; a bundle supplies objects, never the commit, so a bundle
+   that already contains the planned commit needs no further ref check.
 2. The daemon opens a **credential window** on the pod's `gitcred` for this
    reconcile: a token for an enabled private skill repository (`contents:read`,
    that repository only) is minted only while the window is open. On an isolated
@@ -338,7 +369,9 @@ finishes, and a failure is a log line and a metric.
    made, of that clone's shape (section 6.1), never from a shallow repository.
 2. **Reserve before signing.** In one transaction the daemon checks the
    per-bundle cap and inserts a `pending` row for a fresh
-   `bundles/<uuid>.bundle` carrying the declared size and an expiry (the PUT
+   `bundles/<uuid>.bundle` under the access class of the clone the daemon itself
+   instructed — never one the pod names: an anonymous clone instruction carries
+   no credential helper, so its bundle can only land in `anon` — carrying the declared size and an expiry (the PUT
    lifetime plus a grace, default 1 h), admitted only if the org's committed
    bytes plus every unexpired `pending` reservation plus this one stay within the
    quota (section 10). The org's usage row is locked for the check, so two pool
@@ -369,8 +402,9 @@ lost is collected too. No object reaches the bucket without either a row or a
 
 The GET URL passed to `git clone` is visible to other processes in a shared pod
 through `/proc/<pid>/cmdline`. It reads one bundle for a few minutes and is only
-issued after the agent's own resolution proved access, so this exposes nothing
-the agent could not already read.
+either an `anon` entry, whose content any anonymous fetch of that URL returns,
+or a `cred` entry issued only after the agent's own `resolveRef` proved access,
+so this exposes nothing the agent could not already read.
 
 ## 10. Capacity and eviction
 
