@@ -208,7 +208,7 @@ describe('repository grant persistence (re-attestation)', () => {
     expect(await revisionOf(agentId)).toBeGreaterThan(r1)
   })
 
-  it('raising a stale grant with an attestation honors it again under the raiser and advances the revision', async () => {
+  it('an attested raise of a stale grant honors it again under the raiser, reports the restore and advances the revision', async () => {
     const agentId = await scratchAgent()
     const id = await grantRow(agentId)
     const repo = new PgAgentRepoAuthorizationRepo(prisma)
@@ -216,11 +216,57 @@ describe('repository grant persistence (re-attestation)', () => {
     const before = await revisionOf(agentId)
     const at = new Date('2026-09-03T00:00:00Z')
 
-    const raised = await repo.updateAccess(id, 'write', { userId: DEFAULT_OWNER_ID, at })
+    const raised = await repo.raiseAttested(id, 'write', { userId: DEFAULT_OWNER_ID, at })
 
-    expect(raised).toMatchObject({ access: 'write', stale: null, attestedByUserId: DEFAULT_OWNER_ID })
+    expect(raised?.restored).toBe(true)
+    expect(raised?.row).toMatchObject({ access: 'write', stale: null, attestedByUserId: DEFAULT_OWNER_ID })
     expect((await prisma.agentRepoAuthorization.findUniqueOrThrow({ where: { id } })).attestationCheckedAt).toEqual(at)
     expect(await revisionOf(agentId)).toBeGreaterThan(before)
+  })
+
+  it('an attested raise of an honored grant restores nothing and leaves the revision alone', async () => {
+    const agentId = await scratchAgent()
+    const id = await grantRow(agentId)
+    const repo = new PgAgentRepoAuthorizationRepo(prisma)
+    const before = await revisionOf(agentId)
+
+    const raised = await repo.raiseAttested(id, 'write', { userId: DEFAULT_OWNER_ID, at: new Date(0) })
+
+    expect(raised).toMatchObject({ restored: false, row: { access: 'write', stale: null } })
+    expect(await revisionOf(agentId)).toBe(before)
+  })
+
+  it('a suspension committing while the raise waits on the row lock is seen, so the restore still advances the revision', async () => {
+    const agentId = await scratchAgent()
+    const id = await grantRow(agentId)
+    const repo = new PgAgentRepoAuthorizationRepo(prisma)
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    let locked!: () => void
+    const lockTaken = new Promise<void>((resolve) => (locked = resolve))
+    // The sweep's side: lock the grant, mark it stale and advance the revision, then hold the lock.
+    const suspending = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "agent_repo_authorization" WHERE id = ${id}::uuid FOR UPDATE`
+      await tx.agentRepoAuthorization.update({
+        where: { id },
+        data: { staleSince: new Date(0), staleReason: 'access_lost' }
+      })
+      await tx.agent.update({ where: { id: agentId }, data: { configRevision: { increment: 1 } } })
+      locked()
+      await held
+    })
+    await lockTaken
+    const suspendedRevision = (await revisionOf(agentId)) + 1n
+
+    const raising = repo.raiseAttested(id, 'write', { userId: DEFAULT_OWNER_ID, at: new Date(0) })
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    release()
+    await suspending
+    const raised = await raising
+
+    expect(raised?.restored).toBe(true)
+    expect(raised?.row.stale).toBeNull()
+    expect(await revisionOf(agentId)).toBeGreaterThan(suspendedRevision)
   })
 })
 

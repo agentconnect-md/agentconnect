@@ -165,6 +165,8 @@ export interface CodeHostRepoAuthorizationContext {
   access: RepoAccess
   /** The route's shared grant projection, so both arms answer one body shape. */
   toDto(row: AgentRepoAuthorizationRecord): AgentRepoAuthDtoT
+  /** Report that the committed write changed what the agent's spec projects, so the route re-pushes it. */
+  specChanged(): void
 }
 
 /** §17.3/§24.4 feature negotiation for values this host shapes. */

@@ -138,23 +138,25 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
   }
 
   // Raise-only at the write: the tier condition is re-read after a concurrent raise commits, so a stale request is a no-op.
-  async updateAccess(
+  async updateAccess(id: string, access: RepoAccess): Promise<AgentRepoAuthorizationRecord | null> {
+    await this.db.agentRepoAuthorization.updateMany({
+      where: { id, access: { in: RAISABLE_FROM[access] } },
+      data: { access }
+    })
+    return this.get(id)
+  }
+
+  async raiseAttested(
     id: string,
     access: RepoAccess,
-    attestation?: { userId: string; at: Date }
-  ): Promise<AgentRepoAuthorizationRecord | null> {
-    if (!attestation) {
-      await this.db.agentRepoAuthorization.updateMany({
-        where: { id, access: { in: RAISABLE_FROM[access] } },
-        data: { access }
-      })
-      return this.get(id)
-    }
+    attestation: { userId: string; at: Date }
+  ): Promise<{ row: AgentRepoAuthorizationRecord; restored: boolean } | null> {
     return this.transaction(async (tx) => {
-      const before = await tx.agentRepoAuthorization.findUnique({
-        where: { id },
-        select: { agentId: true, staleSince: true }
-      })
+      // Lock before reading the suspension, so a concurrent verdict either lands first and is seen, or waits for this write.
+      const [before] = await tx.$queryRaw<{ agentId: string; staleSince: Date | null }[]>(Prisma.sql`
+        SELECT "agentId", "staleSince" FROM "agent_repo_authorization" WHERE id = ${id}::uuid FOR UPDATE
+      `)
+      if (!before) return null
       // The raiser vouched for the new tier, which covers every lower one, so a stale grant is honored again.
       const raised = await tx.agentRepoAuthorization.updateMany({
         where: { id, access: { in: RAISABLE_FROM[access] } },
@@ -167,9 +169,10 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
         }
       })
       // Staleness is projected (a stale grant leaves the spec), so honoring it again advances the revision.
-      if (raised.count > 0 && before?.staleSince) await bumpAgentConfigRevisions(tx, [before.agentId])
+      const restored = raised.count > 0 && before.staleSince !== null
+      if (restored) await bumpAgentConfigRevisions(tx, [before.agentId])
       const row = await tx.agentRepoAuthorization.findUnique({ where: { id }, include: withCreator })
-      return row ? toRecord(row) : null
+      return row ? { row: toRecord(row), restored } : null
     })
   }
 

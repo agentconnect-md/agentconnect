@@ -600,12 +600,14 @@ export function agentRepoRoutes(deps: HttpDeps) {
             agent,
             row,
             access: req.body.access,
-            toDto
+            toDto,
+            // Follows the committed write, never the pre-check snapshot a concurrent suspension can outdate.
+            specChanged: () => {
+              reproject = true
+            }
           })
           if (!upgraded) return
           dto = upgraded
-          // The raiser's attestation honors a stale grant again, which returns it to the spec.
-          reproject = Boolean(row.stale) && !upgraded.stale
         }
         // Materialization is projected onto the spec, so the repo bumps the revision and the agent is re-pushed.
         if (req.body.materialize !== undefined && req.body.materialize !== row.materialize) {

@@ -110,6 +110,7 @@ function repoAuthWith(
     listForRepository: unused,
     get: unused,
     updateAccess: unused,
+    raiseAttested: unused,
     updateMaterialize: unused,
     updateFullName: unused,
     remove: unused,

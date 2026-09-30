@@ -4490,12 +4490,14 @@ export interface AgentRepoAuthorizationRepo {
   listForAgent(agentId: AgentId): Promise<AgentRepoAuthorizationRecord[]>
   /** Every grant in the organization over one numeric repository — who still consumes a binding (gitea-integration.md §6). */
   listForRepository(orgId: OrgId, provider: CodeHostProvider, repoId: bigint): Promise<AgentRepoAuthorizationRecord[]>
-  /** Raise a grant's tier; with `attestation` the caller becomes the attester and a stale grant is honored again. */
-  updateAccess(
+  /** Raise a grant's capability tier after the caller's GitHub access is re-checked; a tier at or above `access` is left as is. */
+  updateAccess(id: string, access: RepoAccess): Promise<AgentRepoAuthorizationRecord | null>
+  /** Raise a grant under an attestation: the caller becomes the attester, and `restored` says this write honored a stale grant again. */
+  raiseAttested(
     id: string,
     access: RepoAccess,
-    attestation?: { userId: string; at: Date }
-  ): Promise<AgentRepoAuthorizationRecord | null>
+    attestation: { userId: string; at: Date }
+  ): Promise<{ row: AgentRepoAuthorizationRecord; restored: boolean } | null>
   /** Take the grant whose last re-attestation is oldest and before `checkedBefore`, stamping it checked at `now`. */
   claimDueForReattestation(
     provider: CodeHostProvider,

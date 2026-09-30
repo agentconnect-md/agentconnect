@@ -167,7 +167,7 @@ export const githubCodeHostProvider: CodeHostProviderModule = {
   },
 
   /** Raising the tier re-checks the CALLER's own GitHub permission on the repository. */
-  async upgradeRepoAuthorization({ deps, req, reply, orgId, agent, row, access, toDto }) {
+  async upgradeRepoAuthorization({ deps, req, reply, orgId, agent, row, access, toDto, specChanged }) {
     const [owner, repo] = row.repoFullName.split('/')
     const installation = owner ? await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, owner) : null
     if (!owner || !repo || !installation || installation.suspendedAt) {
@@ -189,13 +189,18 @@ export const githubCodeHostProvider: CodeHostProviderModule = {
         )
       }
       // The raiser vouched for the new tier, so re-attestation re-checks them from here on.
-      const updated = await deps.repos.agentRepoAuth.updateAccess(
-        row.id,
-        access,
-        deps.githubUserAuthz && req.principal
-          ? { userId: req.principal.userId, at: new Date(deps.clock.now()) }
-          : undefined
-      )
+      let updated
+      if (deps.githubUserAuthz && req.principal) {
+        const raised = await deps.repos.agentRepoAuth.raiseAttested(row.id, access, {
+          userId: req.principal.userId,
+          at: new Date(deps.clock.now())
+        })
+        // Only the write itself knows whether it honored a stale grant again, which returns it to the spec.
+        if (raised?.restored) specChanged()
+        updated = raised?.row ?? null
+      } else {
+        updated = await deps.repos.agentRepoAuth.updateAccess(row.id, access)
+      }
       if (!updated) {
         void reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
         return undefined
