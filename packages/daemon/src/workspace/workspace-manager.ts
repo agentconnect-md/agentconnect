@@ -50,6 +50,7 @@ import {
   workspaceGitRemoteTarget,
   writeRepoHelperConfig,
   GITHUB_CREDENTIAL_SCOPE,
+  SESSION_CLONE_FILTER,
   managedCredentialScope,
   originOnManagedHost,
   scopeCodeHosts,
@@ -2155,19 +2156,26 @@ export class WorkspaceManager {
     const headRef = reviewHeadRefFor(worktreeId)
     const mergeRef = `${refRoot}/merge`
     if (root.githubApp) await preWarmGitCred(agentId, 'pull', additionalRepositoryOf(root))
-    const pullTarget = workspaceGitRemoteTarget(root.cloneUrl, root.githubApp ? agentId : undefined, root.managed)
+    const pullTarget = workspaceGitRemoteTarget(root.cloneUrl, root.githubApp ? agentId : undefined, root.managed, {
+      blobless
+    })
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), REVIEW_FETCH_TIMEOUT_MS)
     try {
       // Without this a blobless clone's review fetch dies in `unpack-objects` ("could not fetch <oid>
       // from promisor remote"), and every review in a confined session degrades to revision-only.
       const fetchEnv = blobless ? { ...pullTarget.env, GIT_NO_LAZY_FETCH: '0' } : pullTarget.env
-      const git = this.runnerFor(agentId, root.path, abort.signal).withEnv(fetchEnv)
-      await git.raw([
+      // Unfiltered, the server sends the changed blobs as deltas against bases the clone filtered out, and Git lazily fetches those one at a time, one round trip per changed file, which is what pushed a large review past its timeout; filtered, the fetch is one round trip and the checkout batches the blobs.
+      const fetchArgs = [
         'fetch',
         '--force',
         '--no-tags',
         '--no-recurse-submodules',
+        ...(blobless ? [`--filter=${SESSION_CLONE_FILTER}`] : [])
+      ]
+      const git = this.runnerFor(agentId, root.path, abort.signal).withEnv(fetchEnv)
+      await git.raw([
+        ...fetchArgs,
         pullTarget.remote,
         `+${base}:${baseRef}`,
         `+refs/pull/${review.pullNumber}/head:${headRef}`
@@ -2184,14 +2192,7 @@ export class WorkspaceManager {
       // both parents are the exact base/head pair carried by the hook.
       await git.raw(['update-ref', '-d', mergeRef]).catch(() => undefined)
       try {
-        await git.raw([
-          'fetch',
-          '--force',
-          '--no-tags',
-          '--no-recurse-submodules',
-          pullTarget.remote,
-          `+refs/pull/${review.pullNumber}/merge:${mergeRef}`
-        ])
+        await git.raw([...fetchArgs, pullTarget.remote, `+refs/pull/${review.pullNumber}/merge:${mergeRef}`])
         const merge = (await this.revParse(agentId, root.path, mergeRef)).toLowerCase()
         const expectedMerge = review.mergeCommitSha ? this.exactObjectId(review.mergeCommitSha, 'merge SHA') : undefined
         const parents = (
@@ -2703,7 +2704,13 @@ export class WorkspaceManager {
     // Run in the target's parent, which names the pod that owns it: a runner with no cwd is the agent pod's.
     const git = this.runnerFor(agentId, dirname(cwd)).withEnv(this.sessionCloneGitEnv(agentId, root, cwd))
     await withStartupPhase('clone', () =>
-      git.clone(root.cloneUrl, cwd, ['--filter=blob:none', '--no-checkout', '--branch', root.branch, '--single-branch'])
+      git.clone(root.cloneUrl, cwd, [
+        `--filter=${SESSION_CLONE_FILTER}`,
+        '--no-checkout',
+        '--branch',
+        root.branch,
+        '--single-branch'
+      ])
     )
     if (root.githubApp) await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId, root.managed)
   }

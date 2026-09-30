@@ -654,6 +654,20 @@ describe('workspaceGitRemoteTarget', () => {
     expect(target.env[GITCRED_AGENT_ENV]).toBe('agent-1')
   })
 
+  it('declares the remote a promisor with the session clone filter only when asked to', () => {
+    const blobless = workspaceGitRemoteTarget('https://github.com/acme/repo.git', 'agent-1', undefined, {
+      blobless: true
+    })
+    expect(configPairs(blobless.env)).toEqual(
+      expect.arrayContaining([
+        [`remote.${blobless.remote}.promisor`, 'true'],
+        [`remote.${blobless.remote}.partialclonefilter`, 'blob:none']
+      ])
+    )
+    const full = workspaceGitRemoteTarget('https://github.com/acme/repo.git', 'agent-1')
+    expect(configPairs(full.env).some(([key]) => key?.endsWith('.promisor'))).toBe(false)
+  })
+
   it('omits the helper entirely for a workspace the daemon issues no credentials for', () => {
     const target = workspaceGitRemoteTarget('ssh://git@github.com/acme/repo.git')
     const pairs = configPairs(target.env)

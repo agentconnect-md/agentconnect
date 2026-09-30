@@ -163,6 +163,8 @@ export function gitEnvBase(): Record<string, string> {
 
 const WORKSPACE_GIT_PROXY_ENV = /^(?:all|ftp|http|https|no)_proxy$/i
 const EMPTY_GIT_CONFIG = process.platform === 'win32' ? 'NUL' : '/dev/null'
+/** The partial-clone filter of a session clone (§11): whole history, file contents on demand. */
+export const SESSION_CLONE_FILTER = 'blob:none'
 const WORKSPACE_SSH_COMMAND =
   'ssh -F none -o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ClearAllForwardings=yes'
 const WORKSPACE_GIT_CONTROLLED_ENV = new Set([
@@ -264,11 +266,17 @@ export function workspaceGitEnvBase(repository?: string): Record<string, string>
  * One function for both directions so the two cannot drift apart again. `credentialAgentId` is
  * omitted for a workspace with no github-app credential, which then reaches the remote on whatever
  * ambient (ssh) auth the host provides.
+ *
+ * `blobless` marks the remote a promisor with the session clone's own filter, at command scope. A
+ * filtered fetch from a remote Git does not already know as a promisor writes that mark into the
+ * checkout's config, and the URL is never written, so every review would leave one more URL-less
+ * remote behind; declared up front, nothing is persisted.
  */
 export function workspaceGitRemoteTarget(
   repository: string,
   credentialAgentId?: string,
-  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE,
+  { blobless = false }: { blobless?: boolean } = {}
 ): { remote: string; env: Record<string, string> } {
   const normalized = normalizeGitCloneUrl(repository)
   const remote = `agentconnect-${randomUUID()}`
@@ -277,7 +285,13 @@ export function workspaceGitRemoteTarget(
     ...(credentialAgentId ? credentialConfigPairs(credentialAgentId, scope) : []),
     // Never an empty value first: Git reads it as the first fetch URL and fails before the authorized target.
     [`remote.${remote}.url`, normalized] as const,
-    [`remote.${remote}.proxy`, ''] as const
+    [`remote.${remote}.proxy`, ''] as const,
+    ...(blobless
+      ? [
+          [`remote.${remote}.promisor`, 'true'] as const,
+          [`remote.${remote}.partialclonefilter`, SESSION_CLONE_FILTER] as const
+        ]
+      : [])
   ]
   const env = workspaceGitProcessEnv()
   env.GIT_ALLOW_PROTOCOL = 'https:ssh'

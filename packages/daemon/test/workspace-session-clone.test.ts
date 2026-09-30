@@ -892,6 +892,12 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     )
     expect(inClone.length).toBeGreaterThan(0)
     for (const run of inClone) expect(run.env.GIT_NO_LAZY_FETCH).toBe('0')
+    // The fetch itself is filtered like the clone: unfiltered, the changed blobs arrive as deltas against
+    // bases the clone never had and are lazily fetched one round trip per changed file.
+    for (const run of inClone) expect(run.args).toContain('--filter=blob:none')
+    // A filtered fetch from a remote Git did not know as a promisor writes that mark into the checkout's
+    // config; declared at command scope, no daemon-named remote is left behind, review after review.
+    expect(readFileSync(join(cwd, '.git', 'config'), 'utf8')).not.toMatch(/\[remote "agentconnect-/)
     // Retirement is the other side of the rule: it judges the clone with no network target at all.
     gitRuns.length = 0
     await workspaces.removeSessionWorktree(agent, KEY)
