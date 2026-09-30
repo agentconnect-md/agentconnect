@@ -167,9 +167,11 @@ not yet satisfy this section; increasing `replicas` alone is insufficient.
 A relay reconnect replays MCP bindings, hook rules and memory bindings as
 snapshots: the relay keeps serving its tables during the replay and, at the
 end, drops what the replay no longer names unless the CP withheld it after
-failing to produce it. MCP bindings and hook rules still lack per-resource
-revisions, so a stale replayed assign can revive an entry removed during that
-replay. Relay readiness follows its CP link. Daemon turn-path requests wait up to 10 seconds for a replacement link,
+failing to produce it. The CP holds live changes to a projection for a relay
+until that relay's replay of it ends, so a stale replayed assign cannot revive
+an entry removed during the replay. That ordering holds only within one CP:
+MCP bindings and hook rules still lack the per-resource revisions that
+multiple CPs need. Relay readiness follows its CP link. Daemon turn-path requests wait up to 10 seconds for a replacement link,
 only within 30 seconds of a READY link dropping; idempotent reads are re-sent
 once over the new link, and so are memory transactions and `memory/store`
 writes, which a CP advertising `agent-memory-store-operation-id-v1` applies at
