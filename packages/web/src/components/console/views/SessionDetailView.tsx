@@ -79,6 +79,7 @@ import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
+import { SharedFileChip } from '@/components/console/SharedFileChip'
 import { platformSenderFallback } from '../platforms/registry'
 import { McpAppCard, type McpAppCardProps } from '@/components/console/McpAppCard'
 import { UserTurnDetails } from '../UserTurnDetails'
@@ -102,6 +103,7 @@ import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
+import { sharedFileMarker, type SharedFile } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -557,6 +559,7 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
       ...(platform ? { platform } : {})
     }
   }
+  const shared = k === 'text' ? sharedFileMarker(m.text) : null
   return {
     lane: '',
     laneColor: 'var(--text-tertiary)',
@@ -564,11 +567,13 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
     weight: 400,
     textColor: 'var(--text-primary)',
     codeColor: 'var(--text-secondary)',
-    text: m.text,
+    text: shared ? shared.caption : m.text,
     code: '',
     files: [],
     time: formatTranscriptRowTime(m),
-    ...(platform ? { platform } : {})
+    ...(platform ? { platform } : {}),
+    // The download names the session that shared the file, which in a merged conversation is the row's source.
+    ...(shared ? { file: shared.file, ...(toolSessionId ? { toolSessionId } : {}) } : {})
   }
 }
 
@@ -593,6 +598,8 @@ interface FmtStep {
   demoted?: boolean
   // A peer participant's message attachment (rendered like the user bubble's).
   image?: SessionImage
+  // A file the agent shared, parsed off the row's trailing marker and rendered as a download chip.
+  file?: SharedFile
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
   // Conversation rows keep their owning session out-of-band so full-body reads
@@ -5550,6 +5557,15 @@ export default function SessionDetailView() {
                                         {st.text && (
                                           <div className="whitespace-pre-wrap">
                                             <MessageText text={st.text} platform={st.platform} />
+                                          </div>
+                                        )}
+                                        {st.file && (
+                                          <div className={st.text ? 'mt-2' : ''}>
+                                            <SharedFileChip
+                                              file={st.file}
+                                              agentId={turn.agentId}
+                                              sessionId={st.toolSessionId ?? toolSid}
+                                            />
                                           </div>
                                         )}
                                         <StepExtras step={st} sessionId={toolSid} />

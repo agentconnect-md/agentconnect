@@ -2,7 +2,8 @@
 
 **Status:** Draft — not implemented as designed. Platform files reach `uploads/` only when
 the agent saves one through a read tool (#2104), not at prompt build (§8 phase 1); the
-web-console upload (phases 2–3) is not built.
+web-console upload (phases 2–3) is not built. Console download-back (§5.1) is built: the
+console offers it on agent-shared files, and uploads gain it with phase 1's saved path.
 
 Users can already hand an agent an image: webchat uploads one (re-encoded to WebP,
 ≤ 160 KB), and every chat platform's inbound images reach the agent's prompt as ACP
@@ -231,9 +232,48 @@ A file attachment's transcript row stores **metadata only** — name, MIME type,
 digest, saved path — never bytes. The 160 KB image copy remains the only content the
 transcript retains, so transcript growth and the console history DTO stay bounded. The
 console renders a file chip (name, type, size) beside the message; there is nothing to
-preview and, in phase 1, nothing to download back — the Workspace file browser can already
-navigate to `uploads/` for text, and byte download-back is deferred. The CP continues to
-proxy without persisting; nothing new touches it beyond the DTO carrying the metadata row.
+preview, and the bytes come back through §5.1. The CP continues to proxy without
+persisting; nothing new touches it beyond the DTO carrying the metadata row.
+
+### 5.1 Download-back
+
+A session file's original bytes come back through
+`GET /agents/:id/workspace/file/download?sessionId=…&path=…[&sha256=…]`, a byte mode of the
+same bounded workspace read the file viewer already uses:
+
+- **What it serves.** A file under `uploads/` at the session's working root, or a file the
+  agent shared (agent-authored-attachments.md §4) named together with the digest prefix
+  its `[shared: …]` marker recorded. The bytes must still match that digest: a file
+  rewritten since it was shared is refused (409) rather than passed off as the original.
+  The root is the one the daemon landed or shared the file in — the session's isolated
+  worktree, or the agent's checkout when the session shares it.
+- **Who may read it.** The workspace read's gate plus the session's own: the agent must be
+  visible to the caller and the session must pass its visibility rule, so a private
+  session's files are as absent as its transcript.
+- **How the bytes travel.** `workspace/read` gains `encoding: 'base64'`, a raw slice of at
+  most 64 KiB with no binary sniff and no UTF-8 cut, served by the same two
+  implementations as the text read (the daemon's path-based one and the sandbox's
+  fd-anchored one). Containment, the `.git` rule and symlink refusal are therefore the
+  text read's, unchanged. The CP pulls the slices in order, proves they describe one
+  unchanged file (fixed size and mtime, contiguous offsets, canonical base64), and answers
+  with a content type (anything a browser could execute stays `application/octet-stream`),
+  an attachment `Content-Disposition`, `nosniff` and a sandboxing CSP. It holds one file
+  in memory for the length of the request and stores nothing.
+- **Bound.** `MAX_WORKSPACE_DOWNLOAD_BYTES` (8 MiB, the default `maxAttachmentBytes`). A
+  larger file is refused with 413 after its first slice; a streamed download above the cap
+  stays deferred with the materialization cap it would serve (§7).
+- **Version skew.** A daemon without `workspace-file-download-v1` is refused with 409
+  before any frame is sent. A sandbox whose shim predates byte reads drops the new field
+  and answers text or nothing; the daemon refuses that as `sandbox-outdated` (409) instead
+  of forwarding it as the file's bytes.
+
+The console hangs the download on the agent's share marker: a transcript row ending in
+`[shared: path (type, N bytes, sha256:…)]` renders its caption as the message and the
+marker as a chip (name, size) that downloads by path and digest, and says why when the
+server refuses. An upload has no such marker yet. Until prompt-build materialization (§8
+phase 1) writes the saved path into the `[attached: …]` entry (§3), the only record of
+where an upload landed is the read tool's own result, so the route serves `uploads/` to
+API callers while the console has no marker to put a chip on.
 
 `sendMessage`'s cross-conversation forwarding contract is **unchanged**: it resolves only
 the retained ≤ 160 KB transcript image copies. A file's marker names it, but forwarding
@@ -261,7 +301,6 @@ materialization exists — the link rung only fires on over-cap files and write 
 - **Materialization above `maxAttachmentBytes`** — streaming to disk unlocks a higher cap
   than prompt embedding could afford; wants its own knob and its own look at download
   streaming (today's downloads buffer whole).
-- **Console download-back** of an uploaded or agent-produced file.
 - **Forwarding non-image files** across conversations (`sendMessage` stays images-only).
 - **A2A attachments** — collaboration context frames carry markers only.
 - **Peer materialization on demand** — a roster member asked about a file it only saw the

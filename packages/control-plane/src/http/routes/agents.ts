@@ -59,6 +59,7 @@ import {
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
+  WORKSPACE_FILE_DOWNLOAD_FEATURE,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
@@ -173,6 +174,8 @@ import {
   WorkspaceFilesDto,
   WorkspaceFileQueryDto,
   WorkspaceFileDto,
+  WorkspaceDownloadQueryDto,
+  WorkspaceDownloadBody,
   PutWorkspaceFileQueryDto,
   PutWorkspaceFileBody,
   WorkspaceFileWriteDto,
@@ -252,6 +255,15 @@ import {
   type DreamFilesDtoT,
   type DreamFileDtoT
 } from '../dto/index.js'
+import {
+  assembleWorkspaceFile,
+  attachmentDisposition,
+  downloadContentType,
+  DOWNLOAD_SLICE_BYTES,
+  sessionFileDownloadable,
+  sha256Matches,
+  WorkspaceDownloadRefusal
+} from '../workspace-download.js'
 import { provisionDaemonConnect } from '../onboarding.js'
 import { Tag } from '../plugins/openapi.js'
 import { buildAgentMoves } from '../agent-moves.js'
@@ -554,7 +566,8 @@ export function toWorkspaceFileDto(rep: WorkspaceReadContent): WorkspaceFileDtoT
     type: rep.type ?? null,
     size: rep.size ?? null,
     mtime: rep.mtime ?? null,
-    encoding: rep.encoding ?? null,
+    // Only a download asks for bytes, so a text read never carries `base64`.
+    encoding: rep.encoding === 'base64' ? null : (rep.encoding ?? null),
     content: rep.content ?? null,
     offset: rep.offset ?? null,
     nextOffset: rep.nextOffset ?? null,
@@ -836,6 +849,8 @@ export function workspaceFailure(
         return { status: 404, error: 'Not Found', message: 'workspace not found', code }
       }
       if (code === SANDBOX_REMOVED_CODE) return { status: 404, error: 'Not Found', message: err.message, code }
+      // Version skew in the sandbox, like a daemon missing a feature: nothing about the request was wrong.
+      if (code === 'WORKSPACE_SANDBOX_OUTDATED') return { status: 409, error: 'Conflict', message: err.message, code }
       // Ahead of the 400: the daemon reports it as a refused request (it carries a reason), but
       // nothing about the request was wrong, and a 400 tells a console to stop retrying.
       if (code === SANDBOX_UNAVAILABLE) {
@@ -3760,6 +3775,92 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toWorkspaceFileDto(rep)
         } catch (err) {
+          if (sendWorkspaceFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Session file download: an upload or a shared file's bytes, assembled from daemon byte slices and never stored.
+    r.get(
+      '/agents/:id/workspace/file/download',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Download a session file',
+          description:
+            'Return the original bytes of one file from a session’s working root — its isolated worktree, or the agent’s checkout when the session shares it — as an attachment. The file must sit under uploads/ (where inbound attachments land), or be named together with sha256, the digest prefix a shared file’s transcript marker records; the bytes must still match that digest (409 WORKSPACE_FILE_CHANGED otherwise). The agent and the session must both be visible to the caller (404 otherwise). The control plane assembles the file from bounded byte slices it proxies live from the owning daemon and stores none of it; a file over the download ceiling is refused with 413 WORKSPACE_FILE_TOO_LARGE. 409 when the daemon or the agent’s sandbox is too old to serve bytes, 503 when the agent is unplaced or its daemon is offline.',
+          operationId: 'downloadAgentSessionFile',
+          params: IdParam,
+          querystring: WorkspaceDownloadQueryDto,
+          response: {
+            200: WorkspaceDownloadBody,
+            400: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            413: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getServingAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const session = await visibleAgentSession(req, agent.id, req.query.sessionId)
+        if (!session) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        if (!sessionFileDownloadable(req.query.path, req.query.sha256)) {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'only a file under uploads/, or a shared file named by its sha256, can be downloaded',
+            code: 'WORKSPACE_NOT_A_SESSION_FILE'
+          })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        const daemonId = agent.daemonId
+        const downloads = await requireDaemonFeature(
+          reply,
+          agent.orgId,
+          daemonId,
+          WORKSPACE_FILE_DOWNLOAD_FEATURE,
+          'this agent version does not support file downloads; upgrade its daemon'
+        )
+        if (!downloads) return reply
+        // The daemon lands and shares a session's files in its worktree when isolated, else in the checkout.
+        const sessionId = session.workspaceIsolation === 'session' ? req.query.sessionId : undefined
+        if (!(await requireSessionWorkspaceRead(reply, agent.orgId, daemonId, sessionId))) return
+
+        try {
+          const bytes = await assembleWorkspaceFile((offset) =>
+            deps.control.workspaceRead(daemonId, {
+              agentId: agent.id,
+              ...(sessionId ? { sessionId } : {}),
+              path: req.query.path,
+              offset,
+              limit: DOWNLOAD_SLICE_BYTES,
+              encoding: 'base64'
+            })
+          )
+          if (req.query.sha256 && !sha256Matches(bytes, req.query.sha256)) {
+            throw new WorkspaceDownloadRefusal(409, 'WORKSPACE_FILE_CHANGED', 'the file changed since it was shared')
+          }
+          // The typed reply knows only the documented string body; Fastify sends a Buffer raw, past the serializer.
+          return (reply as FastifyReply)
+            .header('content-type', downloadContentType(req.query.path))
+            .header('content-disposition', attachmentDisposition(req.query.path))
+            .header('x-content-type-options', 'nosniff')
+            .header('content-security-policy', "default-src 'none'; sandbox")
+            .header('cache-control', 'private, no-store')
+            .send(bytes)
+        } catch (err) {
+          if (err instanceof WorkspaceDownloadRefusal) {
+            const error = err.status === 404 ? 'Not Found' : err.status === 409 ? 'Conflict' : 'Payload Too Large'
+            return reply.code(err.status).send({ error, statusCode: err.status, message: err.message, code: err.code })
+          }
           if (sendWorkspaceFailure(reply, err)) return
           throw err
         }

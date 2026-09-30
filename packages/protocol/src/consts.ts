@@ -68,6 +68,9 @@ export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
  * worktree named by `sessionId` instead of silently falling back to primary. */
 export const WORKSPACE_SESSION_READ_FEATURE = 'workspace-session-read-v1'
 
+/** Daemon answers a `workspace/read` with `encoding: 'base64'` as a raw byte slice (the console's file download). */
+export const WORKSPACE_FILE_DOWNLOAD_FEATURE = 'workspace-file-download-v1'
+
 /** Daemon resolves every workspace read/git frame against the secondary root named by `repo` —
  * the checkout under `<agentRoot>/repos/<owner>/<repo>`, or that root's per-session worktree. The
  * CP must check this before forwarding a `repo`-scoped request: an older daemon ignores the field

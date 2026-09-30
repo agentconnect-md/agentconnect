@@ -46,7 +46,8 @@ const ReadReqSchema = z.object({
   path: z.string(),
   offset: z.number().int().nonnegative(),
   limit: z.number().int().positive().max(65_536),
-  sessionId: z.string().optional()
+  sessionId: z.string().optional(),
+  encoding: z.enum(['base64']).optional()
 })
 
 const WriteReqSchema = z.object({
@@ -173,8 +174,16 @@ export class ShimWorkspaceFiles implements WorkspaceFiles {
     return this.run({ op: 'list', root, req })
   }
 
-  read(root: string, req: Parameters<WorkspaceFiles['read']>[1]): Promise<WorkspaceReadContent> {
-    return this.run({ op: 'read', root, req })
+  async read(root: string, req: Parameters<WorkspaceFiles['read']>[1]): Promise<WorkspaceReadContent> {
+    const content = await this.run<WorkspaceReadContent>({ op: 'read', root, req })
+    // An older shim strips `encoding` and answers text or nothing, which must never pass for the file's bytes.
+    if (req.encoding === 'base64' && content.type === 'file' && content.encoding !== 'base64') {
+      throw new WorkspaceViolationError(
+        'this agent’s sandbox predates file downloads; it serves them once the sandbox restarts',
+        'sandbox-outdated'
+      )
+    }
+    return content
   }
 
   write(root: string, scratch: boolean, req: Parameters<WorkspaceFiles['write']>[2]): Promise<WorkspaceWriteOk> {

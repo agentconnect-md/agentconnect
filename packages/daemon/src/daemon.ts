@@ -85,6 +85,7 @@ import {
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
+  WORKSPACE_FILE_DOWNLOAD_FEATURE,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
   effectiveManagedMemoryScope,
@@ -7128,6 +7129,7 @@ export class Daemon {
       'workspace-file-delete-v1',
       WORKSPACE_SESSION_READ_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
+      WORKSPACE_FILE_DOWNLOAD_FEATURE,
       TASK_LIST_FEATURE,
       AUTO_MERGE_FEATURE,
       // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.

@@ -2875,6 +2875,19 @@ export async function fetchWorkspaceFile(
   return apiGet<WorkspaceFileDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`)
 }
 
+/** A session file's original bytes (an upload, or a share named by its digest); the CP proxies and stores nothing. */
+export async function downloadSessionFile(
+  agentId: string,
+  opts: { sessionId: string; path: string; sha256?: string }
+): Promise<Blob> {
+  const q = new URLSearchParams({ sessionId: opts.sessionId, path: opts.path })
+  if (opts.sha256) q.set('sha256', opts.sha256)
+  const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file/download?${q.toString()}`
+  const res = await authenticatedFetch(path, { cache: 'no-store' })
+  if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
+  return await res.blob()
+}
+
 /** Read one workspace text file whole before editing it. Every slice must describe
  * the same mtime so a multi-page load cannot assemble two agent revisions. */
 export async function fetchWorkspaceFileFull(

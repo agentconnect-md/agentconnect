@@ -203,7 +203,10 @@ of what was actually published — and, when the bytes fit the existing 160 KB
 `SessionImageAttachment` cap, the bytes themselves, exactly as an inbound image does, so
 the console can render what the agent shared and not only that it shared something. Above
 the cap the row is digest-only; nothing else is kept daemon-side. Without this, a user's
-uploaded PNG would preview while the chart the agent produced in reply would not.
+uploaded PNG would preview while the chart the agent produced in reply would not. The
+console also reads the marker's path and digest prefix to download the shared file's
+original bytes (inbound-file-attachments.md §5.1), so the marker's shape is a contract with
+the console, not only a forensic string.
 
 ## 5. Size, time, and refusals that say why
 

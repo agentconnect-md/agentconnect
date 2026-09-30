@@ -3545,6 +3545,22 @@ export const WorkspaceFileDto = z.object({
   truncated: z.boolean().nullable() // true ⇒ nextOffset < size (more bytes remain)
 })
 
+/** `GET /agents/:id/workspace/file/download` query — one session file's bytes. */
+export const WorkspaceDownloadQueryDto = z.object({
+  sessionId: z.string().min(1), // the session whose working root holds the file
+  path: z.string().min(1).max(4096), // workspace-relative POSIX path
+  sha256: z
+    .string()
+    .regex(/^[0-9a-fA-F]{16,64}$/)
+    .optional() // the digest prefix a share recorded; required outside uploads/
+})
+
+/** The download's 200 for the docs: the file's raw bytes, not JSON. */
+export const WorkspaceDownloadBody = {
+  description: 'The file’s bytes, sent as an attachment.',
+  content: { 'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) } }
+}
+
 /** `PUT /agents/:id/workspace/file` query — one scratch-workspace file. */
 export const PutWorkspaceFileQueryDto = z.object({
   path: z.string().min(1).max(4096)
