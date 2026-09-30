@@ -461,6 +461,8 @@ controlPlane:
   # This protects public browser callbacks from a transient no-healthy-upstream
   # response during a single-replica rollout.
   minReadySeconds: 15
+  # true adds a minAvailable:1 PDB: a node drain then waits for a rollout restart to move the CP without an API gap (README "Node maintenance").
+  podDisruptionBudget: false
   port: 8080
   # Non-secret env for the Fastify app (agentconnect-md/agentconnect,
   # packages/control-plane/src/config/env.ts).
@@ -828,9 +830,10 @@ secrets:
   #     -p "{\"stringData\":{\"OPEN_CONNECTOR_ENCRYPTION_KEY\":\"$(openssl rand -hex 32)\"}}"
   openConnectorEncryptionKeyKey: OPEN_CONNECTOR_ENCRYPTION_KEY
 
-# Before boot, copy the version-matched schema/migrations from the control-plane
-# image into an emptyDir, then run them with this stable, generic Prisma CLI
-# image. The CLI image changes only when Prisma/Node is deliberately upgraded.
+# A pre-install/pre-upgrade hook Job copies the version-matched schema/migrations from the
+# control-plane image into an emptyDir, then runs them with this stable, generic Prisma CLI
+# image, before any new CP pod starts. The CLI image changes only when Prisma/Node is
+# deliberately upgraded.
 migrate:
   enabled: true
   image: prisma-cli

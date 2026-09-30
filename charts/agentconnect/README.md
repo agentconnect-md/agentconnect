@@ -70,8 +70,10 @@ helm install agentconnect oci://ghcr.io/agentconnect-md/charts/agentconnect \
 ## Requirements
 
 - **Kubernetes >= 1.28** (the relay reads the `apps.kubernetes.io/pod-index` label).
-- **PostgreSQL** you operate, reachable as `DATABASE_URL`. Migrations run in an init
-  container on Control Plane startup (`migrate.enabled`).
+- **PostgreSQL** you operate, reachable as `DATABASE_URL`. Migrations run once per
+  install and upgrade in a pre-install/pre-upgrade hook Job, before any new Control Plane
+  pod starts (`migrate.enabled`). Helm waits for that Job, so give a release with a long
+  migration a longer `--timeout`.
 - **Cluster-scoped install rights** by default: the daemon pool renders the TokenReview
   ClusterRole/Bindings, the agent-sandbox CRDs ship in the chart's `crds/` directory
   (applied on first install, skipped when present, never upgraded or deleted by Helm —
@@ -97,3 +99,20 @@ kubectl -n agentconnect port-forward deployment/agentconnect-setup-server 8091:8
 
 The full self-hosting walkthrough (authentication, public URLs, provider apps, image
 pinning) is the [AgentConnect OSS guide](https://www.agentconnect.md/docs/self-hosting).
+
+## Node maintenance
+
+The Control Plane runs as one replica, and it also serves the API. Evicting its pod, as a
+node drain does, leaves the API unavailable until the replacement is ready — several
+seconds. A rolling update has no such gap, because its replacement is ready before the old
+pod stops.
+
+Set `controlPlane.podDisruptionBudget=true` to turn drains into that rolling update. The
+drain then stops at the Control Plane pod; move it first, and the drain proceeds:
+
+```bash
+kubectl -n agentconnect rollout restart deployment/agentconnect-control-plane
+```
+
+The cordoned node takes no new pods, so the replacement starts elsewhere. Leave the budget
+off where nobody can act on a drain that is waiting.

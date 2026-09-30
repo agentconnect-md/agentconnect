@@ -1,0 +1,70 @@
+{{- if .Values.migrate.enabled }}
+# Migrations run once per install and upgrade, before any new CP pod starts, so a replacement CP boots without waiting on them.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-control-plane-migrate
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "control-plane-migrate") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    # Kept after it finishes so its log stays readable until the next upgrade replaces it.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "control-plane-migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: prisma-migration-files
+          emptyDir: {}
+      initContainers:
+        # The CP image owns the versioned schema and migration SQL; export only those files, starting no application process.
+        - name: export-prisma-files
+          image: "{{ .Values.image.registry }}/{{ .Values.controlPlane.image }}:{{ .Values.controlPlane.tag | default (include "agentconnect.imageTag" .) }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /migration/prisma
+              cp /app/packages/control-plane/prisma/schema.prisma /migration/prisma/schema.prisma
+              cp -R /app/packages/control-plane/prisma/migrations /migration/prisma/migrations
+          volumeMounts:
+            - name: prisma-migration-files
+              mountPath: /migration
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.registry }}/{{ .Values.migrate.image }}:{{ .Values.migrate.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Retry until Postgres accepts connections, then apply migrations.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until node_modules/.bin/prisma migrate deploy; do
+                echo "migrate: database not ready, retrying in 3s..."; sleep 3;
+              done
+          volumeMounts:
+            - name: prisma-migration-files
+              mountPath: /migration
+              readOnly: true
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.databaseUrlKey }}
+{{- end }}

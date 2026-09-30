@@ -431,6 +431,33 @@ abort('control plane must not render retired CLUSTER_* envs') if cp_env.keys.any
 abort('control-plane readiness probe timings changed') unless cp_container['readinessProbe'].reject { |key, _| key == 'httpGet' } == {
   'initialDelaySeconds' => 1, 'periodSeconds' => 2, 'failureThreshold' => 10
 }
+# Migrations run in a hook Job before any new CP pod starts, so a replacement CP never waits on them.
+abort('control plane must not migrate at startup') if control_plane.dig('spec', 'template', 'spec', 'initContainers')
+migrate_job = find.call('Job', 'example-agentconnect-control-plane-migrate')
+abort('migrate Job must run before install and upgrade') unless
+  migrate_job.dig('metadata', 'annotations', 'helm.sh/hook') == 'pre-install,pre-upgrade'
+migrate_pod = migrate_job.dig('spec', 'template', 'spec')
+abort('migrate Job must export the CP schema, then migrate') unless
+  migrate_pod['initContainers'].map { |c| c['name'] } == ['export-prisma-files'] &&
+  migrate_pod['containers'].map { |c| c['name'] } == ['migrate']
+abort('migrate Job must read DATABASE_URL from the Secret') unless migrate_pod['containers'][0]['env'].include?(
+  'name' => 'DATABASE_URL', 'valueFrom' => { 'secretKeyRef' => { 'name' => 'agentconnect-secrets', 'key' => 'DATABASE_URL' } }
+)
+no_migrate_rendered, no_migrate_error, no_migrate_status = Open3.capture3(*command, '--set', 'migrate.enabled=false')
+abort("helm template (migrate off) failed:\n#{no_migrate_error}") unless no_migrate_status.success?
+abort('migrate.enabled=false must render no migrate Job') if YAML.load_stream(no_migrate_rendered).compact.any? do |doc|
+  doc['kind'] == 'Job' && doc.dig('metadata', 'name') == 'example-agentconnect-control-plane-migrate'
+end
+# At one replica a PDB blocks every voluntary eviction, so it is opt-in and keeps the one CP pod.
+abort('control-plane PDB must be opt-in') if documents.any? { |doc| doc['kind'] == 'PodDisruptionBudget' && doc.dig('metadata', 'name') == 'example-agentconnect-control-plane' }
+pdb_rendered, pdb_error, pdb_status = Open3.capture3(*command, '--set', 'controlPlane.podDisruptionBudget=true')
+abort("helm template (control-plane PDB) failed:\n#{pdb_error}") unless pdb_status.success?
+cp_pdb = YAML.load_stream(pdb_rendered).compact.find do |doc|
+  doc['kind'] == 'PodDisruptionBudget' && doc.dig('metadata', 'name') == 'example-agentconnect-control-plane'
+end || abort('missing control-plane PDB')
+abort('control-plane PDB must keep the one CP pod') unless cp_pdb['spec'] == {
+  'minAvailable' => 1, 'selector' => { 'matchLabels' => control_plane.dig('spec', 'selector', 'matchLabels') }
+}
 
 # An install with the switch off must not grow a single cluster-scoped object just because the
 # chart carries them: in-cluster daemons are the only thing that presents a projected token,

@@ -182,7 +182,11 @@ daemons and relays redial every 250-500 ms with a 1-second handshake cap for
 10 seconds before ordinary backoff resumes. The CP readiness probe runs every
 2 seconds from 1 second after start, so a replacement is listed within about
 2 seconds of listening; this matters most when a pod is evicted and no surge
-replacement is already ready.
+replacement is already ready. Migrations run in a pre-install/pre-upgrade hook
+Job, so a replacement pod starts without them. An evicted pod stops serving the
+API at once, so a single-replica eviction leaves the API down until the
+replacement is ready; the optional `controlPlane.podDisruptionBudget` makes a
+node drain wait for a rollout restart, which has no such gap.
 
 ### Connection ownership and forwarding
 
