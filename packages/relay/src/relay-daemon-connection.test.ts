@@ -40,6 +40,10 @@ class FakeServerTransport implements ServerTransport {
   feed(type: 'rd/hello' | 'rd/ack' | 'rd/route' | 'rd/route/report', payload: unknown): void {
     this.msgCb?.(JSON.stringify(buildRelayDaemonFrame(type, payload as never)))
   }
+  /** Deliver identical bytes again, the way a correlator retransmits an unanswered request. */
+  feedRaw(text: string): void {
+    this.msgCb?.(text)
+  }
   lastRep(type: string): RelayDaemonFrame | undefined {
     return [...this.sent].reverse().find((f) => f.type === type)
   }
@@ -202,6 +206,23 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     expect(onReady).not.toHaveBeenCalled()
     expect(onClosed).not.toHaveBeenCalled() // never registered ⇒ nothing to unregister
     expect(conn.state).toBe('CLOSED')
+  })
+
+  it('answers a hello the daemon retransmitted during a slow verify exactly once', async () => {
+    let resolveVerify!: (r: RcVerifyResult) => void
+    const { conn, transport, verify, onReady } = build({
+      verify: () => new Promise<RcVerifyResult>((res) => (resolveVerify = res))
+    })
+    const hello = JSON.stringify(buildRelayDaemonFrame('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID }))
+    transport.feedRaw(hello)
+    await Promise.resolve()
+    transport.feedRaw(hello)
+    await Promise.resolve()
+    expect(verify).toHaveBeenCalledTimes(1)
+    resolveVerify({ ok: true, daemonId: DAEMON_ID, orgId: 'org-1' })
+    await vi.waitFor(() => expect(conn.state).toBe('READY'))
+    expect(transport.sent.filter((frame) => frame.type === 'rd/hello/ok')).toHaveLength(1)
+    expect(onReady).toHaveBeenCalledTimes(1)
   })
 
   it('fires onClosed with the daemonId once authenticated', async () => {

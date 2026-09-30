@@ -96,6 +96,9 @@ const ACK_TIMEOUT_MS = 5000
  *  a silently skipped one. */
 const LINK_READY_WAIT_MS = 30_000
 
+/** How long a credential check or thread lookup waits out a reconnecting link; a planned CP handoff takes seconds. */
+const HANDOFF_WAIT_MS = 10_000
+
 /** Run reports held while the link is down. Bounded — the OLDEST is dropped first
  *  (a stale delivery-stage row is the least useful one to replay). */
 const MAX_PENDING_RUN_REPORTS = 200
@@ -261,29 +264,17 @@ export class RelayCpClient {
     credential: string,
     daemonId?: string
   ): Promise<RcVerifyResult> {
-    if (this.state !== 'READY' || !this.transport) {
-      throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
-    }
     const request: RcVerify =
       kind === 'webchat-token'
         ? { kind, credential, conversationBinding: 'v1' }
         : kind === 'daemon-token'
           ? { kind, credential, ...(daemonId ? { daemonId } : {}) }
           : { kind, credential }
-    const rep = await this.sendRequest(buildRelayCpFrame('rc/verify', request))
-    if (rep.type !== 'rc/verify/ok') {
-      throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
-    }
-    return rep.payload
-  }
-
-  /** An API key on the agent chat API, with the agent it names and the caller's chat id (§10.4); throws like {@link verify}. */
-  async verifyAgentChatKey(credential: string, agentId: string, chatId: string): Promise<RcVerifyResult> {
-    if (this.state !== 'READY' || !this.transport) {
-      throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
-    }
-    const rep = await this.sendRequest(
-      buildRelayCpFrame('rc/verify', { kind: 'agent-chat-key', credential, agentId, chatId })
+    const rep = await this.authorizationRequest(
+      () => buildRelayCpFrame('rc/verify', request),
+      'rc/verify',
+      HANDOFF_WAIT_MS,
+      {}
     )
     if (rep.type !== 'rc/verify/ok') {
       throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
@@ -291,29 +282,37 @@ export class RelayCpClient {
     return rep.payload
   }
 
-  /**
-   * One authorization RPC, single-shot PER LINK but held across ONE reconnect:
-   * the caller is off GitHub's HTTP request already, and failing closed on a
-   * link that is merely restarting turns a CP rollout into silently skipped
-   * reviews. The second attempt is bought by a REPLACED CONNECTION, never by a
-   * retryable flag: an ack timeout and the CP's own retryable `error` REPs both
-   * arrive on a link that is still READY, and re-issuing there would duplicate
-   * an expensive upstream permission lookup.
-   */
-  private async authorizationRequest(build: () => RelayCpFrame, label: string): Promise<RelayCpFrame> {
+  /** An API key on the agent chat API, with the agent it names and the caller's chat id (§10.4); waits like {@link verify}. */
+  async verifyAgentChatKey(credential: string, agentId: string, chatId: string): Promise<RcVerifyResult> {
+    const rep = await this.authorizationRequest(
+      () => buildRelayCpFrame('rc/verify', { kind: 'agent-chat-key', credential, agentId, chatId }),
+      'rc/verify agent-chat-key',
+      HANDOFF_WAIT_MS,
+      {}
+    )
+    if (rep.type !== 'rc/verify/ok') {
+      throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
+    }
+    return rep.payload
+  }
+
+  /** One CP read that waits out a reconnect and is re-issued once only over a REPLACED link, never on the one that failed it. */
+  private async authorizationRequest(
+    build: () => RelayCpFrame,
+    label: string,
+    waitMs = LINK_READY_WAIT_MS,
+    opts: RequestOpts = { maxTries: 1, ackTimeoutMs: ACK_TIMEOUT_MS }
+  ): Promise<RelayCpFrame> {
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (!(await this.waitReady(LINK_READY_WAIT_MS)) || !this.transport) {
+      if (!(await this.waitReady(waitMs)) || !this.transport) {
         throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
       }
       const generation = this.linkGeneration
       try {
-        return await this.sendRequest(build(), { maxTries: 1, ackTimeoutMs: ACK_TIMEOUT_MS })
+        return await this.sendRequest(build(), opts)
       } catch (err) {
         if (attempt > 0 || !(err instanceof WireError) || !err.retryable) throw err
-        // Only a connection this request never reached the CP over is retryable
-        // here: wait for the replacement, and give up on the original error if
-        // the link that failed is still the live one.
-        if (!(await this.waitReady(LINK_READY_WAIT_MS)) || this.linkGeneration === generation) throw err
+        if (!(await this.waitReady(waitMs)) || this.linkGeneration === generation) throw err
         this.deps.log.warn(`relay: ${label} lost its link (${err.message}) — retrying across the reconnect`)
       }
     }
@@ -584,18 +583,13 @@ export class RelayCpClient {
     return true
   }
 
-  /** `rc/thread-lookup` → `rc/thread-lookup/ok` — pull-on-miss BACKSTOP leg. When an
-   *  un-mentioned follow-up arrives for a thread this pod holds no affinity for (missed
-   *  the broadcast, or (re)started after it), pull the persisted owner rather than drop.
-   *  Single-shot: a CP outage rejects (the caller drops the message, bounded loss). */
+  /** `rc/thread-lookup`: pull a missed thread's owner, waiting out a CP handoff; a longer outage still drops the message. */
   async lookupThread(m: RcThreadLookup): Promise<RcThreadLookupOk> {
-    if (this.state !== 'READY' || !this.transport) {
-      throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
-    }
-    const rep = await this.sendRequest(buildRelayCpFrame('rc/thread-lookup', m), {
-      maxTries: 1,
-      ackTimeoutMs: ACK_TIMEOUT_MS
-    })
+    const rep = await this.authorizationRequest(
+      () => buildRelayCpFrame('rc/thread-lookup', m),
+      'rc/thread-lookup',
+      HANDOFF_WAIT_MS
+    )
     if (rep.type !== 'rc/thread-lookup/ok') {
       throw new WireError('INTERNAL', `expected rc/thread-lookup/ok, got ${rep.type}`, false)
     }

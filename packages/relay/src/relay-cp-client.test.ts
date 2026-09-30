@@ -711,9 +711,37 @@ describe('RelayCpClient', () => {
     expect(connect).toHaveBeenCalledTimes(1) // no reconnect
   })
 
-  it('verify() rejects when the link is not READY', async () => {
-    const { client } = makeClient()
-    await expect(client.verify('daemon-key', 'creds')).rejects.toThrow(/not ready/)
+  it('verify() waits out a link that is not READY, then rejects when it never becomes READY', async () => {
+    const { client, clock } = makeClient()
+    let settled = false
+    const outcome = client
+      .verify('daemon-key', 'creds')
+      .catch((err: unknown) => err)
+      .finally(() => (settled = true))
+    clock.advance(9_000)
+    await flush()
+    expect(settled).toBe(false)
+    clock.advance(1_000)
+    await flush()
+    await expect(outcome).resolves.toMatchObject({ message: expect.stringMatching(/not ready/) })
+  })
+
+  it('verify() sent while the link is reconnecting goes out once it is READY', async () => {
+    const { client, transport } = makeClient()
+    const p = client.verify('webchat-token', 'the-browser-token')
+    await flush()
+    expect(transport.lastReq('rc/verify')).toBeUndefined()
+    await handshakeToReady(client, transport)
+    await flush()
+    const req = transport.lastReq('rc/verify')!
+    transport.inject(
+      buildRelayCpFrame(
+        'rc/verify/ok',
+        { ok: true, agentId: DAEMON_ID, daemonId: DAEMON_ID, orgId: 'org-1', conversationId: DAEMON_ID },
+        { corr: req.id }
+      )
+    )
+    await expect(p).resolves.toMatchObject({ ok: true })
   })
 
   it('verify() round-trips rc/verify → rc/verify/ok when READY', async () => {
@@ -933,5 +961,27 @@ describe('RelayCpClient', () => {
     const replayed = next.sent.filter((f) => f.type === 'rc/run-report')
     expect(replayed).toHaveLength(200)
     expect((replayed[0]!.payload as { deliveryKey: string }).deliveryKey).toBe('delivery-5')
+  })
+})
+
+describe('RelayCpClient lookups across a CP handoff', () => {
+  it('lookupThread() re-asks a lookup the dying link swallowed, once, over the replaced link', async () => {
+    const { client, transports, reconnect } = makeReconnectingClient()
+    client.start()
+    await flush()
+    await completeHandshake(transports[0]!)
+    const lookup = { botId: DAEMON_ID, sessionKey: 'slack:C1:1.0' }
+    const pending = client.lookupThread(lookup)
+    await flush()
+    expect(transports[0]!.lastReq('rc/thread-lookup')).toBeDefined()
+    transports[0]!.simulateClose(1012)
+    const next = await reconnect()
+    await flush()
+    const req = next.lastReq('rc/thread-lookup')!
+    expect(req.payload).toEqual(lookup)
+    next.inject(
+      buildRelayCpFrame('rc/thread-lookup/ok', { ...lookup, target: null, participants: [] }, { corr: req.id })
+    )
+    await expect(pending).resolves.toMatchObject({ target: null })
   })
 })

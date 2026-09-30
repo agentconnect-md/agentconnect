@@ -83,6 +83,7 @@ export interface RelayDaemonConnDeps {
 export class RelayDaemonConnection {
   state: State = 'AUTHENTICATING'
   daemonId = ''
+  private helloInFlight = false
   /** Which verified credential authenticated this socket. `daemon-token` is a TokenReviewed
    *  install-wide pool identity — duty-governed, so it can rendezvous a webchat trigger.
    *  `daemon-key` is an org-scoped standalone daemon that would answer `no_agent` instead. */
@@ -262,6 +263,17 @@ export class RelayDaemonConnection {
   }
 
   private async handleHello(frame: RelayDaemonFrame, hello: RdHello): Promise<void> {
+    // A retransmitted hello while its verify waits out a CP handoff: the one reply settles both.
+    if (this.helloInFlight) return
+    this.helloInFlight = true
+    try {
+      await this.answerHello(frame, hello)
+    } finally {
+      this.helloInFlight = false
+    }
+  }
+
+  private async answerHello(frame: RelayDaemonFrame, hello: RdHello): Promise<void> {
     const relayId = this.deps.relayId()
     if (!relayId) {
       // Not registered with the CP yet ⇒ can't verify or echo an id. Ask the daemon to retry.
