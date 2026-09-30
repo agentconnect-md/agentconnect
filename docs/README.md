@@ -139,6 +139,6 @@ the picture it draws.
 
 ## Working papers
 
-[`superpowers/`](superpowers/) holds point-in-time implementation plans and
-specs produced during development. They record how a change was executed, are
-not kept current, and never override the designs above.
+[`superpowers/`](superpowers/) holds point-in-time design specs produced during
+development. They record how a change was shaped, are not kept current, and
+never override the designs above.
