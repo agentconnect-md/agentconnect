@@ -319,8 +319,13 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // A READY connection is a reachable `control-plane` memory home: distill the turns that waited for it.
       host.wakeMemoryOutbox()
       host.wakeMemoryHomeMigrations()
-      await host.replayHookTerminalReports()
-      await host.replayChannelSnapshots()
+      // Each replay fails on its own: one that throws must not skip the drains after it.
+      await host
+        .replayHookTerminalReports()
+        .catch((err) => host.log().warn(`cp: hook report replay failed (${(err as Error).message})`))
+      await host
+        .replayChannelSnapshots()
+        .catch((err) => host.log().warn(`cp: channel snapshot replay failed (${(err as Error).message})`))
       // ...and every explicit credential revocation still unacknowledged: the platform never redelivers one.
       void host.replayCredentialRevocations()
       // Only snapshots written to the durable outbox by this build are

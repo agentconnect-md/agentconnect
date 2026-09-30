@@ -20003,26 +20003,24 @@ export class Daemon {
   /** Re-assert cached reports after a CP reconnect without upgrading a partial
    *  observation (including Slack direct-conversation discovery) to a full snapshot. */
   private async replayChannelSnapshots(): Promise<void> {
-    // Keyed by BOTH sources. The snapshots are in memory and the tombstones are on
-    // disk, so a restart before the first reconnect leaves an integration with a
-    // durable retraction and no cached snapshot — and keying on the map alone would
-    // replay nothing for it, stranding the CP row exactly when the original
-    // fire-and-forget retraction was the one thing that got lost.
+    // Keyed by both sources: a restart keeps the on-disk tombstones but not the in-memory snapshots.
     const integrationIds = new Set([...this.channelSnapshots.keys(), ...(await this.store.retractedIntegrations())])
     for (const integrationId of integrationIds) {
       const snapshot = this.channelSnapshots.get(integrationId)
-      // Replay the tombstones too: a retraction emitted while the CP was unreachable
-      // is simply lost, so without carrying it here the reconnect would re-assert what
-      // remains and leave the departed conversation listed forever — the exact failure
-      // this whole mechanism exists to end.
+      // Tombstones replay too: a retraction sent while the CP was unreachable is lost, so the reconnect carries it.
       const removed = [...(await this.store.retractedConversations(integrationId))]
       if (!snapshot && removed.length === 0) continue
-      this.cpClient?.emitIntegrationChannels({
-        integrationId,
-        channels: snapshot?.channels ?? [],
-        ...(snapshot?.authoritative ? {} : { authoritative: false }),
-        ...(removed.length > 0 ? { removed } : {})
-      })
+      try {
+        this.cpClient?.emitIntegrationChannels({
+          integrationId,
+          channels: snapshot?.channels ?? [],
+          ...(snapshot?.authoritative ? {} : { authoritative: false }),
+          ...(removed.length > 0 ? { removed } : {})
+        })
+      } catch (err) {
+        // A pool store's tombstone can name an integration this member cannot scope; skip it, not the rest.
+        this.log.debug(`channels: replay skipped for integration ${integrationId}: ${formatErr(err)}`)
+      }
     }
   }
 
