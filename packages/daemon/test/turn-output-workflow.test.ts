@@ -510,8 +510,8 @@ describe('TurnOutputWorkflow', () => {
             ],
             toolCall: { toolCallId: 'tc-1', title: 'Bash' }
           })
-          await vi.waitFor(() => expect((context.daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-          const [requestId] = (context.daemon as any).permissions.pendingEditorPermissions.keys()
+          await vi.waitFor(() => expect((context.daemon as any).permissions.pendingApprovals.size).toBe(1))
+          const [requestId] = (context.daemon as any).permissions.pendingApprovals.keys()
           clock.advance(120_001)
           await (context.daemon as any).permissions.decideEditorPermission({
             agentId: 'bot-a',

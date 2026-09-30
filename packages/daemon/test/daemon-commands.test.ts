@@ -2067,14 +2067,13 @@ describe('Slack interactive status bar', () => {
       status: 'pending',
       resolvedAt: null
     })
-    ;(daemon as any).permissions.pendingChatPermissions.set(permissionRequestId, {
+    ;(daemon as any).permissions.pendingApprovals.set(permissionRequestId, {
+      kind: 'permission',
       agentId: 'bot-a',
       sessionId: 'acp-1',
       params: { options: [{ optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' }] },
       evaluationParams: {},
-      conn: { updateBlocks, workspaceId: () => 'T1' },
-      channel: 'C1',
-      ts: 'card-1',
+      chat: { conn: { updateBlocks, workspaceId: () => 'T1' }, channel: 'C1', ts: 'card-1' },
       resolve: permissionResolved
     })
     expect(
@@ -2181,7 +2180,7 @@ describe('Slack interactive status bar', () => {
     // With no CP verify available in this harness it fails closed: admitted, not decided.
     const dmResolved = vi.fn()
     const dmRequestId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
-    ;(daemon as any).permissions.pendingEditorPermissions.set(dmRequestId, {
+    ;(daemon as any).permissions.pendingApprovals.set(dmRequestId, {
       kind: 'permission',
       agentId: 'bot-a',
       sessionId: 'acp-2',

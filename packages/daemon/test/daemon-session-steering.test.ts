@@ -232,14 +232,14 @@ describe('mid-turn session steering', () => {
       ],
       toolCall: { toolCallId: 'tc-1', title: 'Bash' }
     })
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1), WAIT)
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1), WAIT)
 
     const p2 = (daemon as any).dispatch('bot-a', msg('100.2', 'skip the migration step'), 'int-a')
     await expect(p2).resolves.toBe('acp-1')
     expect(h.host.steer).toHaveBeenCalledOnce()
     expect((daemon as any).serialQueue.has(key)).toBe(false)
 
-    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.decideEditorPermission({ agentId: 'bot-a', requestId, decision: 'allow' })
     await approval
     h.releaseOne()

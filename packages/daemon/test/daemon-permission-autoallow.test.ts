@@ -272,12 +272,12 @@ describe('an approval publishes its resolver before the durable write', () => {
       req({ title: 'Bash', rawInput: { command: 'pnpm test' } })
     )
     // The resolver is reachable while the row is still being written.
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     // The sweep unpublishes immediately and settles the row once the write it is settling lands.
-    const released = (daemon as any).permissions.releaseEditorPermissions('agent-1', 's1')
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    const released = (daemon as any).permissions.releaseApprovals('agent-1', 's1')
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
     finishWrite()
     await released
     await expect(permissionResult).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
@@ -290,7 +290,7 @@ describe('an approval publishes its resolver before the durable write', () => {
         undefined
       )
     )
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
   })
 })
 
@@ -328,8 +328,8 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       's1',
       req({ toolCallId: 'call-1', name: 'mcp__othersrv__readFile', title: 'mcp__othersrv__readFile' })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'deny' })
     await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
   })
@@ -344,8 +344,8 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       's1',
       req({ title: command, kind: 'execute', rawInput: { command } })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'deny' })
     await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
   })
@@ -370,8 +370,8 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     await expect((daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation(toolCallId))).resolves.toEqual({
       action: 'accept'
     })
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
-    expect((daemon as any).permissions.pendingChatPermissions.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
   })
 
@@ -385,8 +385,8 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       's1',
       req({ title: 'Bash', rawInput: { command: 'pnpm test' } })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-    const [permissionRequestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [permissionRequestId] = (daemon as any).permissions.pendingApprovals.keys()
     expect(
       await (daemon as any).permissions.decideEditorPermission({
         agentId: 'agent-1',
@@ -399,8 +399,8 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     })
 
     const elicitationResult = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-    const [elicitationRequestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [elicitationRequestId] = (daemon as any).permissions.pendingApprovals.keys()
     expect(
       await (daemon as any).permissions.decideEditorPermission({
         agentId: 'agent-1',
@@ -445,8 +445,8 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       pending.plan.approvalSurfaceSuppressed = false
 
       const result = (daemon as any).permissions.onAcpPermission('agent-1', 's1', req({ title: 'Bash' }))
-      await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-      const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+      await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+      const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
       expect(
         await (daemon as any).permissions.decideEditorPermission({
           agentId: 'agent-1',
@@ -470,8 +470,8 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
         outcome: { outcome: 'cancelled' }
       }
     )
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
-    expect((daemon as any).permissions.pendingChatPermissions.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
   })
 
   it('does not trust another server, an uncorrelated id, or malformed approval metadata', async () => {
@@ -491,8 +491,8 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       's1',
       req({ toolCallId: 'other-server-call' })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-    const [permissionRequestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [permissionRequestId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.decideEditorPermission({
       agentId: 'agent-1',
       requestId: permissionRequestId,
@@ -503,8 +503,8 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     })
 
     const elicitationResult = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-    const [elicitationRequestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [elicitationRequestId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.decideEditorPermission({
       agentId: 'agent-1',
       requestId: elicitationRequestId,
@@ -763,9 +763,9 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     // only thing that reaches the stream is today's neutral "ask an editor" notice.
     void (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('tc-approval'))
     await vi.waitFor(() => expect(sink.output).toHaveBeenCalled())
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(cardEvents(sink).map((e) => e.kind)).toEqual(['message'])
-    await (daemon as any).permissions.releaseEditorPermissions('agent-1', 's1')
+    await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
     sink.output.mockClear()
 
     // A continuation mirrors an origin platform, so it keeps falling through to the Slack
@@ -1005,7 +1005,7 @@ describe('a permission card offers every option or sends the request where they 
     await vi.waitFor(() => expect(posted).toHaveLength(1))
     // Eight buttons, not five. The reader sees the whole menu their pick is read against.
     expect((posted[0]![1]! as any).elements).toHaveLength(8)
-    expect((daemon as any).permissions.pendingChatPermissions.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
   })
 
   it('cancels a list it cannot offer whole, and says why, rather than truncating it', async () => {
@@ -1022,8 +1022,8 @@ describe('a permission card offers every option or sends the request where they 
     })
     // No card, and no editor stand-in either: the console record shares the same cap (#1969).
     expect(posted).toEqual([])
-    expect((daemon as any).permissions.pendingChatPermissions.size).toBe(0)
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
     // The reader just lost a decision they could otherwise have made, so the chat says so — and
     // points at no other surface, because none of them can offer the list either.
     const notice = applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
@@ -1059,7 +1059,7 @@ describe('a permission card offers every option or sends the request where they 
       outcome: { outcome: 'cancelled' }
     })
     expect(posted).toEqual([])
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
     expect(applied.filter((a) => a.kind === 'notice')).toHaveLength(1)
   })
 
@@ -1070,7 +1070,7 @@ describe('a permission card offers every option or sends the request where they 
     slackPending(daemon)
     ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: false })
     void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(4))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
   })
 })
 
@@ -2118,7 +2118,7 @@ describe('memory extraction turns grant only the daemon’s own bound bridge too
     await expect(
       (daemon as any).permissions.onAcpPermission('agent-1', 's1', req({ title: 'mcp__agentconnect__readMemory' }))
     ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
   })
 
@@ -2146,8 +2146,8 @@ describe('memory extraction turns grant only the daemon’s own bound bridge too
     await expect(permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))).resolves.toEqual({
       action: 'cancel'
     })
-    expect(permissions.pendingEditorPermissions.size).toBe(0)
-    expect(permissions.pendingChatPermissions.size).toBe(0)
+    expect(permissions.pendingApprovals.size).toBe(0)
+    expect(permissions.pendingApprovals.size).toBe(0)
     expect(permissions.pendingElicits.size).toBe(0)
   })
 
@@ -2185,8 +2185,8 @@ describe('the console decides by the options the request offers (#1969)', () => 
 
   async function queued(daemon: Daemon): Promise<{ requestId: string; result: Promise<unknown> }> {
     const result = (daemon as any).permissions.onAcpPermission('agent-1', 's1', fourOptionReq())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     return { requestId, result }
   }
 
@@ -2239,7 +2239,7 @@ describe('the console decides by the options the request offers (#1969)', () => 
     expect(await decide('allow', 'never')).toEqual({ ok: false, reason: 'decision does not match the chosen option' })
     expect(await decide('deny', 'always')).toEqual({ ok: false, reason: 'decision does not match the chosen option' })
     expect((daemon as any).store.resolvePermissionRequest).not.toHaveBeenCalled()
-    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
 
     expect(await decide('deny', 'never')).toEqual({ ok: true })
     await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'never' } })
@@ -2253,23 +2253,73 @@ describe('the console decides by the options the request offers (#1969)', () => 
     await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
   })
 
-  it('refuses an option id for an approval elicitation, which offers none', async () => {
+  it('offers an approval elicitation its own field options, then Deny (#2592)', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     installPending(daemon)
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingEditorPermissions.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
+    expect((daemon as any).permissions.pendingPermissionOptions('agent-1', requestId)).toEqual([
+      { optionId: 'option:0', name: 'once', kind: 'allow_once' },
+      { optionId: 'option:1', name: 'session', kind: 'allow_once' },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+    ])
+    const decide = (decision: 'allow' | 'deny', optionId?: string) =>
+      (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision, optionId })
+    // A value is never an id, and a choice must agree with the decision: both leave the request pending.
+    expect(await decide('allow', 'session')).toEqual({ ok: false, reason: 'runtime did not offer that option' })
+    expect(await decide('deny', 'option:1')).toEqual({ ok: false, reason: 'decision does not match the chosen option' })
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
+    expect(await decide('allow', 'option:1')).toEqual({ ok: true })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { persist: 'session' } })
+  })
+
+  it("declines an approval elicitation on its Deny choice, and keeps an older console's binary answer", async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installPending(daemon)
+    const denied = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [denyId] = (daemon as any).permissions.pendingApprovals.keys()
+    await (daemon as any).permissions.decideEditorPermission({
+      agentId: 'agent-1',
+      requestId: denyId,
+      decision: 'deny',
+      optionId: 'deny'
+    })
+    await expect(denied).resolves.toEqual({ action: 'decline' })
+
+    const binary = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [binaryId] = (daemon as any).permissions.pendingApprovals.keys()
+    await (daemon as any).permissions.decideEditorPermission({
+      agentId: 'agent-1',
+      requestId: binaryId,
+      decision: 'deny'
+    })
+    await expect(binary).resolves.toEqual({ action: 'cancel' })
+  })
+
+  it('offers no choices for an approval elicitation that is not one single-select', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installPending(daemon)
+    const result = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      elicitation('uncorrelated', { requestedSchema: { type: 'object', properties: {} } })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     expect((daemon as any).permissions.pendingPermissionOptions('agent-1', requestId)).toBeUndefined()
     expect(
       await (daemon as any).permissions.decideEditorPermission({
         agentId: 'agent-1',
         requestId,
         decision: 'allow',
-        optionId: 'once'
+        optionId: 'option:0'
       })
     ).toEqual({ ok: false, reason: 'request offers no options' })
-    await (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'deny' })
-    await expect(result).resolves.toEqual({ action: 'cancel' })
+    await (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'allow' })
+    await expect(result).resolves.toEqual({ action: 'accept' })
   })
 
   it('resolves a chat-card request decided from the console by the same option id', async () => {
@@ -2278,7 +2328,7 @@ describe('the console decides by the options the request offers (#1969)', () => 
     ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
     const result = (daemon as any).permissions.onAcpPermission('agent-1', 's1', fourOptionReq())
     await vi.waitFor(() => expect(posted).toHaveLength(1))
-    const [requestId] = (daemon as any).permissions.pendingChatPermissions.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     expect((daemon as any).permissions.pendingPermissionOptions('agent-1', requestId)).toHaveLength(4)
 
     expect(

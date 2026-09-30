@@ -16089,8 +16089,7 @@ export class Daemon {
     this.clearSlackStream(p)
     // Backstop: settle any permission / elicitation card still awaiting a tap.
     await this.permissions.releaseElicits(p.hostKey, sessionId)
-    await this.permissions.releaseChatPermissions(p.hostKey, sessionId)
-    await this.permissions.releaseEditorPermissions(p.hostKey, sessionId)
+    await this.permissions.releaseApprovals(p.hostKey, sessionId)
     // §6.7: this turn's active call context ends with the turn (a nested messageAgent can
     // only inherit while the turn is in flight). Only clear if THIS turn owns the entry —
     // the map is keyed by sessionKey and the gate guarantees one active turn per key.
@@ -16411,9 +16410,7 @@ export class Daemon {
     if (!exact()) return
     await this.permissions.releaseElicits(live.hostKey, liveSessionId)
     if (!exact()) return
-    await this.permissions.releaseChatPermissions(live.hostKey, liveSessionId)
-    if (!exact()) return
-    await this.permissions.releaseEditorPermissions(live.hostKey, liveSessionId)
+    await this.permissions.releaseApprovals(live.hostKey, liveSessionId)
     if (!exact()) return
     // §7.3 idle→cancelling: send session/cancel, then arm a force backstop. The turn's
     // dispatch finally clears the timer + writes the terminal idle state when the agent
@@ -22502,8 +22499,7 @@ export class Daemon {
         this.clearIdle(p)
         this.turnSurfaces.exact(p.plan.platform)?.onSuppress?.(p)
         await this.permissions.releaseElicits(p.hostKey, p.acpSessionId)
-        await this.permissions.releaseChatPermissions(p.hostKey, p.acpSessionId)
-        await this.permissions.releaseEditorPermissions(p.hostKey, p.acpSessionId)
+        await this.permissions.releaseApprovals(p.hostKey, p.acpSessionId)
         void (p.selectedHost?.host ?? this.hostForOwner(p.hostKey))?.cancel(p.acpSessionId).catch(() => {})
         // Its durable row survives the drain, so the next holder replays the message.
         if (cutHere) await this.postTurnCutNotice(p, SHUTDOWN_NOTICE, true)
