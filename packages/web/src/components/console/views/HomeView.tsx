@@ -495,8 +495,8 @@ export default function HomeView() {
     // Every block here is content-sized: the dashboard picks a row count that fits the
     // leftover viewport (useAvailableHeight), so the page fills a roomy window without
     // stretching a card past its rows, and scrolls rather than squashing when it can't.
-    // Mobile keeps normal flow + the bottom-nav padding.
-    <div className="wrap max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-24">
+    // Mobile keeps normal flow.
+    <div className="wrap max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-6">
       {/* Centered greeting above the composer (design: 32px mark, 27px title). */}
       <div className="mt-[22px] mb-[22px] flex items-center justify-center gap-[13px]">
         <LogoMark size={32} />

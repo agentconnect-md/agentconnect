@@ -890,7 +890,9 @@
       "back": "Back",
       "copyLink": "Copy link",
       "linkCopied": "Link copied",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "openMenu": "Open menu",
+      "closeMenu": "Close menu"
     },
     "connectAi": {
       "title": "Connect your AI",

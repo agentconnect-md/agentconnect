@@ -821,7 +821,7 @@ export default function SessionsView() {
               {t('show', { count: totalCount })}
             </button>
             <div className="msheet-home">
-              <span className="home-pill dark" />
+              <span className="home-pill" />
             </div>
           </div>
         </div>

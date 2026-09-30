@@ -1,4 +1,4 @@
-// Console route metadata, shared by the Shell (rail / mobile nav / app-bar titles)
+// Console route metadata, shared by the Shell (rail / mobile drawer / app-bar titles)
 // and GlobalSearch (the "Pages" and "Settings" result groups). One table per
 // surface, defined here so the nav and the search index can never drift apart.
 
@@ -9,7 +9,7 @@ export interface NavItem {
   label: string
   icon: string
   /** Feature flag this destination needs. Absent ⇒ always shown. Every consumer
-   *  filters through `navVisible`, so the rail, the mobile sheet and the search
+   *  filters through `navVisible`, so the rail, the mobile drawer and the search
    *  index can never disagree about what this deployment offers. */
   requires?: FeatureFlagId
 }
@@ -19,10 +19,11 @@ export function navVisible(item: { requires?: FeatureFlagId }): boolean {
   return item.requires ? featureFlagEnabled(item.requires) : true
 }
 
-// The rail's destinations, in groups separated by a rule: what the organization
-// runs (agents and the surfaces they answer on) first, then what it runs on and
-// pays for — infrastructure, the usage that came out of it, the bill. You visit
-// the second group to check on the deployment, not to get work done.
+// The rail's destinations (and the mobile drawer's — one table, so the two can
+// never drift), in groups separated by a rule: what the organization runs (agents
+// and the surfaces they answer on) first, then what it runs on and pays for —
+// infrastructure, the usage that came out of it, the bill. You visit the second
+// group to check on the deployment, not to get work done.
 export const NAV_GROUPS: NavItem[][] = [
   [
     { href: '/home', label: 'Home', icon: 'house' },
@@ -40,31 +41,6 @@ export const NAV_GROUPS: NavItem[][] = [
     { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
     { href: '/billing', label: 'Billing', icon: 'credit-card', requires: 'billing' }
   ]
-]
-
-// Bottom tab bar (mobile only) — exactly the design's 5-slot bar: the 4 primary
-// destinations as equal columns plus a "More" slot that opens a bottom sheet.
-// (Schedules uses `alarm-clock` per the design, not `calendar-clock`.)
-export const MOBILE_NAV: NavItem[] = [
-  { href: '/home', label: 'Home', icon: 'house' },
-  { href: '/agents', label: 'Agents', icon: 'bot' },
-  { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
-  { href: '/crons', label: 'Schedules', icon: 'alarm-clock' }
-]
-
-// The "More" sheet's destinations — the desktop rail items beyond the 4 primary
-// tabs, plus the org's settings. Profile is NOT here: it lives in the mobile app
-// bar as a top-right avatar (mirroring the desktop top bar). The org switcher is
-// prepended separately, in the sheet itself.
-export const MORE_ROWS: NavItem[] = [
-  { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
-  { href: '/integrations', label: 'Integrations', icon: 'plug' },
-  { href: '/decisions', label: 'Decisions', icon: 'split' },
-  { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
-  { href: '/daemons', label: 'Infra', icon: 'server' },
-  { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
-  { href: '/billing', label: 'Billing', icon: 'credit-card', requires: 'billing' },
-  { href: '/settings', label: 'Organization settings', icon: 'settings' }
 ]
 
 // Section label for the mobile app bar, matched by path prefix. (Desktop has no
@@ -108,7 +84,7 @@ export type ShellNavKey =
   | 'profile'
   | 'organizationSettings'
 
-/** The rail, the mobile tab bar, and the mobile app-bar crumb. */
+/** The rail, the mobile drawer, and the mobile app-bar crumb. */
 export const NAV_LABEL_KEYS: Readonly<Record<string, ShellNavKey>> = {
   '/home': 'home',
   '/agents': 'agents',
@@ -124,12 +100,6 @@ export const NAV_LABEL_KEYS: Readonly<Record<string, ShellNavKey>> = {
   '/billing': 'billing',
   '/settings': 'settings',
   '/profile': 'profile'
-}
-
-/** The mobile "More" sheet, which names `/settings` in full. */
-export const SHEET_LABEL_KEYS: Readonly<Record<string, ShellNavKey>> = {
-  ...NAV_LABEL_KEYS,
-  '/settings': 'organizationSettings'
 }
 
 // ── Search page index ────────────────────────────────────────────────────────

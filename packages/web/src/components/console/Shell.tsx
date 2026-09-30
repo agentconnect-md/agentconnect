@@ -30,7 +30,7 @@ import GettingStarted, { openGettingStarted } from './GettingStarted'
 import { GlobalSearch } from './GlobalSearch'
 import { TooltipLayer } from './Tooltip'
 import { SearchOpenContext } from './search-open'
-import { LoadingState, LogoMark, OrgIconView } from '@/components/marks'
+import { LoadingState, LogoMark, OrgIconView, Wordmark } from '@/components/marks'
 import LanguageSwitcher, { LanguageSubmenu } from '@/components/LanguageSwitcher'
 import { MenuSubmenu } from '@/components/MenuSubmenu'
 import { Avatar, Icon } from '@/components/ui'
@@ -49,20 +49,24 @@ import {
   type ThemePreference
 } from '@/lib/theme'
 import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-view'
-import { NotificationProvider } from '@/lib/notifications'
+import { NotificationProvider, useNotifications } from '@/lib/notifications'
 import { NotificationBell, NotificationToastContainer } from './NotificationCenter'
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
 import { useSessionAccessNotifier } from '@/lib/session-access-notifier'
 import { useApprovalNotifier } from '@/lib/approval-notifier'
 import { useIntegrationNotifier } from '@/lib/integration-notifier'
-import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, SHEET_LABEL_KEYS, navVisible } from './nav'
+import { EscapeLayer } from './Scrim'
+import { localeList } from '@/i18n/config'
+import { NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, navVisible } from './nav'
 
-// Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
-// every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
-// Home is a top-level surface (the default landing), not a push screen.
-const LIST_ROUTES = ['/home', '/agents', '/sessions', '/crons', '/daemons']
-// Push sections that still own nested detail routes, so Back from a deep link lands on them, not Home.
-const NESTED_PARENTS = ['/knowledge']
+// A section's own page owns the list app bar (menu button, no back) on mobile; anything
+// nested under it is a "push" screen (back-button app bar). `/conversations/:key` is the
+// Sessions section's merged detail, so its root is the Sessions list.
+const sectionRoot = (section: string): string | null => {
+  const prefix = `/${section}`
+  if (!SECTIONS.some((s) => s.prefix === prefix)) return null
+  return prefix === '/conversations' ? '/sessions' : prefix
+}
 const CONSOLE_SWR_CONFIG = {
   dedupingInterval: 2_000,
   focusThrottleInterval: 5_000,
@@ -387,8 +391,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   useSessionAccessNotifier({ sessionAccessSnapshot, usageAccessSnapshot, orgPath })
   useApprovalNotifier({ pendingApprovalSessions, agents, agentsLoaded, orgPath })
   useIntegrationNotifier({ integrations, integrationsLoaded, botsLoaded, agents, agentsLoaded, orgPath })
-  // Mobile-only chrome state: which bottom sheet is open, and the full-screen search.
-  const [mobileSheet, setMobileSheet] = useState<'more' | 'org' | null>(null)
+  // Mobile-only chrome state: the drawer (alone, or with one of its sheets over it), and the full-screen search.
+  const [mobileSheet, setMobileSheet] = useState<'menu' | 'account' | 'help' | null>(null)
   const [mobileSearch, setMobileSearch] = useState(false)
   const [locationSearch, setLocationSearch] = useState('')
   const isMobile = useIsMobile()
@@ -543,8 +547,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     else router.push('/login')
   }, [router])
 
-  // Close any open mobile sheet / full-screen search whenever the route changes —
-  // a nav tap, a search selection, a More-row link, or the browser back button.
+  // Close the mobile drawer / its sheets / full-screen search whenever the route changes —
+  // a drawer tap, a search selection, an account-sheet link, or the browser back button.
   useEffect(() => {
     setMobileSheet(null)
     setMobileSearch(false)
@@ -617,15 +621,19 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const section = SECTIONS.find((s) => isActive(barePath, s.prefix))
   const crumb = section ? navLabel(section.prefix, section.label) : ''
 
-  // Mobile chrome is route-driven (SSR-safe): a LIST route shows the list app bar +
-  // bottom nav; anything deeper is a PUSH screen (back-button app bar, no nav). The
+  // Mobile chrome is route-driven (SSR-safe): a section's own page shows the list app
+  // bar (menu button); anything deeper is a PUSH screen (back-button app bar). The
   // viewport switch (desktop rail ↔ mobile chrome) is handled by CSS, so both are in
   // the DOM and there's no hydration flash.
-  const isListRoute = LIST_ROUTES.includes(barePath)
+  const seg = barePath.split('/').filter(Boolean)
+  const parentList = sectionRoot(seg[0] ?? '') ?? '/home'
+  const isListRoute = seg.length === 1 && parentList === barePath
   const addKind = ADD_KIND[barePath] ?? null
   // In no-auth mode there is no user identity and one implicit org, so Profile,
-  // Settings and org switching are all hidden (desktop rail + top bar + mobile More sheet).
+  // Settings and org switching are all hidden (desktop rail + mobile drawer).
   const authOn = isAuthConfigured()
+  // The menu button wears a dot while anything is unread — the bell itself lives in the drawer.
+  const { unreadCount } = useNotifications()
   const closeSheets = () => {
     setMobileSheet(null)
     setMobileSearch(false)
@@ -635,7 +643,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   // back-button app bar reads "deploy-bot" / "edge-1" / the session title, matching
   // the design), falling back to the section crumb for top-level push pages
   // (Profile / Analytics / Tools & Skills / Settings) or before the entity has loaded.
-  const seg = barePath.split('/').filter(Boolean)
   const listTitle = (() => {
     if (seg.length < 2) return undefined
     const [section, id] = seg
@@ -661,10 +668,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const { title: pushTitle } = detailCrumb(crumb, seg[1], listTitle ?? undefined, crumbSlot)
 
   // Back from a push screen: pop in-app history when there is any, else (deep-link /
-  // hard refresh — no history) route to the parent list so "back" never leaves the app.
-  const hasParentList =
-    LIST_ROUTES.includes(`/${seg[0] ?? ''}`) || (seg.length > 1 && NESTED_PARENTS.includes(`/${seg[0]}`))
-  const parentList = hasParentList ? `/${seg[0]}` : '/home'
+  // hard refresh — no history) route to the section's list so "back" never leaves the app.
   const parentListHref = orgPath(parentList + (seg[0] === 'sessions' ? sessionFilterSearch(locationSearch) : ''))
   const goBack = () => {
     if (typeof window !== 'undefined' && window.history.length > 1) router.back()
@@ -952,13 +956,21 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                   </button>
                 </div>
               )}
-              {/* ===== MOBILE APP BAR (hidden ≥ tablet) — list-tab vs push variant ===== */}
+              {/* ===== MOBILE APP BAR (hidden ≥ tablet) — section vs push variant ===== */}
               <header className="mtop">
                 {isListRoute ? (
                   <>
-                    <Link href={orgPath('/home')} className="mtop-logo select-none" aria-label={t('actions.goHome')}>
-                      <LogoMark />
-                    </Link>
+                    <button
+                      className="mappbtn relative"
+                      aria-label={t('actions.openMenu')}
+                      aria-expanded={mobileSheet !== null}
+                      onClick={() => setMobileSheet('menu')}
+                    >
+                      <Icon name="menu" size={20} />
+                      {unreadCount > 0 && (
+                        <span className="absolute top-[10px] right-[9px] h-2 w-2 rounded-full bg-(--brand) ring-2 ring-(--surface-card)" />
+                      )}
+                    </button>
                     <span className="mtop-title">{crumb}</span>
                     {addKind && (
                       <button className="mappbtn" aria-label={t('actions.add')} onClick={() => openModal(addKind)}>
@@ -978,28 +990,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           <span className="absolute top-[9px] right-[10px] h-[7px] w-[7px] rounded-full border-[1.5px] border-(--surface-card) bg-(--brand)" />
                         )}
                       </button>
-                    )}
-                    <button className="mappbtn" aria-label={t('actions.search')} onClick={() => setMobileSearch(true)}>
-                      <Icon name="search" size={20} />
-                    </button>
-                    <NotificationBell variant="mobile" />
-                    <button
-                      className="mappbtn"
-                      aria-label={t('actions.toggleTheme')}
-                      title={t(THEME_SWITCH_LABEL[nextThemePreference(themePref)])}
-                      onClick={toggleTheme}
-                    >
-                      <Icon name={THEME_ICON[nextThemePreference(themePref)]} size={20} />
-                    </button>
-                    {authOn && (
-                      <Link
-                        href={orgPath('/profile')}
-                        aria-label={t('navigation.profile')}
-                        title={t('navigation.profile')}
-                        className="ml-[2px] flex-none leading-[0]"
-                      >
-                        <Avatar src={display.picture} initials={display.initials} size={30} fontSize={11} />
-                      </Link>
                     )}
                   </>
                 ) : (
@@ -1042,45 +1032,53 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
               <div className="content">
                 <SearchOpenContext.Provider value={openSearch}>{children}</SearchOpenContext.Provider>
               </div>
-
-              {/* ===== MOBILE BOTTOM NAV — 4 tabs + More, hidden on push screens ===== */}
-              {isListRoute && (
-                <nav className="mnav">
-                  <div className="mnav-tabs">
-                    {MOBILE_NAV.map((item) => {
-                      const on = isActive(barePath, item.href)
-                      return (
-                        <Link key={item.href} href={orgPath(item.href)} className={on ? 'mnavitem on' : 'mnavitem'}>
-                          <Icon name={item.icon} size={20} color={on ? 'var(--magenta-300)' : undefined} />
-                          <span>{navLabel(item.href, item.label)}</span>
-                        </Link>
-                      )
-                    })}
-                    <button type="button" className="mnavitem" onClick={() => setMobileSheet('more')}>
-                      <Icon name="ellipsis" size={20} />
-                      <span>{t('navigation.more')}</span>
-                    </button>
-                  </div>
-                  <div className="mnav-home">
-                    <span className="home-pill" />
-                  </div>
-                </nav>
-              )}
             </div>
 
-            {/* ===== MOBILE SHEETS + full-screen search (mobile-only; opened from the nav) ===== */}
+            {/* ===== MOBILE DRAWER, its sheets, and the full-screen search (mobile-only; opened from the app bar) ===== */}
             {mobileSheet && (
-              <MobileSheets
-                which={mobileSheet}
+              <MobileDrawer
+                barePath={barePath}
                 authOn={authOn}
+                orgPath={orgPath}
+                display={display}
+                activeOrg={activeOrg}
+                theme={themePref}
+                onToggleTheme={toggleTheme}
+                onSearch={() => {
+                  setMobileSheet(null)
+                  setMobileSearch(true)
+                }}
+                onOpenAccount={() => setMobileSheet('account')}
+                onOpenHelp={() => setMobileSheet('help')}
+                onClose={closeSheets}
+              />
+            )}
+            {mobileSheet === 'account' && (
+              <MobileAccountSheet
+                display={display}
                 orgPath={orgPath}
                 orgs={orgs}
                 activeOrg={activeOrg}
                 setActiveOrg={setActiveOrg}
                 onCreateOrg={goCreateOrg}
                 canCreateOrg={canCreateOrg}
-                onOpenOrg={() => setMobileSheet('org')}
-                onClose={closeSheets}
+                theme={themePref}
+                onSelectTheme={selectTheme}
+                onSignOut={signOut}
+                onNavigate={closeSheets}
+                onClose={() => setMobileSheet('menu')}
+              />
+            )}
+            {mobileSheet === 'help' && (
+              <MobileHelpSheet
+                authOn={authOn}
+                help={help}
+                onConnectAi={() => {
+                  closeSheets()
+                  setConnectAiOpen(true)
+                }}
+                onNavigate={closeSheets}
+                onClose={() => setMobileSheet('menu')}
               />
             )}
             {mobileSearch && <GlobalSearch mobile autoFocus onClose={() => setMobileSearch(false)} />}
@@ -1231,149 +1229,347 @@ function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
   )
 }
 
-// Mobile-only bottom sheets reachable from the nav's "More" tab: the app's overflow
-// destinations (Profile/Analytics/Tools & Skills/Settings) + the org switcher — the sole
-// mobile entry point for switching / creating orgs (the rail picker is hidden).
-function MobileSheets({
-  which,
+// Mobile-only full-screen drawer (design "Mobile navigation", 3b), opened from the
+// app bar's menu button: the rail's destinations at phone size plus everything the
+// rail's brand row and footer hold on desktop — search, the getting-started re-entry,
+// and in the footer the account button (→ account sheet), the bell, and help.
+function MobileDrawer({
+  barePath,
   authOn,
+  orgPath,
+  display,
+  activeOrg,
+  theme,
+  onToggleTheme,
+  onSearch,
+  onOpenAccount,
+  onOpenHelp,
+  onClose
+}: {
+  barePath: string
+  authOn: boolean
+  orgPath: (p: string) => string
+  display: { picture?: string | null; initials: string; name: string; email?: string }
+  activeOrg: OrgDto | null
+  theme: ThemePreference
+  onToggleTheme: () => void
+  onSearch: () => void
+  onOpenAccount: () => void
+  onOpenHelp: () => void
+  onClose: () => void
+}) {
+  const t = useTranslations('Shell')
+  const navLabel = (href: string, fallback: string) => {
+    const key = NAV_LABEL_KEYS[href]
+    return key ? t(`navigation.${key}`) : fallback
+  }
+  const orgName = activeOrg ? (activeOrg.name ?? activeOrg.slug) : ''
+  return (
+    <div className="mdrawer fixed inset-0 z-80 flex flex-col bg-(--surface-inverse) px-3 pt-[env(safe-area-inset-top,0px)] desktop:hidden">
+      <EscapeLayer onEscape={onClose} />
+      <div className="flex h-[52px] flex-none items-center gap-[10px] px-[2px]">
+        <button
+          type="button"
+          className="mappbtn text-(--text-inverse)"
+          aria-label={t('actions.closeMenu')}
+          onClick={onClose}
+        >
+          <Icon name="x" size={20} />
+        </button>
+        <Wordmark height={22} inverse />
+      </div>
+      <button
+        type="button"
+        onClick={onSearch}
+        className="mt-2 mb-[10px] flex h-[46px] flex-none cursor-pointer items-center gap-[10px] rounded-lg border border-(--border-inverse) bg-[rgba(255,255,255,.05)] px-[14px] font-sans text-[15.5px] font-normal leading-normal text-(--text-inverse-dim)"
+      >
+        <Icon name="search" size={18} />
+        {t('actions.search')}
+      </button>
+      <nav className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {NAV_GROUPS.map((g) => g.filter(navVisible)).map((group, groupIndex) => (
+          <Fragment key={group[0]?.href ?? groupIndex}>
+            {groupIndex > 0 && <div className="navsep" />}
+            {group.map((item, index) => (
+              <Fragment key={item.href}>
+                <Link
+                  href={orgPath(item.href)}
+                  className={isActive(barePath, item.href) ? 'navitem on' : 'navitem'}
+                  onClick={onClose}
+                >
+                  <Icon name={item.icon} size={20} />
+                  <span>{navLabel(item.href, item.label)}</span>
+                </Link>
+                {/* Getting started sits right under the landing row (design); owner-only, like the checklist. */}
+                {groupIndex === 0 && index === 0 && activeOrg?.role === 'owner' && (
+                  <button
+                    type="button"
+                    className="navitem"
+                    onClick={() => {
+                      onClose()
+                      openGettingStarted()
+                    }}
+                  >
+                    <Icon name="rocket" size={20} />
+                    <span>{t('help.gettingStarted')}</span>
+                  </button>
+                )}
+              </Fragment>
+            ))}
+          </Fragment>
+        ))}
+      </nav>
+      <div className="-mx-3 flex min-h-16 flex-none items-center gap-1 border-t border-(--border-inverse) pr-2 pb-[env(safe-area-inset-bottom,0px)] pl-4">
+        {authOn ? (
+          <button
+            type="button"
+            onClick={onOpenAccount}
+            className="flex min-h-12 min-w-0 flex-1 cursor-pointer items-center gap-[10px] border-0 bg-transparent p-0 text-left"
+            aria-label={t('actions.account')}
+            aria-haspopup="dialog"
+          >
+            <span className="relative inline-flex flex-none">
+              <Avatar src={display.picture} initials={display.initials} size={30} fontSize={11} />
+              {/* The active org rides the avatar as a corner badge, as on the rail's account block. */}
+              {activeOrg && (
+                <OrgIconView
+                  icon={activeOrg.icon}
+                  iconUrl={activeOrg.iconUrl}
+                  label={orgName}
+                  fallbackColor={orgColor(activeOrg.id)}
+                  size={16}
+                  className="absolute -right-[4px] -bottom-[3px] rounded-xs text-[9px] ring-2 ring-(--surface-inverse)"
+                />
+              )}
+            </span>
+            <span className="ml-[2px] flex min-w-0 flex-col gap-[1px]">
+              <span className="truncate font-sans text-[13.5px] font-semibold leading-normal text-white">
+                {display.name}
+              </span>
+              {orgName && (
+                <span className="truncate font-sans text-[12px] font-medium leading-normal text-(--text-inverse-dim)">
+                  {orgName}
+                </span>
+              )}
+            </span>
+            <Icon name="chevrons-up-down" size={15} color="var(--text-inverse-dim)" className="flex-none" />
+          </button>
+        ) : (
+          <>
+            {/* No-auth has no account, so the theme toggle takes the footer's lead slot, as on the rail. */}
+            <button
+              type="button"
+              className="mappbtn text-(--text-inverse)"
+              title={t(THEME_SWITCH_LABEL[nextThemePreference(theme)])}
+              aria-label={t('actions.toggleTheme')}
+              onClick={onToggleTheme}
+            >
+              <Icon name={THEME_ICON[nextThemePreference(theme)]} size={20} />
+            </button>
+            <div className="flex-1" />
+          </>
+        )}
+        <NotificationBell variant="mobile" />
+        <button
+          type="button"
+          className="mappbtn text-(--text-inverse)"
+          aria-label={t('help.menu')}
+          onClick={onOpenHelp}
+        >
+          <Icon name="circle-question-mark" size={20} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// The sheets' Language row: the locale select, where the desktop menus use a flyout.
+function MobileLanguageRow() {
+  const t = useTranslations('Common.language')
+  if (localeList.length < 2) return null
+  return (
+    <div className="msheet-row">
+      <Icon name="languages" size={20} color="var(--text-tertiary)" />
+      <span className="flex-1">{t('label')}</span>
+      <LanguageSwitcher showLabel={false} />
+    </div>
+  )
+}
+
+// Mobile account sheet (design 3c), over the drawer: what the rail's account menu
+// carries on desktop — org switching, Profile, Organization settings, language,
+// theme, sign-out. Auth mode only; no-auth has no identity to act as.
+function MobileAccountSheet({
+  display,
   orgPath,
   orgs,
   activeOrg,
   setActiveOrg,
   onCreateOrg,
   canCreateOrg,
-  onOpenOrg,
+  theme,
+  onSelectTheme,
+  onSignOut,
+  onNavigate,
   onClose
 }: {
-  which: 'more' | 'org'
-  authOn: boolean
+  display: { picture?: string | null; initials: string; name: string; email?: string }
   orgPath: (p: string) => string
   orgs: OrgDto[]
   activeOrg: OrgDto | null
   setActiveOrg: (id: string) => void
   onCreateOrg: () => void
   canCreateOrg: boolean
-  onOpenOrg: () => void
+  theme: ThemePreference
+  onSelectTheme: (theme: ThemePreference) => void
+  onSignOut: () => void
+  /** Leaving for another page closes the drawer too; `onClose` only drops the sheet. */
+  onNavigate: () => void
   onClose: () => void
 }) {
   const t = useTranslations('Shell')
-  const navLabel = (href: string, fallback: string) => {
-    const key = SHEET_LABEL_KEYS[href]
-    return key ? t(`navigation.${key}`) : fallback
-  }
-
-  const square = (o: OrgDto) => (
-    <OrgIconView
-      icon={o.icon}
-      iconUrl={o.iconUrl}
-      label={o.name ?? o.slug}
-      fallbackColor={orgColor(o.id)}
-      size={32}
-      className="rounded-md text-[13px]"
-    />
-  )
   return (
-    <div className="msheet-scrim" onClick={onClose}>
+    <div className="msheet-scrim desktop:hidden" onClick={onClose}>
+      <EscapeLayer onEscape={onClose} />
       <div className="msheet" onClick={(e) => e.stopPropagation()}>
         <div className="msheet-handle" />
-        {which === 'more' ? (
-          <>
-            <div className="msheet-eyebrow">{t('navigation.more')}</div>
-            {/* Org switcher + Profile/Settings only exist in auth mode. */}
-            {authOn && activeOrg && (
-              <>
-                <button type="button" className="msheet-row" onClick={onOpenOrg}>
-                  {square(activeOrg)}
-                  <span className="msheet-rowtext">
-                    <span className="msheet-rowname">{activeOrg.name ?? activeOrg.slug}</span>
-                    <span className="msheet-rowmeta">{t('organization.count', { count: orgs.length })}</span>
-                  </span>
-                  <Icon name="chevrons-up-down" size={16} color="var(--text-tertiary)" />
-                </button>
-                <div className="msheet-divider" />
-              </>
-            )}
-            {MORE_ROWS.filter((r) => navVisible(r) && (authOn || r.href !== '/settings')).map((r) => (
-              <Link key={r.href} href={orgPath(r.href)} className="msheet-row" onClick={onClose}>
-                <Icon name={r.icon} size={20} color="var(--text-tertiary)" />
-                <span>{navLabel(r.href, r.label)}</span>
-              </Link>
-            ))}
-            {/* The rail (and so the account menu that carries this on desktop) is hidden
-                at mobile widths, so the sheet is the phone/tablet language path. */}
-            <div className="px-3 py-2">
-              <LanguageSwitcher className="w-full justify-between" />
-            </div>
-            {/* The rail (and both of its re-entry menus) is hidden at mobile widths, so
-                this is the phone/tablet way back to a skipped checklist — both auth modes.
-                Owner-only, like the checklist itself. */}
-            {activeOrg?.role === 'owner' && (
-              <button
-                type="button"
-                className="msheet-row"
-                onClick={() => {
-                  onClose()
-                  openGettingStarted()
-                }}
-              >
-                <Icon name="rocket" size={20} color="var(--text-tertiary)" />
-                <span>{t('help.gettingStarted')}</span>
-              </button>
-            )}
-            <button type="button" className="msheet-cancel" onClick={onClose}>
-              {t('actions.cancel')}
-            </button>
-            <div className="msheet-home">
-              <span className="home-pill dark" />
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="msheet-eyebrow">{t('organization.title')}</div>
-            {orgs.map((o) => (
-              <button
-                key={o.id}
-                type="button"
-                className="msheet-row"
-                onClick={() => {
-                  setActiveOrg(o.id)
-                  onClose()
-                }}
-              >
-                {square(o)}
-                <span className="msheet-rowtext">
-                  <span className="msheet-rowname">{o.name ?? o.slug}</span>
-                </span>
-                {o.id === activeOrg?.id && <Icon name="check" size={18} color="var(--brand)" />}
-              </button>
-            ))}
-            {canCreateOrg && (
-              <>
-                <div className="msheet-divider" />
-                <button
-                  type="button"
-                  className="msheet-row"
-                  onClick={() => {
-                    onClose()
-                    onCreateOrg()
-                  }}
-                >
-                  <span className="msheet-orgsq dashed">
-                    <Icon name="plus" size={16} />
-                  </span>
-                  <span>{t('actions.createOrganization')}</span>
-                </button>
-              </>
-            )}
-            <button type="button" className="msheet-cancel" onClick={onClose}>
-              {t('actions.cancel')}
-            </button>
-            <div className="msheet-home">
-              <span className="home-pill dark" />
-            </div>
-          </>
+        {display.email && (
+          <div className="mono truncate px-3 pt-[6px] pb-[6px] text-[12.5px] text-(--text-tertiary)">
+            {display.email}
+          </div>
         )}
+        {orgs.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            className="msheet-row"
+            onClick={() => {
+              setActiveOrg(o.id)
+              onNavigate()
+            }}
+          >
+            <OrgIconView
+              icon={o.icon}
+              iconUrl={o.iconUrl}
+              label={o.name ?? o.slug}
+              fallbackColor={orgColor(o.id)}
+              size={32}
+              className="rounded-md text-[13px]"
+            />
+            <span className="msheet-rowtext">
+              <span className="msheet-rowname">{o.name ?? o.slug}</span>
+            </span>
+            {o.id === activeOrg?.id && <Icon name="check" size={18} color="var(--brand)" />}
+          </button>
+        ))}
+        {canCreateOrg && (
+          <button
+            type="button"
+            className="msheet-row"
+            onClick={() => {
+              onNavigate()
+              onCreateOrg()
+            }}
+          >
+            <span className="msheet-orgsq dashed">
+              <Icon name="plus" size={16} />
+            </span>
+            <span>{t('actions.createOrganization')}</span>
+          </button>
+        )}
+        <div className="msheet-divider" />
+        <Link href={orgPath('/profile')} className="msheet-row" onClick={onNavigate}>
+          <Icon name="circle-user-round" size={20} color="var(--text-tertiary)" />
+          <span>{t('navigation.profile')}</span>
+        </Link>
+        <Link href={orgPath('/settings')} className="msheet-row" onClick={onNavigate}>
+          <Icon name="settings" size={20} color="var(--text-tertiary)" />
+          <span>{t('navigation.organizationSettings')}</span>
+        </Link>
+        <MobileLanguageRow />
+        <div className="msheet-row min-h-[52px]">
+          <Icon name="sun-moon" size={20} color="var(--text-tertiary)" />
+          <span className="flex-1">{t('actions.theme')}</span>
+          <div className="flex gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]">
+            {THEME_OPTIONS.map((value) => (
+              <button
+                key={value}
+                type="button"
+                aria-label={t(THEME_MENU_LABEL[value])}
+                aria-pressed={theme === value}
+                onClick={() => onSelectTheme(value)}
+                className={
+                  theme === value
+                    ? 'flex h-[34px] w-11 cursor-pointer items-center justify-center rounded-[7px] border-0 bg-(--surface-card) text-(--text-primary) shadow-(--shadow-xs)'
+                    : 'flex h-[34px] w-11 cursor-pointer items-center justify-center rounded-[7px] border-0 bg-transparent text-(--text-tertiary)'
+                }
+              >
+                <Icon name={THEME_ICON[value]} size={16} />
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="msheet-divider" />
+        <button type="button" className="msheet-row" onClick={onSignOut}>
+          <Icon name="log-out" size={20} color="var(--text-tertiary)" />
+          <span>{t('actions.signOut')}</span>
+        </button>
+        <div className="msheet-home">
+          <span className="home-pill" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Mobile help sheet, over the drawer: the rail-footer help menu's links. Keyboard
+// shortcuts stay desktop-only; Getting started is a drawer row instead.
+function MobileHelpSheet({
+  authOn,
+  help,
+  onConnectAi,
+  onNavigate,
+  onClose
+}: {
+  authOn: boolean
+  help: ReturnType<typeof resolveHelpLinks>
+  onConnectAi: () => void
+  onNavigate: () => void
+  onClose: () => void
+}) {
+  const t = useTranslations('Shell')
+  return (
+    <div className="msheet-scrim desktop:hidden" onClick={onClose}>
+      <EscapeLayer onEscape={onClose} />
+      <div className="msheet" onClick={(e) => e.stopPropagation()}>
+        <div className="msheet-handle" />
+        <div className="msheet-eyebrow">{t('help.menu')}</div>
+        <button type="button" className="msheet-row" onClick={onConnectAi}>
+          <SiModelcontextprotocol size={20} className="flex-none text-(--text-tertiary)" aria-hidden />
+          <span>{t('help.connectAi')}</span>
+        </button>
+        <a className="msheet-row" href={help.docs} target="_blank" rel="noopener noreferrer" onClick={onNavigate}>
+          <Icon name="book-open" size={20} color="var(--text-tertiary)" />
+          <span>{t('help.documentation')}</span>
+        </a>
+        {/* No-auth has no account sheet, so its language control lives here, as on the rail. */}
+        {!authOn && <MobileLanguageRow />}
+        <a className="msheet-row" href={help.releases} target="_blank" rel="noopener noreferrer" onClick={onNavigate}>
+          <Icon name="gift" size={20} color="var(--text-tertiary)" />
+          <span className="flex-1">{t('help.whatsNew')}</span>
+          {help.version && (
+            <span className="rounded-full bg-(--surface-active) px-[6px] font-mono text-[10px] font-medium leading-[16px] text-(--text-tertiary)">
+              {help.version}
+            </span>
+          )}
+        </a>
+        <a className="msheet-row" href={help.support} onClick={onNavigate}>
+          <Icon name="life-buoy" size={20} color="var(--text-tertiary)" />
+          <span>{t('help.support')}</span>
+        </a>
+        <div className="msheet-home">
+          <span className="home-pill" />
+        </div>
       </div>
     </div>
   )

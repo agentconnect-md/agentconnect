@@ -282,10 +282,10 @@ export default function GettingStarted() {
 
   return (
     <>
-      {/* 1a — floating pill. On mobile it floats above the bottom-tab chrome (the
-          drawer below is already full-width there). */}
+      {/* 1a — floating pill. On mobile it hugs the safe area (the drawer below is
+          already full-width there). */}
       {showPill && !drawerOpen && (
-        <div className="fixed right-[26px] bottom-[22px] z-[60] inline-flex h-10 items-center rounded-full border border-(--border-default) bg-(--surface-card) pr-[5px] pl-[9px] shadow-(--shadow-lg) hover:border-(--border-strong) hover:shadow-(--shadow-xl) max-desktop:right-4 max-desktop:bottom-[96px]">
+        <div className="fixed right-[26px] bottom-[22px] z-[60] inline-flex h-10 items-center rounded-full border border-(--border-default) bg-(--surface-card) pr-[5px] pl-[9px] shadow-(--shadow-lg) hover:border-(--border-strong) hover:shadow-(--shadow-xl) max-desktop:right-4 max-desktop:bottom-[calc(16px+env(safe-area-inset-bottom,0px))]">
           <button
             type="button"
             onClick={() => setDrawerOpen(true)}

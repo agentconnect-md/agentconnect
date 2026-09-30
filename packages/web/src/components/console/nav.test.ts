@@ -1,20 +1,11 @@
 // @vitest-environment happy-dom
-// nav.ts exists so the rail, the mobile sheet and the search index cannot disagree
+// nav.ts exists so the rail, the mobile drawer and the search index cannot disagree
 // about what a deployment offers. A flagged destination is where that promise is
 // easiest to break — one consumer forgetting to filter is a rail without the entry
 // but a search result that navigates to it anyway.
 import { describe, expect, it, afterEach } from 'vitest'
 import english from '../../../messages/en.json'
-import {
-  MORE_ROWS,
-  MOBILE_NAV,
-  NAV_GROUPS,
-  NAV_LABEL_KEYS,
-  SEARCH_PAGES,
-  SECTIONS,
-  SHEET_LABEL_KEYS,
-  navVisible
-} from './nav'
+import { NAV_GROUPS, NAV_LABEL_KEYS, SEARCH_PAGES, SECTIONS, navVisible } from './nav'
 
 const setFlags = (value?: string) => {
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV =
@@ -42,7 +33,7 @@ describe('navVisible', () => {
   })
 
   it('reaches the same verdict in every table, so no surface can offer what the rail hides', () => {
-    const tables = () => [offered(NAV_GROUPS.flat()), offered(MORE_ROWS), offered(SEARCH_PAGES)]
+    const tables = () => [offered(NAV_GROUPS.flat()), offered(SEARCH_PAGES)]
 
     setFlags()
     for (const hrefs of tables()) expect(hrefs).not.toContain('/billing')
@@ -53,8 +44,7 @@ describe('navVisible', () => {
 
   it('offers the Decisions surface everywhere with no flag set', () => {
     setFlags('')
-    for (const hrefs of [offered(NAV_GROUPS.flat()), offered(MORE_ROWS), offered(SEARCH_PAGES)])
-      expect(hrefs).toContain('/decisions')
+    for (const hrefs of [offered(NAV_GROUPS.flat()), offered(SEARCH_PAGES)]) expect(hrefs).toContain('/decisions')
   })
 
   it('leaves the rest of the rail alone when a flag is off', () => {
@@ -68,38 +58,27 @@ describe('navVisible', () => {
 // so nothing else in the suite would notice.
 describe('localized destination labels', () => {
   const navigation = english.Shell.navigation as Record<string, string>
-  const railHrefs = [
-    ...NAV_GROUPS.flat().map((item) => item.href),
-    ...MOBILE_NAV.map((item) => item.href),
-    ...MORE_ROWS.map((item) => item.href),
-    ...SECTIONS.map((section) => section.prefix)
-  ]
+  const railHrefs = [...NAV_GROUPS.flat().map((item) => item.href), ...SECTIONS.map((section) => section.prefix)]
 
-  it('words every destination the rail, the tab bar, or a crumb can name', () => {
+  it('words every destination the rail, the drawer, or a crumb can name', () => {
     const missing = railHrefs.filter((href) => !NAV_LABEL_KEYS[href])
     expect([...new Set(missing)]).toEqual([])
   })
 
-  it('words every row the More sheet can name', () => {
-    const missing = MORE_ROWS.map((item) => item.href).filter((href) => !SHEET_LABEL_KEYS[href])
-    expect(missing).toEqual([])
-  })
-
   it('resolves every mapped key to a real catalog entry', () => {
-    const keys = new Set([...Object.values(NAV_LABEL_KEYS), ...Object.values(SHEET_LABEL_KEYS)])
+    const keys = new Set(Object.values(NAV_LABEL_KEYS))
     const unknown = [...keys].filter((key) => !navigation[key])
     expect(unknown).toEqual([])
   })
 
-  // The one route the two surfaces word differently, and the reason they are two maps.
-  it('keeps the sheet naming Organization settings', () => {
+  // The account menus name `/settings` in full themselves; the crumb keeps the short form.
+  it('keeps the crumb naming Settings', () => {
     expect(NAV_LABEL_KEYS['/settings']).toBe('settings')
-    expect(SHEET_LABEL_KEYS['/settings']).toBe('organizationSettings')
+    expect(navigation.organizationSettings).toBe('Organization settings')
   })
 
-  it('localizes the Decisions entry on both surfaces', () => {
+  it('localizes the Decisions entry', () => {
     expect(NAV_LABEL_KEYS['/decisions']).toBe('decisions')
-    expect(SHEET_LABEL_KEYS['/decisions']).toBe('decisions')
     expect(navigation.decisions).toBe('Decisions')
   })
 })

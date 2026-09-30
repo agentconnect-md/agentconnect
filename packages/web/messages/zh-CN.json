@@ -890,7 +890,9 @@
       "back": "返回",
       "copyLink": "复制链接",
       "linkCopied": "链接已复制",
-      "cancel": "取消"
+      "cancel": "取消",
+      "openMenu": "打开菜单",
+      "closeMenu": "关闭菜单"
     },
     "connectAi": {
       "title": "连接你的 AI",
