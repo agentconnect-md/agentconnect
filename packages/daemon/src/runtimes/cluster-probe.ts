@@ -6,10 +6,10 @@ import type { Logger } from '../log.js'
 import {
   applyClaudeModelAliases,
   applyCodexSessionFloor,
-  applyStaticModelConfig,
+  applyConfiguredModelProviders,
   modelProviderTarget
 } from './model-provider-config.js'
-import type { ModelCredential, ModelRuntimeKind } from './model-provider-config.js'
+import type { ModelCredential, ModelProviderTarget } from './model-provider-config.js'
 import { applyRuntimeEnvironment, type RuntimeEnvironment } from './runtime-environment.js'
 import { probeRuntime, type ProbeHostFactory, type RuntimeProbeResult } from './runtime-prober.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from './k8s-runtimes.js'
@@ -55,8 +55,8 @@ export interface ClusterProbeOptions {
   /** Session cwd in the POD's coordinates — its workspace mount, never a daemon path. */
   cwd: string
   hostFactory: ProbeHostFactory
-  /** The deployment's provider pair for a runtime kind, when one is configured. */
-  staticCredential?: (kind: ModelRuntimeKind) => ModelCredential | undefined
+  /** The deployment's pair for the runtime and provider being configured. */
+  staticCredential?: (target: ModelProviderTarget) => ModelCredential | undefined
   /** Operator-owned Secret entries delivered to the same runtime at probe and spawn. */
   runtimeEnvironment?: RuntimeEnvironment
   /** Deployment-asserted codex session config, applied exactly as a real launch applies it. */
@@ -99,19 +99,24 @@ export function clusterProbeEnv(
   const env: Record<string, string> = { AC_AGENT_ID: opts.agentId }
   const target = modelProviderTarget({ runtime: runtimeId }, runtime)
   const runtimeValues = applyRuntimeEnvironment(opts.runtimeEnvironment ?? {}, runtimeId, env)
-  const configured = target ? opts.staticCredential?.(target.runtime) : undefined
-  const credential = probeCredential(configured)
-  if (target && credential) applyStaticModelConfig(target, env, credential)
+  const configured: ModelCredential[] = []
+  if (target) {
+    applyConfiguredModelProviders(target, env, (providerTarget) => {
+      const credential = opts.staticCredential?.(providerTarget)
+      if (credential) configured.push(credential)
+      return probeCredential(credential)
+    })
+  }
   // Keep the same precedence as session launch: runtime env, then built-in translation and floors.
   if (target && opts.codexSessionFloor) applyCodexSessionFloor(target, env, opts.codexSessionFloor)
   if (target && opts.claudeModelAliases) applyClaudeModelAliases(target, env, opts.claudeModelAliases)
-  const key = configured?.key
   // Redact bound values and any generated config that embeds them.
-  const secrets = [key, ...runtimeValues].filter((value): value is string => !!value)
+  const secrets = [...configured.map((credential) => credential.key), ...runtimeValues].filter(Boolean)
   const redactValues = [
     ...new Set([...secrets, ...Object.values(env).filter((value) => secrets.some((secret) => value.includes(secret)))])
   ]
-  return { env, redactValues, uncredentialed: !!target && !credential?.key && runtimeValues.length === 0 }
+  const credentialed = configured.some((credential) => credential.key || credential.baseUrl)
+  return { env, redactValues, uncredentialed: !!target && !credentialed && runtimeValues.length === 0 }
 }
 
 export async function probeClusterRuntimes(opts: ClusterProbeOptions): Promise<RuntimeProbeResult[]> {

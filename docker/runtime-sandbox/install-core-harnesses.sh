@@ -7,7 +7,8 @@ DSH_RUNTIME_DIR=/opt/agentconnect/dsh-runtime
 npm install --global --no-fund --no-audit \
   "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}" \
   "@agentconnect.md/codex-acp@${CODEX_ACP_VERSION}" \
-  "@openma/deepseek-harness-acp@${DEEPSEEK_HARNESS_ACP_VERSION}"
+  "@openma/deepseek-harness-acp@${DEEPSEEK_HARNESS_ACP_VERSION}" \
+  "opencode-ai@${OPENCODE_VERSION}"
 npm cache clean --force
 # Unpack the vendored DeepSeek runtime once into the image, before session pods start.
 DSH_ACP_CACHE_DIR="$DSH_RUNTIME_DIR" timeout 300 dsh-acp < /dev/null > /dev/null

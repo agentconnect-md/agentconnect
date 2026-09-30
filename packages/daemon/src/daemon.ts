@@ -548,7 +548,7 @@ import {
   applyCodexSessionFloor,
   applyClaudeModelAliases,
   applyModelCredential,
-  applyStaticModelConfig,
+  applyConfiguredModelProviders,
   configuredClaudeModelAliases,
   configuredCodexSessionFloor,
   configuredModelCredentials,
@@ -6874,11 +6874,11 @@ export class Daemon {
           }
           if (!this.k8s) return
           if (target) {
+            applyConfiguredModelProviders(target, launchEnv, (providerTarget) => {
+              const configured = this.modelSessions.staticCredential(providerTarget)
+              return configured && opts.modelCredential ? { ...configured, key: '' } : configured
+            })
             if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
-            else {
-              const configured = this.modelSessions.staticCredential(target.runtime)
-              if (configured) applyStaticModelConfig(target, launchEnv, configured)
-            }
             if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
             if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
           }
@@ -7226,6 +7226,7 @@ export class Daemon {
       log: () => this.log,
       agent: (agentId, key) => this.sessionAgent(agentId, key),
       runtime: (kind) => this.runtimes[kind],
+      defaultModel: (runtime) => this.runtimeFacts.modelCatalog(runtime)?.defaultModel,
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
       modelOverride: async (sessionKey) => {
         const session = await this.store.getSession(sessionKey)
@@ -7836,8 +7837,12 @@ export class Daemon {
     let issued: { target: ModelProviderTarget; grant: KeyGrant } | undefined
     if (this.modelSessions.enabled) {
       const runtime = this.runtimes[agent.runtime]
-      const target = runtime ? modelProviderTarget(agent, runtime) : undefined
+      const model = agent.runtimeOverrides?.model ?? this.runtimeFacts.modelCatalog(agent.runtime)?.defaultModel
+      const target = runtime ? modelProviderTarget(agent, runtime, model) : undefined
       if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
+      if (target.runtime === 'opencode' && !model) {
+        throw new Error('OpenCode model list is not ready; select a model or retry after it loads')
+      }
       issued = {
         target,
         grant: await this.modelSessions.issueKey(agent, target, internalSessionKey.dream(context.dreamId))
@@ -23811,7 +23816,7 @@ export class Daemon {
           log: this.log,
           isolateAccountApps: this.cfg.security.isolateAccountApps
         }),
-      staticCredential: (kind) => this.modelSessions.staticCredential(kind),
+      staticCredential: (target) => this.modelSessions.staticCredential(target),
       runtimeEnvironment: this.runtimeEnvironment,
       ...(this.codexSessionFloor ? { codexSessionFloor: this.codexSessionFloor } : {}),
       ...(this.claudeModelAliases ? { claudeModelAliases: this.claudeModelAliases } : {}),

@@ -877,8 +877,8 @@ The image workflow creates this alias even when it reuses an older component
 image. The pool continues to use the separate `runtime-sandbox` image. Both targets
 share the same helper payload over their respective application layers. Additional
 self-hosted runtimes belong in the full application stage. The pool provides Claude Code,
-Codex, and DeepSeek Harness. The full image additionally installs Antigravity,
-Cline, Devin, GitHub Copilot, Grok Build, Oh My Pi, OpenCode, pi, Qwen Code,
+Codex, DeepSeek Harness, and OpenCode. The full image additionally installs Antigravity,
+Cline, Devin, GitHub Copilot, Grok Build, Oh My Pi, pi, Qwen Code,
 Qoder CLI, and Qoder CN CLI. The `qoder` compatibility ID resolves to `qoder-cli`
 before host discovery and image projection. Both IDs share one native launch
 definition and one probe state; reported `aliasOf` metadata lets the Console show

@@ -1,5 +1,6 @@
 [
   { "id": "claude-acp", "command": "claude-agent-acp", "args": [] },
   { "id": "codex-acp", "command": "codex-acp", "args": [] },
-  { "id": "dsh-acp", "command": "dsh-acp", "args": [] }
+  { "id": "dsh-acp", "command": "dsh-acp", "args": [] },
+  { "id": "opencode", "command": "opencode", "args": ["acp"] }
 ]
