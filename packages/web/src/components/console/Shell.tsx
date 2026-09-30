@@ -396,6 +396,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const [mobileSearch, setMobileSearch] = useState(false)
   const [locationSearch, setLocationSearch] = useState('')
   const isMobile = useIsMobile()
+  // The mobile menu button wears a dot while anything is unread — the bell itself lives in the drawer.
+  const { unreadCount } = useNotifications()
   // Open global search from anywhere (e.g. a not-found page's "Search" action):
   // the full-screen overlay on mobile, or the desktop top-bar box via its own ⌘K
   // listener. Provided to the page subtree through SearchOpenContext.
@@ -632,8 +634,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   // In no-auth mode there is no user identity and one implicit org, so Profile,
   // Settings and org switching are all hidden (desktop rail + mobile drawer).
   const authOn = isAuthConfigured()
-  // The menu button wears a dot while anything is unread — the bell itself lives in the drawer.
-  const { unreadCount } = useNotifications()
   const closeSheets = () => {
     setMobileSheet(null)
     setMobileSearch(false)
