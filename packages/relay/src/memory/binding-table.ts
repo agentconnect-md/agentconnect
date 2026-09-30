@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { RcMemoryConnectionAssign } from '@agentconnect.md/protocol'
+import { ProjectionSnapshot } from '../projection-snapshot.js'
 
 /** Relay-only upstream material. Secret header values must never be logged. */
 export interface MemoryPluginUpstream {
@@ -22,8 +23,11 @@ export class MemoryConnectionBindingTable {
       upstream?: { upstreamUrl: string; headers: MemoryPluginUpstream['headers']; hashes: Set<string> }
     }
   >()
+  private readonly snapshot = new ProjectionSnapshot()
 
   assign(binding: RcMemoryConnectionAssign): void {
+    // Replayed at an equal revision it is still current, so it counts as seen even when ignored below.
+    this.snapshot.see(binding.connectionId)
     const current = this.byConnection.get(binding.connectionId)
     // Every material binding change increments revision. First-writer wins for
     // an equal revision so duplicated delivery stays idempotent while a stale
@@ -65,6 +69,22 @@ export class MemoryConnectionBindingTable {
    * socket close) so a transient CP outage does not interrupt cached traffic. */
   clear(): void {
     this.byConnection.clear()
+  }
+
+  /** `rc/snapshot-begin`: the current bindings keep serving while the replay lands, unlike {@link clear}. */
+  beginSnapshot(snapshotId: string): void {
+    this.snapshot.begin(snapshotId)
+  }
+
+  /** `rc/snapshot-end`: drop each connection the replay neither sent nor withheld. */
+  endSnapshot(snapshotId: string, withheld: readonly string[]): void {
+    for (const connectionId of this.snapshot.end(snapshotId, this.byConnection.keys(), withheld)) {
+      this.byConnection.delete(connectionId)
+    }
+  }
+
+  abandonSnapshot(): void {
+    this.snapshot.abandon()
   }
 
   size(): number {

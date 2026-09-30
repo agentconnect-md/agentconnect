@@ -234,6 +234,7 @@ import { ConnectionRegistry } from './ws/registry.js'
 import { RelayRegistry } from './ws/relay-registry.js'
 import { RelayControlSender } from './orchestrator/relayControl.js'
 import { replayMcpTo } from './orchestrator/mcpReplay.js'
+import { replaySnapshot } from './orchestrator/relaySnapshot.js'
 import { makeMcpPush } from './http/mcp-push.js'
 import { makeOauthRebind } from './http/provider-chain.js'
 import { McpProviderOauthService } from './mcp-oauth/service.js'
@@ -2618,18 +2619,26 @@ export function buildContainer(
         httpBot.reconcileAll().catch((err) => http.log.error({ err }, 'relay: HTTP-bot reconcile on register failed'))
       )
       trackRelayRegistrationTask(
-        hookService.replayTo(ch).catch((err) => http.log.error({ err }, 'relay: hook-rule replay on register failed'))
+        replaySnapshot(ch, 'hook', (withhold) => hookService.replayTo(ch, withhold)).catch((err) =>
+          http.log.error({ err }, 'relay: hook-rule replay on register failed')
+        )
       )
       // Seed the fresh relay with every MCP provider binding (its table starts empty;
       // bindings are pool-wide, so a later-joining relay must be replayed or requests 401).
       trackRelayRegistrationTask(
-        replayMcpTo(ch, {
-          providers: repos.mcpProvider,
-          secrets: repos.mcpProviderSecret,
-          grants: repos.mcpGrant,
-          tokens: mcpTokenService,
-          log: http.log
-        }).catch((err) => http.log.error({ err }, 'relay: mcp binding replay on register failed'))
+        replaySnapshot(ch, 'mcp', (withhold) =>
+          replayMcpTo(
+            ch,
+            {
+              providers: repos.mcpProvider,
+              secrets: repos.mcpProviderSecret,
+              grants: repos.mcpGrant,
+              tokens: mcpTokenService,
+              log: http.log
+            },
+            withhold
+          )
+        ).catch((err) => http.log.error({ err }, 'relay: mcp binding replay on register failed'))
       )
       trackRelayRegistrationTask(
         (async () => {
@@ -2641,7 +2650,7 @@ export function buildContainer(
             log: http.log
           }
           // The relay binding must exist before a daemon is pointed at it.
-          await replayMemoryConnectionsTo(ch, memoryDeps)
+          await replaySnapshot(ch, 'memory', (withhold) => replayMemoryConnectionsTo(ch, memoryDeps, withhold))
           const selected = (await relayRoster.entries())[0]
           if (!selected) return
           await syncMemoryConnectionsToDaemons(relayHttpOrigin(selected.url), {

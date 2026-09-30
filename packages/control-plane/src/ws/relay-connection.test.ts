@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
+  RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   buildRelayCpFrame,
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
@@ -411,7 +412,8 @@ describe('RelayConnection FSM', () => {
         CODEHOST_FEEDBACK_FEATURE,
         PULL_REQUEST_FEEDBACK_FEATURE,
         BOT_CREDENTIAL_CHECK_FEATURE,
-        BOT_TENANT_FEATURE
+        BOT_TENANT_FEATURE,
+        RELAY_PROJECTION_SNAPSHOT_V1_FEATURE
       ]
     })
     expect(conn.state).toBe('READY')

@@ -164,10 +164,12 @@ The current Helm deployment already has surge-first rolling updates, readiness,
 session-metadata outbox. It still has process-local daemon/relay registries,
 control broadcasts, SSE fan-out, and some mutation gates. Those mechanisms do
 not yet satisfy this section; increasing `replicas` alone is insufficient.
-Relay reconnect replay is also incomplete: MCP and hook replay is additive,
-while memory bindings are cleared before asynchronous replay. Neither is the
-atomic replacement snapshot required below. Relay readiness follows its CP
-link. Daemon turn-path requests wait up to 10 seconds for a replacement link,
+A relay reconnect replays MCP bindings, hook rules and memory bindings as
+snapshots: the relay keeps serving its tables during the replay and, at the
+end, drops what the replay no longer names unless the CP withheld it after
+failing to produce it. MCP bindings and hook rules still lack per-resource
+revisions, so a stale replayed assign can revive an entry removed during that
+replay. Relay readiness follows its CP link. Daemon turn-path requests wait up to 10 seconds for a replacement link,
 only within 30 seconds of a READY link dropping; idempotent reads are re-sent
 once over the new link, and `memory/store` still lacks operation IDs. Relay
 credential checks and thread lookups also wait up to 10 seconds, and each is

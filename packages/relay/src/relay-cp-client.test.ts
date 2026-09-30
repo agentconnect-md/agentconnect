@@ -5,6 +5,7 @@ import {
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
+  RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   GITEA_V1_FEATURE,
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
@@ -213,7 +214,8 @@ describe('RelayCpClient', () => {
         HOOK_DECISION_ROUTING_V1_FEATURE,
         HOOK_DECISION_ROUTING_V2_FEATURE,
         OWNER_DEFAULT_DECISION_V1_FEATURE,
-        HOOK_GITHUB_INSTALLATION_V1_FEATURE
+        HOOK_GITHUB_INSTALLATION_V1_FEATURE,
+        RELAY_PROJECTION_SNAPSHOT_V1_FEATURE
       ]
     })
 
@@ -1048,5 +1050,23 @@ describe('RelayCpClient redial after a planned CP restart', () => {
     await flush()
     expect(connect).toHaveBeenCalledTimes(dials + 1)
     expect(connect.mock.calls.at(-1)).toEqual([undefined])
+  })
+})
+
+describe('RelayCpClient reconnect snapshots', () => {
+  it('advertises snapshot support and hands the frames to the tables', async () => {
+    const onSnapshotBegin = vi.fn()
+    const onSnapshotEnd = vi.fn()
+    const { client, transport } = makeClient({ onSnapshotBegin, onSnapshotEnd })
+    await handshakeToReady(client, transport)
+    expect((transport.lastReq('rc/register')!.payload as { features: string[] }).features).toContain(
+      RELAY_PROJECTION_SNAPSHOT_V1_FEATURE
+    )
+    const snapshotId = '33333333-3333-4333-8333-333333333333'
+    transport.inject(buildRelayCpFrame('rc/snapshot-begin', { kind: 'mcp', snapshotId }))
+    transport.inject(buildRelayCpFrame('rc/snapshot-end', { kind: 'mcp', snapshotId, withheld: [DAEMON_ID] }))
+    await flush()
+    expect(onSnapshotBegin).toHaveBeenCalledWith({ kind: 'mcp', snapshotId })
+    expect(onSnapshotEnd).toHaveBeenCalledWith({ kind: 'mcp', snapshotId, withheld: [DAEMON_ID] })
   })
 })

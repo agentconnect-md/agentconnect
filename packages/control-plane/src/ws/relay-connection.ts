@@ -48,6 +48,7 @@ import type {
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
+  RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   buildRelayCpFrame,
   decodeRelayCpFrame,
   CODEHOST_FEEDBACK_FEATURE,
@@ -323,7 +324,9 @@ export class RelayConnection implements RelayChannel {
         CODEHOST_FEEDBACK_FEATURE,
         PULL_REQUEST_FEEDBACK_FEATURE,
         BOT_CREDENTIAL_CHECK_FEATURE,
-        BOT_TENANT_FEATURE
+        BOT_TENANT_FEATURE,
+        // Frames its MCP, hook and memory replays as snapshots, so the relay prunes instead of clearing.
+        RELAY_PROJECTION_SNAPSHOT_V1_FEATURE
       ]
     })
     // A relay just appeared (or reclaimed its id) — refresh the daemons' roster

@@ -925,8 +925,9 @@ The table describes degradation paths within the current control-loss limits.
 Relay readiness follows the CP link; with the chart's probes, roughly 20–30
 seconds without READY removes the relay from Service endpoints. CP roster
 expiry is currently 45 seconds, after which daemons can lose that relay route.
-Reconnect also clears memory bindings before asynchronous replay, while MCP
-and hook replay is additive. Existing connections alone do not establish
+Reconnect replays MCP bindings, hook rules and memory bindings as snapshots:
+the relay keeps serving its tables during the replay and prunes what the
+replay no longer names at its end. Existing connections alone do not establish
 uninterrupted service through those transitions.
 
 The proposed [CP rollout contract](high-availability.md#planned-rollout-and-reconnect-budget)

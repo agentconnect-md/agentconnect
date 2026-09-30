@@ -16,6 +16,7 @@ import {
   type RcHookAssign,
   type RcCodeHostFeedbackWatch
 } from '@agentconnect.md/protocol'
+import { ProjectionSnapshot } from '../projection-snapshot.js'
 
 /** The code-host routing key: the provider-qualified external repository id; a display path is never a match key. */
 function repoIndexKey(provider: CodeHostProvider, externalId: string): string {
@@ -49,8 +50,10 @@ export class HookTable {
   private byCodeHostRepo = new Map<string, Map<string, RcHookAssign>>()
   /** GitHub installation id → hookId → installation-wide rule. */
   private byGithubInstallation = new Map<string, Map<string, RcHookAssign>>()
+  private readonly snapshot = new ProjectionSnapshot()
 
   upsert(rule: RcHookAssign): void {
+    this.snapshot.see(rule.hookId)
     // Re-index: if the hook's token/repository changed (or the kind did), drop the old key.
     const prior = this.byHookId.get(rule.hookId)
     if (prior?.webhook && prior.webhook.urlToken !== rule.webhook?.urlToken) {
@@ -94,6 +97,20 @@ export class HookTable {
     const repoKey = ruleRepoIndexKey(rule)
     if (repoKey !== undefined) this.dropFromRepoIndex(repoKey, hookId)
     if (rule.githubInstallation) this.dropFromInstallationIndex(rule.githubInstallation.installationId, hookId)
+  }
+
+  /** `rc/snapshot-begin`: the current rules keep routing while the replay lands. */
+  beginSnapshot(snapshotId: string): void {
+    this.snapshot.begin(snapshotId)
+  }
+
+  /** `rc/snapshot-end`: remove each hook the replay neither sent nor withheld, such as one deleted while the link was down. */
+  endSnapshot(snapshotId: string, withheld: readonly string[]): void {
+    for (const hookId of this.snapshot.end(snapshotId, this.byHookId.keys(), withheld)) this.remove(hookId)
+  }
+
+  abandonSnapshot(): void {
+    this.snapshot.abandon()
   }
 
   /** The generic-ingress lookup: URL token → rule (undefined = uniform 404). */

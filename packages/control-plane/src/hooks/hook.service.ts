@@ -391,7 +391,7 @@ export class HookService {
   }
 
   /** Full replay to one freshly (re)registered relay: compilable, supported rules only; a failing row is logged and skipped. */
-  async replayTo(ch: RelayChannel): Promise<void> {
+  async replayTo(ch: RelayChannel, withhold: (hookId: string) => void = () => {}): Promise<void> {
     for (const hook of await this.hooks.listEnabled()) {
       try {
         const rule = await this.compile(hook)
@@ -402,6 +402,7 @@ export class HookService {
         if (rule && hookRuleSupported(rule, ch.features)) ch.send('rc/hook-assign', rule)
       } catch (err) {
         this.log?.warn({ hookId: hook.id, err }, 'hook replay: compile/send failed — skipped')
+        withhold(hook.id)
       }
     }
   }

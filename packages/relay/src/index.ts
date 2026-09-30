@@ -14,10 +14,12 @@ import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
   RELAY_CP_SUBPROTOCOL,
+  RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   type RcCodeHostFeedback,
   type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
-  type RcRunReport
+  type RcRunReport,
+  type RcSnapshotKind
 } from '@agentconnect.md/protocol'
 import { ClientTransport, systemClock } from '@agentconnect.md/connection'
 import { loadConfig, resolveAuth, toWsOrigin } from './config.js'
@@ -120,6 +122,8 @@ async function main(): Promise<void> {
   // Upstream headers are the upstream credential — never logged.
   const mcpBindings = new McpBindingTable()
   const memoryBindings = new MemoryConnectionBindingTable()
+  const projectionTable = (kind: RcSnapshotKind) =>
+    kind === 'mcp' ? mcpBindings : kind === 'hook' ? hookTable : memoryBindings
 
   const wsOrigin = toWsOrigin(config.CP_URL)
   const client = new RelayCpClient({
@@ -143,11 +147,10 @@ async function main(): Promise<void> {
     // Link (re)became READY — re-emit thread-assign reports and channel snapshots
     // dropped while it was down.
     onReady: () => {
-      // The CP now replays the complete active memory-binding set for this
-      // registration. Clear only here (not while disconnected), so deleted or
-      // revoked grants cannot survive a reconnect while a CP outage still leaves
-      // the last verified bindings available.
-      memoryBindings.clear()
+      // A snapshot left open by the dropped link never ends; the new CP's replay starts its own.
+      for (const table of [mcpBindings, hookTable, memoryBindings]) table.abandonSnapshot()
+      // A CP without snapshots replays the full memory-binding set, so only its clear drops revoked grants.
+      if (!client.advertisedFeature(RELAY_PROJECTION_SNAPSHOT_V1_FEATURE)) memoryBindings.clear()
       held.relayIngress?.flushPendingReports()
     },
     // CP revoked a daemon's credential/membership — drop its rd/* connection now (§9).
@@ -197,7 +200,9 @@ async function main(): Promise<void> {
     onMcpAssign: (a) => mcpBindings.assign(a),
     onMcpUnassign: (a) => mcpBindings.unassign(a.providerId, a.grantKeyHash),
     onMemoryConnectionAssign: (a) => memoryBindings.assign(a),
-    onMemoryConnectionUnassign: (a) => memoryBindings.unassign(a.connectionId, a.revision, a.grantKeyHash)
+    onMemoryConnectionUnassign: (a) => memoryBindings.unassign(a.connectionId, a.revision, a.grantKeyHash),
+    onSnapshotBegin: (s) => projectionTable(s.kind).beginSnapshot(s.snapshotId),
+    onSnapshotEnd: (s) => projectionTable(s.kind).endSnapshot(s.snapshotId, s.withheld)
   })
   held.client = client
 
