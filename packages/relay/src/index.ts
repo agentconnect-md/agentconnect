@@ -28,7 +28,7 @@ import { buildRelayServer } from './server.js'
 import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { WebchatRouter, bindWebchatPostAuthor } from './webchat-router.js'
-import { WebchatVerdictCache } from './webchat-verdict-cache.js'
+import { VERDICT_TTL_MS, WebchatVerdictCache } from './webchat-verdict-cache.js'
 import { registerAgentChatRoutes } from './agent-chat-route.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
 import { relayIngressPlugins } from './platforms/registry.js'
@@ -52,8 +52,6 @@ import { startRelayOpenTelemetry } from './observability.js'
 const telemetry = startRelayOpenTelemetry()
 
 const RELAY_WS_PATH = '/api/v1/relays/ws'
-// How long a verified agent chat key keeps chatting without the CP (shared-bot-relay.md §10.4).
-const AGENT_CHAT_VERDICT_TTL_MS = 60_000
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -339,13 +337,13 @@ async function main(): Promise<void> {
 
   // The webchat router (chatId → browser or AI SDK chat turn) — a daemon's rd/chat is delivered here.
   const router = new WebchatRouter()
-  // One verdict per browser token until its `exp` (§10.4).
+  // One verdict per browser token for a minute at most, never past its `exp` (§10.4).
   const webchatVerdicts = new WebchatVerdictCache((token) => client.verify('webchat-token', token))
   // One verdict per (API key, agent, chat id) for a minute, the bound on how long a revoked key keeps chatting (§10.4).
   const agentChatVerdicts = new WebchatVerdictCache<[apiKey: string, agentId: string, chatId: string]>(
     (apiKey, agentId, chatId) => client.verifyAgentChatKey(apiKey, agentId, chatId),
     Date.now,
-    (_args, verifiedAtMs) => verifiedAtMs + AGENT_CHAT_VERDICT_TTL_MS
+    (_args, verifiedAtMs) => verifiedAtMs + VERDICT_TTL_MS
   )
 
   // Agent chat API (POST /ai-sdk/… and /ag-ui/agents/:agentId/chat, §10.4); registered before listen, the rd/* server is late-bound.

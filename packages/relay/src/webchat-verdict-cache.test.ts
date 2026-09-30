@@ -37,12 +37,24 @@ describe('webchatTokenExpiryMs', () => {
 })
 
 describe('WebchatVerdictCache', () => {
-  it('answers a live token from the cache until its exp, then asks the CP again', async () => {
+  it('answers a live token from the cache for a minute, then asks the CP again so a revoked member is refused', async () => {
     const { cache, verify, advance } = build()
     const t = token(T0 / 1000 + 300)
     expect(await cache.verify(t)).toMatchObject(OK)
-    advance(299_000)
+    advance(59_000)
     expect(await cache.verify(t)).toMatchObject(OK)
+    expect(verify).toHaveBeenCalledTimes(1)
+    advance(1_000) // a minute after verification: expired, though the token lives on
+    await cache.verify(t)
+    expect(verify).toHaveBeenCalledTimes(2)
+  })
+
+  it('never answers from the cache past the token’s own exp', async () => {
+    const { cache, verify, advance } = build()
+    const t = token(T0 / 1000 + 30)
+    await cache.verify(t)
+    advance(29_000)
+    await cache.verify(t)
     expect(verify).toHaveBeenCalledTimes(1)
     advance(1_000) // exactly exp: expired
     await cache.verify(t)
@@ -53,7 +65,7 @@ describe('WebchatVerdictCache', () => {
     const { cache, advance } = build()
     const t = token(T0 / 1000 + 300)
     expect((await cache.verify(t)).verifiedAtMs).toBe(T0)
-    advance(60_000)
+    advance(30_000)
     expect((await cache.verify(t)).verifiedAtMs).toBe(T0)
   })
 

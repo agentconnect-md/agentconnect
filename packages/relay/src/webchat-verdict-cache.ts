@@ -5,6 +5,9 @@ import type { RcVerifyResult } from '@agentconnect.md/protocol'
 // Bounds memory under a flood of distinct valid credentials; each entry lives minutes at most anyway.
 const MAX_ENTRIES = 10_000
 
+/** How long a verified credential keeps working without asking the CP again, so a revoked member or share stops within it (shared-bot-relay.md §10.4). */
+export const VERDICT_TTL_MS = 60_000
+
 interface Entry {
   verdict: RcVerifyResult
   expiresAtMs: number
@@ -33,8 +36,10 @@ export class WebchatVerdictCache<A extends string[] = [token: string]> {
   constructor(
     private readonly verifyWithCp: (...args: A) => Promise<RcVerifyResult>,
     private readonly now: () => number = Date.now,
-    private readonly expiresAt: (args: A, verifiedAtMs: number) => number | undefined = (args) =>
-      webchatTokenExpiryMs(args[0]!)
+    private readonly expiresAt: (args: A, verifiedAtMs: number) => number | undefined = (args, verifiedAtMs) => {
+      const exp = webchatTokenExpiryMs(args[0]!)
+      return exp === undefined ? undefined : Math.min(exp, verifiedAtMs + VERDICT_TTL_MS)
+    }
   ) {}
 
   /** The cached verdict while it is live, else the CP's; failures and throws are never cached. */

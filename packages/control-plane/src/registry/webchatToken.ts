@@ -18,7 +18,7 @@
 import { createHmac } from 'node:crypto'
 import { SignJWT, jwtVerify } from 'jose'
 
-/** The identity a minted webchat token attests (authz already checked at mint time). */
+/** The identity a minted webchat token attests; authorized at mint, and membership and visibility again at every verify. */
 export interface WebchatTokenClaims {
   userId: string
   /** Display handle for the transcript author line. */

@@ -8,8 +8,10 @@ import {
   type RcWebchatParticipant,
   type RegisterReq
 } from '@agentconnect.md/protocol'
+import { canView } from '../authorization/policy.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { servesSessionContent } from '../domain/session-content.js'
+import type { OrgMemberRole, Shareable, ViewCtx } from '../persistence/ports.js'
 import type { PlacementResolver, ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
 import type { WebchatTokenClaims, WebchatTokenService } from './webchatToken.js'
@@ -21,7 +23,7 @@ interface VerificationDaemon {
 
 export interface WebchatVerificationDeps {
   tokens: Pick<WebchatTokenService, 'verify'>
-  agents: { getUnscoped(agentId: AgentId): Promise<(ResolvableAgent & { orgId: string }) | null> }
+  agents: { getUnscoped(agentId: AgentId): Promise<(ResolvableAgent & Shareable & { orgId: string }) | null> }
   daemons: { get(daemonId: string): VerificationDaemon | undefined }
   /** Roster reads for multi-agent conversations (webchat-multi-agents.md §6.2). */
   conversations: {
@@ -58,23 +60,29 @@ export interface WebchatVerificationDeps {
   placement: Pick<PlacementResolver, 'dispatchDaemon'>
 }
 
-/** The relay's webchat token check: a primary placed on a READY daemon, members best-effort, and a targeted conversation's continuation gates re-run on every dial. */
+/** The relay's webchat token check, re-run on every dial: the minter still a member who sees every participant, a primary on a READY daemon, and any continuation gates. */
 export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (token: string) => Promise<RcVerifyResult> {
   const resolve = webchatBinding(deps)
   return async (token) => {
     const claims = await deps.tokens.verify(token)
     if (!claims) return { ok: false, reason: 'invalid token' }
-    return resolve(claims, { remoteMcp: true })
+    // The token proves who minted it, not that they still may: membership is re-read on every dial.
+    const role = (await deps.orgs.roleOf(claims.orgId, claims.userId)) as OrgMemberRole | null
+    if (!role) return ACCESS_REVOKED
+    return resolve(claims, { remoteMcp: true, viewer: { userId: claims.userId, role } })
   }
 }
+
+const ACCESS_REVOKED: RcVerifyResult = { ok: false, reason: 'access revoked' }
 
 /** Everything a verdict needs once a credential proved `claims`: live placement, the conversation, its roster, and the agent's chat APIs. */
 export function webchatBinding(
   deps: Omit<WebchatVerificationDeps, 'tokens'>
-): (claims: WebchatTokenClaims, opts: { remoteMcp: boolean }) => Promise<RcVerifyResult> {
+): (claims: WebchatTokenClaims, opts: { remoteMcp: boolean; viewer: ViewCtx }) => Promise<RcVerifyResult> {
   return async (claims, opts) => {
     const agent = await deps.agents.getUnscoped(AgentId(claims.agentId))
     if (!agent || agent.orgId !== claims.orgId) return { ok: false, reason: 'invalid token' }
+    if (!canView(agent, opts.viewer)) return ACCESS_REVOKED
     // Readiness is the resolver's answer, not a member id the row happens to carry: a pool agent
     // is dialable while ANY member is live, and after a rollout the member its row used to name is
     // gone by construction — which is what made webchat permanently offline (#987). A lapsed lease
@@ -112,8 +120,7 @@ export function webchatBinding(
       }
       if (session.contentPurgedAt !== null) return { ok: false, reason: 'continuation unavailable' }
       if (!continuableOrigin(session.platform ?? '')) return { ok: false, reason: 'continuation unavailable' }
-      const role = await deps.orgs.roleOf(claims.orgId, claims.userId)
-      if (!role || role === 'viewer') return { ok: false, reason: 'continuation unavailable' }
+      if (opts.viewer.role === 'viewer') return { ok: false, reason: 'continuation unavailable' }
       // Fence the exact owner proved by mint-time provider-identity expansion against the live row.
       if (
         session.visibility === 'private' &&
@@ -140,7 +147,9 @@ export function webchatBinding(
       }
       // No roster growth and no remote MCP entitlement; a hook target also brings its conversation's other members (#2500).
       const peers =
-        originKindOf(session.platform ?? '') === 'hook' ? await hookConversationPeers(deps, session, claims) : []
+        originKindOf(session.platform ?? '') === 'hook'
+          ? await hookConversationPeers(deps, session, claims, opts.viewer)
+          : []
       return {
         ...verifiedBase,
         participants: [{ agentId: claims.agentId, daemonId: agentDaemonId, primary: true }, ...peers],
@@ -171,6 +180,8 @@ export function webchatBinding(
         continue
       }
       const member = await deps.agents.getUnscoped(p.agentId)
+      // A deleted member stays best-effort; one the caller can no longer see revokes the conversation, as at mint.
+      if (member && member.orgId === claims.orgId && !canView(member, opts.viewer)) return ACCESS_REVOKED
       const memberDaemonId =
         member && member.orgId === claims.orgId ? await deps.placement.dispatchDaemon(member) : null
       const memberDaemon = memberDaemonId ? deps.daemons.get(memberDaemonId) : undefined
@@ -208,7 +219,8 @@ export function webchatBinding(
 async function hookConversationPeers(
   deps: Omit<WebchatVerificationDeps, 'tokens'>,
   target: { platform: string | null; tenantScope?: string | null; channel?: string | null; thread?: string | null },
-  claims: WebchatTokenClaims
+  claims: WebchatTokenClaims,
+  viewer: ViewCtx
 ): Promise<RcWebchatParticipant[]> {
   const peers: RcWebchatParticipant[] = []
   for (const claimed of claims.conversationPeers ?? []) {
@@ -228,7 +240,7 @@ async function hookConversationPeers(
       continue
     }
     const agent = await deps.agents.getUnscoped(AgentId(peer.agentId))
-    if (!agent || agent.orgId !== claims.orgId) continue
+    if (!agent || agent.orgId !== claims.orgId || !canView(agent, viewer)) continue
     const daemonId = await deps.placement.dispatchDaemon(agent)
     const daemon = daemonId ? deps.daemons.get(daemonId) : undefined
     if (!daemonId || daemon?.state !== 'READY') continue
