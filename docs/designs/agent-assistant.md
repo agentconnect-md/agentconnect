@@ -373,8 +373,9 @@ POST /oauth/token(code + code_verifier [+ client_id])
 
 - `oauth_client { clientId, name, redirectUris[], tokenEndpointAuthMethod, createdAt, expiresAt(90d) }`—DCR product. CIMD clients are fetched/validated by URL and not persisted.
 - `oauth_grant { id, userId, orgId, clientId, scopes[], resource, rtHash, prevRtHash, rtExpiresAt, createdAt, revokedAt }`—one row per authorization. **Rotate refresh tokens while accepting the newest two generations**. workers-oauth-provider experience shows strict one-time validity can lock a user out if the client fails to persist the new token. Refresh expires after 30d inactivity. Dead refresh returns RFC 6749 `invalid_grant`, which prompts Claude to reauthenticate.
-- Access token = **`ApiKey` row with principalType `oauth`, TTL 1h**, whose `meta` points to grantId. Existing key cleanup removes expired rows. **Revoking a grant revokes every token under it** through the Profile "Connected AI tools" card (§11).
+- Access token = **`ApiKey` row with principalType `oauth`, TTL 1h**, whose `meta` points to grantId. The OAuth reaper below deletes dead ones. **Revoking a grant revokes every token under it** through the Profile "Connected AI tools" card (§11).
 - Claude refreshes passively on 401 and proactively ≤5min before expiry; 1h TTL is invisible to users.
+- **Garbage collection**: the CP's `OAuthReaper` runs every 10 minutes and deletes rows that died more than 7 days earlier: codes consumed or expired, `oauth` access tokens expired or revoked, and expired `oauth_client` registrations. Grants are never deleted. A token that a webchat conversation still names is kept, so the session list keeps its API key label. The 7-day grace keeps an audit entry's key id resolvable to its grant. No foreign key reaches a client and refresh never reads one, so deleting an expired client cannot break a live grant. Tokens are deleted in bounded batches because `api_key` has no `expiresAt` index.
 
 ### 7.5 Cloud Connector Reachability
 
@@ -564,8 +565,3 @@ below are requirements. Cases for the cancelled built-in agent (§3) are gone wi
 4. Synchronization between MCP catalog and OpenAPI: manually curated (current) vs. generated from OpenAPI + allowlist; revisit when tools grow.
 5. Should consent support "remember choice / skip repeat consent" for same client + organization + scopes?
 6. claude.ai requires public CP/console reachability (§7.5). How should documentation and product messaging describe private self-hosted deployments?
-7. **OAuth-row garbage collection**: no cleanup yet exists for consumed or
-   expired `oauth_code`, expired `oauth` API keys, or expired `oauth_client`
-   rows; `*_expiresAt_idx` indexes bound query cost. Add an OAuth reaper modeled
-   after `CronRunReaper`/`SlackInstallReaper` to delete consumed or expired
-   codes, expired and revoked OAuth API keys, and expired clients.

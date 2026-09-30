@@ -520,6 +520,8 @@ export interface ApiKeyRepo {
   /** Revoke every live oauth access token minted under a grant — the "disconnect"
    *  cascade so a Profile revoke kills outstanding tokens now, not in ≤1h. Returns count. */
   revokeByOAuthGrant(grantId: string, reason: string, at: Date): Promise<number>
+  /** Delete oauth access tokens that expired or were revoked before `before`, keeping any a webchat conversation still names. Returns count. */
+  reapOAuthAccessTokens(before: Date): Promise<number>
   /** All keys (including revoked) for a daemon — the console key list, and the
    *  ownership proof the revoke route binds a raw key id against. Org-fenced
    *  (§3): a daemon outside `orgId` yields no keys at all, so that proof cannot
@@ -630,6 +632,8 @@ export interface OAuthRepo {
   listGrantsForUser(userId: string): Promise<OAuthGrantRecord[]>
   /** Revoke a grant (idempotent) — returns the row, or null if it isn't the user's / doesn't exist. */
   revokeGrant(id: string, at: Date): Promise<OAuthGrantRecord | null>
+  /** Delete codes consumed or expired, and clients expired, before `before`; grants are never touched. */
+  reapExpired(before: Date): Promise<{ codes: number; clients: number }>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

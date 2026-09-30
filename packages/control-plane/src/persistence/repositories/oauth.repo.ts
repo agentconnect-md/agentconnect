@@ -177,4 +177,14 @@ export class PgOAuthRepo implements OAuthRepo {
     const row = await this.db.oAuthGrant.findUnique({ where: { id } })
     return row ? toGrant(row) : null
   }
+
+  async reapExpired(before: Date): Promise<{ codes: number; clients: number }> {
+    // A code is consumed only while unexpired, so the consumed clause merely reaps it up to one code TTL sooner.
+    const codes = await this.db.oAuthCode.deleteMany({
+      where: { OR: [{ expiresAt: { lt: before } }, { consumedAt: { lt: before } }] }
+    })
+    // No foreign key reaches a client: grants and codes hold `clientId` as text, and refresh never reads the client.
+    const clients = await this.db.oAuthClient.deleteMany({ where: { expiresAt: { lt: before } } })
+    return { codes: codes.count, clients: clients.count }
+  }
 }

@@ -190,6 +190,7 @@ import {
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
+import { OAuthReaper, OAUTH_REAP_GRACE_MS, OAUTH_REAP_INTERVAL_MS } from './orchestrator/oauthReaper.js'
 import { AgentMemoryStagingSweeper } from './orchestrator/agentMemoryStagingSweeper.js'
 import { AgentMemoryStoreService } from './agent-memory/store.service.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
@@ -2031,6 +2032,15 @@ export function buildContainer(
     http.log
   )
 
+  // Deletes consumed or expired OAuth codes, dead OAuth access tokens and expired DCR clients (agent-assistant.md §7.4).
+  const oauthReaper = new OAuthReaper(
+    repos.oauth,
+    repos.apiKey,
+    clock,
+    { intervalMs: OAUTH_REAP_INTERVAL_MS, graceMs: OAUTH_REAP_GRACE_MS },
+    http.log
+  )
+
   // Same reconciler, hook runs: closes `running` hook_run rows whose completion
   // report was lost (daemon offline at turn end / relay report dropped). The
   // two-report lifecycle matches crons exactly, so the class is reused verbatim.
@@ -2899,6 +2909,7 @@ export function buildContainer(
     startBackground() {
       cronRunReaper.start()
       hookRunReaper.start()
+      oauthReaper.start()
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
       agentMemoryStagingSweeper.start()
@@ -2924,6 +2935,7 @@ export function buildContainer(
     async shutdown() {
       cronRunReaper.stop()
       hookRunReaper.stop()
+      oauthReaper.stop()
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       agentMemoryStagingSweeper.stop()

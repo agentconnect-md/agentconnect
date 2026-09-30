@@ -5,7 +5,7 @@
  * site on every `auth`), minted at onboarding/rotation, and killed by `revoke`. The
  * domain record NEVER carries the hash or any secret material.
  */
-import type { ApiKey, ApiKeyPermission as DbApiKeyPermission } from '../../generated/prisma/client.js'
+import type { ApiKey, ApiKeyPermission as DbApiKeyPermission, Prisma } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import type {
   ApiKeyRepo,
@@ -23,6 +23,9 @@ const WITH_AGENTS = {
   agents: { select: { agentId: true, agent: { select: { name: true, displayName: true } } } }
 } as const
 type ApiKeyRow = ApiKey & { agents: Array<{ agentId: string; agent: { name: string; displayName: string | null } }> }
+
+// One bounded delete per statement, so a backlog of dead OAuth access tokens drains without one long transaction.
+const OAUTH_TOKEN_REAP_BATCH = 1000
 
 // Prisma enum values cannot hold `:`, so the client spells `agent:chat` as `agent_chat` (the column keeps the wire spelling via @map).
 const toDbPermission = (p: ApiKeyPermission): DbApiKeyPermission => (p === 'agent:chat' ? 'agent_chat' : p)
@@ -127,6 +130,23 @@ export class PgApiKeyRepo implements ApiKeyRepo {
       data: { revokedAt: at, revokedReason: reason }
     })
     return res.count
+  }
+
+  async reapOAuthAccessTokens(before: Date): Promise<number> {
+    // A webchat conversation labels its session by the key that opened it, so a key one still names is kept.
+    const where: Prisma.ApiKeyWhereInput = {
+      principalType: 'oauth',
+      OR: [{ expiresAt: { lt: before } }, { revokedAt: { lt: before } }],
+      webchatConversations: { none: {} }
+    }
+    let total = 0
+    for (;;) {
+      const batch = await this.db.apiKey.findMany({ where, select: { id: true }, take: OAUTH_TOKEN_REAP_BATCH })
+      if (batch.length === 0) return total
+      const res = await this.db.apiKey.deleteMany({ where: { ...where, id: { in: batch.map((k) => k.id) } } })
+      total += res.count
+      if (res.count < OAUTH_TOKEN_REAP_BATCH) return total
+    }
   }
 
   async listForDaemon(orgId: OrgId, daemonId: DaemonId): Promise<ApiKeyRecord[]> {
