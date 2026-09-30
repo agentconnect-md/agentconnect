@@ -90,9 +90,7 @@ jobs:
     name: Release & Prepare
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      issues: write
-      pull-requests: write
+      contents: read
       packages: read
     outputs:
       version: ${{ steps.meta.outputs.version }}
@@ -673,7 +671,7 @@ jobs:
             docker buildx imagetools create -t "${REGISTRY}/${OWNER}/${comp}:rc" "${REGISTRY}/${OWNER}/${comp}:${VERSION}"
           done
 
-  # Chart publication needs only the release tag; notification waits until its images are ready.
+  # Publish chart metadata independently; consumers wait for workflow success before using its image tags.
   publish-chart:
     name: Publish Helm chart
     needs: prepare

@@ -18,6 +18,10 @@ release's image tag — so an install that sets no `image.tag` runs the release 
 chart it picked. Release candidates, charts and images alike, may be pruned from GHCR
 after 14 days, so install a stable version.
 
+Use a version only after its Release workflow succeeds. The chart publishes in parallel
+with images and can remain available if an image build fails; the final workflow
+notification waits for all artifacts to be ready.
+
 ```bash
 kubectl create namespace agentconnect
 kubectl -n agentconnect create secret generic agentconnect-secrets \
