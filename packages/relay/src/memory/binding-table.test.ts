@@ -139,4 +139,25 @@ describe('MemoryConnectionBindingTable — reconnect snapshot', () => {
     expect(table.resolve(CONNECTION_ID, 'memory-grant')).not.toBeNull()
     expect(table.resolve(DELETED, 'memory-grant')).toBeNull()
   })
+
+  it('keeps a deletion that landed during the replay, so a delayed older assign cannot restore it', async () => {
+    const table = new MemoryConnectionBindingTable()
+    bind(table, DELETED, 2)
+    table.beginSnapshot(SNAP)
+    table.unassign(DELETED, 3)
+    table.endSnapshot(SNAP, [])
+    bind(table, DELETED, 2)
+    expect(table.resolve(DELETED, 'memory-grant')).toBeNull()
+  })
+
+  it('keeps the revision of a binding it prunes, so only a newer assign re-enables it', async () => {
+    const table = new MemoryConnectionBindingTable()
+    bind(table, DELETED, 2)
+    table.beginSnapshot(SNAP)
+    table.endSnapshot(SNAP, [])
+    bind(table, DELETED, 2)
+    expect(table.resolve(DELETED, 'memory-grant')).toBeNull()
+    bind(table, DELETED, 3)
+    expect(table.resolve(DELETED, 'memory-grant')).not.toBeNull()
+  })
 })

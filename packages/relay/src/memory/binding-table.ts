@@ -76,10 +76,11 @@ export class MemoryConnectionBindingTable {
     this.snapshot.begin(snapshotId)
   }
 
-  /** `rc/snapshot-end`: drop each connection the replay neither sent nor withheld. */
+  /** `rc/snapshot-end`: disable each binding the replay neither sent nor withheld, keeping its revision (and every tombstone) as the fence against a delayed older assign. */
   endSnapshot(snapshotId: string, withheld: readonly string[]): void {
     for (const connectionId of this.snapshot.end(snapshotId, this.byConnection.keys(), withheld)) {
-      this.byConnection.delete(connectionId)
+      const current = this.byConnection.get(connectionId)
+      if (current?.upstream) this.byConnection.set(connectionId, { revision: current.revision })
     }
   }
 
