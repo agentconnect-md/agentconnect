@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { DecisionControlDeps } from './control/decision.js'
 import {
   MEMORY_TRANSACTION_V1_FEATURE,
@@ -123,6 +124,7 @@ import {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
+  AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
   checkInboundFrameOrg,
   checkReplyFrameOrg,
@@ -154,8 +156,10 @@ export { CP_SUBPROTOCOL, CP_WS_PATH } from '@agentconnect.md/protocol'
 const ACK_TIMEOUT_MS = 5000
 /** The correlator's default five-try budget: what a wrapped turn-path request had in total before it waited out a handoff. */
 const TURN_PATH_BUDGET_MS = 5 * ACK_TIMEOUT_MS
-/** One deadline for a `memory/store` op, the shim carrier's per-op timeout; there is never a second send. */
+/** One deadline for a `memory/store` op, the shim carrier's per-op timeout; a safe re-send fits inside it. */
 const MEMORY_STORE_TIMEOUT_MS = 30_000
+/** The `memory/store` ops that change nothing, so a re-send needs no operation id. */
+const MEMORY_FS_READS: ReadonlySet<string> = new Set(['memory-read', 'memory-stat', 'memory-readdir'])
 /** How long a turn-path request waits for a reconnecting control link; a planned CP handoff takes seconds. */
 export const CP_HANDOFF_WAIT_MS = 10_000
 /** Requests wait only this long after a READY link dropped: a handoff, never a startup without a CP or a long outage. */
@@ -1132,7 +1136,7 @@ export class CpClient {
   private async turnPathRequest<T>(
     op: string,
     budgetMs: number,
-    idempotent: boolean,
+    idempotent: boolean | (() => boolean),
     send: (ackTimeoutMs: number) => Promise<T>
   ): Promise<T> {
     const deadline = this.deps.clock.now() + budgetMs
@@ -1144,7 +1148,8 @@ export class CpClient {
       try {
         return await send(remaining())
       } catch (err) {
-        if (!idempotent || attempt > 0 || !(err instanceof WireError) || !err.retryable) throw err
+        const resendable = typeof idempotent === 'function' ? idempotent() : idempotent
+        if (!resendable || attempt > 0 || !(err instanceof WireError) || !err.retryable) throw err
         const replaced = await this.waitConnected(Math.min(CP_HANDOFF_WAIT_MS, remaining() - MIN_TURN_SEND_MS))
         if (!replaced || this.linkGeneration === generation) throw err
         this.deps.log.warn(`cp: ${op} lost its link (${err.message}) — retrying once across the reconnect`)
@@ -1457,7 +1462,8 @@ export class CpClient {
       throw new WireError('INTERNAL', 'control plane does not support memory transactions', false)
     if (payload.operation === 'capture-status' && !this.supportsServerFeature(MEMORY_CAPTURE_FENCE_V1_FEATURE))
       throw new WireError('INTERNAL', 'control plane does not support capture fences', false)
-    const rep = await this.turnPathRequest('memory/transaction/v1', MEMORY_STORE_TIMEOUT_MS, false, (ackTimeoutMs) =>
+    // Reads, and a commit the CP deduplicates by its operation id, so one re-send over a replaced link is safe.
+    const rep = await this.turnPathRequest('memory/transaction/v1', MEMORY_STORE_TIMEOUT_MS, true, (ackTimeoutMs) =>
       this.correlator.request(this.scopedFrame('memory/transaction/v1', payload), (e) => this.transport!.send(e), {
         maxTries: 1,
         ackTimeoutMs
@@ -1472,12 +1478,28 @@ export class CpClient {
     if (!this.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {
       throw new WireError('INTERNAL', 'control plane does not serve the memory store', false)
     }
-    // One send, never re-sent: `memory-append` is not idempotent and the CP does not deduplicate request ids.
-    const rep = await this.turnPathRequest('memory/store', MEMORY_STORE_TIMEOUT_MS, false, (ackTimeoutMs) =>
-      this.correlator.request(this.scopedFrame('memory/store', payload), (e) => this.transport!.send(e), {
-        maxTries: 1,
-        ackTimeoutMs
-      })
+    // A read may be re-sent over a replaced link; a write only under an operation id the CP deduplicates.
+    const operationId = MEMORY_FS_READS.has(payload.op.op) ? undefined : randomUUID()
+    let sends = 0
+    let sentWithId = false
+    const rep = await this.turnPathRequest(
+      'memory/store',
+      MEMORY_STORE_TIMEOUT_MS,
+      () => operationId === undefined || sentWithId,
+      (ackTimeoutMs) => {
+        const withId =
+          operationId !== undefined && this.supportsServerFeature(AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE)
+        // The re-send is safe only under the id the first send carried; a CP that stopped deduplicating gets none.
+        if (sends++ > 0 && operationId !== undefined && !withId) {
+          throw new WireError('INTERNAL', 'control plane no longer deduplicates memory writes', true)
+        }
+        sentWithId = withId
+        const request = withId ? { ...payload, operationId } : payload
+        return this.correlator.request(this.scopedFrame('memory/store', request), (e) => this.transport!.send(e), {
+          maxTries: 1,
+          ackTimeoutMs
+        })
+      }
     )
     if (rep.type !== 'memory/store/ok') {
       throw new WireError('INTERNAL', `expected memory/store/ok, got ${rep.type}`, false)

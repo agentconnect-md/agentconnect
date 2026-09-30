@@ -15,7 +15,8 @@ import type {
   AgentMemoryHistoryRecord,
   AgentMemoryHistoryRepo,
   AgentMemoryHistoryRetention,
-  AgentMemoryRenameOutcome
+  AgentMemoryRenameOutcome,
+  AgentMemoryStoreOperationRepo
 } from '../ports.js'
 
 type Tx = Prisma.TransactionClient
@@ -219,6 +220,42 @@ export class PgAgentMemoryFileRepo implements AgentMemoryFileRepo {
       await lockTree(tx, `agent-memory:${agentId}`)
       await tx.$executeRaw(Prisma.sql`DELETE FROM "agent_memory_file" WHERE "agentId" = ${agentId}::uuid`)
     })
+  }
+}
+
+export class PgAgentMemoryStoreOperationRepo implements AgentMemoryStoreOperationRepo {
+  constructor(private readonly db: PrismaLike) {}
+
+  once<T>(
+    agentId: AgentId,
+    orgId: OrgId,
+    operationId: string,
+    requestHash: string,
+    now: Date,
+    run: (files: AgentMemoryFileRepo) => Promise<T>
+  ): Promise<{ reply: T } | { reusedFor: 'another-request' }> {
+    return withAmbientTx(this.db, async (tx) => {
+      // The file ops take the same lock, so the lookup, the op and its record are one serialized step.
+      await lockTree(tx, `agent-memory:${agentId}`)
+      const prior = await tx.agentMemoryStoreOperation.findUnique({
+        where: { agentId_operationId: { agentId, operationId } }
+      })
+      if (prior)
+        return prior.requestHash === requestHash ? { reply: prior.reply as T } : { reusedFor: 'another-request' }
+      const reply = await run(new PgAgentMemoryFileRepo(tx))
+      await tx.agentMemoryStoreOperation.create({
+        data: { agentId, orgId, operationId, requestHash, reply: reply as Prisma.InputJsonValue, createdAt: now }
+      })
+      return { reply }
+    })
+  }
+
+  sweep(before: Date, limit: number): Promise<number> {
+    return this.db.$executeRaw(Prisma.sql`
+      DELETE FROM "agent_memory_store_operation" WHERE ("agentId", "operationId") IN (
+        SELECT "agentId", "operationId" FROM "agent_memory_store_operation" WHERE "createdAt" < ${before} LIMIT ${limit}::int
+      )
+    `)
   }
 }
 

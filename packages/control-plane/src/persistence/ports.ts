@@ -6885,6 +6885,21 @@ export interface AgentMemoryFileRepo {
   deleteTree(agentId: AgentId): Promise<void>
 }
 
+// The `agent_memory_store_operation` table: a `memory/store` write keyed by its operation id, applied at most once.
+export interface AgentMemoryStoreOperationRepo {
+  /** Answer a recorded operation from its stored reply; otherwise run it and record the reply in the same transaction. */
+  once<T>(
+    agentId: AgentId,
+    orgId: OrgId,
+    operationId: string,
+    requestHash: string,
+    now: Date,
+    run: (files: AgentMemoryFileRepo) => Promise<T>
+  ): Promise<{ reply: T } | { reusedFor: 'another-request' }>
+  /** Delete up to `limit` operation records older than `before`; a re-send never outlives them. */
+  sweep(before: Date, limit: number): Promise<number>
+}
+
 /** One change-log record as stored: the wire event plus the store `root` it belongs to. */
 export interface AgentMemoryHistoryInput {
   id: string

@@ -45,8 +45,12 @@ export const handleMemoryStore: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', verdict.denied, false)
     return
   }
+  const { op, operationId } = frame.payload
   try {
-    conn.replyTo(frame, 'memory/store/ok', await store.apply(verdict.agent, frame.payload.op))
+    const reply = operationId
+      ? await store.applyOnce(verdict.agent, op, operationId)
+      : await store.apply(verdict.agent, op)
+    conn.replyTo(frame, 'memory/store/ok', reply)
   } catch (err) {
     if (err instanceof MemoryStoreTooLargeError) {
       conn.sendError(frame.id, 'BAD_PAYLOAD', err.message, false)

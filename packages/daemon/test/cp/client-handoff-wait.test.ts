@@ -1,6 +1,10 @@
 // A CP handoff closes the control socket for seconds: turn-path requests wait it out, and only idempotent reads are re-sent.
 import { describe, it, expect, vi } from 'vitest'
-import { buildEnvelope, AGENT_MEMORY_STORE_V1_FEATURE } from '@agentconnect.md/protocol'
+import {
+  buildEnvelope,
+  AGENT_MEMORY_STORE_V1_FEATURE,
+  AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE
+} from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
@@ -55,7 +59,11 @@ function harness() {
   return { clock, transports, connect, client: new CpClient(deps) }
 }
 
-async function handshake(t: FakeTransport, epoch: number): Promise<void> {
+async function handshake(
+  t: FakeTransport,
+  epoch: number,
+  serverFeatures: string[] = [AGENT_MEMORY_STORE_V1_FEATURE]
+): Promise<void> {
   const auth = t.lastSent()
   t.pushInbound(
     JSON.stringify(
@@ -78,7 +86,7 @@ async function handshake(t: FakeTransport, epoch: number): Promise<void> {
           crons: [],
           leases: [],
           drop: { assignments: [], crons: [] },
-          serverFeatures: [AGENT_MEMORY_STORE_V1_FEATURE]
+          serverFeatures
         },
         { corr: register.id }
       )
@@ -91,11 +99,11 @@ function sentOf(t: FakeTransport, type: string): Array<{ id: string; type: strin
   return t.sent.map((text) => JSON.parse(text)).filter((frame) => frame.type === type)
 }
 
-async function readyHarness() {
+async function readyHarness(serverFeatures?: string[]) {
   const h = harness()
   h.client.start()
   await tick()
-  await handshake(h.transports[0]!, 1)
+  await handshake(h.transports[0]!, 1, serverFeatures)
   expect(h.client.state).toBe('READY')
   return h
 }
@@ -185,6 +193,35 @@ describe('CpClient turn-path requests across a CP handoff', () => {
       JSON.stringify(buildEnvelope('duty/claim/ok', { granted: false, holder }, { corr: resent!.id }))
     )
     await expect(pending).resolves.toEqual({ granted: false, holder })
+  })
+
+  it('re-sends a memory/store write once over the replaced link, under the operation id the CP deduplicates', async () => {
+    const features = [AGENT_MEMORY_STORE_V1_FEATURE, AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE]
+    const { clock, transports, client } = await readyHarness(features)
+    const pending = client.memoryStore({
+      agentId: AGENT,
+      op: { op: 'memory-append', root: '.', rel: 'notes.md.tmp', content: 'x', create: true }
+    })
+    await tick()
+    const [first] = sentOf(transports[0]!, 'memory/store') as unknown as Array<{
+      id: string
+      payload: { operationId?: string }
+    }>
+    expect(first!.payload.operationId).toBeDefined()
+    transports[0]!.simulateClose(1012, 'restarting')
+    await tick()
+    clock.advance(1000)
+    await tick()
+    await handshake(transports[1]!, 2, features)
+    const [resent] = sentOf(transports[1]!, 'memory/store') as unknown as Array<{
+      id: string
+      payload: { operationId?: string }
+    }>
+    expect(resent!.payload.operationId).toBe(first!.payload.operationId)
+    transports[1]!.pushInbound(
+      JSON.stringify(buildEnvelope('memory/store/ok', { ok: true, value: { size: 1 } }, { corr: resent!.id }))
+    )
+    await expect(pending).resolves.toEqual({ ok: true, value: { size: 1 } })
   })
 
   it('fails fast when the link never came up, so a startup without a CP stays local-first', async () => {

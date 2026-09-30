@@ -315,7 +315,11 @@ conditional write unified-memory-interface.md §5 later builds on this transacti
 previous + 1 ms)` inside the same transaction, so two commits within one millisecond
 never hand out the same token — and a staged row an abandoned append sequence left
 behind (the daemon died between its appends and its `commit` or `rm`, which clear their
-own) is removed by a bounded periodic sweep once it is an hour old. Directories are
+own) is removed by a bounded periodic sweep once it is an hour old. A write that may be
+re-sent across a Control Plane handoff carries an `operationId` when the CP advertises
+`agent-memory-store-operation-id-v1`: the CP looks it up, runs the op and records its
+reply in one transaction, answers a re-send with that reply, refuses the id reused for a
+different op as a `conflict`, and sweeps the records on the same hourly schedule. Directories are
 implicit — a prefix with rows:
 `mkdir` succeeds, `rmdir` answers whether nothing was left, and an empty directory does
 not exist. That is the only observable difference from the two disk ports, and no

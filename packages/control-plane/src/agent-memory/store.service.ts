@@ -8,9 +8,10 @@ import {
   type MemoryFsReadReply,
   type MemoryFsReply
 } from '@agentconnect.md/protocol'
+import { createHash } from 'node:crypto'
 import type { Clock } from '../domain/clock.js'
 import type { AgentId, OrgId } from '../domain/ids.js'
-import type { AgentMemoryFileRepo } from '../persistence/ports.js'
+import type { AgentMemoryFileRepo, AgentMemoryStoreOperationRepo } from '../persistence/ports.js'
 import { MAX_MEMORY_FILE_BYTES } from './limits.js'
 import {
   MemoryStoreConflictError,
@@ -30,8 +31,33 @@ export interface MemoryStoreAgent {
 export class AgentMemoryStoreService {
   constructor(
     private readonly files: AgentMemoryFileRepo,
-    private readonly clock: Clock
+    private readonly clock: Clock,
+    private readonly operations?: AgentMemoryStoreOperationRepo
   ) {}
+
+  /** Whether a re-sent write can be answered from its record instead of applied again. */
+  deduplicatesOperations(): boolean {
+    return this.operations !== undefined
+  }
+
+  /** Run one op at most once per operation id; a re-send gets the first reply, and a reused id for another op is refused. */
+  async applyOnce(agent: MemoryStoreAgent, op: MemoryFsPayload, operationId: string): Promise<MemoryFsReply> {
+    if (!this.operations) return this.apply(agent, op)
+    const requestHash = createHash('sha256').update(JSON.stringify(op)).digest('hex')
+    const outcome = await this.operations.once(
+      agent.id,
+      agent.orgId,
+      operationId,
+      requestHash,
+      new Date(this.clock.now()),
+      (files) => new AgentMemoryStoreService(files, this.clock).apply(agent, op)
+    )
+    if ('reply' in outcome) return outcome.reply
+    return {
+      ok: false,
+      refusal: { kind: 'conflict', message: 'operation id was already used for a different operation' }
+    }
+  }
 
   /** Run one op; the two typed refusals ride as data, anything else is the caller's error REP. */
   async apply(agent: MemoryStoreAgent, op: MemoryFsPayload): Promise<MemoryFsReply> {
