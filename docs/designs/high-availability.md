@@ -652,9 +652,10 @@ incrementing the shared counter does not reconcile two different renderers.
 ### Daemon status during handoff
 
 Control connection status is distinct from daemon execution health. The current
-API already has a bounded `connecting` grace, but the Console mapper collapses
-it into `offline`. The HA implementation must preserve that distinction through
-the API and UI, using the shared liveness view:
+API already has a bounded `connecting` grace, which the Console shows as
+Reconnecting on daemon rows while their agents still read offline. The HA
+implementation must preserve that distinction through the API and UI, using the
+shared liveness view:
 
 | Observation                                                                   | Console behavior                                                                                                        |
 | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |

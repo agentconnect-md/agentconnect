@@ -2385,9 +2385,9 @@ export function daemonFromDto(
     canManageLifecycle: d.canManageLifecycle ?? false,
     // Flag an available upgrade only when both versions parse and latest > running.
     upgradeAvailable: isUpgradeAvailable(d.agentVersion, d.latestVersion),
-    // Keep connection/readiness operational. Presentation surfaces combine this
-    // with lifecycleStatus without changing onboarding or reconnect decisions.
+    // Operational readiness, so `connecting` stays offline for every decision; only presentation reads `reconnecting`.
     status: toStatusKey(d.status),
+    reconnecting: d.status === 'connecting',
     host: d.host ?? PLACEHOLDER,
     // `load.{cpu,mem}` are 0..1 fractions; surface them as percentages.
     cpu: d.load ? Math.round(d.load.cpu * 100) : 0,

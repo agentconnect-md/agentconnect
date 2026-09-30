@@ -3541,7 +3541,8 @@
       "paused": "paused",
       "offline": "offline",
       "upgrading": "upgrading",
-      "restarting": "restarting"
+      "restarting": "restarting",
+      "reconnecting": "reconnecting"
     },
     "metrics": {
       "agents": "agents",
@@ -3595,6 +3596,7 @@
       "off": "Off",
       "onlineStatus": "Online",
       "offlineStatus": "Offline",
+      "reconnectingStatus": "Reconnecting",
       "save": "Save",
       "createGroup": "Create group",
       "expireSessions": "Expire sessions",

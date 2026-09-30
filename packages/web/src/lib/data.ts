@@ -33,6 +33,8 @@ import { randomUuid } from '@/lib/random-uuid'
 export type LifecycleStatusKey = 'upgrading' | 'restarting'
 export type ConnectionStatusKey = 'online' | 'paused' | 'offline'
 export type StatusKey = ConnectionStatusKey | LifecycleStatusKey
+/** Daemons only: `reconnecting` presents a control link still recovering within the liveness grace. */
+export type DaemonStatusKey = StatusKey | 'reconnecting'
 
 export interface StatusInfo {
   dot: string
@@ -41,7 +43,7 @@ export interface StatusInfo {
   text: string
 }
 
-const STATUS_MAP: Record<StatusKey, StatusInfo> = {
+const STATUS_MAP: Record<DaemonStatusKey, StatusInfo> = {
   online: { dot: 'var(--status-online)', label: 'online', bg: 'var(--status-online-soft)', text: '#0f7a48' },
   paused: { dot: 'var(--status-paused)', label: 'paused', bg: 'var(--status-paused-soft)', text: '#9a6500' },
   offline: {
@@ -61,11 +63,17 @@ const STATUS_MAP: Record<StatusKey, StatusInfo> = {
     label: 'restarting',
     bg: 'var(--status-paused-soft)',
     text: '#9a6500'
+  },
+  reconnecting: {
+    dot: 'var(--status-paused)',
+    label: 'reconnecting',
+    bg: 'var(--status-paused-soft)',
+    text: '#9a6500'
   }
 }
 
 export function status(s: string): StatusInfo {
-  return STATUS_MAP[s as StatusKey] ?? STATUS_MAP.offline
+  return STATUS_MAP[s as DaemonStatusKey] ?? STATUS_MAP.offline
 }
 
 export function lifecycleStatus(
@@ -77,8 +85,10 @@ export function lifecycleStatus(
   return op.op === 'upgrade' ? 'upgrading' : 'restarting'
 }
 
-export function presentedDaemonStatus(daemon: Pick<DaemonRow, 'status' | 'lifecycleStatus'>): StatusKey {
-  return daemon.lifecycleStatus ?? daemon.status
+export function presentedDaemonStatus(
+  daemon: Pick<DaemonRow, 'status' | 'lifecycleStatus' | 'reconnecting'>
+): DaemonStatusKey {
+  return daemon.lifecycleStatus ?? (daemon.reconnecting ? 'reconnecting' : daemon.status)
 }
 
 /** What a MANAGED deployment calls the pool: it is AgentConnect's own infrastructure, so it is
@@ -240,14 +250,13 @@ export interface MemberSetRow {
   spreadSessions: boolean
 }
 
-/** One status for a group: online while any of its members is serving — the same rule the pool
- *  uses, and for the same reason (whichever member holds the duty is the one serving). */
+/** One status for a group, by the pool's rule: whichever member holds the duty is the one serving. */
 export function groupFleetStatus(
   group: Pick<MemberSetRow, 'memberDaemonIds'>,
-  daemons: readonly Pick<DaemonRow, 'daemonId' | 'status'>[]
-): ConnectionStatusKey {
+  daemons: readonly Pick<DaemonRow, 'daemonId' | 'status' | 'reconnecting'>[]
+): DaemonStatusKey {
   const members = new Set(group.memberDaemonIds)
-  return daemons.some((d) => members.has(d.daemonId) && d.status === 'online') ? 'online' : 'offline'
+  return poolFleetStatus(daemons.filter((d) => members.has(d.daemonId)))
 }
 
 /** The daemons that are MACHINES this org connected. Pool members are install-wide, replaceable
@@ -257,9 +266,10 @@ export function localDaemons<T extends { pool?: boolean }>(daemons: readonly T[]
   return daemons.filter((daemon) => !daemon.pool)
 }
 
-/** One status for the whole pool: online while any member is serving. */
-export function poolFleetStatus(members: Pick<DaemonRow, 'status'>[]): ConnectionStatusKey {
-  return members.some((m) => m.status === 'online') ? 'online' : 'offline'
+/** One status for the whole pool: online while any member serves, else reconnecting while any link recovers. */
+export function poolFleetStatus(members: Pick<DaemonRow, 'status' | 'reconnecting'>[]): DaemonStatusKey {
+  if (members.some((m) => m.status === 'online')) return 'online'
+  return members.some((m) => m.reconnecting) ? 'reconnecting' : 'offline'
 }
 
 // An agent runs *inside* its owning daemon, so it can't really be online when that
@@ -2367,6 +2377,8 @@ export interface DaemonRow {
   memberSetId: string | null
   /** Planned lifecycle presentation while the durable operation is pending. */
   lifecycleStatus: LifecycleStatusKey | null
+  /** Presentation only: the control link is recovering within the liveness grace, while `status` stays offline. */
+  reconnecting?: boolean
   host: string
   cpu: number // 0-100 CPU utilization
   mem: number // 0-100 memory utilization

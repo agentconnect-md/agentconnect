@@ -175,6 +175,18 @@ describe('GroupDetailView', () => {
     expect(dark).not.toContain('var(--status-online)')
   })
 
+  it('reads reconnecting, on the group and its member, while a member recovers its control link', () => {
+    mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+    mocks.daemons = [daemon('d1', { status: 'offline', reconnecting: true }), daemon('d2', { status: 'offline' })]
+
+    const html = render()
+
+    // The group's badge and the recovering member's row; the other member stays offline.
+    expect(html.match(/>reconnecting</g)).toHaveLength(2)
+    expect(html.match(/>offline</g)).toHaveLength(1)
+    expect(html).toContain('0 / 2')
+  })
+
   it('never borrows a member’s host, version or uptime for the group itself', () => {
     mocks.memberSets = [group({ memberDaemonIds: ['d1'] })]
     mocks.daemons = [daemon('d1', { host: 'builder.internal', version: '9.9.9', uptime: '31d' })]

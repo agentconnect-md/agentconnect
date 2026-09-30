@@ -3541,7 +3541,8 @@
       "paused": "已暂停",
       "offline": "离线",
       "upgrading": "升级中",
-      "restarting": "重启中"
+      "restarting": "重启中",
+      "reconnecting": "重连中"
     },
     "metrics": {
       "agents": "Agent",
@@ -3595,6 +3596,7 @@
       "off": "关闭",
       "onlineStatus": "在线",
       "offlineStatus": "离线",
+      "reconnectingStatus": "重连中",
       "save": "保存",
       "createGroup": "创建组",
       "expireSessions": "过期会话",

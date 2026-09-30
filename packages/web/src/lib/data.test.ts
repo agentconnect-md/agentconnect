@@ -9,6 +9,7 @@ import {
   effortChoicesFor,
   effortField,
   fastModeAvailableFor,
+  groupFleetStatus,
   lifecycleStatus,
   conversationRowKey,
   mergeCanonicalSessions,
@@ -22,6 +23,7 @@ import {
   PLAYGROUND_CHANNEL_FILTER,
   resolvedPermissionMode,
   permissionModeOptions,
+  poolFleetStatus,
   presentedDaemonStatus,
   resolveEffortForModel,
   sessionChannelDisplay,
@@ -72,6 +74,28 @@ describe('planned daemon lifecycle status', () => {
       label: 'restarting',
       text: '#9a6500'
     })
+  })
+})
+
+describe('daemon control-link recovery', () => {
+  const serving = { daemonId: 'serving', status: 'online' as const }
+  const recovering = { daemonId: 'recovering', status: 'offline' as const, reconnecting: true }
+  const gone = { daemonId: 'gone', status: 'offline' as const }
+
+  it('names a planned lifecycle state ahead of a recovering control link', () => {
+    expect(presentedDaemonStatus({ ...recovering, lifecycleStatus: null })).toBe('reconnecting')
+    expect(presentedDaemonStatus({ ...recovering, lifecycleStatus: 'restarting' })).toBe('restarting')
+    expect(presentedDaemonStatus({ ...gone, lifecycleStatus: null })).toBe('offline')
+  })
+
+  it('reads a pool or group reconnecting only while no member serves and one is recovering', () => {
+    expect(poolFleetStatus([serving, recovering])).toBe('online')
+    expect(poolFleetStatus([recovering, gone])).toBe('reconnecting')
+    expect(poolFleetStatus([gone])).toBe('offline')
+    const daemons = [serving, recovering, gone]
+    expect(groupFleetStatus({ memberDaemonIds: ['recovering', 'gone'] }, daemons)).toBe('reconnecting')
+    expect(groupFleetStatus({ memberDaemonIds: ['serving', 'recovering'] }, daemons)).toBe('online')
+    expect(groupFleetStatus({ memberDaemonIds: ['gone'] }, daemons)).toBe('offline')
   })
 })
 
