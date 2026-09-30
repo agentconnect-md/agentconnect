@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
-import { agentHostKey, hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
+import { agentHostKey, hostKeyDirName, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { sandboxSettingsDir } from '../src/acp/sandbox.js'
 import { prepareRuntimeLaunch, privateRuntimeHomeFor } from '../src/launch/prepare.js'
 import { sessionKey } from '../src/store/local-store.js'
@@ -222,6 +222,54 @@ it.skipIf(process.platform === 'win32')(
           expect(host.opts.env.DEEPSEEK_API_KEY).toBe(environment.secrets[0].placeholder)
         }
       }
+    } finally {
+      await daemon.stop()
+      vi.unstubAllEnvs()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
+// A warm host holds its VM against a changed descriptor, so a re-review's Git refused there degraded to revision-only.
+it.skipIf(process.platform === 'win32')(
+  "prepares a session's workspace in the VM its host launched, under the session's selected runtime",
+  async () => {
+    const root = withRuntimes(scaffold(), { 'dsh-acp': { command: 'node', args: ['unused'] } })
+    vi.stubEnv('DSH_HOME', join(root, 'host-dsh'))
+    vi.stubEnv('DEEPSEEK_API_KEY', undefined)
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      const manager = useMicrosandbox(daemon)
+      ;(daemon as any).wirePlaneResolver((daemon as any).microsandboxPlane)
+      const agent = (daemon as any).agents.get('bot-a')
+      // Only the selected runtime turns this into a VM secret, so the two runtimes start different VMs.
+      agent.runtimeOverrides = { secrets: [{ name: 'DEEPSEEK_API_KEY', value: 'fixture-deepseek-key' }] }
+      const key = KEY('review')
+      const cwd = join(agent.dir, 'sessions', sessionKeyDirName(key), 'workspace')
+      mkdirSync(cwd, { recursive: true })
+      ;(daemon as any).sessionRuntimes.set(key, { runtime: 'dsh-acp', model: '' })
+
+      ;(daemon as any).buildAcpHost((daemon as any).sessionAgent('bot-a', key), (daemon as any).cfg, {
+        hostKey: sessionHostKey('bot-a', key),
+        strategy: 'microsandbox',
+        cwd
+      })
+      const launched = (manager.driverFor.mock.calls.at(-1) as any)[0]
+      expect(launched.id).toBe(`bot-a/${sessionKeyDirName(key)}`)
+      expect(launched.secrets).toHaveLength(1)
+
+      const refused = new Error('captured')
+      const withEnvironment = vi
+        .spyOn((daemon as any).localExecutor, 'withEnvironment')
+        .mockRejectedValue(refused as never)
+      await expect((daemon as any).workspaces.revParse('bot-a', cwd, 'HEAD')).rejects.toThrow('captured')
+      const prepared = withEnvironment.mock.calls[0]![0] as typeof launched
+      const spec = (environment: typeof launched) => ({
+        ...environment,
+        secrets: environment.secrets?.map(({ env, placeholder, host }: any) => ({ env, placeholder, host }))
+      })
+      expect(spec(prepared)).toEqual(spec(launched))
     } finally {
       await daemon.stop()
       vi.unstubAllEnvs()

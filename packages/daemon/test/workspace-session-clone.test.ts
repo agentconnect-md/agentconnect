@@ -26,7 +26,13 @@ import {
   initGitInjection,
   workspaceGitLocalEnv
 } from '../src/workspace/git-injection.js'
-import { LocalGitRunner, type GitRunner, type GitLogEntry, type GitPullSummary } from '../src/workspace/git-runner.js'
+import {
+  GitTransportError,
+  LocalGitRunner,
+  type GitRunner,
+  type GitLogEntry,
+  type GitPullSummary
+} from '../src/workspace/git-runner.js'
 import { ALLOWED_GIT_SUBCOMMANDS, createExecHandler } from '../src/shim/exec-handler.js'
 import { ShimGitRunner, type GitExecPayload } from '../src/shim/git-exec.js'
 import type { ShimRequester } from '../src/shim/channels.js'
@@ -387,6 +393,25 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(git(cwd, ['symbolic-ref', '--short', 'HEAD'])).toBe(branch)
     expect(existsSync(join(cwd, 'notes.md'))).toBe(true)
     expect(workspaces.sessionWorktreePath(agent, KEY)).toBe(join(leafOf(agent), 'workspace'))
+  })
+
+  it('keeps the clone when its Git never ran, instead of reading that as no clone and cloning over it', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    writeFileSync(join(cwd, 'notes.md'), 'kept\n')
+    const clones = () => gitRuns.filter(({ args }) => args[0] === 'clone').length
+    const cloned = clones()
+    const refused = new GitTransportError('environment configuration changed while active')
+    const raw = SeamRunner.prototype.raw
+    vi.spyOn(SeamRunner.prototype, 'raw').mockImplementation(function (this: SeamRunner, args: string[]) {
+      return args[0] === 'rev-parse' ? Promise.reject(refused) : raw.call(this, args)
+    })
+
+    await expect(workspaces.prepareSessionWorkspace(agent, confined())).rejects.toBe(refused)
+
+    expect(readFileSync(join(cwd, 'notes.md'), 'utf8')).toBe('kept\n')
+    expect(clones()).toBe(cloned)
   })
 
   it.each(['shared', 'worktree', 'clone'] as const)(

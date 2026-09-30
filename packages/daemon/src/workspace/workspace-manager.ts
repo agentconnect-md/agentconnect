@@ -2488,7 +2488,9 @@ export class WorkspaceManager {
     if (attached) {
       try {
         await this.revParse(agent.id, cwd, 'HEAD')
-      } catch {
+      } catch (err) {
+        // A Git that never ran says nothing about the worktree, which must not be discarded for it.
+        if (err instanceof GitTransportError) throw err
         attached = false
         await fs.rmTree(cwd)
       }
@@ -2542,7 +2544,9 @@ export class WorkspaceManager {
     if (attached) {
       try {
         await this.revParse(agent.id, cwd, 'HEAD')
-      } catch {
+      } catch (err) {
+        // A Git that never ran says nothing about the clone, which must not be discarded for it.
+        if (err instanceof GitTransportError) throw err
         attached = false
       }
     }

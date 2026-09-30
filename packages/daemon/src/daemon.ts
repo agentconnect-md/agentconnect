@@ -5293,8 +5293,16 @@ export class Daemon {
     })
   }
 
+  /** The agent a session's own VM runs, as {@link sessionAgent} hands it to that session's host launch. */
+  private microsandboxSessionAgent(agent: LoadedAgent, sessionDir: string, key?: HostKey): LoadedAgent {
+    const leaf = basename(sessionDir)
+    const sessionKey =
+      (key && hostKeySessionKey(key)) ?? [...this.sessionRuntimes.keys()].find((k) => sessionKeyDirName(k) === leaf)
+    return this.sessionAgent(agent.id, sessionKey) ?? agent
+  }
+
   private microsandboxContext(
-    agent: LoadedAgent,
+    configured: LoadedAgent,
     cwd: string,
     key?: HostKey,
     excludeAgentToolCredentials = false
@@ -5308,10 +5316,14 @@ export class Daemon {
       void this.microsandboxReady().catch(() => {})
       throw new Error('the microsandbox image is not prepared yet; its first session prepares it')
     }
+    const placement = this.microsandboxPlacement(configured, cwd, key)
+    // A session's VM takes the session's selected runtime, as its host launch does, or preparation would name another VM.
+    const agent = placement.trustedSessionDir
+      ? this.microsandboxSessionAgent(configured, placement.trustedSessionDir, key)
+      : configured
     const runtimeEntry = this.microsandboxCatalog.entries[agent.runtime]
     const runtime = runtimeEntry?.runtime
     if (!runtime) throw new Error(`runtime "${agent.runtime}" is not provided by the microsandbox image`)
-    const placement = this.microsandboxPlacement(agent, cwd, key)
     // The provider whose managed credential this spec names; a dream host gets none at all.
     const credentialProvider = excludeAgentToolCredentials
       ? undefined
