@@ -1,29 +1,12 @@
 // ⚠️ NO RELATIVE IMPORTS — a bundler compiles this from source; web's protocol-imports.leaf.test.ts enforces it.
 
-/** App-level Slack message shortcut for opening the controls of the session that
- * owns the selected message's conversation. Direct apps receive it over Socket
- * Mode; shared apps receive the same callback through the relay HTTP edge.
- *
- * Declared to Slack by {@link buildSlackAppManifest} below, which is why it lives
- * here rather than beside the runtime Block Kit action ids in `frames/relay-cp.ts`:
- * those name controls on messages we post, this one names a manifest feature. */
+// App-level message shortcut for session controls, shared by Socket Mode and HTTP apps.
 export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
 
 /** Public platform profile copy. Never derive this from an Agent description. */
 export const PLATFORM_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'
 
-/**
- * Every bot scope the app requests, and the exact set an installation must hold.
- *
- * There was briefly a required/capability split here, on the theory that a scope backing one
- * optional tool should not mark an older installation broken. It did not survive contact: the
- * "required" half was not required either — the app receives and answers messages without
- * several of them — so the line was invented rather than observed, and it bought a second
- * constant, an extra API field, extra console branches, and a message that said six permissions
- * were missing without naming them. One list is both simpler and more honest: these are the
- * scopes AgentConnect needs, an install short of any of them is incomplete, and the console
- * says exactly which to add.
- */
+// Request only scopes used by implemented features; the same list validates installation grants.
 export const SLACK_BOT_SCOPES = [
   'files:read',
   'app_mentions:read',
@@ -36,11 +19,7 @@ export const SLACK_BOT_SCOPES = [
   'groups:history',
   'groups:read',
   'im:history',
-  // `conversations.info` needs one of channels/groups/im/mpim `:read` PER CONVERSATION TYPE,
-  // and this one was the gap: the other three were declared and the DM arm was not. It is not
-  // cosmetic — `sendMessage` into a DM asks `getChannelInfo` whether the target is one, and a
-  // refused lookup falls back to "not a DM", which keys the outbound session as a channel
-  // thread while the inbound messages key it as a DM, so the conversation forks.
+  // DM channel lookup needs `im:read` to keep inbound and outbound session keys consistent.
   'im:read',
   'im:write',
   'mpim:history',
@@ -59,33 +38,15 @@ export const SLACK_BOT_SCOPES = [
   'bookmarks:write',
   'lists:read',
   'lists:write',
-  // `channels:join` was RESERVED here ahead of a caller; the daemon now uses it
-  // (`conversations.join` in the Slack connection's `joiningOnRefusal`) to enter a PUBLIC channel
-  // the first time an agent reads or posts there instead of waiting to be invited. It cannot
-  // enter a private channel, which is what keeps those invitation-only.
+  // Join public channels on first read or post; private channels still require an invitation.
   'channels:join',
-  // RESERVED — declared deliberately ahead of a caller, which the rule above otherwise forbids.
-  // Every scope added later costs a reinstall of every installation, so the ones we know are
-  // coming ride along with these and cost nothing extra: the two directory reads are for
-  // console-side operator screens. Nothing calls them yet; that is the point of naming them
-  // here rather than discovering them one reinstall at a time.
-  'team:read',
-  'users:read.email',
-  // `search:read.*` arrives HERE, with `searchPublicMessages` — the rule this list states, that a
-  // scope may only land alongside the capability that calls it, since anything in this list
-  // makes every existing install incomplete. PUBLIC only, and that is
-  // measured rather than cautious: Slack grants `search:read.private` / `.im` / `.mpim` to a bot
-  // — its scope reference says user tokens only, which is wrong — but they return nothing. With
-  // the bot a MEMBER of a private channel, no combination of `channel_types` surfaced a message
-  // posted there, and a DM's text matched nothing at all. Anthropic's own Slack app makes the
-  // same split: bot search is public, private and DM search is a per-user grant.
+  // Bot search covers public messages, files, and users; private messages require per-user grants.
   'search:read.public',
   'search:read.files',
   'search:read.users'
 ] as const
 
-// Both transports advertise the same events: Socket Mode receives them directly, and the relay's
-// HTTP ingress forwards the ones this app acts on to the daemon that owns the conversation.
+// Socket Mode and relay HTTP ingress deliver the same events to the owning daemon.
 export const SLACK_BOT_EVENTS = [
   // The native stop button on an agent session; without the subscription Slack never shows it.
   'agent_session_stopped',

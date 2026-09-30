@@ -132,8 +132,6 @@ describe('buildInstallManifest', () => {
       'lists:read',
       'lists:write',
       'channels:join',
-      'team:read',
-      'users:read.email',
       'search:read.public',
       'search:read.files',
       'search:read.users'
@@ -170,7 +168,9 @@ describe('checkSlackBotScopes', () => {
   })
 
   it('ignores extra scopes the workspace happens to have granted', () => {
-    expect(checkSlackBotScopes([...SLACK_BOT_SCOPES, 'bookmarks:read'])).toEqual({ status: 'complete' })
+    expect(checkSlackBotScopes([...SLACK_BOT_SCOPES, 'team:read', 'users:read.email'])).toEqual({
+      status: 'complete'
+    })
   })
 
   it('names exactly the required scopes a short grant is missing', () => {

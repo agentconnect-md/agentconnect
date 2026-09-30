@@ -1251,12 +1251,10 @@ column's TYPE, and Slack publishes no schema endpoint for a list. So the columns
 from the rows a read returns and handed back with them — the read is not a convenience before
 the write, it is the only source of the ids and types the write needs.
 
-Three scopes in that same change had NO caller and said so: `channels:join`, `team:read`, and
-`users:read.email`. That is a deliberate exception to the scope-arrives-with-its-feature rule,
-taken because one list means every scope addition costs a reinstall of every installation —
-batching the ones already in view is one reinstall instead of three. The exception is worth
-making once, with the reason recorded, and is not a precedent for declaring scopes speculatively.
-`channels:join` has since found its caller (channel reach, below); the two directory reads still wait.
+The manifest requests only scopes with implemented callers. `channels:join` backs channel
+reach, below. The unused `team:read` and `users:read.email` scopes are no longer requested;
+existing installations that already granted them still pass the scope check. A future
+directory feature must add its scope alongside its implementation.
 
 **Channel reach.** Slack requires bot membership for `conversations.history` / `.replies` and
 `chat.postMessage` even in a public channel, and a bot is a member only of the channels a human

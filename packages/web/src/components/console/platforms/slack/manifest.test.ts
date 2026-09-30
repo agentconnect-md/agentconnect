@@ -45,8 +45,6 @@ describe('manifest parity with the Control Plane', () => {
       'lists:read',
       'lists:write',
       'channels:join',
-      'team:read',
-      'users:read.email',
       'search:read.public',
       'search:read.files',
       'search:read.users'
