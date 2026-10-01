@@ -22,6 +22,7 @@ import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { buildHookMessage } from '../src/messages/hook-message.js'
 import type { DecisionEvaluator } from '../src/decisions/evaluator.js'
 import { WAIT } from './wait-support.js'
+import { ModelSelectionError } from '../src/acp/acp-host.js'
 
 const agentId = 'example-agent'
 const decisionId = '33333333-3333-4333-8333-333333333333'
@@ -218,6 +219,51 @@ async function start(root: string) {
 }
 
 describe('session-pinned Decision model', () => {
+  it('reports a rejected sticky model without prompting on the runtime default', async () => {
+    const { internal, prompted, turn } = await start(scaffold())
+    await turn('rejected-model', 'first')
+    const host = [...internal.hosts.values()][0] as any
+    const setModel = vi
+      .spyOn(host, 'setSessionModel')
+      .mockRejectedValue(new ModelSelectionError('model-capable', new Error('This model requires usage credits.')))
+    vi.spyOn(host, 'modelOptions').mockReturnValue({
+      current: 'model-standard',
+      models: ['model-standard', 'model-capable']
+    })
+    const done = vi.fn()
+    await expect(
+      internal.dispatch(
+        agentId,
+        {
+          msgId: 'webchat:rejected-model',
+          traceId: 'second-turn',
+          source: 'user',
+          platform: 'webchat',
+          channel: 'rejected-model',
+          sender: { id: 'evaluation-user', isBot: false },
+          text: 'second',
+          mentionedBots: [],
+          isDm: true,
+          trigger: 'dm'
+        },
+        undefined,
+        {
+          conversationId: 'rejected-model',
+          turnId: 'second-turn',
+          evaluation: true,
+          sink: { output: vi.fn(), done }
+        }
+      )
+    ).rejects.toThrow('This model requires usage credits.')
+    expect(setModel).toHaveBeenCalledOnce()
+    expect(prompted).toEqual(['model-capable'])
+    expect(done).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'Could not select model "model-capable": This model requires usage credits.'
+      })
+    )
+  })
+
   it('shares one code-host snapshot between model and repository selection before opening a runtime', async () => {
     const { internal, evaluate, started } = await start(scaffold())
     const read = vi.spyOn(codeHostTurnFinal, 'codeHostPullRequestContext').mockResolvedValue({

@@ -5,6 +5,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import {
   AcpHost,
+  ModelSelectionError,
   claudeSessionMeta,
   isOAuthRefreshContention,
   shouldForwardUpdateDuringLoad,
@@ -376,6 +377,41 @@ describe('claudeSessionMeta (system prompt + memory index over _meta)', () => {
 })
 
 describe('AcpHost.setSessionModel (mid-session model switch)', () => {
+  it.each(['new', 'load', 'switch'] as const)(
+    'surfaces a rejected model and its provider detail on %s',
+    async (operation) => {
+      const host = new AcpHost(
+        { command: process.execPath, args: [fakeAgent], env: [] },
+        {
+          onUpdate: () => {},
+          configPrefs: operation === 'switch' ? undefined : { model: 'model-b' },
+          env: { AC_MODELS: 'model-a,model-b', AC_MODEL_ERROR: 'This model requires usage credits.' }
+        }
+      )
+      await host.start()
+      try {
+        let sessionId = 'persisted'
+        if (operation === 'switch') sessionId = await host.newSession('/tmp')
+        const request =
+          operation === 'new'
+            ? host.newSession('/tmp', [], undefined, undefined, [], (id) => {
+                sessionId = id
+              })
+            : operation === 'load'
+              ? host.loadSession(sessionId, '/tmp')
+              : host.setSessionModel(sessionId, 'model-b')
+        await expect(request).rejects.toMatchObject({
+          name: 'ModelSelectionError',
+          message: 'Could not select model "model-b": This model requires usage credits.'
+        })
+        expect(host.hasSession(sessionId)).toBe(operation === 'switch')
+        expect(host.modelOptions(sessionId)?.current).toBe(operation === 'switch' ? 'model-a' : undefined)
+      } finally {
+        await host.stop()
+      }
+    }
+  )
+
   it('applies an offered model to a live session and refreshes modelOptions; rejects bad inputs', async () => {
     const host = new AcpHost(
       { command: process.execPath, args: [fakeAgent], env: [] },
@@ -390,17 +426,16 @@ describe('AcpHost.setSessionModel (mid-session model switch)', () => {
     expect(host.modelOptions()?.current).toBe('model-b')
     expect(host.modelOptions(sid)?.current).toBe('model-b')
 
-    // A second session refreshes the host-global compatibility cache, but the
-    // first session must retain its own selector for per-turn pricing/status.
+    // Each session retains its own selector even when another session refreshes the global cache.
     const sid2 = await host.newSession('/tmp')
     expect(host.modelOptions()?.current).toBe('model-a')
     expect(host.modelOptions(sid)?.current).toBe('model-b')
     expect(host.modelOptions(sid2)?.current).toBe('model-a')
     expect(host.modelOptions('s-unknown')).toBeNull()
 
-    // already selected → no-op false; unoffered value → false; unknown session → false
+    // An unavailable model is an error; unchanged and unknown sessions are no-ops.
     expect(await host.setSessionModel(sid, 'model-b')).toBe(false)
-    expect(await host.setSessionModel(sid, 'nope')).toBe(false)
+    await expect(host.setSessionModel(sid, 'nope')).rejects.toBeInstanceOf(ModelSelectionError)
     expect(await host.setSessionModel('s-unknown', 'model-a')).toBe(false)
     await host.stop()
   })

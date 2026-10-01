@@ -168,7 +168,7 @@ export interface GithubReviewHost {
   storedSessionExecution(
     agentId: string,
     acpSessionId: string
-  ): Promise<{ host?: AcpHost; target?: DecisionRuntimeTarget }>
+  ): Promise<{ host?: AcpHost; target?: DecisionRuntimeTarget; observed?: { runtime?: string; model: string | null } }>
 }
 
 export class GithubReviewOrchestrator {
@@ -1158,16 +1158,17 @@ export class GithubReviewOrchestrator {
   ): Promise<GithubCommentAttribution> {
     const agent = this.agents.get(agentId)
     const execution = await this.host.storedSessionExecution(agentId, sessionId)
-    const runtime = execution.target?.runtime ?? agent?.runtime
+    const runtime = execution.observed?.runtime ?? execution.target?.runtime ?? agent?.runtime
     // The footer links the console, which knows this session by its outward id (§1.1).
     const outward = await this.host.outwardSessionId(agentId, sessionId)
     return {
       agentName: agent?.displayName?.trim() || agent?.name || agentId,
       agentUrl: this.host.agentLink(agentId),
       runtime: runtime ? (this.host.runtimeNames()[runtime] ?? runtime) : 'unknown',
-      model:
-        execution.host?.modelOptions?.(sessionId)?.current ??
-        (execution.target ? execution.target.model || 'default' : (agent?.runtimeOverrides?.model ?? 'default')),
+      model: execution.observed
+        ? (execution.observed.model ?? 'default')
+        : (execution.host?.modelOptions?.(sessionId)?.current ??
+          (execution.target ? execution.target.model || 'default' : (agent?.runtimeOverrides?.model ?? 'default'))),
       sessionUrl: this.host.sessionLink(outward ?? sessionId, codeHostLinkSource(provider)),
       // Same CP-resolved public avatar Slack uses for icon_url; GitHub renders it
       // inline ahead of the footer sentence.

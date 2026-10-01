@@ -89,6 +89,11 @@ full diagnostic stays in the daemon log.
 A runtime that failed to start because its own installation is incomplete is repaired
 and retried automatically before the agent is reported as unavailable at all.
 
+When a runtime offers model selection but rejects an explicitly selected model, the
+turn stops and reports the requested model with the runtime's detailed cause. It must
+not silently run on a different model. Session metadata, usage, and reply attribution
+prefer the concrete model reported during execution over a selector's `default` alias.
+
 A runtime-reported terminal failure is a failed turn even when its prompt response says
 `end_turn`. When the runtime explicitly offers a retry and no tool or answer has started,
 the daemon retries once after five seconds within the same admitted task. A review keeps

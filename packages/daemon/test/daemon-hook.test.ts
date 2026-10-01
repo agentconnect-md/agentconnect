@@ -253,6 +253,16 @@ describe('Daemon rd/msg hook fires', () => {
       model: 'default'
     })
 
+    // Runtime evidence survives host eviction and takes precedence over agent configuration and decision intent.
+    await (daemon as any).store.setObservedTurn(key, 'claude', 'claude-opus-4-6')
+    expect(
+      await (daemon as any).githubReviews.githubCommentAttribution(AGENT_ID, 'acp-selected', 'github')
+    ).toMatchObject({ runtime: 'Claude Code', model: 'claude-opus-4-6' })
+    await (daemon as any).store.setObservedTurn(key, 'claude', null)
+    expect(
+      await (daemon as any).githubReviews.githubCommentAttribution(AGENT_ID, 'acp-selected', 'github')
+    ).toMatchObject({ runtime: 'Claude Code', model: 'default' })
+
     await daemon.stop()
   })
 
