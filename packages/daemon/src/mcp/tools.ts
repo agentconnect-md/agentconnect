@@ -1166,7 +1166,10 @@ export const GITHUB_REVIEW_TOOLS: ToolDescriptor[] = [
         },
         comments: {
           type: 'array',
-          description: 'Optional inline review comments, submitted atomically with the top-level review.',
+          description:
+            'Optional inline review comments, submitted atomically with the top-level review. On GitHub, use lines ' +
+            'in the pull request diff and keep each range within one hunk. After invalid_input with not_submitted, ' +
+            'correct the positions or move the findings into body, then call this tool again.',
           items: obj(
             {
               path: { type: 'string' },

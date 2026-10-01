@@ -1109,6 +1109,11 @@ remains authoritative (`REQUEST_CHANGES` stays `action_required`), and an ambigu
 formal-review write remains a visible failure until it is reconciled. An active
 terminal failure keeps the `Request review` action for a new attempt after the cause is resolved.
 
+An inline review comment must name a line or range in the pull request's diff. Invalid
+positions return an actionable error before publication, so the Agent can correct them
+or move the finding into the review body and retry within the same authorized turn.
+GitHub rejection details are returned to the Agent without changing the review verdict.
+
 A review turn the platform itself ended — the Agent stopped being served where it was
 running — is a distinct outcome from a review that ran and could not conclude, and must not
 borrow the runtime-failure wording. Its Check states that the review was interrupted and
