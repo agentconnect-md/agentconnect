@@ -10858,10 +10858,17 @@ export class Daemon {
       // A hook's stored selection names the runtime even after its host stops.
       storedSessionExecution: async (agentId, acpSessionId) => {
         const rec = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+        const pending = rec
+          ? this.pending.get(pendingTurnKey(this.sessionOwnerKey(agentId, rec.key), acpSessionId))
+          : undefined
         return {
           host: rec ? this.hostForOwner(this.sessionOwnerKey(agentId, rec.key)) : this.hosts.get(agentHostKey(agentId)),
           target: pinnedDecisionTarget(rec?.decisionModel),
-          observed: rec ? await this.store.getObservedTurn(rec.key) : undefined
+          // During a turn, its initial selector snapshot must not override newer live model information.
+          observed:
+            rec && (!pending || pending.signals.runtimeReportedModel)
+              ? await this.store.getObservedTurn(rec.key)
+              : undefined
         }
       }
     }
@@ -13991,6 +13998,7 @@ export class Daemon {
       this.emitTurnStarted(run, host, sessionId, created, prompt.finalCaptureInput, turnModel)
       const outcome = await this.runPromptLoop(p, run, { ...prompt, host, sessionId, turnModel, settlement })
       if (outcome.kind === 'cancelled') return null
+      if (!p.signals.runtimeReportedModel) turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
       await this.settleUsage(p, run, sessionId)
       await this.commitWebchatReply(p, run, outcome)
       await this.flushPlatformFinals(p, run, sessionId, currentAttributionInfo)
@@ -16252,8 +16260,7 @@ export class Daemon {
     )
   }
 
-  /** This turn's live attribution facts. Re-read per call: a runtime may only publish its final
-   *  session-scoped model during the prompt. */
+  /** Prefer execution evidence, then the live selector, which can change during the prompt. */
   private async turnAttributionInfo(
     p: Pending,
     run: TurnRun,
@@ -16265,8 +16272,7 @@ export class Daemon {
       botName: agent.name,
       botUrl: this.agentLink(entry.agentId),
       runtime: this.runtimeFacts.runtimeNames()[agent.runtime] ?? agent.runtime,
-      model:
-        (await this.store.getObservedModel(run.key)) ?? (await this.buildStatusInfo(p)).model ?? turnModel ?? 'default',
+      model: p.signals.runtimeReportedModel ?? (await this.buildStatusInfo(p)).model ?? turnModel ?? 'default',
       sessionUrl: this.sessionLink(p.outwardSessionId, this.sessionLinkSource(plan.platform, plan.integrationId)),
       ...(plan.hopLimitNotice ? { notice: plan.hopLimitNotice } : {})
     }
@@ -18126,7 +18132,7 @@ export class Daemon {
   private async recordRuntimeUsageSnapshot(
     key: string,
     update: Extract<SessionUpdate, { sessionUpdate: 'usage_update' }>
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     await this.store.setUsageSnapshot(key, {
       contextUsed: update.used,
       contextSize: update.size,
@@ -18138,10 +18144,13 @@ export class Daemon {
     const model = typeof reported === 'string' ? reported.trim() : ''
     if (!model || model === 'default' || model === '<synthetic>') return
     const observed = await this.store.getObservedTurn(key)
-    if (!observed?.runtime || observed.model === model) return
-    await this.store.setObservedTurn(key, observed.runtime, model)
-    const rec = await this.store.getSession(key)
-    if (rec) await this.reportSessionStatus(rec)
+    if (!observed?.runtime) return
+    if (observed.model !== model) {
+      await this.store.setObservedTurn(key, observed.runtime, model)
+      const rec = await this.store.getSession(key)
+      if (rec) await this.reportSessionStatus(rec)
+    }
+    return model
   }
 
   /** Emit the daemon's latest merged usage snapshot. Used both at normal turn end
@@ -18472,7 +18481,8 @@ export class Daemon {
       const key = p?.plan.sessionKey ?? rec?.key
       if (key) {
         if (p && update.cost?.amount !== undefined) p.signals.runtimeCostReported = true
-        await this.recordRuntimeUsageSnapshot(key, update)
+        const reportedModel = await this.recordRuntimeUsageSnapshot(key, update)
+        if (p && reportedModel) p.signals.runtimeReportedModel = reportedModel
         if (p) {
           // Live context/cost changed — refresh the status bar (deduped if nothing observable
           // moved). Token totals aren't in this stream; they fold in at turn end.
