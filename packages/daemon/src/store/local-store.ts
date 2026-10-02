@@ -8865,21 +8865,15 @@ export class LocalStore {
    * The identity of a shared session-content store, the same for every daemon writing to it, so the Control Plane can
    * tell which members of a group read one another's sessions. A row the first daemon on the database creates and the
    * rest read back, outside the versioned schema so a daemon of any version may share the database. A private (SQLite)
-   * store has none: no peer can read its rows.
+   * store has none: no peer can read its rows. `PostgresDataPlane.open` first asks under the schema lock, so two daemons
+   * starting together never race to create the table.
    */
   async contentStoreId(): Promise<string | undefined> {
     if (!this.postgres) return undefined
-    try {
-      await this.db.exec(
-        'CREATE TABLE IF NOT EXISTS content_store_identity (' +
-          'singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton), id TEXT NOT NULL)'
-      )
-    } catch (error) {
-      // Two daemons starting together both pass IF NOT EXISTS, and the slower CREATE fails on the
-      // catalog's unique index (23505) or as a duplicate table (42P07): the table exists either way.
-      const code = (error as { code?: unknown }).code
-      if (code !== '23505' && code !== '42P07') throw error
-    }
+    await this.db.exec(
+      'CREATE TABLE IF NOT EXISTS content_store_identity (' +
+        'singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton), id TEXT NOT NULL)'
+    )
     await this.db
       .prepare('INSERT INTO content_store_identity (singleton, id) VALUES (true, ?) ON CONFLICT DO NOTHING')
       .run(randomUUID())

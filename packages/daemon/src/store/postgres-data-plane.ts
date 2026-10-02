@@ -53,6 +53,8 @@ export class PostgresDataPlane {
     const database = await PostgresAsyncDatabase.open(config, onFailure)
     try {
       const store = await LocalStore.open({ database, shared: true, ownerId: randomUUID(), orgForAgent })
+      // Its table is created on first ask: do that while peers still wait on the schema lock.
+      await store.contentStoreId()
       await database.finishSchemaInitialization()
       return new PostgresDataPlane(pool, store)
     } catch (error) {

@@ -158,12 +158,21 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
   })
 
   // Every daemon on one database reports the same content store, so the Control Plane lets a group's members serve
-  // one another's sessions (RegisterReq.contentStore); the first one to ask creates it.
+  // one another's sessions (RegisterReq.contentStore); the first one to open creates it, and two starting together
+  // do not race on the table.
   it('reports one content store identity for every daemon on the database', async () => {
     const config = { version: 1 as const, databaseUrl: databaseUrl!, maxConnections: 2 }
-    const first = await PostgresDataPlane.open(config, () => undefined)
-    const second = await PostgresDataPlane.open(config, () => undefined)
+    const raw = await PostgresAsyncDatabase.open(config)
+    await raw.finishSchemaInitialization()
+    await raw.exec('DROP TABLE IF EXISTS content_store_identity')
+    await raw.close()
+    const onFailure = vi.fn()
+    const [first, second] = await Promise.all([
+      PostgresDataPlane.open(config, () => undefined, onFailure),
+      PostgresDataPlane.open(config, () => undefined, onFailure)
+    ])
     try {
+      expect(onFailure).not.toHaveBeenCalled()
       const [a, b] = await Promise.all([first.store.contentStoreId(), second.store.contentStoreId()])
       expect(a).toMatch(/^[0-9a-f-]{36}$/)
       expect(b).toBe(a)
