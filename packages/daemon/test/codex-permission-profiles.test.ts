@@ -203,6 +203,20 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     expect(agent).toBe(
       `permissions.agentconnect-protected-workspace.filesystem={ "${home}" = "write", "${home}/.codex" = "deny", "${home}/.codex/tmp/arg0" = "write" }`
     )
+    // Automatic approval review runs under the read-only profile, whose `.codex` deny must leave Codex its helper too.
+    expect(
+      config.configOverrides.find((value) =>
+        value.startsWith('permissions.agentconnect-protected-read-only.filesystem=')
+      )
+    ).toBe(
+      `permissions.agentconnect-protected-read-only.filesystem={ "${home}/.codex" = "deny", "${home}/.codex/tmp/arg0" = "write" }`
+    )
+  })
+
+  // Only the session's own Codex home earns the helper carve-out; another protected `.codex` stays denied whole.
+  it('reopens no helper subtree under a protected .codex that is not the session HOME', () => {
+    const config = codexPermissionProfileConfig({ protectedRoots: ['/host/.codex'] })!
+    expect(config.configOverrides.join('\n')).not.toContain('tmp/arg0')
   })
 
   // A HOME alone is a policy: it must not be silently dropped by the "nothing to say" early return.

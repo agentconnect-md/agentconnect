@@ -77,12 +77,18 @@ export function codexPermissionProfileConfig(
     throw new Error('Codex permission roots must be absolute paths')
   }
 
+  // Codex extracts its `codex-linux-sandbox` helper under `$CODEX_HOME/tmp/arg0` and execs it through its own bwrap, which masks a denied directory and reopens only WRITABLE descendants; every profile that denies the session's `.codex` reopens that one subtree.
+  const sessionCodexHome = sessionHomeRoot === undefined ? undefined : join(sessionHomeRoot, '.codex')
+  const codexHelperCarveOut = (codexHome: string): [string, string] => [join(codexHome, 'tmp', 'arg0'), 'write']
   const readOnlyFilesystem =
     protectedRoots.length > 0
       ? [
-          `permissions.${PROFILE_IDS['read-only']}.filesystem=${tomlInlineTable(
-            protectedRoots.map((root): [string, string] => [root, 'deny'])
-          )}`
+          `permissions.${PROFILE_IDS['read-only']}.filesystem=${tomlInlineTable([
+            ...protectedRoots.map((root): [string, string] => [root, 'deny']),
+            ...(sessionCodexHome !== undefined && protectedRoots.includes(sessionCodexHome)
+              ? [codexHelperCarveOut(sessionCodexHome)]
+              : [])
+          ])}`
         ]
       : []
   // Most-specific match wins; hooks/config get `read` (`deny` hides them, and Git needs its config); an owner `.git` names its `worktrees/**` because :workspace pins a worktree's admin dir read-only below the parent grant, while a session clone's `.git` (§11) is the exact pinned path and its entry alone reopens it.
@@ -98,15 +104,12 @@ export function codexPermissionProfileConfig(
       [join(root, 'hooks'), 'read'],
       [join(root, 'config'), 'read']
     ]),
-    // §11's per-session HOME holds the package caches and runtime state; `.codex` is carved back whole because its `auth.json` LINKS to the shared host credential and the rest is the ACP parent's state, written outside this sandbox.
-    // Codex extracts its `codex-linux-sandbox` helper under `$CODEX_HOME/tmp/arg0` and execs it through its own bwrap, which masks a denied directory and reopens only WRITABLE descendants, so that one subtree is reopened for write.
-    ...(sessionHomeRoot === undefined
+    // §11's per-session HOME holds the package caches and runtime state; `.codex` is carved back whole because its `auth.json` LINKS to the shared host credential and the rest is the ACP parent's state, written outside this sandbox. Its helper subtree reopens as above.
+    ...(sessionHomeRoot === undefined || sessionCodexHome === undefined
       ? []
-      : ([
-          [sessionHomeRoot, 'write'],
-          [join(sessionHomeRoot, '.codex'), 'deny'],
-          [join(sessionHomeRoot, '.codex', 'tmp', 'arg0'), 'write']
-        ] as Array<[string, string]>)),
+      : ([[sessionHomeRoot, 'write'], [sessionCodexHome, 'deny'], codexHelperCarveOut(sessionCodexHome)] as Array<
+          [string, string]
+        >)),
     // A shared store sits outside the cwd, so `:workspace` alone would refuse the very install it exists for; the read-only mode keeps refusing it.
     ...sharedWriteRoots.map((root): [string, string] => [root, 'write']),
     ...protectedRoots.map((root): [string, string] => [root, 'deny'])
