@@ -229,9 +229,7 @@ export class SessionPullRequestFeedbackService {
     if (!(await this.deps.validate(item, agent))) return true
     const daemonId = await this.deps.placement.dispatchDaemon(agent)
     if (!daemonId) return false
-    const sharedStoreMembers = session.contentSetId
-      ? await this.deps.memberSets.sharedStoreMemberIdsOf(session.contentSetId)
-      : []
+    const sharedStoreMembers = await this.deps.memberSets.sharedStoreMemberIdsOf(session)
     if (!servesSessionContent({ recordedDaemonId: session.daemonId, sharedStoreMembers }, daemonId)) return false
     const daemon = this.deps.daemon(daemonId)
     const feature =

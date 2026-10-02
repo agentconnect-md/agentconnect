@@ -209,6 +209,34 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     expect((await prisma.sessionMeta.findUnique({ where: { id: SESSION } }))?.contentSetId).toBeNull()
   })
 
+  // A daemon group's members choose their own stores (#2188); only the store id they report says
+  // whether two of them share rows, so it is stamped beside the set.
+  it('stamps an org-set recorder only when it reports a shared store, and that store id', async () => {
+    await fixtures()
+    const STORE = 'a5555555-5555-4555-8555-555555555555'
+    const setId = (
+      await prisma.memberSet.create({
+        data: { id: 'b7777777-7777-4777-8777-777777777777', orgId: DEF_ORG, name: 'group-g' }
+      })
+    ).id
+    await prisma.daemon.update({ where: { id: DAEMON }, data: { capabilities: { features: [], contentStore: STORE } } })
+    await prisma.memberSetMember.create({ data: { setId, daemonId: DAEMON } })
+    const repo = new PgSessionRepo(prisma)
+
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
+    let row = await prisma.sessionMeta.findUnique({ where: { id: SESSION } })
+    expect(row?.contentSetId).toBe(setId)
+    expect(row?.contentStoreId).toBe(STORE)
+
+    // The same member on a private store: no set, no store, so no peer may read it.
+    await prisma.sessionMeta.delete({ where: { id: SESSION } })
+    await prisma.daemon.update({ where: { id: DAEMON }, data: { capabilities: { features: [] } } })
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
+    row = await prisma.sessionMeta.findUnique({ where: { id: SESSION } })
+    expect(row?.contentSetId).toBeNull()
+    expect(row?.contentStoreId).toBeNull()
+  })
+
   it('never lets a later reporter claim the content store of a session it did not record', async () => {
     await fixtures()
     const setId = (await prisma.memberSet.findFirstOrThrow({ where: { orgId: null } })).id

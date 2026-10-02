@@ -589,14 +589,12 @@ export function sessionRoutes(deps: HttpDeps) {
     type ContentRead<T> = { ok: true; value: T } | { ok: false; reason: 'unplaced' | 'offline' }
     const readSessionContent = async <T>(
       req: FastifyRequest,
-      session: { daemonId: string | null; contentSetId: string | null },
+      session: { daemonId: string | null; contentSetId: string | null; contentStoreId: string | null },
       read: (daemonId: string) => Promise<T>
     ): Promise<ContentRead<T>> => {
       const readers = sessionContentReaders({
         recordedDaemonId: session.daemonId,
-        sharedStoreMembers: session.contentSetId
-          ? await deps.repos.memberSet.sharedStoreMemberIdsOf(session.contentSetId)
-          : []
+        sharedStoreMembers: await deps.repos.memberSet.sharedStoreMemberIdsOf(session)
       })
       if (readers.length === 0) return { ok: false, reason: session.daemonId ? 'offline' : 'unplaced' }
       // EVERY failure moves to the next holder of the same store, not just an unreachable socket:

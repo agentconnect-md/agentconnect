@@ -42,7 +42,9 @@ export const RegisterReq = z.object({
     // The machine's own effective strategy table (§5), in the executor report's shape: what its own sessions can run in, and what an agent's `execution` is checked against.
     strategies: ExecutorStrategyTable.optional(),
     // The retiring `sandbox.backend`, reported while the daemon still reads one so the CP can migrate `runInSandbox` once (§5).
-    sandboxBackend: ExecutorStrategyName.optional()
+    sandboxBackend: ExecutorStrategyName.optional(),
+    // The shared PostgreSQL store's id (one per database); absent on a private local store. Members of a group that report the same id read each other's sessions.
+    contentStore: z.string().uuid().optional()
   }),
   maxAgents: z.number().int(), // concurrency ceiling for placement (C3)
   localState: z.object({

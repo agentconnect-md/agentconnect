@@ -393,6 +393,19 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
     }
   })
 
+  it('gives every member on one database the same store id', async () => {
+    const config = { version: 1 as const, databaseUrl: databaseUrl!, maxConnections: 1 }
+    const first = await PostgresDataPlane.open(config, () => undefined)
+    const second = await PostgresDataPlane.open(config, () => undefined)
+    try {
+      expect(first.storeId).toMatch(/^[0-9a-f-]{36}$/)
+      expect(second.storeId).toBe(first.storeId)
+    } finally {
+      await first.close()
+      await second.close()
+    }
+  })
+
   it('keeps each member on its own runtime model catalog', async () => {
     // The rollout case against the real schema: two members, two fingerprints, one table.
     const suffix = randomUUID()

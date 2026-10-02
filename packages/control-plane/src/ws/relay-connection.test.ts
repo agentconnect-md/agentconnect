@@ -301,7 +301,10 @@ function buildWebchatVerifier(
       },
       apiEntries: { listForAgent: async () => [] },
       sessions: { getUnscoped: async (id) => over.sessionById?.[id] ?? null },
-      memberSets: { sharedStoreMemberIdsOf: async (setId) => over.sharedStoreMembersBySet?.[setId] ?? [] },
+      memberSets: {
+        sharedStoreMemberIdsOf: async ({ contentSetId }) =>
+          (contentSetId && over.sharedStoreMembersBySet?.[contentSetId]) || []
+      },
       orgs: { roleOf: async () => (over.role === undefined ? 'collaborator' : over.role) },
       placement: over.placement ?? PLACEMENT_ONLY,
       remoteMcp: { establish }
@@ -1053,6 +1056,7 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
           platform: 'webchat',
           daemonId: RECORDER,
           contentSetId: null,
+          contentStoreId: null,
           visibility: 'org',
           ownerIdentity: null,
           contentPurgedAt: null
@@ -1204,6 +1208,7 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
       platform: string | null
       daemonId: string | null
       contentSetId: string | null
+      contentStoreId: string | null
       visibility: string
       ownerIdentity: string | null
       contentPurgedAt: Date | null
@@ -1214,6 +1219,7 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     platform: 'slack',
     daemonId: WEBCHAT_DAEMON_ID,
     contentSetId: null,
+    contentStoreId: null,
     visibility: 'org',
     ownerIdentity: null,
     contentPurgedAt: null,

@@ -1322,6 +1322,8 @@ export interface SessionMetaRecord {
   /** The member set whose shared store holds this session's content; null ⇒ the recorder kept a
    *  private one. Session-bound provenance that outlives `daemonId` (domain/session-content.ts). */
   contentSetId: string | null
+  /** The recorder's shared store id, stamped beside `contentSetId`; null ⇒ none reported. */
+  contentStoreId: string | null
   workspaceIsolation: 'shared' | 'session' | null
   /** Birth verdict (session-executors.md §7): the group member executing this session, or the reason
    *  it stayed with its holder. At most one is ever set; both null on a session born before the feature. */
@@ -7444,6 +7446,12 @@ export interface OrgInviteLinkRepo {
 // MemberSetRepo — the sets a duty may be claimed within (daemon-groups.md §2)
 // ───────────────────────────────────────────────────────────────────────────
 
+/** Where a session's rows were written: its content set, and the store id its recorder reported. */
+export interface SessionContentStore {
+  contentSetId: string | null
+  contentStoreId: string | null
+}
+
 /** A member set. `orgId` null means CROSS-ORG (the install-wide pool), never "unassigned". */
 export interface MemberSetRecord {
   id: string
@@ -7463,10 +7471,11 @@ export interface MemberSetRepo {
   setOf(daemonId: DaemonId): Promise<MemberSetRecord | null>
   /** The set's members, sorted. The read path for "who could serve a `set`-placed agent". */
   memberIdsOf(setId: string): Promise<string[]>
-  /** The set's members, sorted, but ONLY for a set whose members share one content store — the
-   *  org-less install-wide pool. An org set answers `[]`: its machines may keep private stores, so
-   *  none of them can stand in for another's transcripts (domain/session-content.ts). */
-  sharedStoreMemberIdsOf(setId: string): Promise<string[]>
+  /** The members of a session's content set that hold the store it was written to, sorted: every
+   *  member of the org-less install-wide pool, and in an org set only those reporting the session's
+   *  `contentStoreId` — its machines may keep private stores, which none of them can read for
+   *  another (domain/session-content.ts). `[]` for a session with no content set. */
+  sharedStoreMemberIdsOf(session: SessionContentStore): Promise<string[]>
   /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch.
    *  The automatic path (a pool Pod on auth) — no operator precondition. */
   enroll(setId: string, daemonId: DaemonId): Promise<void>

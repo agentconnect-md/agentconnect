@@ -245,7 +245,30 @@ describe('org set lifecycle (real Postgres)', () => {
     await repo.enroll(setId, DaemonId(MEMBER_G))
 
     expect(await repo.memberIdsOf(setId)).toEqual([MEMBER_G])
-    expect(await repo.sharedStoreMemberIdsOf(setId)).toEqual([])
+    expect(await repo.sharedStoreMemberIdsOf({ contentSetId: setId, contentStoreId: null })).toEqual([])
+  })
+
+  it('answers the org-set members that still report the store a session was written to', async () => {
+    const repo = sets()
+    const STORE = 'a5555555-5555-4555-8555-555555555555'
+    const OTHER_STORE = 'a6666666-6666-4666-8666-666666666666'
+    const capabilities = (contentStore?: string) => ({ features: [], ...(contentStore ? { contentStore } : {}) })
+    await prisma.daemon.createMany({
+      data: [
+        { id: MEMBER_G, capabilities: capabilities(STORE) },
+        { id: MEMBER_H, capabilities: capabilities(STORE) },
+        { id: PINNED, capabilities: capabilities(OTHER_STORE) }
+      ].map((d) => ({ ...d, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' as const }))
+    })
+    const setId = (await repo.createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    for (const id of [MEMBER_G, MEMBER_H, PINNED]) await repo.enroll(setId, DaemonId(id))
+
+    expect(await repo.sharedStoreMemberIdsOf({ contentSetId: setId, contentStoreId: STORE })).toEqual(
+      [MEMBER_G, MEMBER_H].sort()
+    )
+    // A session from before the store id was stamped, or from a private store, keeps no peers.
+    expect(await repo.sharedStoreMemberIdsOf({ contentSetId: setId, contentStoreId: null })).toEqual([])
+    expect(await repo.sharedStoreMemberIdsOf({ contentSetId: null, contentStoreId: STORE })).toEqual([])
   })
 })
 

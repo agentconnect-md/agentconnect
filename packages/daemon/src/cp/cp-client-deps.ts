@@ -110,6 +110,8 @@ export interface CpClientRegistrationHost {
   /** The machine's effective strategy table, and the retiring `sandbox.backend` the CP migrates `runInSandbox` from (session-executors.md §5). */
   ownStrategies(): ExecutorStrategyTable
   sandboxBackend(): string
+  /** The id of the shared PostgreSQL store this daemon writes to; unset on a private local store. */
+  contentStore(): string | undefined
   /** The executor facet (session-executors.md §6); while it is dark it reports nothing, and then nothing new is sent. */
   executorFacet(): ExecutorFacet | undefined
   admittedRuntimeIds(): string[]
@@ -279,6 +281,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     capabilities: () => {
       const sandboxUnavailable = host.sandboxUnavailable()
       const executor = host.executorFacet()?.facts()
+      const contentStore = host.contentStore()
       return {
         platforms: host.registrationPlatforms(),
         // Report the human-facing tool name (e.g. "Claude Agent"), not the
@@ -290,7 +293,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         ...(sandboxUnavailable ? { sandboxUnavailable } : {}),
         ...(executor ? { executor } : {}),
         strategies: host.ownStrategies(),
-        sandboxBackend: host.sandboxBackend()
+        sandboxBackend: host.sandboxBackend(),
+        ...(contentStore ? { contentStore } : {})
       }
     },
     // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on

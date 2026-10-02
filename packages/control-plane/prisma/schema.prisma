@@ -1361,6 +1361,10 @@ model SessionMeta {
   /// nobody else can read. Session-bound on purpose: the agent's CURRENT placement is no evidence
   /// about where a past session ran (`domain/session-content.ts`).
   contentSetId        String?             @db.Uuid
+  /// The recorder's shared store id (`capabilities.contentStore`), stamped beside `contentSetId`. In an
+  /// org set only the members still reporting this id hold the rows; null for the pool's older rows,
+  /// where every member does.
+  contentStoreId      String?             @db.Uuid
   // Session-pinned checkout choice. Null is a legacy row whose daemon never
   // reported it; `session` identifies a daemon-local worktree eligible for the
   // authorized Workspace viewer.
