@@ -230,7 +230,7 @@ export class SessionPullRequestFeedbackService {
     const daemonId = await this.deps.placement.dispatchDaemon(agent)
     if (!daemonId) return false
     const sharedStoreMembers = session.contentSetId
-      ? await this.deps.memberSets.sharedStoreMemberIdsOf(session.contentSetId)
+      ? await this.deps.memberSets.sharedStoreMemberIdsOf(session.contentSetId, session.daemonId)
       : []
     if (!servesSessionContent({ recordedDaemonId: session.daemonId, sharedStoreMembers }, daemonId)) return false
     const daemon = this.deps.daemon(daemonId)

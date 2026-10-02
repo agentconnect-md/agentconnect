@@ -200,6 +200,8 @@ export interface RegisterReqInput {
   generation?: RegisterReq['generation']
   /** The registering process's boot identity; absent ⇒ stored null. */
   bootId?: RegisterReq['bootId']
+  /** The shared session-content store it writes; absent ⇒ stored null (a private store). */
+  contentStoreId?: string
 }
 
 export interface DaemonRecord {
@@ -7466,7 +7468,7 @@ export interface MemberSetRepo {
   /** The set's members, sorted, but ONLY for a set whose members share one content store — the
    *  org-less install-wide pool. An org set answers `[]`: its machines may keep private stores, so
    *  none of them can stand in for another's transcripts (domain/session-content.ts). */
-  sharedStoreMemberIdsOf(setId: string): Promise<string[]>
+  sharedStoreMemberIdsOf(setId: string, recordedDaemonId: string | null): Promise<string[]>
   /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch.
    *  The automatic path (a pool Pod on auth) — no operator precondition. */
   enroll(setId: string, daemonId: DaemonId): Promise<void>

@@ -157,6 +157,23 @@ describe.skipIf(!databaseUrl)('PostgreSQL pool member store', () => {
     }
   })
 
+  // Every daemon on one database reports the same content store, so the Control Plane lets a group's members serve
+  // one another's sessions (RegisterReq.contentStore); the first one to ask creates it.
+  it('reports one content store identity for every daemon on the database', async () => {
+    const config = { version: 1 as const, databaseUrl: databaseUrl!, maxConnections: 2 }
+    const first = await PostgresDataPlane.open(config, () => undefined)
+    const second = await PostgresDataPlane.open(config, () => undefined)
+    try {
+      const [a, b] = await Promise.all([first.store.contentStoreId(), second.store.contentStoreId()])
+      expect(a).toMatch(/^[0-9a-f-]{36}$/)
+      expect(b).toBe(a)
+      expect(await first.store.contentStoreId()).toBe(a)
+    } finally {
+      await first.close()
+      await second.close()
+    }
+  })
+
   it('fences process-owned recovery and activation claims across replicas', async () => {
     const suffix = randomUUID()
     const agentId = `agent-${suffix}`

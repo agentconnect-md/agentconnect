@@ -137,15 +137,26 @@ export class PgMemberSetRepo implements MemberSetRepo {
     return rows.map((r) => r.daemonId).sort()
   }
 
-  async sharedStoreMemberIdsOf(setId: string): Promise<string[]> {
-    // `set: { orgId: null }` IS the shared-store predicate — the install-wide pool is the one set
-    // whose members are cluster daemons on the single data-plane store. An operator-built org set
-    // may be self-hosted machines with private stores, so none of its members answers for another.
-    const rows = await this.prisma.memberSetMember.findMany({
+  async sharedStoreMemberIdsOf(setId: string, recordedDaemonId: string | null): Promise<string[]> {
+    // The install-wide pool (`orgId: null`) is one data-plane store by construction: every member answers. An
+    // operator-built org set may mix self-hosted machines with private stores, so a member answers for the session
+    // only when it reports the same content store as the daemon that recorded it (RegisterReq.contentStore).
+    const pooled = await this.prisma.memberSetMember.findMany({
       where: { setId, set: { orgId: null } },
       select: { daemonId: true }
     })
-    return rows.map((r) => r.daemonId).sort()
+    if (pooled.length > 0) return pooled.map((r) => r.daemonId).sort()
+    if (!recordedDaemonId) return []
+    const recorder = await this.prisma.daemon.findUnique({
+      where: { id: recordedDaemonId },
+      select: { contentStoreId: true }
+    })
+    if (!recorder?.contentStoreId) return []
+    const shared = await this.prisma.memberSetMember.findMany({
+      where: { setId, daemon: { contentStoreId: recorder.contentStoreId } },
+      select: { daemonId: true }
+    })
+    return shared.map((r) => r.daemonId).sort()
   }
 
   async enroll(setId: string, daemonId: DaemonId): Promise<void> {

@@ -192,6 +192,7 @@ export class PgDaemonRepo implements DaemonRepo {
         capabilities: reg.capabilities as Prisma.InputJsonValue,
         maxAgents: reg.maxAgents,
         bootId: reg.bootId ?? null,
+        contentStoreId: reg.contentStoreId ?? null,
         status: 'ready',
         // The `facts/daemon-runtimes.seq` counter is per-connection: reset the
         // fence so the reconnecting daemon's fresh count is accepted from 1.

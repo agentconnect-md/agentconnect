@@ -146,7 +146,8 @@ export class DaemonRegistryService implements DaemonRegistry {
         capabilities: req.capabilities,
         maxAgents: req.maxAgents,
         generation: req.generation,
-        bootId: req.bootId
+        bootId: req.bootId,
+        ...(req.contentStore ? { contentStoreId: req.contentStore.id } : {})
       },
       new Date(this.clock.now())
     )

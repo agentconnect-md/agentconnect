@@ -52,7 +52,7 @@ export interface WebchatVerificationDeps {
     } | null>
   }
   /** Who else holds the shared store a session was written to (`domain/session-content.ts`). */
-  memberSets: { sharedStoreMemberIdsOf(setId: string): Promise<string[]> }
+  memberSets: { sharedStoreMemberIdsOf(setId: string, recordedDaemonId: string | null): Promise<string[]> }
   orgs: { roleOf(orgId: string, userId: string): Promise<string | null> }
   remoteMcp: Pick<WebchatRemoteMcpService, 'establish'>
   /** Resolves the daemon a webchat turn should reach — the holder, or any live member that can
@@ -130,7 +130,7 @@ export function webchatBinding(
       }
       // The dispatch daemon must still reach the content: the recorder, or a holder of the shared store it wrote to.
       const sharedStoreMembers = session.contentSetId
-        ? await deps.memberSets.sharedStoreMemberIdsOf(session.contentSetId)
+        ? await deps.memberSets.sharedStoreMemberIdsOf(session.contentSetId, session.daemonId)
         : []
       if (!servesSessionContent({ recordedDaemonId: session.daemonId, sharedStoreMembers }, agentDaemonId)) {
         return { ok: false, reason: 'continuation unavailable' }
@@ -251,7 +251,9 @@ async function hookConversationPeers(
     ) {
       continue
     }
-    const sharedStoreMembers = peer.contentSetId ? await deps.memberSets.sharedStoreMemberIdsOf(peer.contentSetId) : []
+    const sharedStoreMembers = peer.contentSetId
+      ? await deps.memberSets.sharedStoreMemberIdsOf(peer.contentSetId, peer.daemonId)
+      : []
     if (!servesSessionContent({ recordedDaemonId: peer.daemonId, sharedStoreMembers }, daemonId)) continue
     peers.push({ agentId: peer.agentId, daemonId, targetSessionId: claimed.sessionId })
   }
@@ -267,7 +269,7 @@ export interface ContentReachDeps {
   }
   agents: { get(orgId: OrgId, id: AgentId): Promise<ResolvableAgent | null> }
   placement: Pick<PlacementResolver, 'dispatchDaemon'>
-  memberSets: { sharedStoreMemberIdsOf(setId: string): Promise<string[]> }
+  memberSets: { sharedStoreMemberIdsOf(setId: string, recordedDaemonId: string | null): Promise<string[]> }
 }
 
 /** Resume fence: each participant's current session must be served where its next turn goes, its recorder or a member of its shared store — a group keeps none, so after a failover the successor never takes a turn without the transcript. */
@@ -284,7 +286,9 @@ export async function everyTurnReachesItsContent(
     // Nobody to reach right now is an offline agent, not a moved one: the turn waits for a member.
     const target = await deps.placement.dispatchDaemon(agent)
     if (!target) continue
-    const sharedStoreMembers = s.contentSetId ? await deps.memberSets.sharedStoreMemberIdsOf(s.contentSetId) : []
+    const sharedStoreMembers = s.contentSetId
+      ? await deps.memberSets.sharedStoreMemberIdsOf(s.contentSetId, s.daemonId)
+      : []
     if (!servesSessionContent({ recordedDaemonId: s.daemonId, sharedStoreMembers }, target)) return false
   }
   return true

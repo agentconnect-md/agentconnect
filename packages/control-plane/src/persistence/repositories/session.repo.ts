@@ -962,12 +962,16 @@ export class PgSessionRepo implements SessionRepo {
         ${ev.fastMode ?? null}, ${ev.permissionMode ?? null},
         ${ev.outputMode ?? null}, ${ev.daemonId ?? null},
         -- Read from the reporting daemon's membership in this same statement, so the store the
-        -- bodies are going to can never drift from the daemon it describes. Restricted to the
-        -- org-less pool: that is the set whose members provably share one data-plane store.
+        -- bodies are going to can never drift from the daemon it describes. Restricted to a set
+        -- whose members provably share one store: the org-less pool, or an org set when the
+        -- reporter writes a shared content store (which members answer is decided at read time,
+        -- by matching that store: sharedStoreMemberIdsOf).
         (
           SELECT msm."setId" FROM "member_set_member" msm
           JOIN "member_set" ms ON ms."id" = msm."setId"
-          WHERE msm."daemonId" = ${ev.daemonId ?? null}::uuid AND ms."orgId" IS NULL
+          JOIN "daemon" d ON d."id" = msm."daemonId"
+          WHERE msm."daemonId" = ${ev.daemonId ?? null}::uuid
+            AND (ms."orgId" IS NULL OR d."contentStoreId" IS NOT NULL)
         ),
         ${ev.workspaceIsolation ?? null}::"WorkspaceIsolation",
         ${ev.executorDaemonId ?? null}::uuid, ${ev.stayedHomeReason ?? null},

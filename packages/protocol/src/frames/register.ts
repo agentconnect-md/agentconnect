@@ -30,6 +30,10 @@ export const RegisterReq = z.object({
   // projected pool identity but serves nothing. The CP admits the identity and answers reads, but
   // enrolls it in no member set, so the duty ledger can never grant it anything (k8s-daemon-pool.md §4).
   observer: z.boolean().optional(),
+  // The session-content store this daemon writes, when peers can read it: a shared (PostgreSQL) store's identity,
+  // the same for every daemon on that database, so the CP can tell which members of a group serve one another's
+  // sessions. Absent for a private store, and for a daemon that predates it.
+  contentStore: z.object({ id: z.string().min(1).max(128) }).optional(),
   capabilities: z.object({
     platforms: z.array(Platform), // D3 adapters present
     runtimes: z.array(z.string()), // e.g. ["claude","codex"]

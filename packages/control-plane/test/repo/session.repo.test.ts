@@ -7,6 +7,7 @@
  * `recordMilestone` is an upsert keyed on sessionId so repeated `event/session`
  * frames advance the same row's phase.
  */
+import { randomUUID } from 'node:crypto'
 import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
@@ -207,6 +208,24 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     await prisma.sessionMeta.delete({ where: { id: SESSION } })
     await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
     expect((await prisma.sessionMeta.findUnique({ where: { id: SESSION } }))?.contentSetId).toBeNull()
+  })
+
+  // A self-hosted member writing a shared PostgreSQL store reports it on register (RegisterReq.contentStore): its
+  // org group's set is stamped, and which of its members answer is decided at read time by matching that store.
+  it('stamps an org group recorder that writes a shared content store, and nothing while its store is private', async () => {
+    await fixtures()
+    const orgId = (await prisma.daemon.findUniqueOrThrow({ where: { id: DAEMON } })).orgId!
+    const setId = (await prisma.memberSet.create({ data: { id: randomUUID(), orgId, name: 'group-g' } })).id
+    await prisma.memberSetMember.create({ data: { setId, daemonId: DAEMON } })
+    const repo = new PgSessionRepo(prisma)
+
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
+    expect((await prisma.sessionMeta.findUnique({ where: { id: SESSION } }))?.contentSetId).toBeNull()
+
+    await prisma.sessionMeta.delete({ where: { id: SESSION } })
+    await prisma.daemon.update({ where: { id: DAEMON }, data: { contentStoreId: 'store-a' } })
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
+    expect((await prisma.sessionMeta.findUnique({ where: { id: SESSION } }))?.contentSetId).toBe(setId)
   })
 
   it('never lets a later reporter claim the content store of a session it did not record', async () => {

@@ -233,6 +233,8 @@ export interface CpClientDeps
   generation?: string
   /** This process's boot identity, the same on every reconnect of one process. */
   bootId?: string
+  /** The shared session-content store this daemon writes; absent for a private one. */
+  contentStoreId?: () => string | undefined
   heartbeatDefaultMs: number
   maxAgents: number
   capabilities: () => RegisterReq['capabilities']
@@ -629,6 +631,7 @@ export class CpClient {
       host: this.deps.host,
       ...(this.deps.generation ? { generation: this.deps.generation } : {}),
       ...(this.deps.bootId ? { bootId: this.deps.bootId } : {}),
+      ...(this.deps.contentStoreId?.() ? { contentStore: { id: this.deps.contentStoreId()! } } : {}),
       capabilities: registerCapabilities,
       maxAgents: this.deps.maxAgents,
       localState: this.deps.localState()

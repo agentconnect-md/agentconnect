@@ -5,7 +5,10 @@
  * `SessionMeta.daemonId` names the daemon that FIRST reported the session, and for a
  * self-hosted daemon that is also the only machine holding the rows — its store is local.
  * A cluster pool member is different: its store is the install-wide data-plane Postgres
- * every member shares, so the content outlives the pod that recorded it. Pool members are
+ * every member shares, so the content outlives the pod that recorded it. So does a
+ * self-hosted member of an org group that writes a shared PostgreSQL store: it reports that
+ * store on register (`daemon.contentStoreId`), and the members reporting the same one hold
+ * the same rows (`MemberSetRepo.sharedStoreMemberIdsOf`). Pool members are
  * bound to a Pod UID and reaped 15 minutes after they go silent, which SetNulls `daemonId`
  * on every session they recorded — so routing by that column alone loses transcripts that
  * are still fully there.

@@ -286,7 +286,11 @@ These are the operator's, not the code's:
   a webchat turn that reaches another member is refused rather than answered blind.
   Members that set `store: { "backend": "postgres", "configFile": … }` against one
   database share those rows, the same way pool members do
-  ([cloud-data-plane-postgres.md](cloud-data-plane-postgres.md)). A session that ran on
+  ([cloud-data-plane-postgres.md](cloud-data-plane-postgres.md)). Each reports that
+  store's identity on register (`RegisterReq.contentStore`, a row the first member on the
+  database creates), so a session it records is stamped with its group's set and any
+  member reporting the same store reads and continues it; a member on a private store, or
+  on another database, does not. A session that ran on
   its holder still keeps its runtime state on that machine; one placed on an executor
   resumes from the successor. On a member's own store, the rows a moved duty leaves
   behind are that member's alone, so its retention sweep ages them out like any others

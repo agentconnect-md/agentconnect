@@ -595,7 +595,7 @@ export function sessionRoutes(deps: HttpDeps) {
       const readers = sessionContentReaders({
         recordedDaemonId: session.daemonId,
         sharedStoreMembers: session.contentSetId
-          ? await deps.repos.memberSet.sharedStoreMemberIdsOf(session.contentSetId)
+          ? await deps.repos.memberSet.sharedStoreMemberIdsOf(session.contentSetId, session.daemonId)
           : []
       })
       if (readers.length === 0) return { ok: false, reason: session.daemonId ? 'offline' : 'unplaced' }

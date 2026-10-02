@@ -8861,6 +8861,26 @@ export class LocalStore {
       .run(input)
   }
 
+  /**
+   * The identity of a shared session-content store, the same for every daemon writing to it, so the Control Plane can
+   * tell which members of a group read one another's sessions. A row the first daemon on the database creates and the
+   * rest read back, outside the versioned schema so a daemon of any version may share the database. A private (SQLite)
+   * store has none: no peer can read its rows.
+   */
+  async contentStoreId(): Promise<string | undefined> {
+    if (!this.postgres) return undefined
+    await this.db.exec(
+      'CREATE TABLE IF NOT EXISTS content_store_identity (' +
+        'singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton), id TEXT NOT NULL)'
+    )
+    await this.db
+      .prepare('INSERT INTO content_store_identity (singleton, id) VALUES (true, ?) ON CONFLICT DO NOTHING')
+      .run(randomUUID())
+    const row = (await this.db.prepare('SELECT id FROM content_store_identity WHERE singleton = true').get()) as
+      { id: string } | undefined
+    return row?.id
+  }
+
   async clusterSkillLedger(
     agentId: string,
     workspaceIncarnation: string

@@ -477,6 +477,7 @@ model Daemon {
   generation      String?
   generationSince DateTime? @db.Timestamptz(6) // when this row first reported its current generation
   bootId        String? @db.Uuid // RegisterReq.bootId of the process that last registered; null for an older daemon
+  contentStoreId String? // RegisterReq.contentStore.id: the shared session-content store it writes; null for a private store or an older daemon
   mcpServers    Json    @default("[]") @db.JsonB // facts/daemon-runtimes MCP-server list (FactsMcpServer[] = {name,transport}); replaced whole per frame
   maxAgents     Int     @default(0)
 

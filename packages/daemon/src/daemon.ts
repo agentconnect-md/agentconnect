@@ -1471,6 +1471,8 @@ export class Daemon {
   private readiness?: ReadinessGate
   // The executor facet (session-executors.md §3): dark unless `sandbox.share`, and all of its logic lives in `execution/executor-facet.ts`.
   private executorFacet?: ExecutorFacet
+  /** The shared session-content store's identity, read once the store is open; undefined for a private store. */
+  private contentStore?: string
   // The holder half (§7): this daemon's own sessions placed on other machines of its group. Empty until one is.
   private executorPlane?: ExecutorPlane
   /** Birth verdicts waiting for their session's row, which is written after placement decides its host key. */
@@ -3406,6 +3408,11 @@ export class Daemon {
   /** Phase 16 — the local (or data-plane) store plus the one rule table every row retention runs from. */
   private async openStoreAndRetention(root: string): Promise<void> {
     this.store = this.dataPlane?.store ?? (await LocalStore.open(statePath(root)))
+    // Reported on register so the CP lets a group's other members serve this daemon's sessions (contentSetId).
+    this.contentStore = await this.store.contentStoreId().catch((err: unknown) => {
+      this.log.warn(`store: content store identity unavailable (${formatErr(err)}); sessions stay this machine's`)
+      return undefined
+    })
     for (const agent of this.fileAgents.values()) {
       for (const integration of agent.integrations) {
         await this.store.setIntegrationRemoved(agent.id, integration.id, false)
@@ -22975,6 +22982,7 @@ export class Daemon {
       ownStrategies: () => this.strategyTable(),
       // Only for the Control Plane's one-time `runInSandbox` migration: the retiring key, or its old default.
       sandboxBackend: () => this.cfg.sandbox.backend ?? 'srt',
+      contentStoreId: () => this.contentStore,
       executorFacet: () => this.executorFacet,
       admittedRuntimeIds: () => this.admittedRuntimeIds(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),

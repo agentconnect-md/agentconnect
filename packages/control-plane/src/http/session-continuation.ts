@@ -22,7 +22,7 @@ export async function resolveContinuationHost(
   // A machine placement always names its daemon; only a set with no live member resolves to nobody.
   if (!daemonId) return { ok: false, reason: 'daemon_offline' }
   const sharedStoreMembers = session.contentSetId
-    ? await deps.repos.memberSet.sharedStoreMemberIdsOf(session.contentSetId)
+    ? await deps.repos.memberSet.sharedStoreMemberIdsOf(session.contentSetId, session.daemonId)
     : []
   if (!servesSessionContent({ recordedDaemonId: session.daemonId, sharedStoreMembers }, daemonId)) {
     return { ok: false, reason: 'agent_moved' }

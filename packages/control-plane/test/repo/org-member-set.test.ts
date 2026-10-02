@@ -238,14 +238,35 @@ describe('org set lifecycle (real Postgres)', () => {
     expect(await repo.setOf(DaemonId(POOL_MEMBER))).toBeNull()
   })
 
-  it('answers no shared-store members for an org set — its machines may keep private stores', async () => {
+  it('answers no shared-store members for an org set whose recorder keeps a private store', async () => {
     const repo = sets()
     await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
     const setId = (await repo.createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     await repo.enroll(setId, DaemonId(MEMBER_G))
 
     expect(await repo.memberIdsOf(setId)).toEqual([MEMBER_G])
-    expect(await repo.sharedStoreMemberIdsOf(setId)).toEqual([])
+    expect(await repo.sharedStoreMemberIdsOf(setId, MEMBER_G)).toEqual([])
+    expect(await repo.sharedStoreMemberIdsOf(setId, null)).toEqual([])
+  })
+
+  // Self-hosted members on one PostgreSQL store report its identity (RegisterReq.contentStore): they serve one
+  // another's sessions, and a member of the same set on a private or another store does not.
+  it("answers an org set's members that write the recorder's content store, and only those", async () => {
+    const repo = sets()
+    await prisma.daemon.createMany({
+      data: [
+        { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready', contentStoreId: 'store-a' },
+        { id: MEMBER_H, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready', contentStoreId: 'store-a' },
+        { id: PINNED, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+      ]
+    })
+    const setId = (await repo.createForOrg(DEFAULT_ORG_ID, 'group-g')).id
+    for (const member of [MEMBER_G, MEMBER_H, PINNED]) await repo.enroll(setId, DaemonId(member))
+
+    expect(await repo.sharedStoreMemberIdsOf(setId, MEMBER_G)).toEqual([MEMBER_G, MEMBER_H].sort())
+    expect(await repo.sharedStoreMemberIdsOf(setId, PINNED)).toEqual([])
+    await prisma.daemon.update({ where: { id: MEMBER_H }, data: { contentStoreId: 'store-b' } })
+    expect(await repo.sharedStoreMemberIdsOf(setId, MEMBER_G)).toEqual([MEMBER_G])
   })
 })
 
