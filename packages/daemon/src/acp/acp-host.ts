@@ -449,6 +449,8 @@ export interface AcpToolSandbox {
   claudeProtectedSettings?: ClaudeProtectedSettings
   /** Writable mount targets reopened in the runtime-native tool sandbox. */
   sharedWriteRoots?: string[]
+  /** The runtime's private state (a session HOME's `.claude`): model-authored tools may read it, never change it. */
+  readOnlyStateRoots?: string[]
 }
 
 interface ClaudeSessionSettings {
@@ -470,7 +472,8 @@ export function claudeSessionMeta(
   protectedSettings?: ClaudeProtectedSettings,
   allowModelToolUnixSockets = false,
   extraDisallowedTools: readonly string[] = [],
-  sharedWriteRoots: readonly string[] = []
+  sharedWriteRoots: readonly string[] = [],
+  readOnlyStateRoots: readonly string[] = []
 ):
   | {
       claudeCode: {
@@ -489,11 +492,15 @@ export function claudeSessionMeta(
   // Append the system prompt and memory together, omitting an empty result.
   const append = [systemPrompt, memoryAppend].filter(Boolean).join('\n\n')
   const ultracode = reasoningEffort === ULTRACODE_EFFORT
-  const deny = [...new Set(protectedCredentialRoots)].flatMap((root) => {
-    // Claude uses gitignore patterns with // for absolute paths; cover the root and its descendants.
-    const pattern = `/${root.replace(/\/+$/, '').replace(/[\\*?[\] ]/g, (char) => `\\${char}`)}`
-    return ['Read', 'Edit'].flatMap((tool) => [`${tool}(${pattern})`, `${tool}(${pattern}/**)`])
-  })
+  // Claude uses gitignore patterns with // for absolute paths; cover the root and its descendants.
+  const rules = (roots: readonly string[] | undefined, tools: readonly string[]): string[] =>
+    [...new Set(roots)].flatMap((root) => {
+      const pattern = `/${root.replace(/\/+$/, '').replace(/[\\*?[\] ]/g, (char) => `\\${char}`)}`
+      return tools.flatMap((tool) => [`${tool}(${pattern})`, `${tool}(${pattern}/**)`])
+    })
+  // Credentials are neither read nor changed; the runtime's own state is read back (its saved tool results, its
+  // synced skills) but never changed, so the model cannot plant settings or hooks the trusted parent would load.
+  const deny = [...rules(protectedCredentialRoots, ['Read', 'Edit']), ...rules(readOnlyStateRoots, ['Edit'])]
   const settings: ClaudeSessionSettings = {
     ...(protectedSettings ?? {}),
     // Claude requires custom plans inside the workspace; its default HOME/.claude/plans is protected above.
@@ -508,7 +515,12 @@ export function claudeSessionMeta(
         disallowedTools: [...CLAUDE_DISALLOWED_BUILTIN_TOOLS, ...extraDisallowedTools],
         ...(protectedCredentialRoots
           ? {
-              sandbox: claudeInnerSandboxSettings(protectedCredentialRoots, allowModelToolUnixSockets, sharedWriteRoots)
+              sandbox: claudeInnerSandboxSettings(
+                protectedCredentialRoots,
+                allowModelToolUnixSockets,
+                sharedWriteRoots,
+                readOnlyStateRoots
+              )
             }
           : {}),
         ...(protectedSettings || ultracode || deny.length > 0 ? { settings } : {})
@@ -984,7 +996,8 @@ export class AcpHost {
       this.opts.toolSandbox?.claudeProtectedSettings,
       this.opts.toolSandbox?.allowModelToolUnixSockets,
       extraDisallowedTools,
-      this.opts.toolSandbox?.sharedWriteRoots
+      this.opts.toolSandbox?.sharedWriteRoots,
+      this.opts.toolSandbox?.readOnlyStateRoots
     )
     const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
     const res = await this.conn!.agent.request(methods.agent.session.new, {
@@ -1242,7 +1255,8 @@ export class AcpHost {
         this.opts.toolSandbox?.claudeProtectedSettings,
         this.opts.toolSandbox?.allowModelToolUnixSockets,
         [],
-        this.opts.toolSandbox?.sharedWriteRoots
+        this.opts.toolSandbox?.sharedWriteRoots,
+        this.opts.toolSandbox?.readOnlyStateRoots
       )
       const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
       const res = await this.conn!.agent.request(methods.agent.session.load, {

@@ -10,6 +10,7 @@ import { prepareMicrosandboxLaunch } from '../microsandbox/launch.js'
 import { isRecognizedCredentialEnv, type MicrosandboxSecret } from '../microsandbox/secrets.js'
 import { compactReadRoots, protectedSandboxRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
+import { CLAUDE_STATE_SECRETS, CODEX_STATE_SECRETS, privateRuntimeState } from '../runtimes/private-runtime-state.js'
 import {
   hostPackageCacheEnv,
   prepareRuntimeHome,
@@ -201,8 +202,10 @@ function prepareExecutorLaunch(
   }
   // The private-HOME profile of an unconfined launch, and the clones' `.git` as its caller found them on that machine.
   const gitMetadataWriteRoots = [...(opts.sessionGitDirs ?? [])]
+  // The HOME is on the executor, so its `.codex` cannot be listed from here: its known credential surfaces are denied by name.
   applyCodexPermissionProfile(env, {
-    protectedRoots: [join(home, '.codex')],
+    protectedRoots: CODEX_STATE_SECRETS.map((name) => join(home, '.codex', name)),
+    readOnlyRoots: [join(home, '.codex')],
     sessionGitMetadataRoots: gitMetadataWriteRoots,
     sessionHomeRoot: home,
     allowModelToolUnixSockets
@@ -502,15 +505,24 @@ export function prepareRuntimeLaunch(opts: {
       return canonical
     })
   )
-  // Claude user state is copied into the private HOME for the trusted parent.
-  // It may contain settings.env secrets or MCP credentials, so deny every seeded
-  // Claude state surface to the inner Bash sandbox without changing outer access.
+  // Runtime user state is copied into the private HOME for the trusted parent. Its seeded files may hold
+  // settings.env secrets or MCP credentials, so those are denied to the inner tool sandbox; the rest of the
+  // directory is read-only to it, since the runtime stores what its own tools read back there (privateRuntimeState).
+  const claudeState = claudeRuntime
+    ? privateRuntimeState(join(runtimeHome, '.claude'), CLAUDE_STATE_SECRETS)
+    : { readOnly: [], secret: [] }
   const privateClaudeStateRoots = claudeRuntime
-    ? [join(runtimeHome, '.claude'), join(runtimeHome, '.claude.json')]
-        .filter(existsSync)
-        .map((path) => realpathSync(path))
+    ? [
+        ...claudeState.secret,
+        ...[join(runtimeHome, '.claude.json')].filter(existsSync).map((path) => realpathSync(path))
+      ]
     : []
-  const privateCodexStateRoots = credentialProfile === 'codex' ? [realpathSync(join(runtimeHome, '.codex'))] : []
+  const codexState =
+    credentialProfile === 'codex'
+      ? privateRuntimeState(join(runtimeHome, '.codex'), CODEX_STATE_SECRETS)
+      : { readOnly: [], secret: [] }
+  const privateCodexStateRoots = codexState.secret
+  const readOnlyStateRoots = [...claudeState.readOnly, ...codexState.readOnly]
 
   const boundary = sandboxBoundary({
     agentDir: opts.scopeDir,
@@ -576,6 +588,7 @@ export function prepareRuntimeLaunch(opts: {
     const sessionHomeRoot = sessionDir === undefined ? undefined : existingRealpath(runtimeHome)
     applyCodexPermissionProfile(env, {
       protectedRoots: protectedCredentialRoots,
+      readOnlyRoots: readOnlyStateRoots,
       // A session's clones take the exact per-clone entries; an owner checkout's `.git` takes the worktree ones.
       ...(sessionDir === undefined
         ? { writableGitMetadataRoots }
@@ -605,6 +618,7 @@ export function prepareRuntimeLaunch(opts: {
         }),
     toolSandbox: {
       protectedCredentialRoots,
+      ...(readOnlyStateRoots.length > 0 ? { readOnlyStateRoots } : {}),
       ...(opts.allowModelToolUnixSockets ? { allowModelToolUnixSockets: true } : {}),
       ...(protectedClaudeSettings ? { claudeProtectedSettings: protectedClaudeSettings } : {}),
       ...(operatorWriteRoots.length > 0 ? { sharedWriteRoots: operatorWriteRoots } : {})

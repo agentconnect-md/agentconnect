@@ -742,8 +742,10 @@ describe('prepareMicrosandboxLaunch', () => {
     for (const profile of Object.values(policy.modeProfiles)) {
       const filesystem = policy.configOverrides.find((line) => line.startsWith(`permissions.${profile}.filesystem=`))!
       expect(filesystem).toContain(`${JSON.stringify(auth)} = "deny"`)
-      expect(filesystem).toContain(`${JSON.stringify(join(launch.runtimeHome!, '.codex'))} = "deny"`)
+      expect(filesystem).not.toContain(`${JSON.stringify(join(launch.runtimeHome!, '.codex'))} = "deny"`)
     }
+    // The private `.codex` is read-only to the model's tools wherever a profile names it, never denied whole.
+    expect(launch.toolSandbox?.readOnlyStateRoots).toEqual([realpathSync(join(launch.runtimeHome!, '.codex'))])
   })
 
   it('protects remapped credential aliases while keeping session HOME, clone Git, and guest caches writable', () => {
@@ -819,9 +821,10 @@ describe('prepareMicrosandboxLaunch', () => {
       ANTHROPIC_CONFIG_DIR: profileRoot,
       ANTHROPIC_PROFILE: 'agentconnect-disabled'
     })
-    expect(launch.toolSandbox?.protectedCredentialRoots).toEqual(
-      expect.arrayContaining([config, join(launch.runtimeHome!, '.claude'), '/credential-copy'])
-    )
+    expect(launch.toolSandbox?.protectedCredentialRoots).toEqual(expect.arrayContaining([config, '/credential-copy']))
+    // Claude's own state is read-only, not denied: its saved tool results and synced skills are read back from it.
+    expect(launch.toolSandbox?.protectedCredentialRoots).not.toContain(join(launch.runtimeHome!, '.claude'))
+    expect(launch.toolSandbox?.readOnlyStateRoots).toEqual([realpathSync(join(launch.runtimeHome!, '.claude'))])
     expect(launch.toolSandbox?.sharedWriteRoots).toBeUndefined()
     expect(launch.microsandbox.mounts).toContainEqual({ source: config, target: config, mode: 'writable' })
     expect(launch.microsandbox.mounts).toContainEqual({

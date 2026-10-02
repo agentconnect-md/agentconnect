@@ -355,6 +355,35 @@ describe('claudeSessionMeta (system prompt + memory index over _meta)', () => {
     expect(claudeSessionMeta(undefined, false, 'seed', 'mem')).toBeUndefined()
   })
 
+  // Claude saves an oversized tool result under its own `.claude/projects/…/tool-results/` and tells the model to read
+  // it there: the runtime's state is read back, never changed, while its credentials stay neither read nor changed.
+  it('denies credentials to Read and Edit, and the runtime state it reads back to Edit alone', () => {
+    const meta = claudeSessionMeta(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      ['/home/s/.claude.json'],
+      undefined,
+      false,
+      [],
+      [],
+      ['/home/s/.claude']
+    )!
+    const deny = meta.claudeCode.options.settings!.permissions!.deny
+    expect(deny).toEqual([
+      'Read(//home/s/.claude.json)',
+      'Read(//home/s/.claude.json/**)',
+      'Edit(//home/s/.claude.json)',
+      'Edit(//home/s/.claude.json/**)',
+      'Edit(//home/s/.claude)',
+      'Edit(//home/s/.claude/**)'
+    ])
+    const filesystem = meta.claudeCode.options.sandbox!.filesystem
+    expect(filesystem.denyRead).toEqual(['/home/s/.claude.json'])
+    expect(filesystem.denyWrite).toEqual(['/home/s/.claude.json', '/home/s/.claude'])
+  })
+
   it('omits systemPrompt when neither seed nor memory is set', () => {
     expect(claudeSessionMeta(undefined, true)?.systemPrompt).toBeUndefined()
   })
