@@ -23,7 +23,7 @@ function scratch(): string {
 }
 
 describe('privateRuntimeState', () => {
-  it('keeps a Codex home read-only and denies the seeded config and the credential link with what it points at', () => {
+  it('keeps a Codex home read-only and denies the seeded config and the shared file its credential link points at', () => {
     const root = scratch()
     const host = join(root, 'host-auth.json')
     writeFileSync(host, '{}')
@@ -36,7 +36,8 @@ describe('privateRuntimeState', () => {
 
     const state = privateRuntimeState(codex, CODEX_STATE_SECRETS)
     expect(state.readOnly).toEqual([codex])
-    expect(state.secret.sort()).toEqual([join(codex, 'auth.json'), join(codex, 'config.toml'), host].sort())
+    // Not the link itself: it sits under the writable HOME, and Codex refuses to mask a path crossing a writable symlink.
+    expect(state.secret.sort()).toEqual([join(codex, 'config.toml'), host].sort())
     // The helper Codex execs, and the runtime's own logs and rollouts, are not secrets.
     const inCodex = state.secret.filter((path) => path.startsWith(`${codex}/`)).map((path) => path.slice(codex.length))
     expect(
@@ -44,11 +45,12 @@ describe('privateRuntimeState', () => {
     ).toBe(false)
   })
 
-  it('denies a dangling credential link where it stands', () => {
-    const codex = join(scratch(), '.codex')
+  it('denies the file a dangling credential link will point at, before a login creates it', () => {
+    const root = scratch()
+    const codex = join(root, '.codex')
     mkdirSync(codex)
-    symlinkSync(join(codex, 'missing-host-auth.json'), join(codex, 'auth.json'))
-    expect(privateRuntimeState(codex, CODEX_STATE_SECRETS).secret).toEqual([join(codex, 'auth.json')])
+    symlinkSync(join(root, 'host', 'auth.json'), join(codex, 'auth.json'))
+    expect(privateRuntimeState(codex, CODEX_STATE_SECRETS).secret).toEqual([join(root, 'host', 'auth.json')])
   })
 
   it("leaves Claude's tool results and synced skills readable, and denies the backups of its global config from the first launch", () => {

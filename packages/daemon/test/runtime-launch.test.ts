@@ -687,12 +687,14 @@ describe('prepareRuntimeLaunch', () => {
     expect(policy.filesystem.allowWrite).toContain(realpathSync(join(hostCodex, 'auth.json')))
     // Runtime-native roots follow: the session .codex is read-only to the inner tool sandbox, its credential denied.
     expect(launch.toolSandbox!.readOnlyStateRoots).toContain(join(home, '.codex'))
-    expect(launch.toolSandbox!.protectedCredentialRoots).toContain(join(home, '.codex', 'auth.json'))
+    expect(launch.toolSandbox!.protectedCredentialRoots).toContain(realpathSync(join(hostCodex, 'auth.json')))
+    expect(launch.toolSandbox!.protectedCredentialRoots).not.toContain(join(home, '.codex', 'auth.json'))
     const profile = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] }
     const tables = profile.configOverrides.filter((value) => value.includes('.filesystem='))
     expect(tables).toHaveLength(3)
     for (const table of tables) {
-      expect(table).toContain(`"${join(home, '.codex', 'auth.json')}" = "deny"`)
+      expect(table).toContain(`"${realpathSync(join(hostCodex, 'auth.json'))}" = "deny"`)
+      expect(table).not.toContain(`"${join(home, '.codex', 'auth.json')}"`)
       expect(table).not.toContain(`"${join(home, '.codex')}" = "deny"`)
       expect(table).not.toContain(agentHome)
     }
@@ -728,7 +730,6 @@ describe('prepareRuntimeLaunch', () => {
     const table = agentFilesystem(launch.env)
     expect(table).toContain(`"${home}" = "write"`)
     expect(table).toContain(`"${join(home, '.codex')}" = "read"`)
-    expect(table).toContain(`"${join(home, '.codex', 'auth.json')}" = "deny"`)
     // The link target is the ACP parent's own write capability; the model's tools are denied it directly too.
     expect(table).toContain(`"${realpathSync(join(hostCodex, 'auth.json'))}" = "deny"`)
     expect(launch.toolSandbox!.protectedCredentialRoots).toContain(realpathSync(join(hostCodex, 'auth.json')))
@@ -1299,10 +1300,10 @@ describe('prepareRuntimeLaunch', () => {
 
     expect(launch.env.CODEX_HOME).toBe(`${PLACED_HOME}/.codex`)
     expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}" = "write"`)
-    // The executor's HOME cannot be listed from here: its `.codex` is read-only and its credentials are denied by name.
-    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex" = "read"`)
-    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex/auth.json" = "deny"`)
-    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex/config.toml" = "deny"`)
+    // The executor's HOME cannot be listed from here, nor the file its `auth.json` links to: `.codex` is denied whole,
+    // and Codex's helper below it reopened for write.
+    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex" = "deny"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex/tmp/arg0" = "write"`)
     expect(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]).not.toContain(realpathSync(cwd))
     expect(launch.gitMetadataWriteRoots).toEqual([])
   })
@@ -1337,7 +1338,7 @@ describe('prepareRuntimeLaunch', () => {
     })
 
     expectSessionGitReopened(launch.env, gitDirs)
-    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex" = "read"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${PLACED_HOME}/.codex" = "deny"`)
     expect(launch.gitMetadataWriteRoots).toEqual(gitDirs)
   })
 

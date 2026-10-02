@@ -202,10 +202,10 @@ function prepareExecutorLaunch(
   }
   // The private-HOME profile of an unconfined launch, and the clones' `.git` as its caller found them on that machine.
   const gitMetadataWriteRoots = [...(opts.sessionGitDirs ?? [])]
-  // The HOME is on the executor, so its `.codex` cannot be listed from here: its known credential surfaces are denied by name.
+  // The HOME is on the executor, so its `.codex` cannot be listed from here, nor can the shared file its
+  // `auth.json` links to: the directory stays denied whole (the profile reopens Codex's helper below it).
   applyCodexPermissionProfile(env, {
-    protectedRoots: CODEX_STATE_SECRETS.map((name) => join(home, '.codex', name)),
-    readOnlyRoots: [join(home, '.codex')],
+    protectedRoots: [join(home, '.codex')],
     sessionGitMetadataRoots: gitMetadataWriteRoots,
     sessionHomeRoot: home,
     allowModelToolUnixSockets

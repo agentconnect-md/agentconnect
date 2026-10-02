@@ -188,8 +188,9 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     expect(agent).not.toContain('= "write" }')
   })
 
-  // A caller that still denies the session `.codex` outright wins over the read-only default: one entry, `deny`.
-  it('keeps the session .codex denied once when the caller protects it outright', () => {
+  // A caller that cannot list the session `.codex` (an executor's HOME) denies it outright, which wins over the
+  // read-only default; Codex's helper below it is then reachable only through a writable carve-out.
+  it('keeps the session .codex denied once when the caller protects it outright, and reopens its helper', () => {
     const home = '/agent/sessions/session-1/home'
     const config = codexPermissionProfileConfig({
       protectedRoots: [`${home}/.codex`],
@@ -200,8 +201,14 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
       value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
     )!
     expect(agent).toBe(
-      `permissions.agentconnect-protected-workspace.filesystem={ "${home}" = "write", "${home}/.codex" = "deny" }`
+      `permissions.agentconnect-protected-workspace.filesystem={ "${home}" = "write", "${home}/.codex" = "deny", "${home}/.codex/tmp/arg0" = "write" }`
     )
+    // The read-only profile grants no write, so the carve-out never reaches it.
+    expect(
+      config.configOverrides.find((value) =>
+        value.startsWith('permissions.agentconnect-protected-read-only.filesystem=')
+      )
+    ).toBe(`permissions.agentconnect-protected-read-only.filesystem={ "${home}/.codex" = "deny" }`)
   })
 
   // Automatic approval review runs under a read-only derivative of the profile, which keeps no write: only a

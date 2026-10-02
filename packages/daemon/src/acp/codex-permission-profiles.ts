@@ -91,6 +91,15 @@ export function codexPermissionProfileConfig(
     throw new Error('Codex permission roots must be absolute paths')
   }
 
+  // A caller that cannot list the session's `.codex` (an executor's HOME, on another machine) denies it whole; Codex
+  // then finds its linux-sandbox helper only through a WRITABLE carve-out, since its bwrap masks a denied directory
+  // and reopens writable descendants alone. The read-only derivative approval review runs under keeps no write, so
+  // only the read-only state directory above serves that review.
+  const deniedCodexHome = sessionHomeRoot === undefined ? undefined : join(sessionHomeRoot, '.codex')
+  const helperCarveOut: Array<[string, string]> =
+    deniedCodexHome !== undefined && protectedRoots.includes(deniedCodexHome)
+      ? [[join(deniedCodexHome, 'tmp', 'arg0'), 'write']]
+      : []
   const readOnlyFilesystem =
     protectedRoots.length > 0
       ? [
@@ -118,7 +127,8 @@ export function codexPermissionProfileConfig(
     ...readOnlyRoots.map((root): [string, string] => [root, 'read']),
     // A shared store sits outside the cwd, so `:workspace` alone would refuse the very install it exists for; the read-only mode keeps refusing it.
     ...sharedWriteRoots.map((root): [string, string] => [root, 'write']),
-    ...protectedRoots.map((root): [string, string] => [root, 'deny'])
+    ...protectedRoots.map((root): [string, string] => [root, 'deny']),
+    ...helperCarveOut
   ]
   const agentFilesystem =
     agentFilesystemEntries.length > 0

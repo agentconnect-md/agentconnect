@@ -590,9 +590,11 @@ describe('Linux shared runtime login', () => {
     expect(realpathSync(privateAuth)).toBe(realpathSync(hostAuth))
     expect(readFileSync(hostAuth, 'utf8')).toContain('"new"')
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(realpathSync(hostAuth))
-    // The link and the shared file it points at are denied; the rest of the private `.codex` is read-only.
-    const protectedRoots = [realpathSync(hostAuth), join(realpathSync(privateCodex), 'auth.json')]
+    // The shared file the link points at is denied, not the link under the writable HOME; the rest of the private
+    // `.codex` is read-only, so the link cannot be swapped and reading through it reaches the denied file.
+    const protectedRoots = [realpathSync(hostAuth)]
     expect(launch.toolSandbox?.protectedCredentialRoots).toEqual(expect.arrayContaining(protectedRoots))
+    expect(launch.toolSandbox?.protectedCredentialRoots).not.toContain(join(realpathSync(privateCodex), 'auth.json'))
     expect(launch.toolSandbox?.protectedCredentialRoots).not.toContain(realpathSync(privateCodex))
     expect(launch.toolSandbox?.readOnlyStateRoots).toEqual([realpathSync(privateCodex)])
     const profileConfig = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as {

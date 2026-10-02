@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { isRuntimeHomeSeedFile } from './runtime-home.js'
 
 /** What can hold a secret in a runtime's private state directory, beyond the top-level files seeded from the host. */
@@ -32,18 +32,21 @@ export function privateRuntimeState(dir: string, secretNames: readonly string[])
   const secret = new Set<string>()
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     if ((!entry.isDirectory() && isRuntimeHomeSeedFile(entry.name)) || secretNames.includes(entry.name)) {
-      for (const path of linkAndTarget(join(root, entry.name))) secret.add(path)
+      secret.add(deniablePath(join(root, entry.name)))
     }
   }
   return { readOnly: [root], secret: [...secret] }
 }
 
-/** A credential link is denied where it stands and at the shared host file it points at, which may not exist yet. */
-function linkAndTarget(path: string): string[] {
-  if (!lstatSync(path).isSymbolicLink()) return [path]
+/** A credential link is denied at the shared host file it points at, which may not exist yet. Not at the link:
+ * it sits under the writable HOME, and a sandbox that masks a path refuses one crossing a symlink the sandboxed
+ * process could swap (Codex's `cannot enforce sandbox deny-read path … crosses writable symlink`); the read-only
+ * state directory keeps the link itself from changing, and reading through it reaches the denied target. */
+function deniablePath(path: string): string {
+  if (!lstatSync(path).isSymbolicLink()) return path
   try {
-    return [path, realpathSync(path)]
+    return realpathSync(path)
   } catch {
-    return [path]
+    return resolve(dirname(path), readlinkSync(path))
   }
 }
