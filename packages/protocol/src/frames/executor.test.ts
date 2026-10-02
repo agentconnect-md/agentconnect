@@ -311,6 +311,7 @@ describe('executor/prepare', () => {
         runtimeRoot: '/home/agent/workspace/hs/0a1b2c3d4e5f',
         helperRoot: '/opt/agentconnect',
         missingHelpers: ['ghWrapperDir'],
+        workspaceIncarnation: 'workspace:0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9',
         liveCount: 4
       },
       { status: 'full', liveCount: 32 },

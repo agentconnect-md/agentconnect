@@ -20,6 +20,7 @@ import {
 import { PIPE_TLS } from '../src/execution/executor-pipe.js'
 import type { EnvironmentDescriptor, StrategyLauncher } from '../src/execution/strategies.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT } from '../src/shim/sandbox-paths.js'
+import { workspaceIncarnationOf } from '../src/skills/workspace-incarnation.js'
 import { WAIT } from './wait-support.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
@@ -296,6 +297,8 @@ describe('executor facet', () => {
         runtimeRoot: join(root!, 'hs', '1'),
         helperRoot: '/opt/example/dist',
         missingHelpers: ['gitCredentialHelper'],
+        // The session directory's own identity, which its skill ledger is kept under across launches.
+        workspaceIncarnation: await workspaceIncarnationOf(join(root!, 'sessions', LEAF)),
         liveCount: 1
       })
       expect(Buffer.from(reply.psk, 'base64url')).toHaveLength(32)
@@ -456,7 +459,8 @@ describe('executor facet', () => {
 
     it('remembers the generation and the launch across a restart, and gives the interrupted launch no second key', async () => {
       const first = await start()
-      expect(ready(await first.facet.prepare(req(5))).generation).toBe(1)
+      const before = ready(await first.facet.prepare(req(5)))
+      expect(before.generation).toBe(1)
       await first.facet.stop()
       facets = []
       const { facet } = await start()
@@ -464,7 +468,10 @@ describe('executor facet', () => {
       expect(await facet.prepare(req(5))).toEqual({ status: 'refused', reason: 'launch_retired' })
       expect(starts).toHaveLength(1)
       // The holder answers a retired launch with a new one, which starts the environment again past the generation on disk.
-      expect(ready(await facet.prepare(req(6))).generation).toBe(2)
+      const after = ready(await facet.prepare(req(6)))
+      expect(after.generation).toBe(2)
+      // The same directory under the new launch: the skills the first one installed stay its own.
+      expect(after.workspaceIncarnation).toBe(before.workspaceIncarnation)
       expect(starts).toHaveLength(2)
       expect(record()).toMatchObject({ generation: 2, launchId: LAUNCH(6) })
     })

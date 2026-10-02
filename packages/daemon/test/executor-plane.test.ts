@@ -197,6 +197,30 @@ describe('the session life', () => {
   })
 })
 
+describe('the key a placed session keeps its skill ledger under', () => {
+  const WORKSPACE = 'workspace:5e7b6f7c0d0a4c1f9a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f'
+
+  it('is the session directory the executor reported, the same after an idle close relaunches it', async () => {
+    const { executor, sent } = plane([
+      ready(2, { workspaceIncarnation: WORKSPACE }),
+      ready(3, { workspaceIncarnation: WORKSPACE })
+    ])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.workspaceIncarnationFor(SUBJECT)).toBe(WORKSPACE)
+    await executor.suspendIdle(SUBJECT)
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    // A new launch over the same directory: its skills are the ones the ledger already records, not foreign ones.
+    expect(sent[0]!.launchId).not.toBe(sent[1]!.launchId)
+    expect(executor.workspaceIncarnationFor(SUBJECT)).toBe(WORKSPACE)
+  })
+
+  it('is the launch for an executor that reports no directory', async () => {
+    const { executor, sent } = plane([ready(2)])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.workspaceIncarnationFor(SUBJECT)).toBe(sent[0]!.launchId)
+  })
+})
+
 describe('the adapter a placed session starts', () => {
   // What this machine's own store would launch: its node and a tree only it has.
   const own = { command: '/opt/holder/node', args: ['/srv/holder/runtimes/adapter@1.0.0/bin.js', '--acp'], env: [] }
