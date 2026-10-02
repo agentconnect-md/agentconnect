@@ -8869,10 +8869,17 @@ export class LocalStore {
    */
   async contentStoreId(): Promise<string | undefined> {
     if (!this.postgres) return undefined
-    await this.db.exec(
-      'CREATE TABLE IF NOT EXISTS content_store_identity (' +
-        'singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton), id TEXT NOT NULL)'
-    )
+    try {
+      await this.db.exec(
+        'CREATE TABLE IF NOT EXISTS content_store_identity (' +
+          'singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton), id TEXT NOT NULL)'
+      )
+    } catch (error) {
+      // Two daemons starting together both pass IF NOT EXISTS, and the slower CREATE fails on the
+      // catalog's unique index (23505) or as a duplicate table (42P07): the table exists either way.
+      const code = (error as { code?: unknown }).code
+      if (code !== '23505' && code !== '42P07') throw error
+    }
     await this.db
       .prepare('INSERT INTO content_store_identity (singleton, id) VALUES (true, ?) ON CONFLICT DO NOTHING')
       .run(randomUUID())
