@@ -10,7 +10,12 @@ import { prepareMicrosandboxLaunch } from '../microsandbox/launch.js'
 import { isRecognizedCredentialEnv, type MicrosandboxSecret } from '../microsandbox/secrets.js'
 import { compactReadRoots, protectedSandboxRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
-import { CLAUDE_STATE_SECRETS, CODEX_STATE_SECRETS, privateRuntimeState } from '../runtimes/private-runtime-state.js'
+import {
+  CLAUDE_STATE_SECRETS,
+  CODEX_STATE_SECRETS,
+  privateRuntimeState,
+  type PrivateRuntimeState
+} from '../runtimes/private-runtime-state.js'
 import {
   hostPackageCacheEnv,
   prepareRuntimeHome,
@@ -189,9 +194,10 @@ function prepareExecutorLaunch(
     explicitEnv?: Record<string, string>
     sessionGitDirs?: string[]
   },
-  home: string,
+  executor: { home: string; codexState?: PrivateRuntimeState },
   allowModelToolUnixSockets: boolean
 ): PreparedRuntimeLaunch {
+  const { home, codexState } = executor
   // An empty host env: this daemon's own variables describe a machine the runtime is not on.
   const env = runtimeHomeEnvironment(opts.runtimeId, home, opts.explicitEnv, {})
   // Runtime credentials are the executor's own, even one configured as an agent secret; the rest travels (§8).
@@ -203,9 +209,12 @@ function prepareExecutorLaunch(
   // The private-HOME profile of an unconfined launch, and the clones' `.git` as its caller found them on that machine.
   const gitMetadataWriteRoots = [...(opts.sessionGitDirs ?? [])]
   // The HOME is on the executor, so its `.codex` cannot be listed from here, nor can the shared file its
-  // `auth.json` links to: the directory stays denied whole (the profile reopens Codex's helper below it).
+  // `auth.json` links to: the split that machine reported, else (an older executor) the directory denied whole,
+  // with Codex's helper reopened below it.
   applyCodexPermissionProfile(env, {
-    protectedRoots: [join(home, '.codex')],
+    ...(codexState
+      ? { protectedRoots: codexState.secret, readOnlyRoots: codexState.readOnly }
+      : { protectedRoots: [join(home, '.codex')] }),
     sessionGitMetadataRoots: gitMetadataWriteRoots,
     sessionHomeRoot: home,
     allowModelToolUnixSockets
@@ -265,14 +274,15 @@ export function prepareRuntimeLaunch(opts: {
     trustedSessionDir?: string
     trustedMounts?: SandboxMount[]
   }
-  /** A session placed on another machine: its HOME there, which that machine's strategy — never this one's sandbox — confines. */
-  executor?: { home: string }
+  /** A session placed on another machine: its HOME there, which that machine's strategy — never this one's sandbox — confines,
+   *  and its `.codex` as that machine classified it. */
+  executor?: { home: string; codexState?: PrivateRuntimeState }
   /** A launch through the SRT-wrapped shim rooted here: its boundary, not a per-host policy, confines the runtime (§11). */
   srtShim?: { runtimeRoot: string }
   /** A session whose clones are off this disk (a pool pod, an executor): their `.git`, found where they are as `sessionGitDirsIn` finds this disk's. */
   sessionGitDirs?: string[]
 }): PreparedRuntimeLaunch {
-  if (opts.executor) return prepareExecutorLaunch(opts, opts.executor.home, opts.allowModelToolUnixSockets === true)
+  if (opts.executor) return prepareExecutorLaunch(opts, opts.executor, opts.allowModelToolUnixSockets === true)
   if (opts.runInSandbox && opts.microsandbox) {
     return prepareMicrosandboxLaunch({ ...opts, ...opts.microsandbox })
   }

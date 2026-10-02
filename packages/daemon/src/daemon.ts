@@ -6703,6 +6703,9 @@ export class Daemon {
     const remoteHome = remoteSession && this.executorPlane?.homeFor(remoteSession.subject)
     // The roots its `prepare` named, where the session gitconfig and config files land in that machine's environment (§5).
     const remoteRoots = remoteSession && this.executorPlane?.rootsFor(remoteSession.sessionKey)
+    // Its `.codex` as that machine classified it, which this one cannot list (prepareExecutorLaunch).
+    const remoteCodexState =
+      remoteSession && remoteHome ? this.executorPlane?.codexStateFor(remoteSession.subject, remoteHome) : undefined
     if (remoteSession && (!remoteHome || !remoteRoots)) {
       throw new Error(
         `session ${remoteSession.leaf} has no environment on daemon ${remoteSession.executorDaemonId} to launch in — its next turn prepares one`
@@ -6856,7 +6859,9 @@ export class Daemon {
               }
             }
           : {}),
-        ...(remoteHome ? { executor: { home: remoteHome } } : {}),
+        ...(remoteHome
+          ? { executor: { home: remoteHome, ...(remoteCodexState ? { codexState: remoteCodexState } : {}) } }
+          : {}),
         ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
         ...(srtShim ? { srtShim: { runtimeRoot: srtShim.runtimeRoot } } : {}),
         runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,

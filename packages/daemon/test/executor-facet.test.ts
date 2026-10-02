@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { connect as netConnect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -308,6 +308,31 @@ describe('executor facet', () => {
       const socket = await dial(reply)
       socket.write('hello shim')
       await vi.waitFor(() => expect(shims.get(LEAF)!.received()).toBe('hello shim'), WAIT)
+    })
+
+    // The holder can list neither this HOME nor the shared file its credential link points at, so this machine
+    // classifies the session's `.codex` (private-runtime-state.ts) and the holder's Codex profile applies the split.
+    it("reports the seeded HOME's .codex split: read-only, with its credentials denied at the link's target", async () => {
+      let shared = ''
+      const { facet } = await start({
+        seedHome: (home) => {
+          shared = join(root!, 'operator-codex')
+          mkdirSync(shared, { recursive: true })
+          writeFileSync(join(shared, 'auth.json'), '{}\n')
+          mkdirSync(join(home, '.codex', 'tmp', 'arg0'), { recursive: true })
+          writeFileSync(join(home, '.codex', 'config.toml'), 'model = "x"\n')
+          symlinkSync(join(shared, 'auth.json'), join(home, '.codex', 'auth.json'))
+          return undefined
+        }
+      })
+      const reply = ready(await facet.prepare(req(3)))
+      const home = join(root!, 'sessions', LEAF, 'home')
+      const codex = realpathSync(join(home, '.codex'))
+      expect(reply.codexState).toEqual({
+        home,
+        readOnly: [codex],
+        secret: expect.arrayContaining([realpathSync(join(shared, 'auth.json')), join(codex, 'config.toml')])
+      })
     })
 
     // §8, §11 step 3: the facet builds the environment from the leaf alone, whichever strategy starts it, and only this machine can say where its seed points.

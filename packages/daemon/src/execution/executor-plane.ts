@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { Socket } from 'node:net'
 import { ClientTransport, systemClock, type Clock } from '@agentconnect.md/connection'
 import type { ExecutorPrepareResult, ExecutorReleaseResult } from '@agentconnect.md/protocol'
+import type { PrivateRuntimeState } from '../runtimes/private-runtime-state.js'
 import { sessionKeyDirName } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { clusterMetrics } from '../metrics/cluster-metrics.js'
@@ -304,6 +305,12 @@ export class ExecutorPlane implements ExecutionPlane {
   /** The environment incarnation a skill receipt is fenced on: the launch, which is one environment life. */
   workspaceIncarnationFor(subject: string): string | undefined {
     return this.registry.currentLaunch(subject)?.sandboxUid
+  }
+
+  /** The session `.codex` split its executor reported (prepareExecutorLaunch), for the HOME the holder launches in; undefined for an executor that reports none, or classified another HOME. */
+  codexStateFor(subject: SandboxSubject, home: string): PrivateRuntimeState | undefined {
+    const reported = this.registry.currentLaunch(subject)?.ready?.codexState
+    return reported?.home === home ? { readOnly: reported.readOnly, secret: reported.secret } : undefined
   }
 
   shimGenerationFor(subject: string): number | undefined {

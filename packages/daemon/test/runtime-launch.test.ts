@@ -1308,6 +1308,40 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.gitMetadataWriteRoots).toEqual([])
   })
 
+  it("applies the .codex split a placed Codex session's executor reported, in every profile", () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const codex = `${PLACED_HOME}/.codex`
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: PLACED,
+      runInSandbox: false,
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
+      executor: {
+        home: PLACED_HOME,
+        codexState: { readOnly: [codex], secret: ['/home/op/.codex/auth.json', `${codex}/config.toml`] }
+      }
+    })
+
+    const profiles = (JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] })
+      .configOverrides
+    const readOnly = profiles.find((value) =>
+      value.startsWith('permissions.agentconnect-protected-read-only.filesystem=')
+    )!
+    // `.codex` is readable to the tools, and only the credentials in it are denied. Approval review runs under the
+    // read-only profile, which reopens nothing below a deny, so it finds Codex's helper only because nothing denies it.
+    expect(agentFilesystem(launch.env)).toContain(`"${codex}" = "read"`)
+    for (const table of [agentFilesystem(launch.env), readOnly]) {
+      expect(table).toContain(`"/home/op/.codex/auth.json" = "deny"`)
+      expect(table).toContain(`"${codex}/config.toml" = "deny"`)
+      expect(table).not.toContain(`"${codex}" = "deny"`)
+      expect(table).not.toContain('tmp/arg0')
+    }
+  })
+
   // What Codex's `:workspace` pins read-only, and so what a commit there needs back.
   function expectSessionGitReopened(env: Record<string, string>, gitDirs: string[]): void {
     const table = agentFilesystem(env)

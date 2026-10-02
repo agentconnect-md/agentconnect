@@ -439,9 +439,11 @@ time on shared filesystems.
   logs, synced skills) is readable unless classified a secret, so a runtime
   release that adds a credential-bearing file there needs its name added to that
   module's secret list; a newly seeded top-level file is denied without one. An
-  executor's HOME is the exception: the holder can list neither it nor the target
-  of its credential link, so there `home/.codex` stays denied whole and Codex's
-  helper is reopened below it for write. When the clones are not on this daemon's disk
+  executor's HOME is classified by the executor, since the holder can list neither
+  it nor the target of its credential link: it reports the split with its
+  `prepare` reply, and the holder applies it when it launches in that HOME. From
+  an executor that reports none, `home/.codex` stays denied whole and Codex's
+  helper is reopened below it for write, so its approval review still fails. When the clones are not on this daemon's disk
   (a pool pod's, or a session placed on another machine of its group), the daemon
   lists them through that filesystem before the launch, refusing a `.git` that is
   a link there just as it does here, and names them in that filesystem's

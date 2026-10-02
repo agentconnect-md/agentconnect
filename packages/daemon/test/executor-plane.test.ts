@@ -197,6 +197,26 @@ describe('the session life', () => {
   })
 })
 
+describe("the .codex split a placed session's executor reported", () => {
+  const HOME = '/srv/agentconnect/sessions/s/home'
+  const codexState = { home: HOME, readOnly: [`${HOME}/.codex`], secret: [`${HOME}/.codex/config.toml`] }
+
+  it('is handed over for the HOME the launch runs in', async () => {
+    const { executor } = plane([ready(2, { codexState })])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.codexStateFor(SUBJECT, HOME)).toEqual({ readOnly: codexState.readOnly, secret: codexState.secret })
+  })
+
+  it('is none for another HOME, or from an executor that reports none: the launch denies `.codex` whole', async () => {
+    const { executor } = plane([ready(2, { codexState })])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.codexStateFor(SUBJECT, '/elsewhere/home')).toBeUndefined()
+    const older = plane([ready(2)])
+    await older.executor.prepareAt(AGENT, KEY, [HOST])
+    expect(older.executor.codexStateFor(SUBJECT, HOME)).toBeUndefined()
+  })
+})
+
 describe('the adapter a placed session starts', () => {
   // What this machine's own store would launch: its node and a tree only it has.
   const own = { command: '/opt/holder/node', args: ['/srv/holder/runtimes/adapter@1.0.0/bin.js', '--acp'], env: [] }
