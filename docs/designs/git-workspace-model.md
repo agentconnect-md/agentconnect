@@ -420,10 +420,28 @@ time on shared filesystems.
   it from the runtime ([session-executors.md](session-executors.md) §5). The
   session's `home/` is writable in both layers as well — a runtime's inner policy pins writes to the cwd, and HOME is its _sibling_, so
   the grant is named there too or no package manager can write the caches below
-  it. `home/.codex` is carved back out of that grant and stays denied: its
-  `auth.json` is a link to the shared host credential the outer layer keeps
-  writable for the ACP parent, and the rest is that parent's own state, written
-  from outside the inner sandbox. When the clones are not on this daemon's disk
+  it. The runtime's private state directory below it (`home/.codex`,
+  `home/.claude`) is carved back out of that grant as **read-only** to the
+  model's tools, in every profile, and only what can hold a secret is denied:
+  each top-level file seeded from the host (the `isRuntimeHomeSeedFile` rule that
+  copied it), the shared host credential a link there points at (denied at its
+  target: the link sits under the writable HOME, and Codex's bwrap refuses to
+  mask a path that crosses a symlink the sandboxed process could swap), and the
+  named surfaces in `runtimes/private-runtime-state.ts` (`.codex/config.toml`,
+  Claude's `backups/`). Read-only, not denied, because each runtime stores there
+  what its own tools read back: Codex execs its linux-sandbox helper from
+  `$CODEX_HOME/tmp/arg0` through a bwrap that masks a denied directory, including
+  under the read-only profile automatic approval review runs under; Claude saves
+  an oversized tool result under `.claude/projects/…/tool-results/` and tells the
+  model to read it there. Writes stay denied for the whole directory, so the model
+  cannot plant settings or hooks the parent would load. This rule is
+  open-world: what a runtime writes there itself (its transcripts, rollouts,
+  logs, synced skills) is readable unless classified a secret, so a runtime
+  release that adds a credential-bearing file there needs its name added to that
+  module's secret list; a newly seeded top-level file is denied without one. An
+  executor's HOME is the exception: the holder can list neither it nor the target
+  of its credential link, so there `home/.codex` stays denied whole and Codex's
+  helper is reopened below it for write. When the clones are not on this daemon's disk
   (a pool pod's, or a session placed on another machine of its group), the daemon
   lists them through that filesystem before the launch, refusing a `.git` that is
   a link there just as it does here, and names them in that filesystem's
