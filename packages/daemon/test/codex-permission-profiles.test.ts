@@ -159,6 +159,9 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     // `auth.json` under it LINKS to the shared host credential, and the rest is the ACP parent's own state.
     expect(agent).toContain(`"${home}/.codex" = "deny"`)
     expect(agent).not.toContain(`"${home}/.codex" = "read"`)
+    // Codex's own sandbox helper is extracted there and exec'd; its bwrap reopens a denied directory's writable descendants only.
+    expect(agent).toContain(`"${home}/.codex/tmp/arg0" = "write"`)
+    expect(agent).not.toContain(`"${home}/.codex/auth.json"`)
     // The read-only profile grants nothing, and the write never leaks into it.
     expect(
       config.configOverrides.find((value) =>
@@ -198,7 +201,7 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
       value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
     )!
     expect(agent).toBe(
-      `permissions.agentconnect-protected-workspace.filesystem={ "${home}" = "write", "${home}/.codex" = "deny" }`
+      `permissions.agentconnect-protected-workspace.filesystem={ "${home}" = "write", "${home}/.codex" = "deny", "${home}/.codex/tmp/arg0" = "write" }`
     )
   })
 

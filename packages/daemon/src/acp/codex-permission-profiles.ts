@@ -99,11 +99,13 @@ export function codexPermissionProfileConfig(
       [join(root, 'config'), 'read']
     ]),
     // §11's per-session HOME holds the package caches and runtime state; `.codex` is carved back whole because its `auth.json` LINKS to the shared host credential and the rest is the ACP parent's state, written outside this sandbox.
+    // Codex extracts its `codex-linux-sandbox` helper under `$CODEX_HOME/tmp/arg0` and execs it through its own bwrap, which masks a denied directory and reopens only WRITABLE descendants, so that one subtree is reopened for write.
     ...(sessionHomeRoot === undefined
       ? []
       : ([
           [sessionHomeRoot, 'write'],
-          [join(sessionHomeRoot, '.codex'), 'deny']
+          [join(sessionHomeRoot, '.codex'), 'deny'],
+          [join(sessionHomeRoot, '.codex', 'tmp', 'arg0'), 'write']
         ] as Array<[string, string]>)),
     // A shared store sits outside the cwd, so `:workspace` alone would refuse the very install it exists for; the read-only mode keeps refusing it.
     ...sharedWriteRoots.map((root): [string, string] => [root, 'write']),
