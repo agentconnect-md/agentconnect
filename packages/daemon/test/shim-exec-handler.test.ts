@@ -523,6 +523,23 @@ describe('sandbox exec handler', () => {
     expect(existsSync(join(outside, 'a.bundle'))).toBe(false)
   })
 
+  it('refuses bundle create inside a live skill staging handle', async () => {
+    const root = repository()
+    const paths = runtimePaths()
+    const activeHandle = join(paths.skillStagingDir, 'active-handle')
+    const file = join(activeHandle, 'repo.bundle')
+    mkdirSync(activeHandle, { recursive: true })
+
+    await expect(
+      handler(root, paths)('exec', {
+        tool: 'git',
+        args: ['bundle', 'create', file, 'refs/heads/main'],
+        cwd: root
+      })
+    ).rejects.toThrow(/staging directory/)
+    expect(existsSync(file)).toBe(false)
+  })
+
   it('runs clone --bundle-uri in its joined https form and refuses the separated one', async () => {
     const root = repository()
     const { origin } = bloblessClone(root)
