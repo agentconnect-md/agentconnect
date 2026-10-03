@@ -2048,7 +2048,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       dutyHolders = { [BOB]: [D3] }
       await makeOrch().syncBot(BOT)
       const assign = lastOf(modern, 'rc/bot-assign')!
-      expect(assign.routedConversations).toEqual([{ channel: 'C1', decisionId: DECISION, evaluationDaemonId: D1 }])
+      expect(assign.routedConversations).toEqual([
+        { channel: 'C1', decisionId: DECISION, evaluationDaemonId: D1, targetAgentIds: [ALICE, BOB] }
+      ])
       expect(assign.routes.filter((r) => r.scope?.channel === 'C1')).toEqual([
         {
           agentId: BOB,
@@ -2094,7 +2096,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       await orch.daemonReady(D1)
       const routes = lastOf(modern, 'rc/routes')!
       expect(routes.mutedChannels).not.toContain('C1')
-      expect(routes.routedConversations).toEqual([{ channel: 'C1', decisionId: DECISION, evaluationDaemonId: D1 }])
+      expect(routes.routedConversations).toEqual([
+        { channel: 'C1', decisionId: DECISION, evaluationDaemonId: D1, targetAgentIds: [ALICE, BOB] }
+      ])
     })
 
     it('moves the host to the earliest-created live candidate when it goes offline, and back', async () => {
@@ -2104,7 +2108,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       upserts = []
       await orch.daemonOffline(D1)
       expect(lastOf(modern, 'rc/routes')!.routedConversations).toEqual([
-        { channel: 'C1', decisionId: DECISION, evaluationDaemonId: D2 }
+        { channel: 'C1', decisionId: DECISION, evaluationDaemonId: D2, targetAgentIds: [ALICE, BOB] }
       ])
       expect(pushedTo(D2)?.core.decisions.sharedBotRouting?.channels).toEqual([{ channel: 'C1', defaultAgentId: BOB }])
       expect(pushedTo(D1)?.core.decisions.sharedBotRouting).toBeUndefined()

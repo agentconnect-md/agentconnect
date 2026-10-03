@@ -923,7 +923,10 @@ export type RcConversationDefault = z.infer<typeof RcConversationDefault>
 export const RcRoutedConversation = z.object({
   channel: z.string().min(1),
   decisionId: z.string().min(1).max(128),
-  evaluationDaemonId: z.string().uuid()
+  evaluationDaemonId: z.string().uuid(),
+  // The agents its routing can select. Saving the routing needs edit rights on each, so it enables a gated (§14)
+  // one in this conversation as a channel-scoped route does; absent ⇒ an older CP, only routes enable one
+  targetAgentIds: z.array(z.string().uuid()).max(64).optional()
 })
 export type RcRoutedConversation = z.infer<typeof RcRoutedConversation>
 
