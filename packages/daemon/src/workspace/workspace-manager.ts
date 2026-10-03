@@ -421,8 +421,14 @@ export class WorkspaceManager {
               else reason = report.reason
               reader?.record(
                 report.kind === 'hit'
-                  ? { kind: 'hit', bundleKey: plan.bundleKey, shape: plan.shape }
-                  : { ...report, bundleKey: plan.bundleKey, shape: plan.shape }
+                  ? {
+                      kind: 'hit',
+                      bundleKey: plan.bundleKey,
+                      shape: plan.shape,
+                      repoClass: plan.repoClass,
+                      bytes: plan.bytes
+                    }
+                  : { ...report, bundleKey: plan.bundleKey, shape: plan.shape, repoClass: plan.repoClass }
               )
             }
           }

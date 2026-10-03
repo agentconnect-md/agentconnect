@@ -63,8 +63,10 @@ export interface SourceCacheSweeperDeps {
   /** True while the daemon drains: a tick that lands then is skipped. */
   paused?: () => boolean
   log: { debug(message: string): void; info(message: string): void; warn(message: string): void }
-  /** The CP1.8 metrics hook. */
+  /** Metrics hook for each completed pass. */
   onPass?: (pass: Extract<SourceCacheSweepPass, { kind: 'done' }>) => void
+  /** Metrics hook for each lifecycle check's status. */
+  onLifecycle?: (status: SourceCacheLifecycleStatus) => void
 }
 
 export interface SourceCacheSweeper {
@@ -345,6 +347,11 @@ export function createSourceCacheSweeper(deps: SourceCacheSweeperDeps): SourceCa
         )
       }
       status = next
+      try {
+        deps.onLifecycle?.(next)
+      } catch {
+        // A metrics hook never fails a check.
+      }
       return next
     })()
     lifecycleRunning = current

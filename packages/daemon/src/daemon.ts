@@ -644,7 +644,9 @@ import {
   createSourceCacheReadPlanner,
   createSourceCacheSweeper,
   createSourceCacheWriter,
+  sourceCacheMetrics as defaultSourceCacheMetrics,
   type SourceCache,
+  type SourceCacheMetrics,
   type SourceCachePresigner,
   type SourceCacheSweeper
 } from './source-cache/index.js'
@@ -1906,6 +1908,8 @@ export class Daemon {
       memoryPluginConnect?: MemoryPluginConnector
       /** Test seam for the Source Cache's STS calls. */
       sourceCacheFetch?: typeof fetch
+      /** Test seam for the Source Cache metrics recorder. */
+      sourceCacheMetrics?: SourceCacheMetrics
       /** Optional, observer-only evaluation surface and add-on treatment. */
       evaluation?: DaemonEvaluationOptions
     } = {}
@@ -1944,6 +1948,7 @@ export class Daemon {
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
     })
     if (this.sourceCache) {
+      const cacheMetrics = opts.sourceCacheMetrics ?? defaultSourceCacheMetrics
       // Lazy closures: the credential cache and the store are built in later boot phases.
       const tokens = gitCredReadTokens({
         get: (...args) => this.gitCreds.get(...args),
@@ -1956,7 +1961,8 @@ export class Daemon {
           presigner: this.sourceCache.presigner,
           authorize: createCredentialedCacheReadAuthorizer({ resolver: this.sourceCacheRefs, tokens }),
           orgForAgent: (agentId) => this.orgForAgent(agentId),
-          log: { debug: (m) => this.log.debug(m), warn: (m) => this.log.warn(m) }
+          log: { debug: (m) => this.log.debug(m), warn: (m) => this.log.warn(m) },
+          onOutcome: (outcome) => cacheMetrics.read(outcome)
         })
       )
       const sourceCacheLog = {
@@ -1970,7 +1976,9 @@ export class Daemon {
         config: this.sourceCache.config,
         clock: this.clock,
         paused: () => this.draining || this.shutdownDraining,
-        log: sourceCacheLog
+        log: sourceCacheLog,
+        onPass: (pass) => cacheMetrics.sweepPass(pass),
+        onLifecycle: (status) => cacheMetrics.lifecycle(status)
       })
       this.sourceCacheSweeper = sweeper
       this.workspaces.setSourceCacheWriter(
@@ -1980,7 +1988,8 @@ export class Daemon {
           objects: this.sourceCache.objects,
           limits: this.sourceCache.config.limits,
           allowWrites: () => sweeper.lifecycle() !== 'missing',
-          log: sourceCacheLog
+          log: sourceCacheLog,
+          onOutcome: (outcome, scope) => cacheMetrics.writeBack(outcome, scope)
         })
       )
     }

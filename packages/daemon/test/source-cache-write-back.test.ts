@@ -64,6 +64,7 @@ function harness(opts: Options = {}) {
   const calls: string[] = []
   const logs: string[] = []
   const outcomes: unknown[] = []
+  const scopes: unknown[] = []
   const reserved: Array<{ key: string; bytes: number; expiresAt: number }> = []
   const pointed: Array<{ bundleKey: string; expectedTargetKey?: string | null }> = []
   const discarded: string[] = []
@@ -122,7 +123,10 @@ function harness(opts: Options = {}) {
     limits: { maxBundleBytes: 1024 * 1024, orgQuotaBytes: 10 * 1024 * 1024, pendingReservationSeconds: 3600 },
     now: () => NOW,
     log: { debug: (m) => logs.push(m), info: (m) => logs.push(m), warn: (m) => logs.push(m) },
-    onOutcome: (o) => outcomes.push(o),
+    onOutcome: (o, scope) => {
+      outcomes.push(o)
+      scopes.push(scope)
+    },
     ...(opts.allowWrites ? { allowWrites: opts.allowWrites } : {})
   }
   const stager: SourceCacheBundleStager = {
@@ -166,7 +170,7 @@ function harness(opts: Options = {}) {
     credentialed: false,
     ...extra
   })
-  return { writer, request, calls, logs, outcomes, reserved, pointed, discarded, discardAborts, stager }
+  return { writer, request, calls, logs, outcomes, scopes, reserved, pointed, discarded, discardAborts, stager }
 }
 
 describe('Source Cache write-back triggers (§7 item 4)', () => {
@@ -231,8 +235,10 @@ describe('Source Cache write-back triggers (§7 item 4)', () => {
     const broken = harness({ revListError: true })
     expect(await broken.writer.consider(broken.request({ read: { kind: 'hit', tip: TIP } }))).toMatchObject({
       kind: 'skipped',
-      reason: expect.stringMatching(/^unmeasured/)
+      reason: 'unmeasured',
+      detail: expect.stringContaining('rev-list failed')
     })
+    expect(broken.logs.join('\n')).toContain('unmeasured: rev-list failed')
     const tipless = harness()
     expect(await tipless.writer.consider(tipless.request({ read: { kind: 'hit' } }))).toEqual({
       kind: 'skipped',
@@ -419,6 +425,27 @@ describe('Source Cache write-back is never an exception into the session', () =>
     // Still sent so the pod reclaims promptly, but not tied to the aborted signal or awaited.
     expect(sent).toMatchObject([{ payload: { op: 'discard', handle: 'h-1' } }])
     expect(sent[0]!.options?.abort).toBeUndefined()
+  })
+
+  it('skips as unresolved with the error as detail when the branch cannot be read', async () => {
+    const h = harness()
+    const git = { raw: () => Promise.reject(new Error('bad revision')) } as unknown as GitRunner
+    expect(await h.writer.consider(h.request({ git }))).toEqual({
+      kind: 'skipped',
+      reason: 'unresolved',
+      detail: 'bad revision'
+    })
+  })
+
+  it('hands the metrics hook the target shape and class, never its org or keys', async () => {
+    const h = harness()
+    await h.writer.consider(h.request({ target: target('cred', 'full'), credentialed: true }))
+    await h.writer.consider(h.request({ stager: undefined }))
+    expect(h.scopes).toEqual([
+      { shape: 'full', repoClass: 'cred' },
+      { shape: 'blobless', repoClass: 'anon' }
+    ])
+    expect(JSON.stringify(h.scopes)).not.toContain('org_1')
   })
 
   it('resolves when every dependency throws', async () => {

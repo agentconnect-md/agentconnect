@@ -32,6 +32,8 @@ export interface WorkspaceBundlePlan {
   shape: SourceCacheShape
   /** When the bundle row was written, for the write-back age trigger. */
   bundleCreatedAt: number
+  /** The bundle row's size, counted as bytes read on a hit. */
+  bytes: number
 }
 
 /** Where a write-back of this clone may land: set once the clone's own identity resolved, never from the pod. */
@@ -62,14 +64,28 @@ export type SourceCacheMissReason =
   | 'error'
 
 export type SourceCacheReadOutcome =
-  | { kind: 'hit'; bundleKey: string; shape: SourceCacheShape }
-  | { kind: 'miss'; reason: SourceCacheMissReason; shape: SourceCacheShape; detail?: string }
-  | { kind: 'fallback'; bundleKey: string; shape: SourceCacheShape; reason: BundleFallbackReason; detail: string }
+  | { kind: 'hit'; bundleKey: string; shape: SourceCacheShape; repoClass: SourceCacheClass; bytes: number }
+  | {
+      kind: 'miss'
+      reason: SourceCacheMissReason
+      shape: SourceCacheShape
+      /** Set once the workspace's access class resolved. */
+      repoClass?: SourceCacheClass
+      detail?: string
+    }
+  | {
+      kind: 'fallback'
+      bundleKey: string
+      shape: SourceCacheShape
+      repoClass: SourceCacheClass
+      reason: BundleFallbackReason
+      detail: string
+    }
 
 export interface SourceCacheWorkspaceReader {
   /** A bundle to seed this clone with and where its write-back may land, either possibly absent; never throws. */
   plan(request: WorkspaceBundleRequest): Promise<WorkspaceCachePlan>
-  /** Where a clone's cache outcome goes: logged today, the CP1.8 metrics hook. */
+  /** Where a clone's cache outcome goes: logged, then handed to the metrics hook. */
   record(outcome: SourceCacheReadOutcome): void
 }
 
@@ -190,7 +206,15 @@ export function createSourceCacheReadPlanner(deps: SourceCacheReadPlannerDeps): 
         deps.log.warn(`source cache: could not record a read of ${bundleKey} (${(err as Error).message})`)
       }
     )
-    return { url, bundleKey, pointerKey: latest, repoClass, shape: request.shape, bundleCreatedAt: bundle!.createdAt }
+    return {
+      url,
+      bundleKey,
+      pointerKey: latest,
+      repoClass,
+      shape: request.shape,
+      bundleCreatedAt: bundle!.createdAt,
+      bytes: bundle!.bytes
+    }
   }
 
   return {
@@ -201,13 +225,15 @@ export function createSourceCacheReadPlanner(deps: SourceCacheReadPlannerDeps): 
         const bundle = await resolve(request, found)
         return { bundle, ...(found.target ? { target: found.target } : {}) }
       } catch (err) {
+        const repoClass = found.target ? { repoClass: found.target.repoClass } : {}
         if (err instanceof Miss) {
-          record({ kind: 'miss', reason: err.reason, shape: request.shape, detail: err.message })
+          record({ kind: 'miss', reason: err.reason, shape: request.shape, ...repoClass, detail: err.message })
         } else {
           record({
             kind: 'miss',
             reason: 'error',
             shape: request.shape,
+            ...repoClass,
             detail: (err as Error)?.message ?? String(err)
           })
         }

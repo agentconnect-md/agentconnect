@@ -1,8 +1,8 @@
-import type { LocalStore } from '../store/local-store.js'
+import type { LocalStore, SourceCacheReserveResult } from '../store/local-store.js'
 import type { BundleFallbackReason } from '../workspace/bundled-clone.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 import type { SourceCacheLimits } from './config.js'
-import { bundleKey, newBundleId, refHash, type SourceCacheShape } from './keys.js'
+import { bundleKey, newBundleId, refHash, type SourceCacheClass, type SourceCacheShape } from './keys.js'
 import type { SourceCacheObjectClient } from './object-client.js'
 import type { SourceCachePresigner } from './presigner.js'
 import type { SourceCacheWriteTarget } from './read-plan.js'
@@ -55,8 +55,26 @@ export type SourceCacheWriteTrigger = 'miss' | 'fallback' | 'stale' | 'delta'
 export type SourceCacheWriteStage =
   'measure' | 'create' | 'reserve' | 'presign' | 'upload' | 'verify' | 'commit' | 'retag' | 'pointer'
 
+/** Why a write-back did not run: a closed set, so it can label a metric; free text goes in `detail`. */
+export type SourceCacheWriteSkipReason =
+  | 'lifecycle-missing'
+  | 'class-mismatch'
+  | 'unsupported-shim'
+  | 'branch-diverged'
+  | 'unresolved'
+  | `fallback-${BundleFallbackReason | 'unknown'}`
+  | 'no-tip'
+  | 'unmeasured'
+  | 'fresh'
+  | 'in-flight'
+  | 'busy'
+  | 'store-unavailable'
+  | 'pointer-moved'
+  | 'over-cap'
+  | `reservation-${Extract<SourceCacheReserveResult, { admitted: false }>['reason']}`
+
 export type SourceCacheWriteOutcome =
-  | { kind: 'skipped'; reason: string }
+  | { kind: 'skipped'; reason: SourceCacheWriteSkipReason; detail?: string }
   | { kind: 'written'; trigger: SourceCacheWriteTrigger; bundleKey: string; bytes: number }
   | { kind: 'lost-race'; bundleKey: string }
   | { kind: 'failed'; stage: SourceCacheWriteStage; detail: string; bundleKey?: string }
@@ -78,8 +96,11 @@ export interface SourceCacheWriterDeps {
   log: { debug(message: string): void; info(message: string): void; warn(message: string): void }
   /** False while the bucket affirmatively lacks the lifecycle rules (§14 fallback); omitted means always allowed. */
   allowWrites?: () => boolean
-  /** The CP1.8 metrics hook. */
-  onOutcome?: (outcome: SourceCacheWriteOutcome) => void
+  /** Metrics hook; `scope` is the target's shape and class, never its org or key. */
+  onOutcome?: (
+    outcome: SourceCacheWriteOutcome,
+    scope: { shape: SourceCacheShape; repoClass: SourceCacheClass }
+  ) => void
 }
 
 class Stop extends Error {
@@ -88,8 +109,8 @@ class Stop extends Error {
   }
 }
 
-const skip = (reason: string): never => {
-  throw new Stop({ kind: 'skipped', reason })
+const skip = (reason: SourceCacheWriteSkipReason, detail?: string): never => {
+  throw new Stop({ kind: 'skipped', reason, ...(detail !== undefined ? { detail } : {}) })
 }
 
 const OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
@@ -118,10 +139,12 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
     } else if (outcome.kind === 'lost-race') {
       deps.log.debug(`source cache: ${outcome.bundleKey} lost the pointer race for ${where}`)
     } else {
-      deps.log.debug(`source cache: no write-back for ${where} (${outcome.reason})`)
+      deps.log.debug(
+        `source cache: no write-back for ${where} (${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ''})`
+      )
     }
     try {
-      deps.onOutcome?.(outcome)
+      deps.onOutcome?.(outcome, { shape: target.shape, repoClass: target.repoClass })
     } catch {
       // A metrics hook never fails a write-back.
     }
@@ -153,7 +176,7 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
       delta = await measureDelta(request.git, read.tip, commit, request.target.shape)
     } catch (err) {
       if (err instanceof Stop) throw err
-      return skip(`unmeasured: ${detailOf(err)}`)
+      return skip('unmeasured', detailOf(err))
     }
     if (delta.objects > deltaObjects || delta.bytes > deltaBytes) return 'delta'
     return skip('fresh')
@@ -175,7 +198,7 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
       commit = origin
     } catch (err) {
       if (err instanceof Stop) throw err
-      return skip(`unresolved: ${detailOf(err)}`)
+      return skip('unresolved', detailOf(err))
     }
     const trigger = await triggerOf(request, commit)
     const flight = `${target.orgId}\n${target.pointerKey}`

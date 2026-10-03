@@ -509,6 +509,34 @@ describe('Source Cache sweep: lifecycle check (§10, §14)', () => {
     expect(h.logs.some(([level, m]) => level === 'warn' && m.includes('s3:GetLifecycleConfiguration'))).toBe(true)
   })
 
+  it('hands each check status to onLifecycle, and a throwing hook still updates the status', async () => {
+    const bucket: { result?: () => Promise<SourceCacheBucketLifecycle> } = {}
+    const seen: string[] = []
+    const h = harness(
+      { lifecycle: () => bucket.result?.() ?? Promise.resolve({ kind: 'none' }) },
+      {
+        onLifecycle: (status) => seen.push(status)
+      }
+    )
+    await h.sweeper.checkLifecycle()
+    bucket.result = async () => ({ kind: 'rules', xml: both })
+    await h.sweeper.checkLifecycle()
+    bucket.result = () => Promise.reject(s3Error(403, 'AccessDenied'))
+    await h.sweeper.checkLifecycle()
+    expect(seen).toEqual(['missing', 'present', 'unknown'])
+
+    const throwing = harness(
+      { lifecycle: async () => ({ kind: 'rules', xml: both }) },
+      {
+        onLifecycle: () => {
+          throw new Error('metrics down')
+        }
+      }
+    )
+    await expect(throwing.sweeper.checkLifecycle()).resolves.toBe('present')
+    expect(throwing.sweeper.lifecycle()).toBe('present')
+  })
+
   it('checks at start and again every lifecycleCheckMs, so adding the rules re-enables write-back', async () => {
     const bucket: { xml?: string } = {}
     const h = harness(
