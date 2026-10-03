@@ -246,13 +246,13 @@ RUN --mount=type=bind,from=shim-builder,source=/build,target=/build \
 FROM runtime-sandbox-full AS runtime-sandbox-full-verify
 COPY --from=runtime-sandbox-full-table-check /tmp/ac-table-check.ok /tmp/ac-check/table.ok
 COPY --from=runtime-sandbox-full-smoke /tmp/ac-smoke.ok /tmp/ac-check/smoke.ok
-COPY docker/runtime-sandbox/verify-image.mjs /tmp/ac-check/verify-image.mjs
+COPY docker/runtime-sandbox/verify-image.mjs docker/runtime-sandbox/source-cache-git.mjs /tmp/ac-check/
 RUN node /tmp/ac-check/verify-image.mjs runtime-sandbox-full
 
 FROM runtime-sandbox AS runtime-sandbox-verify
 COPY --from=runtime-sandbox-table-check /tmp/ac-table-check.ok /tmp/ac-check/table.ok
 COPY --from=runtime-sandbox-smoke /tmp/ac-smoke.ok /tmp/ac-check/smoke.ok
-COPY docker/runtime-sandbox/verify-image.mjs /tmp/ac-check/verify-image.mjs
+COPY docker/runtime-sandbox/verify-image.mjs docker/runtime-sandbox/source-cache-git.mjs /tmp/ac-check/
 RUN node /tmp/ac-check/verify-image.mjs runtime-sandbox
 
 # Keep the pool image as the default build target.
