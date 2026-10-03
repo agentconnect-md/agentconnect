@@ -8,7 +8,7 @@
 //
 // This check turns that silent degradation into a hard build failure. It runs
 // after tsdown in the daemon's `build` script; it ships nowhere (files: ["dist"]).
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { builtinModules } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -153,6 +153,16 @@ if (!existsSync(ghWrapper)) {
 }
 if (!readFileSync(ghWrapper, 'utf8').includes('/opt/agentconnect/shim/gh-token.js')) {
   console.error('✗ the sandbox gh wrapper does not call the in-image token entry')
+  process.exit(1)
+}
+
+// The host and srt strategies hand git `<helperRoot>/bin/git-credential` with this `dist` as the helper root, so a
+// build that skipped the emit step would fail every credentialed clone of a session placed on this installation.
+const gitCredentialWrapper = new URL('../dist/bin/git-credential', import.meta.url)
+if (!existsSync(gitCredentialWrapper) || (statSync(gitCredentialWrapper).mode & 0o111) === 0) {
+  console.error(
+    '✗ the installation git credential helper is missing — `node scripts/emit-shim-git-credential-wrapper.mjs` did not run'
+  )
   process.exit(1)
 }
 
