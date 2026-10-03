@@ -445,7 +445,8 @@ Daemon implementation (P1, CP1.6):
   member.
 - For CP1.7: the writer's pointer compare-and-set can retarget a pointer row the
   sweep has already claimed as unread, so the sweep must re-check that row's
-  `targetKey`/`updatedAt` under its claim before deleting the pointer.
+  `targetKey`/`updatedAt` under its claim before deleting the pointer. CP1.7
+  does this inside the delete (section 10).
 
 Workspace resolution: the workspace keeps using the origin as its authority for
 the branch head. The GET URL's class follows the workspace's own
@@ -623,6 +624,65 @@ and every object-store step it takes (retag, delete, `HEAD`) is safe to repeat,
 so two members never double-count and a member that dies mid-pass leaves rows the
 next pass finishes.
 
+Daemon implementation (P1, CP1.7):
+
+- `source-cache/sweep.ts` runs on every member that has a Source Cache, and on
+  no other daemon. The first pass starts at a random point within the first
+  5 minutes, and later passes follow every 5 minutes ±25%. The timers are
+  unref'd and ticks are skipped while the daemon drains. A member runs one pass
+  at a time. Its claims carry the owner `<memberId>/<boot nonce>` and a 15-minute
+  lease, and each step claims at most 25 rows. No new row starts once half the
+  lease has passed. After 3 object-store failures in a row the pass skips its
+  remaining object steps. Shutdown stops the pass between rows and waits for the
+  row in flight.
+- Expired reservations: the pass `HEAD`s the key, deletes the object with a
+  header-signed `DELETE` if it exists, and then deletes the row under the claim
+  fence. A missing object counts as already gone. An object-store error leaves
+  the row claimed, and a later pass retries it once the lease lapses.
+- Unreferenced bundles are claimed once `unpointedAt` is older than the GET
+  lifetime plus the 5-minute grace margin that every other lifetime in this
+  design carries. The pass retags the object `ac-cache=unreferenced` and only
+  then deletes the row, which releases its bytes. A failed retag leaves the row
+  and its bytes. The claim already makes the bundle terminal, so a later pass
+  retries the retag. A `404` on the key means the object is gone, and the row
+  goes too. A delete refused as `referenced` cannot happen while the claim
+  holds; if it does, the pass restores the `live` tag on a best-effort basis
+  and leaves the row.
+- Unread pointers: `deleteSourceCacheObject` takes an `unchanged` guard of the
+  claimed row's `targetKey`, `updatedAt` and `lastReadAt`. It checks the guard
+  under the row lock and refuses with `changed`. The claim fence already
+  catches a retarget, because the compare-and-set clears `claimedBy`. A GET
+  issued after the claim stamps `lastReadAt` without clearing the claim, so only
+  the guard catches it.
+- Lifecycle rules: members check them and never write them. S3 has no merge
+  API: `PutBucketLifecycleConfiguration` replaces the bucket's whole
+  configuration. Daemon-managed rules would therefore turn into a
+  read-modify-write between every member, the operator's infrastructure code,
+  and any foreign rule on a bucket that may also hold `snapshots/`. They would
+  also widen every member's role to `s3:PutLifecycleConfiguration`. A check
+  needs only `s3:GetLifecycleConfiguration`. The chart README ships the
+  two-rule document, and a member logs it for its own prefix.
+- `source-cache/lifecycle.ts` accepts a rule for a tag only when all of these
+  hold:
+  - it is enabled;
+  - it expires by days;
+  - its tag filter is exactly `ac-cache=<tag>`;
+  - its prefix is empty or a prefix of `<prefix>/src/`;
+  - it has no size filter.
+
+  The check warns on a rule that also covers `snapshots/`, on one that keeps
+  objects longer than the defaults, and on an untagged rule that would expire
+  live bundles.
+
+- Each member runs the check at start and every 6 hours. When the bucket
+  affirmatively lacks either rule, the member warns at every check and turns
+  write-back off, following the section 14 fallback. Reads continue. Write-back
+  turns back on at the first check that finds both rules. A configuration the
+  member cannot read only warns. The sweep keeps running either way.
+- The member's credentials need `s3:GetObject`, `s3:PutObject`,
+  `s3:PutObjectTagging` and `s3:DeleteObject` on `<prefix>/src/*`, plus
+  `s3:GetLifecycleConfiguration` on the bucket.
+
 ## 11. Non-GitHub Sources
 
 **Hosts supported by this design:**
@@ -684,6 +744,7 @@ and the 5 GiB single-PUT ceiling.
 | Signing fails                                 | Treated as a miss for that Source; origin fetch; metric    |
 | Any bundled attempt fails                     | Clean retry without the bundle (section 7); metric         |
 | Write-back fails, quota exceeded, or over cap | Nothing written; logged; the session is unaffected         |
+| Bucket lifecycle rules missing                | Write-back off with a warning; reads continue (section 10) |
 | Resolution fails                              | Section 5                                                  |
 
 Session startup never depends on the object store.
@@ -833,13 +894,13 @@ matrix and test-app pod/timing checks run. The chart default remains off while
 
 ## 15. Change index
 
-| Package       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, the workspace read planner `source-cache/read-plan.ts` and retry contract `workspace/bundled-clone.ts` behind `workspace-manager.ts`, workspace write-back `source-cache/write-back.ts` with the header-signed HEAD/retag client `source-cache/object-client.ts`, reconcile plan and write-back in `reconcileSandboxSkills` |
-| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, the `bundle` operations (`shim/bundle-handler.ts`, `shim/bundle-protocol.ts`, daemon side `shim/bundle-client.ts`), credential window in the `gitcred` tunnel, the `--bundle-uri` rule in `workspace/git-command-policy.ts`                                                                                                                                                                                                                                                                   |
-| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect; the pointer row's compare-and-set in `setSourceCachePointer`                                                                                                                                                                                                                                                                                                                                                                                    |
-| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| chart         | `sourceCache.*` values, member credentials, bucket lifecycle rule template                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Package       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, the workspace read planner `source-cache/read-plan.ts` and retry contract `workspace/bundled-clone.ts` behind `workspace-manager.ts`, workspace write-back `source-cache/write-back.ts` with the header-signed HEAD/retag/DELETE/lifecycle-read client `source-cache/object-client.ts`, the sweep `source-cache/sweep.ts` and lifecycle check `source-cache/lifecycle.ts`, reconcile plan and write-back in `reconcileSandboxSkills` |
+| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, the `bundle` operations (`shim/bundle-handler.ts`, `shim/bundle-protocol.ts`, daemon side `shim/bundle-client.ts`), credential window in the `gitcred` tunnel, the `--bundle-uri` rule in `workspace/git-command-policy.ts`                                                                                                                                                                                                                                                                                                                                                                            |
+| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect; the pointer row's compare-and-set in `setSourceCachePointer`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| chart         | `sourceCache.*` values, member credentials, the bucket lifecycle rule document in the chart README                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |

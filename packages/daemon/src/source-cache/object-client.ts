@@ -5,7 +5,7 @@ import { parseSourceCacheObjectKey, type SourceCacheObjectKey } from './keys.js'
 import { addressFor } from './presigner.js'
 import { amzDate, canonicalQuery, canonicalUri, sha256Hex, signHeaders } from './sigv4.js'
 
-// Header-signed object requests the member makes itself (source-cache.md §9 step 5): HEAD verify and retag.
+// Header-signed requests the member makes itself (source-cache.md §9, §10): HEAD, retag, delete, and the lifecycle read.
 
 export type SourceCacheLifecycleTag = 'ac-cache=live' | 'ac-cache=unreferenced'
 
@@ -15,7 +15,13 @@ export type SourceCacheObjectHead =
 export interface SourceCacheObjectClient {
   head(key: SourceCacheObjectKey): Promise<SourceCacheObjectHead>
   putTagging(key: SourceCacheObjectKey, tagging: SourceCacheLifecycleTag): Promise<void>
+  /** Delete a bundle object; an object already gone resolves too. */
+  delete(key: SourceCacheObjectKey): Promise<void>
+  /** The bucket's lifecycle configuration XML, or `none` when the bucket has none. */
+  getBucketLifecycle(): Promise<SourceCacheBucketLifecycle>
 }
+
+export type SourceCacheBucketLifecycle = { kind: 'none' } | { kind: 'rules'; xml: string }
 
 export class SourceCacheObjectError extends Error {
   constructor(
@@ -39,6 +45,8 @@ export interface ObjectClientOptions {
 
 const EMPTY_PAYLOAD_SHA256 = sha256Hex('')
 const REQUEST_TIMEOUT_MS = 30_000
+/** A lifecycle configuration holds at most 1,000 rules; anything past this is not one the daemon reads. */
+const LIFECYCLE_MAX_BYTES = 256 * 1024
 
 function tagParts(tagging: SourceCacheLifecycleTag): [string, string] {
   const [key, value] = tagging.split('=')
@@ -48,6 +56,25 @@ function tagParts(tagging: SourceCacheLifecycleTag): [string, string] {
 function taggingXml(tagging: SourceCacheLifecycleTag): string {
   const [key, value] = tagParts(tagging)
   return `<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><TagSet><Tag><Key>${key}</Key><Value>${value}</Value></Tag></TagSet></Tagging>`
+}
+
+async function boundedText(res: Response, maxBytes: number): Promise<string | undefined> {
+  const reader = res.body?.getReader()
+  if (!reader) return ''
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > maxBytes) {
+      // Not awaited: a cancel settles only once every branch of a teed body is cancelled.
+      void reader.cancel().catch(() => undefined)
+      return undefined
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 async function errorCode(res: Response): Promise<string | undefined> {
@@ -66,13 +93,14 @@ export function createObjectClient(opts: ObjectClientOptions): SourceCacheObject
   }
 
   const send = async (input: {
-    method: 'HEAD' | 'PUT'
-    key: SourceCacheObjectKey
+    method: 'HEAD' | 'PUT' | 'DELETE' | 'GET'
+    /** A bundle key, or `bucket` for a bucket-level subresource such as `?lifecycle`. */
+    key: SourceCacheObjectKey | 'bucket'
     query?: Record<string, string>
     headers: Record<string, string>
     body?: string
   }): Promise<Response> => {
-    const path = objectPath(input.key)
+    const path = input.key === 'bucket' ? address.basePath : objectPath(input.key)
     const creds = await credentials.get(SOURCE_CACHE_GRACE_SECONDS * 1000)
     const payloadHash = input.body === undefined ? EMPTY_PAYLOAD_SHA256 : sha256Hex(input.body)
     const headers = { ...input.headers, 'x-amz-date': amzDate(now()), 'x-amz-content-sha256': payloadHash }
@@ -133,6 +161,25 @@ export function createObjectClient(opts: ObjectClientOptions): SourceCacheObject
       if (res.status < 200 || res.status >= 300)
         throw new SourceCacheObjectError(res.status, await errorCode(res), 'retag')
       await res.body?.cancel().catch(() => undefined)
+    },
+    async delete(key) {
+      const res = await send({ method: 'DELETE', key, headers: {} })
+      if (res.status === 200 || res.status === 204) return void (await res.body?.cancel().catch(() => undefined))
+      const code = await errorCode(res)
+      // S3 answers 204 for an absent key; a 404 counts as gone too, unless the bucket itself is missing.
+      if (res.status === 404 && code !== 'NoSuchBucket') return
+      throw new SourceCacheObjectError(res.status, code, 'DELETE')
+    },
+    async getBucketLifecycle() {
+      const res = await send({ method: 'GET', key: 'bucket', query: { lifecycle: '' }, headers: {} })
+      if (res.status === 200) {
+        const xml = await boundedText(res, LIFECYCLE_MAX_BYTES)
+        if (xml === undefined) throw new SourceCacheObjectError(res.status, 'TooLarge', 'lifecycle read')
+        return { kind: 'rules', xml }
+      }
+      const code = await errorCode(res)
+      if (res.status === 404 && code === 'NoSuchLifecycleConfiguration') return { kind: 'none' }
+      throw new SourceCacheObjectError(res.status, code, 'lifecycle read')
     }
   }
 }

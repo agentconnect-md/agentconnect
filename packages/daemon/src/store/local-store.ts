@@ -1780,7 +1780,15 @@ export type SourceCachePointerResult =
   | { set: false; reason: 'bundle-not-committed' | 'bundle-mismatch' | 'bundle-claimed' | 'pointer-moved' }
 
 export type SourceCacheDeleteResult =
-  { deleted: true; releasedBytes: number } | { deleted: false; reason: 'missing' | 'claim-lost' | 'referenced' }
+  | { deleted: true; releasedBytes: number }
+  | { deleted: false; reason: 'missing' | 'claim-lost' | 'referenced' | 'changed' }
+
+/** The row fields a sweep read at its claim; a delete guarded by them refuses a row that moved since (`changed`). */
+export interface SourceCacheUnchangedGuard {
+  targetKey: string | null
+  updatedAt: number
+  lastReadAt: number | null
+}
 
 /** A sweep claim: `owner` holds the returned rows for `leaseMs`, after which another member may take them. */
 export interface SourceCacheClaimInput {
@@ -9332,6 +9340,7 @@ export class LocalStore {
     key: string
     now: number
     claimedBy?: string
+    unchanged?: SourceCacheUnchangedGuard
   }): Promise<SourceCacheDeleteResult> {
     sourceCacheKeyFor(input.orgId, input.key)
     return await this.transaction(async (raw) => {
@@ -9341,6 +9350,13 @@ export class LocalStore {
       if (!row) return { deleted: false, reason: 'missing' }
       if (input.claimedBy !== undefined && row.claimedBy !== input.claimedBy)
         return { deleted: false, reason: 'claim-lost' }
+      // A read stamps lastReadAt without clearing the claim, so only this re-check under the row lock sees it.
+      const guard = input.unchanged
+      if (
+        guard !== undefined &&
+        (row.targetKey !== guard.targetKey || row.updatedAt !== guard.updatedAt || row.lastReadAt !== guard.lastReadAt)
+      )
+        return { deleted: false, reason: 'changed' }
       if (row.kind === 'bundle') {
         const pointed = await tx
           .prepare("SELECT key FROM source_cache_object WHERE orgId = ? AND kind = 'pointer' AND targetKey = ?")

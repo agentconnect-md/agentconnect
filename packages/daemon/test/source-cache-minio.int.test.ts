@@ -14,10 +14,20 @@ import {
 } from '../src/shim/bundle-protocol.js'
 import { prepareBundleStaging } from '../src/shim/bundle-staging.js'
 import type { CredentialsProvider } from '../src/source-cache/credentials.js'
-import { anonRepoId, bundleKey, newBundleId, pointerKey, type SourceCacheObjectKey } from '../src/source-cache/keys.js'
+import { systemClock } from '@agentconnect.md/connection'
+import {
+  anonRepoId,
+  bundleKey,
+  newBundleId,
+  pointerKey,
+  refHash,
+  type SourceCacheObjectKey
+} from '../src/source-cache/keys.js'
+import { evaluateSourceCacheLifecycle, sourceCacheLifecycleRules } from '../src/source-cache/lifecycle.js'
 import { createObjectClient } from '../src/source-cache/object-client.js'
 import { createPresigner, type SourceCachePresignerConfig } from '../src/source-cache/presigner.js'
 import { amzDate, presign } from '../src/source-cache/sigv4.js'
+import { createSourceCacheSweeper } from '../src/source-cache/sweep.js'
 import { createSourceCacheWriter, type SourceCacheBundleStager } from '../src/source-cache/write-back.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import { openTestStore } from './store-support.js'
@@ -286,6 +296,212 @@ describe.skipIf(!minio)('Source Cache presigned URLs on MinIO', () => {
       await store.close()
       rmSync(root, { recursive: true, force: true })
       rmSync(runtime, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(!minio)('Source Cache sweep and lifecycle on MinIO (§9, §10)', () => {
+  const env = minio ?? {
+    endpoint: 'http://127.0.0.1:9',
+    accessKeyId: 'unused',
+    secretAccessKey: 'unused',
+    region: 'us-east-1'
+  }
+  const SWEEP_BUCKET = 'ac-source-cache-sweep'
+  const credentials: CredentialsProvider = {
+    source: 'static',
+    get: async () => ({ accessKeyId: env.accessKeyId, secretAccessKey: env.secretAccessKey })
+  }
+  const config: SourceCachePresignerConfig = {
+    region: env.region,
+    bucket: SWEEP_BUCKET,
+    prefix: PREFIX,
+    forcePathStyle: true,
+    limits: { getUrlSeconds: 300, putUrlSeconds: 900, maxBundleBytes: 1024 * 1024 }
+  }
+  const signer = createPresigner({ config, credentials, endpointOverride: env.endpoint })
+  const objects = createObjectClient({ config, credentials, endpointOverride: env.endpoint })
+  const host = new URL(env.endpoint).host
+  const HOUR = 3_600_000
+  const DAY = 24 * HOUR
+
+  function adminUrl(method: string, path: string, query?: Record<string, string>, headers?: Record<string, string>) {
+    return presign({
+      method,
+      protocol: 'http:',
+      host,
+      path,
+      ...(query ? { query } : {}),
+      ...(headers ? { headers } : {}),
+      credentials: { accessKeyId: env.accessKeyId, secretAccessKey: env.secretAccessKey },
+      region: env.region,
+      datetime: amzDate(Date.now()),
+      expiresSeconds: 60
+    }).url
+  }
+  const objectPath = (key: string): string => `/${SWEEP_BUCKET}/${PREFIX}/${key}`
+  const repoId = anonRepoId('https://github.com/acme/sweep')
+  const freshKey = (): SourceCacheObjectKey =>
+    bundleKey({ org: 'org_1', class: 'anon', repo: repoId, id: newBundleId() })
+  const tagsOf = async (key: string): Promise<string[]> => {
+    const reply = await send(adminUrl('GET', objectPath(key), { tagging: '' }), 'GET')
+    return [...reply.body.matchAll(/<Tag><Key>([^<]*)<\/Key><Value>([^<]*)<\/Value><\/Tag>/g)].map(
+      ([, k, v]) => `${k}=${v}`
+    )
+  }
+  const exists = async (key: string): Promise<boolean> =>
+    (await send(adminUrl('HEAD', objectPath(key)), 'HEAD')).status === 200
+
+  async function upload(key: SourceCacheObjectKey): Promise<void> {
+    const body = randomBytes(256)
+    const put = await signer.presignPut(key, {
+      contentLength: body.length,
+      checksumSha256: createHash('sha256').update(body).digest('base64')
+    })
+    expect((await send(put.url, 'PUT', put.headers, body)).status).toBe(200)
+  }
+
+  async function reserve(store: Awaited<ReturnType<typeof openTestStore>>, key: string, at: number, expiresAt: number) {
+    expect(
+      await store.reserveBundle({
+        orgId: 'org_1',
+        key,
+        refHash: refHash('refs/heads/main'),
+        shape: 'blobless',
+        bytes: 256,
+        now: at,
+        expiresAt,
+        quotaBytes: 10 * 1024 * 1024,
+        maxBundleBytes: 1024 * 1024
+      })
+    ).toMatchObject({ admitted: true })
+  }
+
+  async function committed(store: Awaited<ReturnType<typeof openTestStore>>, key: string, at: number) {
+    await reserve(store, key, at, at + HOUR)
+    expect(await store.commitBundle({ orgId: 'org_1', key, actualBytes: 256, now: at + 1 })).toMatchObject({
+      committed: true
+    })
+  }
+
+  const sweeperFor = (store: Awaited<ReturnType<typeof openTestStore>>) =>
+    createSourceCacheSweeper({
+      store: () => store,
+      objects,
+      config: { prefix: PREFIX, limits: { getUrlSeconds: 300, unreadPointerDays: 30 } },
+      clock: systemClock,
+      log: { debug: () => {}, info: () => {}, warn: () => {} }
+    })
+
+  beforeAll(async () => {
+    expect((await send(adminUrl('PUT', `/${SWEEP_BUCKET}`), 'PUT')).status).toBe(200)
+  })
+
+  it('deletes expired uploads, retags unpointed bundles unreferenced, drops unread pointers, and repeats safely', async () => {
+    const store = await openTestStore()
+    try {
+      const now = Date.now()
+      const sweeper = sweeperFor(store)
+
+      const abandoned = freshKey()
+      await upload(abandoned)
+      await reserve(store, abandoned, now - 2 * HOUR, now - HOUR)
+      const neverUploaded = freshKey()
+      await reserve(store, neverUploaded, now - 2 * HOUR, now - HOUR)
+
+      const orphan = freshKey()
+      await upload(orphan)
+      await committed(store, orphan, now - 2 * HOUR)
+      await objects.putTagging(orphan, 'ac-cache=live')
+
+      const stale = freshKey()
+      await upload(stale)
+      await committed(store, stale, now - 40 * DAY)
+      await objects.putTagging(stale, 'ac-cache=live')
+      const latest = pointerKey({
+        org: 'org_1',
+        class: 'anon',
+        repo: repoId,
+        ref: 'refs/heads/main',
+        shape: 'blobless'
+      })
+      expect(
+        await store.setSourceCachePointer({ orgId: 'org_1', pointerKey: latest, bundleKey: stale, now: now - 40 * DAY })
+      ).toMatchObject({ set: true })
+
+      const first = await sweeper.runPass('member-1/minio')
+      expect(first).toMatchObject({
+        kind: 'done',
+        pending: { claimed: 2, objectDeleted: 1, alreadyGone: 1, deleted: 2 },
+        unreferenced: { claimed: 1, retagged: 1, deleted: 1, releasedBytes: 256 },
+        pointers: { claimed: 1, deleted: 1 }
+      })
+      expect(await exists(abandoned)).toBe(false)
+      expect(await store.getSourceCacheObject('org_1', abandoned)).toBeUndefined()
+      expect(await store.getSourceCacheObject('org_1', neverUploaded)).toBeUndefined()
+      // The object stays for the lifecycle rule; only its row and bytes go.
+      expect(await exists(orphan)).toBe(true)
+      expect(await tagsOf(orphan)).toEqual(['ac-cache=unreferenced'])
+      expect(await store.getSourceCacheObject('org_1', orphan)).toBeUndefined()
+      expect(await store.getSourceCacheObject('org_1', latest)).toBeUndefined()
+      // The pointer's bundle is unpointed from now, so it waits out the GET lifetime before a retag.
+      expect(await store.getSourceCacheObject('org_1', stale)).toMatchObject({ unpointedAt: expect.any(Number) })
+      expect(await tagsOf(stale)).toEqual(['ac-cache=live'])
+      expect((await store.sourceCacheUsage('org_1', Date.now())).committedBytes).toBe(256)
+
+      expect(await sweeper.runPass('member-1/minio')).toMatchObject({
+        pending: { claimed: 0 },
+        unreferenced: { claimed: 0 },
+        pointers: { claimed: 0 }
+      })
+
+      // An object removed out of band: the retag finds it gone and the row still goes.
+      const vanished = freshKey()
+      await upload(vanished)
+      await committed(store, vanished, now - 2 * HOUR)
+      expect((await send(adminUrl('DELETE', objectPath(vanished)), 'DELETE')).status).toBe(204)
+      expect(await sweeper.runPass('member-2/minio')).toMatchObject({ unreferenced: { alreadyGone: 1, deleted: 1 } })
+      expect(await store.getSourceCacheObject('org_1', vanished)).toBeUndefined()
+
+      // DELETE is idempotent on a missing key.
+      await objects.delete(vanished)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it('finds the lifecycle rules missing on a bare bucket and present once applied beside a foreign rule', async () => {
+    const store = await openTestStore()
+    try {
+      const sweeper = sweeperFor(store)
+      expect(await objects.getBucketLifecycle()).toEqual({ kind: 'none' })
+      expect(await sweeper.checkLifecycle()).toBe('missing')
+
+      const rules = sourceCacheLifecycleRules(PREFIX).Rules.map(
+        (rule) =>
+          `<Rule><ID>${rule.ID}</ID><Status>${rule.Status}</Status><Filter><And><Prefix>${rule.Filter.And.Prefix}</Prefix>${rule.Filter.And.Tags.map((t) => `<Tag><Key>${t.Key}</Key><Value>${t.Value}</Value></Tag>`).join('')}</And></Filter><Expiration><Days>${rule.Expiration.Days}</Days></Expiration></Rule>`
+      )
+      const foreign =
+        '<Rule><ID>logs</ID><Status>Enabled</Status><Filter><Prefix>logs/</Prefix></Filter><Expiration><Days>1</Days></Expiration></Rule>'
+      const body = `<LifecycleConfiguration>${foreign}${rules.join('')}</LifecycleConfiguration>`
+      const md5 = createHash('md5').update(body).digest('base64')
+      const put = await send(
+        adminUrl('PUT', `/${SWEEP_BUCKET}`, { lifecycle: '' }, { 'content-md5': md5 }),
+        'PUT',
+        { 'content-md5': md5 },
+        Buffer.from(body)
+      )
+      expect(put.status, put.body).toBe(200)
+      const read = await objects.getBucketLifecycle()
+      expect(read.kind).toBe('rules')
+      expect(evaluateSourceCacheLifecycle((read as { xml: string }).xml, PREFIX)).toEqual({
+        pending: true,
+        unreferenced: true,
+        warnings: []
+      })
+      expect(await sweeper.checkLifecycle()).toBe('present')
+    } finally {
+      await store.close()
     }
   })
 })
