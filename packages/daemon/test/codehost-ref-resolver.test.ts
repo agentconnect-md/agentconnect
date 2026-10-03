@@ -295,4 +295,23 @@ describe('CodeHostRefResolver', () => {
     await h.resolve('agent-b')
     expect(h.calls).toHaveLength(3)
   })
+
+  it('never lets a call after forgetAgent join a resolution started before it', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const h = build(async (_input, _ctx, call) => {
+      if (call === 1) await gate
+      return ok(call === 1 ? SHA_A : SHA_B)
+    })
+    const before = h.resolve('agent-a')
+    await new Promise((r) => setImmediate(r))
+    h.resolver.forgetAgent('agent-a')
+    const after = h.resolve('agent-a')
+    release()
+    expect(await before).toMatchObject({ ok: true, commit: SHA_A })
+    expect(await after).toMatchObject({ ok: true, commit: SHA_B })
+    expect(h.calls).toHaveLength(2)
+    expect(await h.resolve('agent-a')).toMatchObject({ ok: true, commit: SHA_B })
+    expect(h.calls).toHaveLength(2)
+  })
 })

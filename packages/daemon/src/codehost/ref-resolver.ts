@@ -106,7 +106,12 @@ export class CodeHostRefResolver {
     }
     const existing = this.inFlight.get(key)
     if (existing) return existing
-    const pending = this.refresh(key, module, apiBaseUrl, request, ref, cached).finally(() => this.inFlight.delete(key))
+    // Identity-checked cleanup: a request detached by forgetAgent must never remove a newer one.
+    const pending: Promise<ResolveRefResult> = this.refresh(key, module, apiBaseUrl, request, ref, cached).finally(
+      () => {
+        if (this.inFlight.get(key) === pending) this.inFlight.delete(key)
+      }
+    )
     this.inFlight.set(key, pending)
     return pending
   }
@@ -116,6 +121,8 @@ export class CodeHostRefResolver {
     this.epochs.set(agentId, (this.epochs.get(agentId) ?? 0) + 1)
     const prefix = `${agentId}\u0000`
     for (const key of [...this.cache.keys()]) if (key.startsWith(prefix)) this.cache.delete(key)
+    // Detach in-flight requests too, so a call after invalidation never joins a pre-invalidation answer.
+    for (const key of [...this.inFlight.keys()]) if (key.startsWith(prefix)) this.inFlight.delete(key)
   }
 
   private uncached(reason: ResolveRefFailureReason, detail: string): Failure {
