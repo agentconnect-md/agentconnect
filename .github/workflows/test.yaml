@@ -505,9 +505,26 @@ jobs:
         run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
       - name: Daemon store suites on PostgreSQL
         run: pnpm --filter @agentconnect.md/daemon test:store:postgres
+      # MinIO publishes no images since going source-only, so build the pinned RELEASE.2025-10-15T17-29-55Z commit once and cache the binary.
+      - name: Restore MinIO server binary
+        id: minio-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ac-minio/bin
+          key: ${{ runner.os }}-minio-go1.24.8-9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a
+      - name: Set up Go for MinIO
+        if: steps.minio-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v6
+        with:
+          # The toolchain MinIO's go.mod names at that commit.
+          go-version: 1.24.8
+          cache: false
+      - name: Build MinIO from pinned source
+        if: steps.minio-cache.outputs.cache-hit != 'true'
+        run: GOBIN="$HOME/.cache/ac-minio/bin" go install github.com/minio/minio@9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a
       # Presigned Source Cache URLs against MinIO: signed length, checksum and tag are enforced by the store.
       - name: Daemon Source Cache presigned URLs on MinIO
-        run: pnpm --filter @agentconnect.md/daemon test:source-cache:minio
+        run: AC_TEST_MINIO_BIN="$HOME/.cache/ac-minio/bin/minio" pnpm --filter @agentconnect.md/daemon test:source-cache:minio
 
   # control-plane integration tests against a real Postgres booted by
   # Testcontainers. Each Vitest worker gets an isolated database cloned from one

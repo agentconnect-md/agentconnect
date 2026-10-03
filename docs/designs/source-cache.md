@@ -642,8 +642,10 @@ helper.
 **S3-compatible store matrix.** MinIO
 `RELEASE.2025-10-15T17-29-55Z` was tested locally on 2026-10-01. The community
 MinIO project is archived and source-only since 2025-10-23, so this is a
-fixture result, not a store recommendation; the CI fixture pins
-`minio/minio:RELEASE.2025-09-07T16-13-09Z`, the last image the project published. MinIO enforced `Content-Length`, `x-amz-checksum-sha256` and
+fixture result, not a store recommendation. The project no longer publishes
+images, so CI builds the MinIO server from the pinned
+`RELEASE.2025-10-15T17-29-55Z` commit (`9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a`)
+and runs that binary. MinIO enforced `Content-Length`, `x-amz-checksum-sha256` and
 `x-amz-tagging` only when they were signed headers, not when hoisted into the
 query or left unsigned:
 

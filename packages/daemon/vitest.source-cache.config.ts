@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config'
 import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js'
 
-// The `source-cache-minio` project: presigned URLs against a Testcontainers MinIO, kept apart so `vitest run` stays Docker-free.
+// The `source-cache-minio` project: presigned URLs against a MinIO server binary ($AC_TEST_MINIO_BIN), kept apart from `vitest run`.
 export default defineConfig({
   test: {
     name: 'source-cache-minio',
