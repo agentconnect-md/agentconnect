@@ -164,7 +164,7 @@ export type { AcpSandboxLaunch, SpawnDriver, SpawnedRuntime } from './spawn-driv
 export type { SteeringIdleBehavior, SteeringOutcome } from './steering.js'
 
 /** The `session/set_config_option` call that applies a desired value, or the reason none is needed. */
-export type ConfigSelectionPlan = { configId: string; value: string } | { skip: string }
+export type ConfigSelectionPlan = { configId: string; value: string } | { current: true } | { skip: string }
 
 /**
  * Distill the human-actionable reason from a failed ACP request. Adapters wrap
@@ -376,11 +376,7 @@ export function turnFailureCode(err: unknown): TurnFailureCode {
     : 'turn_failed'
 }
 
-/**
- * Resolve how to apply `desired` to the select config option tagged `category`.
- * `{skip}` (with the reason) means nothing should be sent: the runtime
- * advertises no such selector, doesn't offer the value, or already has it set.
- */
+/** Resolve `desired` for the `category` select: send it, it is already `current`, or `skip` (not offered). */
 export function planConfigSelection(
   configOptions: SessionConfigOption[] | null | undefined,
   category: string,
@@ -392,7 +388,7 @@ export function planConfigSelection(
   if (!values.includes(desired)) {
     return { skip: `value "${desired}" not offered (available: ${values.join(', ')})` }
   }
-  if (opt.currentValue === desired) return { skip: `already "${desired}"` }
+  if (opt.currentValue === desired) return { current: true }
   return { configId: opt.id, value: desired }
 }
 
@@ -1084,6 +1080,8 @@ export class AcpHost {
     value: string
   ): Promise<SessionConfigOption[] | undefined> {
     const plan = planConfigSelection(options, category, value)
+    // Already in effect is success: read-only gates re-assert a mode the session may already hold (#2774).
+    if ('current' in plan) return options ?? undefined
     if ('skip' in plan) {
       const models = category === 'model' ? modelOptionsFrom(options) : null
       if (models && models.current !== value) throw new ModelSelectionError(value, new Error(plan.skip))
@@ -1107,7 +1105,7 @@ export class AcpHost {
     }
   }
 
-  /** Apply a live selection and refresh caches; false means no request was needed or supported. */
+  /** Apply a live selection and refresh caches; true once the value is in effect, false when it is not offered. */
   private async setSessionConfig(sessionId: string, category: string, value: string): Promise<boolean> {
     if (!this.live.has(sessionId)) return false
     const options = await this.selectSessionConfig(sessionId, this.sessionConfigs.get(sessionId), category, value)

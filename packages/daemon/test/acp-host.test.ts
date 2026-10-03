@@ -198,6 +198,21 @@ describe('AcpHost (against a fake ACP agent)', () => {
     expect(mode()?.currentValue).toBe('agent-full-access')
     await host.stop()
   })
+
+  // The dream gate re-asserts the read-only mode the configured settings just applied (#2774).
+  it('reports a mode the session already holds as in effect, and an unoffered one as not', async () => {
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      { onUpdate: () => {}, env: { AC_PERMISSION_MODES: 'agent,read-only' } }
+    )
+    await host.start()
+    const sessionId = await host.newSession('/tmp')
+    await expect(host.setSessionPermissionMode(sessionId, 'read-only')).resolves.toBe(true)
+    await expect(host.setSessionPermissionMode(sessionId, 'read-only')).resolves.toBe(true)
+    expect(host.permissionModeOptions(sessionId)?.current).toBe('read-only')
+    await expect(host.setSessionPermissionMode(sessionId, 'plan')).resolves.toBe(false)
+    await host.stop()
+  })
 })
 
 describe('AcpHost.mcpCapabilities (MCP transports from initialize)', () => {
@@ -433,8 +448,9 @@ describe('AcpHost.setSessionModel (mid-session model switch)', () => {
     expect(host.modelOptions(sid2)?.current).toBe('model-a')
     expect(host.modelOptions('s-unknown')).toBeNull()
 
-    // An unavailable model is an error; unchanged and unknown sessions are no-ops.
-    expect(await host.setSessionModel(sid, 'model-b')).toBe(false)
+    // An unchanged model is already in effect; an unavailable one is an error; unknown sessions are no-ops.
+    expect(await host.setSessionModel(sid, 'model-b')).toBe(true)
+    expect(host.modelOptions(sid)?.current).toBe('model-b')
     await expect(host.setSessionModel(sid, 'nope')).rejects.toBeInstanceOf(ModelSelectionError)
     expect(await host.setSessionModel('s-unknown', 'model-a')).toBe(false)
     await host.stop()
