@@ -1745,6 +1745,14 @@ describe('removeSessionWorktree across every root (decision 4)', () => {
     expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
   })
 
+  it('ignores a primary checkout this volume never received instead of failing the whole cleanup', async () => {
+    // A pool agent pod whose sessions all ran in pods of their own never clones the primary.
+    const agent = agentFixture([])
+
+    expect(await workspaces.hasSessionWorktreeRoots(agent)).toBe(false)
+    expect(await workspaces.removeSessionWorktree(agent, 'session-a', 'worktrees')).toEqual({ outcome: 'absent' })
+  })
+
   it('removes a scratch agent’s secondary worktrees, which have no primary beside them', async () => {
     const agent = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }], { mode: 'from-scratch' })
     serveAll(agent, { 'acme/infra': 'trunk' })
