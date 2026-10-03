@@ -718,9 +718,12 @@ export class BotArbitrationRouter {
     if (!daemonId) return null
     // A conversation-GATED agent (§14) is reachable only while it still holds a
     // channel-scoped route here — a binding made before the gate was applied must not keep
-    // routing a private agent into a now-Off conversation.
+    // routing a private agent into a now-Off conversation — or is a target of this routed
+    // conversation's routing, which only an editor of that agent could have saved.
     if (a.gatedAgentIds?.includes(agentId)) {
-      const scoped = a.routes.some((r) => r.agentId === agentId && r.scope?.channel === channelId)
+      const scoped =
+        a.routes.some((r) => r.agentId === agentId && r.scope?.channel === channelId) ||
+        !!a.routedConversations?.find((c) => c.channel === channelId)?.targetAgentIds?.includes(agentId)
       if (!scoped) return null
     }
     const integrationId = route?.integrationId ?? a.agents.find((x) => x.agentId === agentId)?.integrationId

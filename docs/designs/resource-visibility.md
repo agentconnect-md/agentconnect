@@ -797,7 +797,10 @@ gate executes depends on the transport:
   thread-continuity rung honours a binding to a gated agent only while it still
   has a channel-scoped route in the conversation (`gatedAgentIds` rides
   `rc/bot-assign`/`rc/routes`), and the CP's `rc/thread-lookup` backstop applies
-  the same check; (2) **backstop — the daemon's `handleRelayIm` admission
+  the same check. In a By decision routed conversation, a gated agent its routing
+  can select counts as enabled there too (`RcRoutedConversation.targetAgentIds`):
+  saving that routing needs edit rights on every target, the same people who could
+  enable the conversation, and only the owner holds a channel-scoped route; (2) **backstop — the daemon's `handleRelayIm` admission
   check**: the shared spec carries the gated install's conversation-scoped
   bindRules + `gated`, and the last hop refuses (with the one-time notice) any
   conversation those rules don't cover, so a stale relay route snapshot cannot

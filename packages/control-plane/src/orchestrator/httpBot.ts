@@ -1489,6 +1489,8 @@ export class HttpBotOrchestrator {
     // A routed conversation is held unless its plan names a supported, live evaluation host.
     const routing = await this.planRouting(bot, integrations, chans, placed)
     const routedPlan = new Map((routing?.plan ?? []).map((entry) => [entry.channel, entry]))
+    // The agents the routing can select: saving it needed edit rights on each, so a gated one is enabled where it routes.
+    const routingTargets = routing?.record ? decisionRoutingAgentIds(routing.record.config).slice(0, 64) : []
     for (const c of chans) {
       if (!isRoutedChannel(c)) continue
       const entry = routedPlan.get(c.channelId)
@@ -1538,7 +1540,8 @@ export class HttpBotOrchestrator {
           routedConversations.push({
             channel: c.channelId,
             decisionId: entry.decisionId,
-            evaluationDaemonId: entry.evaluationDaemonId
+            evaluationDaemonId: entry.evaluationDaemonId,
+            ...(routingTargets.length > 0 ? { targetAgentIds: routingTargets } : {})
           })
           continue
         }
