@@ -13939,6 +13939,16 @@ export class Daemon {
       this.log.debug(`dispatch: skipped already-delivered Slack event ${msg.msgId}`)
       return null
     }
+    if (created) {
+      // Classify for session visibility BEFORE the first milestone: the CP's
+      // ingest is first-wins, and the daemon's own capture gate must be closed
+      // from turn one for anything that could be private (session-visibility.md
+      // §4.1/§5.1). Persisted on the session row so later re-emits — including
+      // after a restart, when `msg` is long gone — still carry the same facts.
+      // Also BEFORE the cold fence below: a cancel there keeps the new row, and a row
+      // without its source binding rejects every later turn as a source mismatch.
+      await this.classifyNewSession(agentId, key, sessionId, msg, callMeta, hookContext, webchat?.evaluation === true)
+    }
     // A cold session can spend time booting/materializing inside sessions.handle(). If
     // pause landed in that window, no Pending existed for the transition hook to cancel.
     // Re-check before publishing metadata or prompting, restore the new row to idle, and
@@ -14751,7 +14761,7 @@ export class Daemon {
    *  metadata snapshot, observed-channel discovery, and the caller's session-ready callback. */
   private async announceTurnStart(run: TurnRun, sessionId: string, created: boolean): Promise<void> {
     const { entry, key, plan, replyConn } = run
-    const { agentId, msg, callMeta, hookContext, webchat, onSessionReady } = entry
+    const { agentId, msg, onSessionReady } = entry
     // sessions.handle() booted the host — surface any spawn-time config warnings
     // (config-file secret conflicts / write failures) into this session.
     await this.flushSpawnNotices(agentId, {
@@ -14762,14 +14772,6 @@ export class Daemon {
       statusThread: plan.statusThread,
       sessionKey: plan.sessionKey
     })
-    if (created) {
-      // Classify for session visibility BEFORE the first milestone: the CP's
-      // ingest is first-wins, and the daemon's own capture gate must be closed
-      // from turn one for anything that could be private (session-visibility.md
-      // §4.1/§5.1). Persisted on the session row so later re-emits — including
-      // after a restart, when `msg` is long gone — still carry the same facts.
-      await this.classifyNewSession(agentId, key, sessionId, msg, callMeta, hookContext, webchat?.evaluation === true)
-    }
     // The row exists now, so the birth verdict this turn reached lands before the milestone that reports it (§7).
     await this.flushSessionExecutorVerdict(key)
     // Turn-start metadata snapshot — EVERY turn, not only `created`. The row is

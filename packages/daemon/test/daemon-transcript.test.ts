@@ -307,6 +307,45 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   })
 
+  // A cancel that lands while session/new is still running keeps the new row (state idle, no
+  // ACP id). That row must still carry its Slack binding, or every later message in the
+  // thread is rejected as a source mismatch.
+  it('keeps the Slack source binding on a new session cancelled before its first prompt', async () => {
+    const { factory, host } = replyingHost('here is my answer')
+    let releaseSession!: () => void
+    const sessionBlocked = new Promise<void>((resolve) => (releaseSession = resolve))
+    host.newSession.mockImplementationOnce(async () => {
+      await sessionBlocked
+      return 'acp-1'
+    })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const agent = (daemon as any).agents.get('bot-a')
+
+    const cancelled = (daemon as any).dispatch('bot-a', channelMsg('100', 'first'), 'int-a')
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledOnce(), WAIT)
+    agent.pause = true
+    releaseSession()
+    await cancelled
+    expect(host.prompt).not.toHaveBeenCalled()
+
+    agent.pause = false
+    await (daemon as any).dispatch('bot-a', channelMsg('200', 'follow-up'), 'int-a')
+
+    expect(conn.postMessage).not.toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('already belongs to a session created from another source'),
+      'T1'
+    )
+    expect(host.prompt).toHaveBeenCalledOnce()
+    await daemon.stop()
+  })
+
   it('reuses an external runtime only for the same inherited Slack source', async () => {
     const { factory, host } = replyingHost('here is my answer')
     const daemon = new Daemon({
