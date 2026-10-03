@@ -1,5 +1,11 @@
 import { z } from 'zod'
-import { type GitLogEntry, type GitPullSummary, type GitRunner, type GitStatusSummary } from './git-runner.js'
+import {
+  type GitCloneOutput,
+  type GitLogEntry,
+  type GitPullSummary,
+  type GitRunner,
+  type GitStatusSummary
+} from './git-runner.js'
 
 // The argv-only request shared by sandbox Git executors.
 export const GitExecPayloadSchema = z.object({
@@ -113,8 +119,10 @@ export class CommandGitRunner implements GitRunner {
     return result.stdout
   }
 
-  async clone(repo: string, target: string, options: string[] = []): Promise<void> {
-    await this.exec(['clone', ...options, repo, target])
+  async clone(repo: string, target: string, options: string[] = []): Promise<GitCloneOutput> {
+    // Stderr even on exit 0: a failed bundle download warns and still succeeds (source-cache.md §7).
+    const result = await this.exec(['clone', ...options, repo, target])
+    return { stderr: result.stderr }
   }
 
   async pull(remote: string, branch: string, options: string[] = []): Promise<GitPullSummary> {

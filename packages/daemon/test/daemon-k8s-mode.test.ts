@@ -2497,6 +2497,9 @@ describe('daemon --k8s mode: Source Cache signer (source-cache.md §12)', () => 
     })
   }
 
+  const cacheReaderOf = (instance: { workspaces: unknown }): unknown =>
+    (instance.workspaces as { sourceCacheReader?: unknown }).sourceCacheReader
+
   function keyDir(): string {
     const dir = mkdtempSync(join(tmpdir(), 'ac-source-cache-keys-'))
     writeFileSync(join(dir, 'id'), 'AKIDEXAMPLE\n')
@@ -2510,6 +2513,8 @@ describe('daemon --k8s mode: Source Cache signer (source-cache.md §12)', () => 
     try {
       const instance = daemon({ root: root(), k8s: true, sourceCacheFetch: fetch })
       expect(instance.sourceCacheSigner()).toBeUndefined()
+      // No reader either, so every workspace clone keeps today's argv and reads no store.
+      expect(cacheReaderOf(instance)).toBeUndefined()
       expect(fetch).not.toHaveBeenCalled()
     } finally {
       vi.unstubAllEnvs()
@@ -2532,8 +2537,9 @@ describe('daemon --k8s mode: Source Cache signer (source-cache.md §12)', () => 
       const fetch = vi.fn()
       vi.stubEnv('AC_SOURCE_CACHE', sourceCacheEnv(keyDir()))
       try {
-        const signer = daemon({ root: root(), k8s: true, sourceCacheFetch: fetch }).sourceCacheSigner()
-        expect(signer).toBeDefined()
+        const instance = daemon({ root: root(), k8s: true, sourceCacheFetch: fetch })
+        expect(instance.sourceCacheSigner()).toBeDefined()
+        expect(cacheReaderOf(instance)).toBeDefined()
         expect(fetch).not.toHaveBeenCalled()
       } finally {
         vi.unstubAllEnvs()

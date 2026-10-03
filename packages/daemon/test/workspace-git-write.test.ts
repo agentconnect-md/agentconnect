@@ -159,7 +159,7 @@ class SeamRunner implements GitRunner {
     return parsePorcelainV2(this.run(['status', '--porcelain=v2', '--branch', '-u', '-z']))
   }
 
-  async clone(): Promise<void> {
+  async clone(): Promise<undefined> {
     throw new Error('clone is not part of the console write seam')
   }
 

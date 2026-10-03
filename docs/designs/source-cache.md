@@ -277,8 +277,10 @@ because nothing in the cache decides what a reader ends up with:
    exits 128 (`unable to parse commit`, "Clone succeeded, but checkout failed";
    reproduced on 2.39 and 2.54). A blobless `--no-checkout` clone exits 0
    silently; a later `git fsck --connectivity-only` fails and a checkout lazily
-   fetches the missing trees, so a bundled blobless clone runs that `fsck`
-   itself. A blobless bundle given to a full clone exited 128
+   fetches the missing trees. A full clone can also exit 0 when the bundle holds
+   the tip but omits an older commit's tree, leaving history that fails
+   `git diff HEAD~1 HEAD` (reproduced on 2.39.5). So every bundled clone, of
+   either shape, runs that `fsck` itself. A blobless bundle given to a full clone exited 128
    (`unresolved deltas`) or was ignored. So every cached acquisition, workspace
    or skill, that fails for any reason discards its whole staging checkout and
    object database and retries **once without the bundle** before any origin
@@ -307,8 +309,8 @@ operation this design adds is placed against that rule:
 | ---------------------------------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Workspace clone with `--bundle-uri`                                                      | Shim `exec`                               | `clone` is admitted. New per-subcommand rule: only the exact spelling `--bundle-uri=https://…` is accepted, so the flag cannot read pod-local or cluster-internal files; every unique-prefix abbreviation Git accepts (`--bundle=`, `--bun=`) is refused                                                                                                                                                                                                                                                                                                                                                                          |
 | Workspace retry without the bundle                                                       | Shim `exec`                               | None: the same admitted `clone`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Removing `refs/bundles/*` after a clone                                                  | Shim `exec`                               | None: `show-ref` and `update-ref -d` are admitted. The shim lists refs with `show-ref`, keeps those under `refs/bundles/`, and deletes each one, never a fixed name, because Git 2.50 moved the imported ref from `refs/bundles/<b>` to `refs/bundles/heads/<b>`; `for-each-ref` stays outside the inventory ([git-workspace-model.md](git-workspace-model.md) §11)                                                                                                                                                                                                                                                               |
-| Connectivity check after a bundled blobless clone                                        | Shim `exec`                               | Narrow widening: `fsck` is admitted only as exactly `fsck --connectivity-only` with no other argument, because an incomplete bundle leaves a blobless clone exit 0 and only this read-only check detects it before checkout lazily fetches                                                                                                                                                                                                                                                                                                                                                                                        |
+| Removing `refs/bundles/*` after a clone                                                  | Shim `exec`                               | None: `show-ref` and `update-ref -d` are admitted. The daemon's bundled-clone wrapper, over shim `exec`, lists refs with `show-ref`, keeps those under `refs/bundles/`, and deletes each one, never a fixed name, because Git 2.50 moved the imported ref from `refs/bundles/<b>` to `refs/bundles/heads/<b>`; `for-each-ref` stays outside the inventory ([git-workspace-model.md](git-workspace-model.md) §11)                                                                                                                                                                                                                  |
+| Connectivity check after a bundled clone                                                 | Shim `exec`                               | Narrow widening: `fsck` is admitted only as exactly `fsck --connectivity-only` with no other argument, because an incomplete bundle can leave a clone of either shape exit 0 (a blobless clone before checkout, a full clone with broken history) and only this read-only check detects it                                                                                                                                                                                                                                                                                                                                        |
 | Workspace write-back bundle                                                              | Shim `exec`                               | Narrow widening: `bundle` is admitted only as `bundle create [-q] <file> --filter=blob:none refs/heads/<branch>` (or without the filter for the `full` shape), with `<file>` a new `*.bundle` directly inside `<runtimeRoot>/bundle-staging` (a 0700, shim-owned directory, checked lexically and by the realpath of its parent); a `HEAD` or `refs/remotes/*` bundle is silently ignored by `--bundle-uri`. The shim forces `GIT_NO_LAZY_FETCH=1` into every `bundle` child's environment as a guard, so an unfiltered create from a partial clone fails instead of fetching; `unbundle`, `verify` and `list-heads` stay refused |
 | Anonymous resolution                                                                     | Shim `exec`                               | None: `ls-remote` is admitted                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Skill acquisition: clone, fetch, subdirectory checkout, `fsck`, retry, write-back bundle | Shim-internal, inside the skill reconcile | Not the exec channel. The shim spawns Git itself with argv it composes from validated plan fields (origin policy on the URL, ref / SHA / subdirectory syntax), under the same refused-argument rules as `exec`, in a private staging directory; nothing the daemon sends is passed as free argv, and the runtime cannot invoke the operation. Its connectivity check is the same `fsck --connectivity-only` as the workspace path                                                                                                                                                                                                 |
@@ -355,19 +357,19 @@ its shape: a session root stays blobless, the agent pod's primary stays full.
    origin reports. A bundle's own refs land under `refs/bundles/*` and never
    reach the checkout (verified: a foreign bundle advertising a different
    `main` leaves `refs/heads/main` and `origin/main` at the origin's commit), and
-   right after the clone the shim deletes every ref under `refs/bundles/` that
+   right after the clone the daemon, over shim `exec`, deletes every ref under `refs/bundles/` that
    `show-ref` lists (`refs/bundles/<b>` through Git 2.49, `refs/bundles/heads/<b>` from
    2.50) so no bundle-supplied commit stays reachable by name in the workspace.
 3. **Retry contract.** If the bundled clone fails at any step — download,
-   unbundle, fetch, connectivity, or checkout — the shim empties the checkout
-   directory (object database included) and runs the same clone once without
+   unbundle, fetch, connectivity, or checkout — the daemon empties the checkout
+   directory (object database included) through the shim and runs the same clone once without
    `--bundle-uri`. Only that second attempt's failure is an origin failure, and
    only it reaches the existing clear-and-rethrow path (`cloneSessionRootAt`,
    `cloneInSandbox`). The first
    failure is reported as a cache fallback (metric, and the bundle key in the
    log) and the pointer is not trusted again by this preparation.
-   - A bundled blobless clone runs `git fsck --connectivity-only` before its
-     checkout, because an incomplete bundle exits 0 there (section 6); a
+   - Every bundled clone runs `git fsck --connectivity-only` after the clone,
+     because an incomplete bundle can exit 0 with either shape (section 6); a
      failure is a cache fallback.
    - A bundle download failure (HTTP error, untrusted certificate) also exits
      0, with either `warning: failed to download bundle from URI` or
@@ -382,6 +384,33 @@ its shape: a session root stays blobless, the agent pod's primary stays full.
 
 A resumed pod whose volume already holds the checkout is untouched: it pulls as
 today and uses no cache.
+
+Daemon implementation (P1, CP1.5):
+
+- The daemon, not the shim, drives the bundled clone, its checks, the
+  `refs/bundles/*` cleanup and the retry, over the existing shim `exec` and
+  materialize `clear` operations, so no new shim operation or capability is
+  needed. `source-cache/read-plan.ts` picks the bundle and
+  `workspace/bundled-clone.ts` runs the retry contract.
+- The pointer row's `targetKey` in the data-plane store names the bundle, so a
+  read issues no object-store GET of `latest`. The plan needs a committed,
+  unclaimed pointer and bundle of the same class, repository, ref and shape. Any
+  planning failure (store, signer, refused resolution) is a miss and an origin
+  clone. A GET issuance stamps `lastReadAt` on both rows.
+- Only the primary root reads the cache. Secondary roots and on-demand clones
+  never do, because they are always credentialed and the read gate covers only
+  the primary workspace.
+- Transport loss, a shim request timeout, an abort or shutdown is not a cache
+  fallback and propagates without the bundle-less retry, because the pod-side
+  clone may still be running. Every in-band failure is a fallback, including an
+  older shim refusing `fsck`.
+- A shim older than the `fsck` rule therefore wastes one download per bundled
+  blobless clone until its image ages out.
+- A bundle is planned only on a plane that can empty the checkout, and its
+  clone runner must return stderr: a bundled attempt whose runner reports none
+  is a fallback (`stderr-unavailable`), since a failed download would otherwise
+  read as a hit. Planning runs inside the startup `clone` phase, so a
+  credentialed `resolveRef` shows in startup progress.
 
 Workspace resolution: the workspace keeps using the origin as its authority for
 the branch head. The GET URL's class follows the workspace's own
@@ -759,13 +788,13 @@ matrix and test-app pod/timing checks run. The chart default remains off while
 
 ## 15. Change index
 
-| Package       | Change                                                                                                                                                                                                                                                                                                                        |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, `workspace-manager.ts` clone bundle URL, reconcile plan and write-back in `reconcileSandboxSkills` |
-| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, `writeback` operation, credential window in the `gitcred` tunnel, the `--bundle-uri` and `bundle create` rules in `workspace/git-command-policy.ts`                                                                                                                  |
-| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect                                                                                                                                                                                                                         |
-| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                               |
-| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                              |
-| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                                                                                                                                     |
-| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                                                                                                                                     |
-| chart         | `sourceCache.*` values, member credentials, bucket lifecycle rule template                                                                                                                                                                                                                                                    |
+| Package       | Change                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, the workspace read planner `source-cache/read-plan.ts` and retry contract `workspace/bundled-clone.ts` behind `workspace-manager.ts`, reconcile plan and write-back in `reconcileSandboxSkills` |
+| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, `writeback` operation, credential window in the `gitcred` tunnel, the `--bundle-uri` and `bundle create` rules in `workspace/git-command-policy.ts`                                                                                                                                                                                                               |
+| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect                                                                                                                                                                                                                                                                                                                      |
+| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                                                                                                                            |
+| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                                                                                                                           |
+| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                                                                                                                                                                                                                                  |
+| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                                                                                                                                                                                                                                  |
+| chart         | `sourceCache.*` values, member credentials, bucket lifecycle rule template                                                                                                                                                                                                                                                                                                                                                 |
