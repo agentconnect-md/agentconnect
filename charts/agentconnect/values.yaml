@@ -802,6 +802,42 @@ objectStore:
   # SigV4 region — "auto" for R2; a concrete region for real S3 / MinIO.
   region: auto
 
+# Source Cache (docs/designs/source-cache.md, chart README): rendered into daemon-pool members only; pods get presigned URLs alone.
+sourceCache:
+  enabled: false
+  # S3 API origin; must be https:// (the shim admits only https bundle URLs). Empty => AWS regional S3.
+  endpoint: ''
+  region: ''
+  bucket: ''
+  # Optional key prefix inside the bucket; must not start with snapshots/.
+  prefix: ''
+  # Path-style addressing (MinIO and most self-hosted stores). Dotted buckets and IP endpoints use it anyway.
+  forcePathStyle: false
+  credentials:
+    # serviceAccount (STS web identity, e.g. IRSA) or secret (static keys mounted as files).
+    source: serviceAccount
+    serviceAccount:
+      # Set => a token for this role is projected onto members only; empty => webhook-injected AWS_ROLE_ARN/AWS_WEB_IDENTITY_TOKEN_FILE.
+      roleArn: ''
+      audience: sts.amazonaws.com
+      # Empty => https://sts.<region>.amazonaws.com.
+      stsEndpoint: ''
+    secret:
+      # Existing Secret in the release namespace, mounted read-only into members.
+      name: ''
+      accessKeyIdKey: AWS_ACCESS_KEY_ID
+      secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+      # Optional key holding a session token for temporary keys.
+      sessionTokenKey: ''
+  # Section 10 limits plus the presigned URL lifetimes.
+  limits:
+    maxBundleBytes: 2Gi
+    orgQuotaBytes: 20Gi
+    pendingReservation: 1h
+    unreadPointerDays: 30
+    getUrlLifetime: 5m
+    putUrlLifetime: 15m
+
 # Bootstrap/runtime roots are read from an existing Secret you create in the
 # namespace (the chart never holds their values). Provider credentials are not
 # injected from this Secret; Setup Server seals them in deployment_secret.

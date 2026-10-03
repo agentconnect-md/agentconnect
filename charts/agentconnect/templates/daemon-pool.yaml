@@ -2,6 +2,10 @@
 {{- $dataPlaneSecret := required "daemonPool.dataPlane.existingSecret is required when daemonPool.enabled" .Values.daemonPool.dataPlane.existingSecret }}
 {{- $sandboxNamespace := .Values.daemonPool.sandboxNamespace | default .Release.Namespace }}
 {{- $daemonTag := .Values.daemonPool.tag | default (include "agentconnect.imageTag" .) }}
+{{- $sourceCache := .Values.sourceCache | default dict }}
+{{- $sourceCacheCredentials := $sourceCache.credentials | default dict }}
+{{- $sourceCacheSecret := and $sourceCache.enabled (eq $sourceCacheCredentials.source "secret") }}
+{{- $sourceCacheIdentity := and $sourceCache.enabled (eq $sourceCacheCredentials.source "serviceAccount") (($sourceCacheCredentials.serviceAccount | default dict).roleArn) }}
 # The install-wide daemon pool. Its Pods are pool members.
 apiVersion: v1
 kind: ServiceAccount
@@ -335,6 +339,50 @@ spec:
                   key: {{ $key }}
             {{- end }}
             {{- end }}
+            {{- if $sourceCache.enabled }}
+            {{- if hasKey .Values.daemonPool.extraEnv "AC_SOURCE_CACHE" }}
+            {{- fail "daemonPool.extraEnv.AC_SOURCE_CACHE collides with the chart-owned sourceCache values" }}
+            {{- end }}
+            {{- $bucket := required "sourceCache.bucket is required when sourceCache.enabled" $sourceCache.bucket }}
+            {{- $region := required "sourceCache.region is required when sourceCache.enabled" $sourceCache.region }}
+            {{- if and $sourceCache.endpoint (not (hasPrefix "https://" $sourceCache.endpoint)) }}
+            {{- fail "sourceCache.endpoint must be an https:// origin: the shim admits only https bundle URLs" }}
+            {{- end }}
+            {{- $limits := $sourceCache.limits | default dict }}
+            {{- $document := dict "version" 1 "region" $region "bucket" $bucket "prefix" ($sourceCache.prefix | default "") "forcePathStyle" ($sourceCache.forcePathStyle | default false) }}
+            {{- with $sourceCache.endpoint }}
+            {{- $_ := set $document "endpoint" . }}
+            {{- end }}
+            {{- $_ := set $document "limits" (dict "maxBundleBytes" $limits.maxBundleBytes "orgQuotaBytes" $limits.orgQuotaBytes "pendingReservationSeconds" $limits.pendingReservation "unreadPointerDays" $limits.unreadPointerDays "getUrlSeconds" $limits.getUrlLifetime "putUrlSeconds" $limits.putUrlLifetime) }}
+            {{- if eq $sourceCacheCredentials.source "secret" }}
+            {{- $secret := $sourceCacheCredentials.secret | default dict }}
+            {{- $_ := required "sourceCache.credentials.secret.name is required for the secret credential source" $secret.name }}
+            {{- $credentials := dict "source" "static" "dir" "/var/run/ac-source-cache" "accessKeyIdKey" $secret.accessKeyIdKey "secretAccessKeyKey" $secret.secretAccessKeyKey }}
+            {{- with $secret.sessionTokenKey }}
+            {{- $_ := set $credentials "sessionTokenKey" . }}
+            {{- end }}
+            {{- $_ := set $document "credentials" $credentials }}
+            {{- else if eq $sourceCacheCredentials.source "serviceAccount" }}
+            {{- $identity := $sourceCacheCredentials.serviceAccount | default dict }}
+            {{- $credentials := dict "source" "webIdentity" }}
+            {{- if $identity.roleArn }}
+            {{- $_ := set $credentials "roleArn" $identity.roleArn }}
+            {{- $_ := set $credentials "tokenFile" "/var/run/ac-source-cache-identity/token" }}
+            {{- end }}
+            {{- with $identity.stsEndpoint }}
+            {{- if not (hasPrefix "https://" .) }}
+            {{- fail "sourceCache.credentials.serviceAccount.stsEndpoint must be an https:// origin" }}
+            {{- end }}
+            {{- $_ := set $credentials "stsEndpoint" . }}
+            {{- end }}
+            {{- $_ := set $document "credentials" $credentials }}
+            {{- else }}
+            {{- fail "sourceCache.credentials.source must be serviceAccount or secret" }}
+            {{- end }}
+            # Source Cache: bucket config only; credentials stay in mounted files or a projected token, and pods get presigned URLs alone.
+            - name: AC_SOURCE_CACHE
+              value: {{ toJson $document | quote }}
+            {{- end }}
           # Ready ⇔ servable: startup complete, CP-registered, runtime probe done, not draining.
           # It is what holds a replacement back until it can take duty groups, and what removes a
           # draining member from readiness while its pod keeps running out the grace period.
@@ -371,6 +419,16 @@ spec:
               mountPath: /var/run/ac-key-server-ca
               readOnly: true
             {{- end }}
+            {{- end }}
+            {{- if $sourceCacheSecret }}
+            - name: source-cache-credentials
+              mountPath: /var/run/ac-source-cache
+              readOnly: true
+            {{- end }}
+            {{- if $sourceCacheIdentity }}
+            - name: source-cache-identity
+              mountPath: /var/run/ac-source-cache-identity
+              readOnly: true
             {{- end }}
       volumes:
         # Per-pod daemon id/config survives container restarts but not Pod replacement;
@@ -409,5 +467,23 @@ spec:
           secret:
             secretName: {{ .Values.daemonPool.keyServer.caSecret }}
         {{- end }}
+        {{- end }}
+        {{- if $sourceCacheSecret }}
+        # No items: an optional session-token key need not exist in the Secret.
+        - name: source-cache-credentials
+          secret:
+            secretName: {{ $sourceCacheCredentials.secret.name }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if $sourceCacheIdentity }}
+        # The Source Cache role's web identity, projected onto members only: the reconciler shares the ServiceAccount and must not gain the role.
+        - name: source-cache-identity
+          projected:
+            defaultMode: 0400
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ $sourceCacheCredentials.serviceAccount.audience | default "sts.amazonaws.com" | quote }}
+                  expirationSeconds: 3600
         {{- end }}
 {{- end }}

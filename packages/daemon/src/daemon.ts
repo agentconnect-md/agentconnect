@@ -633,6 +633,7 @@ import {
 } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
+import { createSourceCache, type SourceCache, type SourceCachePresigner } from './source-cache/index.js'
 import { CpClient } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
@@ -1578,6 +1579,8 @@ export class Daemon {
   private readonly codexSessionFloor?: string
   private readonly claudeModelAliases?: Record<string, string>
   private readonly runtimeEnvironment: RuntimeEnvironment
+  /** The pool member's Source Cache signer; undefined outside --k8s or when no bucket is configured. */
+  private readonly sourceCache?: SourceCache
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -1881,6 +1884,8 @@ export class Daemon {
       keyServerClient?: KeyServerClient
       /** Test seam for the daemon-private memory-plugin transport. */
       memoryPluginConnect?: MemoryPluginConnector
+      /** Test seam for the Source Cache's STS calls. */
+      sourceCacheFetch?: typeof fetch
       /** Optional, observer-only evaluation surface and add-on treatment. */
       evaluation?: DaemonEvaluationOptions
     } = {}
@@ -1912,6 +1917,12 @@ export class Daemon {
     // supplies the key alone.
     this.modelSessions.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
     this.runtimeEnvironment = this.k8s ? configuredRuntimeEnvironment(process.env) : {}
+    this.sourceCache = createSourceCache({
+      env: process.env,
+      k8s: this.k8s,
+      ...(opts.sourceCacheFetch ? { fetch: opts.sourceCacheFetch } : {}),
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
+    })
     this.decisionEvaluator = new DecisionEvaluator({
       orgForAgent: (agentId) => this.orgForAgent(agentId),
       credentials: (request, signal) => {
@@ -2981,6 +2992,11 @@ export class Daemon {
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
     })
     probeGitVersion((m) => this.log.warn(m))
+  }
+
+  /** The Source Cache presigner later clone and write-back paths consume; undefined when not configured. */
+  sourceCacheSigner(): SourceCachePresigner | undefined {
+    return this.sourceCache?.presigner
   }
 
   /** Phase 6 — settle this daemon id (minted locally only when the CP will not assign one) and rebuild the logger at the configured level. */

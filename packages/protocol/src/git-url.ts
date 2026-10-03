@@ -159,7 +159,8 @@ export function normalizeGitCloneUrl(input: string): string {
 }
 
 const GITHUB_SKILL_COMPONENT_RE = /^[A-Za-z0-9_.-]+$/
-const GITHUB_SKILL_DOT_SEGMENT_RE = /\/(?:\.|%2e)(?:\.|%2e)?(?:\/|$)/i
+/** A '/'-led `.` or `..` path segment, literal or percent-encoded, which WHATWG URL parsing would collapse. */
+export const DOT_PATH_SEGMENT_RE = /\/(?:\.|%2e)(?:\.|%2e)?(?:\/|$)/i
 
 /** Normalize the deliberately narrow source vocabulary supported by the
  * daemon's bounded GitHub archive acquisition path. Unlike generic workspaces,
@@ -167,10 +168,8 @@ const GITHUB_SKILL_DOT_SEGMENT_RE = /\/(?:\.|%2e)(?:\.|%2e)?(?:\/|$)/i
  * transport exists for them. */
 export function normalizeGitHubSkillSource(input: string): string {
   const normalized = normalizeGitCloneUrl(input)
-  // WHATWG URL parsing collapses literal and percent-encoded dot segments.
-  // Reject them before parsing so admission cannot silently reinterpret an
-  // unsafe tree subdirectory as a different ref/path.
-  if (GITHUB_SKILL_DOT_SEGMENT_RE.test(normalized)) {
+  // Refuse dot segments before parsing so URL collapsing cannot reinterpret a tree subdirectory.
+  if (DOT_PATH_SEGMENT_RE.test(normalized)) {
     invalidCloneUrl('GitHub skill source must not contain dot path segments')
   }
   const scp = SCP_PARTS_RE.exec(normalized)

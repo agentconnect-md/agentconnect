@@ -505,6 +505,9 @@ jobs:
         run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
       - name: Daemon store suites on PostgreSQL
         run: pnpm --filter @agentconnect.md/daemon test:store:postgres
+      # Presigned Source Cache URLs against MinIO: signed length, checksum and tag are enforced by the store.
+      - name: Daemon Source Cache presigned URLs on MinIO
+        run: pnpm --filter @agentconnect.md/daemon test:source-cache:minio
 
   # control-plane integration tests against a real Postgres booted by
   # Testcontainers. Each Vitest worker gets an isolated database cloned from one

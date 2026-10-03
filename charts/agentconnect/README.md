@@ -100,6 +100,82 @@ kubectl -n agentconnect port-forward deployment/agentconnect-setup-server 8091:8
 The full self-hosting walkthrough (authentication, public URLs, provider apps, image
 pinning) is the [AgentConnect OSS guide](https://www.agentconnect.md/docs/self-hosting).
 
+## Source Cache (optional)
+
+The Source Cache lets a new sandbox pod start its Git clone from a bundle in an
+S3-compatible bucket rather than fetching the whole repository from its origin
+([design](../../docs/designs/source-cache.md)). It is off by default. The `sourceCache.*`
+values are rendered into the daemon-pool members only, never into the runtime
+SandboxTemplate or the orphan reconciler. Sandbox pods only ever receive short-lived
+presigned URLs, each for one object and one verb.
+
+The endpoint must be `https://`, because the sandbox shim admits only an https bundle URL.
+Leave `endpoint` empty to use AWS's regional S3 endpoint.
+
+Credentials come from one of two sources:
+
+- **Web identity (`credentials.source: serviceAccount`).** With
+  `credentials.serviceAccount.roleArn` set, the chart projects a ServiceAccount token with
+  the `sts.amazonaws.com` audience onto the member container alone. The member exchanges it
+  through STS `AssumeRoleWithWebIdentity`. The role's trust policy names the subject
+  `system:serviceaccount:<namespace>:ac-cloud-daemon`. On EKS, set
+  `credentials.serviceAccount.roleArn`; this projected-token form is the supported
+  configuration. An empty `roleArn` falls back to `AWS_ROLE_ARN` and
+  `AWS_WEB_IDENTITY_TOKEN_FILE` in the member's environment, which exists only for
+  setups where a pod-identity webhook injects them out of band. The chart exposes no
+  annotation for the member ServiceAccount, and the orphan reconciler shares that
+  ServiceAccount, so annotating it by hand gives the reconciler the role as well. A
+  member started without either value refuses to boot.
+
+  ```yaml
+  sourceCache:
+    enabled: true
+    region: us-east-1
+    bucket: example-agentconnect-source-cache
+    credentials:
+      source: serviceAccount
+      serviceAccount:
+        roleArn: arn:aws:iam::123456789012:role/agentconnect-source-cache
+  ```
+
+- **Static keys (`credentials.source: secret`).** The chart mounts an existing Secret into
+  the member as read-only files, never as environment variables:
+
+  ```bash
+  kubectl -n agentconnect create secret generic agentconnect-source-cache \
+    --from-literal=AWS_ACCESS_KEY_ID=... --from-literal=AWS_SECRET_ACCESS_KEY=...
+  ```
+
+  ```yaml
+  sourceCache:
+    enabled: true
+    endpoint: https://minio.example.test
+    region: us-east-1
+    bucket: agentconnect-source-cache
+    forcePathStyle: true
+    credentials:
+      source: secret
+      secret:
+        name: agentconnect-source-cache
+  ```
+
+Set `forcePathStyle: true` for MinIO and most self-hosted stores. A dotted bucket name or
+an IP-address endpoint uses path-style addressing anyway. MinIO serves as a test fixture,
+not a recommended store: its community edition is archived. AWS S3 has not yet been
+verified against this signer (design §14).
+
+| Value                       | Default | Meaning                                                   |
+| --------------------------- | ------- | --------------------------------------------------------- |
+| `limits.maxBundleBytes`     | `2Gi`   | Largest bundle a pod may upload (at most `5Gi`)           |
+| `limits.orgQuotaBytes`      | `20Gi`  | Committed plus reserved bytes per organization            |
+| `limits.pendingReservation` | `1h`    | How long an upload reservation lives; at least PUT + `5m` |
+| `limits.unreadPointerDays`  | `30`    | Days before an unread pointer is swept                    |
+| `limits.getUrlLifetime`     | `5m`    | Presigned GET lifetime (`1m` to `1h`)                     |
+| `limits.putUrlLifetime`     | `15m`   | Presigned PUT lifetime (`1m` to `1h`)                     |
+
+The bucket lifecycle rules for `ac-cache=pending` and `ac-cache=unreferenced` objects
+arrive with the lifecycle sweep; until then nothing is written.
+
 ## Node maintenance
 
 The Control Plane runs as one replica, and it also serves the API. Evicting its pod, as a

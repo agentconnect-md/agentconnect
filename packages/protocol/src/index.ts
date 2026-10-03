@@ -192,6 +192,7 @@ export type { DecodeResultOf } from './wire.js'
 export {
   DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
   WORKSPACE_GIT_ANY_ORIGIN,
+  DOT_PATH_SEGMENT_RE,
   MAX_GIT_REPO_LENGTH,
   GitCloneUrlError,
   normalizeAllowedWorkspaceGitUrl,

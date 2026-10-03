@@ -552,6 +552,20 @@ MinIO, whose community edition is archived), a credential source
 (`serviceAccount` or a Secret reference), and the limits in section 10. Only
 pool members receive them.
 
+The chart renders them as one JSON variable, `AC_SOURCE_CACHE`, on the member
+container. The member reads it only under `--k8s` and refuses to start on an
+invalid document. The endpoint must be `https://`, because the shim admits only
+`--bundle-uri=https://` (section 6.1). Static keys arrive as read-only files,
+not environment variables, so no process the daemon spawns inherits them
+through the environment. The 0400 mount stays readable by any process running
+as the member's own uid; sandbox pods remain isolated from it (section 6, item
+4). With a role ARN set, the web identity token is projected onto the member
+container alone, because the reconciler shares its ServiceAccount. Temporary credentials
+are refreshed while they still outlive the URL lifetime plus 5 minutes, since
+a presigned URL dies with its session token. The pending reservation must be at
+least the PUT lifetime plus 5 minutes, and the bundle cap at most the org quota
+and the 5 GiB single-PUT ceiling.
+
 | Condition                                     | Behavior                                                   |
 | --------------------------------------------- | ---------------------------------------------------------- |
 | No bucket configured                          | No URLs issued; pods clone from upstream (the OSS default) |
@@ -627,8 +641,9 @@ helper.
 
 **S3-compatible store matrix.** MinIO
 `RELEASE.2025-10-15T17-29-55Z` was tested locally on 2026-10-01. The community
-MinIO project is archived, so this is a fixture result, not a store
-recommendation. MinIO enforced `Content-Length`, `x-amz-checksum-sha256` and
+MinIO project is archived and source-only since 2025-10-23, so this is a
+fixture result, not a store recommendation; the CI fixture pins
+`minio/minio:RELEASE.2025-09-07T16-13-09Z`, the last image the project published. MinIO enforced `Content-Length`, `x-amz-checksum-sha256` and
 `x-amz-tagging` only when they were signed headers, not when hoisted into the
 query or left unsigned:
 
