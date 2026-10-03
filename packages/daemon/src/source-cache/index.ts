@@ -75,8 +75,10 @@ export {
   type SourceCacheBundleStager,
   type SourceCacheWriteOutcome,
   type SourceCacheWriter,
-  type SourceCacheWriteRequest
+  type SourceCacheWriteRequest,
+  type SourceCacheWriteSkipReason
 } from './write-back.js'
+export { createSourceCacheMetrics, sourceCacheMetrics, type SourceCacheMetrics } from './metrics.js'
 export type { SourceCacheBucketLifecycle, SourceCacheObjectClient } from './object-client.js'
 export {
   evaluateSourceCacheLifecycle,

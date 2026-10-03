@@ -230,7 +230,19 @@ describe('the Source Cache workspace read planner', () => {
     expect(await h.planner.plan(request(agent()))).toBeUndefined()
     expect(h.signed).toEqual([])
     expect(h.touches).toEqual([])
-    expect(h.outcomes).toMatchObject([{ kind: 'miss', reason: 'no-pointer' }])
+    expect(h.outcomes).toEqual([expect.objectContaining({ kind: 'miss', reason: 'no-pointer', repoClass: 'anon' })])
+  })
+
+  it('carries the access class on a miss once the pointer was looked up, and none before', async () => {
+    const cred = harness({ decision: githubDecision })
+    await cred.planner.plan(request(agent({ gitCredential: 'github-app' }), 'full'))
+    expect(cred.outcomes).toEqual([expect.objectContaining({ kind: 'miss', reason: 'no-pointer', repoClass: 'cred' })])
+
+    const noOrg = harness({ org: undefined })
+    await noOrg.planner.plan(request(agent()))
+    expect(noOrg.outcomes).toHaveLength(1)
+    expect(noOrg.outcomes[0]).toMatchObject({ kind: 'miss', reason: 'no-org' })
+    expect(noOrg.outcomes[0]).not.toHaveProperty('repoClass')
   })
 
   it.each<[string, Partial<SourceCacheObjectRow>, Partial<SourceCacheObjectRow>]>([
@@ -311,16 +323,23 @@ describe('the Source Cache workspace read planner', () => {
 
   it('logs a fallback with its bundle key and reason, never the URL', () => {
     const h = harness()
-    h.planner.record({ kind: 'fallback', bundleKey: 'k', shape: 'full', reason: 'download-warning', detail: 'd' })
+    h.planner.record({
+      kind: 'fallback',
+      bundleKey: 'k',
+      shape: 'full',
+      repoClass: 'cred',
+      reason: 'download-warning',
+      detail: 'd'
+    })
     expect(h.warnings).toEqual([expect.stringContaining('bundle=k shape=full reason=download-warning')])
-    expect(h.outcomes).toMatchObject([{ kind: 'fallback', reason: 'download-warning' }])
+    expect(h.outcomes).toMatchObject([{ kind: 'fallback', reason: 'download-warning', repoClass: 'cred' }])
   })
 
   it('carries the write-back target with the observed pointer target on a hit and on a missing pointer', async () => {
     const h = harness()
     const { latest, target } = h.seed({ repoClass: 'anon', repo: anonRepoId(URL_HTTPS) }, {}, { createdAt: 42 })
     const hit = await h.cachePlanner.plan(request(agent()))
-    expect(hit.bundle).toMatchObject({ bundleKey: target, bundleCreatedAt: 42 })
+    expect(hit.bundle).toMatchObject({ bundleKey: target, bundleCreatedAt: 42, bytes: 1024 })
     expect(hit.target).toEqual({
       orgId: ORG,
       repoClass: 'anon',

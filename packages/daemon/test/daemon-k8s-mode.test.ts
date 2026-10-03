@@ -18,6 +18,7 @@ import { agentSandboxSubject, sandboxSubjectFor, sandboxSubjectForPath } from '.
 import { DEFAULT_SHIM_WORKSPACE_ROOT } from '../src/shim/protocol.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
+import type { SourceCacheMetrics, SourceCacheSweeper, SourceCacheWorkspaceReader } from '../src/source-cache/index.js'
 import { DATA_PLANE_CONFIG_PATH } from '../src/store/postgres-config.js'
 import { mcpSocketPath, statePath } from '../src/paths.js'
 import { SANDBOX_TUNNEL_PATHS } from '../src/shim/sandbox-paths.js'
@@ -105,6 +106,8 @@ function daemon(opts: {
   onPlaneStart?: (options: any) => void
   /** The Source Cache's STS seam, so a row can prove no network call was made. */
   sourceCacheFetch?: ReturnType<typeof vi.fn>
+  /** A recording Source Cache metrics recorder, for the wiring row. */
+  sourceCacheMetrics?: SourceCacheMetrics
 }): Daemon {
   return new Daemon({
     root: opts.root,
@@ -135,6 +138,7 @@ function daemon(opts: {
         }
       : {}),
     ...(opts.openDataPlane ? { openDataPlane: opts.openDataPlane as never } : {}),
+    ...(opts.sourceCacheMetrics ? { sourceCacheMetrics: opts.sourceCacheMetrics } : {}),
     startControlPlane: (opts.startControlPlane ?? vi.fn(() => Promise.resolve())) as never,
     ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
     resolveCatalog: async () => catalog(),
@@ -2545,6 +2549,25 @@ describe('daemon --k8s mode: Source Cache signer (source-cache.md §12)', () => 
         // The sweeper is built but idle: its lifecycle check and first pass start with the timers, not here.
         expect(sweeperOf(instance)).toBeDefined()
         expect(fetch).not.toHaveBeenCalled()
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'wires the read planner and the sweeper into the injected metrics recorder',
+    async () => {
+      const fetch = vi.fn(() => Promise.reject(new Error('offline')))
+      const recorder = { read: vi.fn(), writeBack: vi.fn(), sweepPass: vi.fn(), lifecycle: vi.fn() }
+      vi.stubEnv('AC_SOURCE_CACHE', sourceCacheEnv(keyDir()))
+      try {
+        const instance = daemon({ root: root(), k8s: true, sourceCacheFetch: fetch, sourceCacheMetrics: recorder })
+        const hit = { kind: 'hit', bundleKey: 'k', shape: 'full', repoClass: 'anon', bytes: 10 } as const
+        ;(cacheReaderOf(instance) as SourceCacheWorkspaceReader).record(hit)
+        expect(recorder.read).toHaveBeenCalledWith(hit)
+        await (sweeperOf(instance) as SourceCacheSweeper).checkLifecycle()
+        expect(recorder.lifecycle).toHaveBeenCalledWith('unknown')
       } finally {
         vi.unstubAllEnvs()
       }

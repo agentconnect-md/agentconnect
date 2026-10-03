@@ -2123,7 +2123,8 @@ describe('workspace clones read the Source Cache (source-cache.md §7)', () => {
               pointerKey: 'p' as never,
               repoClass: 'anon' as const,
               shape: request.shape,
-              bundleCreatedAt: 0
+              bundleCreatedAt: 0,
+              bytes: 4096
             }
           : undefined
         return { ...(bundle ? { bundle } : {}), ...(target ? { target: { ...target, shape: request.shape } } : {}) }
@@ -2235,7 +2236,9 @@ describe('workspace clones read the Source Cache (source-cache.md §7)', () => {
     })
     // Both shapes verify connectivity: an incomplete bundle can leave a full clone exit 0 with broken history.
     expect(calls.some((call) => call.args[0] === 'fsck')).toBe(true)
-    expect(cache.outcomes).toEqual([{ kind: 'hit', bundleKey: BUNDLE_KEY, shape: 'full' }])
+    expect(cache.outcomes).toEqual([
+      { kind: 'hit', bundleKey: BUNDLE_KEY, shape: 'full', repoClass: 'anon', bytes: 4096 }
+    ])
   })
 
   it('empties the checkout and clones once without the bundle when the bundled clone fails', async () => {
@@ -2247,7 +2250,9 @@ describe('workspace clones read the Source Cache (source-cache.md §7)', () => {
 
     expect(clones().map((call) => call.args.some((arg) => arg.startsWith('--bundle-uri=')))).toEqual([true, false])
     expect(cleared).toEqual([CHECKOUT])
-    expect(cache.outcomes).toMatchObject([{ kind: 'fallback', reason: 'clone-failed', bundleKey: BUNDLE_KEY }])
+    expect(cache.outcomes).toMatchObject([
+      { kind: 'fallback', reason: 'clone-failed', bundleKey: BUNDLE_KEY, repoClass: 'anon' }
+    ])
   })
 
   it('surfaces only the retry’s failure, through the existing clear-and-rethrow', async () => {

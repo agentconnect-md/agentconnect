@@ -40,7 +40,7 @@ export interface BundledCloneInput {
   checkout(): GitRunner
   /** Empty the checkout, object database included; throws when it could not. */
   empty(): Promise<void>
-  /** The CP1.8 metrics hook: a hit after success, a fallback before its retry. */
+  /** Outcome hook for logs and metrics: a hit after success, a fallback before its retry. */
   report?(report: BundledCloneReport): void
   log?: { warn(message: string): void }
 }
