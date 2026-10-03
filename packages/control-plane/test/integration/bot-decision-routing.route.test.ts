@@ -227,8 +227,8 @@ describe('PUT /bots/:id/decision-routing', () => {
     })
     const routes = lastRoutes(relay!)
     expect(routes.routedConversations).toEqual([
-      { channel: 'C1', decisionId, evaluationDaemonId: DAEMON },
-      { channel: 'C2', decisionId, evaluationDaemonId: DAEMON }
+      { channel: 'C1', decisionId, evaluationDaemonId: DAEMON, targetAgentIds: [a.agentId, b.agentId] },
+      { channel: 'C2', decisionId, evaluationDaemonId: DAEMON, targetAgentIds: [a.agentId, b.agentId] }
     ])
     expect(routes.routes).toContainEqual(
       expect.objectContaining({ agentId: a.agentId, scope: { channel: 'C1' }, match: { kind: 'decision' }, decisionId })
@@ -355,7 +355,9 @@ describe('PUT /bots/:id/decision-routing', () => {
     for (const row of rows)
       expect(row).toMatchObject({ trigger: 'decision', decisionBinding: { type: 'shared_bot_routing' } })
     const routes = lastRoutes(relay!)
-    expect(routes.routedConversations).toEqual([{ channel: 'C3', decisionId, evaluationDaemonId: DAEMON }])
+    expect(routes.routedConversations).toEqual([
+      { channel: 'C3', decisionId, evaluationDaemonId: DAEMON, targetAgentIds: [a.agentId, b.agentId] }
+    ])
     expect(routes.mutedChannels ?? []).not.toContain('C3')
   })
 
