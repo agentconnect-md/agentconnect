@@ -140,7 +140,7 @@ describe('skill workspace lock database', () => {
     setTimeout(() => peer.close(), 1_500)
 
     await expect(withSkillWorkspaceLock(cwd, async () => 'locked', stateDir)).resolves.toBe('locked')
-  }, 30_000)
+  })
 })
 
 function workerStderr(child: ChildProcess): string {
