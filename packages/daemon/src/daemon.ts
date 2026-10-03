@@ -133,8 +133,13 @@ import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
 import { microsandboxSkillTarget } from './microsandbox/shim.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
-import { IMPLICIT_CREDENTIAL_PROVIDER, parseManagedBaseUrl, stripHostPathPrefix } from './gitcred/managed-hosts.js'
-import { codeHostCredentials, credentialProviderOf, type ManagedWorkspaceRepo } from './codehost/credentials.js'
+import { IMPLICIT_CREDENTIAL_PROVIDER } from './gitcred/managed-hosts.js'
+import {
+  codeHostCredentials,
+  credentialProviderOf,
+  workspaceRepositoryPath,
+  type ManagedWorkspaceRepo
+} from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { setTimeout as sleepFor } from 'node:timers/promises'
@@ -10747,10 +10752,8 @@ export class Daemon {
     if (!agent || provider === undefined || !host || agent.workspace.mode !== 'git-repo') return undefined
     const repoId = host.workspaceRepoId(agent.workspace)
     if (repoId === undefined) return undefined
-    const instance = parseManagedBaseUrl(host.managedHost(this.workspaces.specHostsOf(agent)).baseUrl)
-    const label = agent.workspace.gitRepo ? gitRepoLabel(agent.workspace.gitRepo) : undefined
-    const stripped = instance && label !== undefined ? stripHostPathPrefix(label, instance.pathPrefix) : undefined
-    const repoPath = stripped !== undefined ? host.credentialRepoPath(stripped) : undefined
+    const gitRepo = agent.workspace.gitRepo
+    const repoPath = gitRepo ? workspaceRepositoryPath(host, this.workspaces.specHostsOf(agent), gitRepo) : undefined
     return { provider, repoId, ...(repoPath !== undefined ? { repoPath } : {}) }
   }
 

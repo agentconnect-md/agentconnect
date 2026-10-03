@@ -29,6 +29,7 @@ import {
   codeHostCredentials,
   credentialProviderOf,
   specHostCodeHosts,
+  specHostsOf as agentSpecHosts,
   type CodeHostSpecHosts
 } from '../codehost/credentials.js'
 import { formatErr } from '../daemon/text.js'
@@ -508,10 +509,7 @@ export class WorkspaceManager {
 
   /** The host-carrying fields of this agent's replicated spec — one axis per provider (§24.4, gitea-integration.md §13). */
   specHostsOf(agent: Agent): CodeHostSpecHosts {
-    return {
-      ...(agent.gitlabHost !== undefined ? { gitlabHost: agent.gitlabHost } : {}),
-      ...(agent.giteaHost !== undefined ? { giteaHost: agent.giteaHost } : {})
-    }
+    return agentSpecHosts(agent)
   }
 
   gitRepoOf(agent: Agent): string {

@@ -44,3 +44,9 @@ export function createSourceCache(opts: CreateSourceCacheOptions): SourceCache |
 
 export type { SourceCacheConfig } from './config.js'
 export type { PresignedRequest, SourceCachePresigner } from './presigner.js'
+export {
+  createCredentialedCacheReadAuthorizer,
+  type AuthorizeCredentialedCacheRead,
+  type CredentialedCacheReadAuthorizerDeps,
+  type CredentialedCacheReadDecision
+} from './authorize-read.js'
