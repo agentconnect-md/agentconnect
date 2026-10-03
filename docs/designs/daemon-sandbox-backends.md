@@ -1161,10 +1161,11 @@ network listener.
   second shim over a session directory an earlier life's shim still runs in.
 - **Helpers from the daemon's installation.** `AC_SHIM_HELPER_ROOT` is the
   directory that holds `shim/index.js`, which resolves the MCP bridge, the
-  merge-when-ready watcher and the `gh` token entry from the daemon's own bundle.
-  The git-credential wrapper, the `gh` wrapper directory and the DeepSeek preset
-  have no counterpart in an installation; the launcher reports them in
-  `missingHelpers` rather than naming a path that is not there.
+  merge-when-ready watcher, the `gh` token entry and the git-credential wrapper
+  (`bin/git-credential`, emitted by the build beside `shim/`) from the daemon's own
+  bundle. The `gh` wrapper directory and the DeepSeek preset have no counterpart
+  in an installation; the launcher reports them in `missingHelpers` rather than
+  naming a path that is not there.
 
 The launcher returns the socket path, the runtime root, the helper root, the
 workspace root, the identity token, the missing helpers, an exit promise and
