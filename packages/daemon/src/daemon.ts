@@ -642,6 +642,7 @@ import {
   createCredentialedCacheReadAuthorizer,
   createSourceCache,
   createSourceCacheReadPlanner,
+  createSourceCacheWriter,
   type SourceCache,
   type SourceCachePresigner
 } from './source-cache/index.js'
@@ -1952,6 +1953,15 @@ export class Daemon {
           authorize: createCredentialedCacheReadAuthorizer({ resolver: this.sourceCacheRefs, tokens }),
           orgForAgent: (agentId) => this.orgForAgent(agentId),
           log: { debug: (m) => this.log.debug(m), warn: (m) => this.log.warn(m) }
+        })
+      )
+      this.workspaces.setSourceCacheWriter(
+        createSourceCacheWriter({
+          store: () => this.store as LocalStore | undefined,
+          presigner: this.sourceCache.presigner,
+          objects: this.sourceCache.objects,
+          limits: this.sourceCache.config.limits,
+          log: { debug: (m) => this.log.debug(m), info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
         })
       )
     }

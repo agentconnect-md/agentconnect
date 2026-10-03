@@ -3,6 +3,8 @@
 import { readFileSync } from 'node:fs'
 import { Socket } from 'node:net'
 import { runSandboxRuntimeProvider } from '../acp/sandbox-runtime-provider.js'
+import { createBundleHandler } from './bundle-handler.js'
+import { SOURCE_CACHE_BUNDLE_FEATURE } from './bundle-protocol.js'
 import { prepareBundleStaging } from './bundle-staging.js'
 import { ShimClient } from './client.js'
 import { createAutoMergeHandler } from './auto-merge-handler.js'
@@ -66,13 +68,16 @@ async function main(): Promise<number> {
     throw new Error('invalid sandbox identity')
   }
   const { workspaceRoot, paths } = options
+  let bundleStaging = false
   try {
     prepareBundleStaging(paths.bundleStagingDir)
+    bundleStaging = true
   } catch (error) {
-    // Not fatal: an older or read-only layout only loses `git bundle create`, which is then refused per request.
+    // Not fatal: without staging the shim only stops advertising Source Cache write-back.
     log.warn(`bundle staging unavailable at ${paths.bundleStagingDir}: ${(error as Error).message}`)
   }
   const exec = createExecHandler({ workspaceRoot, paths, log })
+  const bundles = createBundleHandler({ workspaceRoot, stagingDir: paths.bundleStagingDir, log })
   // Watchers own long-lived processes and stay outside the git-only exec inventory.
   const automerge = createAutoMergeHandler({ paths, log })
   const server = new ShimServer({ log })
@@ -100,10 +105,17 @@ async function main(): Promise<number> {
         ? tunnels.handle(payload)
         : capability === 'automerge'
           ? automerge(payload)
-          : exec(capability, payload, abort, context),
+          : capability === 'bundle'
+            ? bundles(payload, abort)
+            : exec(capability, payload, abort, context),
     // Reported in the hello so daemon-built pod paths are anchored on this filesystem.
     workspaceRoot,
-    features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'],
+    features: [
+      'cluster-skills-v1',
+      'cluster-skills-v2',
+      'cluster-skills-v3',
+      ...(bundleStaging ? [SOURCE_CACHE_BUNDLE_FEATURE] : [])
+    ],
     log
   })
   if ('socketPath' in options.listen) await server.startOnSocket(options.listen.socketPath)
@@ -114,6 +126,7 @@ async function main(): Promise<number> {
     if (leaving) return
     leaving = true
     tunnels.close()
+    bundles.stop()
     client.stop()
     // On a host no pod or VM teardown follows this exit, so the runtimes are ended here; elsewhere it does, and they are left to it.
     const runtimes = 'socketPath' in options.listen ? client.closeStreams(5_000) : Promise.resolve()

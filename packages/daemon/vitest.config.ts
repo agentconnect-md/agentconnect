@@ -55,6 +55,7 @@ export const WINDOWS_EXCLUDED = [
   'test/cluster-workspace-prepare.test.ts',
   'test/shim-workspace-files.test.ts',
   'test/shim-skill-handler.test.ts',
+  'test/shim-bundle-handler.test.ts',
   'test/shim-cancellation.test.ts',
   'test/shim-exec-handler.test.ts',
   'test/shim-dial-in.test.ts',

@@ -30,6 +30,25 @@ export interface WorkspaceBundlePlan {
   pointerKey: SourceCacheObjectKey
   repoClass: SourceCacheClass
   shape: SourceCacheShape
+  /** When the bundle row was written, for the write-back age trigger. */
+  bundleCreatedAt: number
+}
+
+/** Where a write-back of this clone may land: set once the clone's own identity resolved, never from the pod. */
+export interface SourceCacheWriteTarget {
+  orgId: string
+  repoClass: SourceCacheClass
+  repoId: string
+  ref: string
+  shape: SourceCacheShape
+  pointerKey: SourceCacheObjectKey
+  /** The pointer row's target when planned (null for none), the write-back's compare-and-set expectation. */
+  observedTargetKey: string | null
+}
+
+export interface WorkspaceCachePlan {
+  bundle?: WorkspaceBundlePlan
+  target?: SourceCacheWriteTarget
 }
 
 export type SourceCacheMissReason =
@@ -48,8 +67,8 @@ export type SourceCacheReadOutcome =
   | { kind: 'fallback'; bundleKey: string; shape: SourceCacheShape; reason: BundleFallbackReason; detail: string }
 
 export interface SourceCacheWorkspaceReader {
-  /** A bundle to seed this clone with, or undefined; never throws. */
-  plan(request: WorkspaceBundleRequest): Promise<WorkspaceBundlePlan | undefined>
+  /** A bundle to seed this clone with and where its write-back may land, either possibly absent; never throws. */
+  plan(request: WorkspaceBundleRequest): Promise<WorkspaceCachePlan>
   /** Where a clone's cache outcome goes: logged today, the CP1.8 metrics hook. */
   record(outcome: SourceCacheReadOutcome): void
 }
@@ -119,7 +138,10 @@ export function createSourceCacheReadPlanner(deps: SourceCacheReadPlannerDeps): 
     return { repoClass: 'cred', repo: decision.credRepoId }
   }
 
-  const resolve = async (request: WorkspaceBundleRequest): Promise<WorkspaceBundlePlan> => {
+  const resolve = async (
+    request: WorkspaceBundleRequest,
+    found: { target?: SourceCacheWriteTarget }
+  ): Promise<WorkspaceBundlePlan> => {
     const orgId = deps.orgForAgent(request.agent.id)
     if (orgId === undefined) return miss('no-org', request.agent.id)
     const store = deps.store() ?? miss('error', 'store not open')
@@ -128,6 +150,15 @@ export function createSourceCacheReadPlanner(deps: SourceCacheReadPlannerDeps): 
     const latest = pointerKey({ org: orgId, class: repoClass, repo, ref, shape: request.shape })
     // The pointer row's targetKey names the bundle, so resolution needs no object-store GET (§4).
     const pointer = await store.getSourceCacheObject(orgId, latest)
+    found.target = {
+      orgId,
+      repoClass,
+      repoId: repo,
+      ref,
+      shape: request.shape,
+      pointerKey: latest,
+      observedTargetKey: pointer?.targetKey ?? null
+    }
     if (pointer === undefined) return miss('no-pointer', latest)
     if (!usable(pointer, 'pointer') || pointer.targetKey === null) return miss('unusable-pointer', latest)
     const target = parseSourceCacheObjectKey(pointer.targetKey)
@@ -159,14 +190,16 @@ export function createSourceCacheReadPlanner(deps: SourceCacheReadPlannerDeps): 
         deps.log.warn(`source cache: could not record a read of ${bundleKey} (${(err as Error).message})`)
       }
     )
-    return { url, bundleKey, pointerKey: latest, repoClass, shape: request.shape }
+    return { url, bundleKey, pointerKey: latest, repoClass, shape: request.shape, bundleCreatedAt: bundle!.createdAt }
   }
 
   return {
     record,
     async plan(request) {
+      const found: { target?: SourceCacheWriteTarget } = {}
       try {
-        return await resolve(request)
+        const bundle = await resolve(request, found)
+        return { bundle, ...(found.target ? { target: found.target } : {}) }
       } catch (err) {
         if (err instanceof Miss) {
           record({ kind: 'miss', reason: err.reason, shape: request.shape, detail: err.message })
@@ -178,7 +211,7 @@ export function createSourceCacheReadPlanner(deps: SourceCacheReadPlannerDeps): 
             detail: (err as Error)?.message ?? String(err)
           })
         }
-        return undefined
+        return found.target ? { target: found.target } : {}
       }
     }
   }

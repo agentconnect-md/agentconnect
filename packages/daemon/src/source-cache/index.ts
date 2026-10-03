@@ -1,5 +1,6 @@
 import { loadSourceCacheConfig, SOURCE_CACHE_ENV, sourceCacheEndpoint, type SourceCacheConfig } from './config.js'
 import { createCredentialsProvider, type ReadTextFile } from './credentials.js'
+import { createObjectClient, type SourceCacheObjectClient } from './object-client.js'
 import { addressFor, createPresigner, type SourceCachePresigner } from './presigner.js'
 
 // Pool-member Source Cache wiring (source-cache.md §12): absent config means no signer, no I/O, no state.
@@ -7,6 +8,8 @@ import { addressFor, createPresigner, type SourceCachePresigner } from './presig
 export interface SourceCache {
   config: SourceCacheConfig
   presigner: SourceCachePresigner
+  /** Header-signed HEAD and retag the member runs itself (§9 step 5). */
+  objects: SourceCacheObjectClient
 }
 
 export interface CreateSourceCacheOptions {
@@ -34,12 +37,18 @@ export function createSourceCache(opts: CreateSourceCacheOptions): SourceCache |
     ...(opts.now ? { now: opts.now } : {})
   })
   const presigner = createPresigner({ config, credentials, ...(opts.now ? { now: opts.now } : {}) })
+  const objects = createObjectClient({
+    config,
+    credentials,
+    ...(opts.fetch ? { fetch: opts.fetch } : {}),
+    ...(opts.now ? { now: opts.now } : {})
+  })
   const endpoint = sourceCacheEndpoint(config)
   const style = addressFor(endpoint, config.bucket, config.forcePathStyle).style
   opts.log?.info(
     `source cache enabled (bucket=${config.bucket} prefix=${config.prefix || '(none)'} endpoint=${new URL(endpoint).host} credentials=${credentials.source} addressing=${style})`
   )
-  return { config, presigner }
+  return { config, presigner, objects }
 }
 
 export type { SourceCacheConfig } from './config.js'
@@ -56,6 +65,16 @@ export {
   type SourceCacheReadOutcome,
   type SourceCacheReadPlannerDeps,
   type SourceCacheWorkspaceReader,
+  type SourceCacheWriteTarget,
   type WorkspaceBundlePlan,
-  type WorkspaceBundleRequest
+  type WorkspaceBundleRequest,
+  type WorkspaceCachePlan
 } from './read-plan.js'
+export {
+  createSourceCacheWriter,
+  type SourceCacheBundleStager,
+  type SourceCacheWriteOutcome,
+  type SourceCacheWriter,
+  type SourceCacheWriteRequest
+} from './write-back.js'
+export type { SourceCacheObjectClient } from './object-client.js'

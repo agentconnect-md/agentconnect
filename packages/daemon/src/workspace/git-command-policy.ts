@@ -1,10 +1,7 @@
-import { basename, dirname, isAbsolute, normalize, resolve } from 'node:path'
-
 // Share the daemon's workspace Git command inventory across sandbox transports.
 export const ALLOWED_GIT_SUBCOMMANDS = new Set([
   'add',
   'branch',
-  'bundle',
   'check-ref-format',
   'checkout',
   'clean',
@@ -70,14 +67,8 @@ const CLONE_VALUE_SHORT = new Set(['o', 'b', 'j'])
 
 const BUNDLE_URI_PREFIX = '--bundle-uri=https://'
 const MAX_BUNDLE_URI_LENGTH = 8192
-const BUNDLE_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.bundle$/
 const BRANCH_REF_PREFIX = 'refs/heads/'
 const MAX_REF_LENGTH = 1024
-
-export interface GitPolicyContext {
-  // The shim's bundle staging directory; without one `bundle` is refused.
-  bundleStagingDir?: string
-}
 
 export class ExecRefusedError extends Error {
   constructor(message: string) {
@@ -145,31 +136,7 @@ export function isValidBranchRef(ref: string): boolean {
   return ref.split('/').every((component) => !component.startsWith('.') && !component.endsWith('.lock'))
 }
 
-// Admit only `bundle create [-q] <file> [--filter=blob:none] refs/heads/<name>` with <file> a direct child of the staging dir.
-function validateBundleCreate(rest: string[], stagingDir: string | undefined): void {
-  if (!stagingDir) throw new ExecRefusedError('git bundle is refused: this shim has no bundle staging directory')
-  const [verb, ...operands] = rest
-  if (verb !== 'create') throw new ExecRefusedError(`git bundle ${verb ?? '(none)'} is refused`)
-  const quiet = operands[0] === '-q' ? 1 : 0
-  const tail = operands.slice(quiet)
-  const filtered = tail.length === 3 && tail[1] === '--filter=blob:none'
-  if (tail.length !== (filtered ? 3 : 2)) throw new ExecRefusedError('git bundle create has an unexpected shape')
-  const file = tail[0]!
-  const ref = tail[tail.length - 1]!
-  if (!isAbsolute(file) || normalize(file) !== file || dirname(file) !== resolve(stagingDir)) {
-    throw new ExecRefusedError(`bundle file must be directly inside the staging directory: ${file}`)
-  }
-  if (!BUNDLE_FILE_NAME.test(basename(file))) throw new ExecRefusedError(`bundle file name is refused: ${file}`)
-  if (!isValidBranchRef(ref)) throw new ExecRefusedError(`bundle ref must be a full refs/heads/* name: ${ref}`)
-}
-
-// The <file> operand of an already-validated `bundle create`.
-export function bundleCreateFile(args: string[]): string {
-  const operands = args.slice(2)
-  return operands[0] === '-q' ? operands[1]! : operands[0]!
-}
-
-export function validateGitArgs(args: string[], context: GitPolicyContext = {}): void {
+export function validateGitArgs(args: string[]): void {
   const [subcommand, ...rest] = args
   if (!subcommand || !ALLOWED_GIT_SUBCOMMANDS.has(subcommand)) {
     throw new ExecRefusedError(`git ${subcommand ?? '(none)'} is not in the permitted inventory`)
@@ -190,7 +157,6 @@ export function validateGitArgs(args: string[], context: GitPolicyContext = {}):
       throw new ExecRefusedError(`argument ${argument} is refused for git clone`)
     }
   }
-  if (subcommand === 'bundle') validateBundleCreate(rest, context.bundleStagingDir)
   if (subcommand === 'fsck' && (rest.length !== 1 || rest[0] !== '--connectivity-only')) {
     throw new ExecRefusedError('git fsck is admitted only as fsck --connectivity-only')
   }

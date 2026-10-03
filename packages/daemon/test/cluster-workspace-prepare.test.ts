@@ -24,6 +24,9 @@ import type { Agent } from '../src/agents/agent-schema.js'
 import type {
   SourceCacheReadOutcome,
   SourceCacheWorkspaceReader,
+  SourceCacheWriter,
+  SourceCacheWriteRequest,
+  SourceCacheWriteTarget,
   WorkspaceBundleRequest
 } from '../src/source-cache/index.js'
 
@@ -314,6 +317,7 @@ beforeEach(() => {
 afterEach(() => {
   workspaces.setPlaneResolver(undefined)
   workspaces.setSourceCacheReader(undefined)
+  workspaces.setSourceCacheWriter(undefined)
 })
 
 describe('clusterWorkspaceCwd', () => {
@@ -2098,7 +2102,10 @@ describe('workspace clones read the Source Cache (source-cache.md §7)', () => {
   const SESSION = { sessionKey: 'sess-1', isolation: 'session' as const, initiatedBy: 'alice' }
   const SHA = 'f'.repeat(40)
 
-  function reader(hit = true): SourceCacheWorkspaceReader & {
+  function reader(
+    hit = true,
+    target?: SourceCacheWriteTarget
+  ): SourceCacheWorkspaceReader & {
     asked: WorkspaceBundleRequest[]
     outcomes: SourceCacheReadOutcome[]
   } {
@@ -2109,21 +2116,86 @@ describe('workspace clones read the Source Cache (source-cache.md §7)', () => {
       outcomes,
       plan: async (request) => {
         asked.push(request)
-        return hit
+        const bundle = hit
           ? {
               url: BUNDLE_URL,
               bundleKey: BUNDLE_KEY as never,
               pointerKey: 'p' as never,
-              repoClass: 'anon',
-              shape: request.shape
+              repoClass: 'anon' as const,
+              shape: request.shape,
+              bundleCreatedAt: 0
             }
           : undefined
+        return { ...(bundle ? { bundle } : {}), ...(target ? { target: { ...target, shape: request.shape } } : {}) }
       },
       record: (outcome) => outcomes.push(outcome)
     }
   }
 
   const clones = () => calls.filter((call) => call.args[0] === 'clone')
+
+  const TARGET: SourceCacheWriteTarget = {
+    orgId: 'o',
+    repoClass: 'cred',
+    repoId: 'github:42',
+    ref: 'refs/heads/main',
+    shape: 'full',
+    pointerKey: 'p' as never,
+    observedTargetKey: null
+  }
+
+  // A writer that records each request and settles only when told to, so a test can prove nothing waited on it.
+  function writer(behavior: 'hang' | 'reject' = 'hang'): SourceCacheWriter & { requests: SourceCacheWriteRequest[] } {
+    const requests: SourceCacheWriteRequest[] = []
+    return {
+      requests,
+      consider: (request) => {
+        requests.push(request)
+        return behavior === 'reject' ? Promise.reject(new Error('boom')) : new Promise(() => {})
+      }
+    }
+  }
+
+  const settle = () => new Promise((resolve) => setImmediate(resolve))
+
+  it('schedules a write-back of the agent pod’s clone without waiting on it, in the class the clone used', async () => {
+    const w = writer()
+    workspaces.setSourceCacheWriter(w)
+    workspaces.setSourceCacheReader(reader(true, TARGET))
+    showRefOut = `${SHA} refs/bundles/heads/main\n`
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)
+    await settle()
+
+    expect(w.requests).toHaveLength(1)
+    expect(w.requests[0]).toMatchObject({
+      target: { ...TARGET, shape: 'full' },
+      read: { kind: 'hit', tip: SHA, bundleCreatedAt: 0 },
+      checkout: CHECKOUT,
+      credentialed: true,
+      stager: undefined
+    })
+  })
+
+  it('schedules a session clone’s write-back at its published path, never the staged one', async () => {
+    const w = writer('reject')
+    workspaces.setSourceCacheWriter(w)
+    workspaces.setSourceCacheReader(reader(false, TARGET))
+    const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
+    await settle()
+
+    expect(w.requests).toHaveLength(1)
+    expect(w.requests[0]).toMatchObject({ checkout: cwd, read: { kind: 'uncached' }, credentialed: true })
+    expect(w.requests[0]!.target.shape).toBe('blobless')
+  })
+
+  it('schedules nothing without a target', async () => {
+    const w = writer()
+    workspaces.setSourceCacheWriter(w)
+    workspaces.setSourceCacheReader(reader(false))
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)
+    await settle()
+    expect(w.requests).toEqual([])
+  })
 
   it('keeps today’s exact clone argv when the reader plans nothing', async () => {
     const cache = reader(false)

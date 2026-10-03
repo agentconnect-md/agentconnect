@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import type { CredentialsProvider, SourceCacheCredentials } from '../src/source-cache/credentials.js'
-import { bundleKey, type SourceCacheObjectKey } from '../src/source-cache/keys.js'
+import { bundleKey, pointerKey, type SourceCacheObjectKey } from '../src/source-cache/keys.js'
 import {
   addressFor,
   createPresigner,
@@ -154,6 +154,21 @@ describe('Source Cache presigner', () => {
     ]) {
       await expect(signer.presignPut(KEY, { contentLength: 1, checksumSha256 })).rejects.toThrow('checksum')
     }
+  })
+
+  it('refuses a pointer key for GET and PUT: pointers are store rows, never objects', async () => {
+    const signer = createPresigner({ config: config(), credentials: provider(), now: () => NOW })
+    const pointer = pointerKey({
+      org: 'org_1',
+      class: 'cred',
+      repo: 'github:42',
+      ref: 'refs/heads/main',
+      shape: 'full'
+    })
+    await expect(signer.presignGet(pointer)).rejects.toThrow('bundle key')
+    await expect(signer.presignPut(pointer, { contentLength: 1, checksumSha256: CHECKSUM })).rejects.toThrow(
+      'bundle key'
+    )
   })
 
   it('rejects when credentials cannot be had, which callers treat as a miss', async () => {

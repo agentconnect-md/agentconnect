@@ -227,7 +227,8 @@ describe('cluster spawn driver', () => {
           'automerge',
           'skills',
           'skills-wide',
-          'skills-receipts'
+          'skills-receipts',
+          'bundle'
         ],
         podName: 'sb-1',
         // The pool's peer is a pod, and its identity is the TokenReview's (session-executors.md §6).

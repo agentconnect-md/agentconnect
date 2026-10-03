@@ -240,6 +240,47 @@ describe('Source Cache pointers and reads (§10)', () => {
     expect((await s.getSourceCacheObject('org-a', b2))!.unpointedAt).toBeNull()
   })
 
+  it('moves the pointer only when the caller still names its current target (write-back compare-and-set)', async () => {
+    const s = await open()
+    const p = pointer()
+    const [b1, b2, b3] = [bundle(), bundle(), bundle()]
+    await committed(s, b1, GiB, 2_000)
+    await committed(s, b2, GiB, 2_100)
+    await committed(s, b3, GiB, 2_200)
+    expect(
+      await s.setSourceCachePointer({ orgId: 'org-a', pointerKey: p, bundleKey: b1, now: 3_000, expectedTargetKey: b2 })
+    ).toEqual({ set: false, reason: 'pointer-moved' })
+    expect(await s.getSourceCacheObject('org-a', p)).toBeUndefined()
+    expect(
+      await s.setSourceCachePointer({
+        orgId: 'org-a',
+        pointerKey: p,
+        bundleKey: b1,
+        now: 3_000,
+        expectedTargetKey: null
+      })
+    ).toEqual({ set: true, previousBundleKey: undefined })
+
+    // A writer that planned before b1 landed loses: nothing moves, and its bundle stays unpointed.
+    expect(
+      await s.setSourceCachePointer({
+        orgId: 'org-a',
+        pointerKey: p,
+        bundleKey: b2,
+        now: 4_000,
+        expectedTargetKey: null
+      })
+    ).toEqual({ set: false, reason: 'pointer-moved' })
+    expect(await s.getSourceCacheObject('org-a', p)).toMatchObject({ targetKey: b1, updatedAt: 3_000 })
+    expect((await s.getSourceCacheObject('org-a', b2))!.unpointedAt).toBe(2_100)
+    expect((await s.getSourceCacheObject('org-a', b1))!.unpointedAt).toBeNull()
+
+    expect(
+      await s.setSourceCachePointer({ orgId: 'org-a', pointerKey: p, bundleKey: b3, now: 5_000, expectedTargetKey: b1 })
+    ).toEqual({ set: true, previousBundleKey: b1 })
+    expect((await s.getSourceCacheObject('org-a', b1))!.unpointedAt).toBe(5_000)
+  })
+
   it('refuses a pending bundle, a bundle of another ref, shape or repository, and a claimed bundle', async () => {
     const s = await open()
     const pending = bundle()

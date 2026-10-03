@@ -1,7 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -71,17 +70,6 @@ function runtimePaths(): ShimPaths {
   const paths = shimPaths(runtimeRoot)
   prepareBundleStaging(paths.bundleStagingDir)
   return paths
-}
-
-// GIT_NO_LAZY_FETCH is honored from the 2024-05 security releases on.
-function gitHonorsNoLazyFetch(): boolean {
-  const match = /(\d+)\.(\d+)\.(\d+)/.exec(execFileSync('git', ['--version'], { encoding: 'utf8' }))
-  if (!match) return false
-  const [major, minor, patch] = match.slice(1).map(Number) as [number, number, number]
-  if (major !== 2) return major > 2
-  if (minor >= 45) return minor > 45 || patch >= 1
-  const fixed: Record<number, number> = { 39: 4, 40: 2, 41: 1, 42: 2, 43: 4, 44: 1 }
-  return fixed[minor] !== undefined && patch >= fixed[minor]
 }
 
 // A bare origin that serves filters, and a blobless --no-checkout clone of it inside the workspace root.
@@ -462,65 +450,20 @@ describe('sandbox exec handler', () => {
     expect(existsSync(marker)).toBe(false)
   })
 
-  it.skipIf(!gitHonorsNoLazyFetch())(
-    'forces GIT_NO_LAZY_FETCH=1 on bundle create whatever the caller sends',
-    async () => {
-      const root = repository()
-      const { clone } = bloblessClone(root)
-      const paths = runtimePaths()
-      const execute = handler(root, paths)
-      const env = { PATH: process.env.PATH ?? '', HOME: root, GIT_NO_LAZY_FETCH: '0' }
-      for (const [name, request] of [
-        ['overridden', { env }],
-        ['omitted', {}]
-      ] as const) {
-        const file = join(paths.bundleStagingDir, `full-${name}.bundle`)
-        const result = (await execute('exec', {
-          tool: 'git',
-          args: ['bundle', 'create', file, 'refs/heads/main'],
-          cwd: clone,
-          ...request
-        })) as GitExecResult
-        expect(result.code, name).not.toBe(0)
-        expect(result.stderr, name).toMatch(/lazy fetch/i)
-      }
-      // The same unfiltered create run directly lazily fetches and succeeds, so the shim's variable did the blocking.
-      const direct = join(paths.bundleStagingDir, 'direct.bundle')
-      execFileSync('git', ['bundle', 'create', '-q', direct, 'refs/heads/main'], { cwd: clone, stdio: 'ignore' })
-      expect(existsSync(direct)).toBe(true)
-      const filtered = join(paths.bundleStagingDir, 'blobless.bundle')
-      const ok = (await execute('exec', {
-        tool: 'git',
-        args: ['bundle', 'create', '-q', filtered, '--filter=blob:none', 'refs/heads/main'],
-        cwd: clone,
-        env
-      })) as GitExecResult
-      expect(ok.code, ok.stderr).toBe(0)
-      expect(existsSync(filtered)).toBe(true)
-    }
-  )
-
-  it('refuses a bundle target through a symlinked staging dir, onto an existing file, or in a non-private dir', async () => {
+  it('refuses every exec `bundle` form: write-back bundles are cut by the shim-owned `bundle` operation', async () => {
     const root = repository()
     const paths = runtimePaths()
-    const args = (file: string) => ['bundle', 'create', file, 'refs/heads/main']
-    writeFileSync(join(paths.bundleStagingDir, 'taken.bundle'), 'x')
-    await expect(
-      handler(root, paths)('exec', { tool: 'git', args: args(join(paths.bundleStagingDir, 'taken.bundle')) })
-    ).rejects.toThrow(/already exists/)
-    chmodSync(paths.bundleStagingDir, 0o755)
-    await expect(
-      handler(root, paths)('exec', { tool: 'git', args: args(join(paths.bundleStagingDir, 'a.bundle')) })
-    ).rejects.toThrow(/mode 0700/)
-    rmSync(paths.bundleStagingDir, { recursive: true })
-    const outside = mkdtempSync(join(tmpdir(), 'ac-execguard-outside-'))
-    roots.push(outside)
-    chmodSync(outside, 0o700)
-    symlinkSync(outside, paths.bundleStagingDir)
-    await expect(
-      handler(root, paths)('exec', { tool: 'git', args: args(join(paths.bundleStagingDir, 'a.bundle')) })
-    ).rejects.toThrow(/not a real directory/)
-    expect(existsSync(join(outside, 'a.bundle'))).toBe(false)
+    const file = join(paths.bundleStagingDir, 'a.bundle')
+    for (const args of [
+      ['bundle', 'create', file, 'refs/heads/main'],
+      ['bundle', 'create', '-q', file, '--filter=blob:none', 'refs/heads/main'],
+      ['bundle', 'list-heads', file]
+    ]) {
+      await expect(handler(root, paths)('exec', { tool: 'git', args, cwd: root })).rejects.toBeInstanceOf(
+        ExecRefusedError
+      )
+    }
+    expect(existsSync(file)).toBe(false)
   })
 
   it('runs clone --bundle-uri in its joined https form and refuses the separated one', async () => {
