@@ -212,6 +212,8 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   launched: () => Array<{ subject: SandboxSubject; agentId: string; since: number }>
   /** Take over an agent's pods from the cluster (claim → Sandbox → mode) so this member can suspend them. */
   adoptAgent: (agentId: string) => Promise<void>
+  /** Take over the Running pods of agents `serves` admits that no launch here tracks; resolves the subjects it took. */
+  adoptUntracked: (serves: (agentId: string) => boolean) => Promise<string[]>
   /** No longer served here: launches, channels, tunnels and loss watches of every pod of the agent go; claims and volumes stay. */
   releaseAgent: (agentId: string) => void
   /** Stop every pod of an agent this member is handing over, keeping the claims and volumes. What
@@ -558,6 +560,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       // orphan sweep's version fence would have nothing to refuse a collection in flight with.
       await driver.markServed(agentId)
     },
+    adoptUntracked: (serves) => driver.adoptUntracked(serves),
     releaseAgent,
     suspendAgent: async (agentId) => {
       // Adoption records only Running pods and creates nothing, so this wakes none and skips the rest.

@@ -7,6 +7,7 @@ import { K8sHttp } from '@agentconnect.md/k8s-client'
 import { closeFakeApiServers, fakeApiServer } from '@agentconnect.md/k8s-client/testing'
 import { K8sDriver } from '../src/k8s/driver.js'
 import { SANDBOX_LAUNCH_GENERATION, SandboxApi } from '../src/k8s/sandbox-api.js'
+import { AC_LABEL_AGENT } from '../src/k8s/sandbox-identity.js'
 import { LocalStore } from '../src/store/local-store.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
@@ -28,7 +29,8 @@ async function cluster() {
     ready: true,
     modeWrites: [] as string[],
     resourceVersion: 1,
-    annotations: {} as Record<string, string>
+    annotations: {} as Record<string, string>,
+    sandboxListDenied: false
   }
   const sandbox = () => ({
     metadata: {
@@ -39,7 +41,10 @@ async function cluster() {
     },
     spec: {
       operatingMode: state.mode,
-      podTemplate: { spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] } }
+      podTemplate: {
+        metadata: { labels: { [AC_LABEL_AGENT]: AGENT } },
+        spec: { containers: [{ name: 'runtime', image: 'runtime:1' }] }
+      }
     },
     status: { conditions: [{ type: 'Ready', status: state.ready ? 'True' : 'False' }], podIPs: ['10.0.0.8'] }
   })
@@ -95,6 +100,10 @@ async function cluster() {
       }
       return { json: sandbox() }
     }
+    if (path.endsWith('/sandboxes') && method === 'GET') {
+      if (state.sandboxListDenied) return { status: 403, json: { kind: 'Status', reason: 'Forbidden' } }
+      return { json: { items: [sandbox()] } }
+    }
     return { status: 404, json: { kind: 'Status', reason: 'NotFound' } }
   })
   const api = new SandboxApi(new K8sHttp(config), 'agent-sandboxes')
@@ -117,7 +126,13 @@ function stubConnection(record: SpawnRecord): ShimConnection {
   } as unknown as ShimConnection
 }
 
-function member(api: SandboxApi, store: LocalStore, clock: FakeClock, servesAgent?: (agentId: string) => boolean) {
+function member(
+  api: SandboxApi,
+  store: LocalStore,
+  clock: FakeClock,
+  servesAgent?: (agentId: string) => boolean,
+  warn: (line: string) => void = () => {}
+) {
   const dialed: SpawnRecord[] = []
   const revoked: string[] = []
   const driver = new K8sDriver({
@@ -132,7 +147,7 @@ function member(api: SandboxApi, store: LocalStore, clock: FakeClock, servesAgen
       return stubConnection(record)
     },
     revokeChannel: (agentId) => revoked.push(agentId),
-    log: { info: () => {}, warn: () => {}, debug: () => {} }
+    log: { info: () => {}, warn, debug: () => {} }
   })
   return { driver, dialed, revoked }
 }
@@ -381,6 +396,43 @@ describe('sandbox launches follow the duty', () => {
     const [adopted, acquired] = await Promise.all([b.driver.adopt(AGENT), b.driver.ensureSandbox(AGENT)])
     expect(acquired).toBe(adopted)
     expect(b.driver.launched()).toHaveLength(1)
+    await store.close()
+  })
+
+  it('takes back a Running pod no launch tracks, so the idle sweep can suspend it again', async () => {
+    const { api, state } = await cluster()
+    const store = await sharedStore()
+    const { driver } = member(api, store, new FakeClock())
+    await driver.ensureBoundChannel(AGENT)
+    expect(await driver.adoptUntracked(() => true)).toEqual([])
+    // Released without a suspend, as a handoff leaves it: only a duty change would look at this pod again.
+    driver.release(AGENT)
+    expect(driver.launched()).toEqual([])
+    expect(await driver.adoptUntracked((agentId) => agentId !== AGENT)).toEqual([])
+    expect(driver.launched()).toEqual([])
+    expect(await driver.adoptUntracked(() => true)).toEqual([AGENT])
+    expect(await driver.adoptUntracked(() => true)).toEqual([])
+    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
+    expect(state.mode).toBe('Suspended')
+    // A suspended pod needs no launch until its next turn claims one.
+    expect(await driver.adoptUntracked(() => true)).toEqual([])
+    expect(driver.launched()).toEqual([])
+    await store.close()
+  })
+
+  it('says once that a Role without list on Sandboxes leaves the takeover to a duty change', async () => {
+    const { api, state } = await cluster()
+    const store = await sharedStore()
+    const warn = vi.fn()
+    const { driver } = member(api, store, new FakeClock(), undefined, warn)
+    await driver.ensureSandbox(AGENT)
+    driver.release(AGENT)
+    state.sandboxListDenied = true
+    expect(await driver.adoptUntracked(() => true)).toEqual([])
+    expect(await driver.adoptUntracked(() => true)).toEqual([])
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn.mock.calls[0]![0]).toMatch(/listing sandboxes is not permitted/)
+    expect(driver.launched()).toEqual([])
     await store.close()
   })
 

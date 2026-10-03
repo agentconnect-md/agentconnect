@@ -27,6 +27,13 @@ export const PROBE_ROOT_SWEEP_INTERVAL_MS = 60_000
  *  expired rows and may run several git commands per candidate. */
 export const SESSION_RETENTION_SWEEP_INTERVAL_MS = 60 * 60_000
 
+// How often the idle sweep looks for Running pods no launch here tracks, which a duty change alone would re-adopt.
+export const UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS = 10 * 60_000
+
+// A pod quiet for this many idle timeouts yet still up has its skip reason logged at info, once per interval.
+export const LONG_IDLE_SKIP_AFTER_TTLS = 4
+export const LONG_IDLE_SKIP_REPORT_INTERVAL_MS = 60 * 60_000
+
 /** Receipts per `event/session-purged` frame. Matches the protocol schema's cap,
  *  which sits far under the frame budget (a batch of ACP ids is tiny). */
 export const MAX_SESSION_PURGE_BATCH = 200

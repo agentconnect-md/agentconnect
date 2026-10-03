@@ -924,6 +924,8 @@ import {
   FEISHU_STREAM_FLUSH_MS,
   SLACK_STREAM_FLUSH_MS,
   IDLE_FLUSH_MS,
+  LONG_IDLE_SKIP_AFTER_TTLS,
+  LONG_IDLE_SKIP_REPORT_INTERVAL_MS,
   MAX_BG_TASK_WAKE_REARMS,
   MAX_BG_TASK_WAKES_PER_SESSION,
   MAX_DRAIN_TEXT_CHARS,
@@ -933,7 +935,8 @@ import {
   MAX_TURN_CONTEXT_REGENERATION_MS,
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
-  SESSION_RETENTION_SWEEP_INTERVAL_MS
+  SESSION_RETENTION_SWEEP_INTERVAL_MS,
+  UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS
 } from './daemon/constants.js'
 import {
   observeStartup,
@@ -1798,6 +1801,11 @@ export class Daemon {
   private lastProbeRootSweepAt = 0
   // Last session-retention GC pass (#485); rides the idle sweep at its own cadence.
   private lastSessionRetentionSweepAt = 0
+  // Last look for Running pods no launch here tracks, and the one still in flight, off the sweep's critical path.
+  private lastUntrackedSandboxAdoptionAt = 0
+  private untrackedSandboxAdoption?: Promise<void>
+  // When each long-quiet pod's skip reason was last logged at info, per subject.
+  private readonly longIdleSkipReportedAt = new Map<string, number>()
   // Single-flight for the retention pass — a slow git cleanup must not overlap
   // the next sweep's pass (the sweep itself is synchronous, the GC is not).
   private sessionRetentionSweepInFlight = false
@@ -21873,11 +21881,15 @@ export class Daemon {
     for (const [agentId, running] of this.k8sAdoptions) {
       if (!running) this.adoptClusterSandbox(agentId)
     }
+    this.adoptUntrackedSandboxes(plane, now)
     const launched = plane.launched()
     this.log.debug(`idle: examining ${launched.length} held sandbox launch(es)`)
+    const held = new Set(launched.map(({ subject }) => subject))
+    for (const subject of this.longIdleSkipReportedAt.keys()) {
+      if (!held.has(subject)) this.longIdleSkipReportedAt.delete(subject)
+    }
     const sessionActivity = new Map<string, Map<string, number>>()
     for (const { subject, agentId, since } of launched) {
-      const skip = (reason: string): void => this.log.debug(`idle: skipping sandbox "${subject}" — ${reason}`)
       const leaf = sandboxSubjectSessionLeaf(subject)
       let activity: number | null
       if (leaf === undefined) {
@@ -21896,6 +21908,10 @@ export class Daemon {
         }
         activity = sessions.get(leaf) ?? null
       }
+      // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
+      const last = Math.max(activity ?? 0, since)
+      const quiet = now - last > ttl
+      const skip = (reason: string): void => this.reportIdleSkip(subject, reason, now - last, ttl, now)
       // Recheck duty and admission after reading the store, before asking the pod to suspend.
       if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) {
         skip('duty held elsewhere')
@@ -21906,9 +21922,6 @@ export class Daemon {
         skip(inUse)
         continue
       }
-      // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
-      const last = Math.max(activity ?? 0, since)
-      const quiet = now - last > ttl
       // A lease on THIS pod defers the suspend: an open page's dirty volume or armed watcher, or this daemon's own on a watcher it saw armed; each lapses within one TTL (§11).
       if (this.sandboxHolds.holds(subject)) {
         skip(`held by ${this.sandboxHolds.reasons(subject).join(', ')}`)
@@ -21928,6 +21941,43 @@ export class Daemon {
         })
         .catch((err) => this.log.warn(`idle: suspending the sandbox "${subject}" failed: ${formatErr(err)}`))
     }
+  }
+
+  /** One sweep skip, at debug unless the pod has stayed quiet several timeouts, when it is logged at info once an hour so a pod that never suspends names what holds it. */
+  private reportIdleSkip(subject: string, reason: string, quietMs: number, ttl: number, now: number): void {
+    const reportedAt = this.longIdleSkipReportedAt.get(subject)
+    if (
+      quietMs <= LONG_IDLE_SKIP_AFTER_TTLS * ttl ||
+      (reportedAt !== undefined && now - reportedAt < LONG_IDLE_SKIP_REPORT_INTERVAL_MS)
+    ) {
+      this.log.debug(`idle: skipping sandbox "${subject}" — ${reason}`)
+      return
+    }
+    this.longIdleSkipReportedAt.set(subject, now)
+    this.log.info(
+      `idle: the sandbox "${subject}" is still up after ${Math.round(quietMs / 60_000)} min without recorded activity — ${reason}`
+    )
+  }
+
+  /** Take over Running pods no launch here tracks, at most once per interval and never awaited, since otherwise only a duty change would. */
+  private adoptUntrackedSandboxes(plane: K8sRuntimePlane, now: number): void {
+    // Duty alone decides, as at a duty gain: before its first auth a member cannot tell its agents from a peer's.
+    if (!this.dutyCoordinator.dutyEnforced() || this.duties.agents().size === 0) return
+    if (this.untrackedSandboxAdoption) return
+    if (now - this.lastUntrackedSandboxAdoptionAt < UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS) return
+    this.lastUntrackedSandboxAdoptionAt = now
+    this.untrackedSandboxAdoption = plane
+      // An agent whose duty-gain takeover is still running or retrying is left to it.
+      .adoptUntracked((agentId) => this.duties.holdsAgent(agentId) && !this.k8sAdoptions.has(agentId))
+      .then((subjects) => {
+        for (const subject of subjects) {
+          this.log.info(`idle: took over the running sandbox "${subject}", which no launch here tracked`)
+        }
+      })
+      .catch((err) => this.log.warn(`idle: looking for running sandboxes no launch tracks failed: ${formatErr(err)}`))
+      .finally(() => {
+        this.untrackedSandboxAdoption = undefined
+      })
   }
 
   /** Where an arm's watcher lives (k8s-daemon-pool §4): an isolated session's own pod when it has one, else the agent's — off the session's directory and its claim, never off what is attached. */
