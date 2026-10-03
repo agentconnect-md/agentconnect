@@ -9315,7 +9315,7 @@ export class LocalStore {
     input: SourceCacheClaimInput & { unreadBefore: number }
   ): Promise<SourceCacheObjectRow[]> {
     return await this.claimSourceCacheRows(
-      "c.kind = 'pointer' AND COALESCE(c.lastReadAt, c.updatedAt) <= @cutoff",
+      "c.kind = 'pointer' AND COALESCE(c.lastReadAt, c.updatedAt) <= @cutoff AND c.updatedAt <= @cutoff",
       'COALESCE(c.lastReadAt, c.updatedAt)',
       input,
       { cutoff: input.unreadBefore }

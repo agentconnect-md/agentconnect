@@ -361,6 +361,22 @@ describe('Source Cache sweep claims and deletes (§10)', () => {
     ])
   })
 
+  it('never claims a pointer rewritten after its last read as unread', async () => {
+    const s = await open()
+    const ptr = pointer('org-a', 'refs/heads/main')
+    const first = bundle()
+    await committed(s, first, GiB)
+    await s.setSourceCachePointer({ orgId: 'org-a', pointerKey: ptr, bundleKey: first, now: 1_000 })
+    await s.touchSourceCacheRead({ orgId: 'org-a', key: ptr, at: 2_000 })
+    const second = bundle()
+    await committed(s, second, GiB)
+    await s.setSourceCachePointer({ orgId: 'org-a', pointerKey: ptr, bundleKey: second, now: 100_000 })
+    expect(await s.claimUnreadSourceCachePointers({ ...claim, now: 100_001, unreadBefore: 5_000 })).toEqual([])
+    expect(keysOf(await s.claimUnreadSourceCachePointers({ ...claim, now: 300_000, unreadBefore: 200_000 }))).toEqual([
+      ptr
+    ])
+  })
+
   it('deletes idempotently, releases committed bytes, honours the claim fence, and unpoints a deleted pointer', async () => {
     const s = await open()
     const b = bundle()
