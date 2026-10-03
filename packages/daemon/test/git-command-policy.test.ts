@@ -5,12 +5,11 @@ import { ExecRefusedError, isValidBranchRef, validateGitArgs } from '../src/work
 // Pure, I/O-free table of the shim's Git argv policy; real-Git execution lives in shim-exec-handler.test.ts.
 
 const STAGING = '/run/agentconnect/bundle-staging'
-const context = { bundleStagingDir: STAGING }
 const refuses = (args: string[]): void => {
-  expect(() => validateGitArgs(args, context)).toThrow(ExecRefusedError)
+  expect(() => validateGitArgs(args)).toThrow(ExecRefusedError)
 }
 const admits = (args: string[]): void => {
-  expect(() => validateGitArgs(args, context)).not.toThrow()
+  expect(() => validateGitArgs(args)).not.toThrow()
 }
 
 describe('refused long options include every abbreviation Git accepts', () => {
@@ -132,46 +131,19 @@ const BAD_REFS = [
 ]
 const GOOD_REFS = ['refs/heads/main', 'refs/heads/feat/a-b', 'refs/heads/-x', 'refs/heads/a.b']
 
-describe.skipIf(process.platform === 'win32')('bundle create', () => {
+// Write-back bundles are cut by the shim's own `bundle` operation (source-cache.md §6.1), so exec admits no form of `bundle`.
+describe('bundle', () => {
   const file = `${STAGING}/x.bundle`
   it.each([
     [['bundle', 'create', file, 'refs/heads/main']],
     [['bundle', 'create', '-q', file, 'refs/heads/main']],
     [['bundle', 'create', file, '--filter=blob:none', 'refs/heads/main']],
-    [['bundle', 'create', '-q', file, '--filter=blob:none', 'refs/heads/feat/a-b']]
-  ])('admits %j', (args) => admits(args))
-
-  it.each([
+    [['bundle', 'create', '-q', file, '--filter=blob:none', 'refs/heads/feat/a-b']],
     [['bundle', 'verify', file]],
     [['bundle', 'unbundle', file]],
     [['bundle', 'list-heads', file]],
-    [['bundle']],
-    [['bundle', 'create', '-', 'refs/heads/main']],
-    [['bundle', 'create', 'x.bundle', 'refs/heads/main']],
-    [['bundle', 'create', '/tmp/x.bundle', 'refs/heads/main']],
-    [['bundle', 'create', `${STAGING}/../x.bundle`, 'refs/heads/main']],
-    [['bundle', 'create', `${STAGING}/sub/x.bundle`, 'refs/heads/main']],
-    [['bundle', 'create', `${STAGING}//x.bundle`, 'refs/heads/main']],
-    [['bundle', 'create', `${STAGING}/x.pack`, 'refs/heads/main']],
-    [['bundle', 'create', `${STAGING}/.bundle`, 'refs/heads/main']],
-    [['bundle', 'create', `${STAGING}/-x.bundle`, 'refs/heads/main']],
-    [['bundle', 'create', file]],
-    [['bundle', 'create', file, 'refs/heads/a', 'refs/heads/b']],
-    ...BAD_REFS.map((ref) => [['bundle', 'create', file, ref]]),
-    [['bundle', 'create', file, '--all']],
-    [['bundle', 'create', file, '--filter=tree:0', 'refs/heads/main']],
-    [['bundle', 'create', file, '--filter=blob:limit=1k', 'refs/heads/main']],
-    [['bundle', 'create', '--quiet', file, 'refs/heads/main']],
-    [['bundle', 'create', '--progress', file, 'refs/heads/main']],
-    [['bundle', 'create', '--version=3', file, 'refs/heads/main']],
-    [['bundle', 'create', file, '--stdin']],
-    [['bundle', 'create', file, '-q', 'refs/heads/main']],
-    [['bundle', 'create', file, 'refs/heads/main', '--filter=blob:none']]
-  ])('refuses %j', (args) => refuses(args as string[]))
-
-  it('is refused without a configured staging directory', () => {
-    expect(() => validateGitArgs(['bundle', 'create', file, 'refs/heads/main'])).toThrow(ExecRefusedError)
-  })
+    [['bundle']]
+  ])('refuses %j', (args) => refuses(args))
 })
 
 describe('isValidBranchRef', () => {

@@ -96,7 +96,7 @@ function harness(
       return true
     }
   }
-  const planner = createSourceCacheReadPlanner({
+  const cachePlanner = createSourceCacheReadPlanner({
     store: () => store,
     presigner: {
       async presignGet(key) {
@@ -141,7 +141,12 @@ function harness(
     rows.set(target, row(target, { shape, refHash: pointer.refHash, ...bundleExtra }))
     return { latest, target }
   }
-  return { planner, rows, reads, touches, signed, authorized, outcomes, warnings, seed }
+  // The bundle half of a plan, which every read case below asserts on.
+  const planner = {
+    plan: async (r: WorkspaceBundleRequest) => (await cachePlanner.plan(r)).bundle,
+    record: cachePlanner.record
+  }
+  return { planner, cachePlanner, rows, reads, touches, signed, authorized, outcomes, warnings, seed }
 }
 
 const request = (a: Agent, shape: SourceCacheShape = 'blobless', cloneUrl = URL_HTTPS): WorkspaceBundleRequest => ({
@@ -309,5 +314,42 @@ describe('the Source Cache workspace read planner', () => {
     h.planner.record({ kind: 'fallback', bundleKey: 'k', shape: 'full', reason: 'download-warning', detail: 'd' })
     expect(h.warnings).toEqual([expect.stringContaining('bundle=k shape=full reason=download-warning')])
     expect(h.outcomes).toMatchObject([{ kind: 'fallback', reason: 'download-warning' }])
+  })
+
+  it('carries the write-back target with the observed pointer target on a hit and on a missing pointer', async () => {
+    const h = harness()
+    const { latest, target } = h.seed({ repoClass: 'anon', repo: anonRepoId(URL_HTTPS) }, {}, { createdAt: 42 })
+    const hit = await h.cachePlanner.plan(request(agent()))
+    expect(hit.bundle).toMatchObject({ bundleKey: target, bundleCreatedAt: 42 })
+    expect(hit.target).toEqual({
+      orgId: ORG,
+      repoClass: 'anon',
+      repoId: anonRepoId(URL_HTTPS),
+      ref: 'refs/heads/main',
+      shape: 'blobless',
+      pointerKey: latest,
+      observedTargetKey: target
+    })
+
+    const empty = harness()
+    const missed = await empty.cachePlanner.plan(request(agent(), 'full'))
+    expect(missed.bundle).toBeUndefined()
+    expect(missed.target).toMatchObject({ repoClass: 'anon', shape: 'full', observedTargetKey: null })
+  })
+
+  it('carries a cred target only after the authorizer succeeds', async () => {
+    const ok = harness({ decision: githubDecision })
+    const plan = await ok.cachePlanner.plan(request(agent({ gitCredential: 'github-app' }), 'full'))
+    expect(plan.target).toMatchObject({ repoClass: 'cred', repoId: 'github:42', observedTargetKey: null })
+
+    const refused = harness({ decision: { ok: false, reason: 'unavailable', detail: 'x' } })
+    expect((await refused.cachePlanner.plan(request(agent({ gitCredential: 'github-app' })))).target).toBeUndefined()
+    expect((await harness({ org: undefined }).cachePlanner.plan(request(agent()))).target).toBeUndefined()
+    const odd = agent()
+    ;(odd.workspace as { gitCredential?: string }).gitCredential = 'mystery'
+    expect((await harness().cachePlanner.plan(request(odd))).target).toBeUndefined()
+    expect(
+      (await harness({ storeError: new Error('down') }).cachePlanner.plan(request(agent()))).target
+    ).toBeUndefined()
   })
 })

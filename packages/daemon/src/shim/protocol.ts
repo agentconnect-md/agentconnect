@@ -50,8 +50,13 @@ export const SHIM_PARENT_FD_ENV = 'AC_SHIM_PARENT_FD'
 /** `1` under a boundary that passes stdio alone: stdin stays open past the identity line, and its end-of-file means stop or a gone daemon. */
 export const SHIM_STDIN_LIFELINE_ENV = 'AC_SHIM_STDIN_LIFELINE'
 
-/** `cluster-skills-v2` admits the widened skill manifest; a v1-only shim still gets the narrow one. */
-export const ShimFeatureSchema = z.enum(['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'])
+/** `cluster-skills-v2` admits the widened skill manifest; `source-cache-bundle-v1` serves the `bundle` capability. */
+export const ShimFeatureSchema = z.enum([
+  'cluster-skills-v1',
+  'cluster-skills-v2',
+  'cluster-skills-v3',
+  'source-cache-bundle-v1'
+])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>
 
 /** Operations the daemon may ask a bound shim to perform. Every one is authorized
@@ -80,6 +85,8 @@ export const ShimCapabilitySchema = z.enum([
   'skills-wide',
   // Bounded paging of prior and installed skill receipts.
   'skills-receipts',
+  // Create, upload and discard a shim-minted Source Cache bundle handle (source-cache.md §9, §13).
+  'bundle',
   /** Report which runtimes this image actually provides, by asking them. The daemon cannot learn
    *  this any other way: `--k8s` runs no local runtime, and anything it states from its own
    *  configuration is a claim about an image it never opened. */

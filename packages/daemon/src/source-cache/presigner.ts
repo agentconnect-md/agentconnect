@@ -1,7 +1,7 @@
 import { isIP } from 'node:net'
 import { SOURCE_CACHE_GRACE_SECONDS, sourceCacheEndpoint, type SourceCacheConfig } from './config.js'
 import type { CredentialsProvider } from './credentials.js'
-import { isSourceCacheObjectKey, type SourceCacheObjectKey } from './keys.js'
+import { parseSourceCacheObjectKey, type SourceCacheObjectKey } from './keys.js'
 import { amzDate, presign } from './sigv4.js'
 
 // Presigned Source Cache URLs (source-cache.md §6 item 4, §9): GET signs host only; PUT signs length, checksum and tag as headers.
@@ -69,7 +69,8 @@ export function createPresigner(opts: PresignerOptions): SourceCachePresigner {
   const now = opts.now ?? Date.now
   const address = addressFor(opts.endpointOverride ?? sourceCacheEndpoint(config), config.bucket, config.forcePathStyle)
   const objectPath = (key: SourceCacheObjectKey): string => {
-    if (!isSourceCacheObjectKey(key)) throw new Error('Source Cache key must be a src/ object key')
+    // Pointers are store rows, never objects (§4), so only a bundle key is ever signed.
+    if (parseSourceCacheObjectKey(key)?.kind !== 'bundle') throw new Error('Source Cache key must be a src/ bundle key')
     return `${address.basePath}${config.prefix ? `${config.prefix}/` : ''}${key}`
   }
 

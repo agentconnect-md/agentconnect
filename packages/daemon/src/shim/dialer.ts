@@ -460,6 +460,8 @@ export class ShimDialer {
     const supportsSkills = identity.features?.includes('cluster-skills-v1') === true
     const supportsWideSkills = supportsSkills && identity.features?.includes('cluster-skills-v2') === true
     const supportsReceipts = supportsWideSkills && identity.features?.includes('cluster-skills-v3') === true
+    // An image without bundle staging never advertises the feature, so it never writes back.
+    const supportsBundles = identity.features?.includes('source-cache-bundle-v1') === true
     return {
       ...record,
       grants: record.grants.filter((grant) =>
@@ -469,7 +471,9 @@ export class ShimDialer {
             ? supportsWideSkills
             : grant === 'skills-receipts'
               ? supportsReceipts
-              : true
+              : grant === 'bundle'
+                ? supportsBundles
+                : true
       )
     }
   }

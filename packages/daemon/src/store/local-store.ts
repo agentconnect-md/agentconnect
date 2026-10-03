@@ -1777,7 +1777,7 @@ export type SourceCacheCommitResult =
 
 export type SourceCachePointerResult =
   | { set: true; previousBundleKey: string | undefined }
-  | { set: false; reason: 'bundle-not-committed' | 'bundle-mismatch' | 'bundle-claimed' }
+  | { set: false; reason: 'bundle-not-committed' | 'bundle-mismatch' | 'bundle-claimed' | 'pointer-moved' }
 
 export type SourceCacheDeleteResult =
   { deleted: true; releasedBytes: number } | { deleted: false; reason: 'missing' | 'claim-lost' | 'referenced' }
@@ -9231,6 +9231,8 @@ export class LocalStore {
     pointerKey: string
     bundleKey: string
     now: number
+    /** Compare-and-set: the target the caller last read (null for none); a different current target is `pointer-moved`. */
+    expectedTargetKey?: string | null
   }): Promise<SourceCachePointerResult> {
     const pointer = sourceCacheKeyFor(input.orgId, input.pointerKey, 'pointer')
     sourceCacheKeyFor(input.orgId, input.bundleKey, 'bundle')
@@ -9240,6 +9242,8 @@ export class LocalStore {
       await this.lockSourceCacheUsage(tx, input.orgId, input.now)
       const current = await this.lockSourceCacheObject(tx, input.orgId, input.pointerKey)
       const target = await this.lockSourceCacheObject(tx, input.orgId, input.bundleKey)
+      if (input.expectedTargetKey !== undefined && (current?.targetKey ?? null) !== input.expectedTargetKey)
+        return { set: false, reason: 'pointer-moved' }
       if (!target || target.state !== 'committed') return { set: false, reason: 'bundle-not-committed' }
       const sameRepository = target.repoClass === pointer.repoClass && target.repoId === pointer.repoId
       if (!sameRepository || target.refHash !== pointer.refHash || target.shape !== pointer.shape)

@@ -140,11 +140,18 @@ One bucket (or one prefix of a bucket) per install:
 
 ```
 <prefix>/
-  src/<org>/<class>/<repo>/refs/<refHash>/<shape>/latest   pointer: JSON { bundle, commit, bytes, createdAt }
   src/<org>/<class>/<repo>/bundles/<uuid>.bundle           immutable Git bundle, exactly one ref, one shape
   files/<org>/<sha256>.tar                           reserved: digest-addressed file collection
   snapshots/…                                        reserved: Workspace Snapshot (not this design)
 ```
+
+`latest` is a data-plane store row, not an object: a `source_cache_object` row
+of kind `pointer` keyed `src/<org>/<class>/<repo>/refs/<refHash>/<shape>/latest`
+whose `targetKey` names the bundle (section 10). Reads already resolve through
+that row alone (section 7), the sweep is driven by the same table, and pointer
+writes serialize under the org's usage-row lock, so an S3 pointer object would
+be a second source of truth nobody reads, an extra PUT per write-back, and a
+dependency on `If-Match` that AWS has not been verified for (section 14).
 
 - `class` is the **access class** of the clone that wrote the entry, and a
   reader only ever takes entries of its own class:
@@ -179,7 +186,7 @@ One bucket (or one prefix of a bucket) per install:
   org. That duplication buys a blast radius confined to one org and removes any
   "is this repository public" judgment from the key: the class records how the
   entry was fetched, not what anyone believes about the repository.
-- Bundles are **immutable** and never overwritten; only `latest` moves.
+- Bundles are **immutable** and never overwritten; only the pointer row moves.
 - Source Cache lifecycle rules and access policy apply to `src/` (and later
   `files/`) only. Nothing in this design may match `snapshots/`.
 
@@ -305,15 +312,15 @@ A pool member spawns no Git; the process that spawns Git is the only one whose
 check is a control ([git-workspace-model.md](git-workspace-model.md) §11). Each
 operation this design adds is placed against that rule:
 
-| Operation                                                                                | Path                                      | Inventory change and why it is a control                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ---------------------------------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace clone with `--bundle-uri`                                                      | Shim `exec`                               | `clone` is admitted. New per-subcommand rule: only the exact spelling `--bundle-uri=https://…` is accepted, so the flag cannot read pod-local or cluster-internal files; every unique-prefix abbreviation Git accepts (`--bundle=`, `--bun=`) is refused                                                                                                                                                                                                                                                                                                                                                                          |
-| Workspace retry without the bundle                                                       | Shim `exec`                               | None: the same admitted `clone`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Removing `refs/bundles/*` after a clone                                                  | Shim `exec`                               | None: `show-ref` and `update-ref -d` are admitted. The daemon's bundled-clone wrapper, over shim `exec`, lists refs with `show-ref`, keeps those under `refs/bundles/`, and deletes each one, never a fixed name, because Git 2.50 moved the imported ref from `refs/bundles/<b>` to `refs/bundles/heads/<b>`; `for-each-ref` stays outside the inventory ([git-workspace-model.md](git-workspace-model.md) §11)                                                                                                                                                                                                                  |
-| Connectivity check after a bundled clone                                                 | Shim `exec`                               | Narrow widening: `fsck` is admitted only as exactly `fsck --connectivity-only` with no other argument, because an incomplete bundle can leave a clone of either shape exit 0 (a blobless clone before checkout, a full clone with broken history) and only this read-only check detects it                                                                                                                                                                                                                                                                                                                                        |
-| Workspace write-back bundle                                                              | Shim `exec`                               | Narrow widening: `bundle` is admitted only as `bundle create [-q] <file> --filter=blob:none refs/heads/<branch>` (or without the filter for the `full` shape), with `<file>` a new `*.bundle` directly inside `<runtimeRoot>/bundle-staging` (a 0700, shim-owned directory, checked lexically and by the realpath of its parent); a `HEAD` or `refs/remotes/*` bundle is silently ignored by `--bundle-uri`. The shim forces `GIT_NO_LAZY_FETCH=1` into every `bundle` child's environment as a guard, so an unfiltered create from a partial clone fails instead of fetching; `unbundle`, `verify` and `list-heads` stay refused |
-| Anonymous resolution                                                                     | Shim `exec`                               | None: `ls-remote` is admitted                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Skill acquisition: clone, fetch, subdirectory checkout, `fsck`, retry, write-back bundle | Shim-internal, inside the skill reconcile | Not the exec channel. The shim spawns Git itself with argv it composes from validated plan fields (origin policy on the URL, ref / SHA / subdirectory syntax), under the same refused-argument rules as `exec`, in a private staging directory; nothing the daemon sends is passed as free argv, and the runtime cannot invoke the operation. Its connectivity check is the same `fsck --connectivity-only` as the workspace path                                                                                                                                                                                                 |
+| Operation                                                                                | Path                                      | Inventory change and why it is a control                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace clone with `--bundle-uri`                                                      | Shim `exec`                               | `clone` is admitted. New per-subcommand rule: only the exact spelling `--bundle-uri=https://…` is accepted, so the flag cannot read pod-local or cluster-internal files; every unique-prefix abbreviation Git accepts (`--bundle=`, `--bun=`) is refused                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Workspace retry without the bundle                                                       | Shim `exec`                               | None: the same admitted `clone`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Removing `refs/bundles/*` after a clone                                                  | Shim `exec`                               | None: `show-ref` and `update-ref -d` are admitted. The daemon's bundled-clone wrapper, over shim `exec`, lists refs with `show-ref`, keeps those under `refs/bundles/`, and deletes each one, never a fixed name, because Git 2.50 moved the imported ref from `refs/bundles/<b>` to `refs/bundles/heads/<b>`; `for-each-ref` stays outside the inventory ([git-workspace-model.md](git-workspace-model.md) §11)                                                                                                                                                                                                                                                                                                                    |
+| Connectivity check after a bundled clone                                                 | Shim `exec`                               | Narrow widening: `fsck` is admitted only as exactly `fsck --connectivity-only` with no other argument, because an incomplete bundle can leave a clone of either shape exit 0 (a blobless clone before checkout, a full clone with broken history) and only this read-only check detects it                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Workspace write-back bundle                                                              | Shim `bundle` operation (shim-internal)   | Not the exec channel, which admits no form of `bundle`. The shim composes `bundle create -q <file> [--filter=blob:none] refs/heads/<branch>` itself, with `<file>` named by a handle it mints (a UUID) inside its 0700 `<runtimeRoot>/bundle-staging`; the daemon sends the checkout, the branch, the origin commit and the shape, never a path. The shim refuses a shallow checkout and a branch that no longer names that commit, forces `GIT_NO_LAZY_FETCH=1` last into an environment it builds (hooks and fsmonitor off, no system or global config), and checks with `bundle list-heads` that the file names exactly that ref at that commit; a `HEAD` or `refs/remotes/*` bundle would be silently ignored by `--bundle-uri` |
+| Anonymous resolution                                                                     | Shim `exec`                               | None: `ls-remote` is admitted                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Skill acquisition: clone, fetch, subdirectory checkout, `fsck`, retry, write-back bundle | Shim-internal, inside the skill reconcile | Not the exec channel. The shim spawns Git itself with argv it composes from validated plan fields (origin policy on the URL, ref / SHA / subdirectory syntax), under the same refused-argument rules as `exec`, in a private staging directory; nothing the daemon sends is passed as free argv, and the runtime cannot invoke the operation. Its connectivity check is the same `fsck --connectivity-only` as the workspace path                                                                                                                                                                                                                                                                                                   |
 
 **Refused options include their abbreviations.** Git accepts any unique prefix
 of a long option and runs it as the full option: `clone --upload=<cmd>`,
@@ -377,10 +384,14 @@ its shape: a session root stays blobless, the agent pod's primary stays full.
      therefore a fallback on a non-zero exit, on either warning, or when
      `refs/bundles` is empty after the clone; only the last also catches a
      bundle that names no `refs/heads` ref.
-4. The shim reports a write-back candidate when the clone missed the cache, the
-   clone's origin fetch after the bundle exceeded a delta threshold (default:
-   5,000 objects or 50 MiB; the checkout's lazy blob fetch is not counted), or
-   the bundle is older than 7 days (section 9).
+4. The clone is a write-back candidate when it missed the cache, when the
+   bundled attempt fell back, when the origin delta after the bundle exceeded a
+   threshold (default: 5,000 objects or 50 MiB; the checkout's lazy blob fetch
+   is not counted), or when the bundle is older than 7 days (section 9).
+   Only a fallback that shows the bundle bad or unusable (`clone-failed`,
+   `no-bundle-refs`, `inspect-failed`, `connectivity`, `cleanup-failed`) is a
+   candidate; `download-warning` and `stderr-unavailable` may be transient
+   (an expired GET, a network blip) and skip, so the pointer is not churned.
 
 A resumed pod whose volume already holds the checkout is untouched: it pulls as
 today and uses no cache.
@@ -393,7 +404,7 @@ Daemon implementation (P1, CP1.5):
   needed. `source-cache/read-plan.ts` picks the bundle and
   `workspace/bundled-clone.ts` runs the retry contract.
 - The pointer row's `targetKey` in the data-plane store names the bundle, so a
-  read issues no object-store GET of `latest`. The plan needs a committed,
+  read makes no object-store request to find it. The plan needs a committed,
   unclaimed pointer and bundle of the same class, repository, ref and shape. Any
   planning failure (store, signer, refused resolution) is a miss and an origin
   clone. A GET issuance stamps `lastReadAt` on both rows.
@@ -411,6 +422,30 @@ Daemon implementation (P1, CP1.5):
   is a fallback (`stderr-unavailable`), since a failed download would otherwise
   read as a hit. Planning runs inside the startup `clone` phase, so a
   credentialed `resolveRef` shows in startup progress.
+
+Daemon implementation (P1, CP1.6):
+
+- The daemon, not the shim, decides candidacy, because it drives the clone over
+  `exec` (CP1.5). A hit reports the bundle's tip, read from `show-ref` before
+  `refs/bundles/*` is deleted, and the delta is
+  `rev-list --objects --missing=allow-any [--filter=blob:none] <tip>..<origin commit>`
+  with `--count` and `--disk-usage`; the filter on a blobless clone keeps lazy
+  checkout blobs out. Git's "objects received" progress is not used: it needs a
+  tty or `--progress` and would count lazy blob fetches. Age is the bundle row's
+  `createdAt`. A measuring error skips the write-back.
+- Only the origin's commit is ever cached: `refs/heads/<branch>` must equal
+  `refs/remotes/origin/<branch>` when the daemon looks, and the shim re-checks
+  it before bundling, so an agent's local commits never reach the cache.
+- The class is the one the daemon's own clone instruction used (the managed
+  credential or none), cross-checked against the planned target; a mismatch
+  skips. A `cred` target exists only after `resolveRef` authorized the read.
+- The write-back is fire-and-forget after the clone is published at its final
+  path (a session clone after its rename), on the primary root only, and only
+  for a shim granted `bundle`. One write per pointer runs at a time, two per
+  member.
+- For CP1.7: the writer's pointer compare-and-set can retarget a pointer row the
+  sweep has already claimed as unread, so the sweep must re-check that row's
+  `targetKey`/`updatedAt` under its claim before deleting the pointer.
 
 Workspace resolution: the workspace keeps using the origin as its authority for
 the branch head. The GET URL's class follows the workspace's own
@@ -474,10 +509,10 @@ uploads. This decision does not depend on whether a bucket is configured.
 Write-back is asynchronous and best-effort; the runtime may start before it
 finishes, and a failure is a log line and a metric.
 
-1. The shim's reply lists candidates: (Source, ref, shape, bundle size, bundle
-   SHA-256). It creates the bundle in its staging root from the clone it just
-   made, of that clone's shape (section 6.1), never from a shallow repository.
-   The bundle names `refs/heads/<branch>`, the only kind of ref `--bundle-uri`
+1. The daemon asks the shim's `bundle` `create` operation for a bundle of the
+   clone it just made, of that clone's shape (section 6.1), never from a shallow
+   repository; the reply is a shim-minted handle, the size and the SHA-256. The
+   bundle names `refs/heads/<branch>`, the only kind of ref `--bundle-uri`
    applies; shape correctness comes from bundling only the shape the clone has,
    and `GIT_NO_LAZY_FETCH=1` only guards against a lazy fetch.
 2. **Reserve before signing.** In one transaction the daemon checks the
@@ -494,15 +529,21 @@ finishes, and a failure is a log line and a metric.
    declared SHA-256 (`x-amz-checksum-sha256`), and the object tag
    `ac-cache=pending` are all part of the signature, so the store rejects any
    other length or content and the pod cannot omit or change the tag.
-4. The daemon sends a `writeback` shim operation carrying the URL. The shim
-   uploads from its own process (the URL never appears on a command line).
-5. On the shim's reply the daemon `HEAD`s the object, requires the reserved
-   length and the signed checksum, marks the row `committed`, retags the object `ac-cache=live`, and
-   replaces `latest` with a conditional write (`If-Match` on the ETag it read).
-   Losing that race is dropped silently and the new bundle is marked
-   unreferenced: any valid bundle of the ref is an acceptable pointer target. On
-   a store without conditional writes the replacement is last-writer-wins, which
-   is equally safe and only occasionally regresses to an older bundle.
+4. The daemon sends the shim's `bundle` `upload` operation the handle, the URL
+   and the signed headers. The shim refuses any header set other than exactly
+   those three with the values it recorded for the handle, and uploads from its
+   own process (the URL never appears on a command line), re-hashing as it
+   streams. The daemon then `discard`s the handle on every path; the shim also
+   drops handles past a lifetime and empties its staging directory at start.
+5. On the shim's reply the daemon `HEAD`s the object with
+   `x-amz-checksum-mode: ENABLED` and requires the reserved length and the
+   signed checksum (a store that omits the checksum fails closed), marks the row
+   `committed`, retags the object `ac-cache=live`, and moves the pointer row
+   with a compare-and-set on the target it read when planning. Losing that race
+   is dropped silently: the new bundle stays committed and unpointed, so it ages
+   out like any replaced bundle, since any valid bundle of the ref is an
+   acceptable pointer target. A failed retag skips the pointer, so a pointer
+   never names a `pending`-tagged object.
 
 **Abandoned uploads.** An upload the store accepted but no reply confirmed —
 the pod died, the channel dropped, the member restarted — keeps its `pending`
@@ -530,7 +571,7 @@ Defaults, all Helm values:
 | Pending reservation   | 1 h     | Sweep deletes the object and the row, releasing the reservation               |
 | Pending-tagged object | 2 days  | Bucket lifecycle rule on `ac-cache=pending`, independent of the database      |
 | Unreferenced          | 7 days  | Bucket lifecycle rule on `ac-cache=unreferenced`                              |
-| Unread pointer        | 30 days | Daemon background sweep deletes the pointer; lifecycle then collects          |
+| Unread pointer        | 30 days | Daemon background sweep deletes the pointer row; its bundle then ages out     |
 
 A bundle over the cap is not written, and that repository keeps cloning from the
 origin.
@@ -659,10 +700,14 @@ Session startup never depends on the object store.
   such image whose Git is ≥ 2.38 benefits. Write-back additionally wants a Git
   that honors `GIT_NO_LAZY_FETCH` (2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4,
   2.44.1, 2.45.1+), which the runtime image verifier requires.
-- **Exec inventory:** the `--bundle-uri` rule and the narrow `bundle create`
-  admission (section 6.1).
-- **`writeback` operation:** (Source or workspace, ref, local bundle handle,
-  presigned PUT URL) → (uploaded bytes, SHA-256).
+- **Exec inventory:** the `--bundle-uri` rule; no form of `bundle` (section
+  6.1).
+- **`bundle` capability:** granted only to a shim advertising
+  `source-cache-bundle-v1`, which a shim does only when its staging directory
+  is usable, so older images never write back. Operations: `create` (checkout,
+  `refs/heads/<branch>`, origin commit, shape, size cap) → (handle, bytes,
+  SHA-256); `upload` (handle, presigned PUT URL, signed headers) → (bytes,
+  SHA-256); `discard` (handle). No field carries a filesystem path.
 - **Credential window:** `gitcred` issuance for skill repositories is admitted
   only while the daemon holds a reconcile open for that pod.
 
@@ -723,7 +768,7 @@ query or left unsigned:
 
 | Primitive                                         | MinIO result | Evidence                                                                                                                       |
 | ------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| Conditional `PutObject` with `If-Match`           | Pass         | A wrong ETag was rejected; the matching ETag replaced the pointer.                                                             |
+| Conditional `PutObject` with `If-Match`           | Pass         | A wrong ETag was rejected; the matching ETag replaced the pointer. No longer used: the pointer is a store row (section 4).     |
 | Presigned PUT with signed `Content-Length`        | Pass         | `X-Amz-SignedHeaders` included `content-length`; the exact request stored the declared length.                                 |
 | Presigned PUT with signed `x-amz-checksum-sha256` | Pass         | The correct checksum stored; a body/checksum mismatch returned `XAmzContentChecksumMismatch`.                                  |
 | Presigned PUT with signed `x-amz-tagging`         | Pass         | The stored tag was `ac-cache=pending`; omitting a signed header was refused as an unsigned-header request.                     |
@@ -731,8 +776,8 @@ query or left unsigned:
 
 AWS S3 was **not verified**: this workstation had no AWS credentials. Its
 conditional-write and signing capabilities therefore remain unassumed for P1.
-The fallbacks are: use last-writer-wins pointer replacement when `If-Match` is
-absent (section 9); do not enable write-back when the store cannot enforce the
+The pointer is a store row since CP1.6 (section 4), so `If-Match` is no longer
+required. The fallbacks are: do not enable write-back when the store cannot enforce the
 declared length/checksum/tag on a presigned PUT; and keep write-back disabled
 where the lifecycle cannot select `ac-cache=pending`, because the database sweep
 alone loses the no-row orphan guarantee.
@@ -788,13 +833,13 @@ matrix and test-app pod/timing checks run. The chart default remains off while
 
 ## 15. Change index
 
-| Package       | Change                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, the workspace read planner `source-cache/read-plan.ts` and retry contract `workspace/bundled-clone.ts` behind `workspace-manager.ts`, reconcile plan and write-back in `reconcileSandboxSkills` |
-| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, `writeback` operation, credential window in the `gitcred` tunnel, the `--bundle-uri` and `bundle create` rules in `workspace/git-command-policy.ts`                                                                                                                                                                                                               |
-| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect                                                                                                                                                                                                                                                                                                                      |
-| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                                                                                                                            |
-| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                                                                                                                           |
-| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                                                                                                                                                                                                                                  |
-| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                                                                                                                                                                                                                                  |
-| chart         | `sourceCache.*` values, member credentials, bucket lifecycle rule template                                                                                                                                                                                                                                                                                                                                                 |
+| Package       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, the workspace read planner `source-cache/read-plan.ts` and retry contract `workspace/bundled-clone.ts` behind `workspace-manager.ts`, workspace write-back `source-cache/write-back.ts` with the header-signed HEAD/retag client `source-cache/object-client.ts`, reconcile plan and write-back in `reconcileSandboxSkills` |
+| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, the `bundle` operations (`shim/bundle-handler.ts`, `shim/bundle-protocol.ts`, daemon side `shim/bundle-client.ts`), credential window in the `gitcred` tunnel, the `--bundle-uri` rule in `workspace/git-command-policy.ts`                                                                                                                                                                                                                                                                   |
+| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect; the pointer row's compare-and-set in `setSourceCachePointer`                                                                                                                                                                                                                                                                                                                                                                                    |
+| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| chart         | `sourceCache.*` values, member credentials, bucket lifecycle rule template                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |

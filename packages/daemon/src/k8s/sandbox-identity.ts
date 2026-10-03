@@ -64,7 +64,8 @@ export const RUNTIME_GRANTS: ShimCapability[] = [
   'automerge',
   'skills',
   'skills-wide',
-  'skills-receipts'
+  'skills-receipts',
+  'bundle'
 ]
 
 /** A probe sandbox asks the image what it provides and then RUNS those runtimes to read the

@@ -119,8 +119,16 @@ describe('cloneFromBundle (scripted Git)', () => {
       ['fsck', '--connectivity-only'],
       ...refs.map((ref) => ['update-ref', '-d', ref])
     ])
-    expect(h.reports).toEqual([{ kind: 'hit' }])
+    // The tip is captured before the refs go, for the write-back delta (source-cache.md §7).
+    expect(h.reports).toEqual([{ kind: 'hit', tip: SHA }])
     expect(h.emptied()).toBe(0)
+  })
+
+  it('reports no tip when the bundle refs disagree on one', async () => {
+    const other = 'e'.repeat(40)
+    const h = harness({ answers: { 'show-ref': `${SHA} refs/bundles/main\n${other} refs/bundles/heads/main\n` } })
+    expect(await h.run()).toBe('hit')
+    expect(h.reports).toEqual([{ kind: 'hit' }])
   })
 
   it('checks connectivity for a full clone too, and falls back when its history is incomplete', async () => {

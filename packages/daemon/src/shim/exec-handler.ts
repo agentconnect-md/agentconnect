@@ -15,8 +15,7 @@ import { applyMemoryFsPayload, isMemoryFsPayload } from './memory-fs-channel.js'
 import { srtGitEnv } from './srt-route.js'
 
 export { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError } from '../workspace/git-command-policy.js'
-import { ExecRefusedError, bundleCreateFile, validateGitArgs } from '../workspace/git-command-policy.js'
-import { assertBundleTarget } from './bundle-staging.js'
+import { ExecRefusedError, validateGitArgs } from '../workspace/git-command-policy.js'
 
 /**
  * Per-stream raw ceiling — a cheap first bound, NOT the authoritative one.
@@ -90,15 +89,8 @@ function assertInsideRoot(root: string, cwd: string, requested: string): void {
   }
 }
 
-/** Copy an environment without its unset entries. */
-function definedEntries(env: Record<string, string | undefined>): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const [name, value] of Object.entries(env)) if (value !== undefined) out[name] = value
-  return out
-}
-
 /** Refuse a cwd that escapes the workspace root, whatever the daemon asked for. */
-function resolveCwd(root: string, requested: string | undefined): string {
+export function resolveCwd(root: string, requested: string | undefined): string {
   const base = canonical(root)
   if (!requested) return base
   if (!isAbsolute(requested)) throw new ExecRefusedError('cwd must be absolute')
@@ -136,7 +128,7 @@ export function createExecHandler(
       await applyFileSinkPayload(payload)
       return null
     }
-    if (capability === 'exec') return runGit(payload, deps, paths, abort)
+    if (capability === 'exec') return runGit(payload, deps, abort)
     if (capability === 'probe') return probeRuntimes(deps, abort)
     if (capability === 'skills') {
       if (typeof payload !== 'object' || payload === null || !('cwd' in payload)) {
@@ -215,18 +207,11 @@ async function probeRuntimes(deps: ExecHandlerDeps, abort?: AbortSignal): Promis
   })
 }
 
-async function runGit(
-  payload: unknown,
-  deps: ExecHandlerDeps,
-  paths: ShimPaths,
-  abort?: AbortSignal
-): Promise<GitExecResult> {
+async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSignal): Promise<GitExecResult> {
   const parsed = GitExecPayloadSchema.parse(payload)
-  validateGitArgs(parsed.args, { bundleStagingDir: paths.bundleStagingDir })
+  validateGitArgs(parsed.args)
   const [subcommand, ...rest] = parsed.args
   const cwd = resolveCwd(deps.workspaceRoot, parsed.cwd)
-  // The bundle file is fenced to the shim's staging dir by realpath here, not to the workspace.
-  if (subcommand === 'bundle') assertBundleTarget(paths.bundleStagingDir, bundleCreateFile(parsed.args))
   // Every non-option operand of clone/worktree is a candidate write path, so each is fenced to the root as Git resolves it.
   if (subcommand === 'clone' || subcommand === 'worktree') {
     for (const argument of rest) {
@@ -237,10 +222,7 @@ async function runGit(
   // The caller's deadline governs, bounded by this side's ceiling so a compromised daemon cannot pin a child here.
   const timeoutMs = Math.min(parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS, deps.timeoutMs ?? MAX_TIMEOUT_MS)
   // Inside SRT the holder's empty proxy pins would leave no route out, so they name the boundary's own bridge (session-executors.md §5).
-  const shimEnv = deps.shimEnv ?? process.env
-  const base = srtGitEnv(parsed.env, shimEnv)
-  // Set last so neither the caller nor SRT can lift it: a bundle create must never lazily fetch from a partial clone.
-  const env = subcommand === 'bundle' ? { ...(base ?? definedEntries(shimEnv)), GIT_NO_LAZY_FETCH: '1' } : base
+  const env = srtGitEnv(parsed.env, deps.shimEnv ?? process.env)
   return await new Promise<GitExecResult>((resolvePromise, reject) => {
     execFile(
       'git',

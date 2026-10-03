@@ -40,6 +40,7 @@ import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-run
 import type { GitRunner } from '../workspace/git-runner.js'
 import { deferredGitRunner } from '../workspace/git-runner.js'
 import type { ExecutionPlane } from '../execution/plane.js'
+import { ShimBundleClient } from '../shim/bundle-client.js'
 
 const SILENT = { info: () => {}, warn: () => {} }
 
@@ -515,6 +516,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     sandboxBound: (subject) => boundSession(subject) !== undefined,
     // Bound-then-retain in one synchronous step, as the sweep's own gate reads it: a caller that checked and then awaited would have its pod suspended underneath it.
     holdIfBound: (subject) => (boundSession(subject) ? driver.retainLaunched(subject) : undefined),
+    bundleStagerFor: async (agentId, path) => {
+      const session = await sessionForPath(agentId, path).catch(() => undefined)
+      return session?.hasCapability('bundle') ? new ShimBundleClient(session) : undefined
+    },
     clearPath: async (agentId, root) => {
       const session = await sessionForPath(agentId, root).catch(() => undefined)
       if (!session) return `agent ${agentId} has no bound sandbox channel for ${root}`

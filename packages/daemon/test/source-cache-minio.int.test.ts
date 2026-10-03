@@ -1,10 +1,26 @@
+import { execFileSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
+import { mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeAll, describe, expect, inject, it } from 'vitest'
+import { createBundleHandler } from '../src/shim/bundle-handler.js'
+import {
+  BundleCreateResultSchema,
+  BundleUploadResultSchema,
+  type BundleCreateRequest,
+  type BundleUploadRequest
+} from '../src/shim/bundle-protocol.js'
+import { prepareBundleStaging } from '../src/shim/bundle-staging.js'
 import type { CredentialsProvider } from '../src/source-cache/credentials.js'
-import { bundleKey, newBundleId, type SourceCacheObjectKey } from '../src/source-cache/keys.js'
+import { anonRepoId, bundleKey, newBundleId, pointerKey, type SourceCacheObjectKey } from '../src/source-cache/keys.js'
+import { createObjectClient } from '../src/source-cache/object-client.js'
 import { createPresigner, type SourceCachePresignerConfig } from '../src/source-cache/presigner.js'
 import { amzDate, presign } from '../src/source-cache/sigv4.js'
+import { createSourceCacheWriter, type SourceCacheBundleStager } from '../src/source-cache/write-back.js'
+import type { GitRunner } from '../src/workspace/git-runner.js'
+import { openTestStore } from './store-support.js'
 
 // The P0 store-matrix facts (source-cache.md §14) re-proved through this presigner against MinIO.
 
@@ -171,5 +187,105 @@ describe.skipIf(!minio)('Source Cache presigned URLs on MinIO', () => {
     const reply = await send((await signer.presignGet(key)).url, 'GET')
     expect(reply.status).toBe(200)
     expect(reply.body).toBe('bundle bytes')
+  })
+
+  it('writes a workspace back end to end: reserve, presign, shim upload, HEAD, commit, retag live, pointer', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'ac-writeback-ws-')))
+    const runtime = realpathSync(mkdtempSync(join(tmpdir(), 'ac-writeback-rt-')))
+    const store = await openTestStore()
+    try {
+      const gitEnv = {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'T',
+        GIT_AUTHOR_EMAIL: 't@e',
+        GIT_COMMITTER_NAME: 'T',
+        GIT_COMMITTER_EMAIL: 't@e'
+      }
+      const seed = join(root, 'seed')
+      execFileSync('git', ['init', '-q', '--initial-branch=main', seed])
+      writeFileSync(join(seed, 'a.txt'), 'a\n')
+      execFileSync('git', ['add', '.'], { cwd: seed })
+      execFileSync('git', ['commit', '-qm', 'a'], { cwd: seed, env: gitEnv })
+      const origin = join(root, 'origin.git')
+      execFileSync('git', ['clone', '-q', '--bare', seed, origin])
+      execFileSync('git', ['config', 'uploadpack.allowFilter', 'true'], { cwd: origin })
+      const checkout = join(root, 'checkout')
+      execFileSync('git', ['clone', '-q', '--filter=blob:none', '--no-checkout', `file://${origin}`, checkout])
+
+      const staging = join(runtime, 'bundle-staging')
+      prepareBundleStaging(staging)
+      const handler = createBundleHandler({ workspaceRoot: root, stagingDir: staging, allowHttpUpload: true })
+      // The shim side in process: the same handler the pod serves, reached without a channel.
+      const stager: SourceCacheBundleStager = {
+        create: async (input, abort) =>
+          BundleCreateResultSchema.parse(
+            await handler({ op: 'create', ...input } satisfies BundleCreateRequest, abort)
+          ),
+        upload: async (input, abort) =>
+          BundleUploadResultSchema.parse(
+            await handler({ op: 'upload', ...input } satisfies BundleUploadRequest, abort)
+          ),
+        discard: async (handle) => {
+          await handler({ op: 'discard', handle })
+        }
+      }
+      const git = {
+        raw: async (args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8' })
+      } as unknown as GitRunner
+      const objects = createObjectClient({ config, credentials, endpointOverride: env.endpoint })
+      const writer = createSourceCacheWriter({
+        store: () => store,
+        presigner: signer,
+        objects,
+        limits: { maxBundleBytes: 1024 * 1024, orgQuotaBytes: 10 * 1024 * 1024, pendingReservationSeconds: 3600 },
+        log: { debug: () => {}, info: () => {}, warn: () => {} }
+      })
+      const repoId = anonRepoId('https://github.com/acme/widgets')
+      const latest = pointerKey({
+        org: 'org_1',
+        class: 'anon',
+        repo: repoId,
+        ref: 'refs/heads/main',
+        shape: 'blobless'
+      })
+      const outcome = await writer.consider({
+        target: {
+          orgId: 'org_1',
+          repoClass: 'anon',
+          repoId,
+          ref: 'refs/heads/main',
+          shape: 'blobless',
+          pointerKey: latest,
+          observedTargetKey: null
+        },
+        read: { kind: 'uncached' },
+        checkout,
+        git,
+        stager,
+        credentialed: false
+      })
+      expect(outcome).toMatchObject({ kind: 'written', trigger: 'miss' })
+      const written = (outcome as { bundleKey: string }).bundleKey as SourceCacheObjectKey
+
+      // MinIO returns the stored checksum under checksum mode, which is what the commit gate requires.
+      const head = await objects.head(written)
+      expect(head).toMatchObject({ exists: true, checksumSha256: expect.stringMatching(/=$/) })
+      const tagging = await send(adminUrl('GET', objectPath(written), { tagging: '' }), 'GET')
+      expect(tagging.body).toContain('<Key>ac-cache</Key><Value>live</Value>')
+      expect(await store.getSourceCacheObject('org_1', written)).toMatchObject({
+        state: 'committed',
+        unpointedAt: null
+      })
+      expect(await store.getSourceCacheObject('org_1', latest)).toMatchObject({ targetKey: written })
+      expect(readdirSync(staging)).toEqual([])
+
+      // The committed bundle reads back through an ordinary presigned GET.
+      const fetched = await send((await signer.presignGet(written)).url, 'GET')
+      expect(fetched.status).toBe(200)
+    } finally {
+      await store.close()
+      rmSync(root, { recursive: true, force: true })
+      rmSync(runtime, { recursive: true, force: true })
+    }
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { prepareBundleStaging } from '../src/shim/bundle-staging.js'
@@ -81,6 +81,17 @@ describe.skipIf(process.platform === 'win32')('prepareBundleStaging', () => {
       mkdirSync(dir, { mode: 0o755 })
       prepareBundleStaging(dir)
       expect(lstatSync(dir).mode & 0o777).toBe(0o700)
+    })
+  })
+
+  it('drops every leftover entry, since staged handles never survive a shim restart', () => {
+    withRoot((root) => {
+      const dir = join(root, 'bundle-staging')
+      mkdirSync(join(dir, 'sub'), { recursive: true })
+      writeFileSync(join(dir, 'stale.bundle'), 'x')
+      writeFileSync(join(dir, 'stale.bundle.lock'), 'x')
+      prepareBundleStaging(dir)
+      expect(readdirSync(dir)).toEqual([])
     })
   })
 

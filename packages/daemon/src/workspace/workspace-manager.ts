@@ -59,9 +59,10 @@ import {
   type ManagedCredentialScope
 } from './git-injection.js'
 import { GitTransportError, LocalGitRunner, type GitCloneOutput, type GitRunner } from './git-runner.js'
-import { cloneFromBundle, type BundledCloneReport } from './bundled-clone.js'
+import { cloneFromBundle, type BundleFallbackReason, type BundledCloneReport } from './bundled-clone.js'
 import type { SourceCacheShape } from '../source-cache/keys.js'
-import type { SourceCacheWorkspaceReader, WorkspaceBundlePlan } from '../source-cache/read-plan.js'
+import type { SourceCacheWorkspaceReader, WorkspaceCachePlan } from '../source-cache/read-plan.js'
+import type { SourceCacheWriteRequest, SourceCacheWriter } from '../source-cache/write-back.js'
 import { localWorkspaceFs, type WorkspaceFs } from './workspace-fs.js'
 import { WorkspaceViolationError } from './workspace-files.js'
 import { githubSubmoduleRepo, gitmoduleRepos } from './gitmodules.js'
@@ -317,6 +318,7 @@ export class WorkspaceManager {
   private readonly sessionSelections = new Map<string, SessionSelection>()
   private planeResolver: PlaneResolver | undefined
   private sourceCacheReader: SourceCacheWorkspaceReader | undefined
+  private sourceCacheWriter: SourceCacheWriter | undefined
   // Joins every Git this manager runs; aborted once, when shutdown stops waiting on work it could not otherwise cancel.
   private readonly shutdown = new AbortController()
 
@@ -339,20 +341,52 @@ export class WorkspaceManager {
     this.sourceCacheReader = reader
   }
 
-  /** A bundle for a primary root's off-disk clone, or undefined; secondary roots never read the cache. */
+  /** The pool member's Source Cache writer (source-cache.md §9); unset means no clone writes back. */
+  setSourceCacheWriter(writer: SourceCacheWriter | undefined): void {
+    this.sourceCacheWriter = writer
+  }
+
+  /** A bundle and write-back target for a primary root's off-disk clone; secondary roots never touch the cache. */
   private async planBundle(
     agent: Agent,
     root: Pick<WorkspaceRoot, 'cloneUrl' | 'branch' | 'subtreeName'>,
     shape: SourceCacheShape,
     path: string
-  ): Promise<WorkspaceBundlePlan | undefined> {
+  ): Promise<WorkspaceCachePlan> {
     const reader = this.sourceCacheReader
     if (reader === undefined || root.subtreeName !== undefined || !this.offDisk({ agentId: agent.id, path })) {
-      return undefined
+      return {}
     }
     // A bundle whose fallback could not empty the checkout would retry into a half-populated directory.
-    if (this.planeFor({ agentId: agent.id, path })?.clearPath === undefined) return undefined
+    if (this.planeFor({ agentId: agent.id, path })?.clearPath === undefined) return {}
     return await reader.plan({ agent, cloneUrl: root.cloneUrl, branch: root.branch, shape })
+  }
+
+  /** Fire-and-forget write-back after a clone (§9): never awaited by, and never failing, the preparation. */
+  private scheduleWriteBack(
+    agentId: string,
+    checkout: string,
+    plan: WorkspaceCachePlan,
+    read: SourceCacheWriteRequest['read'],
+    credentialed: boolean
+  ): void {
+    const writer = this.sourceCacheWriter
+    const target = plan.target
+    if (writer === undefined || target === undefined || this.shutdown.signal.aborted) return
+    void (async () => {
+      const stager = await this.planeFor({ agentId, path: checkout })?.bundleStagerFor?.(agentId, checkout)
+      await writer.consider({
+        target,
+        read,
+        checkout,
+        git: this.runnerFor(agentId, checkout).withEnv(workspaceGitLocalEnv()),
+        stager,
+        credentialed,
+        abort: this.shutdown.signal
+      })
+    })().catch((err: unknown) => {
+      workspaceLog.warn(`workspace: source cache write-back for ${checkout} was not run (${formatErr(err)})`)
+    })
   }
 
   /** Empty a checkout before the bundle-less retry; no plane or no clearer is an error, never a silent no-op. */
@@ -363,32 +397,44 @@ export class WorkspaceManager {
     await this.requireEmptiedSandboxPath(agentId, checkout)
   }
 
-  /** Run a clone through the bundle retry contract, recording its cache outcome. */
+  /** Run a clone through the bundle retry contract, recording its cache outcome and returning how it read the cache. */
   private async cloneWithCache(
     agentId: string,
-    plan: WorkspaceBundlePlan | undefined,
+    cachePlan: WorkspaceCachePlan,
     checkout: string,
     clone: (extra: string[]) => Promise<GitCloneOutput | undefined>
-  ): Promise<void> {
+  ): Promise<SourceCacheWriteRequest['read']> {
     const reader = this.sourceCacheReader
-    await cloneFromBundle({
+    const plan = cachePlan.bundle
+    let tip: string | undefined
+    let reason: BundleFallbackReason | undefined
+    const kind = await cloneFromBundle({
       ...(plan ? { bundle: { url: plan.url, key: plan.bundleKey } } : {}),
       shape: plan?.shape ?? 'full',
       clone,
       checkout: () => this.runnerFor(agentId, checkout).withEnv(workspaceGitLocalEnv()),
       empty: () => this.emptyForBundleRetry(agentId, checkout),
-      ...(plan && reader
+      ...(plan
         ? {
-            report: (report: BundledCloneReport) =>
-              reader.record(
+            report: (report: BundledCloneReport) => {
+              if (report.kind === 'hit') tip = report.tip
+              else reason = report.reason
+              reader?.record(
                 report.kind === 'hit'
                   ? { kind: 'hit', bundleKey: plan.bundleKey, shape: plan.shape }
                   : { ...report, bundleKey: plan.bundleKey, shape: plan.shape }
               )
+            }
           }
         : {}),
       log: workspaceLog
     })
+    return {
+      kind,
+      ...(tip !== undefined ? { tip } : {}),
+      ...(reason !== undefined ? { reason } : {}),
+      ...(kind === 'hit' && plan ? { bundleCreatedAt: plan.bundleCreatedAt } : {})
+    }
   }
 
   private planeFor(scope: PlaneScope): ExecutionPlane | undefined {
@@ -2622,7 +2668,7 @@ export class WorkspaceManager {
         if (secondary) {
           taken = { ...root, branch: await this.resolveRemoteDefaultBranch(agent.id, secondary, dirname(cwd)) }
         }
-        await this.cloneSessionRootAt(agent, taken, staged)
+        const writeBack = await this.cloneSessionRootAt(agent, taken, staged)
         await this.prepareSessionCloneCheckout(agent.id, taken, staged, request, false, discover)
         if (secondary) {
           await fs.writeFile(
@@ -2633,6 +2679,8 @@ export class WorkspaceManager {
         }
         // Publish only after checkout and attestation succeed, so a clone is never resumed unready or unattributed.
         await fs.rename(staged, cwd)
+        // Only once the clone sits at its final path, since the bundle is cut in the pod from there.
+        writeBack(cwd)
       } catch (err) {
         await fs.rmTree(staged)
         // A session directory that ended up holding nothing says nothing about the session: reclaim it.
@@ -2758,14 +2806,20 @@ export class WorkspaceManager {
   }
 
   // A blobless partial clone of one root for a session (§11) — whole history, file contents on demand — straight from the remote through the daemon's credential path like a primary's first clone: never a hardlink of the primary (a session with write on its own `.git` could reach the shared inodes), never `--shared`; a remote that refuses the filter answers with a full clone, and a clone that fails fails the session.
-  private async cloneSessionRootAt(agent: Agent, root: WorkspaceRoot, cwd: string): Promise<void> {
+  // Returns the write-back to schedule once the clone is published at its final path.
+  private async cloneSessionRootAt(
+    agent: Agent,
+    root: WorkspaceRoot,
+    cwd: string
+  ): Promise<(checkout: string) => void> {
     const agentId = agent.id
     if (root.githubApp) await preWarmGitCred(agentId, 'clone', additionalRepositoryOf(root))
     // Run in the target's parent, which names the pod that owns it: a runner with no cwd is the agent pod's.
     const git = this.runnerFor(agentId, dirname(cwd)).withEnv(this.sessionCloneGitEnv(agentId, root, cwd))
+    let plan: WorkspaceCachePlan = {}
     // Planning runs inside the clone phase: a credentialed plan's resolveRef round trip is part of the clone's wait.
-    await withStartupPhase('clone', async () =>
-      this.cloneWithCache(agentId, await this.planBundle(agent, root, 'blobless', cwd), cwd, (extra) =>
+    const read = await withStartupPhase('clone', async () =>
+      this.cloneWithCache(agentId, (plan = await this.planBundle(agent, root, 'blobless', cwd)), cwd, (extra) =>
         git.clone(root.cloneUrl, cwd, [
           ...extra,
           `--filter=${SESSION_CLONE_FILTER}`,
@@ -2777,6 +2831,7 @@ export class WorkspaceManager {
       )
     )
     if (root.githubApp) await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId, root.managed)
+    return (checkout) => this.scheduleWriteBack(agentId, checkout, plan, read, root.githubApp)
   }
 
   /** The env for daemon-run Git that materializes a session clone's tree (the clone, the branch checkout, a review reset): a blobless clone fetches file contents on demand from the promisor remote, which the usual `GIT_NO_LAZY_FETCH=1` refuses, so these permit it and carry the credential channel; everything local keeps `workspaceGitLocalEnv`. */
@@ -3238,11 +3293,18 @@ export class WorkspaceManager {
     const env = githubApp
       ? { ...workspaceGitEnvBase(repository), ...cloneGitEnv(agent.id, repository, this.managedScopeOf(agent)) }
       : { ...workspaceGitEnvBase(repository), GIT_TERMINAL_PROMPT: '0' }
+    let plan: WorkspaceCachePlan = {}
+    let read: SourceCacheWriteRequest['read']
     try {
-      await withStartupPhase('clone', async () =>
+      read = await withStartupPhase('clone', async () =>
         this.cloneWithCache(
           agent.id,
-          await this.planBundle(agent, { cloneUrl: repository, branch: agent.workspace.gitBranch }, 'full', checkout),
+          (plan = await this.planBundle(
+            agent,
+            { cloneUrl: repository, branch: agent.workspace.gitBranch },
+            'full',
+            checkout
+          )),
           checkout,
           (extra) =>
             this.runnerFor(agent.id, root)
@@ -3263,6 +3325,7 @@ export class WorkspaceManager {
     if (githubApp) {
       await writeRepoHelperConfig(this.runnerFor(agent.id, checkout), agent.id, this.managedScopeOf(agent))
     }
+    this.scheduleWriteBack(agent.id, checkout, plan, read, githubApp)
   }
 
   resolvePreparedWorkspaceCwd(agent: Agent): string {

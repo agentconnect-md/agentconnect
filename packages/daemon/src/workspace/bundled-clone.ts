@@ -25,7 +25,8 @@ export type BundleFallbackReason =
   | 'connectivity'
   | 'cleanup-failed'
 
-export type BundledCloneReport = { kind: 'hit' } | { kind: 'fallback'; reason: BundleFallbackReason; detail: string }
+export type BundledCloneReport =
+  { kind: 'hit'; tip?: string } | { kind: 'fallback'; reason: BundleFallbackReason; detail: string }
 
 export type BundledCloneResult = 'uncached' | 'hit' | 'fallback'
 
@@ -44,25 +45,35 @@ export interface BundledCloneInput {
   log?: { warn(message: string): void }
 }
 
-/** The refs under `refs/bundles/` in `show-ref` output, whatever layout the Git that wrote them used. */
-export function bundleRefsOf(showRef: string): string[] {
-  const refs: string[] = []
+/** The refs under `refs/bundles/` in `show-ref` output with their object ids, whatever layout the Git that wrote them used. */
+export function bundleRefEntriesOf(showRef: string): Array<{ ref: string; oid: string }> {
+  const entries: Array<{ ref: string; oid: string }> = []
   for (const line of showRef.split('\n')) {
-    const match = /^[0-9a-f]{40,64} (\S+)$/.exec(line.trim())
-    const ref = match?.[1]
-    if (ref !== undefined && ref.startsWith(BUNDLE_REF_PREFIX) && !ref.startsWith('-')) refs.push(ref)
+    const match = /^([0-9a-f]{40,64}) (\S+)$/.exec(line.trim())
+    const ref = match?.[2]
+    if (ref !== undefined && ref.startsWith(BUNDLE_REF_PREFIX) && !ref.startsWith('-'))
+      entries.push({ ref, oid: match![1]! })
   }
-  return refs
+  return entries
 }
 
-/** List refs with `show-ref`; its exit 1 means the repository has none. */
-async function listBundleRefs(git: GitRunner): Promise<string[]> {
+/** The refs under `refs/bundles/` in `show-ref` output. */
+export function bundleRefsOf(showRef: string): string[] {
+  return bundleRefEntriesOf(showRef).map((entry) => entry.ref)
+}
+
+/** List bundle refs with `show-ref`; its exit 1 means the repository has none. */
+async function listBundleRefEntries(git: GitRunner): Promise<Array<{ ref: string; oid: string }>> {
   try {
-    return bundleRefsOf(await git.raw(['show-ref']))
+    return bundleRefEntriesOf(await git.raw(['show-ref']))
   } catch (err) {
     if (err instanceof GitExecError && err.code === 1) return []
     throw err
   }
+}
+
+async function listBundleRefs(git: GitRunner): Promise<string[]> {
+  return (await listBundleRefEntries(git)).map((entry) => entry.ref)
 }
 
 /** Delete every listed `refs/bundles/*` ref, never a fixed name (Git 2.50 moved them under `heads/`). */
@@ -127,12 +138,15 @@ export async function cloneFromBundle(input: BundledCloneInput): Promise<Bundled
     const warning = BUNDLE_DOWNLOAD_WARNINGS.find((text) => output.stderr.includes(text))
     if (warning !== undefined) throw new Fallback('download-warning', warning)
     const git = input.checkout()
-    const refs = await step('inspect-failed', () => listBundleRefs(git))
+    const entries = await step('inspect-failed', () => listBundleRefEntries(git))
+    const refs = entries.map((entry) => entry.ref)
     if (refs.length === 0) throw new Fallback('no-bundle-refs', 'no ref under refs/bundles/ after the clone')
+    // The bundle's tip, captured before its refs go, is what a write-back measures the origin delta from.
+    const tips = new Set(entries.map((entry) => entry.oid))
     // Both shapes: an incomplete bundle can leave a full clone exit 0 with broken history, a blobless one before checkout.
     await step('connectivity', () => git.raw(['fsck', '--connectivity-only']))
     await step('cleanup-failed', () => removeBundleRefs(git, refs))
-    input.report?.({ kind: 'hit' })
+    input.report?.(tips.size === 1 ? { kind: 'hit', tip: [...tips][0]! } : { kind: 'hit' })
     return 'hit'
   } catch (err) {
     if (!(err instanceof Fallback)) throw err

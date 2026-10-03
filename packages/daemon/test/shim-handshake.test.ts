@@ -230,6 +230,25 @@ describe('shim feature negotiation', () => {
       'skills-receipts'
     ])
   })
+
+  it('grants `bundle` only to a shim that advertises source-cache-bundle-v1', async () => {
+    const grantsFor = async (features: string[]): Promise<string[]> => {
+      const clock = new VirtualClock()
+      const { dialer } = scriptedDialer({
+        answer: presents('projected-token', features),
+        verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+        clock
+      })
+      const connection = await runVirtual(
+        clock,
+        dialer.connect(SCRIPTED_ENDPOINT, record({ grants: ['exec', 'bundle'] as never }), 500)
+      )
+      return connection.binding.grants
+    }
+    expect(await grantsFor([])).toEqual(['exec'])
+    expect(await grantsFor(['cluster-skills-v1'])).toEqual(['exec'])
+    expect(await grantsFor(['source-cache-bundle-v1'])).toEqual(['exec', 'bundle'])
+  })
 })
 
 describe('handshake operability counters', () => {
@@ -328,7 +347,7 @@ describe('shim handshake', () => {
       type: 'shim/hello',
       agentId: 'agent-a',
       generation: 3,
-      supportedFeatures: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3']
+      supportedFeatures: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'source-cache-bundle-v1']
     })
     // The audience is what makes handing over the pod's own token safe: a token minted
     // for anything else must not authenticate here.

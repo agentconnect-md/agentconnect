@@ -24,7 +24,9 @@ import { AgentSchema } from '../src/agents/agent-schema.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
+import { ShimBundleClient } from '../src/shim/bundle-client.js'
 import { ShimServer } from '../src/shim/server.js'
+import type { ShimFeature } from '../src/shim/protocol.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
@@ -135,6 +137,7 @@ function shimAgainst(
     /** The projected identity this pod presents; the fake review maps it to a pod. */
     token?: string
     handle?: (capability: string, payload: unknown) => Promise<unknown>
+    features?: ShimFeature[]
   } = {}
 ): ShimClient {
   const server = serverByPort.get(port)
@@ -153,6 +156,7 @@ function shimAgainst(
           }
         }),
     ...(handlers.workspaceRoot === undefined ? {} : { workspaceRoot: handlers.workspaceRoot }),
+    ...(handlers.features ? { features: handlers.features } : {}),
     endpoint: 'accepted-daemon-channel',
     dial: () => server.nextTransport() as Promise<ShimTransport>,
     readToken: () => handlers.token ?? 'projected-token',
@@ -318,6 +322,20 @@ describe('k8s runtime plane assembly', () => {
     expect(plane.memoryFsFor('agent-b')).toBeUndefined()
     expect(sandboxMemoryRoot(undefined)).toBe('/agent/.agentconnect/memory')
     expect(sandboxMemoryRoot('/mnt/vol/')).toBe('/mnt/vol/.agentconnect/memory')
+  })
+
+  it.each([
+    ['grants', ['source-cache-bundle-v1'] as ShimFeature[], true],
+    ['withholds', [] as ShimFeature[], false]
+  ])('hands the writer a bundle stager only when the bound shim %s `bundle`', async (_label, features, granted) => {
+    const plane = await planeUnderTest(fakeApi())
+    const ensuring = plane.ensureChannel('agent-a')
+    shimAgainst(shimPort(plane), { workspaceRoot: '/agent', features })
+    await ensuring
+    expect(typeof plane.bundleStagerFor).toBe('function')
+    const stager = await plane.bundleStagerFor?.('agent-a', '/agent/checkout')
+    expect(stager instanceof ShimBundleClient).toBe(granted)
+    expect(await plane.bundleStagerFor?.('agent-b', '/agent/checkout')).toBeUndefined()
   })
 
   it('resolves a dialing pod back to its launch, through the ADOPTED pod name', async () => {
