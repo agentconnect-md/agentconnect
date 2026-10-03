@@ -7,6 +7,7 @@ import {
   credRepoId,
   isSourceCacheObjectKey,
   newBundleId,
+  parseSourceCacheObjectKey,
   pointerKey,
   refHash
 } from '../src/source-cache/keys.js'
@@ -185,5 +186,27 @@ describe('Source Cache keys (§4)', () => {
     ]) {
       expect(isSourceCacheObjectKey(key), String(key)).toBe(false)
     }
+  })
+
+  it('parses a key back into its segments and nothing else', () => {
+    const pointer = pointerKey({ org: 'org_1', class: 'anon', repo: ANON, ref: 'refs/heads/main', shape: 'full' })
+    expect(parseSourceCacheObjectKey(pointer)).toEqual({
+      orgId: 'org_1',
+      repoClass: 'anon',
+      repoId: ANON,
+      kind: 'pointer',
+      refHash: refHash('refs/heads/main'),
+      shape: 'full'
+    })
+    const bundle = bundleKey({ org: 'o', class: 'cred', repo: credRepoId('github', '42'), id: UUID })
+    expect(parseSourceCacheObjectKey(bundle)).toEqual({
+      orgId: 'o',
+      repoClass: 'cred',
+      repoId: 'github:42',
+      kind: 'bundle',
+      id: UUID
+    })
+    for (const key of ['snapshots/o/x', `src/o/anon/github:1/bundles/${UUID}.bundle`, `${bundle}x`, 'src/', 7])
+      expect(parseSourceCacheObjectKey(key), String(key)).toBeUndefined()
   })
 })

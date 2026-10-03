@@ -216,7 +216,15 @@ export const canonicalColumns = [
   'finishedAt',
   'bodiesStrippedAt',
   'messageId',
-  'releasedSeq'
+  'releasedSeq',
+  'repoClass',
+  'repoId',
+  'refHash',
+  'lastReadAt',
+  'unpointedAt',
+  'targetKey',
+  'committedBytes',
+  'pendingBytes'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

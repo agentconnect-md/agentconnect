@@ -495,6 +495,27 @@ table is org-scoped like every pool table
 ([k8s-daemon-pool.md](k8s-daemon-pool.md) §11). The bucket is never listed to
 compute usage.
 
+The store surface (`LocalStore`, both drivers) makes these choices concrete.
+"Referenced" is not a stored flag: a pointer row's `targetKey` names its bundle,
+and the bundle carries `unpointedAt`, the time no pointer has named it since.
+Commit sets it, so a bundle that lost the pointer race ages out like any other,
+and the sweep retags a bundle only once `unpointedAt` is older than the GET
+lifetime. Repository identity is `repoClass` plus `repoId`, the section 4 key
+segments, because a `cred` id is not a URL hash. Usage counts committed bundles
+the database still tracks: the sweep deletes a bundle's row, releasing its
+bytes, once it has retagged it `unreferenced`, while the object waits out the
+lifecycle rule. Each lock site takes the org's usage row, then the pointer, then
+the bundle, so PostgreSQL cannot deadlock between them. Sweep claims pick rows
+with `FOR UPDATE SKIP LOCKED` and stamp a `claimedBy`/`claimedAt` lease, because
+the object-store steps that follow must not run inside an open transaction. A
+member that dies mid-pass leaves rows that become claimable again once the lease
+lapses, and a delete fenced on a lost claim changes nothing. Naming a bundle the
+sweep has claimed is refused, even after the claim's lease lapses, which closes
+the race between a new pointer and the `unreferenced` retag; committing a
+reservation the sweep has claimed is refused for the same reason. These tables
+are excluded from generic store retention, which would delete rows without
+their objects.
+
 Lifecycle tagging: every bundle carries `ac-cache=pending`, `live`, or
 `unreferenced`. The upload signs `pending`; commit retags `live`; the sweep
 retags `unreferenced` when a bundle's pointer moves or is deleted. Lifecycle

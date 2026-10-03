@@ -183,3 +183,21 @@ export function isSourceCacheObjectKey(key: unknown): key is SourceCacheObjectKe
   const match = OBJECT_KEY_RE.exec(key)
   return match !== null && (match[1] === undefined || isCodeHostProvider(match[1]))
 }
+
+export type ParsedSourceCacheObjectKey = { orgId: string; repoClass: SourceCacheClass; repoId: string } & (
+  { kind: 'pointer'; refHash: string; shape: SourceCacheShape } | { kind: 'bundle'; id: string }
+)
+
+const OBJECT_KEY_PARTS_RE =
+  /^src\/([^/]+)\/(anon|cred)\/([^/]+)\/(?:refs\/([0-9a-f]{64})\/(blobless|full)\/latest|bundles\/([0-9a-f-]{36})\.bundle)$/
+
+/** Split a key `isSourceCacheObjectKey` accepts into its §4 segments; undefined for any other string. */
+export function parseSourceCacheObjectKey(key: unknown): ParsedSourceCacheObjectKey | undefined {
+  if (!isSourceCacheObjectKey(key)) return undefined
+  const match = OBJECT_KEY_PARTS_RE.exec(key)
+  if (!match) return undefined
+  const [, orgId, repoClass, repoId, hash, shape, id] = match
+  const repo = { orgId: orgId!, repoClass: repoClass as SourceCacheClass, repoId: repoId! }
+  if (id !== undefined) return { ...repo, kind: 'bundle', id }
+  return { ...repo, kind: 'pointer', refHash: hash!, shape: shape as SourceCacheShape }
+}
