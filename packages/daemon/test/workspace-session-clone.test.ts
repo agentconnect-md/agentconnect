@@ -29,6 +29,7 @@ import {
 import {
   GitTransportError,
   LocalGitRunner,
+  type GitCloneOutput,
   type GitRunner,
   type GitLogEntry,
   type GitPullSummary
@@ -217,9 +218,9 @@ class SeamRunner implements GitRunner {
     return this.delegate().raw(args[0] === 'ls-remote' ? args.map(substitute) : args)
   }
 
-  clone(repo: string, target: string, options?: string[]): Promise<void> {
+  async clone(repo: string, target: string, options?: string[]): Promise<GitCloneOutput | undefined> {
     gitRuns.push({ args: ['clone', repo, target, ...(options ?? [])], env: this.env })
-    return this.delegate().clone(substitute(repo), target, options)
+    return await this.delegate().clone(substitute(repo), target, options)
   }
 
   pull(remote: string, branch: string, options?: string[]): Promise<GitPullSummary> {

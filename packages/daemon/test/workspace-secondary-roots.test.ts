@@ -21,7 +21,13 @@ import {
   initGitInjection,
   workspaceGitLocalEnv
 } from '../src/workspace/git-injection.js'
-import { LocalGitRunner, type GitRunner, type GitLogEntry, type GitPullSummary } from '../src/workspace/git-runner.js'
+import {
+  LocalGitRunner,
+  type GitCloneOutput,
+  type GitRunner,
+  type GitLogEntry,
+  type GitPullSummary
+} from '../src/workspace/git-runner.js'
 import { WorkspaceManager, parseSymrefDefaultBranch } from '../src/workspace/workspace-manager.js'
 import { buildWorkspaceRootsAppend } from '../src/session/turn/standing-context.js'
 import { wireTestPlane } from './workspace-plane-support.js'
@@ -251,8 +257,8 @@ class SeamRunner implements GitRunner {
     return this.delegate().raw(args[0] === 'ls-remote' ? args.map(substitute) : args)
   }
 
-  clone(repo: string, target: string, options?: string[]): Promise<void> {
-    return this.delegate().clone(substitute(repo), target, options)
+  async clone(repo: string, target: string, options?: string[]): Promise<GitCloneOutput | undefined> {
+    return await this.delegate().clone(substitute(repo), target, options)
   }
 
   pull(remote: string, branch: string, options?: string[]): Promise<GitPullSummary> {

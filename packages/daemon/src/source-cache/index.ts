@@ -50,3 +50,12 @@ export {
   type CredentialedCacheReadAuthorizerDeps,
   type CredentialedCacheReadDecision
 } from './authorize-read.js'
+export {
+  createSourceCacheReadPlanner,
+  type SourceCacheMissReason,
+  type SourceCacheReadOutcome,
+  type SourceCacheReadPlannerDeps,
+  type SourceCacheWorkspaceReader,
+  type WorkspaceBundlePlan,
+  type WorkspaceBundleRequest
+} from './read-plan.js'

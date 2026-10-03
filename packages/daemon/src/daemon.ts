@@ -638,7 +638,15 @@ import {
 } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
-import { createSourceCache, type SourceCache, type SourceCachePresigner } from './source-cache/index.js'
+import {
+  createCredentialedCacheReadAuthorizer,
+  createSourceCache,
+  createSourceCacheReadPlanner,
+  type SourceCache,
+  type SourceCachePresigner
+} from './source-cache/index.js'
+import { CodeHostRefResolver } from './codehost/ref-resolver.js'
+import { gitCredReadTokens } from './codehost/repository.js'
 import { CpClient } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
@@ -1586,6 +1594,8 @@ export class Daemon {
   private readonly runtimeEnvironment: RuntimeEnvironment
   /** The pool member's Source Cache signer; undefined outside --k8s or when no bucket is configured. */
   private readonly sourceCache?: SourceCache
+  /** The `resolveRef` cache behind credentialed Source Cache reads; only with a Source Cache. */
+  private readonly sourceCacheRefs?: CodeHostRefResolver
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -1928,6 +1938,23 @@ export class Daemon {
       ...(opts.sourceCacheFetch ? { fetch: opts.sourceCacheFetch } : {}),
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
     })
+    if (this.sourceCache) {
+      // Lazy closures: the credential cache and the store are built in later boot phases.
+      const tokens = gitCredReadTokens({
+        get: (...args) => this.gitCreds.get(...args),
+        invalidate: (...args) => this.gitCreds.invalidate(...args)
+      })
+      this.sourceCacheRefs = new CodeHostRefResolver({ tokens, log: { warn: (m) => this.log.warn(m) } })
+      this.workspaces.setSourceCacheReader(
+        createSourceCacheReadPlanner({
+          store: () => this.store as LocalStore | undefined,
+          presigner: this.sourceCache.presigner,
+          authorize: createCredentialedCacheReadAuthorizer({ resolver: this.sourceCacheRefs, tokens }),
+          orgForAgent: (agentId) => this.orgForAgent(agentId),
+          log: { debug: (m) => this.log.debug(m), warn: (m) => this.log.warn(m) }
+        })
+      )
+    }
     this.decisionEvaluator = new DecisionEvaluator({
       orgForAgent: (agentId) => this.orgForAgent(agentId),
       credentials: (request, signal) => {
@@ -5014,6 +5041,7 @@ export class Daemon {
       this.scheduler.unregister(id)
       this.dreamScheduler.unregister(id)
       this.gitCreds.remove(id)
+      this.sourceCacheRefs?.forgetAgent(id)
       this.gitCredServer?.revoke(id)
       this.runtimeCommands.forget(id)
       void this.store.deleteRuntimeCommands(id).catch(() => undefined)
@@ -5094,6 +5122,7 @@ export class Daemon {
         void this.store.deleteRuntimeCommands(a.id).catch(() => undefined)
         if (workspaceNeedsColdRecovery) {
           this.gitCreds.remove(a.id)
+          this.sourceCacheRefs?.forgetAgent(a.id)
           this.gitCredServer?.revoke(a.id)
         }
         try {
@@ -5122,6 +5151,7 @@ export class Daemon {
       // Additional repositories and grants reach sessions started from now (decision 19): running turns keep their roots, and the next credential request mints at the new authorization.
       if (change.additionalRepos && !workspaceNeedsColdRecovery) {
         this.gitCreds.remove(a.id)
+        this.sourceCacheRefs?.forgetAgent(a.id)
         // Codex's `:workspace` profile reopens only the `.git` that existed at launch, so its shared process is reclaimed once idle.
         const shared =
           change.alwaysRootAdded && this.isCodexRuntime(a.id) ? this.hosts.get(agentHostKey(a.id)) : undefined

@@ -58,7 +58,10 @@ import {
   type GitCredRepository,
   type ManagedCredentialScope
 } from './git-injection.js'
-import { GitTransportError, LocalGitRunner, type GitRunner } from './git-runner.js'
+import { GitTransportError, LocalGitRunner, type GitCloneOutput, type GitRunner } from './git-runner.js'
+import { cloneFromBundle, type BundledCloneReport } from './bundled-clone.js'
+import type { SourceCacheShape } from '../source-cache/keys.js'
+import type { SourceCacheWorkspaceReader, WorkspaceBundlePlan } from '../source-cache/read-plan.js'
 import { localWorkspaceFs, type WorkspaceFs } from './workspace-fs.js'
 import { WorkspaceViolationError } from './workspace-files.js'
 import { githubSubmoduleRepo, gitmoduleRepos } from './gitmodules.js'
@@ -313,6 +316,7 @@ export class WorkspaceManager {
   /** Each session's selected repositories (decision 19) beside the selected roots readied for it, keyed by session. */
   private readonly sessionSelections = new Map<string, SessionSelection>()
   private planeResolver: PlaneResolver | undefined
+  private sourceCacheReader: SourceCacheWorkspaceReader | undefined
   // Joins every Git this manager runs; aborted once, when shutdown stops waiting on work it could not otherwise cancel.
   private readonly shutdown = new AbortController()
 
@@ -328,6 +332,63 @@ export class WorkspaceManager {
   /** Where each scope's workspace is placed; every question below asks it, and no resolver or no plane means this daemon's own host and disk. */
   setPlaneResolver(resolver: PlaneResolver | undefined): void {
     this.planeResolver = resolver
+  }
+
+  /** The pool member's Source Cache reader (source-cache.md §7); unset means every clone is exactly today's. */
+  setSourceCacheReader(reader: SourceCacheWorkspaceReader | undefined): void {
+    this.sourceCacheReader = reader
+  }
+
+  /** A bundle for a primary root's off-disk clone, or undefined; secondary roots never read the cache. */
+  private async planBundle(
+    agent: Agent,
+    root: Pick<WorkspaceRoot, 'cloneUrl' | 'branch' | 'subtreeName'>,
+    shape: SourceCacheShape,
+    path: string
+  ): Promise<WorkspaceBundlePlan | undefined> {
+    const reader = this.sourceCacheReader
+    if (reader === undefined || root.subtreeName !== undefined || !this.offDisk({ agentId: agent.id, path })) {
+      return undefined
+    }
+    // A bundle whose fallback could not empty the checkout would retry into a half-populated directory.
+    if (this.planeFor({ agentId: agent.id, path })?.clearPath === undefined) return undefined
+    return await reader.plan({ agent, cloneUrl: root.cloneUrl, branch: root.branch, shape })
+  }
+
+  /** Empty a checkout before the bundle-less retry; no plane or no clearer is an error, never a silent no-op. */
+  private async emptyForBundleRetry(agentId: string, checkout: string): Promise<void> {
+    if (this.planeFor({ agentId, path: checkout })?.clearPath === undefined) {
+      throw new Error(`workspace: cannot empty ${checkout} for agent "${agentId}" before a cache fallback retry`)
+    }
+    await this.requireEmptiedSandboxPath(agentId, checkout)
+  }
+
+  /** Run a clone through the bundle retry contract, recording its cache outcome. */
+  private async cloneWithCache(
+    agentId: string,
+    plan: WorkspaceBundlePlan | undefined,
+    checkout: string,
+    clone: (extra: string[]) => Promise<GitCloneOutput | undefined>
+  ): Promise<void> {
+    const reader = this.sourceCacheReader
+    await cloneFromBundle({
+      ...(plan ? { bundle: { url: plan.url, key: plan.bundleKey } } : {}),
+      shape: plan?.shape ?? 'full',
+      clone,
+      checkout: () => this.runnerFor(agentId, checkout).withEnv(workspaceGitLocalEnv()),
+      empty: () => this.emptyForBundleRetry(agentId, checkout),
+      ...(plan && reader
+        ? {
+            report: (report: BundledCloneReport) =>
+              reader.record(
+                report.kind === 'hit'
+                  ? { kind: 'hit', bundleKey: plan.bundleKey, shape: plan.shape }
+                  : { ...report, bundleKey: plan.bundleKey, shape: plan.shape }
+              )
+          }
+        : {}),
+      log: workspaceLog
+    })
   }
 
   private planeFor(scope: PlaneScope): ExecutionPlane | undefined {
@@ -2561,7 +2622,7 @@ export class WorkspaceManager {
         if (secondary) {
           taken = { ...root, branch: await this.resolveRemoteDefaultBranch(agent.id, secondary, dirname(cwd)) }
         }
-        await this.cloneSessionRootAt(agent.id, taken, staged)
+        await this.cloneSessionRootAt(agent, taken, staged)
         await this.prepareSessionCloneCheckout(agent.id, taken, staged, request, false, discover)
         if (secondary) {
           await fs.writeFile(
@@ -2697,18 +2758,23 @@ export class WorkspaceManager {
   }
 
   // A blobless partial clone of one root for a session (§11) — whole history, file contents on demand — straight from the remote through the daemon's credential path like a primary's first clone: never a hardlink of the primary (a session with write on its own `.git` could reach the shared inodes), never `--shared`; a remote that refuses the filter answers with a full clone, and a clone that fails fails the session.
-  private async cloneSessionRootAt(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
+  private async cloneSessionRootAt(agent: Agent, root: WorkspaceRoot, cwd: string): Promise<void> {
+    const agentId = agent.id
     if (root.githubApp) await preWarmGitCred(agentId, 'clone', additionalRepositoryOf(root))
     // Run in the target's parent, which names the pod that owns it: a runner with no cwd is the agent pod's.
     const git = this.runnerFor(agentId, dirname(cwd)).withEnv(this.sessionCloneGitEnv(agentId, root, cwd))
-    await withStartupPhase('clone', () =>
-      git.clone(root.cloneUrl, cwd, [
-        `--filter=${SESSION_CLONE_FILTER}`,
-        '--no-checkout',
-        '--branch',
-        root.branch,
-        '--single-branch'
-      ])
+    // Planning runs inside the clone phase: a credentialed plan's resolveRef round trip is part of the clone's wait.
+    await withStartupPhase('clone', async () =>
+      this.cloneWithCache(agentId, await this.planBundle(agent, root, 'blobless', cwd), cwd, (extra) =>
+        git.clone(root.cloneUrl, cwd, [
+          ...extra,
+          `--filter=${SESSION_CLONE_FILTER}`,
+          '--no-checkout',
+          '--branch',
+          root.branch,
+          '--single-branch'
+        ])
+      )
     )
     if (root.githubApp) await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId, root.managed)
   }
@@ -3173,14 +3239,24 @@ export class WorkspaceManager {
       ? { ...workspaceGitEnvBase(repository), ...cloneGitEnv(agent.id, repository, this.managedScopeOf(agent)) }
       : { ...workspaceGitEnvBase(repository), GIT_TERMINAL_PROMPT: '0' }
     try {
-      await withStartupPhase('clone', () =>
-        this.runnerFor(agent.id, root)
-          .withEnv(env)
-          .clone(repository, SANDBOX_CHECKOUT_DIR, ['--branch', agent.workspace.gitBranch, '--single-branch'])
+      await withStartupPhase('clone', async () =>
+        this.cloneWithCache(
+          agent.id,
+          await this.planBundle(agent, { cloneUrl: repository, branch: agent.workspace.gitBranch }, 'full', checkout),
+          checkout,
+          (extra) =>
+            this.runnerFor(agent.id, root)
+              .withEnv(env)
+              .clone(repository, SANDBOX_CHECKOUT_DIR, [
+                ...extra,
+                '--branch',
+                agent.workspace.gitBranch,
+                '--single-branch'
+              ])
+        )
       )
     } catch (err) {
-      // A partial checkout would fail the probe above forever after, since git refuses to clone into
-      // a non-empty directory. Emptying it is the pod's own job — there is no rmSync to reach it.
+      // Git refuses to clone into a non-empty directory, so a partial checkout is emptied by the pod.
       await this.clearSandboxPath(agent.id, checkout)
       throw err
     }
