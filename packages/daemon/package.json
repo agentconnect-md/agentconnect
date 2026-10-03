@@ -71,7 +71,7 @@
     "jose": "^6.2.12",
     "mdast-util-from-markdown": "^2.0.3",
     "pg": "^8.22.0",
-    "simple-git": "^3.36.0",
+    "simple-git": "^4.0.2",
     "skills": "1.5.21",
     "smol-toml": "^1.9.0",
     "strip-json-comments": "^5.0.3",
