@@ -123,10 +123,17 @@ describe('cloneFromBundle (scripted Git)', () => {
     expect(h.emptied()).toBe(0)
   })
 
-  it('never runs fsck for a full clone', async () => {
-    const h = harness({ shape: 'full' })
-    expect(await h.run()).toBe('hit')
-    expect(h.calls.some((args) => args[0] === 'fsck')).toBe(false)
+  it('checks connectivity for a full clone too, and falls back when its history is incomplete', async () => {
+    const ok = harness({ shape: 'full' })
+    expect(await ok.run()).toBe('hit')
+    expect(ok.calls).toContainEqual(['fsck', '--connectivity-only'])
+    const broken = harness({
+      shape: 'full',
+      answers: { 'show-ref': showRef('refs/bundles/main'), fsck: execError(2, 'missing tree', ['fsck']) }
+    })
+    expect(await broken.run()).toBe('fallback')
+    expect(broken.clones).toEqual([[`--bundle-uri=${URL}`], []])
+    expect(broken.emptied()).toBe(1)
   })
 
   it('empties and clones once without the bundle after a non-zero exit', async () => {

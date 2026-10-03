@@ -2161,8 +2161,8 @@ describe('workspace clones read the Source Cache (source-cache.md §7)', () => {
       cwd: CHECKOUT,
       args: ['update-ref', '-d', 'refs/bundles/heads/main']
     })
-    // A full clone verifies by its own checkout; only the blobless shape needs fsck.
-    expect(calls.some((call) => call.args[0] === 'fsck')).toBe(false)
+    // Both shapes verify connectivity: an incomplete bundle can leave a full clone exit 0 with broken history.
+    expect(calls.some((call) => call.args[0] === 'fsck')).toBe(true)
     expect(cache.outcomes).toEqual([{ kind: 'hit', bundleKey: BUNDLE_KEY, shape: 'full' }])
   })
 

@@ -129,7 +129,8 @@ export async function cloneFromBundle(input: BundledCloneInput): Promise<Bundled
     const git = input.checkout()
     const refs = await step('inspect-failed', () => listBundleRefs(git))
     if (refs.length === 0) throw new Fallback('no-bundle-refs', 'no ref under refs/bundles/ after the clone')
-    if (input.shape === 'blobless') await step('connectivity', () => git.raw(['fsck', '--connectivity-only']))
+    // Both shapes: an incomplete bundle can leave a full clone exit 0 with broken history, a blobless one before checkout.
+    await step('connectivity', () => git.raw(['fsck', '--connectivity-only']))
     await step('cleanup-failed', () => removeBundleRefs(git, refs))
     input.report?.({ kind: 'hit' })
     return 'hit'
