@@ -490,7 +490,12 @@ describe('Source Cache sweep claims and deletes (§10)', () => {
         unchanged: guardOf(read!)
       })
     ).toEqual({ deleted: false, reason: 'changed' })
-    expect(await s.getSourceCacheObject('org-a', p)).toMatchObject({ targetKey: b, lastReadAt: 10_500 })
+    // The preserved pointer's claim is released, so a read can use it at once.
+    expect(await s.getSourceCacheObject('org-a', p)).toMatchObject({
+      targetKey: b,
+      lastReadAt: 10_500,
+      claimedBy: null
+    })
     expect((await s.getSourceCacheObject('org-a', b))!.unpointedAt).toBeNull()
 
     // A retarget clears the claim, which the fence alone catches.

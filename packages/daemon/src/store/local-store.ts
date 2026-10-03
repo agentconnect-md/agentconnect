@@ -9355,8 +9355,16 @@ export class LocalStore {
       if (
         guard !== undefined &&
         (row.targetKey !== guard.targetKey || row.updatedAt !== guard.updatedAt || row.lastReadAt !== guard.lastReadAt)
-      )
+      ) {
+        // The row is still wanted: release our claim so reads can use it again before the lease lapses.
+        if (input.claimedBy !== undefined)
+          await tx
+            .prepare(
+              'UPDATE source_cache_object SET claimedBy = NULL, claimedAt = NULL WHERE orgId = ? AND key = ? AND claimedBy = ?'
+            )
+            .run(input.orgId, input.key, input.claimedBy)
         return { deleted: false, reason: 'changed' }
+      }
       if (row.kind === 'bundle') {
         const pointed = await tx
           .prepare("SELECT key FROM source_cache_object WHERE orgId = ? AND kind = 'pointer' AND targetKey = ?")
