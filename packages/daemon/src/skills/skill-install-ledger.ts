@@ -962,7 +962,7 @@ async function acquireExternalWorkspaceLock(workspaceKey: string, stateDir: stri
   await ensureLockDatabaseFile(databaseFile, lockRoot)
   const token = randomUUID()
   const deadline = Date.now() + EXTERNAL_LOCK_WAIT_MS
-  const database = openLockDatabase(databaseFile)
+  const database = await openLockDatabase(databaseFile, deadline)
 
   try {
     for (;;) {
@@ -1068,28 +1068,36 @@ async function acquireExternalWorkspaceLock(workspaceKey: string, stateDir: stri
   }
 }
 
-function openLockDatabase(path: string): DatabaseSync {
-  try {
-    const database = new DatabaseSync(path, {
-      timeout: EXTERNAL_LOCK_BUSY_MS,
-      allowExtension: false,
-      enableDoubleQuotedStringLiterals: false
-    })
-    database.enableDefensive(true)
-    database.exec(`
-      PRAGMA synchronous = FULL;
-      PRAGMA trusted_schema = OFF;
-      CREATE TABLE IF NOT EXISTS workspace_skill_leases (
-        workspace_key TEXT PRIMARY KEY NOT NULL,
-        owner_pid INTEGER NOT NULL,
-        owner_token TEXT NOT NULL,
-        helper_pgid INTEGER,
-        updated_at INTEGER NOT NULL
-      ) WITHOUT ROWID;
-    `)
-    return database
-  } catch (error) {
-    throw safety('workspace skill lock database is unavailable', error)
+async function openLockDatabase(path: string, deadline: number): Promise<DatabaseSync> {
+  for (;;) {
+    let database: DatabaseSync | undefined
+    try {
+      database = new DatabaseSync(path, {
+        timeout: EXTERNAL_LOCK_BUSY_MS,
+        allowExtension: false,
+        enableDoubleQuotedStringLiterals: false
+      })
+      database.enableDefensive(true)
+      database.exec(`
+        PRAGMA synchronous = FULL;
+        PRAGMA trusted_schema = OFF;
+        CREATE TABLE IF NOT EXISTS workspace_skill_leases (
+          workspace_key TEXT PRIMARY KEY NOT NULL,
+          owner_pid INTEGER NOT NULL,
+          owner_token TEXT NOT NULL,
+          helper_pgid INTEGER,
+          updated_at INTEGER NOT NULL
+        ) WITHOUT ROWID;
+      `)
+      return database
+    } catch (error) {
+      database?.close()
+      // A peer's commit can outlast the busy timeout on a slow disk; wait it out as the acquire loop does.
+      if (!isSqliteBusy(error) || Date.now() >= deadline) {
+        throw safety('workspace skill lock database is unavailable', error)
+      }
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50))
   }
 }
 
