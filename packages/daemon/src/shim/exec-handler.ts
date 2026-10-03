@@ -15,7 +15,8 @@ import { applyMemoryFsPayload, isMemoryFsPayload } from './memory-fs-channel.js'
 import { srtGitEnv } from './srt-route.js'
 
 export { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError } from '../workspace/git-command-policy.js'
-import { ExecRefusedError, validateGitArgs } from '../workspace/git-command-policy.js'
+import { ExecRefusedError, bundleCreateFile, validateGitArgs } from '../workspace/git-command-policy.js'
+import { assertBundleTarget } from './bundle-staging.js'
 
 /**
  * Per-stream raw ceiling — a cheap first bound, NOT the authoritative one.
@@ -89,6 +90,13 @@ function assertInsideRoot(root: string, cwd: string, requested: string): void {
   }
 }
 
+/** Copy an environment without its unset entries. */
+function definedEntries(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(env)) if (value !== undefined) out[name] = value
+  return out
+}
+
 /** Refuse a cwd that escapes the workspace root, whatever the daemon asked for. */
 function resolveCwd(root: string, requested: string | undefined): string {
   const base = canonical(root)
@@ -128,7 +136,7 @@ export function createExecHandler(
       await applyFileSinkPayload(payload)
       return null
     }
-    if (capability === 'exec') return runGit(payload, deps, abort)
+    if (capability === 'exec') return runGit(payload, deps, paths, abort)
     if (capability === 'probe') return probeRuntimes(deps, abort)
     if (capability === 'skills') {
       if (typeof payload !== 'object' || payload === null || !('cwd' in payload)) {
@@ -207,60 +215,56 @@ async function probeRuntimes(deps: ExecHandlerDeps, abort?: AbortSignal): Promis
   })
 }
 
-async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSignal): Promise<GitExecResult> {
+async function runGit(
+  payload: unknown,
+  deps: ExecHandlerDeps,
+  paths: ShimPaths,
+  abort?: AbortSignal
+): Promise<GitExecResult> {
   const parsed = GitExecPayloadSchema.parse(payload)
-  validateGitArgs(parsed.args)
+  validateGitArgs(parsed.args, { bundleStagingDir: paths.bundleStagingDir })
   const [subcommand, ...rest] = parsed.args
   const cwd = resolveCwd(deps.workspaceRoot, parsed.cwd)
-  // Both WRITE a path from argv, which the cwd fence never looks at: a clone's target, and the
-  // directory `worktree add`/`remove` creates or deletes. EVERY operand is checked, resolved as git
-  // would resolve it — an allowlist of "which operand is the path" is the thing that goes stale, and
-  // the others (a subcommand verb, a URL, a start-point ref) sit under the cwd and pass anyway.
+  // The bundle file is fenced to the shim's staging dir by realpath here, not to the workspace.
+  if (subcommand === 'bundle') assertBundleTarget(paths.bundleStagingDir, bundleCreateFile(parsed.args))
+  // Every non-option operand of clone/worktree is a candidate write path, so each is fenced to the root as Git resolves it.
   if (subcommand === 'clone' || subcommand === 'worktree') {
     for (const argument of rest) {
       if (argument.startsWith('-')) continue
       assertInsideRoot(deps.workspaceRoot, cwd, argument)
     }
   }
-  // The caller's deadline governs, bounded by this side's ceiling: a compromised daemon must not
-  // be able to pin a child here indefinitely, and a child outliving the request that asked for
-  // it keeps holding index.lock after the caller has given up.
+  // The caller's deadline governs, bounded by this side's ceiling so a compromised daemon cannot pin a child here.
   const timeoutMs = Math.min(parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS, deps.timeoutMs ?? MAX_TIMEOUT_MS)
   // Inside SRT the holder's empty proxy pins would leave no route out, so they name the boundary's own bridge (session-executors.md §5).
-  const env = srtGitEnv(parsed.env, deps.shimEnv ?? process.env)
+  const shimEnv = deps.shimEnv ?? process.env
+  const base = srtGitEnv(parsed.env, shimEnv)
+  // Set last so neither the caller nor SRT can lift it: a bundle create must never lazily fetch from a partial clone.
+  const env = subcommand === 'bundle' ? { ...(base ?? definedEntries(shimEnv)), GIT_NO_LAZY_FETCH: '1' } : base
   return await new Promise<GitExecResult>((resolvePromise, reject) => {
     execFile(
       'git',
       parsed.args,
       {
         cwd,
-        // The env REPLACES rather than extends, matching the contract: the daemon sanitizes it,
-        // and merging the sandbox's own environment back in would undo that.
-        // Boundary worth stating: env is a TRUSTED input here and argv filtering does not close
-        // it — GIT_SSH_COMMAND, or GIT_CONFIG_COUNT pairs naming an executable setting, still
-        // reach execution. It cannot simply be filtered, because those same mechanisms are how
-        // the daemon delivers credential helpers and pins hooksPath; making it untrusted means
-        // moving that policy into the shim, which is a design change, not a patch.
+        // The env replaces rather than extends, and is a trusted input that argv filtering does not close (GIT_SSH_COMMAND, GIT_CONFIG_*).
         ...(env ? { env } : {}),
         timeout: timeoutMs,
         // The daemon's abort kills the child here, matching what simple-git's signal does locally.
         ...(abort ? { signal: abort } : {}),
-        // A killed git leaves index.lock behind, so the timeout is a last resort rather than
-        // the primary cancellation path — the daemon aborting its request is.
+        // A killed git leaves index.lock behind, so the timeout is a last resort behind the daemon's abort.
         killSignal: 'SIGTERM',
         maxBuffer: MAX_STREAM_BYTES
       },
       (error, stdout, stderr) => {
         const failure = error as (Error & { code?: unknown; signal?: string | null; killed?: boolean }) | null
         if (failure?.code === 'ABORT_ERR') {
-          // A cancelled child reports neither killed nor a signal, so it must be classified before
-          // the checks below or it reads as a spawn failure.
+          // A cancelled child reports neither killed nor a signal, so classify it before it reads as a spawn failure.
           reject(new ExecRefusedError(`git ${subcommand} was cancelled`))
           return
         }
         if (failure?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-          // Must precede the killed check: Node kills the child on overflow, so this would
-          // otherwise be reported as a timeout.
+          // Must precede the killed check: Node kills the child on overflow, which would otherwise read as a timeout.
           reject(
             new ExecRefusedError(
               `git ${subcommand} produced more than ${MAX_STREAM_BYTES} bytes on one stream, which does not fit a shim frame`
@@ -282,10 +286,7 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSign
           resolvePromise(result)
         }
         if (failure && (failure.killed === true || typeof failure.signal === 'string')) {
-          // A signalled child has NO exit code — Node reports `code: null`, `signal: SIGTERM`.
-          // Mapping that to 0 was the dangerous case: a timed-out `status` came back as success
-          // with partial output, which every caller reads as a clean tree, and a timed-out
-          // `rev-parse` as an empty HEAD. Non-zero makes it a failure the daemon raises.
+          // A signalled child has no exit code; mapping it to 0 made a timed-out `status` read as a clean tree.
           const signal = failure.signal ?? ''
           deliver({
             code: SIGNAL_EXIT_BASE + (SIGNAL_NUMBERS[signal] ?? 0),
@@ -295,8 +296,7 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSign
           return
         }
         if (failure && typeof failure.code === 'string') {
-          // Spawn-level failure (git missing, cwd gone): not an exit code, so report it as one
-          // the daemon can distinguish from a git-level refusal.
+          // Spawn-level failure (git missing, cwd gone), reported distinctly from a git-level exit.
           reject(new ExecRefusedError(`git could not be run: ${failure.message}`))
           return
         }

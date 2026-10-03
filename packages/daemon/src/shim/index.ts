@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { Socket } from 'node:net'
 import { runSandboxRuntimeProvider } from '../acp/sandbox-runtime-provider.js'
+import { prepareBundleStaging } from './bundle-staging.js'
 import { ShimClient } from './client.js'
 import { createAutoMergeHandler } from './auto-merge-handler.js'
 import { shimEntryOptions } from './entry-options.js'
@@ -65,6 +66,12 @@ async function main(): Promise<number> {
     throw new Error('invalid sandbox identity')
   }
   const { workspaceRoot, paths } = options
+  try {
+    prepareBundleStaging(paths.bundleStagingDir)
+  } catch (error) {
+    // Not fatal: an older or read-only layout only loses `git bundle create`, which is then refused per request.
+    log.warn(`bundle staging unavailable at ${paths.bundleStagingDir}: ${(error as Error).message}`)
+  }
   const exec = createExecHandler({ workspaceRoot, paths, log })
   // Watchers own long-lived processes and stay outside the git-only exec inventory.
   const automerge = createAutoMergeHandler({ paths, log })
