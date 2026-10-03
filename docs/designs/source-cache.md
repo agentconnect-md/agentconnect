@@ -237,6 +237,27 @@ On failure:
 A pinned ref (a commit SHA) still resolves: resolution proves access and the
 commit is taken as given.
 
+Daemon implementation (P1, CP1.4):
+
+- Resolution reads only with CP-minted tokens, never a spawned Git helper: a
+  GitHub workspace uses its `git`-plane installation token, a GitLab workspace
+  the binding's read PAT on the `glab` plane (`read_api` + `read_repository`).
+- A GitHub workspace's spec carries no numeric repository id
+  ([git-workspace-model.md](git-workspace-model.md) §3), so the id behind
+  `github:<repoId>` comes from the github-qualified `gitcred` grant echo; with no
+  echo the `cred` read is refused (`identity_unknown`) and the clone goes to the
+  origin.
+- Identity requires both the numeric id and the current path (GitHub
+  `full_name`, GitLab `path_with_namespace`) to match the spec; a rename fails
+  closed as `replaced` until the spec catches up, costing only a cache miss.
+- The cache key also carries the API base, so an instance change never reuses
+  an answer. A failure is cached with backoff (5 s doubling to 60 s, extended by
+  the host's `Retry-After` or rate-limit reset up to 15 min), replaces any cached
+  success at once, and a success is never served past its 60 s.
+- `authorizeCredentialedCacheRead(agent, workspace)` in
+  `source-cache/authorize-read.ts` is the one gate the workspace read path calls
+  before a `cred` GET.
+
 ## 6. Trust model
 
 Pods run agent code and are not trusted. They may still write the shared cache,
@@ -623,10 +644,11 @@ All operations are daemon-initiated, as today's `begin` / `upload` / `reconcile`
 Each phase ships and rolls back alone.
 
 - **P1 — workspace cache.** S3 configuration and signing on pool members, the
-  `source_cache_object` table, `--bundle-uri` on the workspace clone, workspace
+  `source_cache_object` table, `CodeHostRepository.resolveRef` for credentialed
+  workspaces (section 7), `--bundle-uri` on the workspace clone, workspace
   write-back, the lifecycle sweep, metrics (hit, miss, fallback, write-back,
   bytes).
-- **P2 — skills in the pod.** `CodeHostRepository.resolveRef`, in-pod anonymous
+- **P2 — skills in the pod.** `resolveRef` for skill Sources, in-pod anonymous
   resolution, the credential window,
   `skill-git-in-pod-v1` and the in-pod Git skill install, skill write-back.
   Images without the capability keep the daemon-acquisition path, including its
@@ -737,13 +759,13 @@ matrix and test-app pod/timing checks run. The chart default remains off while
 
 ## 15. Change index
 
-| Package       | Change                                                                                                                                                                                                       |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef`, `workspace-manager.ts` clone bundle URL, reconcile plan and write-back in `reconcileSandboxSkills`                                          |
-| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, `writeback` operation, credential window in the `gitcred` tunnel, the `--bundle-uri` and `bundle create` rules in `workspace/git-command-policy.ts` |
-| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect                                                                                                        |
-| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                              |
-| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                             |
-| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                    |
-| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                    |
-| chart         | `sourceCache.*` values, member credentials, bucket lifecycle rule template                                                                                                                                   |
+| Package       | Change                                                                                                                                                                                                                                                                                                                        |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, `workspace-manager.ts` clone bundle URL, reconcile plan and write-back in `reconcileSandboxSkills` |
+| daemon (shim) | In-pod Git skill acquisition in `shim/skill-handler.ts`, `writeback` operation, credential window in the `gitcred` tunnel, the `--bundle-uri` and `bundle create` rules in `workspace/git-command-policy.ts`                                                                                                                  |
+| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect                                                                                                                                                                                                                         |
+| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                               |
+| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                              |
+| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                                                                                                                                     |
+| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                                                                                                                                     |
+| chart         | `sourceCache.*` values, member credentials, bucket lifecycle rule template                                                                                                                                                                                                                                                    |

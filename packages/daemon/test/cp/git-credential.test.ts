@@ -527,6 +527,13 @@ describe('GitCredentialCache — explicit github provider (§17.3)', () => {
     })
   })
 
+  it('keeps the numeric id a github-qualified grant echoes, and none for an unqualified one', async () => {
+    const qualified = buildV2({ v2: true })
+    expect((await qualified.cache.get(AGENT, 'fetch')).externalRepoId).toBe('501')
+    const plain = buildV2({ v2: false, respond: (_p, n) => grant(`ghs_${n}`, 3540) })
+    expect((await plain.cache.get(AGENT, 'fetch')).externalRepoId).toBeUndefined()
+  })
+
   it('refuses a grant whose provider or repository echo disagrees with the qualified ask', async () => {
     const stripped = buildV2({ v2: true, respond: (_p, n) => grant(`ghs_${n}`, 3540) })
     await expect(stripped.cache.get(AGENT, 'clone')).rejects.toThrow(/github \(unqualified\) for a github request/)
