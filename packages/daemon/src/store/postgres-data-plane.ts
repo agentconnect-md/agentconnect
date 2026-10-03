@@ -3,14 +3,13 @@ import { Pool } from 'pg'
 import { LocalStore, type OrgForAgent } from './local-store.js'
 import { readDataPlaneConfig, type DataPlaneConfig } from './postgres-config.js'
 import { PostgresAsyncDatabase } from './postgres-async-database.js'
-import { migrateDataPlaneSchema } from './postgres-migrations.js'
+import { DATA_PLANE_SCHEMA, migrateDataPlaneSchema } from './postgres-migrations.js'
 
 /**
  * A pool member's durable state: one shared LocalStore over PostgreSQL, plus the pg pool
- * that keeps the install-wide `agentconnect_data_plane` schema migrated. That schema holds
- * no tables of its own any more — its transcript pair was constructed and never read or
- * written, and the fence it carried now lives on the store's own rows (#1041 item 7) — but
- * its migration list must keep running so an installed data plane drops what it still has.
+ * that keeps the install-wide `agentconnect_data_plane` schema migrated. That schema's one
+ * table is the store's identity; its transcript pair was constructed and never read or
+ * written, and the fence it carried now lives on the store's own rows (#1041 item 7).
  */
 export class PostgresDataPlane {
   readonly store: LocalStore
@@ -20,7 +19,9 @@ export class PostgresDataPlane {
 
   private constructor(
     private readonly pool: Pool,
-    store: LocalStore
+    store: LocalStore,
+    /** The database's `store_identity` id, the same for every daemon on this store. */
+    readonly storeId: string
   ) {
     this.store = store
   }
@@ -39,10 +40,13 @@ export class PostgresDataPlane {
       connectionTimeoutMillis: 10_000
     })
     pool.on('error', (error) => onFailure?.(error))
+    let storeId: string
     try {
       const client = await pool.connect()
       try {
         await migrateDataPlaneSchema(client)
+        const identity = await client.query<{ id: string }>(`SELECT id FROM ${DATA_PLANE_SCHEMA}.store_identity`)
+        storeId = identity.rows[0]!.id
       } finally {
         client.release()
       }
@@ -54,7 +58,7 @@ export class PostgresDataPlane {
     try {
       const store = await LocalStore.open({ database, shared: true, ownerId: randomUUID(), orgForAgent })
       await database.finishSchemaInitialization()
-      return new PostgresDataPlane(pool, store)
+      return new PostgresDataPlane(pool, store, storeId)
     } catch (error) {
       await database.close()
       await pool.end().catch(() => undefined)

@@ -3,10 +3,10 @@
 ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20260911-021456@sha256:bc7614a2d7de40b77e03ac8cfdd09b738efbf93391122cb54ca4d1233c68f5cb
 ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20260911-021456@sha256:669063d1594c8610267bbcd5d9503ea5932e712774346a1b1920e6aeb18891ae
 
-ARG AGENT_BROWSER_VERSION=0.38.1
-ARG CLAUDE_ACP_VERSION=0.84.0
-ARG CODEX_ACP_VERSION=2.1.0-agentconnect.1
-ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.35
+ARG AGENT_BROWSER_VERSION=0.38.2
+ARG CLAUDE_ACP_VERSION=0.85.1
+ARG CODEX_ACP_VERSION=2.1.1-agentconnect.1
+ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.36
 ARG OPENCODE_VERSION=1.18.32
 
 # Release builds install applications over stable system bases, then add daemon-versioned helpers.
@@ -246,13 +246,13 @@ RUN --mount=type=bind,from=shim-builder,source=/build,target=/build \
 FROM runtime-sandbox-full AS runtime-sandbox-full-verify
 COPY --from=runtime-sandbox-full-table-check /tmp/ac-table-check.ok /tmp/ac-check/table.ok
 COPY --from=runtime-sandbox-full-smoke /tmp/ac-smoke.ok /tmp/ac-check/smoke.ok
-COPY docker/runtime-sandbox/verify-image.mjs /tmp/ac-check/verify-image.mjs
+COPY docker/runtime-sandbox/verify-image.mjs docker/runtime-sandbox/source-cache-git.mjs /tmp/ac-check/
 RUN node /tmp/ac-check/verify-image.mjs runtime-sandbox-full
 
 FROM runtime-sandbox AS runtime-sandbox-verify
 COPY --from=runtime-sandbox-table-check /tmp/ac-table-check.ok /tmp/ac-check/table.ok
 COPY --from=runtime-sandbox-smoke /tmp/ac-smoke.ok /tmp/ac-check/smoke.ok
-COPY docker/runtime-sandbox/verify-image.mjs /tmp/ac-check/verify-image.mjs
+COPY docker/runtime-sandbox/verify-image.mjs docker/runtime-sandbox/source-cache-git.mjs /tmp/ac-check/
 RUN node /tmp/ac-check/verify-image.mjs runtime-sandbox
 
 # Keep the pool image as the default build target.

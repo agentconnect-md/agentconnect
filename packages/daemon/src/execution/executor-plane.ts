@@ -302,9 +302,10 @@ export class ExecutorPlane implements ExecutionPlane {
     )
   }
 
-  /** The environment incarnation a skill receipt is fenced on: the launch, which is one environment life. */
+  /** The incarnation a skill receipt is fenced on: the session directory the executor reported, which outlives a launch (an idle close, a restart), else the launch for an executor that reports none. */
   workspaceIncarnationFor(subject: string): string | undefined {
-    return this.registry.currentLaunch(subject)?.sandboxUid
+    const launch = this.registry.currentLaunch(subject)
+    return launch?.ready?.workspaceIncarnation ?? launch?.sandboxUid
   }
 
   /** The session `.codex` split its executor reported (prepareExecutorLaunch), for the HOME the holder launches in; undefined for an executor that reports none, or classified another HOME. */

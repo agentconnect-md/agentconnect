@@ -11,7 +11,7 @@ import {
 import { canView } from '../authorization/policy.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { servesSessionContent } from '../domain/session-content.js'
-import type { OrgMemberRole, Shareable, ViewCtx } from '../persistence/ports.js'
+import type { MemberSetRepo, OrgMemberRole, SessionContentStore, Shareable, ViewCtx } from '../persistence/ports.js'
 import type { PlacementResolver, ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
 import type { WebchatTokenClaims, WebchatTokenService } from './webchatToken.js'
@@ -46,13 +46,14 @@ export interface WebchatVerificationDeps {
       thread?: string | null
       daemonId: string | null
       contentSetId: string | null
+      contentStoreId: string | null
       visibility: string
       ownerIdentity: string | null
       contentPurgedAt: Date | null
     } | null>
   }
   /** Who else holds the shared store a session was written to (`domain/session-content.ts`). */
-  memberSets: { sharedStoreMemberIdsOf(setId: string): Promise<string[]> }
+  memberSets: Pick<MemberSetRepo, 'sharedStoreMemberIdsOf'>
   orgs: { roleOf(orgId: string, userId: string): Promise<string | null> }
   remoteMcp: Pick<WebchatRemoteMcpService, 'establish'>
   /** Resolves the daemon a webchat turn should reach — the holder, or any live member that can
@@ -129,9 +130,7 @@ export function webchatBinding(
         return { ok: false, reason: 'continuation unavailable' }
       }
       // The dispatch daemon must still reach the content: the recorder, or a holder of the shared store it wrote to.
-      const sharedStoreMembers = session.contentSetId
-        ? await deps.memberSets.sharedStoreMemberIdsOf(session.contentSetId)
-        : []
+      const sharedStoreMembers = await deps.memberSets.sharedStoreMemberIdsOf(session)
       if (!servesSessionContent({ recordedDaemonId: session.daemonId, sharedStoreMembers }, agentDaemonId)) {
         return { ok: false, reason: 'continuation unavailable' }
       }
@@ -251,7 +250,7 @@ async function hookConversationPeers(
     ) {
       continue
     }
-    const sharedStoreMembers = peer.contentSetId ? await deps.memberSets.sharedStoreMemberIdsOf(peer.contentSetId) : []
+    const sharedStoreMembers = await deps.memberSets.sharedStoreMemberIdsOf(peer)
     if (!servesSessionContent({ recordedDaemonId: peer.daemonId, sharedStoreMembers }, daemonId)) continue
     peers.push({ agentId: peer.agentId, daemonId, targetSessionId: claimed.sessionId })
   }
@@ -263,11 +262,11 @@ export interface ContentReachDeps {
     get(
       orgId: OrgId,
       id: SessionId
-    ): Promise<{ agentId: string; daemonId: string | null; contentSetId: string | null } | null>
+    ): Promise<({ agentId: string; daemonId: string | null } & SessionContentStore) | null>
   }
   agents: { get(orgId: OrgId, id: AgentId): Promise<ResolvableAgent | null> }
   placement: Pick<PlacementResolver, 'dispatchDaemon'>
-  memberSets: { sharedStoreMemberIdsOf(setId: string): Promise<string[]> }
+  memberSets: Pick<MemberSetRepo, 'sharedStoreMemberIdsOf'>
 }
 
 /** Resume fence: each participant's current session must be served where its next turn goes, its recorder or a member of its shared store — a group keeps none, so after a failover the successor never takes a turn without the transcript. */
@@ -284,7 +283,7 @@ export async function everyTurnReachesItsContent(
     // Nobody to reach right now is an offline agent, not a moved one: the turn waits for a member.
     const target = await deps.placement.dispatchDaemon(agent)
     if (!target) continue
-    const sharedStoreMembers = s.contentSetId ? await deps.memberSets.sharedStoreMemberIdsOf(s.contentSetId) : []
+    const sharedStoreMembers = await deps.memberSets.sharedStoreMemberIdsOf(s)
     if (!servesSessionContent({ recordedDaemonId: s.daemonId, sharedStoreMembers }, target)) return false
   }
   return true

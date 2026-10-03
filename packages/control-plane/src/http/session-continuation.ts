@@ -6,6 +6,7 @@ import {
 import { servesSessionContent } from '../domain/session-content.js'
 import type { ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { HttpDeps } from './deps.js'
+import type { SessionContentStore } from '../persistence/ports.js'
 
 /** Why no daemon can host a session continuation right now — the detail view's reason vocabulary. */
 export type ContinuationHostRefusal = 'agent_moved' | 'daemon_offline' | 'unavailable'
@@ -15,15 +16,13 @@ export type ContinuationHost = { ok: true; daemonId: string } | { ok: false; rea
 /** The ONE answer to "which daemon continues this session" — the detail projection (`canContinue`) and the session-target mint both read it, so they cannot disagree. The daemon a turn reaches (`dispatchDaemon`) must be the recorder or a holder of the shared store the rows went to (`domain/session-content.ts`); keying on `session.daemonId` alone read as "agent moved" for every pooled agent once its recorder pod rolled. */
 export async function resolveContinuationHost(
   deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns' | 'repos' | 'config'>,
-  session: { platform: string | null; daemonId: string | null; contentSetId: string | null },
+  session: { platform: string | null; daemonId: string | null } & SessionContentStore,
   agent: ResolvableAgent
 ): Promise<ContinuationHost> {
   const daemonId = await deps.placementResolver.dispatchDaemon(agent)
   // A machine placement always names its daemon; only a set with no live member resolves to nobody.
   if (!daemonId) return { ok: false, reason: 'daemon_offline' }
-  const sharedStoreMembers = session.contentSetId
-    ? await deps.repos.memberSet.sharedStoreMemberIdsOf(session.contentSetId)
-    : []
+  const sharedStoreMembers = await deps.repos.memberSet.sharedStoreMemberIdsOf(session)
   if (!servesSessionContent({ recordedDaemonId: session.daemonId, sharedStoreMembers }, daemonId)) {
     return { ok: false, reason: 'agent_moved' }
   }

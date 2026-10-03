@@ -1,5 +1,5 @@
-import { createHash, randomBytes } from 'node:crypto'
-import { lstat, readFile, realpath } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Duplex } from 'node:stream'
@@ -8,6 +8,7 @@ import { z } from 'zod'
 import type { Logger } from '../log.js'
 import type { ShimSession } from '../shim/session.js'
 import { ClusterSkillClient } from '../shim/skill-client.js'
+import { workspaceIncarnationOf } from '../skills/workspace-incarnation.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT, SANDBOX_SKILL_STAGING_DIR } from '../shim/sandbox-paths.js'
 import {
   DEFAULT_SHIM_LISTEN_PORT,
@@ -76,11 +77,8 @@ print(root, flush=True)
 /** A local VM's skills seam over its bound shim, fenced on the workspace's own identity. */
 export async function microsandboxSkillTarget(session: Pick<ShimSession, 'request' | 'hasCapability'>, cwd: string) {
   // VM replacement preserves bind-mounted storage; replacing that storage must revoke its receipts.
-  const stat = await lstat(cwd, { bigint: true })
-  if (!stat.isDirectory()) throw new Error('skill workspace root is unsafe')
-  const identity = [await realpath(cwd), String(stat.dev), String(stat.ino)]
   return {
-    workspaceIncarnation: `workspace:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`,
+    workspaceIncarnation: await workspaceIncarnationOf(cwd),
     client: new ClusterSkillClient(
       { request: (capability, request, options) => session.request(capability, { cwd, request }, options) },
       session.hasCapability('skills-wide'),

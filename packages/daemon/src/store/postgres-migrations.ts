@@ -49,6 +49,16 @@ const MIGRATIONS: readonly string[] = [
     DROP TABLE IF EXISTS transcript_recipient;
     DROP TABLE IF EXISTS transcript;
     DROP SEQUENCE IF EXISTS transcript_revision_seq;
+  `,
+  // One id per database, created by whichever daemon migrates it first: two daemons that read the
+  // same id write to the same store, which is what the Control Plane needs to let one member of a
+  // group serve another's sessions (domain/session-content.ts).
+  `
+    CREATE TABLE store_identity (
+      singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+      id UUID NOT NULL DEFAULT gen_random_uuid()
+    );
+    INSERT INTO store_identity DEFAULT VALUES;
   `
 ]
 

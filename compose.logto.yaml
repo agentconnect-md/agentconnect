@@ -45,11 +45,11 @@ services:
     restart: 'no'
 
   logto:
-    image: ghcr.io/logto-io/logto:${LOGTO_VERSION:-1.42.0}
+    image: ghcr.io/logto-io/logto:${LOGTO_VERSION:-1.44.0}
     depends_on:
       logto-db-init:
         condition: service_completed_successfully
-    entrypoint: ['sh', '-c', 'npm run cli db seed -- --swe && npm start']
+    entrypoint: ['sh', '-c', 'npm run cli db seed -- --swe && npm run cli db alteration deploy latest && npm start']
     environment:
       DB_URL: postgresql://logto:${LOGTO_POSTGRES_PASSWORD:-logto}@postgres:5432/logto
       ENDPOINT: ${LOGTO_ENDPOINT:-http://localhost:3001}

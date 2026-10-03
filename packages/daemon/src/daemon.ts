@@ -22980,6 +22980,7 @@ export class Daemon {
       ownStrategies: () => this.strategyTable(),
       // Only for the Control Plane's one-time `runInSandbox` migration: the retiring key, or its old default.
       sandboxBackend: () => this.cfg.sandbox.backend ?? 'srt',
+      contentStore: () => this.dataPlane?.storeId,
       executorFacet: () => this.executorFacet,
       admittedRuntimeIds: () => this.admittedRuntimeIds(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),

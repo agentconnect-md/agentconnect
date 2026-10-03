@@ -96,23 +96,43 @@ Non-goals:
 | Skill preview already degrades to `resolvable:false` (whole-source enablement only)                        | `control-plane/src/http/routes/skill-sources.ts`                                        |
 
 Git has a native bundle bootstrap since 2.38: `git clone --bundle-uri=<url>
-<remote>` downloads a bundle, then fetches whatever is missing from the remote.
-`git bundle create <file> --filter=blob:none <ref>` writes a v3 bundle that
-records its filter (`@filter=blob:none`); a blobless `--bundle-uri` clone accepts
-it, `git fsck` passes on the result, and a checkout fetches only the blobs it
-needs. With `GIT_NO_LAZY_FETCH=1` a filtered bundle is written from a partial
-clone without fetching anything (verified on Git 2.54).
+<remote>` downloads a bundle, then fetches whatever is missing from the remote
+(measured working from 2.38.0). `git bundle create <file> --filter=blob:none
+refs/heads/<branch>` writes a v3 bundle that records its filter
+(`@filter=blob:none`); a blobless `--bundle-uri` clone accepts it, `git fsck`
+passes on the result, and a checkout fetches only the blobs it needs.
+
+- **Bundle the branch ref.** `--bundle-uri` applies a bundle only for the
+  `refs/heads/*` refs it names; a `HEAD` or `refs/remotes/*` bundle is silently
+  ignored, so every bundle this design writes names `refs/heads/<branch>`.
+- **The imported ref moved in Git 2.50.** Through 2.49 a bundle's
+  `refs/heads/<b>` lands as `refs/bundles/<b>`; from 2.50 as
+  `refs/bundles/heads/<b>`. Nothing may name a fixed `refs/bundles/` ref; code
+  enumerates every ref under `refs/bundles/`.
+- **`GIT_NO_LAZY_FETCH` is a guard, not a correctness requirement.** A
+  `bundle create --filter=blob:none refs/heads/<b>` from a blobless clone
+  fetches nothing on every measured version (2.38.0 through 2.56.0). An
+  unfiltered create from a partial clone does fetch lazily, and with the
+  variable set it fails instead. Git honors the variable only from the 2024-05
+  security releases (2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4, 2.44.1, 2.45.1+);
+  2.38.0 and 2.39.3 ignore it.
+
 The daemon image is `node:24-bookworm-slim` (Git 2.39). The runtime sandbox image
 is built separately. Its pinned dependency base was run on 2026-10-01 and ships
-Git 2.39.5; the image verifier now behaviorally pins `--bundle-uri`,
-`git bundle create --filter=blob:none` and `GIT_NO_LAZY_FETCH`, so a later base
-bump fails the image build if any of them regresses (section 14).
+Git 2.39.5, which honors `GIT_NO_LAZY_FETCH`. The image verifier requires a
+`GIT_NO_LAZY_FETCH`-honoring release and behaviorally pins `--bundle-uri`, a
+`refs/heads` `git bundle create --filter=blob:none`, `fsck --connectivity-only`
+and `GIT_NO_LAZY_FETCH`, so a later base bump fails the image build if any of
+them regresses (section 14).
 
 The P0 S3-compatible store matrix was also sampled on 2026-10-01. The archived
 MinIO release `RELEASE.2025-10-15T17-29-55Z` passed conditional `If-Match`,
 presigned PUT with signed `Content-Length`, `x-amz-checksum-sha256` and
-`x-amz-tagging`, and a tag-filtered lifecycle rule. AWS S3 remains unverified
-until credentials are available; section 14 records the exact results and gate.
+`x-amz-tagging`, and a tag-filtered lifecycle rule. The community MinIO project
+is archived and gets no further community releases, so it serves as a test
+fixture and a target for existing deployments, not a recommended new store. AWS
+S3 remains unverified until credentials are available; section 14 records the
+exact results and gate.
 
 ## 4. Storage layout
 
@@ -229,15 +249,20 @@ because nothing in the cache decides what a reader ends up with:
    `--bundle-uri` always performs (workspace). A bundle never decides which
    commit is used.
 3. **Readers verify, and always keep a clean origin retry.** A skill reader
-   requires the planned commit to be present and `git fsck`-clean after import.
-   Git's bundle bootstrap is not a fallback: a bundle that advertises the right
-   ref but omits objects the commit needs makes `git clone --bundle-uri` fail
-   (`unable to parse commit`, "Clone succeeded, but checkout failed"; reproduced
-   on 2.39 and 2.54) even though the origin is healthy. So every cached
-   acquisition, workspace or skill, that fails for any reason discards its whole
-   staging checkout and object database and retries **once without the bundle**
-   before any origin error is surfaced (the retry contract, section 7). A
-   poisoned bundle then costs one wasted download, never a failed session.
+   requires the planned commit to be present and `fsck --connectivity-only` to pass after import.
+   Git's bundle bootstrap is not a fallback, and an incomplete bundle (one that
+   advertises the right ref but omits objects the commit needs) fails
+   differently by clone shape even though the origin is healthy. A full clone
+   exits 128 (`unable to parse commit`, "Clone succeeded, but checkout failed";
+   reproduced on 2.39 and 2.54). A blobless `--no-checkout` clone exits 0
+   silently; a later `git fsck --connectivity-only` fails and a checkout lazily
+   fetches the missing trees, so a bundled blobless clone runs that `fsck`
+   itself. A blobless bundle given to a full clone exited 128
+   (`unresolved deltas`) or was ignored. So every cached acquisition, workspace
+   or skill, that fails for any reason discards its whole staging checkout and
+   object database and retries **once without the bundle** before any origin
+   error is surfaced (the retry contract, section 7). A poisoned bundle then
+   costs one wasted download, never a failed session.
 4. **No bucket credentials in pods.** The pool daemon holds the only S3
    credentials (IRSA / Workload Identity preferred; a static key Secret
    otherwise). A pod only ever receives presigned URLs, each for one key, one
@@ -257,14 +282,23 @@ A pool member spawns no Git; the process that spawns Git is the only one whose
 check is a control ([git-workspace-model.md](git-workspace-model.md) §11). Each
 operation this design adds is placed against that rule:
 
-| Operation                                                                                | Path                                      | Inventory change and why it is a control                                                                                                                                                                                                                                                                                                                              |
-| ---------------------------------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace clone with `--bundle-uri`                                                      | Shim `exec`                               | `clone` is admitted. New per-subcommand rule: `--bundle-uri` is accepted only with an `https://` value, so the flag cannot read pod-local or cluster-internal files                                                                                                                                                                                                   |
-| Workspace retry without the bundle                                                       | Shim `exec`                               | None: the same admitted `clone`                                                                                                                                                                                                                                                                                                                                       |
-| Removing `refs/bundles/*` after a clone                                                  | Shim `exec`                               | None: `update-ref -d` is admitted                                                                                                                                                                                                                                                                                                                                     |
-| Workspace write-back bundle                                                              | Shim `exec`                               | Narrow widening: `bundle` is admitted only as `bundle create <file> --filter=blob:none <ref>` (or without the filter for the `full` shape), with `<file>` inside the shim's staging root and `GIT_NO_LAZY_FETCH=1`; `unbundle`, `verify` and `list-heads` stay refused                                                                                                |
-| Anonymous resolution                                                                     | Shim `exec`                               | None: `ls-remote` is admitted                                                                                                                                                                                                                                                                                                                                         |
-| Skill acquisition: clone, fetch, subdirectory checkout, `fsck`, retry, write-back bundle | Shim-internal, inside the skill reconcile | Not the exec channel. The shim spawns Git itself with argv it composes from validated plan fields (origin policy on the URL, ref / SHA / subdirectory syntax), under the same refused-argument rules as `exec`, in a private staging directory; nothing the daemon sends is passed as free argv, and the runtime cannot invoke the operation. `fsck` exists only here |
+| Operation                                                                                | Path                                      | Inventory change and why it is a control                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Workspace clone with `--bundle-uri`                                                      | Shim `exec`                               | `clone` is admitted. New per-subcommand rule: only the exact spelling `--bundle-uri=https://…` is accepted, so the flag cannot read pod-local or cluster-internal files; every unique-prefix abbreviation Git accepts (`--bundle=`, `--bun=`) is refused                                                                                                                                                                                               |
+| Workspace retry without the bundle                                                       | Shim `exec`                               | None: the same admitted `clone`                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Removing `refs/bundles/*` after a clone                                                  | Shim `exec`                               | None: `show-ref` and `update-ref -d` are admitted. The shim lists refs with `show-ref`, keeps those under `refs/bundles/`, and deletes each one, never a fixed name, because Git 2.50 moved the imported ref from `refs/bundles/<b>` to `refs/bundles/heads/<b>`; `for-each-ref` stays outside the inventory ([git-workspace-model.md](git-workspace-model.md) §11)                                                                                    |
+| Connectivity check after a bundled blobless clone                                        | Shim `exec`                               | Narrow widening: `fsck` is admitted only as exactly `fsck --connectivity-only` with no other argument, because an incomplete bundle leaves a blobless clone exit 0 and only this read-only check detects it before checkout lazily fetches                                                                                                                                                                                                             |
+| Workspace write-back bundle                                                              | Shim `exec`                               | Narrow widening: `bundle` is admitted only as `bundle create <file> --filter=blob:none refs/heads/<branch>` (or without the filter for the `full` shape), with `<file>` inside the shim's staging root; a `HEAD` or `refs/remotes/*` bundle is silently ignored by `--bundle-uri`. `GIT_NO_LAZY_FETCH=1` is set as a guard, so an unfiltered create from a partial clone fails instead of fetching; `unbundle`, `verify` and `list-heads` stay refused |
+| Anonymous resolution                                                                     | Shim `exec`                               | None: `ls-remote` is admitted                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Skill acquisition: clone, fetch, subdirectory checkout, `fsck`, retry, write-back bundle | Shim-internal, inside the skill reconcile | Not the exec channel. The shim spawns Git itself with argv it composes from validated plan fields (origin policy on the URL, ref / SHA / subdirectory syntax), under the same refused-argument rules as `exec`, in a private staging directory; nothing the daemon sends is passed as free argv, and the runtime cannot invoke the operation. Its connectivity check is the same `fsck --connectivity-only` as the workspace path                      |
+
+**Refused options include their abbreviations.** Git accepts any unique prefix
+of a long option and runs it as the full option: `clone --upload=<cmd>`,
+`--upl=<cmd>` and `push --receive=<cmd>` run as `--upload-pack` /
+`--receive-pack`. `REFUSED_ARGUMENT` must therefore match every abbreviated
+spelling of each refused long option (`--upload-pack`, `--receive-pack`,
+`--config`, `--exec-path`); today's anchored patterns admit those
+abbreviations. The skill-acquisition row inherits the same rule.
 
 **Acquisition hardening carries over.** A staged skill subdirectory reaches the
 CLI cell only through the existing bounded no-follow snapshot
@@ -296,8 +330,9 @@ its shape: a session root stays blobless, the agent pod's primary stays full.
    origin reports. A bundle's own refs land under `refs/bundles/*` and never
    reach the checkout (verified: a foreign bundle advertising a different
    `main` leaves `refs/heads/main` and `origin/main` at the origin's commit), and
-   the shim deletes them with `update-ref -d` right after the clone so no
-   bundle-supplied commit stays reachable by name in the workspace.
+   right after the clone the shim deletes every ref under `refs/bundles/` that
+   `show-ref` lists (`refs/bundles/<b>` through Git 2.49, `refs/bundles/heads/<b>` from
+   2.50) so no bundle-supplied commit stays reachable by name in the workspace.
 3. **Retry contract.** If the bundled clone fails at any step — download,
    unbundle, fetch, connectivity, or checkout — the shim empties the checkout
    directory (object database included) and runs the same clone once without
@@ -306,6 +341,15 @@ its shape: a session root stays blobless, the agent pod's primary stays full.
    `cloneInSandbox`). The first
    failure is reported as a cache fallback (metric, and the bundle key in the
    log) and the pointer is not trusted again by this preparation.
+   - A bundled blobless clone runs `git fsck --connectivity-only` before its
+     checkout, because an incomplete bundle exits 0 there (section 6); a
+     failure is a cache fallback.
+   - A bundle download failure (HTTP error, untrusted certificate) also exits
+     0, with either `warning: failed to download bundle from URI` or
+     `failed to fetch objects from bundle URI` on stderr. A bundled attempt is
+     therefore a fallback on a non-zero exit, on either warning, or when
+     `refs/bundles` is empty after the clone; only the last also catches a
+     bundle that names no `refs/heads` ref.
 4. The shim reports a write-back candidate when the clone missed the cache, the
    clone's origin fetch after the bundle exceeded a delta threshold (default:
    5,000 objects or 50 MiB; the checkout's lazy blob fetch is not counted), or
@@ -353,7 +397,9 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
      GitLab) fetches all branches and tags and looks for the commit, else skips
      the Source with that reason;
    - on any failure of a bundled attempt, or when the imported repository is
-     not `fsck`-clean, discards the staging directory and repeats this step once
+     not `fsck`-clean (the same `fsck --connectivity-only` check as a workspace
+     clone, with the same download-warning and empty-`refs/bundles`
+     classification), discards the staging directory and repeats this step once
      without the bundle (the retry contract, section 7);
    - checks out only the subdirectory at the planned commit, which fetches only
      that subtree's blobs, and passes it through the bounded no-follow snapshot
@@ -377,6 +423,9 @@ finishes, and a failure is a log line and a metric.
 1. The shim's reply lists candidates: (Source, ref, shape, bundle size, bundle
    SHA-256). It creates the bundle in its staging root from the clone it just
    made, of that clone's shape (section 6.1), never from a shallow repository.
+   The bundle names `refs/heads/<branch>`, the only kind of ref `--bundle-uri`
+   applies; shape correctness comes from bundling only the shape the clone has,
+   and `GIT_NO_LAZY_FETCH=1` only guards against a lazy fetch.
 2. **Reserve before signing.** In one transaction the daemon checks the
    per-bundle cap and inserts a `pending` row for a fresh
    `bundles/<uuid>.bundle` under the access class of the clone the daemon itself
@@ -494,9 +543,10 @@ stays decodable during migration, as the workspace contract's `github` and
 ## 12. Configuration and degradation
 
 The Source Cache is optional. The Helm chart gains `sourceCache.*` values (off by
-default): `endpoint`, `region`, `bucket`, `prefix`, `forcePathStyle` (MinIO), a
-credential source (`serviceAccount` or a Secret reference), and the limits in
-section 10. Only pool members receive them.
+default): `endpoint`, `region`, `bucket`, `prefix`, `forcePathStyle` (e.g.
+MinIO, whose community edition is archived), a credential source
+(`serviceAccount` or a Secret reference), and the limits in section 10. Only
+pool members receive them.
 
 | Condition                                     | Behavior                                                   |
 | --------------------------------------------- | ---------------------------------------------------------- |
@@ -517,7 +567,9 @@ Session startup never depends on the object store.
 - **Workspace clone:** the existing clone instruction accepts an optional bundle
   URL, passed as `--bundle-uri`. It needs the new `https://`-only rule for that
   flag in the exec inventory, so it ships with shims that carry the rule; any
-  such image whose Git is ≥ 2.38 benefits.
+  such image whose Git is ≥ 2.38 benefits. Write-back additionally wants a Git
+  that honors `GIT_NO_LAZY_FETCH` (2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4,
+  2.44.1, 2.45.1+), which the runtime image verifier requires.
 - **Exec inventory:** the `--bundle-uri` rule and the narrow `bundle create`
   admission (section 6.1).
 - **`writeback` operation:** (Source or workspace, ref, local bundle handle,
@@ -551,17 +603,30 @@ Dockerfile (`RUNTIME_SANDBOX_BASE`) ran Git 2.39.5. The pinned digest was
 `sha256:bc7614a2d7de40b77e03ac8cfdd09b738efbf93391122cb54ca4d1233c68f5cb`.
 In that exact image:
 
-- a blobless `--filter=blob:none` bundle was created and `git bundle verify`
-  reported filter `blob:none`;
+- a blobless `--filter=blob:none` bundle of `refs/heads/main` was created and
+  `git bundle verify` reported filter `blob:none`;
 - `GIT_NO_LAZY_FETCH=1` stopped a missing promisor object without invoking the
-  configured lazy-fetch helper and reported `lazy fetching disabled`;
-- a blobless clone consumed a bundle through `--bundle-uri`.
+  configured lazy-fetch helper and reported `lazy fetching disabled` (newer
+  releases such as 2.54 block it without that warning);
+- a blobless clone consumed a bundle through `--bundle-uri`, and
+  `fsck --connectivity-only` passed on the result.
 
-`docker/runtime-sandbox/verify-image.mjs` now fails either runtime image build
-below Git 2.38 or when any of those three behaviors regresses.
+`docker/runtime-sandbox/verify-image.mjs` (its probe lives in
+`docker/runtime-sandbox/source-cache-git.mjs`) now fails either runtime image
+build on a Git that does not honor `GIT_NO_LAZY_FETCH` (below 2.39.4, 2.40.2,
+2.41.1, 2.42.2, 2.43.4, 2.44.1 or 2.45.1), or when any of these regresses: the
+bundle names exactly `refs/heads/main`, every ref `for-each-ref refs/bundles`
+lists after the clone is the source commit (so the Git 2.50 rename passes),
+`fsck --connectivity-only` passes, and `GIT_NO_LAZY_FETCH=1` keeps the
+lazy-fetch helper from running while the same read without it reaches the
+helper.
 
 **S3-compatible store matrix.** MinIO
-`RELEASE.2025-10-15T17-29-55Z` was tested locally on 2026-10-01:
+`RELEASE.2025-10-15T17-29-55Z` was tested locally on 2026-10-01. The community
+MinIO project is archived, so this is a fixture result, not a store
+recommendation. MinIO enforced `Content-Length`, `x-amz-checksum-sha256` and
+`x-amz-tagging` only when they were signed headers, not when hoisted into the
+query or left unsigned:
 
 | Primitive                                         | MinIO result | Evidence                                                                                                                       |
 | ------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -586,11 +651,34 @@ used for a local Git 2.39.5 spike:
 - the blobless `cloneSessionRootAt` shape used `--filter=blob:none`,
   `--no-checkout`, `--single-branch` and a `--bundle-uri=<url>`; `reset --hard`
   fetched the missing blob;
-- a foreign `refs/heads/main` bundle left `refs/bundles/main` at the foreign
-  commit while the clone's branch and `origin/main` stayed at the origin commit;
+- a foreign `refs/heads/main` bundle left `refs/bundles/main`
+  (`refs/bundles/heads/main` from Git 2.50) at the foreign commit while the
+  clone's branch and `origin/main` stayed at the origin commit;
 - a `tree:0` bundle used by a full clone exited 128 with
   `unable to parse commit` and `Clone succeeded, but checkout failed`; it left
-  `refs/bundles/main` for the retry path to remove.
+  `refs/bundles/main` for the retry path to remove;
+- a presigned-style HTTPS URL with a 1.5 KB query string worked as a
+  `--bundle-uri` value.
+
+A Docker version matrix (Git 2.38.0, 2.39.3, 2.39.4, 2.39.5, 2.47.3, 2.49.0,
+2.50.0 and 2.56.0) then measured:
+
+- `--bundle-uri` worked on every version, and a blobless
+  `bundle create --filter=blob:none refs/heads/<b>` from a blobless clone did no
+  lazy fetch on any of them;
+- `GIT_NO_LAZY_FETCH` was ignored by 2.38.0 and 2.39.3 and honored from 2.39.4;
+  an unfiltered create from a partial clone fetched lazily, and failed with the
+  variable set;
+- a bundle was applied only for the `refs/heads/*` refs it named; a `HEAD` or
+  `refs/remotes/*` bundle was silently ignored;
+- the imported ref was `refs/bundles/<b>` through 2.49 and
+  `refs/bundles/heads/<b>` from 2.50;
+- an incomplete bundle failed a full clone (rc 128) but let a blobless
+  `--no-checkout` clone exit 0, after which `fsck --connectivity-only` failed
+  and a checkout lazily fetched the missing trees;
+- a bundle download failure (HTTP error, untrusted certificate) exited 0 with
+  either `warning: failed to download bundle from URI` or
+  `failed to fetch objects from bundle URI`.
 
 This reproduces the §6/§7 behavior at the container layer, but it does not
 replace the required test-app pod run.

@@ -149,6 +149,7 @@ export const ExecutorPrepareResult = z.discriminatedUnion('status', [
         secret: z.array(z.string().min(1).max(4096)).max(64)
       })
       .optional(),
+    workspaceIncarnation: z.string().min(1).max(256).optional(), // the session directory's identity on the executor, the same across its launches: the key its skill ledger is kept under; absent ⇒ an older executor, keyed on the launch
     liveCount: z.number().int().min(0) // environments live on the executor now, this one included
   }),
   z.object({ status: z.literal('full'), liveCount: z.number().int().min(0).optional() }),
