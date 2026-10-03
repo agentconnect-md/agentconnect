@@ -241,7 +241,7 @@ class SeamRunner implements GitRunner {
         env[`GIT_CONFIG_VALUE_${index}`] = substitute(env[`GIT_CONFIG_VALUE_${index}`] ?? '')
       }
     }
-    const make = (value: Record<string, string>) => gitFor(this.cwd, this.abort).env(value)
+    const make = (value: Record<string, string>) => gitFor(this.cwd, this.abort, value)
     return new LocalGitRunner(gitFor(this.cwd, this.abort), this.cwd, make).withEnv(env)
   }
 

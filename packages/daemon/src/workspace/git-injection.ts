@@ -80,22 +80,21 @@ const UNSAFE_OPTS = {
     allowUnsafeConfigPaths: true, // the daemon-selected empty global/system config view
     allowUnsafeFsMonitor: true, // the daemon-built false override for checkout fsmonitor commands
     allowUnsafeHooksPath: true, // the daemon-built /dev/null hooks path for host-side Git
-    allowUnsafeSshCommand: true // the daemon-built ssh command that ignores user routing config
+    allowUnsafeSshCommand: true, // the daemon-built ssh command that ignores user routing config
+    allowUnsafeUrlRewrite: true // the daemon-built self-rewrite that pins the target URL against broader insteadOf rules
   }
 } as const
 
-/**
- * simple-git bound to a cwd with the credential-helper opt-in. An `abort`
- * signal KILLS the spawned git child (abort-plugin) — pair budget timeouts
- * with it, or the abandoned child keeps running and holds .git locks
- * (index.lock) into the next session's pull.
- */
-export function gitFor(cwd?: string, abort?: AbortSignal): SimpleGit {
-  return simpleGit({
+/** simple-git at `cwd` with `env` as the whole child env; `abort` KILLS the child, so pair timeouts with it or it holds index.lock. */
+export function gitFor(cwd?: string, abort?: AbortSignal, env?: Record<string, string>): SimpleGit {
+  const git = simpleGit({
     ...(cwd ? { baseDir: cwd } : {}),
     ...(abort ? { abort } : {}),
+    // simple-git 4 rejects any GIT_* name it is not told about; the caller built `env`, and the unsafe checks still run on it.
+    ...(env ? { allowEnvironment: Object.keys(env).filter((key) => /^git_/i.test(key)) } : {}),
     ...UNSAFE_OPTS
   })
+  return env ? git.env(env) : git
 }
 
 // Every env var simple-git's checker refuses by NAME (it matches

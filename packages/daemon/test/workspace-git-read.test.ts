@@ -486,7 +486,7 @@ describe.skipIf(process.platform === 'win32')('createWorkspaceGit against a work
     wireTestPlane(workspaces, {
       workspacesOffDisk: true,
       gitRunnerFor: (_agentId, _cwd, abort) =>
-        new LocalGitRunner(gitFor(repo, abort), repo, (e) => gitFor(repo, abort).env(e))
+        new LocalGitRunner(gitFor(repo, abort), repo, (e) => gitFor(repo, abort, e))
     })
     clusterSeam = createWorkspaceGit(workspaces, async (agentId) => (agentId === AGENT ? POD_ROOT : undefined))
   })

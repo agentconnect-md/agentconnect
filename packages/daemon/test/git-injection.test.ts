@@ -179,7 +179,7 @@ describe('gitEnvBase', () => {
 
     try {
       await expect(
-        gitFor(workspace).env(workspaceGitLocalEnv()).raw(['remote', 'get-url', 'origin'])
+        gitFor(workspace, undefined, workspaceGitLocalEnv()).raw(['remote', 'get-url', 'origin'])
       ).resolves.toContain('https://other-host.example/acme/repo')
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -408,8 +408,8 @@ describe('gitEnvBase', () => {
       run(['-C', seed, 'commit', '--allow-empty', '-m', 'advance'])
       run(['-C', seed, 'push', 'origin', 'main'])
 
-      const git = gitFor(workspace).env(env)
-      const runner = new LocalGitRunner(git, workspace, (overrides) => gitFor(workspace).env(overrides), env)
+      const git = gitFor(workspace, undefined, env)
+      const runner = new LocalGitRunner(git, workspace, (overrides) => gitFor(workspace, undefined, overrides), env)
       const moved = await syncWorkspaceRef(runner, 'origin', 'main')
       expect(moved.switchedFrom).toBeUndefined()
 
@@ -446,8 +446,8 @@ describe('gitEnvBase', () => {
     run(['clone', '--branch', 'main', remote, workspace])
     run(['-C', workspace, 'config', 'user.name', 'Test'])
     run(['-C', workspace, 'config', 'user.email', 'test@example.invalid'])
-    const git = gitFor(workspace).env(env)
-    const runner = new LocalGitRunner(git, workspace, (overrides) => gitFor(workspace).env(overrides), env)
+    const git = gitFor(workspace, undefined, env)
+    const runner = new LocalGitRunner(git, workspace, (overrides) => gitFor(workspace, undefined, overrides), env)
     return { root, seed, workspace, env, run, git, runner }
   }
 
@@ -682,7 +682,7 @@ describe('workspaceGitRemoteTarget', () => {
     // Same guarantee the clone env gets: the credential-helper pairs and the GIT_CONFIG_COUNT
     // channel each need an opt-in, and only handles built by `gitFor` carry it.
     const target = workspaceGitRemoteTarget('https://github.com/acme/repo.git', 'agent-1')
-    await expect(gitFor().env(target.env).raw(['version'])).resolves.toContain('git version')
+    await expect(gitFor(undefined, undefined, target.env).raw(['version'])).resolves.toContain('git version')
   })
 })
 
@@ -901,25 +901,22 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
 describe('simple-git unsafe checker', () => {
   it('passes the github-app clone env (helper pairs + GIT_CONFIG_COUNT channel)', async () => {
     await expect(
-      gitFor()
-        .env({ ...gitEnvBase(), ...cloneGitEnv('agent-1') })
-        .raw(['version'])
+      gitFor(undefined, undefined, { ...gitEnvBase(), ...cloneGitEnv('agent-1') }).raw(['version'])
     ).resolves.toContain('git version')
   })
 
   it('passes the plain-mode env (sanitized host env + prompt guard)', async () => {
     await expect(
-      gitFor()
-        .env({ ...workspaceGitEnvBase(), GIT_TERMINAL_PROMPT: '0' })
-        .raw(['version'])
+      gitFor(undefined, undefined, { ...workspaceGitEnvBase(), GIT_TERMINAL_PROMPT: '0' }).raw(['version'])
     ).resolves.toContain('git version')
   })
 
   it('passes the isolated SSH workspace env', async () => {
     await expect(
-      gitFor()
-        .env({ ...workspaceGitEnvBase('ssh://git@github.com/acme/repo.git'), GIT_TERMINAL_PROMPT: '0' })
-        .raw(['version'])
+      gitFor(undefined, undefined, {
+        ...workspaceGitEnvBase('ssh://git@github.com/acme/repo.git'),
+        GIT_TERMINAL_PROMPT: '0'
+      }).raw(['version'])
     ).resolves.toContain('git version')
   })
 
@@ -947,9 +944,7 @@ describe('simple-git unsafe checker', () => {
 
   it('still refuses an unsanitized host env (the deployed failure mode)', async () => {
     await expect(
-      gitFor()
-        .env({ ...process.env, GIT_TERMINAL_PROMPT: '0' })
-        .raw(['version'])
+      gitFor(undefined, undefined, { ...process.env, GIT_TERMINAL_PROMPT: '0' }).raw(['version'])
     ).rejects.toThrow(/(EDITOR|GIT_PAGER|PAGER).*not permitted/)
   })
 })

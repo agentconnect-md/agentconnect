@@ -700,7 +700,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
       gitRunnerFor: (_agentId, cwd) => {
         resolutions += 1
         if (resolutions > 1) return undefined
-        return new LocalGitRunner(gitFor(cwd ?? dir), cwd ?? dir, (env) => gitFor(cwd ?? dir).env(env))
+        return new LocalGitRunner(gitFor(cwd ?? dir), cwd ?? dir, (env) => gitFor(cwd ?? dir, undefined, env))
       }
     })
     try {

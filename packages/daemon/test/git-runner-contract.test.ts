@@ -90,7 +90,7 @@ function runners(root: string): {
 } {
   const requester = sandboxRequester(root)
   return {
-    local: new LocalGitRunner(gitFor(root), root, (env) => gitFor(root).env(env)),
+    local: new LocalGitRunner(gitFor(root), root, (env) => gitFor(root, undefined, env)),
     remote: new ShimGitRunner(requester, root),
     requester
   }
@@ -415,10 +415,9 @@ describe('git runner contract, local and shim-backed', () => {
     git(seed, ['commit', '-m', 'upstream change'])
     git(seed, ['push', 'origin', 'main'])
 
-    const fromLocal = await new LocalGitRunner(gitFor(forLocal), forLocal, (env) => gitFor(forLocal).env(env)).pull(
-      'origin',
-      'main'
-    )
+    const fromLocal = await new LocalGitRunner(gitFor(forLocal), forLocal, (env) =>
+      gitFor(forLocal, undefined, env)
+    ).pull('origin', 'main')
     const fromRemote = await new ShimGitRunner(sandboxRequester(forRemote), forRemote).pull('origin', 'main')
 
     expect([...fromRemote.files].sort()).toEqual([...fromLocal.files].sort())
@@ -443,7 +442,7 @@ describe('git runner contract, local and shim-backed', () => {
     roots.push(clone)
     git(clone, ['clone', upstream, '.'])
 
-    const fromLocal = await new LocalGitRunner(gitFor(clone), clone, (env) => gitFor(clone).env(env)).pull(
+    const fromLocal = await new LocalGitRunner(gitFor(clone), clone, (env) => gitFor(clone, undefined, env)).pull(
       'origin',
       'main'
     )

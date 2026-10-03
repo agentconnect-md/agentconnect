@@ -120,7 +120,7 @@ function recording(): {
   const argv: string[][] = []
   const resolver: ExecutionPlane['gitRunnerFor'] = (agentId, cwd, abort) => {
     calls.push({ agentId, ...(cwd === undefined ? {} : { cwd }) })
-    const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
+    const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort, env))
     const wrap = (runner: GitRunner): GitRunner => {
       const recorder: Omit<GitRunner, 'readBounded'> = {
         withEnv: (env) => wrap(runner.withEnv(env)),

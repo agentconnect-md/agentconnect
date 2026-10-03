@@ -295,7 +295,7 @@ const reviewHeadRefFor = (id: string): string => `refs/agentconnect/reviews/${id
 
 /** Git this daemon runs on its own disk, with no plane between. */
 function hostGitRunner(cwd?: string, abort?: AbortSignal): GitRunner {
-  return new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
+  return new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort, env))
 }
 
 // Instance state, not module state: a process can hold more than one daemon (the test suite routinely does), and a k8s daemon and a local one place every scope differently.
