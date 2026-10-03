@@ -642,9 +642,11 @@ import {
   createCredentialedCacheReadAuthorizer,
   createSourceCache,
   createSourceCacheReadPlanner,
+  createSourceCacheSweeper,
   createSourceCacheWriter,
   type SourceCache,
-  type SourceCachePresigner
+  type SourceCachePresigner,
+  type SourceCacheSweeper
 } from './source-cache/index.js'
 import { CodeHostRefResolver } from './codehost/ref-resolver.js'
 import { gitCredReadTokens } from './codehost/repository.js'
@@ -1597,6 +1599,8 @@ export class Daemon {
   private readonly sourceCache?: SourceCache
   /** The `resolveRef` cache behind credentialed Source Cache reads; only with a Source Cache. */
   private readonly sourceCacheRefs?: CodeHostRefResolver
+  /** The member's share of the Source Cache sweep and lifecycle check; only with a Source Cache. */
+  private readonly sourceCacheSweeper?: SourceCacheSweeper
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -1955,13 +1959,28 @@ export class Daemon {
           log: { debug: (m) => this.log.debug(m), warn: (m) => this.log.warn(m) }
         })
       )
+      const sourceCacheLog = {
+        debug: (m: string) => this.log.debug(m),
+        info: (m: string) => this.log.info(m),
+        warn: (m: string) => this.log.warn(m)
+      }
+      const sweeper = createSourceCacheSweeper({
+        store: () => this.store as LocalStore | undefined,
+        objects: this.sourceCache.objects,
+        config: this.sourceCache.config,
+        clock: this.clock,
+        paused: () => this.draining || this.shutdownDraining,
+        log: sourceCacheLog
+      })
+      this.sourceCacheSweeper = sweeper
       this.workspaces.setSourceCacheWriter(
         createSourceCacheWriter({
           store: () => this.store as LocalStore | undefined,
           presigner: this.sourceCache.presigner,
           objects: this.sourceCache.objects,
           limits: this.sourceCache.config.limits,
-          log: { debug: (m) => this.log.debug(m), info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
+          allowWrites: () => sweeper.lifecycle() !== 'missing',
+          log: sourceCacheLog
         })
       )
     }
@@ -4822,6 +4841,8 @@ export class Daemon {
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
     this.armStoreRetentionSweep()
+    if (this.sourceCacheSweeper && this.k8sPlane)
+      this.sourceCacheSweeper.start(`${this.k8sPlane.memberId}/${randomUUID().slice(0, 8)}`)
     this.startupComplete = true
     this.readiness?.refresh()
     this.log.info('daemon ready')
@@ -24094,6 +24115,8 @@ export class Daemon {
     }
     this.runtimeFacts.dispose()
     this.k8sProbeSchedule?.stop()
+    // Bounded: the pass stops between rows, so at most one row's HEAD and DELETE (30 s each) plus one store call.
+    await this.sourceCacheSweeper?.stop()
     // Not awaited: an image pull in flight must not hold the drain; the manager refuses the VM once it closes.
     this.vmModelProbe?.abort()
     this.dutyCoordinator.dispose()

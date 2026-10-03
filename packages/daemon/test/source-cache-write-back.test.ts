@@ -57,6 +57,7 @@ interface Options {
   noStore?: boolean
   storeThrows?: boolean
   discardError?: Error
+  allowWrites?: () => boolean
 }
 
 function harness(opts: Options = {}) {
@@ -121,7 +122,8 @@ function harness(opts: Options = {}) {
     limits: { maxBundleBytes: 1024 * 1024, orgQuotaBytes: 10 * 1024 * 1024, pendingReservationSeconds: 3600 },
     now: () => NOW,
     log: { debug: (m) => logs.push(m), info: (m) => logs.push(m), warn: (m) => logs.push(m) },
-    onOutcome: (o) => outcomes.push(o)
+    onOutcome: (o) => outcomes.push(o),
+    ...(opts.allowWrites ? { allowWrites: opts.allowWrites } : {})
   }
   const stager: SourceCacheBundleStager = {
     create: async (input) => {
@@ -240,6 +242,16 @@ describe('Source Cache write-back triggers (§7 item 4)', () => {
 })
 
 describe('Source Cache write-back refusals', () => {
+  it('skips without touching git, the store or the bucket while the lifecycle rules are missing (§14 fallback)', async () => {
+    let allowed = false
+    const h = harness({ allowWrites: () => allowed })
+    expect(await h.writer.consider(h.request())).toEqual({ kind: 'skipped', reason: 'lifecycle-missing' })
+    expect(h.calls).toEqual([])
+    expect(h.reserved).toEqual([])
+    allowed = true
+    expect(await h.writer.consider(h.request())).toMatchObject({ kind: 'written', trigger: 'miss' })
+  })
+
   it('skips a shim without the bundle capability', async () => {
     const h = harness()
     expect(await h.writer.consider(h.request({ stager: undefined }))).toEqual({

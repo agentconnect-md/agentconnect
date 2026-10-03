@@ -5,7 +5,7 @@ import { bundleKey, pointerKey, type SourceCacheObjectKey } from '../src/source-
 import { createObjectClient, SourceCacheObjectError } from '../src/source-cache/object-client.js'
 import { canonicalUri, sha256Hex } from '../src/source-cache/sigv4.js'
 
-// The member's own header-signed HEAD and PutObjectTagging (source-cache.md §9 step 5), against a fake fetch.
+// The member's own header-signed HEAD, PutObjectTagging, DELETE and lifecycle read (source-cache.md §9, §10), against a fake fetch.
 
 const NOW = Date.UTC(2026, 9, 3, 12, 0, 0)
 const KEY = bundleKey({ org: 'org_1', class: 'cred', repo: 'github:42', id: '0b5c3f8e-8d0a-4c4e-9a1e-0123456789ab' })
@@ -109,6 +109,57 @@ describe('Source Cache object client', () => {
     expect((failure as Error).message).not.toContain('secret')
   })
 
+  it('deletes a bundle with a header-signed DELETE, and reads 204, 200 and 404 as gone', async () => {
+    const { client, captured } = harness({ response: new Response(null, { status: 204 }) })
+    await client.delete(KEY)
+    const [req] = captured
+    expect(req!.method).toBe('DELETE')
+    expect(req!.url).toBe(`https://s3.example.com${canonicalUri(`/cache/agentconnect/${KEY}`)}`)
+    expect(req!.headers['x-amz-content-sha256']).toBe(sha256Hex(''))
+    expect(req!.headers.authorization).toContain('SignedHeaders=host;x-amz-content-sha256;x-amz-date,')
+    await harness({ response: new Response(null, { status: 200 }) }).client.delete(KEY)
+    const gone = new Response('<Error><Code>NoSuchKey</Code></Error>', { status: 404 })
+    await harness({ response: gone }).client.delete(KEY)
+  })
+
+  it('surfaces a refused DELETE and a missing bucket as typed errors with no secret', async () => {
+    const denied = new Response('<Error><Code>AccessDenied</Code></Error>', { status: 403 })
+    const failure = await harness({ response: denied })
+      .client.delete(KEY)
+      .catch((err: unknown) => err)
+    expect(failure).toMatchObject({ status: 403, code: 'AccessDenied' })
+    expect((failure as Error).message).not.toContain('secret')
+    const noBucket = new Response('<Error><Code>NoSuchBucket</Code></Error>', { status: 404 })
+    await expect(harness({ response: noBucket }).client.delete(KEY)).rejects.toMatchObject({
+      status: 404,
+      code: 'NoSuchBucket'
+    })
+  })
+
+  it('reads the bucket lifecycle with a signed GET on the bucket root, path and virtual-hosted', async () => {
+    const xml = '<LifecycleConfiguration><Rule><ID>x</ID></Rule></LifecycleConfiguration>'
+    const path = harness({ response: new Response(xml, { status: 200 }) })
+    expect(await path.client.getBucketLifecycle()).toEqual({ kind: 'rules', xml })
+    expect(path.captured[0]!.method).toBe('GET')
+    expect(path.captured[0]!.url).toBe('https://s3.example.com/cache/?lifecycle=')
+    expect(path.captured[0]!.headers.authorization).toContain('SignedHeaders=host;x-amz-content-sha256;x-amz-date,')
+    const virtual = harness({ response: new Response(xml, { status: 200 }), forcePathStyle: false })
+    await virtual.client.getBucketLifecycle()
+    expect(virtual.captured[0]!.url).toBe('https://cache.s3.example.com/?lifecycle=')
+  })
+
+  it('maps NoSuchLifecycleConfiguration to none and a refusal or an oversized body to a typed error', async () => {
+    const none = new Response('<Error><Code>NoSuchLifecycleConfiguration</Code></Error>', { status: 404 })
+    expect(await harness({ response: none }).client.getBucketLifecycle()).toEqual({ kind: 'none' })
+    const denied = new Response('<Error><Code>AccessDenied</Code></Error>', { status: 403 })
+    await expect(harness({ response: denied }).client.getBucketLifecycle()).rejects.toMatchObject({
+      status: 403,
+      code: 'AccessDenied'
+    })
+    const huge = new Response('x'.repeat(300 * 1024), { status: 200 })
+    await expect(harness({ response: huge }).client.getBucketLifecycle()).rejects.toMatchObject({ code: 'TooLarge' })
+  })
+
   it('refuses a pointer key: pointers are store rows, never objects', async () => {
     const pointer = pointerKey({
       org: 'org_1',
@@ -120,6 +171,7 @@ describe('Source Cache object client', () => {
     const { client, captured } = harness()
     await expect(client.head(pointer)).rejects.toThrow(/bundle key/)
     await expect(client.putTagging(pointer, 'ac-cache=live')).rejects.toThrow(/bundle key/)
+    await expect(client.delete(pointer)).rejects.toThrow(/bundle key/)
     await expect(client.head('src/../x' as SourceCacheObjectKey)).rejects.toThrow(/bundle key/)
     expect(captured).toEqual([])
   })

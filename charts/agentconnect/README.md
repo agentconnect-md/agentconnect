@@ -173,8 +173,59 @@ verified against this signer (design §14).
 | `limits.getUrlLifetime`     | `5m`    | Presigned GET lifetime (`1m` to `1h`)                     |
 | `limits.putUrlLifetime`     | `15m`   | Presigned PUT lifetime (`1m` to `1h`)                     |
 
-The bucket lifecycle rules for `ac-cache=pending` and `ac-cache=unreferenced` objects
-arrive with the lifecycle sweep; until then nothing is written.
+### Bucket lifecycle rules
+
+Every member sweeps the cache: it deletes abandoned uploads, retags bundles no
+pointer names `ac-cache=unreferenced`, and drops pointers unread for
+`limits.unreadPointerDays`. The bucket must then expire the tagged objects. Neither the
+chart nor the daemon writes these rules, because `PutBucketLifecycleConfiguration`
+replaces the bucket's whole configuration; apply them once yourself. Scope them to
+`<prefix>/src/` and never to `snapshots/`. For the prefix `agentconnect`, save this as
+`source-cache-lifecycle.json`:
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "ac-source-cache-pending",
+      "Status": "Enabled",
+      "Filter": { "And": { "Prefix": "agentconnect/src/", "Tags": [{ "Key": "ac-cache", "Value": "pending" }] } },
+      "Expiration": { "Days": 2 }
+    },
+    {
+      "ID": "ac-source-cache-unreferenced",
+      "Status": "Enabled",
+      "Filter": { "And": { "Prefix": "agentconnect/src/", "Tags": [{ "Key": "ac-cache", "Value": "unreferenced" }] } },
+      "Expiration": { "Days": 7 }
+    }
+  ]
+}
+```
+
+With no prefix, use `src/`. The member logs this document for its own prefix when the
+rules are missing. On AWS, read the current configuration first and add these two rules
+to its `Rules`, because the put replaces every existing rule:
+
+```bash
+aws s3api get-bucket-lifecycle-configuration --bucket example-agentconnect-source-cache
+aws s3api put-bucket-lifecycle-configuration --bucket example-agentconnect-source-cache \
+  --lifecycle-configuration file://source-cache-lifecycle.json
+```
+
+On MinIO, `mc ilm rule add` appends a rule without replacing the others:
+
+```bash
+mc ilm rule add --prefix agentconnect/src/ --tags 'ac-cache=pending' --expire-days 2 store/agentconnect-source-cache
+mc ilm rule add --prefix agentconnect/src/ --tags 'ac-cache=unreferenced' --expire-days 7 store/agentconnect-source-cache
+```
+
+The member's credentials need `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` and
+`s3:PutObjectTagging` on `<prefix>/src/*`, and
+`s3:GetLifecycleConfiguration` on the bucket. Each member checks the rules at start and
+every 6 hours. When the bucket has no enabled rule for either tag, it logs a warning
+with the document above and stops writing bundles, while reads keep working. It resumes
+on the first check that finds both. A member that cannot read the configuration warns
+and keeps writing.
 
 ## Node maintenance
 

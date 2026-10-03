@@ -465,6 +465,67 @@ describe('Source Cache sweep claims and deletes (§10)', () => {
     })
     expect(await s.sourceCacheUsage('org-a', 21_000)).toEqual({ committedBytes: 0, pendingBytes: 0 })
   })
+
+  it('refuses a guarded pointer delete once a read or a retarget followed the claim (CP1.6 note)', async () => {
+    const s = await open()
+    const p = pointer()
+    const b = bundle()
+    await committed(s, b, GiB)
+    await s.setSourceCachePointer({ orgId: 'org-a', pointerKey: p, bundleKey: b, now: 4_000 })
+    const guardOf = (row: SourceCacheObjectRow) => ({
+      targetKey: row.targetKey,
+      updatedAt: row.updatedAt,
+      lastReadAt: row.lastReadAt
+    })
+
+    // A read after the claim leaves the claim in place, so only the guard sees it.
+    const [read] = await s.claimUnreadSourceCachePointers({ ...claim, now: 10_000, unreadBefore: 9_000 })
+    await s.touchSourceCacheRead({ orgId: 'org-a', key: p, at: 10_500 })
+    expect(
+      await s.deleteSourceCacheObject({
+        orgId: 'org-a',
+        key: p,
+        now: 11_000,
+        claimedBy: 'member-1',
+        unchanged: guardOf(read!)
+      })
+    ).toEqual({ deleted: false, reason: 'changed' })
+    // The preserved pointer's claim is released, so a read can use it at once.
+    expect(await s.getSourceCacheObject('org-a', p)).toMatchObject({
+      targetKey: b,
+      lastReadAt: 10_500,
+      claimedBy: null
+    })
+    expect((await s.getSourceCacheObject('org-a', b))!.unpointedAt).toBeNull()
+
+    // A retarget clears the claim, which the fence alone catches.
+    const [retargeted] = await s.claimUnreadSourceCachePointers({ ...claim, now: 100_000, unreadBefore: 20_000 })
+    const next = bundle()
+    await committed(s, next, GiB, 100_100)
+    await s.setSourceCachePointer({ orgId: 'org-a', pointerKey: p, bundleKey: next, now: 100_200 })
+    expect(
+      await s.deleteSourceCacheObject({
+        orgId: 'org-a',
+        key: p,
+        now: 100_300,
+        claimedBy: 'member-1',
+        unchanged: guardOf(retargeted!)
+      })
+    ).toEqual({ deleted: false, reason: 'claim-lost' })
+
+    // A row untouched since the claim deletes and unpoints its target.
+    const [untouched] = await s.claimUnreadSourceCachePointers({ ...claim, now: 300_000, unreadBefore: 200_000 })
+    expect(
+      await s.deleteSourceCacheObject({
+        orgId: 'org-a',
+        key: p,
+        now: 300_100,
+        claimedBy: 'member-1',
+        unchanged: guardOf(untouched!)
+      })
+    ).toEqual({ deleted: true, releasedBytes: 0 })
+    expect((await s.getSourceCacheObject('org-a', next))!.unpointedAt).toBe(300_100)
+  })
 })
 
 describe('Source Cache org scoping', () => {

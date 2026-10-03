@@ -803,6 +803,7 @@ objectStore:
   region: auto
 
 # Source Cache (docs/designs/source-cache.md, chart README): rendered into daemon-pool members only; pods get presigned URLs alone.
+# Apply the bucket lifecycle rules yourself (chart README "Bucket lifecycle rules"); without them members stop writing bundles.
 sourceCache:
   enabled: false
   # S3 API origin; must be https:// (the shim admits only https bundle URLs). Empty => AWS regional S3.

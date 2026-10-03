@@ -76,6 +76,8 @@ export interface SourceCacheWriterDeps {
   maxConcurrent?: number
   now?: () => number
   log: { debug(message: string): void; info(message: string): void; warn(message: string): void }
+  /** False while the bucket affirmatively lacks the lifecycle rules (§14 fallback); omitted means always allowed. */
+  allowWrites?: () => boolean
   /** The CP1.8 metrics hook. */
   onOutcome?: (outcome: SourceCacheWriteOutcome) => void
 }
@@ -159,6 +161,7 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
 
   const run = async (request: SourceCacheWriteRequest): Promise<SourceCacheWriteOutcome> => {
     const { target, stager, abort } = request
+    if (deps.allowWrites && !deps.allowWrites()) return skip('lifecycle-missing')
     // The class is the one the daemon's own clone instruction used, never one the pod names (§9 step 2).
     if (request.credentialed !== (target.repoClass === 'cred')) return skip('class-mismatch')
     if (stager === undefined) return skip('unsupported-shim')

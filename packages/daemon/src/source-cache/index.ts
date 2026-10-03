@@ -8,7 +8,7 @@ import { addressFor, createPresigner, type SourceCachePresigner } from './presig
 export interface SourceCache {
   config: SourceCacheConfig
   presigner: SourceCachePresigner
-  /** Header-signed HEAD and retag the member runs itself (§9 step 5). */
+  /** Header-signed HEAD, retag, delete and lifecycle read the member runs itself (§9, §10). */
   objects: SourceCacheObjectClient
 }
 
@@ -77,4 +77,20 @@ export {
   type SourceCacheWriter,
   type SourceCacheWriteRequest
 } from './write-back.js'
-export type { SourceCacheObjectClient } from './object-client.js'
+export type { SourceCacheBucketLifecycle, SourceCacheObjectClient } from './object-client.js'
+export {
+  evaluateSourceCacheLifecycle,
+  SOURCE_CACHE_LIFECYCLE_DAYS,
+  sourceCacheLifecycleRules,
+  type SourceCacheLifecycleDocument,
+  type SourceCacheLifecycleEvaluation
+} from './lifecycle.js'
+export {
+  createSourceCacheSweeper,
+  type SourceCacheLifecycleStatus,
+  type SourceCacheSweepCounts,
+  type SourceCacheSweeper,
+  type SourceCacheSweeperDeps,
+  type SourceCacheSweepPass,
+  type SourceCacheSweepStore
+} from './sweep.js'
