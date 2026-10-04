@@ -1163,7 +1163,8 @@ network listener.
   directory that holds `shim/index.js`, which resolves the MCP bridge, the
   merge-when-ready watcher, the `gh` token entry and the git-credential wrapper
   (`bin/git-credential`, emitted by the build beside `shim/`) from the daemon's own
-  bundle. The `gh` wrapper directory and the DeepSeek preset have no counterpart
+  bundle. Git runs a sandbox helper through `sh`, because npm ships that wrapper
+  without its executable bit. The `gh` wrapper directory and the DeepSeek preset have no counterpart
   in an installation; the launcher reports them in `missingHelpers` rather than
   naming a path that is not there.
 
