@@ -3244,6 +3244,41 @@ describe('Daemon session retention GC (#485)', () => {
     await daemon.stop()
   })
 
+  it('purges an expired Dream row without judging a directory, since its runner never prepares one', async () => {
+    const clock = new FakeClock()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
+    await daemon.start()
+    await sweepRetention(daemon)
+    // An agent that may own worktrees, so only the Dream rule keeps the row out of the directory judgement.
+    vi.spyOn((daemon as any).workspaces, 'mayOwnSessionWorktrees').mockReturnValue(true)
+    const judge = vi.spyOn(daemon as any, 'judgeSessionDirectories')
+    await (daemon as any).store.upsertSession({
+      key: 'dream:memory:drm-1:bot-a',
+      agentId: 'bot-a',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'drm-1',
+      acpSessionId: 'acp-dream',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 0
+    })
+
+    clock.advance(8 * 24 * 3_600_000)
+    await vi.waitFor(
+      async () => expect(await (daemon as any).store.getSession('dream:memory:drm-1:bot-a')).toBeUndefined(),
+      WAIT
+    )
+    expect(judge).not.toHaveBeenCalled()
+
+    await daemon.stop()
+  })
+
   it('keeps the session row until VM destruction succeeds, retries the next sweep, then collects images', async () => {
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),

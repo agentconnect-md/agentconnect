@@ -492,7 +492,10 @@ markers say is due, or the one-time moves above for a session or clone that
 predates its own record. A worktree a session left on the agent pod before this
 tier is judged by retention only while the agent pod is bound, never woken for it,
 unless the session has no pod of its own, whose workspace can only be there; a row
-that goes first leaves such a worktree in place, unjudged and never removed.
+that goes first leaves such a worktree in place, unjudged and never removed. An agent
+pod that never received the primary checkout — its agent's sessions all ran in pods of
+their own — holds no such worktree, so retention reads that root as absent instead of
+running Git where there is no repository.
 
 **Every Git of this tier runs inside the pod's closed inventory.** On a pool
 member the daemon does not spawn Git at all: each invocation crosses the shim's

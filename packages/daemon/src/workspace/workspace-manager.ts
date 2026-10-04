@@ -1831,16 +1831,16 @@ export class WorkspaceManager {
     return join(root.worktreesPath, this.sessionWorktreeId(sessionKey))
   }
 
-  /** Every root that can hold a per-session worktree: the primary when there is one, plus every
-   *  MATERIALIZED secondary subtree on disk — a retired root's worktrees are this session's too
-   *  (decision 12), while a subtree a failed clone left behind owns none and has no checkout for
-   *  Git to run in, which would fail the whole session's cleanup forever. */
+  /** Every root on this volume with a checkout, retired secondaries included (decision 12); one without — a failed clone, a pod never given the primary — owns no worktree and leaves Git nowhere to run. */
   async sessionWorktreeRoots(agent: Agent): Promise<SessionRootLocator[]> {
     const fs = this.fsFor(agent.id)
-    const roots: SessionRootLocator[] = agent.workspace.mode === 'git-repo' ? [this.primaryLocator(agent)] : []
+    const candidates: SessionRootLocator[] = agent.workspace.mode === 'git-repo' ? [this.primaryLocator(agent)] : []
     for (const { path, worktreesPath, subtreeName } of await this.secondarySubtreesFor(agent)) {
-      if ((await fs.stat(join(path, '.git'))) === 'missing') continue
-      roots.push({ path, worktreesPath, subtreeName })
+      candidates.push({ path, worktreesPath, subtreeName })
+    }
+    const roots: SessionRootLocator[] = []
+    for (const root of candidates) {
+      if ((await fs.stat(join(root.path, '.git'))) !== 'missing') roots.push(root)
     }
     return roots
   }
