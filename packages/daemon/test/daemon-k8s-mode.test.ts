@@ -9,6 +9,11 @@ import {
   RUNTIME_PROBE_FEATURE
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import {
+  LONG_IDLE_SKIP_AFTER_TTLS,
+  LONG_IDLE_SKIP_REPORT_INTERVAL_MS,
+  UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS
+} from '../src/daemon/constants.js'
 import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { wireWorkspacePlane } from '../src/execution/plane.js'
 import { SANDBOX_HOLD_TTL_MS, SandboxHolds } from '../src/k8s/sandbox-hold.js'
@@ -127,6 +132,7 @@ function daemon(opts: {
               workspacesOffDisk: true,
               gitRunnerFor: () => undefined,
               launched: () => [],
+              adoptUntracked: async () => [],
               armedIn: async () => false,
               suspendIdle: async () => 'absent',
               suspendStalled: async () => 'absent',
@@ -1016,6 +1022,98 @@ describe('daemon --k8s mode', () => {
       expect(suspended).toEqual(['held', 'held'])
     } finally {
       ;(k8sDaemon as any).cpClient = undefined
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('takes over a running pod no launch here tracks, only for agents whose duty it holds and once per interval', async () => {
+    const adoptUntracked = vi.fn(async (_serves: (agentId: string) => boolean) => ['held:session-x'])
+    const k8sDaemon = daemon({ root: root(), k8s: true, plane: { adoptUntracked } })
+    try {
+      await k8sDaemon.start()
+      const inner = k8sDaemon as any
+      const info = vi.spyOn(inner.log, 'info')
+      const ttl = inner.cfg.limits.agentIdleTimeoutMs
+      const now = Date.now()
+      // Outside a member set nothing tells this member's agents from a peer's.
+      await inner.sweepIdleSandboxes(now, ttl)
+      expect(adoptUntracked).not.toHaveBeenCalled()
+      inner.cpClient = {
+        organizationScope: () => 'frame',
+        memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),
+        stop: async () => {}
+      }
+      inner.duties.applyGrant([
+        {
+          groupId: '11111111-1111-4111-8111-111111111111',
+          orgId: 'org-1',
+          term: '1',
+          members: [{ kind: 'agent', refId: 'held' }]
+        }
+      ])
+      await inner.sweepIdleSandboxes(now, ttl)
+      await vi.waitFor(() =>
+        expect(info).toHaveBeenCalledWith(
+          'idle: took over the running sandbox "held:session-x", which no launch here tracked'
+        )
+      )
+      await vi.waitFor(() => expect(inner.untrackedSandboxAdoption).toBeUndefined())
+      const serves = adoptUntracked.mock.calls[0]![0]
+      expect([serves('held'), serves('moved')]).toEqual([true, false])
+      // A duty-gain takeover still running or retrying keeps its agent.
+      inner.k8sAdoptions.set('held', undefined)
+      expect(serves('held')).toBe(false)
+      inner.k8sAdoptions.delete('held')
+      await inner.sweepIdleSandboxes(now + UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS - 1, ttl)
+      expect(adoptUntracked).toHaveBeenCalledOnce()
+      await inner.sweepIdleSandboxes(now + UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS, ttl)
+      expect(adoptUntracked).toHaveBeenCalledTimes(2)
+    } finally {
+      ;(k8sDaemon as any).cpClient = undefined
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('names what keeps a long-quiet pod up at info once an hour, and at debug before and in between', async () => {
+    let launched = [{ subject: 'bot-a', agentId: 'bot-a', since: 0 }]
+    const k8sDaemon = daemon({
+      root: root(),
+      k8s: true,
+      plane: { launched: () => launched, suspendIdle: async () => 'busy' }
+    })
+    try {
+      await k8sDaemon.start()
+      const inner = k8sDaemon as any
+      const info = vi.spyOn(inner.log, 'info')
+      const debug = vi.spyOn(inner.log, 'debug')
+      const ttl = inner.cfg.limits.agentIdleTimeoutMs
+      const stillUp = (): number =>
+        info.mock.calls.filter(([line]) => String(line).startsWith('idle: the sandbox "bot-a" is still up after'))
+          .length
+      const skipped = (): number =>
+        debug.mock.calls.filter(([line]) => String(line).startsWith('idle: skipping sandbox "bot-a" — busy')).length
+      const longQuiet = (LONG_IDLE_SKIP_AFTER_TTLS + 1) * ttl
+      await inner.sweepIdleSandboxes(LONG_IDLE_SKIP_AFTER_TTLS * ttl, ttl)
+      await vi.waitFor(() => expect(skipped()).toBe(1))
+      expect(stillUp()).toBe(0)
+      await inner.sweepIdleSandboxes(longQuiet, ttl)
+      await vi.waitFor(() => expect(stillUp()).toBe(1))
+      expect(info).toHaveBeenCalledWith(
+        `idle: the sandbox "bot-a" is still up after ${Math.round(longQuiet / 60_000)} min without recorded activity — ` +
+          `busy; idle ${Math.round(longQuiet / 1000)}s, timeout ${Math.round(ttl / 1000)}s`
+      )
+      await inner.sweepIdleSandboxes(longQuiet + LONG_IDLE_SKIP_REPORT_INTERVAL_MS - 1, ttl)
+      await vi.waitFor(() => expect(skipped()).toBe(2))
+      expect(stillUp()).toBe(1)
+      await inner.sweepIdleSandboxes(longQuiet + LONG_IDLE_SKIP_REPORT_INTERVAL_MS, ttl)
+      await vi.waitFor(() => expect(stillUp()).toBe(2))
+      // A pod this member stopped holding starts over: the next time it is held and skipped, it is named at once.
+      launched = []
+      await inner.sweepIdleSandboxes(longQuiet + LONG_IDLE_SKIP_REPORT_INTERVAL_MS + 1, ttl)
+      launched = [{ subject: 'bot-a', agentId: 'bot-a', since: 0 }]
+      await inner.sweepIdleSandboxes(longQuiet + LONG_IDLE_SKIP_REPORT_INTERVAL_MS + 2, ttl)
+      await vi.waitFor(() => expect(stillUp()).toBe(3))
+    } finally {
       await k8sDaemon.stop()
     }
   })

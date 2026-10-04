@@ -86,6 +86,8 @@ export class K8sDriver implements SpawnDriver {
   private readonly clock: Clock
   /** So a Role without `patch` on claims says so once, not on every admission it degrades. */
   private stampRefusalReported = false
+  /** So a Role without `list` on Sandboxes says so once, not on every sweep that looks for untracked pods. */
+  private sandboxListRefusalReported = false
 
   constructor(private readonly deps: K8sDriverDeps) {
     this.clock = deps.clock ?? systemClock
@@ -353,6 +355,34 @@ export class K8sDriver implements SpawnDriver {
       }
     }
     if (failures.length) throw new AggregateError(failures, `could not adopt ${failures.length} session sandbox(es)`)
+    return adopted
+  }
+
+  /** Take over every Running pod of an agent `serves` admits that no launch here tracks — otherwise only a duty change would. */
+  async adoptUntracked(serves: (agentId: string) => boolean): Promise<SandboxSubject[]> {
+    const sandboxes = await this.deps.api.listSandboxes().catch((err: unknown) => {
+      if (!(err instanceof K8sApiError) || err.status !== 403) throw err
+      if (!this.sandboxListRefusalReported)
+        this.deps.log.warn(`cluster: listing sandboxes is not permitted — only a duty change takes over a running pod`)
+      this.sandboxListRefusalReported = true
+      return []
+    })
+    const adopted: SandboxSubject[] = []
+    for (const sandbox of sandboxes) {
+      if ((sandbox.spec?.operatingMode ?? 'Running') !== 'Running') continue
+      const labels = sandbox.spec?.podTemplate?.metadata?.labels
+      const agentId = labels?.[AC_LABEL_AGENT]
+      if (!agentId || !serves(agentId)) continue
+      const leaf = labels?.[AC_LABEL_SESSION]
+      const subject = leaf ? sessionSandboxSubject(agentId, leaf) : agentSandboxSubject(agentId)
+      if (this.ownedLaunch(subject)) continue
+      // Adoption reads the claim, so a Sandbox its claim no longer names is left for the orphan reconciler.
+      const launch = await this.adopt(subject).catch((err: unknown) => {
+        this.deps.log.warn(`cluster: could not take over the running sandbox ${subject} — ${(err as Error).message}`)
+        return undefined
+      })
+      if (launch) adopted.push(subject)
+    }
     return adopted
   }
 

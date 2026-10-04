@@ -309,6 +309,7 @@ function planeOver(
     sessionDirFor: (_agentId: string, leaf: string) => `${MOUNT}/sessions/${leaf}`,
     launched: () => driver.launched(),
     adoptAgent: async () => {},
+    adoptUntracked: async () => [],
     releaseAgent: () => {},
     suspendAgent: async () => {},
     suspendIdle: (subject: string) => driver.suspendIfIdle(subject),
