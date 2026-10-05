@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   CODEX_DEFAULT_ENDPOINT,
+  CODEX_MCP_STARTUP_GRACE_MS,
+  codexConfigWithMcpStartupGrace,
   codexConfigWithUserInputTool,
   codexGatewayAuthRequest
 } from '../src/runtimes/codex-config.js'
@@ -44,5 +46,31 @@ describe('codexConfigWithUserInputTool', () => {
     expect(() => codexConfigWithUserInputTool(JSON.stringify({ features: 'all' }))).toThrow(
       'CODEX_CONFIG.features must be a JSON object'
     )
+  })
+})
+
+describe('codexConfigWithMcpStartupGrace', () => {
+  it('raises the grace a first turn waits for a still-starting MCP server', () => {
+    expect(JSON.parse(codexConfigWithMcpStartupGrace(undefined))).toEqual({
+      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS
+    })
+  })
+
+  it('keeps every other field', () => {
+    const raw = JSON.stringify({ model: 'gpt-test', features: { apps: false } })
+    expect(JSON.parse(codexConfigWithMcpStartupGrace(raw))).toEqual({
+      model: 'gpt-test',
+      features: { apps: false },
+      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS
+    })
+  })
+
+  it('leaves a grace the caller already chose', () => {
+    const raw = JSON.stringify({ mcp_optional_startup_grace_ms: 0 })
+    expect(JSON.parse(codexConfigWithMcpStartupGrace(raw))).toEqual({ mcp_optional_startup_grace_ms: 0 })
+  })
+
+  it('rejects a malformed config rather than silently dropping it', () => {
+    expect(() => codexConfigWithMcpStartupGrace('not-json')).toThrow('CODEX_CONFIG must be a valid JSON object')
   })
 })

@@ -82,6 +82,16 @@ export function codexConfigWithBaseUrlFillIn(raw: string | undefined, baseUrl: s
   return codexConfigWithBaseUrl(raw, baseUrl)
 }
 
+// How long a turn's tool list waits for a still-starting MCP server; Codex's own 1 s drops most remote HTTP servers from the first turn.
+export const CODEX_MCP_STARTUP_GRACE_MS = 10_000
+
+/** Sets Codex's optional-MCP startup grace unless the caller's CODEX_CONFIG already chose one. */
+export function codexConfigWithMcpStartupGrace(raw: string | undefined): string {
+  const config = objectFromJson(raw, 'CODEX_CONFIG')
+  if (config.mcp_optional_startup_grace_ms !== undefined) return JSON.stringify(config)
+  return JSON.stringify({ ...config, mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS })
+}
+
 // Codex offers `request_user_input` — the only path from a Codex turn to our ACP form elicitation — in
 // Default mode only behind this feature; verified against @openai/codex-linux-x64 bundled with
 // codex-acp@1.10.0 (the `[tools] experimental_request_user_input` knob alone changes nothing there).
