@@ -31,7 +31,7 @@ import {
   ULTRACODE_EFFORT
 } from '../runtime-defs/claude-runtime.js'
 import { isCodexRuntimeDef, runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
-import { codexConfigWithUserInputTool } from '../runtimes/codex-config.js'
+import { codexConfigWithMcpStartupGrace, codexConfigWithUserInputTool } from '../runtimes/codex-config.js'
 import {
   LocalDriver,
   type AcpSandboxLaunch,
@@ -757,12 +757,21 @@ export class AcpHost {
           `signed-in account apps/connectors may be inherited${detail}`
       )
     }
+    const isCodex = this.opts.runtimeId === 'codex-acp' || isCodexRuntimeDef(this.runtime)
     // Codex offers `request_user_input` only when configured on; enable it exactly when this host services session elicitations.
-    if (this.opts.onElicit && (this.opts.runtimeId === 'codex-acp' || isCodexRuntimeDef(this.runtime))) {
+    if (this.opts.onElicit && isCodex) {
       try {
         env.CODEX_CONFIG = codexConfigWithUserInputTool(env.CODEX_CONFIG)
       } catch (err) {
         this.opts.log?.warn(`acp: leaving Codex's request_user_input tool off — ${(err as Error).message}`)
+      }
+    }
+    // Codex leaves an MCP server still starting after 1 s out of the turn, so a remote server misses the first turn.
+    if (isCodex) {
+      try {
+        env.CODEX_CONFIG = codexConfigWithMcpStartupGrace(env.CODEX_CONFIG)
+      } catch (err) {
+        this.opts.log?.warn(`acp: leaving Codex's MCP startup grace at its default — ${(err as Error).message}`)
       }
     }
     // The memory-backend env arrives in `opts.env` from memoryProviderFor at spawn; a host built without it keeps the runtime's default memory.
