@@ -236,10 +236,11 @@ describe('the workspace manager recording the bundles its skills step installs',
   })
 
   it("excludes a placed session's bundles, installed into its checkout, through the plane that holds it", async () => {
-    const cwd = '/srv/executor/sessions/session-a/workspace'
+    // Composed with this host's path rules, as the workspace manager composes every placed path.
+    const cwd = join('/srv', 'executor', 'sessions', 'session-a', 'workspace')
     const runner = {
       withEnv: () => runner,
-      raw: async () => `${cwd}/.git\n${cwd}\n`
+      raw: async () => `${join(cwd, '.git')}\n${cwd}\n`
     } as unknown as GitRunner
     const written: Array<{ path: string; content: string }> = []
     const fs = {
@@ -257,7 +258,7 @@ describe('the workspace manager recording the bundles its skills step installs',
     // The exclude file is the checkout's own, on the executor: nothing is written on this disk.
     expect(written).toEqual([
       {
-        path: `${cwd}/.git/info/exclude`,
+        path: join(cwd, '.git', 'info', 'exclude'),
         content: `# BEGIN agentconnect-managed skills\n/.agentconnect/cluster-skill-state/\n/${BUNDLE}/\n# END agentconnect-managed skills\n`
       }
     ])
