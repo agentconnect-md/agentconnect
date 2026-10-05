@@ -23,6 +23,7 @@ import {
   workspaceGitRemoteTarget,
   writeRepoHelperConfig
 } from '../src/workspace/git-injection.js'
+import { INSTALLATION_GIT_CREDENTIAL_WRAPPER } from '../src/shim/git-credential-wrapper.js'
 import { SANDBOX_GIT_CONFIG_DIR, SANDBOX_GIT_CREDENTIAL_HELPER } from '../src/shim/sandbox-paths.js'
 import { SANDBOX_TUNNEL_PATHS } from '../src/shim/tunnel.js'
 
@@ -78,10 +79,13 @@ beforeAll(() => {
   initGitInjection({
     // Per agent, as the daemon's own resolver is: an agent whose git runs in a pod gets the
     // image's paths, and one that runs here gets this daemon's. `pod-` ids pick the former.
+    // `installed-` ids get a daemon installation as their helper root, as the host and srt strategies do.
     targetFor: (agentId) =>
       agentId.startsWith('pod-')
         ? sandboxGitCredentialTarget()
-        : daemonGitCredentialTarget({ shimPath: join(tmpRun, 'helper.sh'), runDir: tmpRun }),
+        : agentId.startsWith('installed-')
+          ? sandboxGitCredentialTarget(join(tmpRun, 'hs'), join(tmpRun, 'installation'))
+          : daemonGitCredentialTarget({ shimPath: join(tmpRun, 'helper.sh'), runDir: tmpRun }),
     preWarm: async () => undefined,
     capabilityFor: (agentId) => `cap-${agentId}`
   })
@@ -829,7 +833,7 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
     const pairs = configPairs(cloneGitEnv('pod-agent', 'https://github.com/acme/repo.git'))
     expect(pairs).toContainEqual([
       'credential.https://github.com.helper',
-      `!'${SANDBOX_GIT_CREDENTIAL_HELPER}' pod-agent`
+      `!sh '${SANDBOX_GIT_CREDENTIAL_HELPER}' pod-agent`
     ])
     // The helper has no daemon root to derive a socket from, so the tunnel's path travels with it.
     expect(cloneGitEnv('pod-agent')[GITCRED_SOCKET_ENV]).toBe(SANDBOX_TUNNEL_PATHS.gitcred)
@@ -866,7 +870,7 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
     expect(pod.path).toBe(`${SANDBOX_GIT_CONFIG_DIR}/agent-1.gitconfig`)
     expect(pod.env.GIT_CONFIG_GLOBAL).toBe(pod.path)
     expect(pod.env[GITCRED_SOCKET_ENV]).toBe(SANDBOX_TUNNEL_PATHS.gitcred)
-    expect(pod.content).toContain(`!'${SANDBOX_GIT_CREDENTIAL_HELPER}' agent-1`)
+    expect(pod.content).toContain(`!sh '${SANDBOX_GIT_CREDENTIAL_HELPER}' agent-1`)
     expect(pod.content).not.toContain(homedir())
   })
 
@@ -875,6 +879,32 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
     // lands on the daemon's disk, creating the file a check would look for while the pod has none.
     expect(() => sessionGitEnv('pod-agent')).toThrow(/materialize its gitconfig/)
     expect(existsSync(join(SANDBOX_GIT_CONFIG_DIR, 'pod-agent.gitconfig'))).toBe(false)
+  })
+
+  it('runs an installation helper that npm shipped without its executable bit', () => {
+    // npm packs every non-`bin` file as 0644 and only the CLI restores modes, so a daemon installation's
+    // `bin/git-credential` arrives non-executable on any host whose CLI predates the fix.
+    const installation = join(tmpRun, 'installation')
+    mkdirSync(join(installation, 'bin'), { recursive: true })
+    mkdirSync(join(installation, 'shim'), { recursive: true })
+    writeFileSync(join(installation, 'bin', 'git-credential'), INSTALLATION_GIT_CREDENTIAL_WRAPPER)
+    chmodSync(join(installation, 'bin', 'git-credential'), 0o644)
+    // A stand-in for the built helper bundle that echoes its argv back as the password.
+    writeFileSync(
+      join(installation, 'shim', 'git-credential.js'),
+      "process.stdout.write(`username=x-access-token\\npassword=${process.argv.slice(2).join('+')}\\n`)\n"
+    )
+    const out = execFileSync('git', ['credential', 'fill'], {
+      input: 'protocol=https\nhost=github.com\npath=acme/repo.git\n\n',
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: tmpRun,
+        GIT_TERMINAL_PROMPT: '0',
+        ...cloneGitEnv('installed-agent', 'https://github.com/acme/repo.git')
+      }
+    })
+    expect(out).toContain('password=installed-agent+get')
   })
 
   it('writes the repo-local helper in the coordinates of the git that will read it', async () => {
@@ -893,7 +923,7 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
       'config',
       '--add',
       'credential.https://github.com.helper',
-      `!'${SANDBOX_GIT_CREDENTIAL_HELPER}' pod-agent`
+      `!sh '${SANDBOX_GIT_CREDENTIAL_HELPER}' pod-agent`
     ])
   })
 })

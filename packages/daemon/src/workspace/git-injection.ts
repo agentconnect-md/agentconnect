@@ -609,7 +609,10 @@ export function gitCredentialEnv(
 
 function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(agentId)): string {
   const { helper } = target
-  return `!'${helper.replaceAll("'", "'\\''")}' ${agentId}`
+  const quoted = `'${helper.replaceAll("'", "'\\''")}'`
+  // A sandbox helper is read by `sh` rather than executed, so its mode does not matter: npm packs every non-`bin`
+  // file as 0644, and the installed CLI that would restore the bit is not upgraded along with the daemon.
+  return target.kind === 'sandbox' ? `!sh ${quoted} ${agentId}` : `!${quoted} ${agentId}`
 }
 
 /** The three host-scoped config pairs both channels share. The host defaults to
