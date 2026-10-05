@@ -141,7 +141,9 @@ answers exactly that sentence; the pool's resumes a Sandbox and waits for its po
 driver, and its `resolve` is the `prepare` of §6. Above it the path is
 indistinguishable from the pool's: ACP is spawned through the shim, Git and
 workspace reads cross the shim's exec and fs channels, skills are published through
-it, and the credential and MCP tunnels ride the same channel in the direction §6 of
+it into the session's checkout (the runtime's cwd, where runtimes scan for project
+skills; the shim's own root is the session directory above it, and Codex stops at
+the repository root), and the credential and MCP tunnels ride the same channel in the direction §6 of
 [cluster-spawn-and-shim.md](cluster-spawn-and-shim.md) already fixes. Where a
 session's workspace operations land is an `ExecutionPlane`
 (`packages/daemon/src/execution/plane.ts`), resolved per scope rather than per
