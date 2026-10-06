@@ -264,4 +264,15 @@ describe('sandbox spawn environment', () => {
     expect(ghWrapperPath('/usr/local/bin:/usr/bin', () => false)).toBe('/usr/local/bin:/usr/bin')
     expect(ghWrapperPath(undefined, () => false)).toBeUndefined()
   })
+
+  // A host shim on an installation has no image directory: its launcher writes the wrappers into the runtime root.
+  it("puts the host launcher's wrappers first when the image ships none", () => {
+    const runtime = '/srv/daemon/hs/0a1b2c3d4e5f/pathbin'
+    const only = (dir: string) => (candidate: string) => candidate === dir
+    expect(ghWrapperPath('/usr/bin', only(runtime), runtime)).toBe(`${runtime}:/usr/bin`)
+    expect(ghWrapperPath(`/usr/bin:${runtime}`, only(runtime), runtime)).toBe(`${runtime}:/usr/bin`)
+    // The image's own wrapper stays the one a pod runs, whatever a launcher named.
+    expect(ghWrapperPath('/usr/bin', () => true, runtime)).toBe(`${SANDBOX_GH_WRAPPER_DIR}:/usr/bin`)
+    expect(ghWrapperPath('/usr/bin', () => false, runtime)).toBe('/usr/bin')
+  })
 })

@@ -97,6 +97,7 @@ async function main(): Promise<number> {
     podEnv: process.env,
     completeEnv: options.completeEnv,
     ...(options.runtimeMark ? { runtimeMark: options.runtimeMark } : {}),
+    runtimeWrapperDir: paths.runtimeWrapperDir,
     // Serves materialize and git exec, and ENFORCES the declared inventory here rather than
     // trusting that the daemon sent only permitted subcommands; tunnels are served separately
     // because they own long-lived sockets rather than answering one request.

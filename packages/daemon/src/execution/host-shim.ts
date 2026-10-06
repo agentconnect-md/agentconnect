@@ -5,6 +5,8 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AF_UNIX_PATH_MAX } from '../acp/sandbox-temp.js'
+import { renderGhWrapper } from '../cp/gh-shim.js'
+import { renderGlabWrapper } from '../cp/glab-shim.js'
 import type { Logger } from '../log.js'
 import { sweepMarkedUntilClear } from '../shim/marked-sweep.js'
 import {
@@ -152,6 +154,29 @@ export function hostShimEnv(input: {
   return env
 }
 
+/** Single-quote a value for sh, escaping any quote it carries. */
+const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
+
+/**
+ * The gh and glab wrappers a host shim's runtimes find first on PATH, as a pod finds the image's: each fetches a
+ * per-invocation token over the shim's gitcred tunnel. Written per launch rather than shipped, because npm packs an
+ * installation's files without their executable bit, and a wrapper is found by PATH lookup.
+ */
+export async function writeRuntimeWrappers(paths: ShimPaths): Promise<void> {
+  const node = q(process.execPath)
+  const dir = paths.runtimeWrapperDir
+  await mkdir(dir, { mode: 0o755 })
+  const tokenCommand = (entry: string) => `${node} ${q(entry)} "$AC_AGENT_ID" -- "$@"`
+  await writeFile(join(dir, 'gh'), renderGhWrapper({ selfDir: dir, tokenCommand: tokenCommand(paths.ghTokenEntry) }), {
+    mode: 0o755
+  })
+  await writeFile(
+    join(dir, 'glab'),
+    renderGlabWrapper({ selfDir: dir, tokenCommand: tokenCommand(paths.glabTokenEntry) }),
+    { mode: 0o755 }
+  )
+}
+
 /** Runtime roots whose shim this process started and has not seen go. */
 const liveRoots = new Set<string>()
 /** A fixed root's last removal, which the next start of that root waits out. */
@@ -227,6 +252,7 @@ export async function startHostShim(input: HostShimInput): Promise<HostShim> {
     await mkdir(runtimeRoot, { mode: 0o700 })
     // Written before the shim exists, so no crash leaves a marked process a restart cannot find.
     await writeFile(join(runtimeRoot, MARK_FILE), mark, { mode: 0o600 })
+    await writeRuntimeWrappers(shimPaths(runtimeRoot, helperRoot))
     for (const dir of ['workspace', 'repos', 'home'])
       await mkdir(join(workspaceRoot, dir), { recursive: true, mode: 0o700 })
   } catch (error) {

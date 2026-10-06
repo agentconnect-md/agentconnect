@@ -57,17 +57,20 @@ function seedEnv(podEnv: Record<string, string | undefined>): Record<string, str
   }
 }
 
-/** PATH with the image's gh wrapper first, or unchanged when this image ships none. */
+/** PATH with the image's gh wrapper first, else the host launcher's, or unchanged when neither exists. */
 // Decided HERE, not sent by the daemon: the wrapper dir is the IMAGE's layout, and a daemon naming a path on a
-// machine it is not on is the class of bug sandbox-paths.ts exists to keep out.
+// machine it is not on is the class of bug sandbox-paths.ts exists to keep out. An installation has no image
+// directory, so its host launcher writes the wrappers into the shim's runtime root instead.
 // Consulted rather than assumed, so an older runtime image keeps launching with exactly the PATH it always had.
 export function ghWrapperPath(
   path: string | undefined,
-  exists: (dir: string) => boolean = existsSync
+  exists: (dir: string) => boolean = existsSync,
+  runtimeWrapperDir?: string
 ): string | undefined {
-  if (!exists(SANDBOX_GH_WRAPPER_DIR)) return path
-  const entries = (path ?? '').split(':').filter((entry) => entry && entry !== SANDBOX_GH_WRAPPER_DIR)
-  return [SANDBOX_GH_WRAPPER_DIR, ...entries].join(':')
+  const dir = [SANDBOX_GH_WRAPPER_DIR, runtimeWrapperDir].find((candidate) => candidate && exists(candidate))
+  if (!dir) return path
+  const entries = (path ?? '').split(':').filter((entry) => entry && entry !== dir)
+  return [dir, ...entries].join(':')
 }
 
 /** Provider profile of the REQUESTED command (its registry identity, not the resolved path). */
@@ -159,6 +162,8 @@ export class AcpRunner {
       completeEnv?: boolean
       /** A host launcher's mark, set on every runtime in both env modes so its sweep finds what a dead shim left; unset elsewhere. */
       runtimeMark?: string
+      /** The host launcher's gh and glab wrappers, for a machine whose image directory does not exist. */
+      runtimeWrapperDir?: string
       /** Test seam: the image directory the DeepSeek preset is seeded from. */
       dshPresetSource?: string
       log?: { info: (m: string) => void; warn: (m: string) => void }
@@ -214,7 +219,7 @@ export class AcpRunner {
     const env = { ...podBaseEnv(this.deps.podEnv ?? {}), ...seedEnv(this.deps.podEnv ?? {}), ...payload.env }
     applySrtProxyEnv(env, this.deps.podEnv ?? {})
     // After the daemon's env, so an agent's `gh` reaches the image's per-repo wrapper even when a PATH travelled.
-    const ghPath = ghWrapperPath(env.PATH)
+    const ghPath = ghWrapperPath(env.PATH, existsSync, this.deps.runtimeWrapperDir)
     if (ghPath !== undefined) env.PATH = ghPath
     this.fillHints(payload, env)
     // Fill-in only, like hints: an env the daemon decided (per-agent key/gateway) stays authoritative.

@@ -54,6 +54,8 @@ export interface ShimClientDeps {
   completeEnv?: boolean
   /** A host launcher's mark, which the ACP runner copies into every runtime's environment. */
   runtimeMark?: string
+  /** Where this shim's launcher wrote the gh and glab wrappers, used when the image ships none. */
+  runtimeWrapperDir?: string
   /** This pod's workspace mount, reported in the hello so the daemon builds pod paths on it. */
   workspaceRoot?: string
   /** Versioned optional surfaces this shim image can accept. */
@@ -344,6 +346,7 @@ export class ShimClient {
         ...(this.deps.podEnv ? { podEnv: this.deps.podEnv } : {}),
         ...(this.deps.completeEnv ? { completeEnv: true } : {}),
         ...(this.deps.runtimeMark ? { runtimeMark: this.deps.runtimeMark } : {}),
+        ...(this.deps.runtimeWrapperDir ? { runtimeWrapperDir: this.deps.runtimeWrapperDir } : {}),
         ...(this.deps.log ? { log: this.deps.log } : {})
       })
       this.acpStreams.set(streamId, runner)
