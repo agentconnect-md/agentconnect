@@ -16,6 +16,7 @@ import { startHostShim } from '../src/execution/host-shim.js'
 import { effectiveStrategies, hostLauncher, machineStrategies } from '../src/execution/strategies.js'
 import { assembleRuntimeLaunch } from '../src/launch/assemble.js'
 import { ShimDialer } from '../src/shim/dialer.js'
+import { shimPaths } from '../src/shim/sandbox-paths.js'
 import { ShimSession } from '../src/shim/session.js'
 import { WAIT } from './wait-support.js'
 
@@ -278,7 +279,10 @@ describe('executor facet, end to end', () => {
       expect(seen.CLAUDE_CONFIG_DIR).toBe(join(root, 'sessions', LEAF, 'home', '.claude'))
       // Where this machine keeps the sign-in that HOME points at: a path only it can name, filled in by its shim.
       expect(seen.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(signIn)
-      expect(seen.PATH).toBe(process.env.PATH)
+      // The machine's own PATH, behind the gh and glab wrappers its launcher wrote beside the shim (the image's are absent here).
+      const wrappers = shimPaths(reply.runtimeRoot).runtimeWrapperDir
+      expect(seen.PATH).toBe(`${wrappers}:${process.env.PATH}`)
+      expect(['gh', 'glab'].every((tool) => existsSync(join(wrappers, tool)))).toBe(true)
       expect(seen.HOLDER_ONLY).toBeUndefined()
       expect(Object.values(seen).filter((value) => value?.startsWith(holderDir))).toEqual([])
 

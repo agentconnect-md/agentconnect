@@ -6980,6 +6980,8 @@ export class Daemon {
       Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
       shimDirs.add(this.glabBinDir)
     }
+    // A placed session's glab wrapper is its executor's (written beside its shim); the instance it talks to still comes from here.
+    if (gitlabCredentials && remoteSession) Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
     if (shimDirs.size > 0) {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
     }
