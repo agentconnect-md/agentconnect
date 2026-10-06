@@ -254,8 +254,7 @@ describe('the skills a placed session installs', () => {
     return { executor, request }
   }
 
-  // The shim is rooted at the session directory, above the checkout the runtime scans for project skills (Codex
-  // stops at the repository root), so installs are aimed at the runtime's cwd.
+  // The shim is rooted at the session directory, above the checkout where runtimes scan for project skills.
   it('aims every request at the cwd it is given', async () => {
     const { executor, request } = bound()
     await executor.skillClientFor(SUBJECT, CWD)!.verify([])

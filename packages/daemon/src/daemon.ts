@@ -6229,14 +6229,55 @@ export class Daemon {
   ): Promise<ClusterSkillLedger | undefined> {
     const reported = plane?.workspaceIncarnationFor?.(pod)
     const shimGeneration = plane?.shimGenerationFor?.(pod)
-    return await this.reconcileSandboxSkills(agent, {
+    const isLaunchCurrent = () =>
+      plane?.workspaceIncarnationFor?.(pod) === reported && plane?.shimGenerationFor?.(pod) === shimGeneration
+    const ledger = await this.reconcileSandboxSkills(agent, {
       client: plane?.skillClientFor?.(pod, cwd),
       // Receipts are relative to the directory installed into, so installs into a cwd keep a ledger of their own.
       workspaceIncarnation: reported && cwd ? cwdWorkspaceIncarnation(reported, cwd) : reported,
       shimGeneration,
-      isLaunchCurrent: () =>
-        plane?.workspaceIncarnationFor?.(pod) === reported && plane?.shimGenerationFor?.(pod) === shimGeneration
+      isLaunchCurrent
     })
+    if (cwd !== undefined && reported && shimGeneration !== undefined) {
+      await this.retireShimRootSkills(agent, plane?.skillClientFor?.(pod), reported, shimGeneration, isLaunchCurrent)
+    }
+    return ledger
+  }
+
+  /** Remove the bundles an older daemon installed at a placed session's directory, above its checkout: no runtime scans there, and no other ledger owns them. */
+  private async retireShimRootSkills(
+    agent: Agent,
+    client: ClusterSkillClient | undefined,
+    workspaceIncarnation: string,
+    shimGeneration: number,
+    isLaunchCurrent: () => boolean
+  ): Promise<void> {
+    const prior = await this.store.clusterSkillLedger(agent.id, workspaceIncarnation)
+    if (!prior?.ledger.roots.length) return
+    const duty = this.duties.dutyForAgent(agent.id)
+    const skillsAgentId = this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId
+    if (!client || !duty || !skillsAgentId || !this.cfg.daemonId) return
+    try {
+      await new ClusterSkillCoordinator(this.store).reconcile({
+        authority: {
+          groupId: duty.groupId,
+          term: duty.term,
+          daemonId: this.cfg.daemonId,
+          agentId: agent.id,
+          workspaceIncarnation
+        },
+        skillsAgentId,
+        shimGeneration,
+        sources: [],
+        client,
+        isLaunchCurrent
+      })
+    } catch (error) {
+      // Retried at the next preparation: the ledger still holds them.
+      this.log.warn(
+        `skills: could not remove ${agent.id}'s bundles at its session directory (${(error as Error).message})`
+      )
+    }
   }
 
   private async reconcileMicrosandboxSkills(agent: Agent, cwd: string): Promise<string[]> {
