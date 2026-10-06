@@ -98,9 +98,7 @@ describe('buildInstallManifest', () => {
     expect(manifest.features.agent_view.agent_description).toBe(PLATFORM_APP_DESCRIPTION)
   })
 
-  // Drift guard: these scopes/events MUST stay in lock-step with the manual manifest
-  // (packages/web/src/lib/slack-manifest.ts) and what the daemon's Slack adapter uses.
-  // A change here is deliberate — update the pins AND the other two places.
+  // Pin the scopes exposed by the CP installer as well as the manual installer.
   it('pins the exact bot scopes (drift guard)', () => {
     expect([...SLACK_BOT_SCOPES]).toEqual([
       'files:read',
@@ -132,9 +130,7 @@ describe('buildInstallManifest', () => {
       'lists:read',
       'lists:write',
       'channels:join',
-      'search:read.public',
-      'search:read.files',
-      'search:read.users'
+      'search:read.public'
     ])
   })
 

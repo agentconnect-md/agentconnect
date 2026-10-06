@@ -40,10 +40,8 @@ export const SLACK_BOT_SCOPES = [
   'lists:write',
   // Join public channels on first read or post; private channels still require an invitation.
   'channels:join',
-  // Bot search covers public messages, files, and users; private messages require per-user grants.
-  'search:read.public',
-  'search:read.files',
-  'search:read.users'
+  // The search tool requests public-channel messages and returns message results only.
+  'search:read.public'
 ] as const
 
 // Socket Mode and relay HTTP ingress deliver the same events to the owning daemon.
