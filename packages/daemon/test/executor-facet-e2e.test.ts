@@ -279,10 +279,9 @@ describe('executor facet, end to end', () => {
       expect(seen.CLAUDE_CONFIG_DIR).toBe(join(root, 'sessions', LEAF, 'home', '.claude'))
       // Where this machine keeps the sign-in that HOME points at: a path only it can name, filled in by its shim.
       expect(seen.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(signIn)
-      // The machine's own PATH, behind the gh and glab wrappers its launcher wrote beside the shim (the image's are absent here).
-      const wrappers = shimPaths(reply.runtimeRoot).runtimeWrapperDir
-      expect(seen.PATH).toBe(`${wrappers}:${process.env.PATH}`)
-      expect(['gh', 'glab'].every((tool) => existsSync(join(wrappers, tool)))).toBe(true)
+      // The machine's own PATH, untouched: the source entry's helper root has no built token entries, so its launcher wrote no wrappers.
+      expect(seen.PATH).toBe(process.env.PATH)
+      expect(existsSync(shimPaths(reply.runtimeRoot).runtimeWrapperDir)).toBe(false)
       expect(seen.HOLDER_ONLY).toBeUndefined()
       expect(Object.values(seen).filter((value) => value?.startsWith(holderDir))).toEqual([])
 

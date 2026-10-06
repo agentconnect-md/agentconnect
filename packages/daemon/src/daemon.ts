@@ -6963,25 +6963,20 @@ export class Daemon {
     // Every shim driver routes its launch by AC_AGENT_ID — a pod's, a VM's, and an executor environment's.
     if (this.k8sPlane || micro || remoteSession || srtShim) env.AC_AGENT_ID = agent.id
     const shimDirs = new Set<string>()
-    // The gh wrapper is a DAEMON path: prepending it to a pod launch would name a dir the pod
-    // never had, and the pod image ships no wrapper (gh there degrades to unauthenticated).
-    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane && !micro && !remoteSession) {
-      // gh wrapper (multi-repo #457): PATH prepend + the agent identity the
-      // wrapper hands to the hidden token helper. sessionGitEnv supplies the
-      // matching runtime-only capability; a user PATH override must not
-      // shadow the wrapper.
+    // The daemon's wrappers are DAEMON paths: a pod, a VM or another machine never had them, and a shim writes its own.
+    const daemonWrappers = !this.k8sPlane && !micro && !remoteSession && !srtShim
+    if (githubAppCredentials && this.ghBinDir && daemonWrappers) {
+      // gh wrapper (multi-repo #457): PATH prepend plus the agent identity it hands the token helper; a user PATH must not shadow it.
       env.AC_AGENT_ID = agent.id
       shimDirs.add(this.ghBinDir)
     }
-    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane && !micro && !remoteSession) {
+    if (gitlabCredentials && this.glabBinDir && daemonWrappers) {
       // glab wrapper (§13.3): read-only project tokens for the managed workspace.
       env.AC_AGENT_ID = agent.id
-      // §24.4: point the real CLI at the deployment's instance, prefix and port included.
-      Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
       shimDirs.add(this.glabBinDir)
     }
-    // A placed session's glab wrapper is its executor's (written beside its shim); the instance it talks to still comes from here.
-    if (gitlabCredentials && remoteSession) Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
+    // §24.4: whichever glab wrapper a session runs, the instance it talks to comes from here, prefix and port included.
+    if (gitlabCredentials && !this.k8sPlane && !micro) Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
     if (shimDirs.size > 0) {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
     }

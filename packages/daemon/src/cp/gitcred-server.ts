@@ -43,6 +43,7 @@ import { isWindowsNamedPipe, localIpcPath } from '../paths.js'
 // credential cache into an image whose bundle may import only node builtins).
 export { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { shQuote } from './gh-shim.js'
 
 /** The socket a helper should dial: an explicit override, else this daemon's own. */
 export function gitcredSocketFrom(env: NodeJS.ProcessEnv, root: string): string {
@@ -333,21 +334,20 @@ export class GitCredServer {
 export function writeGitcredShim(root: string, cliEntry: string): string {
   const shim = gitcredShimPath(root)
   mkdirSync(dirname(shim), { recursive: true, mode: 0o700 })
-  const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
   const executableEntry = existsSync(cliEntry) ? realpathSync(cliEntry) : cliEntry
   // Production runs the built dist (a .js entry node executes directly). A dev
   // daemon runs under tsx with a .ts argv[1] — route the shim through the tsx
   // CLI then, or plain `node entry.ts` would die resolving .js-suffixed imports.
-  const argv = [q(realpathSync(process.execPath))]
+  const argv = [shQuote(realpathSync(process.execPath))]
   if (executableEntry.endsWith('.ts')) {
     const req = createRequire(import.meta.url)
-    argv.push(q(req.resolve('tsx/cli')))
+    argv.push(shQuote(req.resolve('tsx/cli')))
   }
-  argv.push(q(executableEntry))
+  argv.push(shQuote(executableEntry))
   const body = [
     '#!/bin/sh',
     '# agentconnect git credential helper shim — regenerated on daemon start; NO secrets.',
-    `AGENTCONNECT_ROOT=${q(root)} \\`,
+    `AGENTCONNECT_ROOT=${shQuote(root)} \\`,
     `  exec ${argv.join(' ')} git-credential "$@"`,
     ''
   ].join('\n')

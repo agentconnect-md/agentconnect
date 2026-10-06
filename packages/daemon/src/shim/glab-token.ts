@@ -1,7 +1,5 @@
 #!/usr/bin/env node
-// The in-sandbox half of the glab wrapper, the gh-token entry's GitLab twin (gitlab-com-integration.md §13.3).
-// Its own entry for the same reason gh-token is one: a single file per bundle, whose graph shares no chunk.
-// It holds no policy: the daemon decides whether this agent may have a READ token and for which project.
+// The in-sandbox half of the glab wrapper (gitlab-com-integration.md §13.3): gh-token's twin, its own single-file bundle, no policy of its own.
 import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 import { emitGlabToken } from '../gitcred/glab-token-client.js'
 import { SANDBOX_TUNNEL_PATHS } from './sandbox-paths.js'
