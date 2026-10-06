@@ -58,6 +58,7 @@ import { useIntegrationNotifier } from '@/lib/integration-notifier'
 import { EscapeLayer } from './Scrim'
 import { localeList } from '@/i18n/config'
 import { NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, navVisible } from './nav'
+import { HELP_LINK_DEFAULTS } from '@/lib/help-links'
 
 // A section's own page owns the list app bar (menu button, no back) on mobile; anything
 // nested under it is a "push" screen (back-button app bar). `/conversations/:key` is the
@@ -104,19 +105,6 @@ const isActive = (pathname: string, href: string) =>
   pathname.startsWith(href + '/') ||
   // /conversations/:key is the Sessions section's merged detail page.
   (href === '/sessions' && pathname.startsWith('/conversations/'))
-
-// Rail-footer "Help & resources" menu targets. `mcp` is the connector guide (how to
-// wire Claude — or any MCP client — to AgentConnect), reached as the "More" link of
-// the Connect-your-AI dialog. Each is overridable at deploy time via runtime env
-// (window.__AC_ENV / NEXT_PUBLIC_*), so an OSS fork can point them at its own docs /
-// releases / support without rebuilding; unset ⇒ these agentconnect.md defaults. See
-// lib/public-env.tsx (HELP_* keys) + resolveHelpLinks().
-const HELP_LINK_DEFAULTS = {
-  mcp: 'https://www.agentconnect.md/docs/connect-automate/mcp-connector',
-  docs: 'https://www.agentconnect.md/docs',
-  releases: 'https://github.com/agentconnect-md/agentconnect/releases',
-  support: 'mailto:contact@agentconnect.md'
-}
 
 // Resolve at render (not module load) so it reads the runtime config: window.__AC_ENV
 // in the browser, process.env during SSR — mirroring lib/auth.ts. `support` accepts a

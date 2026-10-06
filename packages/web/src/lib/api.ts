@@ -67,6 +67,7 @@ import { chatRoomSigil } from '@/lib/platform-labels'
 import { track } from '@/lib/analytics'
 import { createSseParser } from '@/lib/sse'
 import { isUpgradeAvailable } from '@/lib/version'
+import { cpBase } from '@/lib/endpoints'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 /** A non-2xx CP response. `status` lets callers branch without parsing strings;
@@ -87,33 +88,11 @@ export class ApiError extends Error {
   }
 }
 
-// The CP's **versioned API base** — origin + version path (e.g.
-// `https://api.example.test/v1`, or direct-to-CP `http://cp.example.com:8080/api/v1`).
-// REST calls, including the webchat token mint, append resource paths to this.
-// The browser then dials the relay URL returned by that mint.
-//
-// The CP always serves its routes under `/api/v1` (see
-// `packages/control-plane/src/http/version.ts`); WHERE that surfaces publicly is a
-// DEPLOY/ingress choice — a subdomain can rewrite `/v1/*` → CP `/api/v1/*`. So the
-// version segment lives HERE in CP_URL, not hard-coded in the client, and the
-// deployment fully controls the public URL shape. See docs/designs/api-versioning.md.
-// (`/health` and the daemon `/daemon/ws` channel stay unversioned and are never
-// reached from the console.)
-//
-// Resolved at RUNTIME (not build time) so one prebuilt image can target any CP via
-// plain container env: the server injects CP_URL into window.__AC_ENV in the root
-// layout (see lib/public-env), mirroring the Logto config. NEXT_PUBLIC_CP_URL is a
-// build-time fallback for local dev/SSR. api.ts runs client-side, so __AC_ENV is set.
-// NOTE: an overriding CP_URL MUST include the version path — a bare origin 404s.
-function cpBase(): string {
-  const runtime = typeof window !== 'undefined' ? window.__AC_ENV?.CP_URL : process.env.CP_URL
-  return (runtime || process.env.NEXT_PUBLIC_CP_URL || 'http://localhost:8080/api/v1').replace(/\/+$/, '')
-}
-
 /** The CP REST base (`http(s)://…/api/v1`), so an agent's API Quickstart shows the exact mint endpoint. */
 export function cpRestBase(): string {
   return cpBase()
 }
+
 // Static bearer token (e.g. CI/service token). When OIDC is configured the live
 // per-user token from `@/lib/auth` takes precedence; with both unset the CP runs
 // its zero-config devAuth stub (admits all) — the OSS no-auth default.

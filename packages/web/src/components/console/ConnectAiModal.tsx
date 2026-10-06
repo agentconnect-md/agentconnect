@@ -13,15 +13,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { LogoMark } from '@/components/marks'
-import { cpRestBase } from '@/lib/api'
-
-// The public MCP endpoint: a dedicated origin when the deploy sets MCP_URL
-// (mirrors the CP's PUBLIC_MCP_URL, injected via window.__AC_ENV), else the
-// CP REST base + /mcp.
-function mcpEndpointUrl(): string {
-  const dedicated = typeof window !== 'undefined' ? window.__AC_ENV?.MCP_URL : process.env.MCP_URL
-  return (dedicated || `${cpRestBase()}/mcp`).replace(/\/+$/, '')
-}
+import { mcpEndpointUrl } from '@/lib/endpoints'
 
 // The design fills this column with a screenshot of the claude.ai connector
 // pane. It is drawn from our own tokens rather than shipped as a raster: a
