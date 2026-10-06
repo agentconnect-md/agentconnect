@@ -412,6 +412,7 @@ import {
   retainedAfterTracking
 } from './skills/install-skills.js'
 import { GitSkillRefTracker } from './skills/git-skill-ref-tracker.js'
+import { cwdWorkspaceIncarnation } from './skills/workspace-incarnation.js'
 import {
   ClusterSkillCoordinator,
   clusterSkillSupportRequired,
@@ -6147,7 +6148,12 @@ export class Daemon {
           ...request!,
           confined: true
         })
-        await this.reconcileClusterSkills(agent, placed.subject, plane)
+        // Into the checkout, where the runtime scans for project skills, and kept out of its `git status` like a local install.
+        const ledger = await this.reconcileClusterSkills(agent, placed.subject, plane, cwd)
+        await this.workspaces.excludePlacedSessionSkills(agent, cwd, [
+          ...(ledger?.roots.map((root) => root.path) ?? []),
+          '.agentconnect/cluster-skill-state'
+        ])
         return cwd
       })
     }
@@ -6218,17 +6224,18 @@ export class Daemon {
     agent: Agent,
     pod: SandboxSubject,
     plane: Pick<K8sRuntimePlane, 'skillClientFor' | 'workspaceIncarnationFor' | 'shimGenerationFor'> | undefined = this
-      .k8sPlane
-  ): Promise<void> {
-    const workspaceIncarnation = plane?.workspaceIncarnationFor?.(pod)
+      .k8sPlane,
+    cwd?: string
+  ): Promise<ClusterSkillLedger | undefined> {
+    const reported = plane?.workspaceIncarnationFor?.(pod)
     const shimGeneration = plane?.shimGenerationFor?.(pod)
-    await this.reconcileSandboxSkills(agent, {
-      client: plane?.skillClientFor?.(pod),
-      workspaceIncarnation,
+    return await this.reconcileSandboxSkills(agent, {
+      client: plane?.skillClientFor?.(pod, cwd),
+      // Receipts are relative to the directory installed into, so installs into a cwd keep a ledger of their own.
+      workspaceIncarnation: reported && cwd ? cwdWorkspaceIncarnation(reported, cwd) : reported,
       shimGeneration,
       isLaunchCurrent: () =>
-        plane?.workspaceIncarnationFor?.(pod) === workspaceIncarnation &&
-        plane?.shimGenerationFor?.(pod) === shimGeneration
+        plane?.workspaceIncarnationFor?.(pod) === reported && plane?.shimGenerationFor?.(pod) === shimGeneration
     })
   }
 

@@ -234,4 +234,33 @@ describe('the workspace manager recording the bundles its skills step installs',
       rmSync(local.base, { recursive: true, force: true })
     }
   })
+
+  it("excludes a placed session's bundles, installed into its checkout, through the plane that holds it", async () => {
+    // Composed with this host's path rules, as the workspace manager composes every placed path.
+    const cwd = join('/srv', 'executor', 'sessions', 'session-a', 'workspace')
+    const runner = {
+      withEnv: () => runner,
+      raw: async () => `${join(cwd, '.git')}\n${cwd}\n`
+    } as unknown as GitRunner
+    const written: Array<{ path: string; content: string }> = []
+    const fs = {
+      readFileBytes: async () => undefined,
+      mkdir: async () => {},
+      writeFile: async (path: string, content: string) => void written.push({ path, content })
+    }
+    const workspaces = new WorkspaceManager()
+    wireTestPlane(workspaces, {
+      workspacesOffDisk: true,
+      gitRunnerFor: () => runner,
+      workspaceFsFor: () => ({ fs, mount: '/srv/executor' }) as never
+    })
+    await workspaces.excludePlacedSessionSkills(agent, cwd, [BUNDLE, '.agentconnect/cluster-skill-state'])
+    // The exclude file is the checkout's own, on the executor: nothing is written on this disk.
+    expect(written).toEqual([
+      {
+        path: join(cwd, '.git', 'info', 'exclude'),
+        content: `# BEGIN agentconnect-managed skills\n/.agentconnect/cluster-skill-state/\n/${BUNDLE}/\n# END agentconnect-managed skills\n`
+      }
+    ])
+  })
 })

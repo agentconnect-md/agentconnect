@@ -533,6 +533,15 @@ export class WorkspaceManager {
   private async excludeInstalledSkills(agent: Agent, acpCwd: string, owned: string[]): Promise<void> {
     // Off-disk bundles live OUTSIDE the checkout and never dirty a worktree; worse, the shim would answer rev-parse with its own paths, which this local write would then create on daemon disk.
     if (this.offDisk({ agentId: agent.id, path: acpCwd })) return
+    await this.recordExcludedSkills(agent, acpCwd, owned, this.fsFor(agent.id))
+  }
+
+  /** A placed session's bundles are installed INTO its checkout on the executor, so its exclude file is written there, through the plane whose shim answered rev-parse. */
+  async excludePlacedSessionSkills(agent: Agent, acpCwd: string, owned: string[]): Promise<void> {
+    await this.recordExcludedSkills(agent, acpCwd, owned, this.fsFor(agent.id, { path: acpCwd }))
+  }
+
+  private async recordExcludedSkills(agent: Agent, acpCwd: string, owned: string[], fs: WorkspaceFs): Promise<void> {
     try {
       const git = this.runnerFor(agent.id, acpCwd).withEnv(workspaceGitLocalEnv())
       const [commonDir = '', checkoutRoot = ''] = (await git.raw(['rev-parse', '--git-common-dir', '--show-toplevel']))
@@ -540,11 +549,7 @@ export class WorkspaceManager {
         .map((line) => line.trim())
       if (commonDir === '' || checkoutRoot === '') return
       const roots = bundlePathsFromCheckoutRoot(checkoutRoot, acpCwd, owned)
-      await excludeManagedSkillBundles(
-        isAbsolute(commonDir) ? commonDir : join(acpCwd, commonDir),
-        roots,
-        this.fsFor(agent.id)
-      )
+      await excludeManagedSkillBundles(isAbsolute(commonDir) ? commonDir : join(acpCwd, commonDir), roots, fs)
     } catch (err) {
       // A from-scratch workspace has no repository to exclude in, and bookkeeping must not fail a launch.
       skillsLog.debug(`skills: could not record managed bundles as ignored: ${(err as Error).message}`)

@@ -7,7 +7,7 @@ import type { Sandbox } from 'microsandbox'
 import { z } from 'zod'
 import type { Logger } from '../log.js'
 import type { ShimSession } from '../shim/session.js'
-import { ClusterSkillClient } from '../shim/skill-client.js'
+import { ClusterSkillClient, cwdSkillRequester } from '../shim/skill-client.js'
 import { workspaceIncarnationOf } from '../skills/workspace-incarnation.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT, SANDBOX_SKILL_STAGING_DIR } from '../shim/sandbox-paths.js'
 import {
@@ -80,7 +80,7 @@ export async function microsandboxSkillTarget(session: Pick<ShimSession, 'reques
   return {
     workspaceIncarnation: await workspaceIncarnationOf(cwd),
     client: new ClusterSkillClient(
-      { request: (capability, request, options) => session.request(capability, { cwd, request }, options) },
+      cwdSkillRequester(session, cwd),
       session.hasCapability('skills-wide'),
       true,
       session.hasCapability('skills-receipts')

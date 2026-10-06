@@ -17,7 +17,7 @@ import { ShimFileSink } from '../shim/channels.js'
 import type { ShimTransport } from '../shim/client.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
-import { ClusterSkillClient } from '../shim/skill-client.js'
+import { ClusterSkillClient, cwdSkillRequester } from '../shim/skill-client.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import { shimPaths } from '../shim/sandbox-paths.js'
 import type { ShimSession } from '../shim/session.js'
@@ -290,12 +290,13 @@ export class ExecutorPlane implements ExecutionPlane {
     return leaf === undefined || mount === undefined ? undefined : sessionHomeIn(sessionDirIn(mount, leaf))
   }
 
-  /** The skills seam over one session's shim, as the pool's is over a pod's; undefined until its channel is bound. */
-  skillClientFor(subject: string): ClusterSkillClient | undefined {
+  /** The skills seam over one session's shim, installing into the runtime's cwd (its checkout) when one is named; undefined until its channel is bound. */
+  skillClientFor(subject: string, cwd?: string): ClusterSkillClient | undefined {
     const session = this.boundSession(subject)
     if (!session?.hasCapability('skills')) return undefined
     return new ClusterSkillClient(
-      session,
+      // The shim's own root is the session directory, above the checkout the runtime scans for project skills.
+      cwd === undefined ? session : cwdSkillRequester(session, cwd),
       session.hasCapability('skills-wide'),
       false,
       session.hasCapability('skills-receipts')

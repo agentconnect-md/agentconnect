@@ -204,7 +204,8 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   workspaceRootFor: (subject: string) => string | undefined
   /** The session directory of one confined session, in the coordinates of ITS pod (§11). */
   sessionDirFor: (agentId: string, leaf: string) => string
-  skillClientFor?: (subject: string) => ClusterSkillClient | undefined
+  /** `cwd` aims the installs at the runtime's checkout (a placed session); the pool's pods take none and install at their workspace root. */
+  skillClientFor?: (subject: string, cwd?: string) => ClusterSkillClient | undefined
   workspaceIncarnationFor?: (subject: string) => string | undefined
   shimGenerationFor?: (subject: string) => number | undefined
   /** Subjects this daemon holds a Sandbox for, and since when — the idle sweep's candidates. Read from
