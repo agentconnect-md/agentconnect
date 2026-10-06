@@ -294,8 +294,14 @@ export async function recoverSkillLedger(
 
     const priorByPath = new Map(ledger.prior.map((entry) => [entry.relativeRoot, entry]))
     const vanished = new Set<string>()
+    const operationRoots = new Set(ledger.operations.map((operation) => operation.relativeRoot))
     for (const operation of [...ledger.operations].reverse()) {
       const prior = priorByPath.get(operation.relativeRoot)
+      // Edited where it stands and never moved, so nothing of ours is there to discard or restore: give it up and leave it.
+      if (prior && (await editedInPlace(cwd, prior, operation))) {
+        vanished.add(prior.relativeRoot)
+        continue
+      }
       await mutate(
         {
           action: 'discard',
@@ -337,9 +343,11 @@ export async function recoverSkillLedger(
         )
       }
     }
-    const operationRoots = new Set(ledger.operations.map((operation) => operation.relativeRoot))
     for (const prior of ledger.prior) {
-      if (!operationRoots.has(prior.relativeRoot) && !(await destinationOccupied(cwd, prior.relativeRoot))) {
+      if (
+        !operationRoots.has(prior.relativeRoot) &&
+        (!(await destinationOccupied(cwd, prior.relativeRoot)) || (await editedInPlace(cwd, prior)))
+      ) {
         vanished.add(prior.relativeRoot)
       }
     }
@@ -408,6 +416,17 @@ async function destinationOccupied(cwd: string, relativeRoot: string): Promise<b
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw error
   }
+}
+
+/** Whether a prior still at its own path, with no artifact of its operation beside it, no longer matches its receipt. */
+async function editedInPlace(cwd: string, prior: OwnedSkillBundle, operation?: JournalOperation): Promise<boolean> {
+  if (operation) {
+    const parent = operation.relativeRoot.split('/').slice(0, -1).join('/')
+    for (const name of [operation.quarantineName, operation.tombstoneName]) {
+      if (await destinationOccupied(cwd, `${parent}/${name}`)) return false
+    }
+  }
+  return (await destinationOccupied(cwd, prior.relativeRoot)) && !(await installedBundlesIntact(cwd, [prior]))
 }
 
 /** Whether an operation's prior bundle is at neither of the two addresses recovery can find it at: its own path, or the quarantine a mutation moves it to. */
@@ -483,9 +502,17 @@ async function reconcileSkillBundlesLocked(
     const recorded = await canonicalizeOwned(options.cwd, ledger?.owned ?? [])
     // An absent recorded bundle is not stale executable content — nothing to quarantine, nothing foreign to protect — so plan its path as a first install.
     const prior: OwnedSkillBundle[] = []
+    const modified = new Set<string>()
     for (const entry of recorded) {
-      if (await destinationOccupied(options.cwd, entry.relativeRoot)) prior.push(entry)
-      else options.warn?.(`skills: recorded bundle ${entry.relativeRoot} is gone from the workspace; reinstalling`)
+      if (!(await destinationOccupied(options.cwd, entry.relativeRoot))) {
+        options.warn?.(`skills: recorded bundle ${entry.relativeRoot} is gone from the workspace; reinstalling`)
+      } else if (await installedBundlesIntact(options.cwd, [entry])) {
+        prior.push(entry)
+      } else {
+        // Edited since install, so no longer ours to replace or remove: give it up and leave it in place.
+        modified.add(entry.relativeRoot)
+        options.warn?.(`skills: recorded bundle ${entry.relativeRoot} was modified in the workspace; leaving it as is`)
+      }
     }
     const priorByPath = new Map(prior.map((entry) => [entry.relativeRoot, entry]))
     const legacyHints = new Set<string>()
@@ -518,9 +545,11 @@ async function reconcileSkillBundlesLocked(
           continue
         }
       }
-      const detail = legacyHints.has(candidate.relativeRoot)
-        ? 'legacy workspace marker is not trusted; remove or migrate it explicitly'
-        : 'the path is not owned by this daemon ledger'
+      const detail = modified.has(candidate.relativeRoot)
+        ? 'it was modified after installation; remove it to reinstall'
+        : legacyHints.has(candidate.relativeRoot)
+          ? 'legacy workspace marker is not trusted; remove or migrate it explicitly'
+          : 'the path is not owned by this daemon ledger'
       // Skipping leaves the path untouched, which is what refusing wanted; one foreign bundle must not stop every other skill.
       conflicts.push(candidate.relativeRoot)
       options.warn?.(`skills: skipped unowned skill ${candidate.relativeRoot}: ${detail}`)
@@ -688,7 +717,9 @@ async function reconcileSkillBundlesLocked(
     return {
       installed: candidates.map((entry) => entry.relativeRoot),
       // Replaced and vanished prior bundles count as removed; untouched bundles do not.
-      removed: recorded.filter((entry) => !kept.has(entry.relativeRoot)).map((entry) => entry.relativeRoot),
+      removed: recorded
+        .filter((entry) => !kept.has(entry.relativeRoot) && !modified.has(entry.relativeRoot))
+        .map((entry) => entry.relativeRoot),
       skipped: null,
       conflicts,
       owned
