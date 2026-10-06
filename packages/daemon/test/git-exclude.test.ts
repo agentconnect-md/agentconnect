@@ -248,11 +248,18 @@ describe('the workspace manager recording the bundles its skills step installs',
       mkdir: async () => {},
       writeFile: async (path: string, content: string) => void written.push({ path, content })
     }
+    const unscoped = {
+      readFileBytes: async () => {
+        throw new Error('asked without the path that names the session')
+      }
+    }
     const workspaces = new WorkspaceManager()
     wireTestPlane(workspaces, {
       workspacesOffDisk: true,
       gitRunnerFor: () => runner,
-      workspaceFsFor: () => ({ fs, mount: '/srv/executor' }) as never
+      // A placed session's filesystem is found by its path; an agent-wide question would reach the holder's own disk.
+      workspaceFsFor: (_agentId, scope) =>
+        ({ fs: scope?.path === cwd ? fs : unscoped, mount: '/srv/executor' }) as never
     })
     await workspaces.excludePlacedSessionSkills(agent, cwd, [BUNDLE, '.agentconnect/cluster-skill-state'])
     // The exclude file is the checkout's own, on the executor: nothing is written on this disk.

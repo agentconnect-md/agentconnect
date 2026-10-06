@@ -30,8 +30,7 @@ import {
   type ClusterSkillVerifyReply
 } from './skill-protocol.js'
 
-/** A shim's skills seam aimed at `cwd` rather than the shim's own workspace root: the runtimes scan for project skills
- *  from their cwd up to its repository root only, so bundles beside a checkout rather than in it are never found. */
+/** A shim's skills seam aimed at `cwd`, not its own root: runtimes scan for project skills only from cwd up to the repository root. */
 export function cwdSkillRequester(session: ShimRequester, cwd: string): ShimRequester {
   return { request: (capability, request, options) => session.request(capability, { cwd, request }, options) }
 }
