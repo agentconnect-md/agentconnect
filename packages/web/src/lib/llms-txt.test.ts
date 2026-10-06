@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { HELP_LINK_DEFAULTS } from '@/lib/help-links'
-import { llmsTxt } from '@/lib/llms-txt'
+import { llmsTxt, publicOrigin } from '@/lib/llms-txt'
 
 const links = {
   origin: 'https://console.example.test',
@@ -9,6 +9,24 @@ const links = {
   docs: HELP_LINK_DEFAULTS.docs,
   mcpGuide: HELP_LINK_DEFAULTS.mcp
 }
+
+describe('publicOrigin', () => {
+  const internal = 'http://0.0.0.0:8080/llms.txt'
+
+  it("prefers the proxy's forwarded host and protocol over the listening address", () => {
+    const headers = new Headers({
+      'x-forwarded-proto': 'https, http',
+      'x-forwarded-host': 'console.example.test, 10.0.0.1',
+      host: '0.0.0.0:8080'
+    })
+    expect(publicOrigin(headers, internal)).toBe('https://console.example.test')
+  })
+
+  it('falls back to the Host header, then the request URL', () => {
+    expect(publicOrigin(new Headers({ host: 'console.example.test' }), internal)).toBe('http://console.example.test')
+    expect(publicOrigin(new Headers(), internal)).toBe('http://0.0.0.0:8080')
+  })
+})
 
 describe('llmsTxt', () => {
   it("links this deployment's OpenAPI document and MCP endpoint", () => {

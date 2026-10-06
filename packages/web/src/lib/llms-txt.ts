@@ -8,6 +8,15 @@ export interface LlmsTxtLinks {
   mcpGuide: string
 }
 
+// The origin the reader used: the standalone server's request.url carries its listening address, so prefer the proxy's forwarded host and protocol.
+export function publicOrigin(headers: Headers, requestUrl: string): string {
+  const url = new URL(requestUrl)
+  const first = (name: string) => headers.get(name)?.split(',')[0]?.trim()
+  const proto = first('x-forwarded-proto') || url.protocol.slice(0, -1)
+  const host = first('x-forwarded-host') || headers.get('host') || url.host
+  return `${proto}://${host}`
+}
+
 // The console's llms.txt: every page needs sign-in, so it points readers at the docs and this deployment's API instead.
 export function llmsTxt({ origin, cpBase, mcpEndpoint, docs, mcpGuide }: LlmsTxtLinks): string {
   const abs = (url: string) => new URL(url, origin).href
