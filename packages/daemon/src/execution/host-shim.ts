@@ -5,7 +5,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AF_UNIX_PATH_MAX } from '../acp/sandbox-temp.js'
-import { renderGhWrapper } from '../cp/gh-shim.js'
+import { renderGhWrapper, shQuote } from '../cp/gh-shim.js'
 import { renderGlabWrapper } from '../cp/glab-shim.js'
 import type { Logger } from '../log.js'
 import { sweepMarkedUntilClear } from '../shim/marked-sweep.js'
@@ -35,6 +35,7 @@ const INHERITED_ENV = ['PATH', 'LANG', 'LC_ALL', 'TZ'] as const
 const HELPER_KEYS: ReadonlyArray<Exclude<keyof ShimPaths, 'tunnels'>> = [
   'gitCredentialHelper',
   'ghTokenEntry',
+  'glabTokenEntry',
   'autoMergeEntry',
   'mcpBridgeEntry',
   'ghWrapperDir',
@@ -154,27 +155,20 @@ export function hostShimEnv(input: {
   return env
 }
 
-/** Single-quote a value for sh, escaping any quote it carries. */
-const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
-
-/**
- * The gh and glab wrappers a host shim's runtimes find first on PATH, as a pod finds the image's: each fetches a
- * per-invocation token over the shim's gitcred tunnel. Written per launch rather than shipped, because npm packs an
- * installation's files without their executable bit, and a wrapper is found by PATH lookup.
- */
+/** The gh and glab wrappers a shim's runtimes find first on PATH, written per launch: npm packs no executable bit, and a PATH lookup needs one. */
 export async function writeRuntimeWrappers(paths: ShimPaths): Promise<void> {
-  const node = q(process.execPath)
   const dir = paths.runtimeWrapperDir
+  // Only a wrapper whose token entry this installation has: one naming a missing entry would fail every call on stderr.
+  const wrappers = [
+    { name: 'gh', entry: paths.ghTokenEntry, render: renderGhWrapper },
+    { name: 'glab', entry: paths.glabTokenEntry, render: renderGlabWrapper }
+  ].filter((wrapper) => existsSync(wrapper.entry))
+  if (wrappers.length === 0) return
   await mkdir(dir, { mode: 0o755 })
-  const tokenCommand = (entry: string) => `${node} ${q(entry)} "$AC_AGENT_ID" -- "$@"`
-  await writeFile(join(dir, 'gh'), renderGhWrapper({ selfDir: dir, tokenCommand: tokenCommand(paths.ghTokenEntry) }), {
-    mode: 0o755
-  })
-  await writeFile(
-    join(dir, 'glab'),
-    renderGlabWrapper({ selfDir: dir, tokenCommand: tokenCommand(paths.glabTokenEntry) }),
-    { mode: 0o755 }
-  )
+  for (const { name, entry, render } of wrappers) {
+    const tokenCommand = `${shQuote(process.execPath)} ${shQuote(entry)} "$AC_AGENT_ID" -- "$@"`
+    await writeFile(join(dir, name), render({ selfDir: dir, tokenCommand }), { mode: 0o755 })
+  }
 }
 
 /** Runtime roots whose shim this process started and has not seen go. */

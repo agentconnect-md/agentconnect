@@ -9,7 +9,7 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 
 /** Single-quote a value for sh, escaping any quote it carries. */
-const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
+export const shQuote = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
 
 export interface GhWrapperSpec {
   /** The wrapper's own directory, skipped while it locates the real gh. */
@@ -24,7 +24,7 @@ export function renderGhWrapper({ selfDir, tokenCommand }: GhWrapperSpec): strin
 # agentconnect gh wrapper — generated, never edited; NO secrets.
 # Per-repo, per-invocation GH_TOKEN over the daemon's credential channel (issue #457).
 
-SELF_DIR=${q(selfDir)}
+SELF_DIR=${shQuote(selfDir)}
 
 # The real gh: first one on PATH outside our own bin dir.
 REAL_GH=""
@@ -83,15 +83,15 @@ export function writeGhShim(root: string, cliEntry: string): string {
   const executableEntry = existsSync(cliEntry) ? realpathSync(cliEntry) : cliEntry
   // Dev daemons run under tsx with a .ts argv[1] — route through the tsx CLI (the git-credential shim
   // precedent; plain `node entry.ts` dies on .js-suffixed imports).
-  const argv = [q(realpathSync(process.execPath))]
+  const argv = [shQuote(realpathSync(process.execPath))]
   if (executableEntry.endsWith('.ts')) {
     const req = createRequire(import.meta.url)
-    argv.push(q(req.resolve('tsx/cli')))
+    argv.push(shQuote(req.resolve('tsx/cli')))
   }
-  argv.push(q(executableEntry))
+  argv.push(shQuote(executableEntry))
   const body = renderGhWrapper({
     selfDir: dir,
-    tokenCommand: `AGENTCONNECT_ROOT=${q(root)} ${argv.join(' ')} gh-token "$AC_AGENT_ID" -- "$@"`
+    tokenCommand: `AGENTCONNECT_ROOT=${shQuote(root)} ${argv.join(' ')} gh-token "$AC_AGENT_ID" -- "$@"`
   })
   writeFileSync(join(dir, 'gh'), body, { mode: 0o755 })
   return dir

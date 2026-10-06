@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { writeRuntimeWrappers } from '../src/execution/host-shim.js'
@@ -48,5 +48,17 @@ describe.skipIf(process.platform === 'win32')("a host shim's gh and glab wrapper
     expect(execFileSync('glab', ['mr', 'list'], { env, encoding: 'utf8' }).trim()).toBe(
       'GITLAB_TOKEN=glab-token-for-agent-a args=mr list'
     )
+  })
+
+  it('are written only for the token entries this installation has', async () => {
+    const { paths } = layout()
+    rmSync(paths.glabTokenEntry)
+    await writeRuntimeWrappers(paths)
+    expect(readdirSync(paths.runtimeWrapperDir)).toEqual(['gh'])
+    // None at all leaves the directory absent, so the ACP runner leaves PATH alone.
+    rmSync(paths.ghTokenEntry)
+    rmSync(paths.runtimeWrapperDir, { recursive: true })
+    await writeRuntimeWrappers(paths)
+    expect(existsSync(paths.runtimeWrapperDir)).toBe(false)
   })
 })

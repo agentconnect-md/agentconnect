@@ -57,11 +57,8 @@ function seedEnv(podEnv: Record<string, string | undefined>): Record<string, str
   }
 }
 
-/** PATH with the image's gh wrapper first, else the host launcher's, or unchanged when neither exists. */
-// Decided HERE, not sent by the daemon: the wrapper dir is the IMAGE's layout, and a daemon naming a path on a
-// machine it is not on is the class of bug sandbox-paths.ts exists to keep out. An installation has no image
-// directory, so its host launcher writes the wrappers into the shim's runtime root instead.
-// Consulted rather than assumed, so an older runtime image keeps launching with exactly the PATH it always had.
+/** PATH with the image's gh wrapper first, else the host launcher's, or unchanged when neither exists on THIS machine. */
+// Decided here, not sent by the daemon: a daemon naming a path on a machine it is not on is the bug sandbox-paths.ts keeps out.
 export function ghWrapperPath(
   path: string | undefined,
   exists: (dir: string) => boolean = existsSync,

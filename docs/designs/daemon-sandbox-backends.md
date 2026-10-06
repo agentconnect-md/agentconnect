@@ -1166,7 +1166,7 @@ network listener.
   bundle. Git runs a sandbox helper through `sh`, because npm ships that wrapper
   without its executable bit. The `gh` and `glab` wrappers cannot ship that way, since
   a runtime finds them by PATH lookup: the launcher writes them per launch into
-  `<runtimeRoot>/pathbin` (`runtimeWrapperDir`), fetching tokens through the helper
+  `<runtimeRoot>/pathbin` (`runtimeWrapperDir`), each only when its token entry exists, fetching tokens through the helper
   root's `shim/gh-token.js` and `shim/glab-token.js` over the gitcred tunnel, and the
   ACP runner puts that directory first on PATH when the image's `pathbin` is absent.
   The image's `pathbin` and the DeepSeek preset have no counterpart in an installation;
