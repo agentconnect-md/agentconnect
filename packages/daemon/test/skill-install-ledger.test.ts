@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -533,38 +533,139 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     expect(existsSync(join(cwd, ...BUNDLE.split('/'), 'SKILL.md'))).toBe(true)
   })
 
-  it('still refuses a recorded path that now holds content it does not own', async () => {
+  it('skips a recorded path that now holds content it does not own', async () => {
     await reconcile('v1')
     const target = join(cwd, ...BUNDLE.split('/'))
     await rm(target, { recursive: true, force: true })
     await mkdir(target, { recursive: true })
     await writeFile(join(target, 'manual'), 'do not delete')
 
-    await expect(reconcile('v1')).rejects.toThrow(SkillLedgerSafetyError)
+    const skipped = await reconcile('v1')
+
+    expect(skipped.conflicts).toEqual([BUNDLE])
+    expect(skipped.owned).toEqual([])
     expect(await readFile(join(target, 'manual'), 'utf8')).toBe('do not delete')
+    expect((await readSkillLedger(await skillLedgerLocation(cwd, stateDir)))?.phase).toBe('ready')
   })
 
   // The recorded inode is not proof on its own: a filesystem that recycles inode numbers can seat a
   // re-checked-out directory on the recorded one, and then only the receipt walk tells the two apart.
-  it('refuses a recorded path whose identity still matches but whose content no longer does', async () => {
+  it('skips a recorded path whose identity still matches but whose content no longer does', async () => {
     await reconcile('v1')
     const target = join(cwd, ...BUNDLE.split('/'))
     const recorded = await pathIdentity(target)
     await writeFile(join(target, 'manual'), 'do not delete')
     expect(await pathIdentity(target)).toEqual(recorded)
 
-    await expect(reconcile('v1')).rejects.toThrow(/installation failure: .*refusing to replace unowned skill/)
+    const skipped = await reconcile('v1')
+
+    expect(skipped.conflicts).toEqual([BUNDLE])
+    expect(skipped.owned).toEqual([])
     expect(await readFile(join(target, 'manual'), 'utf8')).toBe('do not delete')
+  })
+
+  it('skips an installed skill the agent edited and still updates the others', async () => {
+    const editedRoot = '.claude/skills/edited'
+    const options = { cwd, stateDir, agentId: 'a1', runtime: 'claude', cliVersion: '1.5.21' }
+    await reconcileSkillBundles({
+      ...options,
+      fingerprint: 'v1',
+      candidates: [
+        { ...oneFileReceipt(BUNDLE, 'fixture:v1'), sourceDir },
+        { ...oneFileReceipt(editedRoot, 'edited:v1'), sourceDir }
+      ]
+    })
+    const edited = join(cwd, ...editedRoot.split('/'))
+    await writeFile(join(edited, 'SKILL.md'), `${BODY}Local notes\n`)
+    await mkdir(join(edited, 'references'))
+    await writeFile(join(edited, 'references/notes.md'), 'kept')
+    const nextSource = join(root, 'next-source')
+    const nextBody = `${BODY}Updated content\n`
+    await mkdir(nextSource)
+    await writeFile(join(nextSource, 'SKILL.md'), nextBody)
+    const files = [{ path: 'SKILL.md', mode: 0o600, size: Buffer.byteLength(nextBody), sha256: sha256(nextBody) }]
+    const next = (root: string, sourceKey: string) => ({
+      relativeRoot: root,
+      sourceKey,
+      sourceDir: nextSource,
+      files,
+      treeDigest: treeDigest(files)
+    })
+    const warnings: string[] = []
+
+    const result = await reconcileSkillBundles({
+      ...options,
+      fingerprint: 'v2',
+      candidates: [next(BUNDLE, 'fixture:v2'), next(editedRoot, 'edited:v2')],
+      warn: (message) => warnings.push(message)
+    })
+
+    expect(result.installed).toEqual([BUNDLE])
+    expect(result.removed).toEqual([BUNDLE])
+    expect(result.conflicts).toEqual([editedRoot])
+    expect(result.owned.map((entry) => entry.relativeRoot)).toEqual([BUNDLE])
+    expect(warnings).toContainEqual(expect.stringMatching(/skipped unowned skill .*edited: it was modified/))
+    expect(await readFile(join(cwd, BUNDLE, 'SKILL.md'), 'utf8')).toBe(nextBody)
+    expect(await readFile(join(edited, 'SKILL.md'), 'utf8')).toBe(`${BODY}Local notes\n`)
+    expect(await readFile(join(edited, 'references/notes.md'), 'utf8')).toBe('kept')
+    const location = await skillLedgerLocation(cwd, stateDir)
+    expect((await readSkillLedger(location))?.phase).toBe('ready')
+    expect(
+      (await reconcileSkillBundles({ ...options, fingerprint: 'v2', candidates: [next(BUNDLE, 'fixture:v2')] }))
+        .conflicts
+    ).toEqual([])
+    expect(await readFile(join(edited, 'references/notes.md'), 'utf8')).toBe('kept')
+  })
+
+  it('leaves an edited skill in place when it is no longer desired', async () => {
+    await reconcile('v1')
+    const target = join(cwd, ...BUNDLE.split('/'))
+    await writeFile(join(target, 'SKILL.md'), 'modified')
+
+    const result = await reconcileSkillBundles({
+      cwd,
+      stateDir,
+      agentId: 'a1',
+      runtime: 'claude',
+      cliVersion: '1.5.21',
+      fingerprint: 'v2',
+      candidates: []
+    })
+
+    expect(result.removed).toEqual([])
+    expect(result.owned).toEqual([])
+    expect(await readFile(join(target, 'SKILL.md'), 'utf8')).toBe('modified')
   })
 
   it('names the installation failure alongside the recovery failure', async () => {
     await reconcile('v1')
-    const target = join(cwd, ...BUNDLE.split('/'))
-    await rm(target, { recursive: true, force: true })
-    await mkdir(target, { recursive: true })
-    await writeFile(join(target, 'manual'), 'do not delete')
+    const skills = join(cwd, '.claude/skills')
+    const nextSource = join(root, 'next-source')
+    const nextBody = `${BODY}Updated content\n`
+    await mkdir(nextSource)
+    await writeFile(join(nextSource, 'SKILL.md'), nextBody)
+    const files = [{ path: 'SKILL.md', mode: 0o600, size: Buffer.byteLength(nextBody), sha256: sha256(nextBody) }]
 
-    await expect(reconcile('v1')).rejects.toThrow(/installation failure: .*refusing to replace unowned skill/)
+    await expect(
+      reconcileSkillBundles({
+        cwd,
+        stateDir,
+        agentId: 'a1',
+        runtime: 'claude',
+        cliVersion: '1.5.21',
+        fingerprint: 'v2',
+        candidates: [
+          { relativeRoot: BUNDLE, sourceKey: 'fixture:v2', sourceDir: nextSource, files, treeDigest: treeDigest(files) }
+        ],
+        assertMutationAuthority: () => {
+          const quarantine = readdirSync(skills).find((name) => name.startsWith('.agentconnect-skill-old-'))
+          if (!quarantine) return
+          // Tamper with the quarantined prior so recovery cannot put it back either.
+          writeFileSync(join(skills, quarantine, 'extra'), 'tampered')
+          throw new Error('publication authority lost after quarantine')
+        }
+      })
+    ).rejects.toThrow(/could not be restored \(installation failure: .*publication authority lost after quarantine/)
   })
 
   it('recovers an interrupted journal by restoring the prior it quarantined', async () => {
@@ -635,25 +736,43 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     expect(existsSync(join(cwd, ...BUNDLE.split('/'), 'SKILL.md'))).toBe(true)
   })
 
-  it('refuses modified retained bundles but recovers and reinstalls them after cleanup', async () => {
+  it('gives up a modified retained bundle in recovery and reinstalls it once removed', async () => {
     const installed = await reconcile('v1')
     const location = await writeApplyingOver(installed.owned, [])
     const applying = await readSkillLedger(location)
     const target = join(cwd, BUNDLE, 'SKILL.md')
     await writeFile(target, 'modified')
 
-    await expect(recover(location, applying!)).rejects.toThrow(/could not restore the prior receipt set/)
-    expect(await readFile(target, 'utf8')).toBe('modified')
-    expect(await readSkillLedger(location)).toEqual(applying)
-
-    await rm(join(cwd, '.claude'), { recursive: true, force: true })
     const recovered = await recover(location, applying!)
 
     expect(recovered.owned).toEqual([])
     expect(recovered.fingerprint).toBeUndefined()
+    expect(await readFile(target, 'utf8')).toBe('modified')
+    expect((await reconcile('v1')).conflicts).toEqual([BUNDLE])
+    expect(await readFile(target, 'utf8')).toBe('modified')
+
+    await rm(join(cwd, '.claude'), { recursive: true, force: true })
     const retried = await reconcile('v1')
     expect(retried.installed).toEqual([BUNDLE])
     expect(await readFile(target, 'utf8')).toBe(BODY)
+  })
+
+  // A journal left by a daemon whose reservation was refused before anything moved: recovery must not wedge on it.
+  it('recovers a journal whose prior was edited in place and never quarantined', async () => {
+    const installed = await reconcile('v1')
+    const target = join(cwd, BUNDLE)
+    await mkdir(join(target, 'references'))
+    await writeFile(join(target, 'references/notes.md'), 'kept')
+    const location = await writeApplyingOver(installed.owned, [operation(BUNDLE)])
+    const applying = await readSkillLedger(location)
+
+    const recovered = await recover(location, applying!)
+
+    expect(recovered.phase).toBe('ready')
+    expect(recovered.owned).toEqual([])
+    expect(recovered.fingerprint).toBeUndefined()
+    expect(await readFile(join(target, 'references/notes.md'), 'utf8')).toBe('kept')
+    expect((await reconcile('v1')).conflicts).toEqual([BUNDLE])
   })
 })
 

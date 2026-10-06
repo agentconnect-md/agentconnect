@@ -565,7 +565,7 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(await readFile(join(cwd, '.runtime/skills/recreated/SKILL.md'), 'utf8')).toBe('manual replacement')
   })
 
-  it('checks installed bytes rather than trusting a matching plan fingerprint and preserves tampering', async () => {
+  it('checks installed bytes rather than trusting a matching plan fingerprint and skips a tampered skill', async () => {
     const sourceDir = await writeSkill(sources, 'repair', 'expected')
     const cli = fakeCli(() => '.runtime')
     const localSkills: LocalSkillSource[] = [{ kind: 'dream', key: 'dream:repair', name: 'repair', sourceDir }]
@@ -580,9 +580,16 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(cli.calls).toHaveLength(1)
 
     await writeFile(join(cwd, '.runtime/skills/repair/SKILL.md'), 'tampered')
-    await expect(
-      installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir, localSkills, runCli: cli.run })
-    ).rejects.toThrow(/could not be restored|mutation was refused/i)
+    // An edited skill is skipped as a conflict rather than failing the whole preparation.
+    const skipped = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
+      stateDir,
+      localSkills,
+      runCli: cli.run
+    })
+    expect(skipped.errors).toEqual([
+      { source: '.runtime/skills/repair', error: 'destination is not owned by this daemon ledger; skill skipped' }
+    ])
+    expect(skipped.owned).toEqual([])
     expect(cli.calls).toHaveLength(2)
     expect(await readFile(join(cwd, '.runtime/skills/repair/SKILL.md'), 'utf8')).toBe('tampered')
   }, 120_000)
