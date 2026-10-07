@@ -149,6 +149,38 @@ describe('integrationToSpec sessionModes', () => {
   })
 })
 
+// assistant-mode.md §5.3: the effective level of every declared or detected conversation; the daemon reads the rest as external.
+describe('integrationToSpec trustLevels', () => {
+  const trusted = (
+    channelId: string,
+    trust: Pick<IntegrationChannelRecord, 'trustDeclared' | 'trustDetected'>
+  ): IntegrationChannelRecord => ({ ...channel(channelId, 'mention'), ...trust })
+
+  it('ships the effective level, a detected external outranking a declared internal', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [
+      trusted('C1', { trustDeclared: 'internal', trustDetected: null }),
+      trusted('C2', { trustDeclared: 'internal', trustDetected: 'external' }),
+      trusted('C3', { trustDeclared: null, trustDetected: 'internal' }),
+      trusted('C4', { trustDeclared: 'external', trustDetected: 'internal' }),
+      trusted('C5', { trustDeclared: null, trustDetected: null }),
+      channel('C6', 'mention')
+    ])
+    expect(spec.core.trustLevels).toEqual([
+      { channel: 'C1', level: 'internal' },
+      { channel: 'C2', level: 'external' },
+      { channel: 'C3', level: 'internal' },
+      { channel: 'C4', level: 'external' }
+    ])
+  })
+
+  it('ships for a relay-managed bot too', async () => {
+    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, [
+      trusted('C1', { trustDeclared: 'internal', trustDetected: null })
+    ])
+    expect(spec?.core.trustLevels).toEqual([{ channel: 'C1', level: 'internal' }])
+  })
+})
+
 describe('integrationToSpec bindRules', () => {
   it('defaults to mention + dm with no channels', async () => {
     const spec = await specOf(INTEGRATION, SECRET)

@@ -27,7 +27,8 @@ import {
   EMPTY_DECISION_BUNDLE,
   IntegrationQQConfig,
   type DecisionBundle,
-  type IntegrationSessionMode
+  type IntegrationSessionMode,
+  type IntegrationTrustLevel
 } from '@agentconnect.md/protocol'
 import type { BindRuleConfig, Integration } from '../agents/agent-schema.js'
 import {
@@ -86,6 +87,8 @@ export interface IntegrationCore {
   /** Conversations whose session mode departs from `createNew` (channel-session-mode.md).
    *  Sparse, and normalized to [] here so a hand-assembled integration reads as all-default. */
   sessionModes: IntegrationSessionMode[]
+  /** Conversations with a declared or detected trust level (assistant-mode.md §5.3); sparse, absent ⇒ external. */
+  trustLevels: IntegrationTrustLevel[]
   /** The By decision bundle (decisions.md §7.1); normalized to empty so a hand-assembled integration binds nothing. */
   decisions: DecisionBundle
 }
@@ -162,6 +165,7 @@ export function integrationCore(int: Integration): IntegrationCore {
     mutedChannels: core?.mutedChannels ?? [],
     gated: core?.gated ?? false,
     sessionModes: core?.sessionModes ?? [],
+    trustLevels: core?.trustLevels ?? [],
     decisions: core?.decisions ?? EMPTY_DECISION_BUNDLE
   }
 }

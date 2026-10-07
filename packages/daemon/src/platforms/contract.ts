@@ -34,7 +34,7 @@
  * MANIFEST (§5, pure data) is genuinely cross-host, and it goes to protocol when
  * the registry lands. This one is daemon-owned.
  */
-import type { RdMsgIm } from '@agentconnect.md/protocol'
+import type { PlaceTrustDetection, RdMsgIm } from '@agentconnect.md/protocol'
 import type { NormalizedMessage } from '../messages/normalized.js'
 
 /** The human behind one interactive click (button / select / modal submit). Carried
@@ -84,6 +84,8 @@ export interface PlatformChannelRef {
   id: string
   name?: string
   isPrivate?: boolean
+  /** The trust level the platform module detected, on a membership listing only (assistant-mode.md §5.3). */
+  trust?: PlaceTrustDetection
   /** Display glyph and tint where the platform gives the conversation one (a Linear team). */
   icon?: string
   color?: string

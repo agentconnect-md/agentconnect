@@ -18,9 +18,14 @@
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
 import {
+  isSlackGuest,
   isSlackSystemMessage,
   normalizeSlackMessage,
   normalizeSlackResponseFinalization,
+  SLACK_CHANNEL_SHARED_TRUST,
+  SLACK_GUEST_JOINED_TRUST,
+  slackListedChannelTrust,
+  SlackPendingTrust,
   type SlackMessageLike
 } from '@agentconnect.md/message'
 import {
@@ -37,6 +42,7 @@ import {
   decodeSlackStatusOverflowValue,
   decodeSharedSlackStatusTarget,
   elicitFormViewValues,
+  type PlaceTrustDetection,
   type RdSlackAction,
   type SlackViewState,
   type SharedSlackStatusTarget,
@@ -373,6 +379,14 @@ export interface SlackIngestSidecar {
   searchActionToken?: string
 }
 
+/** One channel of a membership snapshot, with the trust level Slack's flags show (assistant-mode.md §5.3). */
+export interface SlackReportedChannel {
+  id: string
+  name?: string
+  isPrivate?: boolean
+  trust?: PlaceTrustDetection
+}
+
 export interface SlackHttpIngestDeps {
   /** Hand a normalized message to the router/forwarder; resolves once the delivery
    *  outcome is known (delivered or dropped). NEVER throws — runs after the HTTP 200. */
@@ -381,7 +395,7 @@ export interface SlackHttpIngestDeps {
   onBotUserId: (botUserId: string) => void
   /** Report the bot's complete Slack channel-membership snapshot after an event
    *  says the bot itself joined or left a channel. */
-  onChannelsChanged: (channels: { id: string; name?: string; isPrivate?: boolean }[]) => void
+  onChannelsChanged: (channels: SlackReportedChannel[]) => void
   /** Candidate agents for the config modal's "default agent" selector (bot members). */
   agents: () => { agentId: string; name: string }[]
   /** This channel's current default agent (initial modal selection), if any. */
@@ -415,6 +429,8 @@ export class SlackHttpIngest {
   private slackBotId = ''
   private channelRefresh?: Promise<void>
   private channelRefreshQueued = false
+  /** Trust detections from events, overlaid on the next membership listing (assistant-mode.md §5.3). */
+  private readonly pendingTrust = new SlackPendingTrust()
   private probing = false
   /** users.info label cache for DM counterpart names (null = lookup failed). */
   private readonly userNames = new Map<string, string | null>()
@@ -555,6 +571,16 @@ export class SlackHttpIngest {
         await this.refreshChannels()
         return
       }
+      if (event?.type === 'channel_shared') {
+        if (!event.channel) return
+        this.pendingTrust.note(event.channel, SLACK_CHANNEL_SHARED_TRUST)
+        await this.refreshChannels()
+        return
+      }
+      if (event?.type === 'member_joined_channel') {
+        if (event.channel && event.user) await this.detectGuestJoin(event.channel, event.user)
+        return
+      }
       if (event?.bot_id && (!this.botUserId || !this.slackBotId)) return
       if (!event || isSlackSystemMessage(event)) return
       // send-message-routing-rework.md §5: the ONE edit wrapper that survives ingest is
@@ -618,7 +644,7 @@ export class SlackHttpIngest {
   private async refreshChannelsOnce(): Promise<void> {
     const web = this.web
     if (!web) return
-    const channels: { id: string; name?: string; isPrivate?: boolean }[] = []
+    const channels: SlackReportedChannel[] = []
     let cursor: string | undefined
     do {
       const res = await web.users.conversations({
@@ -632,12 +658,23 @@ export class SlackHttpIngest {
         channels.push({
           id: channel.id,
           ...(channel.name ? { name: channel.name } : {}),
-          ...(channel.is_private ? { isPrivate: true } : {})
+          ...(channel.is_private ? { isPrivate: true } : {}),
+          trust: slackListedChannelTrust(channel)
         })
       }
       cursor = res.response_metadata?.next_cursor || undefined
     } while (cursor)
-    this.deps.onChannelsChanged(channels)
+    this.deps.onChannelsChanged(this.pendingTrust.apply(channels))
+  }
+
+  /** One `users.info` per human join: a guest joining makes the channel external (assistant-mode.md §5.3). */
+  private async detectGuestJoin(channel: string, user: string): Promise<void> {
+    const web = this.web
+    if (!web) return
+    const res = await web.users.info({ user })
+    if (!isSlackGuest(res.user)) return
+    this.pendingTrust.note(channel, SLACK_GUEST_JOINED_TRUST)
+    await this.refreshChannels()
   }
 
   /** Handle one verified `/slack/interactions` payload. The returned value is the

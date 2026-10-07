@@ -179,6 +179,37 @@ export const IntegrationSessionMode = z.object({
 })
 export type IntegrationSessionMode = z.infer<typeof IntegrationSessionMode>
 
+/** Who is in a place (assistant-mode.md §5.3): only organization members, or possibly anyone else. */
+export const PlaceTrustLevel = z.enum(['internal', 'external'])
+export type PlaceTrustLevel = z.infer<typeof PlaceTrustLevel>
+
+/** Why a platform module detected a trust level; names the evidence, never the platform. */
+export const PlaceTrustReason = z.enum([
+  // A membership listing says the conversation is shared with another organization.
+  'externallyShared',
+  // The platform announced the conversation was just shared with another organization.
+  'channelShared',
+  // A guest (a non-member account) joined the conversation.
+  'guestJoined',
+  // A membership listing found none of the signals above.
+  'verifiedInternal'
+])
+export type PlaceTrustReason = z.infer<typeof PlaceTrustReason>
+
+/** External detections a membership listing cannot re-verify, so a later internal detection never lifts them. */
+export const STICKY_PLACE_TRUST_REASONS: readonly PlaceTrustReason[] = ['guestJoined']
+
+/** A trust level a platform module detected for one conversation. */
+export const PlaceTrustDetection = z.object({ level: PlaceTrustLevel, reason: PlaceTrustReason })
+export type PlaceTrustDetection = z.infer<typeof PlaceTrustDetection>
+
+/** One conversation's effective trust level. Absent from the list means undeclared, which counts as external. */
+export const IntegrationTrustLevel = z.object({
+  channel: z.string(),
+  level: PlaceTrustLevel
+})
+export type IntegrationTrustLevel = z.infer<typeof IntegrationTrustLevel>
+
 // §6.3 core routing envelope: the platform-independent routing, gating, and ingress knobs core reads, never duplicated in `config`.
 export const IntegrationCoreEnvelope = z.object({
   mode: z.enum(['direct', 'shared']).default('direct'),
@@ -186,6 +217,8 @@ export const IntegrationCoreEnvelope = z.object({
   mutedChannels: z.array(z.string()).default([]),
   gated: z.boolean().default(false),
   sessionModes: z.array(IntegrationSessionMode).default([]),
+  // Sparse: every conversation with a declared or detected level (assistant-mode.md §5.3); absent reads as none.
+  trustLevels: z.array(IntegrationTrustLevel).optional(),
   // Emitted unconditionally and stripped by readers that predate it; an empty bundle clears every binding.
   decisions: DecisionBundle.default(EMPTY_DECISION_BUNDLE)
 })
@@ -326,7 +359,9 @@ export const IntegrationChannel = z.object({
   // The 1:1 DM counterpart's platform member id (§14.8) — control metadata of the same
   // class as `name`, and the only thing that identifies WHO a private agent's DM row is
   // with. Absent on channels and group DMs, whose membership is a room, not a person.
-  dmUserId: z.string().optional()
+  dmUserId: z.string().optional(),
+  // The trust level the platform module detected (assistant-mode.md §5.3); absent means it checked nothing.
+  trust: PlaceTrustDetection.optional()
 })
 export type IntegrationChannel = z.infer<typeof IntegrationChannel>
 

@@ -259,6 +259,11 @@ The daemon has no presence data and member enumeration is not made a prerequisit
 - What a platform can verify is filled in; what it cannot gets a warning:
   - Slack: a plain channel is internal; a Slack Connect channel (`is_ext_shared`) or one with
     guests is forced external; a `channel_shared` event downgrades and notifies the editors.
+    Detection reads only what already flows: the membership listing's channel flags, and one
+    `users.info` per member join. Existing members are never enumerated, so a guest who was in
+    the channel before the bot is not detected. A detected external outranks any declaration; a
+    later listing lifts a shared detection once Slack no longer reports the share, never a guest
+    one.
   - Telegram groups, Discord channels, Feishu groups: unchecked by default, with the warning
     "everyone here will be able to get the content of other internal places out of it; enable
     only if fully trusted"; where a member-joined event exists, it downgrades (verified per

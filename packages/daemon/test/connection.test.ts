@@ -198,10 +198,30 @@ describe('SlackConnection.listBotChannels', () => {
         ]) as any
     )
     const channels = await conn.listBotChannels()
+    const internal = { level: 'internal', reason: 'verifiedInternal' }
     expect(channels).toEqual([
-      { id: 'C1', name: 'deploys' },
-      { id: 'C2', name: 'ops', isPrivate: true },
-      { id: 'C3', name: 'releases' }
+      { id: 'C1', name: 'deploys', trust: internal },
+      { id: 'C2', name: 'ops', isPrivate: true, trust: internal },
+      { id: 'C3', name: 'releases', trust: internal }
+    ])
+  })
+
+  it('detects a Slack Connect channel as external from the listing it already makes', async () => {
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        fakeAppWithConversations([
+          {
+            channels: [
+              { id: 'C1', name: 'partners', is_ext_shared: true },
+              { id: 'C2', name: 'invited', is_pending_ext_shared: true }
+            ]
+          }
+        ]) as any
+    )
+    expect((await conn.listBotChannels())?.map((c) => c.trust)).toEqual([
+      { level: 'external', reason: 'externallyShared' },
+      { level: 'external', reason: 'externallyShared' }
     ])
   })
 
@@ -691,6 +711,51 @@ describe('SlackConnection membership events', () => {
     await handlers.get('channel_left')!({ event: { channel: 'C1' } })
     await handlers.get('group_left')!({ event: { channel: 'G1' } })
     expect(changed).toBe(3)
+  })
+
+  // Trust detection (assistant-mode.md §5.3): events mark the channel, the next membership listing carries it.
+  it('marks a channel shared with another organization external on the next listing', async () => {
+    const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+    let changed = 0
+    const app = {
+      ...fakeAppWithEvents(handlers),
+      client: {
+        auth: { test: async () => ({ user_id: 'UBOT' }) },
+        users: { conversations: async () => ({ channels: [{ id: 'C1', name: 'general' }, { id: 'C2' }] }) }
+      }
+    }
+    const conn = new SlackConnection({ ...deps(), onChannelsChanged: () => changed++ } as any, () => app as any)
+    await conn.start()
+    await handlers.get('channel_shared')!({ event: { channel: 'C1', connected_team_id: 'T0000EXAMPLE' } })
+    expect(changed).toBe(1)
+    const listed = await conn.listBotChannels()
+    expect(listed?.find((c) => c.id === 'C1')?.trust).toEqual({ level: 'external', reason: 'channelShared' })
+    expect(listed?.find((c) => c.id === 'C2')?.trust).toEqual({ level: 'internal', reason: 'verifiedInternal' })
+    // The event detection is reported once; later listings read Slack's own flags again.
+    expect((await conn.listBotChannels())?.find((c) => c.id === 'C1')?.trust?.level).toBe('internal')
+  })
+
+  it('marks a channel external when a guest joins it, and leaves it alone for a full member', async () => {
+    const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+    let changed = 0
+    const info = vi.fn(async ({ user }: { user: string }) => ({
+      user: { id: user, is_restricted: user === 'UGUEST', is_ultra_restricted: false }
+    }))
+    const app = {
+      ...fakeAppWithEvents(handlers),
+      client: {
+        auth: { test: async () => ({ user_id: 'UBOT' }) },
+        users: { info, conversations: async () => ({ channels: [{ id: 'C1' }] }) }
+      }
+    }
+    const conn = new SlackConnection({ ...deps(), onChannelsChanged: () => changed++ } as any, () => app as any)
+    await conn.start()
+    await handlers.get('member_joined_channel')!({ event: { user: 'UMEMBER', channel: 'C1' } })
+    await vi.waitFor(() => expect(info).toHaveBeenCalledTimes(1))
+    expect(changed).toBe(0)
+    await handlers.get('member_joined_channel')!({ event: { user: 'UGUEST', channel: 'C1' } })
+    await vi.waitFor(() => expect(changed).toBe(1))
+    expect((await conn.listBotChannels())?.[0]?.trust).toEqual({ level: 'external', reason: 'guestJoined' })
   })
 
   it('acknowledges the permission-update URL button', async () => {

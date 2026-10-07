@@ -33,6 +33,7 @@ import type {
   IntegrationSpec,
   IntegrationBindRule,
   IntegrationSessionMode,
+  IntegrationTrustLevel,
   IntegrationCoreEnvelope,
   McpServerSpec,
   MemoryConnectionSpec
@@ -74,6 +75,7 @@ import {
 } from './agentDefinitions.js'
 import { daemonSupportsAgent, encodeAgentSpecForPeer, requiredDaemonFeatures } from '../domain/daemon-features.js'
 import { encodeIntegrationSpecForPeer } from '../domain/decision-trigger-features.js'
+import { effectivePlaceTrust } from '../domain/place-trust.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
@@ -288,6 +290,14 @@ function sessionModeEntries(channels: IntegrationChannelRecord[]): IntegrationSe
     .map((c) => ({ channel: c.channelId, mode: c.sessionMode }))
 }
 
+/** Every conversation with an effective trust level (assistant-mode.md §5.3); the daemon reads an absent one as external. */
+function trustLevelEntries(channels: IntegrationChannelRecord[]): IntegrationTrustLevel[] {
+  return channels.flatMap((c) => {
+    const level = effectivePlaceTrust(c)
+    return level ? [{ channel: c.channelId, level }] : []
+  })
+}
+
 /**
  * Assemble the wire {@link IntegrationSpec} the daemon opens its socket from —
  * metadata from the `integration` row + tokens from the {@link BotSecretStore}
@@ -339,6 +349,7 @@ export async function integrationToSpec(
     mutedChannels,
     gated,
     sessionModes: sessionModeEntries(channels),
+    trustLevels: trustLevelEntries(channels),
     decisions: decisionBundleOf(channels)
   }
   return projectSpec(platforms, i, bot, core, secret)
@@ -381,6 +392,7 @@ export async function httpIntegrationToSpec(
     mutedChannels: [...mutedChannelIds(channels, gated), ...(gated ? [] : heldDecisionChannels(channels))],
     gated,
     sessionModes: sessionModeEntries(channels),
+    trustLevels: trustLevelEntries(channels),
     decisions: decisionBundleOf(channels)
   }
   return projectSpec(platforms, i, bot, httpCore, secret)

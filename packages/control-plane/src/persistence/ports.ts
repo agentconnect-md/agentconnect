@@ -49,6 +49,9 @@ import type {
   PullRequestFeedbackSignal,
   SessionStayedHomeReason,
   BotRevocationEvidence,
+  PlaceTrustDetection,
+  PlaceTrustLevel,
+  PlaceTrustReason,
   RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import type {
@@ -5428,6 +5431,14 @@ export interface IntegrationChannelRecord {
   triggerChosen: boolean
   /** Per-conversation owner for a shared bot (§10.1); null on sibling non-owner rows. */
   agentId: AgentId | null
+  /** Trust level an editor declared (assistant-mode.md §5.3); null is undeclared. Optional for older fixtures. */
+  trustDeclared?: PlaceTrustLevel | null
+  /** Trust level the platform module detected; a detected external outranks any declaration. */
+  trustDetected?: PlaceTrustLevel | null
+  /** Why the platform detected `trustDetected`. */
+  trustDetectedReason?: PlaceTrustReason | null
+  /** When the effective trust level last changed. */
+  trustChangedAt?: Date | null
 }
 
 /** Daemon-reported conversation (no trigger — that is operator-owned CP state). */
@@ -5452,6 +5463,8 @@ export interface ReportedChannel {
   kind?: ConversationKind
   /** The 1:1 DM counterpart's platform member id — reported for `kind:'im'` only. */
   dmUserId?: string
+  /** The trust level the platform module detected; absent leaves the stored detection standing. */
+  trust?: PlaceTrustDetection
 }
 
 /**
@@ -5493,7 +5506,13 @@ export interface IntegrationChannelRepo {
       authoritative?: boolean
       removed?: string[]
     }
-  ): Promise<void>
+  ): Promise<{ trustChanged: boolean }>
+  /** Declare (or clear with null) an editor's trust level on one conversation's rows; internal is refused while any row has a detected external. */
+  setDeclaredTrust(
+    integrationIds: readonly IntegrationId[],
+    channelId: string,
+    level: PlaceTrustLevel | null
+  ): Promise<'ok' | 'not_found' | 'detected_external'>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */

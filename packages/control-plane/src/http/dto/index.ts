@@ -27,6 +27,8 @@ import {
   MemoryFileHistoryEvent,
   MemoryPluginHistoryEvent,
   MemoryPluginOperation,
+  PlaceTrustLevel,
+  PlaceTrustReason,
   RESERVED_MCP_SERVER_NAME,
   SESSION_RETENTION_RE,
   GitCloneUrlError,
@@ -1003,7 +1005,16 @@ export const IntegrationChannelDto = z.object({
   sessionMode: z.enum(['createNew', 'append']),
   /** Effective per-conversation owner for a shared bot (§10.1); null before convergence
    *  or when ownership does not apply. */
-  agentId: z.string().nullable()
+  agentId: z.string().nullable(),
+  /** Who is in this place (assistant-mode.md §5.3). A null level is undeclared and counts as external. */
+  trust: z.object({
+    level: PlaceTrustLevel.nullable(),
+    source: z.enum(['declared', 'detected']).nullable(),
+    declared: PlaceTrustLevel.nullable(),
+    detected: PlaceTrustLevel.nullable(),
+    detectedReason: PlaceTrustReason.nullable(),
+    changedAt: z.string().nullable()
+  })
 })
 
 /** Console view of an integration — metadata only, NEVER the tokens. */
@@ -1880,11 +1891,14 @@ export const UpdateIntegrationChannelBody = z
     // The complete By decision gate; required with, and only with, trigger 'decision'.
     decisionBinding: ChannelDecisionGate.safeExtend({ decisionId: z.string().uuid() }).optional(),
     sessionMode: z.enum(['createNew', 'append']).optional(),
-    agentId: z.string().min(1).optional()
+    agentId: z.string().min(1).optional(),
+    // Declare the place's trust level (assistant-mode.md §5.3); null clears the declaration.
+    trust: PlaceTrustLevel.nullable().optional()
   })
-  .refine((b) => b.trigger !== undefined || b.sessionMode !== undefined || b.agentId !== undefined, {
-    message: 'provide trigger, sessionMode and/or agentId'
-  })
+  .refine(
+    (b) => b.trigger !== undefined || b.sessionMode !== undefined || b.agentId !== undefined || b.trust !== undefined,
+    { message: 'provide trigger, sessionMode, agentId and/or trust' }
+  )
   .refine((b) => (b.trigger === 'decision') === (b.decisionBinding !== undefined), {
     message: "decisionBinding is required with, and only with, trigger 'decision'",
     path: ['decisionBinding']

@@ -4,6 +4,7 @@ import {
   resolveCpRule,
   resolveAgentIntegration,
   conversationAdmitted,
+  conversationTrustLevel,
   integrationRouting,
   type CpRule
 } from '../src/router/routing-rule.js'
@@ -98,6 +99,7 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
         mutedChannels: ['C9'],
         gated: true,
         sessionModes: [],
+        trustLevels: [],
         decisions: { bindings: [], definitions: [] }
       })
       expect(configuredBotSelfId(int)).toBe(selfId)
@@ -433,5 +435,29 @@ describe('conversationAdmitted', () => {
       bindRules: [{ channel: 'C1', match: { kind: 'mention' } }]
     })
     expect(conversationAdmitted(r, 'C1')).toBe(false)
+  })
+})
+
+// assistant-mode.md §5.3 / §5.1: the CP projects every declared or detected level; anything else is external.
+describe('conversationTrustLevel', () => {
+  const int = (trustLevels?: { channel: string; level: 'internal' | 'external' }[]) =>
+    ({
+      id: 'i-trust',
+      platform: 'slack',
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: true, ...(trustLevels ? { trustLevels } : {}) }
+    }) as unknown as Integration
+
+  it('reads the projected level for a listed conversation', () => {
+    const i = int([
+      { channel: 'C1', level: 'internal' },
+      { channel: 'C2', level: 'external' }
+    ])
+    expect(conversationTrustLevel(i, 'C1')).toBe('internal')
+    expect(conversationTrustLevel(i, 'C2')).toBe('external')
+  })
+
+  it('treats an undeclared conversation, and a spec from a CP without the field, as external', () => {
+    expect(conversationTrustLevel(int([{ channel: 'C1', level: 'internal' }]), 'C9')).toBe('external')
+    expect(conversationTrustLevel(int(), 'C1')).toBe('external')
   })
 })

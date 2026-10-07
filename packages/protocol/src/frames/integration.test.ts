@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { IntegrationCoreEnvelope, IntegrationRevoked, IntegrationRevokedOk } from './integration.js'
+import { IntegrationChannel, IntegrationCoreEnvelope, IntegrationRevoked, IntegrationRevokedOk } from './integration.js'
 import { buildEnvelope, decodeEnvelope, encode } from '../codec.js'
 import { isInstallWideFrameType } from '../frame-scope.js'
 
@@ -53,6 +53,33 @@ describe('IntegrationCoreEnvelope sessionModes', () => {
 
   it('rejects a mode outside the enum rather than silently defaulting it', () => {
     expect(() => IntegrationCoreEnvelope.parse({ ...base, sessionModes: [{ channel: 'C1', mode: 'auto' }] })).toThrow()
+  })
+})
+
+// Trust levels (assistant-mode.md §5.3): sparse on the envelope, a detection on a reported channel.
+describe('place trust on the wire', () => {
+  const base = { mode: 'direct' as const, bindRules: [], mutedChannels: [], gated: false }
+
+  it('leaves the levels absent when a writer sends none, which the daemon reads as all external', () => {
+    expect(IntegrationCoreEnvelope.parse(base).trustLevels).toBeUndefined()
+  })
+
+  it('round-trips declared and detected levels and rejects an unknown one', () => {
+    const trustLevels = [
+      { channel: 'C1', level: 'internal' },
+      { channel: 'C2', level: 'external' }
+    ]
+    expect(IntegrationCoreEnvelope.parse({ ...base, trustLevels }).trustLevels).toEqual(trustLevels)
+    expect(() =>
+      IntegrationCoreEnvelope.parse({ ...base, trustLevels: [{ channel: 'C1', level: 'members' }] })
+    ).toThrow()
+  })
+
+  it('carries a detection on a reported channel and leaves it absent when nothing was checked', () => {
+    const detected = IntegrationChannel.parse({ id: 'C1', trust: { level: 'external', reason: 'channelShared' } })
+    expect(detected.trust).toEqual({ level: 'external', reason: 'channelShared' })
+    expect(IntegrationChannel.parse({ id: 'C2' }).trust).toBeUndefined()
+    expect(() => IntegrationChannel.parse({ id: 'C3', trust: { level: 'external', reason: 'rumor' } })).toThrow()
   })
 })
 

@@ -149,6 +149,7 @@ describe('buildInstallManifest', () => {
       'message.im',
       'message.mpim',
       'member_joined_channel',
+      'channel_shared',
       'channel_left',
       'group_left',
       'tokens_revoked'
