@@ -2725,7 +2725,8 @@ export function agentRoutes(deps: HttpDeps) {
           if (memoryError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: memoryError })
           }
-          if (req.body.assistantMode) {
+          // Only an enabled policy needs a live target; switching off must work after the saved target is gone.
+          if (req.body.assistantMode?.enabled) {
             const targetError = await assistantModeTargetError(existing, req.body.assistantMode)
             if (targetError) return badRequest(reply, targetError)
           }

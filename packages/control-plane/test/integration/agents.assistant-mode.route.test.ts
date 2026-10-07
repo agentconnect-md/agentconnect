@@ -156,6 +156,18 @@ describe('assistant mode', () => {
       assistantMode: { enabled: true, fallbackConversation: { integrationId: own, channelId: 'C1' } }
     })
     expect(ownConversation.statusCode, ownConversation.body).toBe(200)
+
+    // The saved targets disappear; the console still sends them back when it switches the mode off.
+    await prisma.integration.delete({ where: { id: own } })
+    const offWithStaleTargets = await patch(app, agentId, {
+      assistantMode: {
+        enabled: false,
+        responsibleUserId: 'usr_absent',
+        fallbackConversation: { integrationId: own, channelId: 'C1' }
+      }
+    })
+    expect(offWithStaleTargets.statusCode, offWithStaleTargets.body).toBe(200)
+    expect(offWithStaleTargets.json()).toMatchObject({ assistantMode: { enabled: false } })
   })
 
   it('requires every member of a daemon group to share one store', async () => {
