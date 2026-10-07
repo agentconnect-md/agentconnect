@@ -469,7 +469,7 @@ describe('repository Decision routing — configuration', () => {
     })
     expect(paused.statusCode).toBe(200)
     await vi.waitFor(() => expect(routingOf(w.relay, w.lateHook)).toBeUndefined())
-    expect(w.spy.lastSpec(w.early)?.hookRoutings).toEqual([])
+    await vi.waitFor(() => expect(w.spy.lastSpec(w.early)?.hookRoutings).toEqual([]))
 
     expect((await w.app.app.inject({ method: 'PUT', url: SCOPE, payload: { config: w.config } })).statusCode).toBe(200)
     await vi.waitFor(() => expect(routingOf(w.relay, w.lateHook)).toBeDefined())
@@ -479,7 +479,7 @@ describe('repository Decision routing — configuration', () => {
       expect(routingOf(w.relay, w.lateHook)).toBeUndefined()
       expect(routingOf(w.relay, w.earlyHook)).toBeUndefined()
     })
-    expect(w.spy.lastSpec(w.early)?.hookRoutings).toEqual([])
+    await vi.waitFor(() => expect(w.spy.lastSpec(w.early)?.hookRoutings).toEqual([]))
     expect((await w.app.app.inject({ method: 'GET', url: SCOPE })).json()).toMatchObject({ config: null, status: null })
   })
 
