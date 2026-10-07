@@ -850,6 +850,17 @@ into the turn as separate system context, so an opaque raw identifier such as Sl
 agent's AgentConnect name. Implicit thread, keyword, and auto routes never receive that
 assertion, and the original user text is not rewritten.
 
+## Assistant-mode item ledger
+
+An agent in assistant mode keeps a ledger of what people asked of it. It takes an item only
+after restating what it will do, what counts as done and when it will check next, and the
+person confirming. When an open item already covers a request, it asks whether to attach the
+request to that item instead, and the asker follows the existing item on a yes. The ledger is
+visible to the whole organization: an item records who asked for what and where it stands,
+never the wording of a direct message, and the agent says so when it takes an item asked in a
+DM. Every conversation of the agent is reminded of the same list of open items. An agent
+outside assistant mode is offered no item tools.
+
 ## Directional agent visibility
 
 Agent-to-agent visibility is the intersection of two independently configured directions.

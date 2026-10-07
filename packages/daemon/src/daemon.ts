@@ -292,6 +292,7 @@ import {
   type LiveApp
 } from './mcp/apps/cards.js'
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
+import { askerIdentity, assistantItemToolsFor, assistantModeOn } from './mcp/ops/assistant-items.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
@@ -3926,6 +3927,10 @@ export class Daemon {
       // coords at call time so a policy change takes effect for an already-running ACP session.
       memoryAccessDecision: (ctx, mode) => this.memoryAccessDecisionFor(ctx, mode),
       requestMemoryWriteApproval: (ctx, ask) => this.requestMemoryWriteApprovalFor(ctx, ask),
+      assistantItems: {
+        ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.store.assistantItems : undefined),
+        askerFor: (ctx) => this.assistantAskerFor(ctx)
+      },
       memoryScope: (ctx) => ({
         ...this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
         sourceTurnId: this.activeMemorySourceTurns.get(
@@ -4268,6 +4273,8 @@ export class Daemon {
         // outlive many hook deliveries. The call resolves the CURRENT daemon-
         // private turn and fails closed everywhere else.
         tools = [...tools, ...GITHUB_REVIEW_TOOLS]
+        // Assistant mode's item ledger (assistant-mode.md §5.4); each call re-checks the mode, since this list is fixed per session.
+        tools = [...tools, ...assistantItemToolsFor(agent)]
         // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
         const managedRepo = this.managedWorkspaceRepo(agent.id)
         if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
@@ -7548,6 +7555,15 @@ export class Daemon {
     const outcome = await this.permissions.askMemoryWriteApproval(p.hostKey, p.acpSessionId, ask)
     if (outcome === 'allow_session') this.memoryWriteGrants.add(key)
     return outcome === 'allow_once' || outcome === 'allow_session' ? 'allowed' : outcome
+  }
+
+  /** The person whose message started the session's live turn, as an item follower identity (assistant-mode.md §5.4). */
+  private async assistantAskerFor(ctx: SessionContext): Promise<string | undefined> {
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const msg = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)?.entry.msg
+    if (!msg) return undefined
+    const integration = ctx.integrationId ? this.integrationConfigById(ctx.integrationId) : undefined
+    return askerIdentity(msg, integration ? await this.tenantScopeForIntegration(integration) : undefined)
   }
 
   /** Build the memory scope for an agent + conversation. For a `channel`-scoped

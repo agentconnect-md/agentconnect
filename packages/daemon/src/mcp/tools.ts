@@ -11,6 +11,7 @@ import {
 } from '../platforms/read-ports.js'
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
 import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
+import { ASSISTANT_ITEM_TOOLS } from './ops/assistant-items.js'
 
 /**
  * The single unified send tool (session-concept §3). It merges the former
@@ -1400,7 +1401,8 @@ export const ALL_TOOL_NAMES = [
       // the old descriptor, or an in-flight orchestration, must not start hitting approval).
       ...RETIRED_ORCHESTRATION_TOOLS,
       ...GITHUB_REVIEW_TOOLS,
-      ...CODE_HOST_EFFECT_TOOLS
+      ...CODE_HOST_EFFECT_TOOLS,
+      ...ASSISTANT_ITEM_TOOLS
     ]
       .map((t) => t.name)
       // External-memory record tools: only their names are core knowledge here, the descriptors live in memory/.
