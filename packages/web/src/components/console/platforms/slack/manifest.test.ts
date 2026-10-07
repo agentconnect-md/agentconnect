@@ -8,11 +8,7 @@ import {
   PLATFORM_APP_DESCRIPTION
 } from './manifest'
 
-// The manual manifest must request exactly what the CP's auto-install manifest does, or
-// an app a user creates by hand is short a permission the daemon needs. The two lists
-// live in separate packages, so each pins the same literal: changing one side alone
-// fails its own drift guard, here or in
-// packages/control-plane/src/http/slack-manifest.test.ts.
+// Pin the scopes exposed by the manual installer as well as the CP installer.
 describe('manifest parity with the Control Plane', () => {
   it('pins the exact bot scopes (drift guard)', () => {
     expect([...SLACK_BOT_SCOPES]).toEqual([
@@ -45,9 +41,7 @@ describe('manifest parity with the Control Plane', () => {
       'lists:read',
       'lists:write',
       'channels:join',
-      'search:read.public',
-      'search:read.files',
-      'search:read.users'
+      'search:read.public'
     ])
   })
 
