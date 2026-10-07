@@ -123,8 +123,6 @@ export interface PlatformReadPorts {
    *  a private channel, DM or group DM is reachable only as the session's own conversation
    *  (`mcp/ops/channel-reach.ts`). */
   readonly publicChannelReach?: boolean
-  /** `isPrivateConversation`: the platform reports which channels only members read (assistant-mode.md §5.5). */
-  readonly conversationPrivacy?: boolean
   /** `createCanvas` / `readCanvas` / `updateCanvas`: a platform-hosted rich-text page. */
   readonly canvas?: boolean
   /** `listBookmarks` / `addBookmark` / `removeBookmark`: the platform pins links in a channel. */
@@ -166,7 +164,6 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       conversationCreate: true,
       publicMessageSearch: true,
       publicChannelReach: true,
-      conversationPrivacy: true,
       scheduledMessages: true,
       canvas: true,
       bookmarks: true,
@@ -264,11 +261,6 @@ export function directMessagePlatformFor(sessionPlatform: string): string {
  *  PUBLIC channels? Undeclared ⇒ no gate: the bot reaches whatever it is already in. */
 export function reachesPublicChannelsOnly(platform: string): boolean {
   return READ_PORTS.get(platform)?.publicChannelReach === true
-}
-
-/** Does `platform` report private channels? Undeclared ⇒ its channels count as not private. */
-export function reportsConversationPrivacy(platform: string): boolean {
-  return READ_PORTS.get(platform)?.conversationPrivacy === true
 }
 
 /** The DM-capable platforms, rendered for an error message ("Slack",

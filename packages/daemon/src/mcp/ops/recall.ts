@@ -2,6 +2,7 @@
 import { z } from 'zod'
 import {
   checkPlaceRead,
+  NOT_SHARED_HERE,
   placeReadRefusal,
   placeRefusalMessage,
   samePlace,
@@ -54,9 +55,17 @@ async function placesOf(ctx: SessionContext, store: PlaceStore): Promise<Place[]
 }
 
 function describe(ctx: SessionContext, place: Place, deps: PlaceAccessDeps) {
-  const gw = deps.placeGatewayFor?.(ctx.agentId, place.platform, place.sessions[0]?.transportScope)
-  return describePlace(place, rowKindOf(place), gw)
+  const integrationId = deps.placeIntegrationFor?.(ctx.agentId, place.platform, place.sessions[0]?.transportScope)
+  return describePlace(place, rowKindOf(place), integrationId, deps)
 }
+
+/** What every refusal but a DM's returns, and an unknown place too, so no answer tells a private place from none. */
+const notSharedHere = (handle: string) => ({
+  place: handle,
+  refused: true,
+  answer: NOT_SHARED_HERE,
+  note: 'Call recall without `place` to list the conversations you can recall from here.'
+})
 
 /** A place's display name: the cached conversation name, or a webchat conversation's title. */
 function nameOf(place: Place, names: Map<string, string>): string | undefined {
@@ -95,9 +104,7 @@ async function listing(ctx: SessionContext, places: Place[], deps: PlaceAccessDe
   }
   return {
     places: listed,
-    note:
-      'Direct conversations and private channels are not listed: what was said there is answered only there. ' +
-      'Pass a `place` id back to recall it.'
+    note: 'Only the conversations you may recall from here are listed. Pass a `place` id back to recall it.'
   }
 }
 
@@ -218,17 +225,12 @@ export async function recall(
   const names = await store.getDisplayNames(places.map((p) => p.channel))
   if (handle === undefined) return await listing(ctx, places, deps, names)
   const place = resolvePlace(handle, places, names)
-  if (!place) {
-    return {
-      place: handle,
-      excerpts: [],
-      note: 'You have no conversation there to recall. Call recall without `place` to list the ones you can.'
-    }
-  }
+  if (!place) return notSharedHere(handle)
   const current: PlaceRef = { platform: ctx.platform, channel: ctx.channel }
   if (!samePlace(current, place)) {
     const refusal = checkPlaceRead('recall', current, await describe(ctx, place, deps))
-    if (refusal) return { place: placeId(place), refused: refusal, answer: placeRefusalMessage(refusal) }
+    if (refusal === 'direct') return { place: handle, refused: true, answer: placeRefusalMessage(refusal) }
+    if (refusal) return notSharedHere(handle)
   }
   const name = nameOf(place, names)
   return {

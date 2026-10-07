@@ -457,12 +457,9 @@ told `missing_scope` rather than handed a silent success.
 The optional facets an AGENT can reach are declared per platform in
 `platforms/read-ports.ts`, the same pre-connection registry that decides which attachment tool
 to inject: `channelHistory`, `threadHistory`, `reactions`, `messageDelete`, `conversationCreate`,
-`publicMessageSearch`, `scheduledMessages`, `canvas`, `bookmarks`, `lists`, and two that gate REACH rather than a
-tool: `publicChannelReach` (daemon-detailed-design.md §9.4 "Channel reach") and `conversationPrivacy`, which says
-the adapter's optional `isPrivateConversation` answers which channels only their members can read — the input of
-assistant mode's read rule ([assistant-mode.md](assistant-mode.md) §5.5); a platform that declares it but cannot
-answer now leaves the channel undetermined, and an undeclared platform's channels count as not private. A
-declaration gates tool INJECTION (before any connection exists) for a session ON that platform — the tools carry no `platform`
+`publicMessageSearch`, `scheduledMessages`, `canvas`, `bookmarks`, `lists`, and one that gates REACH rather than a
+tool: `publicChannelReach` (daemon-detailed-design.md §9.4 "Channel reach"). A declaration gates tool INJECTION
+(before any connection exists) for a session ON that platform — the tools carry no `platform`
 selector and never appear in the same agent's sessions elsewhere; the live
 `typeof conn.x === 'function'` probe still decides whether this connection can serve the call.
 Fail-closed by absence, so a platform that declares nothing is injected nothing. Slack

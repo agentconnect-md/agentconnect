@@ -10,15 +10,15 @@ export interface PlaceRef {
   channel: string
 }
 
-/** A source place as far as it could be described; an undescribed kind or channel privacy is refused. */
+/** A source place as far as it could be described; an undescribed kind or privacy is refused. */
 export interface SourcePlace extends PlaceRef {
   kind?: PlaceKind
-  /** A channel only its members can read; undefined on a channel means the platform could not say. */
+  /** The platform's `isPrivate` for a channel or group DM; undefined when it could not be read. */
   private?: boolean
 }
 
-/** Why a read was refused: a direct conversation, a private channel, or a place that could not be described. */
-export type PlaceRefusal = 'direct' | 'private_channel' | 'undetermined'
+/** Why a read was refused: a direct conversation, a private place, or a place that could not be described. */
+export type PlaceRefusal = 'direct' | 'private' | 'undetermined'
 
 /** The tools whose cross-place reads pass the rule; a closed set, so it can label a metric. */
 export type PlaceReadTool = 'recall' | 'getChannelHistory' | 'getThreadHistory' | 'getReactions' | 'listBookmarks'
@@ -27,14 +27,13 @@ export function samePlace(a: PlaceRef, b: PlaceRef): boolean {
   return a.platform === b.platform && a.channel === b.channel
 }
 
-/** May `current` read `source`? Undefined when it may; P0a reads a DM, webchat or private channel only from itself. */
+/** May `current` read `source`? Undefined when it may; a DM, webchat or private place is read only from itself. */
 export function placeReadRefusal(current: PlaceRef, source: SourcePlace): PlaceRefusal | undefined {
   if (samePlace(current, source)) return undefined
   switch (source.kind) {
-    case 'group_dm':
-      return undefined
     case 'channel':
-      return source.private === false ? undefined : source.private ? 'private_channel' : 'undetermined'
+    case 'group_dm':
+      return source.private === false ? undefined : source.private ? 'private' : 'undetermined'
     case 'dm':
     case 'webchat':
       return 'direct'
@@ -43,25 +42,18 @@ export function placeReadRefusal(current: PlaceRef, source: SourcePlace): PlaceR
   }
 }
 
-/** What the model is told instead of the content, worded so it can relay it. */
+/** The opaque answer for anything that cannot be shared here; it never says that a place exists or where. */
+export const NOT_SHARED_HERE =
+  'That cannot be shared here. Do not repeat, summarize, hint at or guess the content, and do not say where it ' +
+  'might be or whether it exists; answer: "I can\'t share that here."'
+
+/** What the model is told instead of the content: a DM refusal says "ask me in a DM", every other one is opaque. */
 export function placeRefusalMessage(reason: PlaceRefusal): string {
-  switch (reason) {
-    case 'direct':
-      return (
-        'That was said in a direct conversation, and its content stays there. Do not repeat, summarize or hint at ' +
-        'it here; answer: "Ask me in a DM."'
-      )
-    case 'private_channel':
-      return (
-        'That was said in a private channel, and its content is read only there. Do not repeat, summarize or hint ' +
-        'at it here; say it is in a private channel and can be asked there.'
-      )
-    case 'undetermined':
-      return (
-        'Whether that conversation may be read from here could not be determined, so it was not read. Do not guess ' +
-        'at its content; suggest asking in that conversation.'
-      )
-  }
+  if (reason !== 'direct') return NOT_SHARED_HERE
+  return (
+    'That was said in a direct conversation, and it stays there. Do not repeat, summarize or hint at it here; ' +
+    'answer: "Ask me in a DM."'
+  )
 }
 
 const meter = metrics.getMeter('@agentconnect.md/daemon-assistant', '1.0.0')

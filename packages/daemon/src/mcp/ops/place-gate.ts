@@ -8,9 +8,8 @@ import {
   type PlaceRef,
   type SourcePlace
 } from '../../assistant/place-access.js'
-import { reportsConversationPrivacy } from '../../platforms/read-ports.js'
 import type { SessionRecord, TranscriptRow, TranscriptSessionScope } from '../../store/local-store.js'
-import type { MessageGateway, SessionContext } from './context.js'
+import type { SessionContext } from './context.js'
 import { knownIntegrations, type GatewayDeps } from './gateway.js'
 
 /** The slice of the daemon store the place rules read: session rows and this agent's own transcript. */
@@ -25,53 +24,70 @@ export interface PlaceStore {
   getDisplayNames(ids: string[]): Promise<Map<string, string>>
 }
 
+/** One conversation in an integration's snapshot (membership listing and observed chats): its kind and `isPrivate`. */
+export interface PlaceSnapshotRow {
+  kind?: 'channel' | 'im' | 'mpim'
+  isPrivate?: boolean
+}
+
 export interface PlaceAccessDeps extends GatewayDeps {
   /** Whether the agent is in assistant mode now, read per call so a switch applies to open sessions. */
   assistantModeFor?: (agentId: string) => boolean
-  /** The live connection of the agent's bot behind a session's transport scope, to describe a place it reached. */
-  placeGatewayFor?: (agentId: string, platform: string, transportScope?: string | null) => MessageGateway | undefined
+  /** The agent's integration behind a session's transport scope, for a place it reached through that bot. */
+  placeIntegrationFor?: (agentId: string, platform: string, transportScope?: string | null) => string | undefined
+  /** The integration's snapshot row for a conversation, so privacy needs no platform call when it is known. */
+  placeSnapshot?: (integrationId: string, channel: string) => PlaceSnapshotRow | undefined
   placeStore?: PlaceStore
 }
 
 const KIND_STRICTNESS: Record<PlaceKind, number> = { channel: 1, group_dm: 2, dm: 3, webchat: 3 }
+const SNAPSHOT_KINDS: Record<NonNullable<PlaceSnapshotRow['kind']>, PlaceKind> = {
+  channel: 'channel',
+  im: 'dm',
+  mpim: 'group_dm'
+}
+
+function stricter(a: PlaceKind | undefined, b: PlaceKind | undefined): PlaceKind | undefined {
+  if (!a || !b) return a ?? b
+  return KIND_STRICTNESS[b] > KIND_STRICTNESS[a] ? b : a
+}
 
 /** A place's kind from the conversation kinds its session rows recorded; the strictest one wins. */
 export function kindFromRows(platform: string, kinds: Iterable<string | null | undefined>): PlaceKind | undefined {
   if (platform === 'webchat') return 'webchat'
   let kind: PlaceKind | undefined
   for (const recorded of kinds) {
-    if (recorded !== 'dm' && recorded !== 'group_dm' && recorded !== 'channel') continue
-    if (!kind || KIND_STRICTNESS[recorded] > KIND_STRICTNESS[kind]) kind = recorded
+    if (recorded === 'dm' || recorded === 'group_dm' || recorded === 'channel') kind = stricter(kind, recorded)
   }
   return kind
 }
 
-/** Whether only a channel's members read it: false where the platform never says, undefined when it cannot now. */
-async function channelPrivacy(
-  platform: string,
-  channel: string,
-  gw: MessageGateway | undefined
-): Promise<boolean | undefined> {
-  if (!reportsConversationPrivacy(platform)) return false
-  if (!gw?.isPrivateConversation) return undefined
-  return await gw.isPrivateConversation(channel).catch(() => undefined)
-}
+const shared = (kind: PlaceKind | undefined): boolean => kind === 'channel' || kind === 'group_dm'
 
-/** Describe a place: the kind its session rows recorded, else the platform's own word, plus a channel's privacy. */
+/** Describe a place from its session rows and the snapshot; `getChannelInfo` fills only what they leave open. */
 export async function describePlace(
   place: PlaceRef,
   rowKind: PlaceKind | undefined,
-  gw: MessageGateway | undefined
+  integrationId: string | undefined,
+  deps: PlaceAccessDeps
 ): Promise<SourcePlace> {
-  let kind = rowKind
-  if (!kind && gw) {
-    const info = await gw.getChannelInfo(place.channel).catch(() => undefined)
-    if (info) kind = info.isIm ? 'dm' : info.isMpim ? 'group_dm' : 'channel'
+  const snapshot = integrationId ? deps.placeSnapshot?.(integrationId, place.channel) : undefined
+  let kind = stricter(rowKind, snapshot?.kind ? SNAPSHOT_KINDS[snapshot.kind] : undefined)
+  let isPrivate = snapshot?.isPrivate
+  if (kind === undefined || (shared(kind) && isPrivate === undefined)) {
+    const gw = integrationId ? deps.gatewayFor(integrationId) : undefined
+    const info = gw ? await gw.getChannelInfo(place.channel).catch(() => undefined) : undefined
+    if (info) {
+      kind = stricter(kind, info.isIm ? 'dm' : info.isMpim ? 'group_dm' : 'channel')
+      if (isPrivate === undefined && typeof info.isPrivate === 'boolean') isPrivate = info.isPrivate
+    }
   }
-  const source: SourcePlace = { platform: place.platform, channel: place.channel, ...(kind ? { kind } : {}) }
-  if (kind !== 'channel') return source
-  const isPrivate = await channelPrivacy(place.platform, place.channel, gw)
-  return isPrivate === undefined ? source : { ...source, private: isPrivate }
+  return {
+    platform: place.platform,
+    channel: place.channel,
+    ...(kind ? { kind } : {}),
+    ...(shared(kind) && isPrivate !== undefined ? { private: isPrivate } : {})
+  }
 }
 
 /** The channel-addressed platform reads that pass the place rule. */
@@ -142,12 +158,11 @@ async function assertReadableHere(
     channel: typeof args.channel === 'string' ? args.channel : ctx.channel
   }
   if (samePlace(current, source)) return
-  const integrationId = typeof args.integrationId === 'string' ? args.integrationId : ctx.integrationId
-  const own = knownIntegrations(ctx).some((i) => i.id === integrationId && i.platform === ctx.platform)
-  const gw = own && integrationId ? deps.gatewayFor(integrationId) : undefined
+  const named = typeof args.integrationId === 'string' ? args.integrationId : ctx.integrationId
+  const own = knownIntegrations(ctx).some((i) => i.id === named && i.platform === ctx.platform)
   const row = await deps.placeStore?.latestSession(ctx.agentId, source.channel)
   const rowKind = row?.platform === ctx.platform ? kindFromRows(ctx.platform, [row.conversationKind]) : undefined
-  const refusal = checkPlaceRead(tool, current, await describePlace(source, rowKind, gw))
+  const refusal = checkPlaceRead(tool, current, await describePlace(source, rowKind, own ? named : undefined, deps))
   if (refusal) throw new Error(`${tool}: ${placeRefusalMessage(refusal)}`)
 }
 

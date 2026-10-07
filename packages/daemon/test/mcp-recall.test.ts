@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+import { NOT_SHARED_HERE } from '../src/assistant/place-access.js'
 import { executeTool, type MessageGateway, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
-import type { PlaceStore } from '../src/mcp/ops/place-gate.js'
+import type { PlaceSnapshotRow, PlaceStore } from '../src/mcp/ops/place-gate.js'
 import { ALL_TOOL_NAMES, toolsForIntegrations } from '../src/mcp/tools.js'
 import type { MemoryProvider } from '../src/memory/provider.js'
 import type { SessionRecord, TranscriptRow } from '../src/store/local-store.js'
@@ -46,6 +47,7 @@ const SESSIONS: SessionRecord[] = [
   }),
   session({ key: 's-web2', platform: 'webchat', channel: 'chat-2', conversationKind: 'dm', updatedAt: 350 }),
   session({ key: 's-tg', platform: 'telegram', channel: '-1001', conversationKind: 'channel', updatedAt: 300 }),
+  session({ key: 's-tg-closed', platform: 'telegram', channel: '-1002', conversationKind: 'channel', updatedAt: 250 }),
   // An earlier long session of #deploys, retired by `!new`: still the same place.
   session({
     key: 's-deploys-old',
@@ -90,7 +92,8 @@ const ROWS = [
   row('s-mpim', 'U_ALICE', 'group dm planning payments', 22),
   row('s-web2', 'user-2', 'webchat budget notes', 23),
   row('s-child', 'peer', 'peer payments secret', 24),
-  row('s-tg', 'tg-user', 'telegram payments chatter', 25)
+  row('s-tg', 'tg-user', 'telegram payments chatter', 25),
+  row('s-tg-closed', 'tg-user', 'closed group plans', 26)
 ]
 
 function fakeStore(sessions = SESSIONS): PlaceStore {
@@ -113,15 +116,16 @@ function fakeStore(sessions = SESSIONS): PlaceStore {
   }
 }
 
+// The platform-neutral `isPrivate` facet: Slack reports group DMs and private channels private.
 function fakeGateway(over: Partial<MessageGateway> = {}): MessageGateway {
   return {
     postMessage: vi.fn(async () => 'ts-1'),
     getChannelInfo: vi.fn(async (id: string) => ({
       id,
       ...(id.startsWith('D') ? { isIm: true } : {}),
-      ...(id.startsWith('G') ? { isMpim: true } : {})
+      ...(id.startsWith('G') ? { isMpim: true } : {}),
+      isPrivate: id === 'C_PRIV' || id.startsWith('D') || id.startsWith('G')
     })),
-    isPrivateConversation: vi.fn(async (id: string) => id === 'C_PRIV' || id.startsWith('D') || id.startsWith('G')),
     listMembers: vi.fn(async () => []),
     listChannels: vi.fn(async () => []),
     getUserProfile: vi.fn(async (u: string) => ({ id: u })),
@@ -139,12 +143,23 @@ function fakeGateway(over: Partial<MessageGateway> = {}): MessageGateway {
   }
 }
 
+// What the membership listing and observed chats already say; group DM rows carry no privacy, so the platform is asked.
+const SNAPSHOT: Record<string, Record<string, PlaceSnapshotRow>> = {
+  'int-slack': {
+    C_DEPLOY: { isPrivate: false },
+    C_PRIV: { isPrivate: true },
+    D_P: { kind: 'im' },
+    G_MPIM: { kind: 'mpim' }
+  },
+  'int-tg': { '-1001': { isPrivate: false, kind: 'channel' }, '-1002': { isPrivate: true, kind: 'channel' } }
+}
+
 const noMemory = {} as unknown as MemoryProvider
 
 function makeDeps(over: Partial<OpsDeps> = {}): OpsDeps {
-  const slack = fakeGateway()
+  const gateways: Record<string, MessageGateway> = { 'int-slack': fakeGateway(), 'int-tg': fakeGateway() }
   return {
-    gatewayFor: (id) => (id === 'int-slack' ? slack : undefined),
+    gatewayFor: (id) => gateways[id],
     channelAgents: async () => {
       throw new Error('channelAgents not stubbed')
     },
@@ -157,12 +172,9 @@ function makeDeps(over: Partial<OpsDeps> = {}): OpsDeps {
     recordOutbound: async () => {},
     now: () => 1000,
     assistantModeFor: () => true,
-    placeGatewayFor: (_agent, platform) =>
-      platform === 'slack'
-        ? slack
-        : platform === 'telegram'
-          ? fakeGateway({ isPrivateConversation: undefined })
-          : undefined,
+    placeIntegrationFor: (_agent, platform) =>
+      platform === 'slack' ? 'int-slack' : platform === 'telegram' ? 'int-tg' : undefined,
+    placeSnapshot: (integrationId, channel) => SNAPSHOT[integrationId]?.[channel],
     placeStore: fakeStore(),
     ...over
   }
@@ -190,36 +202,45 @@ function ctxAt(platform: string, channel: string, over: Partial<SessionContext> 
 
 const inDmOfP = ctxAt('slack', 'D_P')
 
+/** The one answer for a private place, an undescribed one and an unknown one alike. */
+const opaque = (place: string) => ({
+  place,
+  refused: true,
+  answer: NOT_SHARED_HERE,
+  note: expect.any(String)
+})
+
 describe('recall — listing the places this one may recall', () => {
-  it("lists the current DM, channels and group DMs from P's DM, and nothing direct or private", async () => {
-    const result = (await executeTool(inDmOfP, 'recall', {}, makeDeps())) as { places: Record<string, unknown>[] }
+  it("lists the current DM and the open channels from P's DM, and nothing direct or private", async () => {
+    const deps = makeDeps()
+    const result = (await executeTool(inDmOfP, 'recall', {}, deps)) as { places: Record<string, unknown>[] }
     expect(result.places).toEqual([
       { place: 'slack:D_P', kind: 'dm', current: true, lastActive: expect.any(String) },
       { place: 'slack:C_DEPLOY', name: 'deploys', kind: 'channel', lastActive: expect.any(String) },
-      { place: 'slack:G_MPIM', kind: 'group_dm', lastActive: expect.any(String) },
-      // A platform that reports no privacy treats its channels as not private.
       { place: 'telegram:-1001', kind: 'channel', lastActive: expect.any(String) }
     ])
+    expect(JSON.stringify(result)).not.toMatch(/C_PRIV|leadership|G_MPIM|-1002/)
+    // The snapshot answered every channel; only the group DM, whose row carries no privacy, asked the platform.
+    expect(deps.gatewayFor('int-slack')!.getChannelInfo).toHaveBeenCalledTimes(1)
+    expect(deps.gatewayFor('int-slack')!.getChannelInfo).toHaveBeenCalledWith('G_MPIM')
   })
 
-  it('lists channels from webchat but no DM and no other webchat conversation', async () => {
+  it('lists open channels from webchat but no DM and no other webchat conversation', async () => {
     const result = (await executeTool(ctxAt('webchat', 'chat-1'), 'recall', {}, makeDeps())) as {
       places: { place: string; name?: string }[]
     }
-    expect(result.places.map((p) => p.place)).toEqual([
-      'slack:C_DEPLOY',
-      'slack:G_MPIM',
-      'webchat:chat-1',
-      'telegram:-1001'
-    ])
+    expect(result.places.map((p) => p.place)).toEqual(['slack:C_DEPLOY', 'webchat:chat-1', 'telegram:-1001'])
     expect(result.places.find((p) => p.place === 'webchat:chat-1')).toMatchObject({ name: 'Planning', current: true })
   })
 
-  it('leaves out a channel whose privacy cannot be confirmed while its bot is unreachable', async () => {
-    const result = (await executeTool(inDmOfP, 'recall', {}, makeDeps({ placeGatewayFor: () => undefined }))) as {
-      places: { place: string }[]
-    }
-    expect(result.places.map((p) => p.place)).toEqual(['slack:D_P', 'slack:G_MPIM', 'telegram:-1001'])
+  it('leaves out a place whose privacy cannot be read while its bot is unreachable', async () => {
+    const deps = makeDeps({
+      gatewayFor: () => undefined,
+      placeSnapshot: (integrationId, channel) =>
+        integrationId === 'int-tg' ? SNAPSHOT['int-tg']?.[channel] : undefined
+    })
+    const result = (await executeTool(inDmOfP, 'recall', {}, deps)) as { places: { place: string }[] }
+    expect(result.places.map((p) => p.place)).toEqual(['slack:D_P', 'telegram:-1001'])
   })
 })
 
@@ -259,23 +280,13 @@ describe('recall — excerpts', () => {
     expect(result.excerpts).toHaveLength(5)
   })
 
-  it('says so when nothing matched, and when it does not know the place', async () => {
+  it('says so when nothing matched', async () => {
     expect(
       await executeTool(inDmOfP, 'recall', { place: 'slack:C_DEPLOY', query: 'kubernetes' }, makeDeps())
-    ).toMatchObject({
-      excerpts: [],
-      note: 'Nothing that was searched there matched.'
-    })
-    // A peer's wake is no place, and neither is a conversation it never spoke in.
-    for (const place of ['slack:C_A2A', 'slack:C_NOWHERE']) {
-      expect(await executeTool(inDmOfP, 'recall', { place }, makeDeps())).toMatchObject({
-        excerpts: [],
-        note: expect.stringContaining('no conversation there')
-      })
-    }
+    ).toMatchObject({ excerpts: [], note: 'Nothing that was searched there matched.' })
   })
 
-  it('reads a channel on a platform without privacy reports', async () => {
+  it("reads an open channel by the platform's own privacy facet", async () => {
     const result = (await executeTool(inDmOfP, 'recall', { place: 'telegram:-1001' }, makeDeps())) as {
       excerpts: { text: string }[]
     }
@@ -286,56 +297,64 @@ describe('recall — excerpts', () => {
 describe('recall — refusals the model relays', () => {
   it('refuses another person\'s DM with "ask me in a DM"', async () => {
     const result = await executeTool(inDmOfP, 'recall', { place: 'slack:D_Q', query: 'salary' }, makeDeps())
-    expect(result).toEqual({
-      place: 'slack:D_Q',
-      refused: 'direct',
-      answer: expect.stringContaining('Ask me in a DM.')
-    })
+    expect(result).toEqual({ place: 'slack:D_Q', refused: true, answer: expect.stringContaining('Ask me in a DM.') })
     expect(JSON.stringify(result)).not.toContain('salary question')
   })
 
-  it('refuses a private channel from anywhere else and reads it from itself', async () => {
-    const refused = await executeTool(inDmOfP, 'recall', { place: 'slack:C_PRIV', query: 'merger' }, makeDeps())
-    expect(refused).toMatchObject({ refused: 'private_channel', answer: expect.stringContaining('private channel') })
-    const own = (await executeTool(
-      ctxAt('slack', 'C_PRIV'),
-      'recall',
-      { place: 'slack:C_PRIV', query: 'merger' },
-      makeDeps()
-    )) as {
-      excerpts: { text: string }[]
+  it('answers a private place exactly as it answers a place that does not exist', async () => {
+    for (const place of [
+      'slack:C_PRIV',
+      '#leadership',
+      'slack:G_MPIM',
+      'telegram:-1002',
+      'slack:C_NOWHERE',
+      'slack:C_A2A'
+    ]) {
+      const result = await executeTool(inDmOfP, 'recall', { place, query: 'plans' }, makeDeps())
+      expect(result, place).toEqual(opaque(place))
+      const { place: _echoed, ...rest } = result as Record<string, unknown>
+      expect(JSON.stringify(rest)).not.toMatch(/private|leadership|merger|C_PRIV|G_MPIM/i)
     }
-    expect(own.excerpts.map((e) => e.text)).toEqual(['secret merger talk'])
   })
 
-  it('refuses DMs and other webchat conversations from webchat, and reads channels there', async () => {
+  it('reads a private channel and a private group DM from themselves', async () => {
+    for (const [channel, text] of [
+      ['C_PRIV', 'secret merger talk'],
+      ['G_MPIM', 'group dm planning payments']
+    ] as const) {
+      const own = (await executeTool(ctxAt('slack', channel), 'recall', { place: `slack:${channel}` }, makeDeps())) as {
+        excerpts: { text: string }[]
+      }
+      expect(own.excerpts.map((e) => e.text)).toEqual([text])
+    }
+  })
+
+  it('refuses DMs and other webchat conversations from webchat, and reads open channels there', async () => {
     const web = ctxAt('webchat', 'chat-1')
-    expect(await executeTool(web, 'recall', { place: 'slack:D_P' }, makeDeps())).toMatchObject({ refused: 'direct' })
+    expect(await executeTool(web, 'recall', { place: 'slack:D_P' }, makeDeps())).toMatchObject({
+      answer: expect.stringContaining('Ask me in a DM.')
+    })
     expect(await executeTool(web, 'recall', { place: 'webchat:chat-2' }, makeDeps())).toMatchObject({
-      refused: 'direct'
+      answer: expect.stringContaining('Ask me in a DM.')
     })
     expect(await executeTool(web, 'recall', { place: 'slack:C_DEPLOY', query: 'friday' }, makeDeps())).toMatchObject({
       excerpts: [{ from: 'alice' }, { from: 'you' }]
     })
   })
 
-  it('refuses webchat and DMs from a channel, and reads a group DM there', async () => {
+  it('refuses webchat and DMs from a channel', async () => {
     const deploys = ctxAt('slack', 'C_DEPLOY')
-    expect(await executeTool(deploys, 'recall', { place: 'webchat:chat-1' }, makeDeps())).toMatchObject({
-      refused: 'direct'
-    })
-    expect(await executeTool(deploys, 'recall', { place: 'slack:D_P' }, makeDeps())).toMatchObject({
-      refused: 'direct'
-    })
-    expect(await executeTool(deploys, 'recall', { place: 'slack:G_MPIM' }, makeDeps())).toMatchObject({
-      excerpts: [{ text: 'group dm planning payments' }]
-    })
+    for (const place of ['webchat:chat-1', 'slack:D_P']) {
+      expect(await executeTool(deploys, 'recall', { place }, makeDeps())).toMatchObject({
+        refused: true,
+        answer: expect.stringContaining('Ask me in a DM.')
+      })
+    }
   })
 
-  it('refuses a channel whose privacy cannot be confirmed', async () => {
-    expect(
-      await executeTool(inDmOfP, 'recall', { place: 'slack:C_DEPLOY' }, makeDeps({ placeGatewayFor: () => undefined }))
-    ).toMatchObject({ refused: 'undetermined' })
+  it('refuses a channel whose privacy cannot be read', async () => {
+    const deps = makeDeps({ gatewayFor: () => undefined, placeSnapshot: () => undefined })
+    expect(await executeTool(inDmOfP, 'recall', { place: 'slack:C_DEPLOY' }, deps)).toEqual(opaque('slack:C_DEPLOY'))
   })
 
   it('is not available to an agent outside assistant mode', async () => {
@@ -346,29 +365,31 @@ describe('recall — refusals the model relays', () => {
 })
 
 describe('the place rule on the existing cross-place reads', () => {
-  it('reads another public channel and the current conversation', async () => {
+  it('reads another open channel and the current conversation', async () => {
     const deps = makeDeps()
     await executeTool(inDmOfP, 'getChannelHistory', { channel: 'C_DEPLOY' }, deps)
     await executeTool(inDmOfP, 'getChannelHistory', {}, deps)
     expect(deps.gatewayFor('int-slack')!.getChannelHistory).toHaveBeenCalledTimes(2)
   })
 
-  it("refuses another person's DM and a private channel before the platform read", async () => {
+  it("refuses another person's DM, and a private channel or group DM opaquely, before the platform read", async () => {
     const deps = makeDeps()
     const gw = deps.gatewayFor('int-slack')!
     await expect(executeTool(inDmOfP, 'getChannelHistory', { channel: 'D_Q' }, deps)).rejects.toThrow(/Ask me in a DM/)
-    await expect(executeTool(inDmOfP, 'getThreadHistory', { channel: 'C_PRIV', thread: '1.1' }, deps)).rejects.toThrow(
-      /private channel/
-    )
+    for (const [tool, args] of [
+      ['getThreadHistory', { channel: 'C_PRIV', thread: '1.1' }],
+      ['getChannelHistory', { channel: 'G_MPIM' }]
+    ] as const) {
+      const refusal = executeTool(inDmOfP, tool, args, deps)
+      await expect(refusal).rejects.toThrow("I can't share that here.")
+      await expect(refusal).rejects.not.toThrow(/private/i)
+    }
     expect(gw.getChannelHistory).not.toHaveBeenCalled()
     expect(gw.getThreadReplies).not.toHaveBeenCalled()
   })
 
   it('takes a DM from the session rows where the platform does not say', async () => {
-    const feishu = fakeGateway({
-      getChannelInfo: vi.fn(async (id: string) => ({ id })),
-      isPrivateConversation: undefined
-    })
+    const feishu = fakeGateway({ getChannelInfo: vi.fn(async (id: string) => ({ id })) })
     const ctx = ctxAt('feishu', 'oc_group', {
       integrationId: 'int-feishu',
       integrations: [{ id: 'int-feishu', platform: 'feishu' }]

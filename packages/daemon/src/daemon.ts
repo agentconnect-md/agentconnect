@@ -3737,10 +3737,11 @@ export class Daemon {
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
       // Assistant mode's place rules (assistant-mode.md §5.5), read live so a switch applies to open sessions.
       assistantModeFor: (agentId) => this.agents.get(agentId)?.assistantMode?.enabled === true,
-      placeGatewayFor: (agentId, platform, transportScope) => {
-        const integrationId = this.integrationIdForTransportScope(agentId, platform, transportScope)
-        return integrationId ? this.connForIntegration(integrationId) : undefined
-      },
+      placeIntegrationFor: (agentId, platform, transportScope) =>
+        this.integrationIdForTransportScope(agentId, platform, transportScope),
+      // The membership listing and observed chats already carry each conversation's `isPrivate`.
+      placeSnapshot: (integrationId, channel) =>
+        this.channelSnapshots.get(integrationId)?.channels.find((c) => c.id === channel),
       placeStore: this.store,
       attachmentReaderFor: (integrationId) =>
         this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),

@@ -1284,10 +1284,13 @@ stays `listBotChannels`. Platforms that declare nothing keep their previous reac
 For an agent in assistant mode one more gate sits in front of every bridge tool
 (`mcp/ops/place-gate.ts`, [assistant-mode.md](assistant-mode.md) §5.5), on every platform. The
 channel-addressed reads (`getChannelHistory`, `getThreadHistory`, `getReactions`,
-`listBookmarks`) pass the place rule that `recall` uses: a DM or a private channel is read only
-from itself, and the refusal tells the model what to say instead ("ask me in a DM", or that the
-content is in a private channel and can be asked there). The platform
-writes stay in the current conversation: `sendMessage` to a channel or a user, `scheduleMessage`,
+`listBookmarks`) pass the place rule that `recall` uses: a DM, and a channel or group DM whose
+platform `isPrivate` is true, is read only from itself. Privacy comes from the integration's
+conversation snapshot (the membership listing and observed chats) and otherwise from
+`getChannelInfo`; a place whose privacy cannot be read is refused. A DM refusal tells the model to
+answer "ask me in a DM"; every other refusal is the same opaque "I can't share that here" and never
+says that a private place exists or where content lives. The platform writes stay in the current
+conversation: `sendMessage` to a channel or a user, `scheduleMessage`,
 reactions, message deletion and bookmarks name only the session's own conversation and bot,
 `createCanvas` only into it, and `createConversation`, `updateCanvas` and the list writes are
 refused because their conversation is new or cannot be confirmed. The agent-to-agent forms of
