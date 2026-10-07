@@ -469,7 +469,7 @@ describe('repository Decision routing — configuration', () => {
     })
     expect(paused.statusCode).toBe(200)
     await vi.waitFor(() => expect(routingOf(w.relay, w.lateHook)).toBeUndefined())
-    expect(w.spy.lastSpec(w.early)?.hookRoutings).toEqual([])
+    await vi.waitFor(() => expect(w.spy.lastSpec(w.early)?.hookRoutings).toEqual([]))
 
     expect((await w.app.app.inject({ method: 'PUT', url: SCOPE, payload: { config: w.config } })).statusCode).toBe(200)
     await vi.waitFor(() => expect(routingOf(w.relay, w.lateHook)).toBeDefined())
@@ -479,7 +479,7 @@ describe('repository Decision routing — configuration', () => {
       expect(routingOf(w.relay, w.lateHook)).toBeUndefined()
       expect(routingOf(w.relay, w.earlyHook)).toBeUndefined()
     })
-    expect(w.spy.lastSpec(w.early)?.hookRoutings).toEqual([])
+    await vi.waitFor(() => expect(w.spy.lastSpec(w.early)?.hookRoutings).toEqual([]))
     expect((await w.app.app.inject({ method: 'GET', url: SCOPE })).json()).toMatchObject({ config: null, status: null })
   })
 
@@ -498,7 +498,8 @@ describe('repository Decision routing — configuration', () => {
     await vi.waitFor(() =>
       expect(w.spy.lastSpec(w.late)?.hookRoutings?.[0]?.members).toEqual([{ agentId: w.late, hookId: w.lateHook }])
     )
-    expect(w.spy.lastSpec(w.early)?.hookRoutings ?? []).toEqual([])
+    // Each daemon's spec push lands independently, so the early one's retraction is awaited too.
+    await vi.waitFor(() => expect(w.spy.lastSpec(w.early)?.hookRoutings ?? []).toEqual([]))
   })
 
   it('marks the routing Needs review after an incompatible Decision edit, holds it, and protects the Decision', async () => {
