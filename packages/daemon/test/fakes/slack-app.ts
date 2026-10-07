@@ -29,7 +29,7 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
       shortcut: () => {},
       view: () => {},
       client: {
-        views: { open: ok, update: ok },
+        views: { open: ok, update: ok, publish: ok },
         auth: {
           test: async () => ({
             user_id: identity.userId ?? 'U_FAKE_BOT',

@@ -24,6 +24,7 @@ import {
   type SlackMessageLike
 } from '@agentconnect.md/message'
 import {
+  buildSlackAppHomeView,
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
@@ -398,6 +399,7 @@ export interface SlackHttpIngestDeps {
   /** Forward the native agent-session Stop to the daemon owning that conversation. */
   onSessionStopped: (stop: HttpSlackSessionStop) => void
   onAppHomeOpened?: (opened: HttpSlackAppHomeOpened) => void
+  webAppUrl?: () => string | undefined
   /** The bot's credential is definitively dead (an uninstall, a token revocation, or a probe saying so); report it so the CP revokes the bot. */
   onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', proof: SlackRevocationProof) => void
   /** A probe answer that does not revoke: `ok` clears an earlier rejection, `rejected` only marks the bot. */
@@ -518,6 +520,11 @@ export class SlackHttpIngest {
   async handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number, eventId?: string): Promise<void> {
     try {
       if (event?.type === 'app_home_opened') {
+        if (event.tab === 'home' && event.user)
+          await this.web?.views.publish({
+            user_id: event.user,
+            view: buildSlackAppHomeView(this.botUserId, this.deps.webAppUrl?.())
+          })
         if (event.tab === 'messages' && event.channel?.startsWith('D') && event.user && eventId)
           this.deps.onAppHomeOpened?.({ channelId: event.channel, userId: event.user, interactionId: eventId })
         return

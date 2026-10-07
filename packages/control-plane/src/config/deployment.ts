@@ -121,19 +121,21 @@ export function applyDeploymentEnvironment(
   return env
 }
 
-/** The snapshot every relay receives on authentication, with the relay pool's public http(s) origin; undefined when there is nothing to send. */
+// Public service origins and provider configuration sent to relays on authentication.
 export function relayDeploymentSnapshot(
   deployment: Pick<DeploymentConfigRuntime, 'revision' | 'values' | 'secrets'> | undefined,
   googleChatAnchor: RcGoogleChatAnchor | undefined,
-  publicRelayUrl?: string
+  publicRelayUrl?: string,
+  webAppUrl?: string
 ): RcDeploymentConfig | undefined {
-  if (!deployment && !googleChatAnchor && !publicRelayUrl) return undefined
+  if (!deployment && !googleChatAnchor && !publicRelayUrl && !webAppUrl) return undefined
   const githubWebhookSecret = deployment?.values.github ? deployment.secrets['github.webhookSecret'] : undefined
   return {
     // Zero when nothing came from a stored document.
     revision: deployment?.revision ?? 0,
     ...(githubWebhookSecret ? { githubWebhookSecret } : {}),
     ...(googleChatAnchor ? { googleChatAnchor } : {}),
-    ...(publicRelayUrl ? { publicRelayUrl } : {})
+    ...(publicRelayUrl ? { publicRelayUrl } : {}),
+    ...(webAppUrl ? { webAppUrl } : {})
   }
 }
