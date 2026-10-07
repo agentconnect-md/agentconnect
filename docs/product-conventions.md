@@ -709,6 +709,12 @@ applies to observed 1:1 and group DMs; classic integrations remain per-agent.
 
 ## Direct messages
 
+Opening Slack's Messages tab shows a short welcome in an empty DM and two suggested
+prompts only when its current agent is the built-in preset. This is application UI:
+it never starts a model turn or spends credits. Existing conversations receive no
+new greeting, including after a daemon restart. Custom agents and conversations
+whose replies are Off or restricted without a grant receive no built-in onboarding.
+
 Every observed direct conversation appears under **Direct messages** on the Agent's
 integration card, for both Everyone and Restricted visibility. A 1:1 DM has one binary
 **Off / On** control: On responds to messages in that conversation; Off is an effective

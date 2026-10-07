@@ -7,8 +7,9 @@ import {
   isSlackSystemMessage,
   normalizeSlackResponseFinalization
 } from '@agentconnect.md/message'
-import type { Agent } from '../agents/agent-schema.js'
+import type { Agent, Integration } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
+import { conversationAdmitted, integrationRouting } from '../router/routing-rule.js'
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
 import { SLACK_LIFECYCLE_EVENTS, slackLifecycleRevocation } from './lifecycle.js'
 import type { CredentialRevocation } from '../platforms/credential-revocation.js'
@@ -408,6 +409,7 @@ export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGrou
 export interface SlackDeps {
   group: ConsolidatedGroup
   onMessage: (msg: NormalizedMessage) => void
+  onAppHomeOpened?: (channel: string) => Promise<void>
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
   onChannelsChanged?: () => void
@@ -701,13 +703,11 @@ export type AppLike = {
         rename: (a: unknown) => Promise<unknown>
       }
     }
-    // The Data Access API — the ONLY workspace search a bot token can make, and only with the
-    // ephemeral `action_token` from the message that triggered the turn (`search:read.*`).
-    // `assistant.search.context` has no binding in `@slack/web-api` (8.1.x exposes only
-    // `assistant.threads.*`), so it goes through the client's generic `apiCall`: a dotted
-    // member access would throw `TypeError` before Slack was ever asked, which surfaced as a
-    // code-less "searching messages failed".
-    apiCall: (method: 'assistant.search.context', a: unknown) => Promise<SlackSearchContextResponse>
+    // Generic calls cover the search endpoint and channel-level Agent prompts without a legacy thread timestamp.
+    apiCall: (
+      method: 'assistant.search.context' | 'assistant.threads.setSuggestedPrompts',
+      a: unknown
+    ) => Promise<SlackSearchContextResponse>
   }
   init?: () => Promise<void>
   start: () => Promise<void>
@@ -985,6 +985,8 @@ export class SlackConnection implements PlatformConnection {
   // assistant_thread_started, while later message.im payloads may arrive without
   // thread_ts. Keep the active DM thread root so replies stay inside that thread.
   private assistantDmThreads = new Map<string, string>()
+  private appHomeOpens = new Map<string, Promise<void>>()
+  private welcomedAppHomes = new Set<string>()
   /** Last agent-session lifecycle state per `channel:thread`, so an unchanged one refires nothing. */
   private sessionLifecycle = new Map<string, string>()
   /** The slot's displayed owner per `channel:thread`: the sessionKey of the last `processing`
@@ -1109,6 +1111,10 @@ export class SlackConnection implements PlatformConnection {
     this.app.event('assistant_thread_started', async ({ event }) => {
       const thread = this.rememberAssistantThread(event as AssistantThreadStartedEvent)
       if (thread) log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
+    })
+    this.app.event('app_home_opened', async ({ event }) => {
+      const ev = event as { channel?: string; tab?: string }
+      if (ev.tab === 'messages' && ev.channel?.startsWith('D')) await this.deps.onAppHomeOpened?.(ev.channel)
     })
     // Native stop button, Socket Mode arm. The HTTP arm reaches the same method through the relay.
     this.app.event('agent_session_stopped', async ({ event }) => {
@@ -1460,6 +1466,58 @@ export class SlackConnection implements PlatformConnection {
       await this.postPermissionUpdateCard(channel, threadTs)
       throw err
     }
+  }
+
+  // Slack history survives daemon restarts; an existing conversation never receives a new greeting.
+  async welcomeBuiltin(channel: string, agent: Agent, integration: Integration): Promise<void> {
+    if (
+      !channel.startsWith('D') ||
+      !agent.builtin ||
+      agent.status !== 'active' ||
+      agent.pause ||
+      !conversationAdmitted(integrationRouting(integration), channel) ||
+      this.welcomedAppHomes.has(channel)
+    )
+      return
+    const pending = this.appHomeOpens.get(channel)
+    if (pending) return pending
+    const work = this.queue
+      .enqueue(async () => {
+        const history = await this.app.client.conversations.history({ channel, limit: 1 })
+        if (!history.messages) return
+        if (history.messages.length === 0) {
+          await this.app.client.chat.postMessage({
+            channel,
+            text: "Hi! I'm your AgentConnect agent. Send me a task here, or invite me to a channel and @mention me to get started.\n\nI can help with research, code, and documents. For setup and support, open Help in your AgentConnect console.",
+            ...slackMessageMetadata({ chrome: true, chromeOwnerAgentId: agent.id }),
+            unfurl_links: false,
+            unfurl_media: false
+          })
+        }
+        // Agent messaging requires channel-level prompts; thread_ts silently fails on this surface.
+        await this.app.client.apiCall('assistant.threads.setSuggestedPrompts', {
+          channel_id: channel,
+          prompts: [
+            {
+              title: 'Plan a task',
+              message: 'Help me turn an idea into a practical plan. Start by asking what I want to accomplish.'
+            },
+            {
+              title: 'Work with a file',
+              message: 'Help me review a document or code file. Ask me to share it and explain what I want to change.'
+            }
+          ]
+        })
+        this.welcomedAppHomes.add(channel)
+      })
+      .catch((err) => {
+        this.deps.log?.warn(`slack: app home welcome failed: ${(err as Error).message}`)
+      })
+      .finally(() => {
+        this.appHomeOpens.delete(channel)
+      })
+    this.appHomeOpens.set(channel, work)
+    return work
   }
 
   async postMessage(

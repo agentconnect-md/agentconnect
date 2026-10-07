@@ -44,7 +44,7 @@ import {
 import type { Logger } from '../../log.js'
 
 export { normalizeSlackMessage } from '@agentconnect.md/message'
-export type SlackMessageEvent = SlackMessageLike
+export type SlackMessageEvent = SlackMessageLike & { tab?: string }
 
 /** block_id / action_id of the modal's agent selector (local to this file). */
 const CONFIG_BLOCK = 'agent_block'
@@ -94,7 +94,12 @@ export type HttpSlackSessionAction = HttpSlackInteractionReceipt & {
   /** Who tapped it (Slack `body.user`), forwarded so the daemon can attribute the
    *  session change. Absent when the payload names no user. */
   userId?: string
-} & Exclude<RdSlackAction, { kind: 'open-config-for-thread' }>
+} & Exclude<RdSlackAction, { kind: 'open-config-for-thread' | 'app-home-opened' }>
+
+export interface HttpSlackAppHomeOpened extends HttpSlackInteractionReceipt {
+  channelId: string
+  userId: string
+}
 
 export interface HttpSlackSessionShortcut extends HttpSlackInteractionReceipt {
   channelId: string
@@ -392,6 +397,7 @@ export interface SlackHttpIngestDeps {
   onSessionShortcut: (shortcut: HttpSlackSessionShortcut) => boolean
   /** Forward the native agent-session Stop to the daemon owning that conversation. */
   onSessionStopped: (stop: HttpSlackSessionStop) => void
+  onAppHomeOpened?: (opened: HttpSlackAppHomeOpened) => void
   /** The bot's credential is definitively dead (an uninstall, a token revocation, or a probe saying so); report it so the CP revokes the bot. */
   onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', proof: SlackRevocationProof) => void
   /** A probe answer that does not revoke: `ok` clears an earlier rejection, `rejected` only marks the bot. */
@@ -511,6 +517,11 @@ export class SlackHttpIngest {
    *  falls through to the drop at the end. */
   async handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number, eventId?: string): Promise<void> {
     try {
+      if (event?.type === 'app_home_opened') {
+        if (event.tab === 'messages' && event.channel?.startsWith('D') && event.user && eventId)
+          this.deps.onAppHomeOpened?.({ channelId: event.channel, userId: event.user, interactionId: eventId })
+        return
+      }
       // App lifecycle: the workspace pulled the app / revoked its tokens. Not a
       // chat event (no user/bot_id — isRoutableEvent would drop it), so branch
       // before the chat filters. `tokens_revoked` is treated as a full revoke —

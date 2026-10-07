@@ -1619,7 +1619,7 @@ export class RelayIngressManager {
    */
   private resolveConversationTarget(
     botId: string,
-    coords: { channelId: string; threadTs: string }
+    coords: { channelId: string; threadTs?: string }
   ): RouteTarget | undefined {
     const sessionKey = sessionKeyOf({ channel: coords.channelId, thread: coords.threadTs })
     const assignment = this.router.get(botId)
@@ -1630,7 +1630,7 @@ export class RelayIngressManager {
     const allowedInChannel = (agentId: string): boolean =>
       !assignment.gatedAgentIds?.includes(agentId) ||
       assignment.routes.some((route) => route.agentId === agentId && route.scope?.channel === coords.channelId)
-    const affinity = this.router.peekAffinity(botId, sessionKey)
+    const affinity = coords.threadTs ? this.router.peekAffinity(botId, sessionKey) : undefined
     const affinityRoute =
       affinity && allowedInChannel(affinity.agentId)
         ? this.router.targetForAgent(botId, affinity.agentId, affinity.integrationId)

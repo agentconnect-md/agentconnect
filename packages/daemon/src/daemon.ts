@@ -10348,6 +10348,10 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
     }
     const payload = msg.payload
+    if (payload.kind === 'app-home-opened') {
+      await conn.welcomeBuiltin(payload.channelId, agent, integration)
+      return { msgId: msg.msgId, accepted: true }
+    }
     if (payload.kind === 'open-config-for-thread') {
       const routing = integrationRouting(integration)
       const unauthorized = !conversationAdmitted(routing, payload.channelId)

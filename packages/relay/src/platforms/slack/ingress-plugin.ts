@@ -25,6 +25,7 @@ import {
   type HttpSlackSessionAction,
   type HttpSlackSessionShortcut,
   type HttpSlackSessionStop,
+  type HttpSlackAppHomeOpened,
   type SlackInteractiveBody,
   type SlackMessageEvent
 } from './http-ingest.js'
@@ -233,6 +234,32 @@ export function forwardSessionStop(host: RelayIngressHost, botId: string, stop: 
   }
 }
 
+// Opening Messages addresses its current owner, without reusing an older thread's affinity.
+export function forwardAppHomeOpened(host: RelayIngressHost, botId: string, opened: HttpSlackAppHomeOpened): void {
+  const route = host.directory.resolveTarget(botId, { channelId: opened.channelId })
+  if (!route) return
+  const digest = createHash('sha256')
+    .update(JSON.stringify([botId, 'app-home-opened', opened]))
+    .digest('hex')
+  const rd: RdMsgPlatformAction = {
+    source: 'platform_action',
+    platformId: 'slack',
+    agentId: route.agentId,
+    integrationId: route.integrationId,
+    sessionKey: sessionKeyOf({ channel: opened.channelId }),
+    msgId: `slack-action:${digest}`,
+    botId,
+    userId: opened.userId,
+    payload: { kind: 'app-home-opened', channelId: opened.channelId }
+  }
+  void host
+    .forwardAction(rd, route)
+    .then((ack) => {
+      if (!ack.accepted) host.log.warn(`relay-ingress(${botId}): daemon rejected app home (${ack.reason ?? 'unknown'})`)
+    })
+    .catch((err) => host.log.warn(`relay-ingress(${botId}): app home forward failed: ${(err as Error).message}`))
+}
+
 /** The plugin's typed verified product: one authenticated Slack delivery, as
  *  the two HTTP routes parse it. Opaque to core (§8). */
 export type SlackVerifiedDelivery =
@@ -271,6 +298,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
         onSessionAction: (action) => forwardSessionAction(host, botId, action),
         onSessionShortcut: (shortcut) => forwardSessionShortcut(host, botId, shortcut),
         onSessionStopped: (stop) => forwardSessionStop(host, botId, stop),
+        onAppHomeOpened: (opened) => forwardAppHomeOpened(host, botId, opened),
         onBotRevoked: (reason, proof) => {
           host.log.warn(`relay-ingress(${botId}): workspace revoked the app (${reason})`)
           // Fence with the generation THIS ingest was built from, so a late probe of an older ingest cannot revoke its replacement.

@@ -302,6 +302,17 @@ export class ConnectionReconciler {
         this.host.slackNameResolver()?.noteMessage(conn(), msg)
         this.host.onInbound(msg, this.host.srcIntegrationIds(conn()))
       },
+      onAppHomeOpened: async (channel) => {
+        const ids = this.host.srcIntegrationIds(conn())
+        const bindings = this.host
+          .transportAgents()
+          .flatMap((agent) =>
+            agent.integrations
+              .filter((integration) => ids.includes(integration.id))
+              .map((integration) => ({ agent, integration }))
+          )
+        if (bindings.length === 1) await conn().welcomeBuiltin(channel, bindings[0]!.agent, bindings[0]!.integration)
+      },
       onChannelsChanged: () => void this.host.refreshChannels(conn()),
       onCredentialRevoked: (revocation) =>
         this.revocations.report(this.revocableIntegrations(conn(), group), revocation),

@@ -51,6 +51,7 @@ export const SLACK_BOT_EVENTS = [
   // Subscribed but not handled yet, so title sync can land without a second manifest refresh.
   'agent_session_title_changed',
   'app_mention',
+  'app_home_opened',
   'app_uninstalled',
   'assistant_thread_started',
   // Same: the shipping context signal for an assistant thread, pre-provisioned and inert today.
