@@ -134,7 +134,9 @@ function main(argv) {
     if (!channel) fail(USAGE)
     if (options.raw && options.seq === undefined) fail('--raw shows one row at a time: pass --seq <n> with it')
     // Rows of one thread are shared by every agent in it; sessionScope is the admitting session's key.
-    const filter = `channel = ?1 and (?2 is null or thread = ?2) and kind = 'tool'
+    // A transport-scoped conversation is keyed `<channel>\x1f<scope>` (code-host hooks are), so match both forms.
+    const filter = `(channel = ?1 or substr(channel, 1, length(?1) + 1) = ?1 || char(31))
+           and (?2 is null or thread = ?2) and kind = 'tool'
            and (?3 is null or sessionScope = ?3) and (?4 is null or seq = ?4)`
     const params = [channel, thread ?? null, options.session ?? null, options.seq ?? null]
     const total = db.prepare(`select count(*) as n from transcript where ${filter}`).get(...params).n

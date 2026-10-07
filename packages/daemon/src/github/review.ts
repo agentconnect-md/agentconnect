@@ -297,7 +297,7 @@ export class GithubReviewClient {
         return {
           state: 'ambiguous',
           code: 'ambiguous_write',
-          message: 'GitHub review outcome is unknown; automatic retry is blocked'
+          message: `GitHub review outcome is unknown (${err instanceof Error ? err.message : String(err)}); automatic retry is blocked`
         }
       }
     } catch (err) {
@@ -418,7 +418,10 @@ export class GithubReviewClient {
         signal: AbortSignal.timeout(this.timeoutMs)
       })
     } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`)
+      // fetch reports only "fetch failed"; the cause code (ECONNRESET, ENOTFOUND, …) names the network failure.
+      const code = (err as { cause?: { code?: unknown } } | undefined)?.cause?.code
+      const detail = typeof code === 'string' ? ` (${code})` : ''
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}${detail}`)
     }
     const text = await response.text()
     if (!response.ok) {
