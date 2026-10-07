@@ -149,6 +149,7 @@ import {
   type PlatformReadDeps
 } from './ops/platform-reads.js'
 import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
+import { ASSISTANT_ITEM_ARG_SCHEMAS, ASSISTANT_ITEM_HANDLERS, type AssistantItemDeps } from './ops/assistant-items.js'
 
 export type { McpContentResult, MessageGateway, SendIdentity, SessionContext } from './ops/context.js'
 export type { ChannelAgentsRequest } from './ops/directory.js'
@@ -192,7 +193,8 @@ export interface OpsDeps
     MemoryOpsDeps,
     ShareFileDeps,
     PlatformReadDeps,
-    PlatformActionDeps {
+    PlatformActionDeps,
+    AssistantItemDeps {
   /** Rejected tool arguments are logged here at debug, key names only — the sole trace of them (#1921). */
   log?: Pick<Logger, 'debug'>
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
@@ -293,7 +295,8 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['searchPublicMessages', searchPublicMessages],
   ['createCanvas', createCanvas],
   ['readCanvas', readCanvas],
-  ['updateCanvas', updateCanvas]
+  ['updateCanvas', updateCanvas],
+  ...ASSISTANT_ITEM_HANDLERS
 ])
 
 /**
@@ -361,6 +364,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['createCanvas', CREATE_CANVAS_ARGS],
   ['readCanvas', READ_CANVAS_ARGS],
   ['updateCanvas', UPDATE_CANVAS_ARGS],
+  ...ASSISTANT_ITEM_ARG_SCHEMAS,
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
   // One body serves every platform's credentialed attachment read, so one schema does too.

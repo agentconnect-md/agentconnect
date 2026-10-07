@@ -27,6 +27,7 @@ import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from '
 import { openRuntimeSession } from './turn/runtime-session.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
+import { standingSummaryFor } from '../assistant/standing-summary.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
 import { backgroundConversationText, intakeEvidenceText } from '../decisions/evidence.js'
@@ -949,6 +950,7 @@ export class SessionManager {
 
     // A new session or an initialized root's first prompt inlines the standing context unless `_meta` has it (#398).
     const promptPrelude: ContentBlock[] = []
+    let reminded = false
     if (opening) {
       // Start the reminder epoch: this session just received the full rule, inline or via `_meta`.
       this.turnsSinceReminder.set(key, 0)
@@ -957,11 +959,14 @@ export class SessionManager {
       // An open session's standing context lacks this obligation or names another parent, so state it as a turn block.
       promptPrelude.push({ type: 'text', text: preludeStanding.parentReplyAppend })
     } else if (await this.shouldRemind(key)) {
-      // Long-running (or just-compacted) session: re-assert the no-response
-      // rule as a compact system reminder so it stays salient. A brand-new session already
-      // carries the full rule (the `created` branch / Claude's system-prompt append), so this
-      // fires only on later turns. Placed first, ahead of the catch-up context + message.
+      // A long-running or just-compacted session gets the no-response rule again; a new one already carries it.
       promptPrelude.push({ type: 'text', text: NO_RESPONSE_REMINDER })
+      reminded = true
+    }
+    // Assistant mode's standing summary rides the same points: first turn, restart, compaction, every 12th turn (§5.4 ②).
+    if (opening || reminded) {
+      const summary = await standingSummaryFor(this.deps.store.assistantItems, agent)
+      if (summary) promptPrelude.push({ type: 'text', text: summary })
     }
     // A trusted direct agent call is addressed to this agent regardless of names
     // or quoted mentions in its body. State that routing fact per turn so the
