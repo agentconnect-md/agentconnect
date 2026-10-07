@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, fourth revision (2026-10-07). Reviewed by three independent design reviews and
+**Status:** Design, fifth revision (2026-10-07). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -37,9 +37,11 @@ one exists, and does not pretend to defend against effects it cannot defend agai
   too.
 - **One mind behind them.** Something asked of it in one place is known in the others; a
   discussion in an internal channel can be recalled when you ask about it in a DM.
-- **It speaks for the room.** In a place it draws only on what everyone present may see, and
-  writes only to that place. Nobody can get at another person's DM; when something cannot be said
-  here, it says "ask me in a DM".
+- **It speaks for the room.** It writes only to the place it is in. Nobody can get at another
+  person's DM; when something cannot be said here, it says "ask me in a DM".
+- **Shared with another organization.** In a place the platform reports as external (a Slack
+  Connect channel) it still knows everything, but every reply is a draft that an internal member
+  approves in a DM before it is posted.
 
 ### 1.2 Asking it to do things
 
@@ -98,7 +100,8 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 
 ### 1.6 Approval
 
-- The card lands in the item's place of origin. Who may approve follows the existing in-chat
+- The card lands in the item's place of origin; for an external place, in the approver's DM
+  instead (§5.5). Who may approve follows the existing in-chat
   approval rules: with "allow runtime changes in chat" switched on, anyone who sees the card can
   click; otherwise the console and the editor DM path. The card offers "always allow this tool".
 - The card leads with one plain sentence; the raw arguments are folded underneath.
@@ -120,7 +123,7 @@ one exists, and does not pretend to defend against effects it cannot defend agai
   auto-approving workspace-local operations.
 - Once on, the agent is off everywhere; an editor enables places one by one. Enabling a place
   trusts it as _internal_ unless the platform detects it as _external_ (§5.3); the enable flow
-  warns "everyone here will be able to get the content of other internal places out of it;
+  warns "everyone here will be able to get the content of its other places out of it;
   enable only if fully trusted".
 - It acts with the agent's own identity and permissions, never someone's personal account.
 
@@ -134,7 +137,7 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 | An open-source personal-agent template                                  | The approval record: hash-bound, expiring, `outcome_unknown` never retried; idempotent notifications; failure backoff and auto-pause                                                                                                                                                                                                 | Rule-based idea generation; a task model that re-runs from scratch each time       |
 | An open-source coworker-agent template                                  | Scheduled turns run in the original conversation; interruption waits for human review before retry                                                                                                                                                                                                                                   | One task at a time globally                                                        |
 | A durable agent-harness library                                         | The shape of background sub-agents: own conversation, anchored outside the parent's abort, replies delivered back as follow-ups, request ids on every delivery and report; sub-agents cannot spawn sub-agents                                                                                                                        | Using it as a runtime                                                              |
-| A commercial AI coworker for team chat                                  | **Access scoped per person, enforced at recall**; DM content cannot be asked out of it; shared-channel mentions answered in a DM; approval cards lead with a sentence and offer "always allow"; stopping the main task does not stop scheduled ones                                                                                  | One session per thread plus memory retrieval                                       |
+| A commercial AI coworker for team chat                                  | **Access scoped per person, enforced at recall**; DM content cannot be asked out of it; shared-channel replies drafted in a DM and posted after approval; approval cards lead with a sentence and offer "always allow"; stopping the main task does not stop scheduled ones                                                          | One session per thread plus memory retrieval                                       |
 | An open-source self-hosted multi-agent assistant                        | Read-only as a per-session tool filter; self-scheduled tasks in two tiers (push text without a model / run a turn); push cadence with active hours, random intervals and a dedup record; background replies only raise an unread badge                                                                                               | No distinction between senders in an IM; a per-thread persisted "allow all" bypass |
 
 ---
@@ -243,7 +246,8 @@ conversation. Each place has exactly one long session:
 - **Channel**: forced `append`. Rows already in `append` are taken as they are; Linear rows are
   skipped; Decision-gated rows are not forced to change mode.
 - **DM**: Slack DMs gain `append` (other platforms are already continuous). Fixed `private`.
-- **Group DM**: treated as a small private channel; for recall it counts as external. Its
+- **Group DM**: treated as a small private channel, internal unless the platform detects it as
+  external. Its
   console-side default of `org` visibility is a session-visibility matter tracked separately.
 - **Webchat**: one conversation is already one session.
 
@@ -256,8 +260,11 @@ the context with the ledger and summary as a handover note) is an open question 
 The daemon has no presence data and member enumeration is not made a prerequisite. There is no
 per-place trust setting: **enabling a place on an assistant-mode agent trusts it as internal**
 (everyone here is an organization member), on top of conversation gating. The enable flow shows
-the warning "everyone here will be able to get the content of other internal places out of it;
-enable only if fully trusted". The only exception is an **external** level the platform detects:
+the warning "everyone here will be able to get the content of its other places out of it;
+enable only if fully trusted". The only exception is an **external** level the platform detects.
+An external place is not walled off: the agent reads there what it reads in an internal place,
+and **every post is a draft an internal member approves first** (§5.5). External limits what
+leaves, not what the agent knows, so an agent added to a shared channel can still answer.
 
 - Slack: a Slack Connect channel (`is_ext_shared` / `is_pending_ext_shared` on the existing
   membership listing) is external; a later listing that no longer reports the share lifts it.
@@ -267,21 +274,14 @@ enable only if fully trusted". The only exception is an **external** level the p
   and only for assistant-mode agents.
 - Telegram groups, Discord channels, Feishu groups: no detection; enabled means trusted.
 - DM: enabling it is trusting that person as a member. Webchat is internal by construction.
-- **Trust propagates downward**: a sub-session's place is its parent's; an item's trust level is
-  the lowest among its followers' places; a patrol's tool scope follows the item's level.
-- **The downgrade transition (internal → external) retires context, not just the flag.** The
-  place's long session was populated under internal permissions: recalled transcripts and memory
-  reads sit in its ACP context whether or not they were ever posted, and a sub-session born there
-  carries the same context. On a downgrade — a detected share, a `channel_shared` event, a guest
-  joining — the daemon: interrupts the place's in-flight turn; retires
-  the long session the way `!new` does (a fresh coordinate, so the next message starts from an
-  empty context with the external-filtered standing summary); interrupts the sub-sessions born in
-  that place and drops their pending full-text reports (structured rows stay); leaves pending
-  approval cards in place. The retired session's transcript keeps the visibility it had. An
-  upgrade (external → internal) needs no transition.
-- **An agent with a shared workspace cannot be enabled in an external place** (git with shared
-  isolation, scratch): workspace files cross places, and the runtime's native file tools cannot
-  be filtered.
+- A sub-session's place is its parent's: one born in an external place reports through that
+  place's main session, so its result is drafted too.
+- **The downgrade transition (internal → external) changes the output path, not the context.**
+  On a downgrade — a detected share, a `channel_shared` event, a guest joining — the daemon
+  interrupts the place's in-flight turn, whose reply would otherwise post unapproved; from the
+  next turn on, replies are drafts. The long session and its sub-sessions keep their context:
+  what they know was never the risk, what they post is. An upgrade (external → internal) needs no
+  transition; drafts already pending stay approvable.
 - Joining a public Slack channel on demand (`joiningOnRefusal`) does not create a place: an off
   row is not a place, and no filtering of self-initiated joins is attempted.
 
@@ -292,8 +292,7 @@ enable only if fully trusted". The only exception is an **external** level the p
 ```
 { id, title, doneWhen, nextCheck, status: active | waiting | done | dropped,
   followers: [{ identity: '<platform>:<scope>:<uid>' | 'user:<id>', place }],
-  origin: place, trust: internal | external,      // = lowest among followers' places
-  summary, observations: [...], subsessions: [...], proposals: [...], version }
+  origin: place, summary, observations: [...], subsessions: [...], proposals: [...], version }
 ```
 
 - Item summaries are visible to organization members; the wording stays in the source session.
@@ -311,31 +310,44 @@ enable only if fully trusted". The only exception is an **external** level the p
 
 **② The standing summary**: `id`, title, status and followers' places of active and waiting
 items; capped at 30; injected through the existing reminder path (`shouldRemind`, which already
-handles first turn, restart and compaction). External places receive only locally-born items.
-Incremental injection (`lastInjectedVersion`) is not in P0.
+handles first turn, restart and compaction); every place receives the same summary. Incremental injection (`lastInjectedVersion`) is not in P0.
 
 **③ The recall tool** `recall({ place, query })`: reads this agent's transcript excerpts from
 another place, under §5.5.
 
 ### 5.5 Permission rules
 
-> **Read**: in an internal place, any other internal place may be recalled; everywhere else reads
-> only itself. Another person's DM, never.
+> **Read**: any place may recall any channel or group DM; a DM only from that person's own DM or
+> webchat. Another person's DM, never.
 > **Write**: platform write tools (`sendMessage`, `shareFile`, `scheduleMessage`, canvas, lists…)
 > target only **the current place**; anything cross-place goes through §5.7 as structured fields.
+> **External**: an external place reads like an internal one; what it posts is a draft.
 
-| Current place              | Recallable sources                             | Memory / knowledge                                                                                                                                                                  |
-| -------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P's DM (internal)          | P's own DM and webchat, every internal channel | all                                                                                                                                                                                 |
-| Internal channel           | itself, every other internal channel           | all                                                                                                                                                                                 |
-| External channel, group DM | itself only                                    | **closed**: memory recall, `readMemory`, `findKnowledge` and cross-place read tools (`getChannelHistory` and kin) — internal channel content is already captured into shared memory |
-| Webchat                    | as a DM, by the conversation's owner           | all                                                                                                                                                                                 |
+| Current place                | Recallable sources                                 | Memory / knowledge | Output                                                |
+| ---------------------------- | -------------------------------------------------- | ------------------ | ----------------------------------------------------- |
+| P's DM                       | P's own DM and webchat, every channel and group DM | all                | posted                                                |
+| Internal channel or group DM | every channel and group DM                         | all                | posted                                                |
+| External channel or group DM | every channel and group DM                         | all                | **drafted**: posted after an internal member approves |
+| Webchat                      | as a DM, by the conversation's owner               | all                | posted                                                |
+
+**Drafts in an external place:**
+
+- The turn's reply becomes a draft; other platform write tools are refused there. The place sees
+  no streaming or tool progress; the triggering message gets a reaction where the platform
+  supports one, never text.
+- The draft goes as a card to an internal member's DM: the asker when the asker is an internal
+  member (on Slack, a full member of the installing workspace — not a guest, not from the other
+  organization), otherwise the responsible user or the fallback conversation. **Approve** posts
+  the text unchanged in the original thread; **discard** drops it.
+- A draft is an approval record (§5.10) whose action is "post this text to this place"; the
+  daemon executes it itself, with no sub-session. It expires after 24 hours.
+- Any other card that would land in an external place (a runtime permission request, a
+  `propose`) goes to the same DM instead: a card is output too.
 
 - Webchat ↔ IM recognition depends on identity links (P1); in P0 webchat recalls only itself and
-  internal channels.
-- **"Ask me in a DM"**: asked in place B for something only the asker may see, or asked for
-  internal content in an external place, B's session neither reads nor answers; it says "ask me
-  in a DM". P1 adds `handoff`: a row through §5.7 to the asker's DM carrying the original
+  channels.
+- **"Ask me in a DM"**: asked in place B for something only the asker may see, B's session
+  neither reads nor answers; it says "ask me in a DM". P1 adds `handoff`: a row through §5.7 to the asker's DM carrying the original
   question, answered there by the DM session under its own permissions (the human-reaching
   `sendMessage` only sends already-generated text and starts no turn in the DM, so it is not used).
 - No output filter; one zero-cost assertion: a source read during a turn that is outside the
@@ -363,8 +375,8 @@ another place, under §5.5.
 - **Runtime permission requests** (far more common than `propose`):
   1. Standing prompt: finish the work in the workspace; the outward step (push, open the PR) goes
      through `propose`.
-  2. When one fires it is delivered to the place of origin as a card through the existing two
-     approval paths and listed in Activity; the card offers "always allow this tool".
+  2. When one fires it is delivered to the place of origin (an external place's to the approver's
+     DM, §5.5) as a card through the existing two approval paths and listed in Activity; the card offers "always allow this tool".
   3. **Waiting is waiting**: the ACP request stays open and the turn is not cancelled — the card
      and both approval paths are bound to that pending request; cancelling it expires the card,
      and a later "continue" grants nothing to the re-triggered request. Host and concurrency slot
@@ -492,9 +504,13 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
   createdAt, expiresAt = createdAt + 30min }
 ```
 
-- The card is delivered through §5.7 to the item's place of origin.
+- The card is delivered through §5.7 to the item's place of origin, or for an external place to
+  the approver's DM (§5.5).
+- **Drafts are the record's first use** (P0a): action "post", executed by the daemon. General
+  `propose` actions come with P1.
 - **Approvers follow the existing two paths** (`allowRuntimeChangesInChat` on ⇒ any participant
-  of the conversation may click; off ⇒ the editor path). Only the policy is reused: both existing
+  of the conversation may click; off ⇒ the editor path); for an external place, the internal
+  member of §5.5. Only the policy is reused: both existing
   paths bind to a pending ACP request, so a `propose` record that outlives a turn is a new
   mechanism; the chat card and the editor DM exist on Slack only, other platforms use the console.
 - Approval ⇒ CAS to `executing`, record the sub-session id and write the marked inbox row in one
@@ -535,14 +551,14 @@ conversation only raises an unread badge.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                             |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the three permission rules (read, write, memory); memory bypass closed; "ask me in a DM". **No sub-sessions** |
-| **P0b — background work**         | Direct self-delegation, own coordinates, the persistent parent–child index; the persistent outbox (merge, ack, dead letter, chain depth, failure reports, hop reset, recovery order); sub-session permission requests and the wait cap; list / steer / stop (text list); pause suspends the outbox                  |
-| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` and the approval record; `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours                                                    |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                              |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                            |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions** |
+| **P0b — background work**         | Direct self-delegation, own coordinates, the persistent parent–child index; the persistent outbox (merge, ack, dead letter, chain depth, failure reports, hop reset, recovery order); sub-session permission requests and the wait cap; list / steer / stop (text list); pause suspends the outbox                                                                  |
+| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours                                                                                    |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                              |
+| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                            |
 
 ---
 
@@ -559,8 +575,9 @@ conversation only raises an unread badge.
 - sub-sessions of sub-sessions; sub-sessions as platform threads;
 - an "add this to the ledger" card; the "allow for this session" memory-write bypass;
   `tool_call.kind`-based retry;
-- per-place restrictions on `!stop`, `!new`, pause or approval cards; filtering self-initiated
-  Slack joins;
+- per-place restrictions on `!stop`, `!new` or pause; filtering self-initiated Slack joins;
+- closing reads or memory in external places — their output is drafted instead; editing a draft
+  before approval (discard and ask again);
 - runtimes outside the admission list, external memory plugins, self-hosted groups without a
   shared store.
 
@@ -631,4 +648,13 @@ degraded residual.
 
 **Review bot, public PR**: an internal → external downgrade left context read under internal
 permissions in the long session and in active sub-sessions → the downgrade transition retires
-the session and its sub-sessions' full-text reports (§5.3).
+the session and its sub-sessions' full-text reports (§5.3). Superseded by the fifth revision.
+
+**Fifth revision (2026-10-07)**: a per-place trust declaration was a new setting nobody asked for
+→ enabling a place trusts it; only a platform-detected external is the exception. An external
+place that reads only itself cannot answer what it was added to answer → it reads like an
+internal place and every post is a draft an internal member approves in a DM (the shared-channel
+practice in §2). Consequences: the downgrade transition no longer retires context; the
+shared-workspace restriction on external places, item trust levels and the external-filtered
+summary are dropped; cards from external places go to the approver's DM, which settles the
+external-place card question left open above.
