@@ -21276,9 +21276,9 @@ export class Daemon {
     }
   }
 
-  /** An opted-in agent's current append session skips idle retention (channel-session-mode.md §6.3); removing the agent or integration, leaving `append`, or `!new` ends it. */
+  /** A conversation's current append session skips idle retention (channel-session-mode.md §6.3); removing the agent or integration, leaving `append`, or `!new` ends it. */
   private async keepsAppendSession(rec: SessionRecord): Promise<boolean> {
-    if (!isAppendCoordinate(rec.thread) || !this.agents.get(rec.agentId)?.keepAppendSessions) return false
+    if (!isAppendCoordinate(rec.thread)) return false
     const integrationId = this.integrationIdForSessionTransport(rec.agentId, rec.platform, rec.transportScope)
     const int = this.agents.get(rec.agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
     if (!int || conversationSessionMode(int, rec.channel) !== 'append') return false

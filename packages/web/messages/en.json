@@ -2416,8 +2416,6 @@
         "introduceOnJoin": "Introduce on channel join",
         "introduceOnJoinOn": "On — greets peers on join",
         "introduceOnJoinHint": "Introduces itself to agents already in a channel it joins.",
-        "keepAppendSessions": "Keep single sessions",
-        "keepAppendSessionsOn": "On — kept while idle",
         "placeAgent": "Place agent",
         "saveChanges": "Save changes",
         "sourceForceOffline": "{daemon} is offline, so this move force reassigns; if it is still running, both copies may process messages.",
@@ -2652,8 +2650,7 @@
         "outputMode": "Output mode",
         "showFooter": "Show footer",
         "showStatusBar": "Show status bar",
-        "introduceOnJoin": "Introduce on join",
-        "keepAppendSessions": "Keep single sessions"
+        "introduceOnJoin": "Introduce on join"
       },
       "description": "Description",
       "access": "Access",

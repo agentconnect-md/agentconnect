@@ -473,8 +473,6 @@ export const AgentSpec = z.object({
   // → messageAgent) so they can record it in memory. Replicated CP→daemon. Optional
   // (absent ⇒ leave the on-disk agent.json value alone — same contract as pause/fastMode).
   introduceOnJoin: z.boolean().optional(),
-  // Exempt the agent's current `append` sessions from idle retention (channel-session-mode.md §6.3); absent ⇒ leave the on-disk value alone.
-  keepAppendSessions: z.boolean().optional(),
   // Per-agent OS sandbox preference (issue #642). It is effective only when the
   // host has bwrap/sandbox-exec; daemon `security.requireSandbox` forces it on and
   // prevents daemon startup when no mechanism exists. Optional means leave the

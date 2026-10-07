@@ -2416,8 +2416,6 @@
         "introduceOnJoin": "加入频道时介绍自己",
         "introduceOnJoinOn": "开启：加入时向其他 Agent 问候",
         "introduceOnJoinHint": "加入频道后，会向该频道中已有的 Agent 介绍自己。",
-        "keepAppendSessions": "保留单一会话",
-        "keepAppendSessionsOn": "开启：空闲时不回收",
         "placeAgent": "部署 Agent",
         "saveChanges": "保存更改",
         "sourceForceOffline": "{daemon} 已离线，因此本次迁移会强制重新分配；如果它仍在运行，两个副本可能都会处理消息。",
@@ -2652,8 +2650,7 @@
         "outputMode": "输出模式",
         "showFooter": "显示页脚",
         "showStatusBar": "显示状态栏",
-        "introduceOnJoin": "加入频道时介绍自己",
-        "keepAppendSessions": "保留单一会话"
+        "introduceOnJoin": "加入频道时介绍自己"
       },
       "description": "描述",
       "access": "访问权限",

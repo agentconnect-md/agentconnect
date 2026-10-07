@@ -18,7 +18,7 @@ import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
  * against an implementation that resolved it too late to matter.
  */
 
-function scaffold(mode: 'createNew' | 'append', agents: string[] = ['bot-a'], keepAppendSessions = false): string {
+function scaffold(mode: 'createNew' | 'append', agents: string[] = ['bot-a']): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-append-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -38,7 +38,6 @@ function scaffold(mode: 'createNew' | 'append', agents: string[] = ['bot-a'], ke
         name: id,
         status: 'active',
         runtime: 'claude',
-        keepAppendSessions,
         workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
         integrations: [
           {
@@ -236,13 +235,13 @@ describe('append mode keys one session per conversation', () => {
   })
 })
 
-describe('keepAppendSessions exempts the current append session from idle retention (#2812)', () => {
+describe("idle retention keeps a conversation's current append session (#2812)", () => {
   const DAY = 24 * 3_600_000
 
-  async function bootKept(mode: 'createNew' | 'append', keep: boolean) {
+  async function bootKept(mode: 'createNew' | 'append') {
     const clock = new FakeClock()
     const daemon = new Daemon({
-      root: scaffold(mode, ['bot-a'], keep),
+      root: scaffold(mode),
       hostFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn() }) as never,
       slackAppFactory: fakeSlackAppFactory(),
       clock
@@ -280,7 +279,7 @@ describe('keepAppendSessions exempts the current append session from idle retent
   }
 
   it('keeps an idle current session past the window, and collects the one `!new` superseded', async () => {
-    const { daemon, clock, store, scope, seed, sweep } = await bootKept('append', true)
+    const { daemon, clock, store, scope, seed, sweep } = await bootKept('append')
     const first = await store.resolveAppendCoordinate('bot-a', 'C1', scope, 1)
     const firstKey = await seed(first)
     clock.advance(30 * DAY)
@@ -298,18 +297,8 @@ describe('keepAppendSessions exempts the current append session from idle retent
     await daemon.stop()
   })
 
-  it('collects the idle append session and clears its reservation when the agent has not opted in', async () => {
-    const { daemon, clock, store, scope, seed, sweep } = await bootKept('append', false)
-    const key = await seed(await store.resolveAppendCoordinate('bot-a', 'C1', scope, 1))
-    clock.advance(8 * DAY)
-    await sweep()
-    expect(await store.getSession(key)).toBeUndefined()
-    expect(await store.currentAppendCoordinate('bot-a', 'C1', scope)).toBeUndefined()
-    await daemon.stop()
-  })
-
-  it('collects it once the conversation no longer appends, even with the opt-in', async () => {
-    const { daemon, clock, store, scope, seed, sweep } = await bootKept('createNew', true)
+  it('collects it and clears its reservation once the conversation no longer appends', async () => {
+    const { daemon, clock, store, scope, seed, sweep } = await bootKept('createNew')
     const key = await seed(await store.resolveAppendCoordinate('bot-a', 'C1', scope, 1))
     clock.advance(8 * DAY)
     await sweep()

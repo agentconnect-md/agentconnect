@@ -446,7 +446,6 @@ function toDto(
     outboundPolicy: a.outboundPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
-    keepAppendSessions: a.keepAppendSessions,
     runInSandbox: a.runInSandbox,
     execution: a.execution,
     strategies: placementView.strategies.kind === 'table' ? placementView.strategies.table : null,
@@ -2063,9 +2062,6 @@ export function agentRoutes(deps: HttpDeps) {
                     : {}),
                   ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
                   ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
-                  ...(req.body.keepAppendSessions !== undefined
-                    ? { keepAppendSessions: req.body.keepAppendSessions }
-                    : {}),
                   runInSandbox: executionChoice.runInSandbox,
                   execution: executionChoice.execution,
                   ...(req.body.env !== undefined ? { env: req.body.env } : {}),

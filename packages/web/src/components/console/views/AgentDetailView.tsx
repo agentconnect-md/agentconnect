@@ -1602,20 +1602,6 @@ function AgentDetail() {
                     {da.introduceOnJoin ? t('on') : t('off')}
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-4 px-4 py-3">
-                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
-                    {t('runtime.keepAppendSessions')}
-                  </span>
-                  <span
-                    className={
-                      da.keepAppendSessions
-                        ? 'badge bg-(--brand-soft) text-(--brand-soft-text) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
-                        : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
-                    }
-                  >
-                    {da.keepAppendSessions ? t('on') : t('off')}
-                  </span>
-                </div>
               </div>
             </div>
           </div>

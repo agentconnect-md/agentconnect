@@ -349,7 +349,6 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     outboundPolicy: a.outboundPolicy as AgentCallPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
-    keepAppendSessions: a.keepAppendSessions,
     runInSandbox: a.runInSandbox,
     execution: a.execution,
     lastModifiedAt: a.lastModifiedAt,
@@ -487,7 +486,6 @@ export class PgAgentRepo implements AgentRepo {
           capabilities: input.capabilities ?? [],
           // #536 self-introduce-on-join (dedicated column; absent ⇒ DB default false).
           ...(input.introduceOnJoin !== undefined ? { introduceOnJoin: input.introduceOnJoin } : {}),
-          ...(input.keepAppendSessions !== undefined ? { keepAppendSessions: input.keepAppendSessions } : {}),
           // #642 sandbox preference (dedicated column; absent ⇒ DB default false).
           ...(input.runInSandbox !== undefined ? { runInSandbox: input.runInSandbox } : {}),
           // An agent that is not sandboxed runs on `host`; a sandboxed one names its strategy or stays null until its daemon reports.
@@ -758,7 +756,6 @@ export class PgAgentRepo implements AgentRepo {
         ...(patch.runtime !== undefined ? { runtime: patch.runtime } : {}),
         ...(patch.capabilities !== undefined ? { capabilities: patch.capabilities } : {}),
         ...(patch.introduceOnJoin !== undefined ? { introduceOnJoin: patch.introduceOnJoin } : {}),
-        ...(patch.keepAppendSessions !== undefined ? { keepAppendSessions: patch.keepAppendSessions } : {}),
         ...(patch.runInSandbox !== undefined ? { runInSandbox: patch.runInSandbox } : {}),
         ...(patch.execution !== undefined ? { execution: patch.execution } : {}),
         ...(patch.gitAccess !== undefined ? { gitAccess: patch.gitAccess } : {}),

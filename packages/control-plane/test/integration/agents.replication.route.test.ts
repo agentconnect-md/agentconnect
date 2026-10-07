@@ -218,7 +218,6 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         allowedTargetAgentIds: [],
         // #536: self-introduce-on-join — always shipped (definite column) so a toggle replicates.
         introduceOnJoin: false,
-        keepAppendSessions: false,
         // #642: sandbox preference — always shipped (definite column); default false.
         runInSandbox: false,
         // Preset marker — always shipped so the daemon can gate preset-only capabilities.

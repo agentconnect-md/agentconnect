@@ -218,8 +218,6 @@ export const AgentSchema = z.object({
   // off — the daemon seeds each integration's channel baseline silently, so only
   // channels joined AFTER the baseline (never a restart/re-list) trigger an intro.
   introduceOnJoin: z.boolean().default(false),
-  // Exempts the agent's current `append` sessions from idle retention (channel-session-mode.md §6.3).
-  keepAppendSessions: z.boolean().default(false),
   // The legacy sandbox request, read only while `execution` is absent (session-executors.md §5).
   runInSandbox: z.boolean().default(false),
   // The strategy this agent's sessions run in (§5); absent ⇒ the Control Plane has not migrated it, and `runInSandbox` decides.
