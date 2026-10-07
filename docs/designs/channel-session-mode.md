@@ -555,7 +555,9 @@ conversation's long-lived session, and flipping it to `private` would move every
 participant's messages into a session only that person can read and only that person can
 continue from the console, with the privacy bit pushed to the daemon to exclude those
 turns from memory capture. An `append` session's audience follows its conversation, so it
-is not one person's to change.
+is not one person's to change. The `session.visibility.change` policy enforces this from
+the session's recorded `thread`, treating an unread coordinate as `append`, and the console
+shows the tier read-only for such a session.
 
 The eventual home for "audience = the conversation" is the existing external tier —
 `externalProvider` + `externalScopeId` bound to an `ExternalScope`, which nulls

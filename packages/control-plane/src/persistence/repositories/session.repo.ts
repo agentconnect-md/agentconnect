@@ -1791,6 +1791,7 @@ export class PgSessionRepo implements SessionRepo {
       visibility: SessionVisibility
       ownerIdentity: string | null
       externalProvider: string | null
+      thread: string | null
     }) => boolean
   ): Promise<SessionVisibilityChange> {
     return withAmbientTx(this.db, async (tx) => {
@@ -1798,9 +1799,14 @@ export class PgSessionRepo implements SessionRepo {
       // for children, and a child whose row is still uncommitted is invisible to that scan.
       await lockSessionLineage(tx, [sessionId])
       const locked = await tx.$queryRaw<
-        Array<{ visibility: string; ownerIdentity: string | null; externalProvider: string | null }>
+        Array<{
+          visibility: string
+          ownerIdentity: string | null
+          externalProvider: string | null
+          thread: string | null
+        }>
       >(Prisma.sql`
-        SELECT "visibility", "ownerIdentity", "externalProvider"
+        SELECT "visibility", "ownerIdentity", "externalProvider", "thread"
         FROM "session_meta" WHERE "id" = ${sessionId} AND "orgId" = ${orgId} FOR UPDATE
       `)
       // The org fence rides the row-lock read, so a cross-org id takes the same
@@ -1811,7 +1817,8 @@ export class PgSessionRepo implements SessionRepo {
       const current = {
         visibility: locked[0]!.visibility as SessionVisibility,
         ownerIdentity: locked[0]!.ownerIdentity,
-        externalProvider: locked[0]!.externalProvider
+        externalProvider: locked[0]!.externalProvider,
+        thread: locked[0]!.thread
       }
       // Re-authorize against the LOCKED row, not the one the route read. An
       // ancestor cascade committing in between can re-own this session, and the
