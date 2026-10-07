@@ -71,7 +71,8 @@ import {
   TaskErrorReason,
   gitRepoLabel,
   isCodeHostHookKind,
-  HOST_STRATEGY
+  HOST_STRATEGY,
+  type AssistantModePolicy
 } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
@@ -91,7 +92,7 @@ import {
   type DerivedWorkspace
 } from './workspace-credential.js'
 import type { DaemonView } from '../../ports.js'
-import { AgentId, DaemonId, OrgId, SessionId } from '../../domain/ids.js'
+import { AgentId, DaemonId, IntegrationId, OrgId, SessionId } from '../../domain/ids.js'
 import { advertises } from '../../domain/daemon-features.js'
 import {
   UNPLACED,
@@ -137,6 +138,13 @@ import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { repositorySelectorRefusal } from '../../agents/repository-selector.js'
+import {
+  ASSISTANT_MODE_NOT_ADMITTED,
+  AssistantModeAdmissionRefused,
+  assistantModeAdmissionOf,
+  assistantModeEditNeedsAdmission,
+  assistantModeRefusalMessage
+} from '../../agents/assistant-mode.js'
 import { readySetMembers, usesDecisionMaterialize } from '../repository-selection.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { AgentMoveConflict, AgentMoveFailed } from '../../orchestrator/agentMove.js'
@@ -166,6 +174,7 @@ import {
   AgentPermissionDecisionBody,
   AgentCreatedDto,
   AgentListDto,
+  AssistantModeAdmissionDto,
   ErrorDto,
   IdParam,
   WorkspaceFilesQueryDto,
@@ -419,6 +428,7 @@ function toDto(
     repositorySelector: a.repositorySelector ?? null,
     managedSkills: a.managedSkills,
     memory: a.memory,
+    assistantMode: a.assistantMode ?? null,
     status: a.status,
     placementKind: a.placementKind,
     daemonId: a.daemonId,
@@ -1744,6 +1754,27 @@ export function agentRoutes(deps: HttpDeps) {
       return null
     }
 
+    // Where an enabled assistant mode sends what it cannot deliver: an organization member, or a conversation of this agent's own integration.
+    const assistantModeTargetError = async (
+      agent: AgentRecord,
+      policy: AssistantModePolicy
+    ): Promise<string | null> => {
+      if (
+        policy.responsibleUserId !== undefined &&
+        !(await deps.repos.org.roleOf(agent.orgId, policy.responsibleUserId))
+      ) {
+        return 'the responsible user is not a member of this organization'
+      }
+      const fallback = policy.fallbackConversation
+      if (fallback) {
+        const integration = await deps.repos.integration.get(agent.orgId, IntegrationId(fallback.integrationId))
+        if (!integration || integration.agentId !== agent.id) {
+          return 'the fallback conversation must belong to one of this agent’s integrations'
+        }
+      }
+      return null
+    }
+
     const validateManagedSkills = async (
       ids: readonly string[] | null | undefined,
       orgId: OrgId
@@ -2317,6 +2348,26 @@ export function agentRoutes(deps: HttpDeps) {
     )
 
     r.get(
+      '/agents/:id/assistant-mode/admission',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Check assistant mode admission',
+          description:
+            'Reports whether the agent may switch assistant mode on as it stands, and every reason it may not: no runtime yet, a runtime outside the admission list, memory other than managed or off, or a daemon group whose members do not share one store. Switching it off is never refused.',
+          operationId: 'getAgentAssistantModeAdmission',
+          params: IdParam,
+          response: { 200: AssistantModeAdmissionDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        return assistantModeAdmissionOf(deps.repos.memberSet, agent)
+      }
+    )
+
+    r.get(
       '/agents/:id/decisions',
       {
         schema: {
@@ -2674,6 +2725,32 @@ export function agentRoutes(deps: HttpDeps) {
           if (memoryError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: memoryError })
           }
+          if (req.body.assistantMode) {
+            const targetError = await assistantModeTargetError(existing, req.body.assistantMode)
+            if (targetError) return badRequest(reply, targetError)
+          }
+          // The friendly admission refusal, with the placement's store check; the row-locked write re-checks the definition.
+          const targetRuntime = req.body.runtime ?? existing.runtime
+          const changesDefinition =
+            targetRuntime !== existing.runtime ||
+            (targetMemory?.provider ?? 'managed') !== (existing.memory?.provider ?? 'managed')
+          const targetAssistantMode =
+            req.body.assistantMode !== undefined ? req.body.assistantMode : existing.assistantMode
+          if (assistantModeEditNeedsAdmission(existing.assistantMode, targetAssistantMode, changesDefinition)) {
+            const admission = await assistantModeAdmissionOf(deps.repos.memberSet, {
+              ...existing,
+              runtime: targetRuntime,
+              memory: targetMemory
+            })
+            if (!admission.admitted) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: assistantModeRefusalMessage(admission.refusals),
+                code: ASSISTANT_MODE_NOT_ADMITTED
+              })
+            }
+          }
           // The row patch and the secret merge commit as ONE transaction (sealing
           // outside it), so the replicateUpsert below can only ever ship a
           // definition that fully applied — never a half-updated one. Chained per
@@ -2727,6 +2804,11 @@ export function agentRoutes(deps: HttpDeps) {
             // The binding changed under the edit (a forced return, a completion) and the locked resolution refused.
             if (e instanceof MemoryHomeRefusedError) {
               return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message })
+            }
+            if (e instanceof AssistantModeAdmissionRefused) {
+              return reply
+                .code(409)
+                .send({ error: 'Conflict', statusCode: 409, message: e.message, code: ASSISTANT_MODE_NOT_ADMITTED })
             }
             throw e
           }

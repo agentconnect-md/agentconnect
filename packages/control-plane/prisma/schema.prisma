@@ -921,6 +921,7 @@ model Agent {
   capabilities          String[]           @default([]) // → AgentLaunch.activeCapabilities
   permissions           Json               @default("{}") @db.JsonB // {policy:"ask",autoApprove:[...]}
   runtimeOverrides      Json?              @db.JsonB // {model, reasoningEffort, outputMode, fastMode, env{K:V}, mcpServers[], skills[]} — NO secret values (those live in agent_secret)
+  assistantMode         Json?              @db.JsonB // protocol AssistantModePolicy (assistant-mode.md §5.1); null ⇒ never configured, off
   managedSkills         String[]           @default([]) // centrally accepted managed_skill ids, explicitly enabled
   createdByUserId       String? // WebUI user who created the agent (immutable audit; null for daemon/CLI-created). Surfaced in the console "Created" row.
   // Last-modification audit (human edits only): stamped on create + PATCH. Kept

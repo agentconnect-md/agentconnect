@@ -5,6 +5,7 @@ import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
 import {
   AgentMemoryBinding,
+  AssistantModePolicy,
   apiGateDecisionIds,
   modelSelectionDecisionIds,
   type AgentApiGates,
@@ -58,6 +59,7 @@ import {
   resolveMemoryBindingOnUpdate
 } from '../../agent-memory/home.js'
 import { PgAgentMemoryFileRepo, PgAgentMemoryHistoryRepo } from './agent-memory.repo.js'
+import { assertAssistantModeDefinition, assistantModeEditNeedsAdmission } from '../../agents/assistant-mode.js'
 import { PgHookRepo } from './hook.repo.js'
 import { joinGiteaBindingFence } from './gitea-binding-fence.js'
 import { lockAgentPlacement, settlePlacementChange } from './agent-placement.js'
@@ -220,6 +222,13 @@ function storedMemoryBinding(memory: AgentMemoryBinding | undefined): AgentMemor
   return parsed.success ? parsed.data : memory
 }
 
+// A stored policy that no longer parses reads as never configured, so a read never fails on it.
+function assistantModeOf(value: unknown): AssistantModePolicy | undefined {
+  if (value === null || value === undefined) return undefined
+  const parsed = AssistantModePolicy.safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
 // The selector's evaluator columns are one pair: both set, or both null to clear.
 function repositorySelectorColumns(selector: AgentRepositorySelector | null) {
   return {
@@ -302,6 +311,7 @@ function workspaceColumns(workspace: AgentWorkspace) {
 
 function toRecord(a: AgentWithUsers): AgentRecord {
   const ov = overridesOf(a)
+  const assistantMode = assistantModeOf(a.assistantMode)
   return {
     id: AgentId(a.id),
     orgId: OrgId(a.orgId),
@@ -329,6 +339,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     ...repositorySelectorOf(a),
     managedSkills: a.managedSkills,
     memory: storedMemoryBinding(ov.memory),
+    ...(assistantMode ? { assistantMode } : {}),
     status: a.status as AgentRecord['status'],
     placementKind: a.placementKind,
     daemonId: a.daemonId ? DaemonId(a.daemonId) : null,
@@ -744,6 +755,27 @@ export class PgAgentRepo implements AgentRepo {
       }
       overrides = next
     }
+    // Assistant mode admission (assistant-mode.md §4.1), decided against the locked row: a concurrent runtime or memory edit cannot slip past it.
+    if (patch.assistantMode !== undefined || patch.runtime !== undefined || overrides !== undefined) {
+      const rows = await tx.$queryRaw<
+        Array<{ runtime: string | null; runtimeOverrides: unknown; assistantMode: unknown }>
+      >(
+        Prisma.sql`SELECT "runtime", "runtimeOverrides", "assistantMode" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
+      )
+      const row = rows[0]
+      if (row) {
+        const before = assistantModeOf(row.assistantMode)
+        const after = patch.assistantMode !== undefined ? patch.assistantMode : before
+        const lockedMemory = (row.runtimeOverrides as RuntimeOverrides | null)?.memory
+        const memory = overrides !== undefined ? overrides.memory : lockedMemory
+        const runtime = patch.runtime ?? row.runtime
+        const changesDefinition =
+          runtime !== row.runtime || (memory?.provider ?? 'managed') !== (lockedMemory?.provider ?? 'managed')
+        if (assistantModeEditNeedsAdmission(before, after, changesDefinition)) {
+          assertAssistantModeDefinition({ runtime, memory })
+        }
+      }
+    }
     const a = await tx.agent.update({
       where: { id: agentId },
       data: {
@@ -763,6 +795,12 @@ export class PgAgentRepo implements AgentRepo {
         ...(patch.managedSkills !== undefined ? { managedSkills: patch.managedSkills ?? [] } : {}),
         ...(patch.repositorySelector !== undefined ? repositorySelectorColumns(patch.repositorySelector) : {}),
         ...(overrides !== undefined ? { runtimeOverrides: overrides } : {}),
+        ...(patch.assistantMode !== undefined
+          ? {
+              assistantMode:
+                patch.assistantMode === null ? Prisma.DbNull : (patch.assistantMode as Prisma.InputJsonValue)
+            }
+          : {}),
         // A PATCH is a human edit — advance the last-modified audit. The editor is
         // stamped when known (absent under devAuth ⇒ leave the prior editor as-is).
         lastModifiedAt: new Date(),
