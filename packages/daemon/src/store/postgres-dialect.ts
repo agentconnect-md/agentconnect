@@ -224,7 +224,17 @@ export const canonicalColumns = [
   'unpointedAt',
   'targetKey',
   'committedBytes',
-  'pendingBytes'
+  'pendingBytes',
+  'doneWhen',
+  'nextCheck',
+  'originPlatform',
+  'originChannel',
+  'originTransportScope',
+  'observationVersion',
+  'itemId',
+  'addedAt',
+  'refId',
+  'linkedAt'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */
