@@ -150,10 +150,11 @@ transcript is still sitting there, so the new session would inherit the retired
 conversation's history. A timestamp needs no surviving state: the clock only moves
 forward, so a coordinate minted after a purge is one that has never been used.
 
-The same property answers what happens to a conversation that goes quiet past the
-retention window: its session row, ACP session id, and worktree are gone, so its model
+The same property is what keeps a superseded coordinate from being reused: once `!new` or
+retention retires a session, its row, ACP session id, and worktree are gone, so its model
 context is gone regardless. Minting a fresh coordinate reports that honestly instead of
-presenting a continuation that cannot continue.
+presenting a continuation that cannot continue. A conversation's current coordinate is not
+reclaimed for idleness at all (§6.3).
 
 Two mechanics follow:
 
@@ -352,9 +353,19 @@ per-agent coordinate buys is that `!new` stays a per-agent command like every ot
   worktree, and leaves transcript rows behind. For an `append` conversation it also clears
   the reservation row naming the purged coordinate, inside `deleteSession` itself and
   conditionally on it still naming that coordinate (§3.3) — otherwise the next message
-  would rejoin a coordinate whose session is gone but whose transcript is not. An actively
-  used `append` session is never a GC candidate; a conversation quiet past the window loses
-  its session and the next message mints a fresh coordinate.
+  would rejoin a coordinate whose session is gone but whose transcript is not.
+- **The current `append` session is exempt from idle reclaim.** Choosing `append` promises
+  one conversation, so the sweep skips a session whose conversation is still `append` on
+  one of the agent's live integrations and whose coordinate is the one the reservation
+  names, however long it has been quiet. Each condition is how the session retires
+  instead: deleting the agent or the integration, flipping the conversation back to
+  `createNew`, or `!new` rotating the reservation makes it an ordinary session, which the
+  next sweep past the window deletes and whose reservation it clears as above. The cost is
+  that the run state stays with the row — the ACP session, the worktree on a daemon host,
+  and on the pool the per-session volume when the agent uses session isolation — bounded by
+  one session per agent per `append` conversation. Keeping the row while reclaiming idle run
+  state, then rebuilding the worktree and resuming the ACP session by id, is a follow-up
+  that first needs every runtime verified to resume that way.
 - **Thread affinity and peer fan-out need their own record** — see §6.4. This is the one
   place `append` does not leave activation alone.
 - **Unaffected.** The trigger, gating, and mute fences all key on `channel`, never on a
@@ -604,6 +615,9 @@ open question about transcript retention in §12, not to a read that does not ex
 - `packages/daemon`, minting — the maximum lookup ignores the ACP-id filter; a mint after
   every append session was retention-purged produces a coordinate that no surviving
   transcript row uses; a clock moved backwards still mints above the current maximum.
+- `packages/daemon`, retention — the current append session survives the idle window; one
+  superseded by `!new`, or in a conversation no longer on `append`, is purged with its
+  reservation.
 - `packages/daemon`, concurrency — two messages arriving together into a conversation with
   no append session resolve to ONE coordinate, enter one inbox lane, and claim one serial
   gate; two simultaneous `!new` commands advance the conversation once and the CAS loser
