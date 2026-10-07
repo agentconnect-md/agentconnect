@@ -14,8 +14,8 @@
  */
 import { conversationLink } from '@agentconnect.md/protocol'
 import type { AgentId, IntegrationId } from '../../domain/ids.js'
-import { isGatedAgent } from '../../orchestrator/placement.js'
-import type { AgentRecord, SeedTrigger, IntegrationChannelRepo } from '../../persistence/ports.js'
+import { isGatedAgent, type SpecOwner } from '../../orchestrator/placement.js'
+import type { SeedTrigger, IntegrationChannelRepo } from '../../persistence/ports.js'
 import type { LinearTeam } from './api.js'
 
 /** What a Linear label joins the workspace and the team with — the daemon's own separator,
@@ -41,13 +41,8 @@ export const linearTeamRowLink = (team: LinearTeam): { key: string | null; url: 
   return { key: link.key ?? null, url: link.url ?? null }
 }
 
-/**
- * What a freshly seeded team row's trigger is — the same §14 arm every other conversation seat
- * takes, asked of the members that could own the row: `mention` when any of them is unrestricted,
- * `off` when they are all gated (and, fail-closed, when there are none). `any` has no Linear
- * meaning: the platform emits no unaddressed traffic to opt into.
- */
-export const linearTeamSeedTrigger = (candidates: readonly Pick<AgentRecord, 'visibility'>[]): SeedTrigger =>
+/** A fresh team row's trigger (§14): `mention` when any member that could own it is ungated, else (or with none) `off`. */
+export const linearTeamSeedTrigger = (candidates: readonly SpecOwner[]): SeedTrigger =>
   candidates.some((agent) => !isGatedAgent(agent)) ? 'mention' : 'off'
 
 /**

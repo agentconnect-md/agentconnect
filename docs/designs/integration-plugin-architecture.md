@@ -254,7 +254,10 @@ lands in the same change as the branches it retires. `addressedByConstruction`
 is set on Linear and Google Chat: every Space delivery there already addresses
 the app — Google delivers only mentions and adds — so the decision gate treats a
 mention inside a thread the agent holds as the continuation it is, not as a
-fresh address to judge again.
+fresh address to judge again. `appendKinds` lists the conversation kinds whose rows
+can key one long session; the spec projection reads it before any dispatch to give an
+assistant-mode agent one session per place, so no core branch names Linear (rooms
+never append) or Slack (its DMs do).
 
 Status-bar shape is the counter-example: it reads like a capability, but every
 read of it happens from a turn that already exists, so it is post-dispatch and

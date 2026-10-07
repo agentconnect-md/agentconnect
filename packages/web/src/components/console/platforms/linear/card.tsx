@@ -11,7 +11,7 @@ import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
-import { type IntegrationRow } from '@/lib/data'
+import { conversationGate, type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { linearApi } from './api'
 import { useLinearConnect, type LinearConnectFlow } from './connect'
@@ -107,7 +107,8 @@ export function LinearWorkspaceRows({ integration, padX }: { integration: Integr
         agentId={integration.agentId}
         platform={integration.platform}
         shareable={integration.shareable ?? true}
-        gated={agent?.visibility === 'restricted'}
+        gate={conversationGate(agent)}
+        assistantMode={agent?.assistantMode?.enabled === true}
         padX={padX}
       />
     </>

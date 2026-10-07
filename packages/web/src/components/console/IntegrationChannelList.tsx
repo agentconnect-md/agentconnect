@@ -3,7 +3,14 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
-import { agentLabel, isDirectConversation, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
+import {
+  agentLabel,
+  conversationGate,
+  isDirectConversation,
+  type ConversationGate,
+  type IntegrationChannelRow,
+  type IntegrationRow
+} from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
@@ -14,6 +21,11 @@ import {
   type ChannelSettingsOption
 } from '@/components/console/ChannelSettingsPopover'
 import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
+import {
+  placeEnableNeedsWarning,
+  placeName,
+  useAssistantPlaceWarning
+} from '@/components/console/AssistantPlaceWarning'
 import { useChannelGates } from '@/components/console/decisions/channel-gates'
 import { managedByRouting } from '@/lib/decisions/binding'
 import {
@@ -67,11 +79,14 @@ function RowSettings({
   disabled,
   trigger,
   gateOwnsTrigger = false,
+  assistantMode = false,
   onTrigger,
   onSessionMode
 }: {
   /** The row's By decision pill owns the trigger (its × leaves it), so only the session mode stays here. */
   gateOwnsTrigger?: boolean
+  /** The agent is in assistant mode: a place that can hold one session keeps it (assistant-mode.md §5.2). */
+  assistantMode?: boolean
   channel: IntegrationChannelRow
   /** Names the room the way its platform does — one noun per card. */
   platform?: string
@@ -148,6 +163,8 @@ function RowSettings({
       }
     ] satisfies ChannelSettingsOption<SessionMode>[]
   ).filter((o) => !offered || offered.includes(o.value))
+  // Mirrors the projection: an assistant-mode place appends wherever it can, unless a decision gates it.
+  const fixedSession = assistantMode && trigger !== 'decision' && sessions.some((o) => o.value === 'append')
   // While a decision owns the trigger, the plain choices stay listed but inert, and the footer says how to get them back.
   const groups: ChannelSettingsGroup[] = [
     {
@@ -161,8 +178,17 @@ function RowSettings({
       })
     }
   ]
-  // One mode is no choice, so a platform that offers only one shows no group for it.
-  if (sessions.length > 1) {
+  // One mode is no choice, so a platform that offers only one shows no group for it; a fixed one shows alone.
+  if (fixedSession) {
+    groups.push({
+      id: 'session',
+      label: translate('settings.sessionMode'),
+      options: sessions.filter((o) => o.value === 'append'),
+      value: 'append',
+      summarize: (chosen) => chosen.trigger !== 'off',
+      onPick: () => undefined
+    })
+  } else if (sessions.length > 1) {
     groups.push({
       id: 'session',
       label: translate('settings.sessionMode'),
@@ -280,9 +306,14 @@ function groupHeader(label: string, padX: number, action?: ReactNode) {
   )
 }
 
-/** One agent that shares the bot — the shape the default-dispatch popover renders.
- *  `restricted` is what makes a default move consequential (§6.2), so it travels with it. */
-type MemberAgent = { id: string; label: string; runtime: string; restricted: boolean; icon?: AgentIcon | null }
+/** One agent sharing the bot, as the dispatch popover renders it; its gate makes a default move consequential (§6.2). */
+type MemberAgent = {
+  id: string
+  label: string
+  runtime: string
+  gate: ConversationGate | null
+  icon?: AgentIcon | null
+}
 
 // Per-platform display semantics come from the platform modules
 // ({@link WebChannelListSemantics}, §10); the ALGORITHMS below — grouping, the
@@ -760,7 +791,8 @@ export function IntegrationChannelList({
   agentId,
   platform,
   shareable = false,
-  gated = false,
+  gate = null,
+  assistantMode = false,
   padX = 18
 }: {
   integrationId?: string
@@ -774,9 +806,10 @@ export function IntegrationChannelList({
   agentId?: string
   /** When true (shared bot), show the per-conversation default-agent picker. */
   shareable?: boolean
-  /** Restricted-agent integration (resource-visibility.md §14): conversations are
-   *  gated — new ones start off and the banner explains the gate. */
-  gated?: boolean
+  /** Why the agent's conversations are gated (resource-visibility.md §14): new ones start Off and the banner names it. */
+  gate?: ConversationGate | null
+  /** The agent is in assistant mode: places hold one session, and enabling a room warns first (assistant-mode.md §5.2, §5.3). */
+  assistantMode?: boolean
   /** Horizontal row padding, to line up with the host card (18 list / 14 detail). */
   padX?: number
 }) {
@@ -793,6 +826,7 @@ export function IntegrationChannelList({
     integrations
   } = useConsoleData()
   const ownerGuard = useOwnerChangeGuard()
+  const placeWarning = useAssistantPlaceWarning()
   // The shared-bot row whose By decision rules modal is open.
   const [routingRow, setRoutingRow] = useState<{
     botId: string
@@ -816,9 +850,13 @@ export function IntegrationChannelList({
   const memberIds = shareable ? (bot?.agentIds ?? []) : []
   // Dispatch is a decision only where there are two agents to decide between.
   const dispatchable = memberIds.length > 1
-  // Why a private agent's rows start off. A platform whose gate is more than the row's own says so itself.
+  // Why a gated agent's rows start off. A platform whose gate is more than the row's own says so itself.
   const gatedMessage = channelListSemantics(platform).gatedNote
-  const gatedNote = gatedMessage ? resolveMessage(translate, gatedMessage) : translate('gatedNote')
+  const gatedNote = gate
+    ? gatedMessage
+      ? resolveMessage(translate, gatedMessage, { reason: gate })
+      : translate('gatedNote', { reason: gate })
+    : null
   // A platform refusal is the useful half of a failed Leave — a missing scope or a
   // last-member channel tells the operator what to do — so it is shown verbatim
   // rather than collapsed into "something went wrong".
@@ -837,7 +875,7 @@ export function IntegrationChannelList({
       id,
       label: a ? agentLabel(a) : id,
       runtime: a?.runtime ?? a?.model ?? '',
-      restricted: a?.visibility === 'restricted',
+      gate: conversationGate(a),
       icon: a?.icon
     }
   }
@@ -865,6 +903,17 @@ export function IntegrationChannelList({
   const rowTrigger = (c: IntegrationChannelRow): RowTrigger => gates.rowTrigger(botId, c)
   const pickTrigger = (c: IntegrationChannelRow, trigger: RowTrigger) =>
     gates.pickTrigger(botId, integrationId, c, trigger)
+  // Enabling a room or group DM of an assistant-mode agent is trusting everyone in it, so it asks first.
+  const enablePlace = (c: IntegrationChannelRow, trigger: RowTrigger, apply: () => void | Promise<void>) =>
+    placeEnableNeedsWarning(c, rowTrigger(c), trigger, assistantMode)
+      ? placeWarning.confirmBefore(
+          {
+            title: translate('assistantPlace.title', { name: placeName(c, roomGlyph(c.kind, platform)) }),
+            confirmLabel: translate('assistantPlace.confirm')
+          },
+          apply
+        )
+      : apply()
   /**
    * Leaving, for a platform that has no per-conversation membership to leave. A
    * Discord bot is in a SERVER, so the action belongs to the band that names one —
@@ -918,7 +967,13 @@ export function IntegrationChannelList({
           // The same owner the row's dispatch picker shows — for a shared bot, a sibling install's.
           agentName: (defaultAgent(c) ?? (agentId ? member(agentId) : undefined))?.label ?? '',
           padX,
-          siblings: { platform, rows: channelRows.map((row) => ({ integrationId, row })) }
+          // An assistant-mode agent's Off rooms are enabled one by one, behind their warning, never in bulk.
+          siblings: {
+            platform,
+            rows: channelRows
+              .filter((row) => !assistantMode || rowTrigger(row) !== 'off')
+              .map((row) => ({ integrationId, row }))
+          }
         })
   const row = (c: IntegrationChannelRow) => {
     // One member is no choice, so the row drops the picker unless the bot's routing owns the row.
@@ -939,7 +994,14 @@ export function IntegrationChannelList({
             {label.hint && <span className="flex-none text-(--text-tertiary)">{label.hint}</span>}
           </span>
           <div className="ml-auto flex items-center gap-2 max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
-            {ownGate && gates.entry({ botId, platform, integrationId, row: c })}
+            {ownGate &&
+              gates.entry({
+                botId,
+                platform,
+                integrationId,
+                row: c,
+                beforeAdd: (open) => void enablePlace(c, 'decision', open)
+              })}
             {def && (
               // The PATCH goes through THIS agent's integration: shared ownership is bot-scoped and fenced server-side.
               <DispatchPicker
@@ -984,7 +1046,8 @@ export function IntegrationChannelList({
               gateOwnsTrigger={
                 trigger === 'decision' && ((!!decisions && ownGate) || (shareable && managedByRouting(c)))
               }
-              onTrigger={(next) => pickTrigger(c, next)}
+              assistantMode={assistantMode}
+              onTrigger={(next) => enablePlace(c, next, () => pickTrigger(c, next))}
               onSessionMode={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
             />
             {/* Demo rows carry no button rather than an inert one, and a derived roster none at all — the
@@ -1007,7 +1070,7 @@ export function IntegrationChannelList({
   }
   return (
     <>
-      {gated && (
+      {gatedNote && (
         <div
           role="note"
           className="flex items-start gap-2 border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)"
@@ -1036,6 +1099,7 @@ export function IntegrationChannelList({
       {dmRows.length > 0 && groupHeader(translate('directMessages'), padX)}
       {dmRows.map(row)}
       {ownerGuard.dialog}
+      {placeWarning.dialog}
       {routingRow && decisions && (
         <DecisionRoutingModal
           botId={routingRow.botId}

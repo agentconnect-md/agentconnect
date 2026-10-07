@@ -1456,8 +1456,8 @@
         "addTitle": "Pick the agent per message with a decision",
         "stop": "Stop using By decision in this channel"
       },
-      "gatedNote": "Private agent — answers only where enabled below.",
-      "linearGatedNote": "Private agent — answers only in teams where it is the default.",
+      "gatedNote": "{reason, select, assistant {Assistant mode} other {Private agent}} — answers only where enabled below.",
+      "linearGatedNote": "{reason, select, assistant {Assistant mode} other {Private agent}} — answers only in teams where it is the default.",
       "discordCannotLeaveRowHint": "A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.",
       "googlechatMentionHint": "Replies when mentioned. Google Chat delivers a message in a space, thread replies included, only when it mentions the app.",
       "space": {
@@ -1470,9 +1470,15 @@
       "openIn": "Open {name} in {platform}",
       "ownerChange": {
         "title": "Move this team’s default?",
-        "body": "{owner} is a private agent, and being {room}’s default is what lets it act there. Its live sessions in this team can still be stopped, but it will not answer in them again. A new mention or delegation opens a session with the new default.",
+        "body": "{owner} {reason, select, assistant {is in assistant mode} other {is a private agent}}, and being {room}’s default is what lets it act there. Its live sessions in this team can still be stopped, but it will not answer in them again. A new mention or delegation opens a session with the new default.",
         "confirmLabel": "Move",
         "busy": "Moving…"
+      },
+      "assistantPlace": {
+        "title": "Enable {name}?",
+        "warning": "Everyone here will be able to get the content of this agent’s other places out of it. Enable only if everyone here is fully trusted.",
+        "confirm": "Enable",
+        "busy": "Enabling…"
       },
       "sessionMode": {
         "createNew": "Per thread",
@@ -3002,6 +3008,8 @@
         "saving": "Saving…",
         "save": "Save assistant mode",
         "enable": "Turn on assistant mode",
+        "turnOnTitle": "Turn on assistant mode?",
+        "turnOn": "Turn on",
         "responsibleUser": "Responsible user",
         "fallbackConversation": "Fallback conversation",
         "none": "None",

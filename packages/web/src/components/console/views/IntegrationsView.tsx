@@ -30,7 +30,13 @@ import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import { creatorLabel, type BotDto, type MeDto } from '@/lib/api'
-import { agentLabel, isDirectConversation, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
+import {
+  agentLabel,
+  conversationGate,
+  isDirectConversation,
+  type IntegrationChannelRow,
+  type IntegrationRow
+} from '@/lib/data'
 import { ConversationName, roomGlyph, roomPlural, rowLabelParts } from '@/components/console/IntegrationChannelList'
 import { RevokedMarkDot } from '@/components/console/IntegrationMarks'
 import {
@@ -495,10 +501,10 @@ function BotsCard({
           })
           const roomNoun = channelListSemantics(b.platform).roomNoun
           const roomLabel = roomNoun.charAt(0).toUpperCase() + roomNoun.slice(1)
-          // The outgoing owner, as the owner-change warning reads it — private is what costs.
+          // The outgoing owner, as the owner-change warning reads it — a gate is what costs.
           const owner = (id: string | null) => {
             const ag = id ? getAgent(id) : undefined
-            return ag ? { id: ag.id, label: agentLabel(ag), restricted: ag.visibility === 'restricted' } : undefined
+            return ag ? { id: ag.id, label: agentLabel(ag), gate: conversationGate(ag) } : undefined
           }
           return (
             <Fragment key={b.id}>

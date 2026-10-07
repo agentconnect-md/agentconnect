@@ -10,13 +10,16 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { createDiscordCpProvider, discordIntegrationConfig, DiscordCreateCredentials } from './provider.js'
-import { integrationToSpec } from '../../orchestrator/placement.js'
+import { integrationToSpec, type SpecOwner } from '../../orchestrator/placement.js'
 import { buildCpPlatformRegistry } from '../registry.js'
 import type { DiscordBotVerification, DiscordMessageContentIntentSetup } from '../../http/discord-identity.js'
 import type { BotProfileIconAgent } from '../../http/bot-profile-icon.js'
 import type { BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { IntegrationDiscordConfig } from '@agentconnect.md/protocol'
+
+/** A restricted owner: the projection's gated arm. */
+const RESTRICTED: SpecOwner = { visibility: 'restricted' }
 
 // A structurally valid Gateway token: first segment base64url-decodes to the
 // 18-digit application id (`discordAppIdFromBotToken`'s contract).
@@ -278,14 +281,11 @@ describe('discord projection equivalence with the live integrationToSpec path', 
   // GOLDEN: the literal payload the PRE-ADOPTION `integrationToSpec` discord arm
   // emitted — the Gateway authenticates with the single bot token (no appToken).
   it('emits the byte-identical payload the pre-adoption discord arm produced', async () => {
-    const spec = await integrationToSpec(
-      PLATFORMS,
-      INTEGRATION,
-      BOT,
-      SECRET,
-      [channel('C1', 'any'), channel('C2', 'mention'), channel('C3', 'off')],
-      false
-    )
+    const spec = await integrationToSpec(PLATFORMS, INTEGRATION, BOT, SECRET, [
+      channel('C1', 'any'),
+      channel('C2', 'mention'),
+      channel('C3', 'off')
+    ])
     const bindRules = [
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
@@ -315,7 +315,14 @@ describe('discord projection equivalence with the live integrationToSpec path', 
   // the pre-adoption arm called.
   for (const { label, channels, gated } of cases) {
     it(`routes the live path through the discord projector unchanged — ${label}`, async () => {
-      const spec = await integrationToSpec(PLATFORMS, INTEGRATION, BOT, SECRET, channels, gated)
+      const spec = await integrationToSpec(
+        PLATFORMS,
+        INTEGRATION,
+        BOT,
+        SECRET,
+        channels,
+        gated ? RESTRICTED : undefined
+      )
       if (!spec) throw new Error('expected a deliverable spec')
       expect(spec.core.mode).toBe('direct')
       expect(spec.config).toEqual(discordIntegrationConfig(SECRET))

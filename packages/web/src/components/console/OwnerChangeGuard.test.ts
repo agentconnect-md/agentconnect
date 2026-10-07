@@ -1,17 +1,16 @@
-// When a conversation-owner move has to be confirmed. Three conditions, and each one on
-// its own is a reason to write straight through: the platform must declare the warning
-// (owner-as-default, linear-integration.md §6.2), the outgoing owner must be resolvable
-// AND private, and the incoming one must actually differ.
+// A move needs confirming only on a declaring platform, off a resolvable gated owner, to a different one (linear-integration.md §6.2).
 
 import { describe, expect, it } from 'vitest'
 import { ownerChangeNeedsWarning } from './OwnerChangeGuard'
 
-const priv = { id: 'agent-b', label: 'triage-bot', restricted: true }
-const open = { id: 'agent-c', label: 'docs-bot', restricted: false }
+const priv = { id: 'agent-b', label: 'triage-bot', gate: 'private' as const }
+const assistant = { id: 'agent-d', label: 'ops-bot', gate: 'assistant' as const }
+const open = { id: 'agent-c', label: 'docs-bot', gate: null }
 
 describe('ownerChangeNeedsWarning', () => {
-  it('warns when a declaring platform moves a team off a private agent', () => {
+  it('warns when a declaring platform moves a team off a private or assistant-mode agent', () => {
     expect(ownerChangeNeedsWarning({ platform: 'linear', from: priv, toId: 'agent-a', room: 'ENG' })).toBe(true)
+    expect(ownerChangeNeedsWarning({ platform: 'linear', from: assistant, toId: 'agent-a', room: 'ENG' })).toBe(true)
   })
 
   it('stays silent for an unrestricted owner, an unchanged one, or an unknown one', () => {

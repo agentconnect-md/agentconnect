@@ -76,12 +76,15 @@ export function useChannelGates() {
     botId,
     platform,
     integrationId,
-    row
+    row,
+    beforeAdd
   }: {
     botId: string | undefined
     platform: string | undefined
     integrationId: string | undefined
     row: IntegrationChannelRow
+    /** Runs `open` for a new gate, or holds it behind a confirmation of its own. */
+    beforeAdd?: (open: () => void) => void
   }): ReactNode => {
     if (!decisions) return null
     const plain = plainTrigger(platform)
@@ -93,6 +96,7 @@ export function useChannelGates() {
         canWrite={!!integrationId}
         offer={offers(platform, row)}
         disabled={!integrationId || busy(botId, row)}
+        {...(beforeAdd ? { beforeAdd } : {})}
         onStop={() => (plain ? pickTrigger(botId, integrationId, row, plain) : undefined)}
       />
     )

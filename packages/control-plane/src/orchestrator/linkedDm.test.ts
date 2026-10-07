@@ -69,6 +69,11 @@ describe('linkedAudienceMemberIds', () => {
     expect((await linkedAudienceMemberIds(agent(), bot(), { users: deps(links).users })).size).toBe(0)
   })
 
+  it('resolves nothing for an Everyone agent in assistant mode, whatever share set it kept', async () => {
+    const assistant = { ...agent({ visibility: 'org' }), assistantMode: { enabled: true } }
+    expect((await linkedAudienceMemberIds(assistant, bot(), deps({ 'user-a': slack('U_A') }))).size).toBe(0)
+  })
+
   it('keeps the Off default when one member’s lookup throws, without losing the others', async () => {
     const warn = vi.fn()
     const ids = await linkedAudienceMemberIds(agent({ sharedWith: ['user-a', 'user-b'] }), bot(), {

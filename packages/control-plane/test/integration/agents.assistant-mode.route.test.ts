@@ -1,7 +1,7 @@
 // The assistant mode switch and its admission checks (assistant-mode.md §4.1, §5.1) over the REST surface and real Postgres.
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import type { AgentUpsert } from '@agentconnect.md/protocol'
+import type { AgentUpsert, IntegrationSpec } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -27,8 +27,12 @@ afterEach(async () => {
 /** Records the spec pushes the routes make. */
 class SpyControl {
   readonly upserts: AgentUpsert[] = []
+  readonly integrations: IntegrationSpec[] = []
   async agentUpsert(_daemonId: string, u: AgentUpsert): Promise<void> {
     this.upserts.push(u)
+  }
+  async integrationUpsert(_daemonId: string, spec: IntegrationSpec): Promise<void> {
+    this.integrations.push(spec)
   }
   async agentRemove(): Promise<void> {}
   async collaborationRoutes(): Promise<void> {}
@@ -88,6 +92,71 @@ describe('assistant mode', () => {
     expect(off.json()).toMatchObject({ assistantMode: null })
     expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).assistantMode).toBeNull()
     expect(spy.upserts.at(-1)?.spec).toHaveProperty('assistantMode', null)
+  })
+
+  it("re-projects the agent's integrations as it switches, never rewriting the stored rows", async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, runtime: 'claude-acp' })
+    const botId = randomUUID()
+    await prisma.bot.create({ data: { id: botId, orgId: DEFAULT_ORG_ID, platform: 'slack', name: `bot-${botId}` } })
+    await prisma.botSecret.create({ data: { botId, botToken: 'xoxb-x', appToken: 'xapp-x', signingSecret: 'shh-x' } })
+    const integrationId = randomUUID()
+    await prisma.integration.create({
+      data: { id: integrationId, orgId: DEFAULT_ORG_ID, agentId, botId, platform: 'slack', name: 'acme-bot' }
+    })
+    const stored = [
+      { channelId: 'C1', kind: 'channel', trigger: 'mention', sessionMode: 'createNew' },
+      { channelId: 'C2', kind: 'channel', trigger: 'off', sessionMode: 'createNew' },
+      { channelId: 'D1', kind: 'im', trigger: 'any', sessionMode: 'createNew' },
+      { channelId: 'G1', kind: 'mpim', trigger: 'mention', sessionMode: 'createNew' }
+    ] as const
+    await prisma.integrationChannel.createMany({
+      data: stored.map((row) => ({ integrationId, name: row.channelId.toLowerCase(), ...row }))
+    })
+    const rows = () =>
+      prisma.integrationChannel.findMany({
+        where: { integrationId },
+        orderBy: { channelId: 'asc' },
+        select: { channelId: true, kind: true, trigger: true, sessionMode: true }
+      })
+    const byChannel = <T extends { channel?: string }>(list: readonly T[]) =>
+      [...list].sort((a, b) => (a.channel ?? '').localeCompare(b.channel ?? ''))
+    const { app, spy } = withSpy()
+
+    const on = await patch(app, agentId, { assistantMode: ON })
+    expect(on.statusCode, on.body).toBe(200)
+    const gated = spy.integrations.at(-1)!
+    expect(gated.integrationId).toBe(integrationId)
+    expect(gated.core.gated).toBe(true)
+    expect(gated.core.mutedChannels).toEqual([])
+    // Already-enabled places keep their state; nothing unscoped answers anywhere else.
+    expect(byChannel(gated.core.bindRules)).toEqual([
+      { channel: 'C1', match: { kind: 'mention' } },
+      { channel: 'D1', match: { kind: 'dm' } },
+      { channel: 'G1', match: { kind: 'mention' } }
+    ])
+    // One session per room and Slack DM; a group DM keeps the platform's own keying.
+    expect(byChannel(gated.core.sessionModes)).toEqual([
+      { channel: 'C1', mode: 'append' },
+      { channel: 'C2', mode: 'append' },
+      { channel: 'D1', mode: 'append' }
+    ])
+    expect(await rows()).toEqual(stored)
+
+    // An edit that leaves the mode alone projects nothing new.
+    const pushed = spy.integrations.length
+    expect((await patch(app, agentId, { description: 'Helps the team.' })).statusCode).toBe(200)
+    expect(spy.integrations).toHaveLength(pushed)
+
+    const off = await patch(app, agentId, { assistantMode: { enabled: false } })
+    expect(off.statusCode, off.body).toBe(200)
+    const open = spy.integrations.at(-1)!
+    expect(spy.integrations).toHaveLength(pushed + 1)
+    expect(open.core.gated).toBe(false)
+    expect(open.core.sessionModes).toEqual([])
+    expect(open.core.mutedChannels).toEqual(['C2'])
+    expect(await rows()).toEqual(stored)
   })
 
   it('refuses an unlisted runtime and external memory with their reasons', async () => {

@@ -157,6 +157,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let threadOwnerLookup: { botId: BotId; channel: string; thread: string } | null
   // §14: agents whose AgentRepo.get returns visibility 'restricted' (⇒ gated).
   let gatedAgents: Set<string>
+  // Agents switched into assistant mode, which gates them without restricting them.
+  let assistantAgents: Set<string>
   // Agents reported with no daemonId — not placed, so they compile no routes.
   let unplacedAgents: Set<string>
   // Drives ThreadAffinityStore.get (null = affinity miss → SessionMeta fallback).
@@ -341,7 +343,11 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       getUnscoped: async (id) => {
         const a = agents[id]
         if (!a) return null
-        return { ...a, visibility: gatedAgents.has(id) ? 'restricted' : 'org' } as AgentRecord
+        return {
+          ...a,
+          visibility: gatedAgents.has(id) ? 'restricted' : 'org',
+          ...(assistantAgents.has(id) ? { assistantMode: { enabled: true } } : {})
+        } as AgentRecord
       }
     }
     const control = {
@@ -441,6 +447,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     threadOwner = null
     threadOwnerLookup = null
     gatedAgents = new Set()
+    assistantAgents = new Set()
     unplacedAgents = new Set()
     threadBinding = null
     threadParticipants = []
@@ -975,6 +982,31 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       // ALICE's install is the earliest, but a gated agent must not catch bare @bot/DMs.
       expect(assign.defaultAgentId).toBe(BOB)
       expect(assign.gatedAgentIds).toEqual([ALICE])
+    })
+
+    it('gates an assistant-mode member like a restricted one, and keys its places on one session', async () => {
+      assistantAgents = new Set([ALICE])
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'mention' }),
+        channel({ integrationId: INT_A, channelId: 'D9', kind: 'im', trigger: 'any' }),
+        channel({ integrationId: INT_B, channelId: 'C1', agentId: BOB, trigger: 'mention' })
+      ]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.defaultAgentId).toBe(BOB)
+      expect(assign.gatedAgentIds).toEqual([ALICE])
+      const alice = upserts.find((u) => u.daemonId === D1)!.spec as never as {
+        core: { gated: boolean; sessionModes: unknown[] }
+      }
+      expect(alice.core.gated).toBe(true)
+      // Every room of the bot is replicated onto her install, so each keys one session for her alone.
+      expect(alice.core.sessionModes).toEqual([
+        { channel: 'C9', mode: 'append' },
+        { channel: 'D9', mode: 'append' },
+        { channel: 'C1', mode: 'append' }
+      ])
+      const bob = upserts.find((u) => u.daemonId === D2)!.spec as never as { core: { sessionModes: unknown[] } }
+      expect(bob.core.sessionModes).toEqual([])
     })
 
     it('a group of only gated agents has NO default agent', async () => {
