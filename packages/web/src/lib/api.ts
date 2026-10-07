@@ -4958,6 +4958,16 @@ export async function fetchOrgs(): Promise<OrgDto[]> {
   return apiGet<OrgDto[]>('/orgs')
 }
 
+export async function fetchSlackWorkspaceInstall(id: string): Promise<{ workspaceName: string; slackUrl: string }> {
+  return apiGet(`/integrations/slack/workspace-install/${encodeURIComponent(id)}`)
+}
+
+export async function connectSlackWorkspace(orgId: string, id: string, agentId: string): Promise<{ botId: string }> {
+  return apiPost(`${orgBase(orgId)}/integrations/slack/workspace-install/${encodeURIComponent(id)}/connect`, {
+    agentId
+  })
+}
+
 // Persist the caller's active org on their membership. The browser cookie is
 // only a stale-link fallback; this preference restores bare entries after
 // sign-out and on other devices.

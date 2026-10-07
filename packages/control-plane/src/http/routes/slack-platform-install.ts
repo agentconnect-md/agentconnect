@@ -1,31 +1,4 @@
-/**
- * `http/routes/slack-platform-install.ts` (docs/designs/preset-agents.md §5.3) —
- * the PLATFORM-published (distributed) Slack app install: the true "Add to
- * Slack". One deployment-level app (SLACK_PLATFORM_* env) that every org
- * installs into its own workspace via standard OAuth v2. The resulting Bot is
- * always **http + NON-shareable** — Events-API-only because a distributed app has
- * no per-workspace xapp token, and one-agent because a workspace install keeps the
- * classic 1-install cap — and auto-binds to the org's `agentconnect` preset agent
- * (or an explicitly chosen one). A Settings reauthorization instead binds the
- * OAuth state to an existing Bot/workspace and preserves its memberships.
- * Serving several agents from one Slack identity remains the quick-install
- * upgrade (a dedicated app per agent).
- *
- * TWO plugins, mirroring the quick-install funnel's split:
- *  - `slackPlatformInstallRoutes` mounts inside `/orgs/:orgId` (humanAuth +
- *    org-scope): mint a pending-install row whose id doubles as the OAuth
- *    `state` — binding either {org, target agent, user} or {org, expected bot,
- *    user} — and return the authorize URL. A bare share URL cannot carry
- *    tenancy, so installs always start here.
- *  - `slackPlatformCallbackRoutes` mounts at the version root, UNAUTHENTICATED
- *    (Slack redirects the installer's browser). The exchange runs server-side
- *    with the env credentials; the browser gets only a self-closing page.
- *
- * Distributed apps are Events-API-only (a socket-mode xapp is per-app and cannot
- * be demuxed per workspace), so the start route hard-requires the relay pool.
- * The target agent may be UNPLACED: the Bot + Integration rows are created and
- * the relay assignment converges when the agent is placed.
- */
+// Distributed Slack OAuth supports console-first binding and public installation before organization selection.
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -37,10 +10,10 @@ import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
 import { checkSlackBotScopes, SLACK_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
-import { installNewSlackBot } from '../install-slack.js'
-import { BotWorkspaceClaimed } from '../../persistence/errors.js'
+import { BotWorkspaceClaimed, BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { closePageHtml } from './slack-install.js'
 import { relayIngress } from '../relay-ingress.js'
+import { finishSlackWorkspaceInstall, standaloneSlackStateMatches } from './slack-workspace-install.js'
 import type { SlackRouteSeams } from '../platform-route-seams.js'
 import {
   SlackPlatformInstallStartBody,
@@ -245,12 +218,16 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
           return back(note)
         }
 
-        // A user denial DOES carry the state (`?error=access_denied&state=…`), so
-        // settle the row rather than leaving the console polling a `pending` row
-        // until the TTL reaper turns it into a 404 "expired".
+        // Public installs bind the OAuth response to the browser that started it, including denial responses.
+        if (row && !row.orgId && (!state || !standaloneSlackStateMatches(req, state))) return back('denied')
         if (req.query.error) return fail('denied')
         if (!req.query.code || !state) return fail('denied')
-        if (!row || row.status !== 'pending') return back('expired')
+        if (
+          !row ||
+          row.status !== 'pending' ||
+          row.createdAt.getTime() + (deps.config.SLACK_INSTALL_TTL_SEC ?? 3600) * 1000 < Date.now()
+        )
+          return back('expired')
 
         const exchanged = await api.exchangeOAuth({
           clientId: platform.clientId,
@@ -269,6 +246,26 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
         if (result.appId !== platform.appId || !result.teamId) {
           req.log.warn({ installId: row.id, appId: result.appId }, 'slack platform oauth: unexpected app/team')
           return fail('error')
+        }
+
+        if (!row.orgId) {
+          const checked = await slack.verifyBot?.(result.botToken)
+          const grant = checked?.status === 'ok' ? checkSlackBotScopes(checked.scopes) : { status: 'unknown' as const }
+          if (grant.status === 'short') return fail('missing_scopes', grant.missing)
+          try {
+            const destination = await finishSlackWorkspaceInstall(
+              deps,
+              slack,
+              result,
+              checked?.status === 'ok' ? (checked.scopes ?? []) : []
+            )
+            await deps.repos.slackPlatformInstall.settle(row.id, { status: 'completed' })
+            return reply.header('Cache-Control', 'no-store').redirect(destination)
+          } catch (error) {
+            if (error instanceof BotWorkspaceClaimed) return fail('workspace_taken')
+            req.log.warn({ installId: row.id }, 'slack workspace installation could not finish')
+            return fail('error')
+          }
         }
 
         // A Settings refresh puts its expected Bot id in the pending state. Its
@@ -412,42 +409,35 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
           }
           await deps.httpBot.syncBot(existing.id)
         } else {
-          if (!agent || expectedBot) return fail('error')
-          let created: Awaited<ReturnType<typeof installNewSlackBot>>
+          if (!agent || expectedBot || !row.createdByUserId || !result.botUserId || !result.installerUserId)
+            return fail('error')
           try {
-            created = await installNewSlackBot(deps, req.log, {
-              orgId: OrgId(row.orgId),
-              agent,
-              name: result.teamName ? `AgentConnect (${result.teamName})` : 'AgentConnect',
-              botToken: result.botToken,
-              // Always http (a distributed app is Events-API-only — there is no
-              // per-workspace xapp token for Socket Mode) and always NON-shareable:
-              // one workspace install backs exactly one agent, keeping the classic
-              // 1-install cap. Widening a workspace to several agents is the
-              // quick-install upgrade path (its own Slack app), not this one.
-              transport: 'http',
-              shareable: false,
-              prebuilt: true,
-              slackAppId: platform.appId,
+            // Both entry points reuse the same installation identity, so a console install also finishes an unclaimed one.
+            const installed = await deps.repos.slackWorkspaceInstall.put({
+              appId: platform.appId,
               teamId: result.teamId,
-              workspaceId: result.teamId,
-              ...(result.teamName ? { workspaceName: result.teamName } : {}),
-              ...(result.botUserId ? { botUserId: result.botUserId } : {}),
-              ...(checked?.status === 'ok' && checked.scopes?.length ? { grantedScopes: checked.scopes } : {}),
-              signingSecret: platform.signingSecret,
-              ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
+              teamName: result.teamName,
+              botUserId: result.botUserId,
+              installerUserId: result.installerUserId,
+              botToken: result.botToken,
+              grantedScopes: checked?.status === 'ok' ? (checked.scopes ?? []) : []
             })
+            const claimed = await deps.repos.slackWorkspaceInstall.claim({
+              id: installed.id,
+              revision: installed.credentialRevision,
+              orgId: row.orgId,
+              agentId: agent.id,
+              userId: row.createdByUserId,
+              signingSecret: platform.signingSecret
+            })
+            if (!claimed) return fail('error')
+            botId = claimed
+            await deps.httpBot.syncBot(botId)
           } catch (err) {
-            // The install tail's generic workspace-claim fence
-            // (ingress-tenant-fence.md §5). This funnel's own identity pre-check
-            // covers platform-app rows; the tail additionally catches a
-            // workspace some org connected through a DIFFERENT funnel with this
-            // same app id. Callback UX, not JSON: same closing page as the
-            // pre-check's refusal.
-            if (err instanceof BotWorkspaceClaimed) return fail('workspace_taken')
+            if (err instanceof BotWorkspaceClaimed || err instanceof BotExternalIdentityTaken)
+              return fail('workspace_taken')
             throw err
           }
-          botId = created.botId
         }
 
         // Terminal state, not deletion: the console polls this row to learn the

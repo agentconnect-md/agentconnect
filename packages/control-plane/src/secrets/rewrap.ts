@@ -264,6 +264,20 @@ export async function rewrapAllSecrets(
   }
 
   {
+    let rows = 0
+    let skipped = 0
+    for (const r of await prisma.slackWorkspaceInstall.findMany()) {
+      const res = await prisma.slackWorkspaceInstall.updateMany({
+        where: { id: r.id, botToken: r.botToken },
+        data: { botToken: await reseal(r.botToken, DEPLOYMENT_SCOPE) }
+      })
+      if (res.count === 0) skipped += 1
+      else rows += 1
+    }
+    done('slack_workspace_install', rows, rows, skipped)
+  }
+
+  {
     // JSONB values map: {NAME: value} — logical-secret NAMES are config and stay
     // readable; each VALUE re-seals (same shape PgExternalMemoryConnectionSecretStore
     // writes). The CAS compares the whole JSONB document against the snapshot.

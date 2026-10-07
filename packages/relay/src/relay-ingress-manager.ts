@@ -768,6 +768,8 @@ export class RelayIngressManager {
 
   /** `rc/bot-assign` — (re)load the routing table + (re)build the bot's HTTP ingest. */
   async assign(a: BotAssignment): Promise<void> {
+    const heldRevision = this.router.get(a.botId)?.credentialRevision
+    if (heldRevision !== undefined && a.credentialRevision !== undefined && a.credentialRevision < heldRevision) return
     // A full (re)assignment can mean new installs. Stale report latches would starve
     // a later install of its own configurable direct row.
     this.clearConversationReportLatches(a.botId)
@@ -780,6 +782,7 @@ export class RelayIngressManager {
     this.router.upsert(a)
     // Rebuild the ingest (secrets or transport may have rotated). Idempotent.
     await this.stopIngest(a.botId)
+    if (this.router.get(a.botId) !== a) return
     this.forgetDemux(a.botId)
 
     // §8 plugin registry: the platform's plugin validates the assignment shape

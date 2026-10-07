@@ -32,6 +32,7 @@ export interface SlackOAuthResult {
   teamId: string | null
   teamName: string | null
   botUserId: string | null
+  installerUserId?: string | null
 }
 
 /** A rotated App Configuration token pair — a fresh access + refresh + expiry. Each
@@ -163,7 +164,8 @@ export function createSlackConfigApi(options: SlackConfigApiOptions = {}): Slack
             appId: body.app_id,
             teamId: body.team?.id ?? null,
             teamName: body.team?.name ?? null,
-            botUserId: body.bot_user_id ?? null
+            botUserId: body.bot_user_id ?? null,
+            installerUserId: body.authed_user?.id ?? null
           }
         }
       } catch (error) {

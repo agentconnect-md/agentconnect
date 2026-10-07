@@ -323,7 +323,9 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
       {
         onMessage: async (msg, sidecar) => void (await host.forward(botId, msg, sidecar)),
         onBotUserId: (uid) => host.reportBotUserId(botId, uid),
-        onChannelsChanged: (channels) => host.reportChannels({ botId, channels }),
+        onChannelsChanged: (channels) => {
+          if (!a.claimUrl) host.reportChannels({ botId, channels })
+        },
         agents: () => host.directory.agents(botId),
         currentOwner: (channelId) => host.directory.channelOwner(botId, channelId),
         onSetChannelAgent: (channelId, agentId) => host.setChannelAgent(botId, channelId, agentId),
@@ -337,6 +339,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
         appHomeContext: (channelId) => ({
           webAppUrl: host.webAppUrl(),
           orgSlug: a.orgSlug,
+          connectUrl: a.claimUrl,
           ...(a.installedAgentIds ? { connected: a.installedAgentIds.length > 0, botId } : {}),
           agentId:
             (channelId ? host.directory.resolveTarget(botId, { channelId }) : undefined)?.agentId ??

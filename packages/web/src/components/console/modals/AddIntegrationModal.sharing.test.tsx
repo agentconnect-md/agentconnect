@@ -1,13 +1,5 @@
 // @vitest-environment happy-dom
-/**
- * The wizard's "Shared bot" opt-in, per platform. It is a decision on Slack and a
- * non-decision on Linear: a Bot row there IS one connected workspace and the provider
- * stamps `shareable` itself (linear-integration.md §4.3), so the reuse path must admit
- * members WITHOUT the console offering a flag it has no business moving.
- *
- * Rendered here rather than asserted on the predicate alone, because "supports sharing"
- * and "offers a control for it" are the two facts that used to be one value.
- */
+// Reconnection fixes bot identity; ordinary reuse keeps each platform's sharing behavior.
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -16,16 +8,20 @@ import type { Agent, DaemonRow } from '@/lib/data'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
-const mocks = vi.hoisted(() => ({ bots: [] as BotDto[], createIntegration: vi.fn() }))
+const mocks = vi.hoisted(() => ({ bots: [] as BotDto[], agents: [] as Agent[], createIntegration: vi.fn() }))
 
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
+vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
 vi.mock('@/lib/org-context', () => ({
-  useOrgs: () => ({ activeOrg: { id: 'org-1' }, orgPath: (path: string) => path })
+  useOrgs: () => ({ activeOrg: { id: 'org-1', name: 'Example organization' }, orgPath: (path: string) => path })
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     get bots() {
       return mocks.bots
+    },
+    get agents() {
+      return mocks.agents
     },
     daemons: [
       {
@@ -73,10 +69,12 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 }))
 
 const AddIntegrationModal = (await import('./AddIntegrationModal')).default
+const ReconnectIntegrationModal = (await import('./ReconnectIntegrationModal')).default
 
 const agent = {
   id: 'agent-a',
   name: 'pilot',
+  runtime: 'claude',
   daemon: 'd1',
   placementKind: 'daemon',
   setId: null,
@@ -146,28 +144,66 @@ afterEach(async () => {
   root = undefined
   host = undefined
   mocks.bots = []
+  mocks.agents = []
   mocks.createIntegration.mockReset()
 })
 
-describe('the wizard’s Shared bot opt-in', () => {
-  it('reconnects the named workspace app without selecting a different free bot', async () => {
-    mocks.bots = [bot({ id: 'other', name: 'Other app' }), bot({ id: 'target', teamId: 'T1', shareable: false })]
+describe('reusing bot identities', () => {
+  async function openReconnect() {
     host = document.createElement('div')
     document.body.append(host)
     root = createRoot(host)
-    await act(async () =>
-      root?.render(
-        <AddIntegrationModal agent={agent} initialPlatform="slack" initialBotId="target" onClose={() => undefined} />
-      )
-    )
+    await act(async () => root?.render(<ReconnectIntegrationModal botId="target" onClose={() => undefined} />))
     await settle()
-    await clickByText('button', 'Connect & authorize')
+  }
+
+  it('reconnects the exact built-in app to the preset without asking for an agent or another authorization', async () => {
+    mocks.agents = [agent, { ...agent, id: 'preset', builtin: true, name: 'general' }]
+    mocks.bots = [bot({ id: 'other', name: 'Other app' }), bot({ id: 'target', prebuilt: true, shareable: false })]
+    await openReconnect()
+    expect(document.body.textContent).toContain('Example organization')
+    expect(document.body.textContent).toContain('general')
+    expect(document.body.textContent).not.toContain('Other app')
+    expect(document.body.textContent).not.toContain('Add integration')
+    expect(document.body.textContent).not.toContain('Connect & authorize')
+    expect(document.querySelector('button[aria-label="Agent"]')).toBeNull()
+    await clickByText('button', 'Reconnect')
+    expect(mocks.createIntegration).toHaveBeenCalledExactlyOnceWith({
+      platform: 'slack',
+      agentId: 'preset',
+      botId: 'target',
+      transport: 'http'
+    })
+  })
+
+  it('requires an explicit editable agent for a custom app', async () => {
+    mocks.agents = [agent, { ...agent, id: 'private', name: 'Private agent', canEdit: false }]
+    mocks.bots = [bot({ id: 'target', shareable: false })]
+    await openReconnect()
+    const submit = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent === 'Reconnect'
+    )!
+    expect(submit.disabled).toBe(true)
+    await clickByText('button', 'Choose an agent')
+    expect(document.body.textContent).not.toContain('Private agent')
+    await clickByText('[role="option"]', 'pilot')
+    expect(submit.disabled).toBe(false)
+    await clickByText('button', 'Reconnect')
     expect(mocks.createIntegration).toHaveBeenCalledExactlyOnceWith({
       platform: 'slack',
       agentId: agent.id,
       botId: 'target',
       transport: 'http'
     })
+  })
+
+  it('does not substitute another bot when the linked app is unavailable', async () => {
+    mocks.agents = [{ ...agent, builtin: true }]
+    mocks.bots = [bot({ id: 'other' })]
+    await openReconnect()
+    await clickByText('button', 'Reconnect')
+    expect(document.body.textContent).toContain('This app is no longer available to reconnect')
+    expect(mocks.createIntegration).not.toHaveBeenCalled()
   })
 
   it('is not offered for a Linear workspace, which is shared structurally', async () => {

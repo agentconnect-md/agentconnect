@@ -277,7 +277,13 @@ export class HttpBotOrchestrator {
   // Broadcast installation ingress to the relay pool and send-only specs to placed members.
   async syncBot(botId: string): Promise<void> {
     const bot = await this.bots.getUnscoped(BotId(botId))
-    if (!bot) return
+    if (!bot) {
+      for (const provider of this.platforms.all()) {
+        const assign = await provider.unclaimedIngress?.get(botId)
+        if (assign) this.broadcast((ch) => ch.send('rc/bot-assign', assign))
+      }
+      return
+    }
     if (!this.relayHosted(bot)) {
       await this.unassign(bot)
       return
@@ -433,9 +439,21 @@ export class HttpBotOrchestrator {
     proof: { evidence?: BotRevocationEvidence; code?: string } = {}
   ): Promise<{ applied: boolean }> {
     const bot = await this.bots.getUnscoped(BotId(botId))
-    // Unknown bot: nothing to apply and nothing that will ever change that, so
-    // this is terminal for the reporting relay — not a reason to keep retrying.
-    if (!bot) return { applied: false }
+    // Unclaimed installations belong to their provider; an unknown id is terminal for the reporting relay.
+    if (!bot) {
+      for (const provider of this.platforms.all()) {
+        if (await provider.unclaimedIngress?.revoke(botId, fence)) {
+          this.broadcast((ch) =>
+            ch.send('rc/bot-unassign', {
+              botId,
+              ...(fence.revision !== undefined ? { credentialRevision: fence.revision } : {})
+            })
+          )
+          return { applied: true }
+        }
+      }
+      return { applied: false }
+    }
     // Snapshot members BEFORE the flip — listForBot is active-only.
     const installs = await this.integrations.listForBot(bot.id)
     // A reporter that names no evidence predates the field, and only lifecycle events existed then.
@@ -528,6 +546,11 @@ export class HttpBotOrchestrator {
 
   // Converge active HTTP bots and provider-owned installation UI without bindings.
   async reconcileAll(): Promise<void> {
+    for (const provider of this.platforms.all()) {
+      for (const assign of (await provider.unclaimedIngress?.list()) ?? []) {
+        this.broadcast((ch) => ch.send('rc/bot-assign', assign))
+      }
+    }
     const http = await this.bots.listHttpActive(this.unboundIngressPlatforms())
     for (const b of http) await this.syncBot(b.id)
   }
@@ -545,6 +568,9 @@ export class HttpBotOrchestrator {
    * next reconnect; not worth a per-binding version on the wire.
    */
   async replayTo(ch: RelayChannel): Promise<void> {
+    for (const provider of this.platforms.all()) {
+      for (const assign of (await provider.unclaimedIngress?.list()) ?? []) ch.send('rc/bot-assign', assign)
+    }
     const bots = await this.bots.listHttpActive(this.unboundIngressPlatforms())
     for (const bot of bots) {
       if (!this.relayHosted(bot)) continue

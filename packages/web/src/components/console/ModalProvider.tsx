@@ -23,6 +23,7 @@ import DeleteIntegrationModal from './modals/DeleteIntegrationModal'
 import DeleteHookModal from './modals/DeleteHookModal'
 import AddCronModal from './modals/AddCronModal'
 import ReconnectDaemonModal from './modals/ReconnectDaemonModal'
+import ReconnectIntegrationModal from './modals/ReconnectIntegrationModal'
 import DeleteDaemonModal from './modals/DeleteDaemonModal'
 import DaemonLifecycleModal from './modals/DaemonLifecycleModal'
 import EditDaemonModal from './modals/EditDaemonModal'
@@ -157,7 +158,7 @@ export function ModalProvider({ children }: { children: ReactNode }) {
                 (open.opts?.nativeUi?.resourceUri === AGENT_SETUP_URI ||
                   open.opts?.nativeUi?.resourceUri === AGENT_TOOLS_URI))
                 ? 'modal desktop:max-w-[830px]'
-                : open.kind === 'integration' || open.kind === 'nativeIntegration'
+                : (open.kind === 'integration' && !open.opts?.botId) || open.kind === 'nativeIntegration'
                   ? 'modal desktop:max-w-[700px]'
                   : 'modal'
             }
@@ -189,22 +190,20 @@ export function ModalProvider({ children }: { children: ReactNode }) {
                 registerDismiss={registerDismiss}
               />
             )}
-            {/* With a target the agent is fixed (opened from an agent); without one
-                — the Integrations page's Add button — the same dialog picks the
-                agent inside. */}
+            {/* Reconnect fixes the app; ordinary adds either fix the calling agent or offer a picker. */}
             {open.kind === 'integration' &&
-              (open.target ? (
+              (open.opts?.botId ? (
+                <ReconnectIntegrationModal botId={open.opts.botId} onClose={close} />
+              ) : open.target ? (
                 <AddIntegrationModal
                   agent={open.target as Agent}
                   initialPlatform={open.opts?.platform}
-                  initialBotId={open.opts?.botId}
                   initialFeishuRegion={open.opts?.feishuRegion}
                   onClose={close}
                 />
               ) : (
                 <AddIntegrationForOrgModal
                   initialPlatform={open.opts?.platform}
-                  initialBotId={open.opts?.botId}
                   initialFeishuRegion={open.opts?.feishuRegion}
                   onClose={close}
                 />

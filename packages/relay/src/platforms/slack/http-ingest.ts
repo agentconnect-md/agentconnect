@@ -534,12 +534,7 @@ export class SlackHttpIngest {
     }
   }
 
-  /** Handle one verified `/slack/events` envelope after demux + HMAC. Forwards
-   *  top-level chat after removing this app's own echo. Never throws — HTTP 200 was
-   *  already sent; a forward miss is bounded loss at the forwarder. `eventId` is the
-   *  envelope's `event_id`, the receipt a redelivery reuses. Every event this app
-   *  subscribes to but does not act on (agent-session title, assistant thread context)
-   *  falls through to the drop at the end. */
+  // Handle verified events after acknowledgement, dropping own echoes and unsupported event types.
   async handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number, eventId?: string): Promise<void> {
     try {
       if (event?.type === 'app_home_opened') {
@@ -609,6 +604,15 @@ export class SlackHttpIngest {
       const ownMessage = event.user === this.botUserId || event.bot_id === this.slackBotId
       if (ownMessage || !isRoutableEvent(event)) return
       if (event.type !== 'message' && event.type !== 'app_mention') return
+      if (this.deps.appHomeContext?.(event.channel)?.connectUrl) {
+        if (event.channel && (event.channel_type === 'im' || event.type === 'app_mention'))
+          await this.web?.chat.postMessage({
+            channel: event.channel,
+            text: 'This workspace is not connected yet. Ask the person who installed this app to open its Home tab and select Connect AgentConnect.',
+            ...(event.thread_ts || event.type === 'app_mention' ? { thread_ts: event.thread_ts ?? event.ts } : {})
+          })
+        return
+      }
       const msg = normalizeSlackMessage(event)
       if (msg)
         await this.deps.onMessage(msg, event.action_token ? { searchActionToken: event.action_token } : undefined)

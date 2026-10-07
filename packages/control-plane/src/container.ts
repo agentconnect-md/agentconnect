@@ -133,6 +133,7 @@ import {
   PgThreadAffinityStore,
   PgSlackInstallStore,
   PgSlackPlatformInstallStore,
+  PgSlackWorkspaceInstallStore,
   PgFeishuAppRegistrationStore,
   PgSlackUserConfigStore,
   PgLinearTokenStore,
@@ -306,6 +307,8 @@ import { googleChatAppRoutes, googleChatKeyRoutes } from './platforms/googlechat
 import { googleChatClaimRoutes } from './platforms/googlechat/claim.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
+import { slackWorkspaceIngress } from './platforms/slack/workspace-install.js'
+import { slackWorkspacePublicRoutes, slackWorkspaceClaimRoutes } from './http/routes/slack-workspace-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from './http/routes/slack-bot-refresh.js'
 import { slackBotTokenRoutes } from './http/routes/slack-bot-token.js'
@@ -510,6 +513,7 @@ export function buildContainer(
     threadAffinity: new PgThreadAffinityStore(prisma),
     slackInstall: new PgSlackInstallStore(prisma, secretCipher),
     slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
+    slackWorkspaceInstall: new PgSlackWorkspaceInstallStore(prisma, secretCipher),
     feishuAppRegistration: new PgFeishuAppRegistrationStore(prisma, secretCipher),
     slackUserConfig: new PgSlackUserConfigStore(prisma, secretCipher),
     linearToken: new PgLinearTokenStore(prisma, secretCipher),
@@ -1887,6 +1891,7 @@ export function buildContainer(
       agentMemoryHistory: repos.agentMemoryHistory,
       slackInstall: repos.slackInstall,
       slackPlatformInstall: repos.slackPlatformInstall,
+      slackWorkspaceInstall: repos.slackWorkspaceInstall,
       feishuAppRegistration: repos.feishuAppRegistration,
       slackUserConfig: repos.slackUserConfig,
       linearToken: repos.linearToken,
@@ -2358,19 +2363,22 @@ export function buildContainer(
       syncBotProfile: syncDiscordBotProfile
     }),
     createSlackCpProvider({
+      unclaimedIngress: slackWorkspaceIngress(repos.slackWorkspaceInstall, slackPlatformApp, webAppUrl),
       verifyBot: verifySlackBot,
       verifyAppToken: verifySlackAppToken,
       funnelRoutes: {
         org: [
           slackInstallRoutes(httpDeps, slackSeams),
           slackPlatformInstallRoutes(httpDeps, slackSeams),
+          slackWorkspaceClaimRoutes(httpDeps, slackSeams),
           slackConfigRoutes(httpDeps, slackSeams),
           slackBotRefreshRoutes(httpDeps, slackSeams),
           slackBotTokenRoutes(httpDeps, slackSeams)
         ],
         publicCallback: [
           slackOauthCallbackRoutes(httpDeps, slackSeams),
-          slackPlatformCallbackRoutes(httpDeps, slackSeams)
+          slackPlatformCallbackRoutes(httpDeps, slackSeams),
+          slackWorkspacePublicRoutes(httpDeps, slackSeams)
         ]
       },
       ...(slackSeams.toolingCredentials ? { toolingCredentials: slackSeams.toolingCredentials } : {}),
@@ -3053,6 +3061,7 @@ export function httpServerConfigFrom(
     WAITLIST_MODE: config.WAITLIST_MODE,
     ...(config.CORS_ORIGIN !== undefined ? { CORS_ORIGIN: config.CORS_ORIGIN } : {}),
     ...(config.PUBLIC_WEB_URL ? { PUBLIC_WEB_URL: config.PUBLIC_WEB_URL } : {}),
+    SLACK_INSTALL_TTL_SEC: config.SLACK_INSTALL_TTL_SEC,
     ...(config.PUBLIC_RELAY_URL ? { PUBLIC_RELAY_URL: config.PUBLIC_RELAY_URL } : {}),
     ...(config.USAGE_INGEST_TOKEN ? { USAGE_INGEST_TOKEN: config.USAGE_INGEST_TOKEN } : {}),
     USAGE_COLLECTOR_SERVICE_ACCOUNT: config.USAGE_COLLECTOR_SERVICE_ACCOUNT,

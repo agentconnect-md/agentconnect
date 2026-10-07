@@ -271,6 +271,7 @@ export interface SlackCpProviderDeps {
    *  cannot drift between the provider and its callers. Absent ⇒ the platform
    *  reports no provider tooling credentials. */
   toolingCredentials?: CpProviderToolingCredentials
+  unclaimedIngress?: CpPlatformProvider['unclaimedIngress']
   /** Pending-install funnel state (§9 `pendingInstalls`): the two stores'
    *  reap slices + the shared TTL/interval from this provider's env keys
    *  (`SLACK_INSTALL_TTL_SEC` / `SLACK_INSTALL_REAP_INTERVAL_SEC`, ms).
@@ -518,6 +519,7 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
     },
 
     retainUnboundIngress: true,
+    ...(deps.unclaimedIngress ? { unclaimedIngress: deps.unclaimedIngress } : {}),
 
     // Socket Mode delivers `app_uninstalled` / `tokens_revoked` to the daemon; its report counts only for the bot user and workspace `auth.test` stored for this bot.
     socketLifecycleRevocation: (bot, reported) =>
