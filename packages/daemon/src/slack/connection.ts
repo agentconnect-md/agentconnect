@@ -1,7 +1,12 @@
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt'
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
-import { decodeSlackStatusOverflowValue, SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
+import {
+  buildSlackAppHomeView,
+  decodeSlackStatusOverflowValue,
+  SLACK_APP_HOME_ACTION_PREFIX,
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID
+} from '@agentconnect.md/protocol'
 import {
   extractSlackMessageText,
   isSlackSystemMessage,
@@ -410,6 +415,7 @@ export interface SlackDeps {
   group: ConsolidatedGroup
   onMessage: (msg: NormalizedMessage) => void
   onAppHomeOpened?: (channel: string) => Promise<void>
+  webAppUrl?: () => string | undefined
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
   onChannelsChanged?: () => void
@@ -552,6 +558,7 @@ export type AppLike = {
     views: {
       open: (a: unknown) => Promise<unknown>
       update: (a: unknown) => Promise<unknown>
+      publish: (a: unknown) => Promise<unknown>
     }
     // auth.test also returns the team id and `url`, the workspace's base Slack
     // URL (e.g. "https://acme.slack.com/").
@@ -1113,9 +1120,19 @@ export class SlackConnection implements PlatformConnection {
       if (thread) log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
     })
     this.app.event('app_home_opened', async ({ event }) => {
-      const ev = event as { channel?: string; tab?: string }
+      const ev = event as { channel?: string; tab?: string; user?: string }
+      if (ev.tab === 'home' && ev.user)
+        await this.queue
+          .enqueue(() =>
+            this.app.client.views.publish({
+              user_id: ev.user,
+              view: buildSlackAppHomeView(this.botUserId, this.deps.webAppUrl?.())
+            })
+          )
+          .catch((err) => log?.warn(`slack: Home tab publish failed: ${(err as Error).message}`))
       if (ev.tab === 'messages' && ev.channel?.startsWith('D')) await this.deps.onAppHomeOpened?.(ev.channel)
     })
+    this.app.action(new RegExp(`^${SLACK_APP_HOME_ACTION_PREFIX}`), async ({ ack }) => void (await ack()))
     // Native stop button, Socket Mode arm. The HTTP arm reaches the same method through the relay.
     this.app.event('agent_session_stopped', async ({ event }) => {
       const ev = event as { channel?: string; thread_ts?: string; user?: string }

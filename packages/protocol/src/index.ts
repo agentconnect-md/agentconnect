@@ -84,6 +84,7 @@ export {
 
 // ── normalized platform-message wire contract ──
 export * from './normalized-message.js'
+export * from './slack-app-home.js'
 
 // Code-host provider identity (gitlab-com-integration.md §8.1)
 export * from './code-host.js'

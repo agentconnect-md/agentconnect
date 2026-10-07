@@ -2587,7 +2587,12 @@ export function buildContainer(
     )
   }
 
-  const relayDeploymentConfig = relayDeploymentSnapshot(opts.deploymentConfig, googleChatAnchor, relayPublicBase)
+  const relayDeploymentConfig = relayDeploymentSnapshot(
+    opts.deploymentConfig,
+    googleChatAnchor,
+    relayPublicBase,
+    webAppUrl
+  )
   const relayWsDeps: RelayWsServerDeps = {
     auth: relayAuth,
     relays: repos.relay,

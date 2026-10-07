@@ -21,6 +21,7 @@ function fixture(messages: { text?: string }[] = []) {
     return { ts: '1.0' }
   })
   const apiCall = vi.fn(async () => ({}))
+  const publish = vi.fn(async () => ({}))
   const onMessage = vi.fn()
   app.event = (type, handler) => {
     events.set(type, handler)
@@ -28,20 +29,45 @@ function fixture(messages: { text?: string }[] = []) {
   app.client.conversations.history = history
   app.client.chat.postMessage = postMessage
   app.client.apiCall = apiCall
+  app.client.views.publish = publish
   const conn: SlackConnection = new SlackConnection(
     {
       group: { appToken: 'xapp-test', botToken: 'xoxb-test', integrations: [] },
       newTraceId: () => 'trace',
       sendIntervalMs: 0,
       onMessage,
+      webAppUrl: () => 'https://console.example.test',
       onAppHomeOpened: (channel) => conn.welcomeBuiltin(channel, agent, integration)
     },
     () => app
   )
-  return { conn, agent, integration, events, history, postMessage, apiCall, onMessage }
+  return { conn, agent, integration, events, history, postMessage, apiCall, publish, onMessage }
 }
 
 describe('built-in Slack welcome', () => {
+  it('publishes public Home guidance for custom agents without a DM or a model turn', async () => {
+    const h = fixture()
+    h.agent.builtin = false
+    h.agent.pause = true
+    h.integration.core.gated = true
+    await h.conn.start()
+    const open = h.events.get('app_home_opened')!
+    await open({ event: { tab: 'home', user: 'U-VISITOR' } })
+    expect(h.publish).toHaveBeenCalledWith({
+      user_id: 'U-VISITOR',
+      view: expect.objectContaining({ type: 'home' })
+    })
+    const view = JSON.stringify(h.publish.mock.calls[0])
+    expect(view).toContain('https://console.example.test')
+    expect(view).not.toContain(h.agent.name)
+    expect(h.history).not.toHaveBeenCalled()
+    expect(h.postMessage).not.toHaveBeenCalled()
+    expect(h.onMessage).not.toHaveBeenCalled()
+    await open({ event: { tab: 'home', user: 'U-OTHER' } })
+    expect(h.publish).toHaveBeenCalledTimes(2)
+    await h.conn.stop()
+  })
+
   it('greets an empty DM once across repeated opens and a restart, without producing a model message', async () => {
     const messages: { text?: string }[] = []
     const h = fixture(messages)
