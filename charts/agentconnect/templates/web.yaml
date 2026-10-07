@@ -85,6 +85,7 @@ spec:
             {{- if .Values.features.qq }}{{- $flags = append $flags "qq" }}{{- end }}
             {{- if .Values.features.googleChatDeploymentApp }}{{- $flags = append $flags "google-chat-deployment-app" }}{{- end }}
             {{- if .Values.features.repositoryDecision }}{{- $flags = append $flags "repository-decision" }}{{- end }}
+            {{- if .Values.features.assistantMode }}{{- $flags = append $flags "assistant-mode" }}{{- end }}
             {{- with $flags }}
             # Assembled from the features block — the values file flips one knob per feature
             # and never spells flag ids.

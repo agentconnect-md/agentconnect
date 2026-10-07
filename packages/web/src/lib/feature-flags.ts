@@ -15,6 +15,8 @@ export type FeatureFlagId =
   | 'google-chat-deployment-app'
   // The By decision checkout for additional repositories; a row already By decision keeps it, and a set selector stays shown.
   | 'repository-decision'
+  // The assistant mode switch on the agent page; an agent already switched on keeps it shown.
+  | 'assistant-mode'
 
 function enabledIds(): ReadonlySet<string> {
   // Match PublicEnvScript's precedence so server rendering and browser hydration agree.
