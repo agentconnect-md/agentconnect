@@ -281,7 +281,7 @@ export function forwardAssistantThreadStarted(
     msgId: `slack-action:${digest}`,
     botId,
     ...(started.userId ? { userId: started.userId } : {}),
-    payload: { kind: 'assistant-thread-started', channelId: started.channelId }
+    payload: { kind: 'assistant-thread-started', channelId: started.channelId, threadTs: started.threadTs }
   }
   void host
     .forwardAction(rd, route)

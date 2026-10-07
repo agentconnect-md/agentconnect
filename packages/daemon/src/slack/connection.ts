@@ -416,7 +416,7 @@ export interface SlackDeps {
   onMessage: (msg: NormalizedMessage) => void
   onAppHomeOpened?: (channel: string) => Promise<void>
   /** Fired when a user starts a new Assistant thread ("new chat") in a DM — a fresh session where the DM appends. */
-  onAssistantThreadStarted?: (channel: string, userId?: string) => Promise<void>
+  onAssistantThreadStarted?: (channel: string, userId?: string, startedAtMs?: number) => Promise<void>
   webAppUrl?: () => string | undefined
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
@@ -975,6 +975,13 @@ function realSocketModeApp(o: { token: string; appToken: string }, boltDebug?: b
   }) as unknown as AppLike
 }
 
+/** A Slack message ts (`seconds.micros`) as epoch milliseconds; undefined when it is not one. */
+export function slackTsToMs(ts: string | undefined): number | undefined {
+  const match = ts === undefined ? null : /^(\d+)\.(\d{1,6})$/.exec(ts)
+  if (!match) return undefined
+  return Number(match[1]) * 1000 + Math.floor(Number(match[2]!.padEnd(6, '0')) / 1000)
+}
+
 export class SlackConnection implements PlatformConnection {
   private app: AppLike
   // §9.1: all outbound writes (post/update/setStatus/setTitle) funnel through one queue so
@@ -1122,7 +1129,11 @@ export class SlackConnection implements PlatformConnection {
       if (!thread) return
       log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
       // "New chat" is Slack's own `!new`: a DM on one session starts a fresh one.
-      await this.deps.onAssistantThreadStarted?.(thread.channel, ev.assistant_thread?.user_id)
+      await this.deps.onAssistantThreadStarted?.(
+        thread.channel,
+        ev.assistant_thread?.user_id,
+        slackTsToMs(thread.threadTs)
+      )
     })
     this.app.event('app_home_opened', async ({ event }) => {
       const ev = event as { channel?: string; tab?: string; user?: string }

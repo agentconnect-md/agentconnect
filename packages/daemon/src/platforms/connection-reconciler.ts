@@ -104,7 +104,8 @@ export interface PlatformActionSink {
     platform: string,
     channel: string,
     srcIntegrationIds: readonly string[],
-    actor?: InteractionActor
+    actor?: InteractionActor,
+    notBefore?: number
   ): Promise<number>
   settleSlackSlot(conn: unknown, a: { channel: string; thread: string; exclude?: string }): void
 }
@@ -322,9 +323,15 @@ export class ConnectionReconciler {
           )
         if (bindings.length === 1) await conn().welcomeBuiltin(channel, bindings[0]!.agent, bindings[0]!.integration)
       },
-      onAssistantThreadStarted: async (channel, userId) => {
+      onAssistantThreadStarted: async (channel, userId, startedAtMs) => {
         const actor = userId ? { userId } : undefined
-        await this.host.startNewAppendSessions('slack', channel, this.host.srcIntegrationIds(conn()), actor)
+        await this.host.startNewAppendSessions(
+          'slack',
+          channel,
+          this.host.srcIntegrationIds(conn()),
+          actor,
+          startedAtMs
+        )
       },
       onChannelsChanged: () => void this.host.refreshChannels(conn()),
       onCredentialRevoked: (revocation) =>

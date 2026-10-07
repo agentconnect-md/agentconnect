@@ -103,7 +103,7 @@ describe('slack ingress plugin — review-pinned regressions', () => {
       expect.objectContaining({
         agentId: ROUTE.agentId,
         userId: 'U1',
-        payload: { kind: 'assistant-thread-started', channelId: 'D1' }
+        payload: { kind: 'assistant-thread-started', channelId: 'D1', threadTs: '1720000000.000500' }
       }),
       ROUTE
     )

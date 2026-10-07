@@ -108,6 +108,7 @@ export interface HttpSlackAppHomeOpened extends HttpSlackInteractionReceipt {
 /** A user started a new Assistant thread ("new chat") in a DM with the app. */
 export interface HttpSlackAssistantThreadStarted extends HttpSlackInteractionReceipt {
   channelId: string
+  threadTs: string
   userId?: string
 }
 
@@ -545,6 +546,7 @@ export class SlackHttpIngest {
         if (thread?.channel_id && thread.thread_ts)
           this.deps.onAssistantThreadStarted?.({
             channelId: thread.channel_id,
+            threadTs: thread.thread_ts,
             interactionId: eventId ?? `${thread.channel_id}:${thread.thread_ts}`,
             ...(thread.user_id ? { userId: thread.user_id } : {})
           })

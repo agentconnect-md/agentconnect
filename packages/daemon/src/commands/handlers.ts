@@ -28,7 +28,7 @@ import {
   type RoutingRule
 } from '../router/routing-rule.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
-import { isAppendCoordinate } from '../session/append-coordinate.js'
+import { appendCoordinateTs, isAppendCoordinate } from '../session/append-coordinate.js'
 import { transcriptCoords } from '../session/session-manager.js'
 import {
   CommandChromeRegistry,
@@ -1160,7 +1160,8 @@ export class CommandHandlers {
     platform: string,
     channel: string,
     srcIntegrationIds: readonly string[],
-    actor?: InteractionActor
+    actor?: InteractionActor,
+    notBefore?: number
   ): Promise<number> {
     const transportScope = this.host.transportScopeForIntegrationIds(srcIntegrationIds)
     let rotated = 0
@@ -1173,7 +1174,10 @@ export class CommandHandlers {
       // Read-only first: a conversation nobody has spoken in has nothing to rotate, and its first message mints anyway.
       const current = await this.host.store().currentAppendCoordinate(agentId, channel, transportScope)
       if (current === undefined) continue
-      await this.host.store().advanceAppendCoordinate(agentId, channel, current, transportScope)
+      // A coordinate minted at or after the new conversation began already belongs to it: a replayed event rotates nothing.
+      if (notBefore !== undefined && (appendCoordinateTs(current) ?? 0) >= notBefore) continue
+      const now = notBefore === undefined ? Date.now() : Math.max(Date.now(), notBefore)
+      await this.host.store().advanceAppendCoordinate(agentId, channel, current, transportScope, now)
       this.logSessionAction('new', sessionKey(platform, channel, current, agentId, transportScope), actor)
       rotated++
     }

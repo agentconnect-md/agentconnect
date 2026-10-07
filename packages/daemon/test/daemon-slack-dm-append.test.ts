@@ -121,6 +121,9 @@ async function boot(mode: 'createNew' | 'append') {
   return { daemon, handlers, host, posts, answers, dm, store, scope, sessionThreads }
 }
 
+// A new chat opens after the conversation's current coordinate was minted, as it does live.
+const threadRootAfterNow = (): string => `${Math.floor(Date.now() / 1000) + 5}.000500`
+
 describe('a Slack DM on append', () => {
   it('keys top-level and in-thread messages onto one session and answers in each physical thread', async () => {
     const { daemon, host, answers, dm, sessionThreads } = await boot('append')
@@ -168,9 +171,10 @@ describe('a Slack DM on append', () => {
     await dm('1720000000.000100', 'first')
     await vi.waitFor(() => expect(answers()).toHaveLength(1))
     const before = await store.currentAppendCoordinate('bot-a', 'D1', scope)
+    const root = threadRootAfterNow()
 
     await handlers.get('assistant_thread_started')!({
-      event: { assistant_thread: { user_id: 'U1', channel_id: 'D1', thread_ts: '1720000000.000500' } }
+      event: { assistant_thread: { user_id: 'U1', channel_id: 'D1', thread_ts: root } }
     })
     const after = await store.currentAppendCoordinate('bot-a', 'D1', scope)
     expect(after).not.toBe(before)
@@ -178,9 +182,31 @@ describe('a Slack DM on append', () => {
     // A message in the new thread may arrive without thread_ts; it still answers inside that thread.
     await dm('1720000000.000600', 'in the new chat')
     await vi.waitFor(() => expect(answers()).toHaveLength(2))
-    expect(answers()[1]!.thread).toBe('1720000000.000500')
+    expect(answers()[1]!.thread).toBe(root)
     expect(host.newSession).toHaveBeenCalledTimes(2)
     expect(await store.currentAppendCoordinate('bot-a', 'D1', scope)).toBe(after)
+    await daemon.stop()
+  })
+
+  // Socket Mode redelivers an event it did not see acknowledged; the redelivery must not split the new chat.
+  it('rotates once for a redelivered Assistant thread event', async () => {
+    const { daemon, handlers, host, answers, dm, store, scope } = await boot('append')
+    await dm('1720000000.000100', 'first')
+    await vi.waitFor(() => expect(answers()).toHaveLength(1))
+    const started = {
+      event: { assistant_thread: { user_id: 'U1', channel_id: 'D1', thread_ts: threadRootAfterNow() } }
+    }
+
+    await handlers.get('assistant_thread_started')!(started)
+    const rotated = await store.currentAppendCoordinate('bot-a', 'D1', scope)
+    await dm('1720000000.000600', 'in the new chat')
+    await vi.waitFor(() => expect(answers()).toHaveLength(2))
+
+    await handlers.get('assistant_thread_started')!(started)
+    expect(await store.currentAppendCoordinate('bot-a', 'D1', scope)).toBe(rotated)
+    await dm('1720000000.000700', 'still the same chat')
+    await vi.waitFor(() => expect(answers()).toHaveLength(3))
+    expect(host.newSession).toHaveBeenCalledTimes(2)
     await daemon.stop()
   })
 
@@ -220,7 +246,7 @@ describe('a relay-forwarded new Assistant thread', () => {
         msgId: 'slack-action:new-chat',
         botId: 'shared-bot',
         userId: 'U1',
-        payload: { kind: 'assistant-thread-started', channelId: 'D1' }
+        payload: { kind: 'assistant-thread-started', channelId: 'D1', threadTs: '1720000000.000500' }
       },
       () => {}
     )
@@ -229,6 +255,23 @@ describe('a relay-forwarded new Assistant thread', () => {
     const after = await inner.store.currentAppendCoordinate('bot-a', 'D1', scope)
     expect(isAppendCoordinate(after)).toBe(true)
     expect(after).not.toBe(before)
+
+    // A redelivered action names the same thread root and leaves the new chat's coordinate alone.
+    await inner.handleRelayMsg(
+      {
+        source: 'platform_action',
+        platformId: 'slack',
+        agentId: 'bot-a',
+        integrationId: 'int-bot-a',
+        sessionKey: 'D1',
+        msgId: 'slack-action:new-chat-retry',
+        botId: 'shared-bot',
+        userId: 'U1',
+        payload: { kind: 'assistant-thread-started', channelId: 'D1', threadTs: '1720000000.000500' }
+      },
+      () => {}
+    )
+    expect(await inner.store.currentAppendCoordinate('bot-a', 'D1', scope)).toBe(after)
     await daemon.stop()
   })
 })
