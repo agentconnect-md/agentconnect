@@ -973,11 +973,8 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
     expect(await prisma.bot.count()).toBe(0)
   })
 
-  // `inUseByAgentId` clears with the last install, so both of these look "free"
-  // to the generic bot picker. Reusing them through POST /integrations would flip
-  // the platform bot to shareable (breaking §5.5) or mint an install on a token
-  // Slack already rejects.
-  it('the generic reuse path refuses a platform-app bot and a revoked bot', async () => {
+  // Disconnecting keeps a usable installation; revoking its token does not.
+  it('reconnects a freed workspace app without widening its one-agent cap or reauthorizing', async () => {
     const { app } = withPlatform()
     // The generic reuse route requires a PLACED agent before it reaches the
     // bot checks, so give the reuse target a daemon.
@@ -991,9 +988,6 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
       url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${started.id}`
     })
     const bot = await prisma.bot.findFirstOrThrow({ where: { slackAppId: PLATFORM.appId } })
-    // Free it: remove the install, exactly as the console's "remove integration" does.
-    await prisma.integration.deleteMany({ where: { botId: bot.id } })
-
     const other = randomUUID()
     await seedAgent(prisma, other, { daemonId })
     const reuse = await app.app.inject({
@@ -1005,18 +999,21 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
     expect((reuse.json() as { message: string }).message).toMatch(/one agent per workspace/)
     // Not widened behind our back.
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).shareable).toBe(false)
-    expect(await prisma.integration.count({ where: { botId: bot.id } })).toBe(0)
+    expect(await prisma.integration.count({ where: { botId: bot.id } })).toBe(1)
 
-    // Flipping the bot shareable (the Settings → Bots opt-in) lifts the guard:
-    // the platform bot then reuses like any shared http bot.
-    await prisma.bot.update({ where: { id: bot.id }, data: { shareable: true } })
-    const reuseShared = await app.app.inject({
+    const integration = await prisma.integration.findFirstOrThrow({ where: { botId: bot.id } })
+    const removed = await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${integration.id}` })
+    expect(removed.statusCode).toBe(204)
+    expect(await app.deps.repos.bot.listHttpActive()).toEqual([])
+    expect((await app.deps.repos.bot.listHttpActive(['slack'])).map((b) => b.id)).toContain(bot.id)
+    const reconnected = await app.app.inject({
       method: 'POST',
       url: `${ORG}/integrations`,
       payload: { platform: 'slack', agentId: other, botId: bot.id }
     })
-    expect(reuseShared.statusCode).toBe(201)
+    expect(reconnected.statusCode).toBe(201)
     expect(await prisma.integration.count({ where: { botId: bot.id, status: 'active', agentId: other } })).toBe(1)
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).shareable).toBe(false)
 
     // A revoked NON-platform bot is refused too — its token is dead.
     const plain = await prisma.bot.create({

@@ -3494,10 +3494,8 @@ export interface BotRepo {
    *  Org-fenced: the lock read is filtered, so a cross-org id throws the same
    *  missing-row error ({@link BotMissing}) as an absent one. */
   update(orgId: OrgId, id: BotId, patch: BotUpdate): Promise<void>
-  /** Every http-transport bot with ≥1 active integration, across all orgs — the
-   *  shared-bot orchestrator's convergence worklist (relay register / failover).
-   *  System-tier: fleet-wide by design. */
-  listHttpActive(): Promise<BotRecord[]>
+  // Fleet-wide HTTP worklist, including unbound installations for providers that retain ingress.
+  listHttpActive(retainUnboundPlatforms?: readonly string[]): Promise<BotRecord[]>
   /**
    * Every bot of ONE platform, across all orgs — a provider's own convergence
    * worklist (§9 `backgroundLoops`; today the Linear deployment-credential

@@ -946,6 +946,8 @@ export const RcBotAssign = z.object({
   botId: z.string().uuid(),
   // Console organization path for provider-owned management links; absent from older CPs.
   orgSlug: z.string().min(1).optional(),
+  // Bindings outlive daemon availability; an empty array means the installation is disconnected.
+  installedAgentIds: z.array(z.string().uuid()).optional(),
   // S1a open reader (route.ts Platform policy). The CP only emits ids the
   // relay build supports; the relay's assign handler already refuses an
   // unsupported platform gracefully ("not yet supported"), never the socket.

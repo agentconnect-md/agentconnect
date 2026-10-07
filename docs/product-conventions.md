@@ -720,6 +720,14 @@ entry point. The view never lists private agent names, configuration, organizati
 membership, or conversation history. Console access remains subject to the console's
 normal authentication and authorization.
 
+An HTTP Slack installation keeps serving Home after its last agent is disconnected.
+Home then explains that no agent is connected and offers **Reconnect**, which opens
+the console's existing agent picker with that installation selected. Reconnecting
+does not require another Slack authorization while the installation's token remains
+valid, and does not enable sharing. A bound agent with no available daemon is not
+shown as disconnected. Uninstalling the app in Slack or revoking its token stops
+ingress; deleting the saved bot or its organization still deletes its credentials.
+
 Home opens publish a view for the visiting Slack user without starting a model
 turn, posting a message, or requiring admission to a conversation. HTTP installs
 serve this page from the relay even when no daemon can receive a task; Socket

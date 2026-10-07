@@ -517,6 +517,8 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
       httpAssignRequires: ['signingSecret']
     },
 
+    retainUnboundIngress: true,
+
     // Socket Mode delivers `app_uninstalled` / `tokens_revoked` to the daemon; its report counts only for the bot user and workspace `auth.test` stored for this bot.
     socketLifecycleRevocation: (bot, reported) =>
       !!bot.botUserId &&

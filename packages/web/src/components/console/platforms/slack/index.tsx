@@ -20,14 +20,8 @@ export const slackModule: WebPlatformModule<SlackApi> = {
   Mark: SlackMark,
   wizard: {
     Body: SlackWizardBody,
-    /**
-     * A platform-app install (`teamId`) starts NON-shareable — one workspace
-     * serves one agent (preset-agents.md §5.5) — and the CP 409s reusing it, so
-     * the list must not offer it. Only the Slack platform-app install ever
-     * persists a `teamId`, which is why this eligibility rule is Slack's and not
-     * the chassis's generic predicate.
-     */
-    freeBotFilter: (bot) => !bot.teamId || bot.shareable,
+    // A disconnected workspace app can reconnect; adding another agent still requires sharing.
+    freeBotFilter: (bot) => !bot.teamId || bot.shareable || bot.agentIds.length === 0,
     buildReuseInput: (bot, ctx) => ({
       platform: 'slack',
       agentId: ctx.agentId,

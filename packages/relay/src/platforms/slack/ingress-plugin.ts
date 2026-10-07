@@ -337,9 +337,14 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
         appHomeContext: (channelId) => ({
           webAppUrl: host.webAppUrl(),
           orgSlug: a.orgSlug,
+          ...(a.installedAgentIds ? { connected: a.installedAgentIds.length > 0, botId } : {}),
           agentId:
             (channelId ? host.directory.resolveTarget(botId, { channelId }) : undefined)?.agentId ??
-            host.directory.soleTarget(botId)?.agentId
+            (a.installedAgentIds
+              ? a.installedAgentIds.length === 1
+                ? a.installedAgentIds[0]
+                : undefined
+              : host.directory.soleTarget(botId)?.agentId)
         }),
         onBotRevoked: (reason, proof) => {
           host.log.warn(`relay-ingress(${botId}): workspace revoked the app (${reason})`)

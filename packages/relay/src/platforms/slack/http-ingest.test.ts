@@ -559,6 +559,36 @@ describe('SlackHttpIngest events', () => {
     await ingest.stop()
   })
 
+  it('replaces the agent links with a reconnect flow when the installation has no bindings', async () => {
+    const publish = vi.fn(async (_body: unknown) => ({}))
+    const web = { auth: { test: async () => ({ user_id: 'U-BOT' }) }, views: { publish } }
+    let connected = false
+    const d = deps(web, {
+      appHomeContext: () => ({
+        webAppUrl: 'https://console.example.test',
+        orgSlug: 'example-org',
+        botId: 'bot-1',
+        connected,
+        agentId: 'agent-1'
+      })
+    })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    const event = { type: 'app_home_opened', tab: 'home', user: 'U-VISITOR', channel: 'D1' }
+    await ingest.handleEvent(event)
+    const disconnected = JSON.stringify(publish.mock.calls[0])
+    expect(disconnected).toContain('No agent connected')
+    expect(disconnected).toContain('https://console.example.test/example-org/integrations?reconnect=bot-1')
+    expect(disconnected).not.toContain('Configure agent')
+    connected = true
+    await ingest.handleEvent(event)
+    const reconnected = JSON.stringify(publish.mock.calls[1])
+    expect(reconnected).toContain('Configure agent')
+    expect(reconnected).not.toContain('Reconnect')
+    expect(d.onMessage).not.toHaveBeenCalled()
+    await ingest.stop()
+  })
+
   it('refreshes the complete paginated snapshot only when the bot itself joins', async () => {
     const conversations = vi.fn(async ({ cursor }: { cursor?: string }) =>
       cursor

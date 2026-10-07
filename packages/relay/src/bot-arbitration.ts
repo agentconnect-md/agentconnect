@@ -36,6 +36,7 @@ import { isThreadRootMessage } from '@agentconnect.md/message'
 export interface BotAssignment {
   botId: string
   orgSlug?: string
+  installedAgentIds?: string[]
   // S1a open reader (protocol route.ts Platform policy): the wire field is an
   // open string; the assign handler refuses an unsupported platform gracefully.
   platform: string
@@ -923,6 +924,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
   return {
     botId: a.botId,
     ...(a.orgSlug ? { orgSlug: a.orgSlug } : {}),
+    ...(a.installedAgentIds ? { installedAgentIds: a.installedAgentIds } : {}),
     platform: a.platform,
     secrets,
     ...(apiAppId ? { apiAppId } : {}),

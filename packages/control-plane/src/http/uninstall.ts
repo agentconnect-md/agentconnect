@@ -88,6 +88,9 @@ export async function deleteBotIdentity(deps: HttpDeps, log: TeardownLog, orgId:
   const onBotDelete = deps.platforms.get(bot.platform)?.sideEffects?.onBotDelete
   const secrets = onBotDelete ? await deps.repos.botSecret.get(orgId, bot.id) : null
   await deps.repos.bot.delete(orgId, bot.id)
+  if (bot.transport === 'http' && deps.platforms.get(bot.platform)?.retainUnboundIngress) {
+    await deps.httpBot.unassign(bot)
+  }
   if (!onBotDelete) return
   try {
     await onBotDelete(bot, secrets)

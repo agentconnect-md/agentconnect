@@ -16,7 +16,7 @@ import type { Agent, DaemonRow } from '@/lib/data'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
-const mocks = vi.hoisted(() => ({ bots: [] as BotDto[] }))
+const mocks = vi.hoisted(() => ({ bots: [] as BotDto[], createIntegration: vi.fn() }))
 
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/org-context', () => ({
@@ -41,7 +41,7 @@ vi.mock('@/lib/data-context', () => ({
     ],
     daemonsLoading: false,
     memberSets: [],
-    createIntegration: vi.fn(),
+    createIntegration: mocks.createIntegration,
     createHook: vi.fn(),
     createGithubHook: vi.fn(),
     createGitlabHook: vi.fn(),
@@ -146,9 +146,30 @@ afterEach(async () => {
   root = undefined
   host = undefined
   mocks.bots = []
+  mocks.createIntegration.mockReset()
 })
 
 describe('the wizard’s Shared bot opt-in', () => {
+  it('reconnects the named workspace app without selecting a different free bot', async () => {
+    mocks.bots = [bot({ id: 'other', name: 'Other app' }), bot({ id: 'target', teamId: 'T1', shareable: false })]
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () =>
+      root?.render(
+        <AddIntegrationModal agent={agent} initialPlatform="slack" initialBotId="target" onClose={() => undefined} />
+      )
+    )
+    await settle()
+    await clickByText('button', 'Connect & authorize')
+    expect(mocks.createIntegration).toHaveBeenCalledExactlyOnceWith({
+      platform: 'slack',
+      agentId: agent.id,
+      botId: 'target',
+      transport: 'http'
+    })
+  })
+
   it('is not offered for a Linear workspace, which is shared structurally', async () => {
     mocks.bots = [bot({ id: 'ws-1', platform: 'linear', name: 'Example Workspace' })]
     await openPane('Linear')

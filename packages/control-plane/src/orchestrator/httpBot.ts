@@ -274,13 +274,7 @@ export class HttpBotOrchestrator {
     private readonly orgs?: Pick<OrgRepo, 'slugById'>
   ) {}
 
-  /**
-   * Converge one bot: BROADCAST `rc/bot-assign` to every connected relay (whole-pool
-   * ingress — any pod may receive an inbound Events API POST via the stable
-   * PUBLIC_RELAY_URL LB) + deliver the send-only spec to each member daemon. A
-   * non-http / empty bot is released. Safe to call for a socket bot (no-op after
-   * the release check).
-   */
+  // Broadcast installation ingress to the relay pool and send-only specs to placed members.
   async syncBot(botId: string): Promise<void> {
     const bot = await this.bots.getUnscoped(BotId(botId))
     if (!bot) return
@@ -532,9 +526,9 @@ export class HttpBotOrchestrator {
     return { applied }
   }
 
-  /** Converge EVERY http+active bot — the failover / broad-change worklist. */
+  // Converge active HTTP bots and provider-owned installation UI without bindings.
   async reconcileAll(): Promise<void> {
-    const http = await this.bots.listHttpActive()
+    const http = await this.bots.listHttpActive(this.unboundIngressPlatforms())
     for (const b of http) await this.syncBot(b.id)
   }
 
@@ -551,7 +545,7 @@ export class HttpBotOrchestrator {
    * next reconnect; not worth a per-binding version on the wire.
    */
   async replayTo(ch: RelayChannel): Promise<void> {
-    const bots = await this.bots.listHttpActive()
+    const bots = await this.bots.listHttpActive(this.unboundIngressPlatforms())
     for (const bot of bots) {
       if (!this.relayHosted(bot)) continue
       const compiled = await this.compile(bot)
@@ -1351,7 +1345,7 @@ export class HttpBotOrchestrator {
   /** Compile the attributed routing table after converging conversation ownership, then record its holds. */
   private async compile(bot: BotRecord): Promise<Compiled | null> {
     const integrations = await this.integrations.listForBot(bot.id)
-    if (integrations.length === 0) return null
+    if (integrations.length === 0 && !this.platforms.get(bot.platform)?.retainUnboundIngress) return null
     await this.ensureConversationOwners(bot.id, integrations)
     const compiled = await this.plan(bot, integrations)
     this.recordDecisionHolds(bot.id, compiled?.heldFor ?? new Set())
@@ -1454,7 +1448,7 @@ export class HttpBotOrchestrator {
   /** The attributed routing table from the current reads; no writes and no hold bookkeeping. */
   private async plan(bot: BotRecord, integrations: IntegrationRecord[]): Promise<Compiled | null> {
     const { agentById, placed } = await this.readPlacement(integrations)
-    if (placed.length === 0) return null
+    if (placed.length === 0 && !this.platforms.get(bot.platform)?.retainUnboundIngress) return null
     // linear-integration.md §6.2: a row's owner rides the relay's PER-CONVERSATION default
     // rung instead of a channel-scoped route — which would otherwise shadow keyword selection
     // and thread continuity on a platform whose every event marks the app as mentioned.
@@ -1726,8 +1720,17 @@ export class HttpBotOrchestrator {
 
   /** An installed HTTP bot its platform lets the relay host; any other is released. */
   private relayHosted(bot: BotRecord): boolean {
-    if (bot.transport !== 'http' || bot.agentIds.length === 0) return false
-    return this.platforms.get(bot.platform)?.relayAssignable?.(bot) !== false
+    if (bot.transport !== 'http' || bot.revokedAt) return false
+    const provider = this.platforms.get(bot.platform)
+    if (bot.agentIds.length === 0 && !provider?.retainUnboundIngress) return false
+    return provider?.relayAssignable?.(bot) !== false
+  }
+
+  private unboundIngressPlatforms(): string[] {
+    return this.platforms
+      .all()
+      .filter((provider) => provider.retainUnboundIngress)
+      .map((provider) => provider.platformId)
   }
 
   /**
@@ -1785,6 +1788,7 @@ export class HttpBotOrchestrator {
     return {
       botId: bot.id,
       ...(orgSlug ? { orgSlug } : {}),
+      installedAgentIds: bot.agentIds,
       platform: compiled.platform,
       // §6.1: a bot assignment is always a CHAT platform; carried so an older
       // relay can classify an id a newer CP introduces.

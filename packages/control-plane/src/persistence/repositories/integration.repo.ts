@@ -358,10 +358,13 @@ export class PgBotRepo implements BotRepo {
     })
   }
 
-  async listHttpActive(): Promise<BotRecord[]> {
-    // http-transport bots with ≥1 ACTIVE install — the orchestrator's convergence set.
+  async listHttpActive(retainUnboundPlatforms: readonly string[] = []): Promise<BotRecord[]> {
     const rows = await this.db.bot.findMany({
-      where: { transport: 'http', integrations: { some: { status: 'active' } } },
+      where: {
+        transport: 'http',
+        revokedAt: null,
+        OR: [{ integrations: { some: { status: 'active' } } }, { platform: { in: [...retainUnboundPlatforms] } }]
+      },
       include: botInclude,
       orderBy: { createdAt: 'asc' }
     })

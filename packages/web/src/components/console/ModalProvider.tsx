@@ -71,6 +71,7 @@ interface ModalOpts {
   nativeRequestId?: string
   onCompleted?: NativeDialogReport
   platform?: IntegrationPlatform
+  botId?: string
   feishuRegion?: FeishuRegion
   focusSection?: EditAgentSection
   /** The daemon the Edit-agent picker opens on — the one the chained Add-daemon dialog just connected. */
@@ -196,12 +197,14 @@ export function ModalProvider({ children }: { children: ReactNode }) {
                 <AddIntegrationModal
                   agent={open.target as Agent}
                   initialPlatform={open.opts?.platform}
+                  initialBotId={open.opts?.botId}
                   initialFeishuRegion={open.opts?.feishuRegion}
                   onClose={close}
                 />
               ) : (
                 <AddIntegrationForOrgModal
                   initialPlatform={open.opts?.platform}
+                  initialBotId={open.opts?.botId}
                   initialFeishuRegion={open.opts?.feishuRegion}
                   onClose={close}
                 />

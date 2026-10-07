@@ -462,6 +462,7 @@ export default function AddIntegrationModal({
   agentChoices,
   onPickAgent,
   initialPlatform,
+  initialBotId,
   initialFeishuRegion,
   onCompleted,
   onFailed,
@@ -472,6 +473,7 @@ export default function AddIntegrationModal({
   agentChoices?: Agent[]
   onPickAgent?: (agentId: string) => void
   initialPlatform?: Platform
+  initialBotId?: string
   initialFeishuRegion?: FeishuRegion
   onCompleted?: (summary: string) => void
   /** Why a submitted create did not land — a native card must report a failure as well as a save. */
@@ -695,10 +697,9 @@ export default function AddIntegrationModal({
   const [gtReviewPolicy, setGtReviewPolicy] = useState<HookReviewPolicy>('full')
   const [gtReportingMode, setGtReportingMode] = useState<HookReportingMode>('status')
 
-  // Reusing a bot is an advanced path; every platform opens on the create flow
-  // until the user explicitly chooses an existing identity.
-  const [modePick, setModePick] = useState<'existing' | 'create' | null>(null)
-  const [botPick, setBotPick] = useState<string | null>(null)
+  // A reconnect link preselects the installation; ordinary adds open the create flow.
+  const [modePick, setModePick] = useState<'existing' | 'create' | null>(initialBotId ? 'existing' : null)
+  const [botPick, setBotPick] = useState<string | null>(initialBotId ?? null)
   // Shared-bot opt-in (shared-bot-relay.md §4.1): one bot, many agents, inbound via a
   // relay. Only platforms declaring the `share` affordance offer it; the CP rejects
   // a shared install anywhere else.
@@ -834,7 +835,11 @@ export default function AddIntegrationModal({
       !b.revokedAt &&
       (wizard?.freeBotFilter(b, reuseContext(shared)) ?? false)
   )
-  const selectedBotId = freeBots.some((b) => b.id === botPick) ? botPick : (freeBots[0]?.id ?? null)
+  const selectedBotId = freeBots.some((b) => b.id === botPick)
+    ? botPick
+    : initialBotId
+      ? null
+      : (freeBots[0]?.id ?? null)
   const selectedBot = freeBots.find((b) => b.id === selectedBotId) ?? null
 
   // The effective callback-capable transport for the CREATE path: an explicit pick,
@@ -2857,6 +2862,7 @@ function AgentPicker({ agents, value, onPick }: { agents: Agent[]; value: string
  *  repos, the picked bot, a half-finished platform flow) survives a switch. */
 export function AddIntegrationForOrgModal({
   initialPlatform,
+  initialBotId,
   initialFeishuRegion,
   initialAgentId,
   onCompleted,
@@ -2864,6 +2870,7 @@ export function AddIntegrationForOrgModal({
   onClose
 }: {
   initialPlatform?: Platform
+  initialBotId?: string
   initialFeishuRegion?: FeishuRegion
   initialAgentId?: string
   onCompleted?: (summary: string) => void
@@ -2915,6 +2922,7 @@ export function AddIntegrationForOrgModal({
       onCompleted={onCompleted}
       onFailed={onFailed}
       initialPlatform={initialPlatform}
+      initialBotId={initialBotId}
       initialFeishuRegion={initialFeishuRegion}
       onClose={onClose}
     />
