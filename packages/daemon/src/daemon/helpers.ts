@@ -103,11 +103,6 @@ export function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined
   return effectiveMemoryDreamingPolicy(agent.memory)
 }
 
-/** Whether an agent is switched into assistant mode (assistant-mode.md §5.1); absent ⇒ off. */
-export function assistantModeOn(agent: { assistantMode?: Agent['assistantMode'] } | undefined): boolean {
-  return agent?.assistantMode?.enabled === true
-}
-
 /** Connectable when there is a URL and a credential: an API key, or — in-cluster — the
  *  projected ServiceAccount token this pod presents instead of one. */
 export function configuredControlPlane(

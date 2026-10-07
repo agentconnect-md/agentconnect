@@ -910,7 +910,6 @@ import * as webchatTurnOutput from './webchat/turn-output.js'
 import {
   activationKey,
   assertExclusiveAgentWorkspaces,
-  assistantModeOn,
   configuredControlPlane,
   dreamingPolicyOf,
   ignoreAgentWatchPath,
