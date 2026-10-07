@@ -1,10 +1,6 @@
 // @vitest-environment happy-dom
 
-// The pure half of the wizard facet: which free bots a platform will let you
-// reuse, and the create input that reuse commits. Both moved out of one
-// `submit()` switch in AddIntegrationModal and into per-platform modules, and
-// both are exactly where a silent behavior change would hide — nothing renders
-// them, so only these assertions notice if an arm drifts.
+// Check each platform's bot reuse rules and the input submitted by its wizard.
 
 import { describe, expect, it } from 'vitest'
 import type { BotDto } from '@/lib/api'
@@ -55,11 +51,23 @@ describe('platform registry', () => {
 })
 
 describe('freeBotFilter', () => {
-  it('slack refuses a workspace install that has not been flipped shareable', () => {
-    // A platform-app install (`teamId`) serves one agent per workspace until the
-    // owner shares it; the CP 409s the reuse, so the list must not offer it.
-    expect(wizardOf('slack').freeBotFilter(bot({ teamId: 'T0EXAMPLE1', shareable: false }), ctx())).toBe(false)
-    expect(wizardOf('slack').freeBotFilter(bot({ teamId: 'T0EXAMPLE1', shareable: true }), ctx())).toBe(true)
+  it('slack permits an unshared workspace install only after its agent disconnects', () => {
+    // An unshared workspace install can reconnect, but cannot serve a second agent.
+    expect(
+      wizardOf('slack').freeBotFilter(
+        bot({ teamId: 'T0EXAMPLE1', shareable: false, agentIds: ['existing-agent'] }),
+        ctx()
+      )
+    ).toBe(false)
+    expect(wizardOf('slack').freeBotFilter(bot({ teamId: 'T0EXAMPLE1', shareable: false, agentIds: [] }), ctx())).toBe(
+      true
+    )
+    expect(
+      wizardOf('slack').freeBotFilter(
+        bot({ teamId: 'T0EXAMPLE1', shareable: true, agentIds: ['existing-agent'] }),
+        ctx()
+      )
+    ).toBe(true)
     expect(wizardOf('slack').freeBotFilter(bot({ shareable: false }), ctx())).toBe(true)
   })
 
