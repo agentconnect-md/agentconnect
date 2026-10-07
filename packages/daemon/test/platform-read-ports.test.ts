@@ -8,7 +8,8 @@ import {
   offersDirectMessages,
   offersReadPort,
   platformLabel,
-  readPortsFor
+  readPortsFor,
+  reportsConversationPrivacy
 } from '../src/platforms/read-ports.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
@@ -67,6 +68,14 @@ describe('the read-port registry', () => {
     expect(offersDirectMessages('telegram')).toBe(has(TelegramConnection, 'openDirectMessage'))
     expect(offersDirectMessages('discord')).toBe(has(DiscordConnection, 'openDirectMessage'))
     expect(offersDirectMessages('feishu')).toBe(has(FeishuConnection, 'openDirectMessage'))
+    // A platform that reports privacy must answer it, or every channel there would read as undetermined.
+    for (const [platform, ctor] of [
+      ['slack', SlackConnection],
+      ['telegram', TelegramConnection],
+      ['discord', DiscordConnection],
+      ['feishu', FeishuConnection]
+    ] as const)
+      expect(reportsConversationPrivacy(platform)).toBe(has(ctor, 'isPrivateConversation'))
   })
 
   it('is fail-closed for an unregistered platform', () => {

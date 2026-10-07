@@ -92,7 +92,11 @@ export interface MessageGateway {
   /** Materialize a provider-native thread from a root message when that platform
    *  requires one before the post can own a follow-up session (Discord). */
   createThread?(channel: string, messageId: string, name: string): Promise<string | undefined>
-  getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }>
+  getChannelInfo(
+    channel: string
+  ): Promise<{ id: string; name?: string; isIm?: boolean; isMpim?: boolean; isPrivate?: boolean }>
+  /** Whether only the conversation's members can read it, where the platform reports that (assistant-mode.md §5.5). */
+  isPrivateConversation?(channel: string): Promise<boolean>
   listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]>
   listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]>
   getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>

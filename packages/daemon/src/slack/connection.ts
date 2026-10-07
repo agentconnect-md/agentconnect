@@ -769,6 +769,9 @@ function isRoutableMessageEvent(ev: SlackMessageEvent): boolean {
 
 /** Cap on members enriched per `listChannelMembers` call (bounds users.info fan-out). */
 const MEMBER_ENRICH_CAP = 50
+// A channel turned private is honored within this window; the membership listing refreshes it sooner.
+const PRIVACY_TTL_MS = 10 * 60_000
+const PRIVACY_CACHE_MAX = 5000
 const SLACK_CHANNEL_HISTORY_DEFAULT_LIMIT = 100
 const SLACK_CHANNEL_HISTORY_MAX_LIMIT = 200
 const SLACK_FILE_ORIGIN = 'https://files.slack.com'
@@ -1007,6 +1010,8 @@ export class SlackConnection implements PlatformConnection {
   private assistantDmThreads = new Map<string, string>()
   private appHomeOpens = new Map<string, Promise<void>>()
   private welcomedAppHomes = new Set<string>()
+  /** Privacy per conversation, from the membership listing or `conversations.info`, read until it expires. */
+  private privacy = new Map<string, { isPrivate: boolean; at: number }>()
   /** Last agent-session lifecycle state per `channel:thread`, so an unchanged one refires nothing. */
   private sessionLifecycle = new Map<string, string>()
   /** The slot's displayed owner per `channel:thread`: the sessionKey of the last `processing`
@@ -2548,6 +2553,23 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
+  /** Private channels, DMs and group DMs are read only by their members; throws when Slack cannot say. */
+  async isPrivateConversation(channel: string): Promise<boolean> {
+    const known = this.privacy.get(channel)
+    if (known && Date.now() - known.at < PRIVACY_TTL_MS) return known.isPrivate
+    const res = await this.app.client.conversations.info({ channel })
+    const c = res.channel
+    if (!c) throw new Error('Slack conversations.info returned no conversation')
+    const isPrivate = c.is_private === true || c.is_im === true || c.is_mpim === true
+    this.rememberPrivacy(channel, isPrivate)
+    return isPrivate
+  }
+
+  private rememberPrivacy(channel: string, isPrivate: boolean): void {
+    if (this.privacy.size >= PRIVACY_CACHE_MAX && !this.privacy.has(channel)) this.privacy.clear()
+    this.privacy.set(channel, { isPrivate, at: Date.now() })
+  }
+
   async listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]> {
     const res = await this.app.client.conversations.members({ channel, limit: 200 })
     const ids = (res.members ?? []).slice(0, MEMBER_ENRICH_CAP)
@@ -2579,6 +2601,7 @@ export class SlackConnection implements PlatformConnection {
         })
         for (const c of res.channels ?? []) {
           if (!c.id || c.is_im || c.is_mpim) continue
+          this.rememberPrivacy(c.id, c.is_private === true)
           out.push({
             id: c.id,
             ...(c.name ? { name: c.name } : {}),

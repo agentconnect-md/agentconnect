@@ -325,6 +325,8 @@ export interface PlatformConnection {
   /** AUTHORITATIVE bot membership, when the platform can enumerate it
    *  (`membershipEnumeration: 'authoritative'`). `null` ⇒ not answerable now. */
   listBotChannels?(): Promise<PlatformChannelRef[] | null>
+  /** Whether only its members can read the conversation (read-ports.ts `conversationPrivacy`); throws when unsure. */
+  isPrivateConversation?(channel: string): Promise<boolean>
   /** Leave one conversation (`leaveGranularity: 'conversation'`). */
   leaveChannel?(channel: string): Promise<void>
   /** Leave the enclosing space/guild (`leaveGranularity: 'space'` — Discord). */

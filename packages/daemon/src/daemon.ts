@@ -3735,6 +3735,13 @@ export class Daemon {
       now: () => Date.now(),
       canRun: (ctx) => this.toolTurnRunnable(ctx),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      // Assistant mode's place rules (assistant-mode.md §5.5), read live so a switch applies to open sessions.
+      assistantModeFor: (agentId) => this.agents.get(agentId)?.assistantMode?.enabled === true,
+      placeGatewayFor: (agentId, platform, transportScope) => {
+        const integrationId = this.integrationIdForTransportScope(agentId, platform, transportScope)
+        return integrationId ? this.connForIntegration(integrationId) : undefined
+      },
+      placeStore: this.store,
       attachmentReaderFor: (integrationId) =>
         this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
@@ -4262,7 +4269,8 @@ export class Daemon {
           organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true,
           decisions:
             !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
-          currentPlatform: platform
+          currentPlatform: platform,
+          assistantMode: agent.assistantMode?.enabled === true
         })
         // Static descriptor, dynamic authority: a per-thread ACP session can
         // outlive many hook deliveries. The call resolves the CURRENT daemon-

@@ -66,7 +66,8 @@ const advertised: ToolDescriptor[] = [
   ...toolsForIntegrations([slackInt, telegramInt, qqInt], {
     organizationKnowledge: true,
     decisions: true,
-    currentPlatform: 'slack'
+    currentPlatform: 'slack',
+    assistantMode: true
   }),
   ...toolsForIntegrations([slackInt, telegramInt], {
     organizationKnowledge: true,
