@@ -312,13 +312,23 @@ describe('IntegrationChannelList session mode', () => {
     expect(html).not.toContain('Per thread')
   })
 
-  // A DM is one continuous exchange already, and a group DM is not a place this is configured either.
-  it('offers it on no direct conversation', () => {
-    for (const kind of ['im', 'mpim'] as const) {
-      const html = render([{ channelId: 'D1', name: '@alice', kind, trigger: 'any' }])
-      expect(html, kind).not.toContain('Session mode')
-      expect(html, kind).not.toContain('Per thread')
-    }
+  // Most platforms' DMs are one continuous exchange already, and a group DM is not a place this is configured either.
+  it('offers it on no direct conversation where the platform keeps DMs continuous', () => {
+    for (const platform of ['telegram', 'discord', 'feishu'])
+      for (const kind of ['im', 'mpim'] as const) {
+        const html = render([{ channelId: 'D1', name: '@alice', kind, trigger: 'any' }], platform)
+        expect(html, `${platform} ${kind}`).not.toContain('Session mode')
+        expect(html, `${platform} ${kind}`).not.toContain('Per thread')
+      }
+  })
+
+  // A Slack DM opens a session per top-level message, so its row may pick one session instead.
+  it('offers it on a Slack DM, but not on a Slack group DM', () => {
+    const dm = render([{ channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any', sessionMode: 'append' }])
+    expect(dm).toContain('title="Respond to · Session mode"')
+    expect(dm).toContain('<span>Single session</span>')
+    const group = render([{ channelId: 'G1', name: '@alice, bob', kind: 'mpim', trigger: 'any' }])
+    expect(group).not.toContain('Session mode')
   })
 
   it('offers it nowhere the platform allows only one mode', () => {

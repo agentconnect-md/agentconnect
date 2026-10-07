@@ -90,6 +90,25 @@ describe('slack ingress plugin — review-pinned regressions', () => {
     await ingest.handleEvent({ type: 'app_home_opened', channel: 'D1', user: 'U1', tab: 'messages' }, 0, 'Ev3')
     expect(h.forwardAction).not.toHaveBeenCalled()
   })
+  it("forwards an Assistant 'new chat' to the DM's owner, never as chat", async () => {
+    const h = host({ forward: vi.fn() })
+    const resolve = vi.spyOn(h.directory, 'resolveTarget')
+    const ingest = slackIngressPlugin.buildIngest(slackAssignment(), h)!
+    const started = (thread: Record<string, string>) => ({ type: 'assistant_thread_started', assistant_thread: thread })
+    await ingest.handleEvent(started({ user_id: 'U1', channel_id: 'D1' }), 0, 'Ev1')
+    expect(h.forwardAction).not.toHaveBeenCalled()
+    await ingest.handleEvent(started({ user_id: 'U1', channel_id: 'D1', thread_ts: '1720000000.000500' }), 0, 'Ev2')
+    expect(resolve).toHaveBeenCalledWith('bot-1', { channelId: 'D1' })
+    expect(h.forwardAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: ROUTE.agentId,
+        userId: 'U1',
+        payload: { kind: 'assistant-thread-started', channelId: 'D1', threadTs: '1720000000.000500' }
+      }),
+      ROUTE
+    )
+    expect(h.forward).not.toHaveBeenCalled()
+  })
   it('a shortcut whose daemon is OFFLINE returns false (local unavailable modal, trigger not eaten)', () => {
     // The trigger id is one-shot: returning true consumes it. An offline daemon
     // must fall back to the local unavailable path exactly like an unroutable

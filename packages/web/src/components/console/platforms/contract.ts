@@ -579,6 +579,8 @@ export interface WebChannelListSemantics {
    *  platform that has channels. A platform opts out by omitting one rather than core
    *  branching on a platform name. */
   sessionModes?: readonly ('createNew' | 'append')[]
+  /** Session modes a 1:1 DM row offers. Absent ⇒ none: the platform's DMs are one continuous session already. */
+  dmSessionModes?: readonly ('createNew' | 'append')[]
   /**
    * Confirmation shown before a row's default dispatch moves OFF a RESTRICTED agent.
    * Where an owner compiles to a per-conversation default rather than an ownership
