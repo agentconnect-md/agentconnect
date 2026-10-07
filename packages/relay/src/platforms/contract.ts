@@ -199,7 +199,7 @@ export interface RelayIngressHost {
      * applied at every rung. `undefined` = nothing addressable (the plugin
      * answers the platform accordingly and forwards nothing).
      */
-    resolveTarget(botId: string, coords: { channelId: string; threadTs: string }): RouteTarget | undefined
+    resolveTarget(botId: string, coords: { channelId: string; threadTs?: string }): RouteTarget | undefined
     /**
      * The STOP-only bound-target lookup (linear-integration.md §9.3): the session's
      * stored affinity target, validated against current membership and placement (the

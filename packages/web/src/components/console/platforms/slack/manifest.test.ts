@@ -50,6 +50,7 @@ describe('manifest parity with the Control Plane', () => {
       'agent_session_stopped',
       'agent_session_title_changed',
       'app_mention',
+      'app_home_opened',
       'app_uninstalled',
       'assistant_thread_started',
       'assistant_thread_context_changed',

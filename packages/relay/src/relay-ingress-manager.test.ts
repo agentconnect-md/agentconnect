@@ -27,6 +27,7 @@ import { RelayIngressManager, aggregateAdmission, type RelayIngressManagerDeps }
 // core re-export shim that outlived the #571 route migration (audit F7).
 import {
   forwardSessionAction,
+  forwardAppHomeOpened,
   forwardSessionShortcut,
   forwardSessionStop,
   httpSlackActionMsgId,
@@ -244,6 +245,37 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     })
     expect(second.msgId).toBe(first.msgId)
     expect(first.msgId).toMatch(/^slack-action:[a-f0-9]{64}$/)
+  })
+
+  it('routes Messages opens to the current owner instead of old DM affinity, and respects Off', () => {
+    const sendMsg = vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: () => ({ sendMsg }) as unknown as RelayDaemonConnection })
+    )
+    const internals = internalsOf(manager)
+    const assigned = assignment()
+    assigned.defaultAgentId = AGENT_ID
+    assigned.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
+    assigned.agents.push({ agentId: OTHER_AGENT_ID, name: 'Custom agent' })
+    assigned.routes.push({
+      agentId: OTHER_AGENT_ID,
+      daemonId: OTHER_DAEMON_ID,
+      integrationId: OTHER_INTEGRATION_ID,
+      scope: { channel: 'D1' },
+      match: { kind: 'dm' }
+    })
+    internals.router.upsert(assigned)
+    internals.router.setAffinity(BOT_ID, 'D1/D1', {
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      integrationId: INTEGRATION_ID
+    })
+    forwardAppHomeOpened(internals.ingressHost, BOT_ID, { channelId: 'D1', userId: 'U1', interactionId: 'Ev1' })
+    expect(sendMsg).toHaveBeenCalledWith(expect.objectContaining({ agentId: OTHER_AGENT_ID }))
+    sendMsg.mockClear()
+    internals.router.upsert({ ...assigned, mutedChannels: ['D1'] })
+    forwardAppHomeOpened(internals.ingressHost, BOT_ID, { channelId: 'D1', userId: 'U1', interactionId: 'Ev2' })
+    expect(sendMsg).not.toHaveBeenCalled()
   })
 
   it('forwards a message shortcut through the current thread affinity', () => {
