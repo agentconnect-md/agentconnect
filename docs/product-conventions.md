@@ -707,6 +707,21 @@ or automatic fallback to a restricted agent instead leaves the conversation Off,
 because only an authorized Console editor may enable it. This same owner boundary
 applies to observed 1:1 and group DMs; classic integrations remain per-agent.
 
+## Slack Home tab
+
+Every AgentConnect Slack app offers a Home tab with public getting-started guidance,
+the configured console entry point, and documentation, support, and privacy links.
+This includes custom agents: the page belongs to the Slack app, so agents sharing
+one bot also share one Home tab. It never lists private agents, configuration,
+organization membership, or conversation history. Console access remains subject
+to the console's normal authentication and authorization.
+
+Home opens publish a view for the visiting Slack user without starting a model
+turn, posting a message, or requiring admission to a conversation. HTTP installs
+serve this page from the relay even when no daemon can receive a task; Socket
+Mode serves the same view from its connection. Existing apps enable Home through
+the normal manifest refresh, after the serving component is upgraded.
+
 ## Direct messages
 
 Opening Slack's Messages tab shows a short welcome in an empty DM and two suggested

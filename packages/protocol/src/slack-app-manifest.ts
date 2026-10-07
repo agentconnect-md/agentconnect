@@ -126,7 +126,7 @@ export function buildSlackAppManifest(name: string, options: SlackAppManifestOpt
     },
     features: {
       bot_user: { display_name: displayName, always_online: true },
-      app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+      app_home: { home_tab_enabled: true, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
       agent_view: {
         agent_description: PLATFORM_APP_DESCRIPTION,
         suggested_prompts: []

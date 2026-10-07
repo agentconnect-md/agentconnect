@@ -498,7 +498,7 @@ describe('SlackHttpIngest.handleInteraction', () => {
   })
 })
 
-describe('SlackHttpIngest channel membership events', () => {
+describe('SlackHttpIngest events', () => {
   const silentLog = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
   const deps = (web: object, over: Partial<SlackHttpIngestDeps> = {}): SlackHttpIngestDeps => ({
     onMessage: vi.fn(async () => {}),
@@ -514,6 +514,27 @@ describe('SlackHttpIngest channel membership events', () => {
     webClientFactory: () => web as never,
     log: silentLog,
     ...over
+  })
+
+  it('publishes Home for each visitor without an agent route or a chat message', async () => {
+    const publish = vi.fn(async (_body: unknown) => ({}))
+    const web = { auth: { test: async () => ({ user_id: 'U-BOT' }) }, views: { publish } }
+    let webAppUrl: string | undefined = 'https://console.example.test'
+    const d = deps(web, { webAppUrl: () => webAppUrl, onAppHomeOpened: vi.fn() })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-VISITOR' })
+    expect(publish).toHaveBeenCalledWith({ user_id: 'U-VISITOR', view: expect.objectContaining({ type: 'home' }) })
+    expect(JSON.stringify(publish.mock.calls[0])).toContain('https://console.example.test')
+    expect(d.onMessage).not.toHaveBeenCalled()
+    expect(d.onAppHomeOpened).not.toHaveBeenCalled()
+    webAppUrl = undefined
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-OTHER' })
+    expect(publish).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(publish.mock.calls[1])).not.toContain('https://console.example.test')
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home' })
+    expect(publish).toHaveBeenCalledTimes(2)
+    await ingest.stop()
   })
 
   it('refreshes the complete paginated snapshot only when the bot itself joins', async () => {

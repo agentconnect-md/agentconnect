@@ -238,6 +238,8 @@ export interface RelayIngressHost {
   reportBotUserId(botId: string, botUserId: string): void
   /** The relay pool's public origin as the CP's deployment snapshot last named it: a provider that signs for its callback URL is checked against it. */
   publicRelayUrl(): string | undefined
+  // Public console origin for provider-owned onboarding, without tenant-specific information.
+  webAppUrl(): string | undefined
   /** Event-identity dedup — CORE owns the bounded, TTL'd table; the PLUGIN
    *  mints the identity (it derives from parsed envelope semantics, §8) and
    *  carries it on its verified product into `handle`. True ⇒ already seen

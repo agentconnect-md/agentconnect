@@ -334,6 +334,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
         onSessionStopped: (stop) => forwardSessionStop(host, botId, stop),
         onAppHomeOpened: (opened) => forwardAppHomeOpened(host, botId, opened),
         onAssistantThreadStarted: (started) => forwardAssistantThreadStarted(host, botId, started),
+        webAppUrl: () => host.webAppUrl(),
         onBotRevoked: (reason, proof) => {
           host.log.warn(`relay-ingress(${botId}): workspace revoked the app (${reason})`)
           // Fence with the generation THIS ingest was built from, so a late probe of an older ingest cannot revoke its replacement.

@@ -70,6 +70,11 @@ export const RcDeploymentConfig = z.object({
   revision: z.number().int().nonnegative(),
   githubWebhookSecret: z.string().min(1).optional(),
   googleChatAnchor: RcGoogleChatAnchor.optional(),
+  // Console links in provider-owned onboarding use the configured origin, without an organization path.
+  webAppUrl: z
+    .string()
+    .url({ protocol: /^https?$/ })
+    .optional(),
   // The relay pool's public origin (the CP's PUBLIC_RELAY_URL): a provider that signs for its callback URL is checked against it.
   publicRelayUrl: z
     .string()
