@@ -589,6 +589,47 @@ describe('SlackHttpIngest events', () => {
     await ingest.stop()
   })
 
+  it('offers workspace setup in Home and DMs before an organization is connected, without forwarding chat', async () => {
+    const publish = vi.fn(async (_body: unknown) => ({}))
+    const postMessage = vi.fn(async (_body: unknown) => ({}))
+    const web = {
+      auth: { test: async () => ({ user_id: 'U-BOT', bot_id: 'B-BOT' }) },
+      views: { publish },
+      chat: { postMessage }
+    }
+    const connectUrl = 'https://console.example.test/slack/connect?installation=example'
+    const d = deps(web, { appHomeContext: () => ({ webAppUrl: 'https://console.example.test', connectUrl }) })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-VISITOR' })
+    expect(JSON.stringify(publish.mock.calls[0])).toContain('Connect AgentConnect')
+    expect(JSON.stringify(publish.mock.calls[0])).toContain(connectUrl)
+    expect(postMessage).not.toHaveBeenCalled()
+    await ingest.handleEvent({
+      type: 'message',
+      user: 'U-VISITOR',
+      channel: 'D1',
+      channel_type: 'im',
+      ts: '1.1',
+      text: 'hello'
+    })
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'D1', text: expect.stringContaining('Home tab') })
+    )
+    await ingest.handleEvent({
+      type: 'app_mention',
+      user: 'U-VISITOR',
+      channel: 'C1',
+      ts: '2.1',
+      text: '<@U-BOT> hello'
+    })
+    expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ channel: 'C1', thread_ts: '2.1' }))
+    await ingest.handleEvent({ type: 'message', user: 'U-VISITOR', channel: 'C1', ts: '3.1', text: 'chatter' })
+    expect(postMessage).toHaveBeenCalledTimes(2)
+    expect(d.onMessage).not.toHaveBeenCalled()
+    await ingest.stop()
+  })
+
   it('refreshes the complete paginated snapshot only when the bot itself joins', async () => {
     const conversations = vi.fn(async ({ cursor }: { cursor?: string }) =>
       cursor

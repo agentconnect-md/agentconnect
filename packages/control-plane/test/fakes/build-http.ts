@@ -74,6 +74,7 @@ import {
   PgExternalMemoryGrantRepo,
   PgSlackInstallStore,
   PgSlackPlatformInstallStore,
+  PgSlackWorkspaceInstallStore,
   PgFeishuAppRegistrationStore,
   PgThreadAffinityStore,
   PgSlackUserConfigStore,
@@ -141,6 +142,9 @@ import {
 import { feishuRegistrationRoutes } from '../../src/http/routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from '../../src/http/routes/slack-bot-refresh.js'
 import { slackBotTokenRoutes } from '../../src/http/routes/slack-bot-token.js'
+import { slackWorkspaceClaimRoutes, slackWorkspacePublicRoutes } from '../../src/http/routes/slack-workspace-install.js'
+import { slackWorkspaceIngress } from '../../src/platforms/slack/workspace-install.js'
+import { resolveWebAppUrl } from '../../src/config/env.js'
 import { telegramCheckRoutes } from '../../src/http/routes/telegram-check.js'
 import type {
   FeishuRouteSeams,
@@ -574,6 +578,7 @@ export function buildHttpApp(
       agentMemoryHistory: new PgAgentMemoryHistoryRepo(prisma),
       slackInstall: new PgSlackInstallStore(prisma, cipher),
       slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
+      slackWorkspaceInstall: new PgSlackWorkspaceInstallStore(prisma, cipher),
       feishuAppRegistration: feishuAppRegistrationStore,
       slackUserConfig: slackUserConfigStore,
       linearToken: linearTokenStore,
@@ -812,15 +817,25 @@ export function buildHttpApp(
     createSlackCpProvider({
       verifyBot: slackSeams.verifyBot!,
       verifyAppToken: slackSeams.verifyAppToken!,
+      unclaimedIngress: slackWorkspaceIngress(
+        deps.repos.slackWorkspaceInstall,
+        slackSeams.platformApp,
+        resolveWebAppUrl(deps.config)
+      ),
       funnelRoutes: {
         org: [
           slackInstallRoutes(deps, slackSeams),
           slackPlatformInstallRoutes(deps, slackSeams),
+          slackWorkspaceClaimRoutes(deps, slackSeams),
           slackConfigRoutes(deps, slackSeams),
           slackBotRefreshRoutes(deps, slackSeams),
           slackBotTokenRoutes(deps, slackSeams)
         ],
-        publicCallback: [slackOauthCallbackRoutes(deps, slackSeams), slackPlatformCallbackRoutes(deps, slackSeams)]
+        publicCallback: [
+          slackOauthCallbackRoutes(deps, slackSeams),
+          slackPlatformCallbackRoutes(deps, slackSeams),
+          slackWorkspacePublicRoutes(deps, slackSeams)
+        ]
       },
       toolingCredentials: slackSeams.toolingCredentials!
     }),

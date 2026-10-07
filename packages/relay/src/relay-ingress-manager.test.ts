@@ -3059,6 +3059,24 @@ describe('RelayIngressManager lifecycle is registry-driven (a third platform)', 
     expect(internals.entryFor(SYNTHETIC)).toBeDefined()
   })
 
+  it('keeps a newer claimed assignment when an older snapshot or slow ingest teardown arrives late', async () => {
+    const { manager, built } = build()
+    await manager.assign(syntheticAssignment({ credentialRevision: 2 }))
+    await manager.assign(syntheticAssignment({ credentialRevision: 1 }))
+    expect(built).toHaveLength(1)
+    let release!: () => void
+    built[0]!.stop = () =>
+      new Promise<void>((resolve) => {
+        release = resolve
+      })
+    const slow = manager.assign(syntheticAssignment({ credentialRevision: 3 }))
+    await manager.assign(syntheticAssignment({ credentialRevision: 4 }))
+    release()
+    await slow
+    expect(built).toHaveLength(2)
+    await manager.unassign(BOT_ID)
+  })
+
   it('hands the platform route the admission verdict its handler produced, untouched', async () => {
     const admission = { disposition: 'retry' as const, reason: 'draining' as const }
     const plugin: RelayPlatformIngressPlugin = {

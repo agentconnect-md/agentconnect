@@ -954,7 +954,8 @@
       "activate": "激活账户 · AgentConnect",
       "join": "加入组织 · AgentConnect",
       "welcome": "开始使用 · AgentConnect",
-      "googleChatClaim": "连接 Google Chat · AgentConnect"
+      "googleChatClaim": "连接 Google Chat · AgentConnect",
+      "slackConnect": "连接 Slack · AgentConnect"
     },
     "login": {
       "brandLead": "在团队已在使用的工具中运行你的 Agent。",
@@ -983,6 +984,30 @@
       "goToAgentConnect": "前往 AgentConnect",
       "joining": "正在加入组织…",
       "role": "你将以协作者身份加入。"
+    },
+    "slackConnect": {
+      "title": "连接 Slack 工作区",
+      "description": "为此工作区选择组织和 agent。Slack 已完成授权，无需再次安装应用。",
+      "workspace": "工作区：{name}",
+      "organization": "组织",
+      "agent": "Agent",
+      "noOrganizations": "请先创建组织，然后回到此页面刷新，完成 Slack 连接。",
+      "createOrganization": "创建组织",
+      "noAgents": "此组织中没有你可以连接的 agent。请创建一个，或向组织所有者申请权限，然后刷新。",
+      "manageAgents": "管理 agents",
+      "connect": "连接工作区",
+      "connecting": "正在连接…",
+      "refresh": "刷新",
+      "doneTitle": "Slack 已连接",
+      "doneBody": "回到 Slack 即可向 agent 发消息。在频道中使用时，请先邀请应用加入，再 @提及它。Agent 现有的访问权限和触发设置仍然适用。",
+      "backToSlack": "返回 Slack",
+      "configureAgent": "配置 agent",
+      "identityRequired": "请使用安装此应用的 Slack 账号。在 AgentConnect 个人资料中关联该 Slack 账号，然后回到此页面刷新。",
+      "openProfile": "打开个人资料",
+      "invalidLink": "此连接链接无效。请打开 Slack 中应用的 Home 标签页，继续设置。",
+      "storageBlocked": "请允许此网站存储浏览器数据，然后刷新以继续登录。",
+      "loadError": "无法加载连接选项，请刷新重试。",
+      "connectError": "无法连接此工作区，请重试。"
     },
     "googleChatClaim": {
       "preparing": "正在准备…",

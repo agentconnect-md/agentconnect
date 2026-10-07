@@ -6,6 +6,7 @@ export interface SlackAppHomeContext {
   agentId?: string | undefined
   connected?: boolean | undefined
   botId?: string | undefined
+  connectUrl?: string | undefined
 }
 
 // Links use normal console authorization; the view never includes private configuration or membership.
@@ -15,6 +16,7 @@ export function buildSlackAppHomeView(botUserId: string, context: SlackAppHomeCo
     context.webAppUrl && /^https?:\/\//.test(context.webAppUrl) ? context.webAppUrl.replace(/\/+$/, '') : undefined
   const orgUrl = consoleUrl && context.orgSlug ? `${consoleUrl}/${encodeURIComponent(context.orgSlug)}` : undefined
   const disconnected = context.connected === false
+  const connectUrl = context.connectUrl?.startsWith('https://') ? context.connectUrl : undefined
   const reconnectUrl =
     orgUrl && context.botId ? `${orgUrl}/integrations?reconnect=${encodeURIComponent(context.botId)}` : consoleUrl
   return {
@@ -36,9 +38,11 @@ export function buildSlackAppHomeView(botUserId: string, context: SlackAppHomeCo
         type: 'section' as const,
         text: {
           type: 'mrkdwn' as const,
-          text: disconnected
-            ? '*No agent connected*\nThis app is installed in your Slack workspace, but it is not connected to an agent. Reconnect it in AgentConnect to start receiving replies.'
-            : `*Get started*\n• Send this app a direct message to start a task.\n• Invite ${mention} to a channel, then @mention it with your task.\n• Reply in the same thread to continue the conversation.`
+          text: connectUrl
+            ? '*Connect your workspace*\nAgentConnect is installed in your Slack workspace. Connect it to an organization and agent to start receiving replies.'
+            : disconnected
+              ? '*No agent connected*\nThis app is installed in your Slack workspace, but it is not connected to an agent. Reconnect it in AgentConnect to start receiving replies.'
+              : `*Get started*\n• Send this app a direct message to start a task.\n• Invite ${mention} to a channel, then @mention it with your task.\n• Reply in the same thread to continue the conversation.`
         }
       },
       { type: 'divider' as const },
@@ -46,9 +50,11 @@ export function buildSlackAppHomeView(botUserId: string, context: SlackAppHomeCo
         type: 'section' as const,
         text: {
           type: 'mrkdwn' as const,
-          text: disconnected
-            ? '*Reconnect your agent*\nChoose an agent in the AgentConnect console and connect this Slack app. If you do not have access, ask an organization owner or the person who set up this app.'
-            : '*Manage your agents*\nUse the AgentConnect console to set up agents, choose models, and connect tools. For access or help completing setup, contact the person who connected this app.'
+          text: connectUrl
+            ? '*Finish setup*\nThe person who installed this app can sign in to AgentConnect, choose an organization and agent, and connect this workspace.'
+            : disconnected
+              ? '*Reconnect your agent*\nChoose an agent in the AgentConnect console and connect this Slack app. If you do not have access, ask an organization owner or the person who set up this app.'
+              : '*Manage your agents*\nUse the AgentConnect console to set up agents, choose models, and connect tools. For access or help completing setup, contact the person who connected this app.'
         }
       },
       ...(consoleUrl
@@ -59,8 +65,12 @@ export function buildSlackAppHomeView(botUserId: string, context: SlackAppHomeCo
                 {
                   type: 'button' as const,
                   action_id: `${SLACK_APP_HOME_ACTION_PREFIX}console`,
-                  text: { type: 'plain_text' as const, text: orgUrl ? 'Open organization' : 'Open AgentConnect' },
-                  url: orgUrl ? `${orgUrl}/home` : consoleUrl
+                  text: {
+                    type: 'plain_text' as const,
+                    text: connectUrl ? 'Connect AgentConnect' : orgUrl ? 'Open organization' : 'Open AgentConnect'
+                  },
+                  url: connectUrl ?? (orgUrl ? `${orgUrl}/home` : consoleUrl),
+                  ...(connectUrl ? { style: 'primary' as const } : {})
                 },
                 ...(orgUrl
                   ? [

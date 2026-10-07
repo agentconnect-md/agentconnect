@@ -294,14 +294,18 @@ installed via standard OAuth v2. Verified gaps against current code:
   client and signing secrets live in the DB-backed deployment configuration and
   are edited through Setup. Without that provider configuration, the
   one-click platform App is absent and the per-agent setup paths remain available.
-- **Install starts from the console.** The OAuth callback strictly requires a `state`
-  resolving to a pending-install row (`routes/slack-install.ts` renders denied/expired
-  otherwise), and a bare share URL cannot carry org/agent tenancy. A new route mints
-  `state` binding `{orgId, targetAgentId, userId}` and redirects to the authorize URL;
-  any public landing page can only bounce the user back into their console.
-- **Callback branch.** Exchange with the platform credentials and **persist `team.id`
-  and `bot_user_id`** — today `SlackOAuthResult` deliberately drops `team.id`
-  (`http/slack-config-api.ts`).
+- **Two install entry points.** The console mints OAuth state bound to an organization
+  and agent. The public `/v1/integrations/slack/install` entry instead binds state to
+  a browser cookie, allowing Slack authorization before an account or organization
+  exists. Both use the same registered callback and reject expired or consumed state.
+- **Workspace connection.** An unclaimed installation stores the workspace, bot and
+  installing Slack user identities with deployment-scoped credentials. A provider-owned
+  relay assignment serves Home and setup guidance without any agent routes. The
+  installer signs in with that Slack identity and chooses an editable organization
+  and agent. One transaction moves the token to the organization key, creates the
+  bot and membership, and removes the unclaimed row. The bot retains the installation
+  id with an advanced credential revision, fencing stale assignments and revocations.
+  Existing bindings survive public reauthorization; enabling sharing remains explicit.
 - **Schema.** `Bot.teamId` (nullable when no workspace was captured), projected
   into the `(platform, externalAppId, externalTenantId)` unique; multiple `Bot`
   rows may now share one `slackAppId` across orgs.

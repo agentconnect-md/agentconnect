@@ -2878,9 +2878,8 @@ model SlackInstall {
 // org/agent/bot delete is harmless.
 model SlackPlatformInstall {
   id              String                     @id @db.Uuid // == OAuth state
-  orgId           String
-  // Generic installs bind a target agent. A bot-bound Settings reauthorization
-  // leaves this null so a freed bot stays free.
+  orgId           String?
+  // Public installs defer binding; bot-bound reauthorization preserves existing memberships.
   agentId         String?                    @db.Uuid
   // Terminal state of the OAuth round trip — the row IS the console's completion
   // signal. It must survive the callback (not be deleted) because a successful
@@ -2904,6 +2903,23 @@ model SlackPlatformInstall {
   settledAt       DateTime?                  @db.Timestamptz(6)
 
   @@map("slack_platform_install")
+}
+
+// An authorized workspace awaiting its first organization and agent binding.
+model SlackWorkspaceInstall {
+  id                 String   @id @db.Uuid
+  appId              String
+  teamId             String
+  teamName           String?
+  botUserId          String
+  installerUserId    String
+  botToken           String
+  grantedScopes      String[] @default([])
+  credentialRevision Int      @default(1)
+  installedAt        DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([appId, teamId])
+  @@map("slack_workspace_install")
 }
 
 /**

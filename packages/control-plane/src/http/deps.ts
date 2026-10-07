@@ -49,6 +49,7 @@ import type {
   MemoryConnectionWriter,
   SlackInstallStore,
   SlackPlatformInstallStore,
+  SlackWorkspaceInstallStore,
   FeishuAppRegistrationStore,
   SlackUserConfigStore,
   LinearTokenStore,
@@ -124,6 +125,7 @@ import type { RuntimeConfigRouteDeps } from './routes/runtime-config.js'
 import type { ProviderKeyProvider } from '@agentconnect.md/protocol'
 
 export interface HttpServerConfig extends HumanAuthConfig {
+  SLACK_INSTALL_TTL_SEC?: number
   /** Drives browser CORS for the Web UI (see `buildHttpServer`). */
   NODE_ENV?: 'development' | 'test' | 'production'
   CORS_ORIGIN?: string
@@ -274,6 +276,7 @@ export interface HttpDeps {
     slackInstall: SlackInstallStore
     /** Pending platform-app installs (preset-agents.md §5.3): OAuth state → tenancy, no secrets. */
     slackPlatformInstall: SlackPlatformInstallStore
+    slackWorkspaceInstall: SlackWorkspaceInstallStore
     /** Durable, encrypted Feishu/Lark one-click device registrations. */
     feishuAppRegistration: FeishuAppRegistrationStore
     /** One org's stored Slack App Configuration token (§Tier B); holds secret material, never DTO'd. */

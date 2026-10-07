@@ -4770,9 +4770,8 @@ export type SlackPlatformInstallStatus = 'pending' | 'completed' | 'failed'
 
 export interface SlackPlatformInstallRecord {
   id: string // == OAuth state (random uuid)
-  orgId: OrgId
-  /** Generic-install bind target. Null for bot-bound Settings reauthorization,
-   *  which preserves the bot's current (possibly empty) membership set. */
+  orgId: OrgId | null
+  // Null for public installs before binding and for reauthorization that preserves existing memberships.
   agentId: AgentId | null
   /** Terminal state of the OAuth round trip — the console's completion signal. */
   status: SlackPlatformInstallStatus
@@ -4792,7 +4791,7 @@ export interface SlackPlatformInstallRecord {
 export interface SlackPlatformInstallStore {
   create(input: {
     id: string
-    orgId: OrgId
+    orgId?: OrgId
     agentId?: AgentId
     /** Bind OAuth to an existing platform Bot/workspace without changing membership. */
     botId?: BotId
@@ -4818,6 +4817,36 @@ export interface SlackPlatformInstallStore {
   /** TTL sweep: delete rows created before `staleBefore` (settled or not — a
    *  settled row has already been observed, or the tab is long gone). */
   reapExpired(staleBefore: Date): Promise<number>
+}
+
+export interface SlackWorkspaceInstallRecord {
+  id: string
+  appId: string
+  teamId: string
+  teamName: string | null
+  botUserId: string
+  installerUserId: string
+  botToken: string
+  grantedScopes: string[]
+  credentialRevision: number
+  installedAt: Date
+}
+
+export interface SlackWorkspaceInstallStore {
+  put(
+    input: Omit<SlackWorkspaceInstallRecord, 'id' | 'credentialRevision' | 'installedAt'>
+  ): Promise<SlackWorkspaceInstallRecord>
+  get(id: string): Promise<SlackWorkspaceInstallRecord | null>
+  list(): Promise<SlackWorkspaceInstallRecord[]>
+  claim(input: {
+    id: string
+    revision: number
+    orgId: OrgId
+    agentId: AgentId
+    userId: string
+    signingSecret: string
+  }): Promise<BotId | null>
+  revoke(id: string, fence: { revision?: number; eventAtMs?: number }): Promise<boolean>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

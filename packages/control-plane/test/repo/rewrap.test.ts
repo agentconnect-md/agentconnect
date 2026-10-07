@@ -90,6 +90,17 @@ async function seedAllSecretTables(): Promise<void> {
     }
   })
 
+  await prisma.slackWorkspaceInstall.create({
+    data: {
+      id: randomUUID(),
+      appId: 'AEXAMPLE',
+      teamId: 'TEXAMPLE',
+      botUserId: 'UBOT',
+      installerUserId: 'UINSTALLER',
+      botToken: 'xoxb-unconnected-plain'
+    }
+  })
+
   // Short-lived install-flow state — the table this sweep did not reach until
   // per-org keys made an unswept value an unshreddable one.
   const feishuIntegration = await prisma.integration.create({
@@ -189,7 +200,8 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
       'provider_key',
       'provider_key_header',
       'slack_install',
-      'slack_user_config'
+      'slack_user_config',
+      'slack_workspace_install'
     ])
     // Every table saw its seeded row with no concurrent-write skips; bot_secret
     // resealed 2 values (null signingSecret stays null), the external-memory
@@ -220,6 +232,7 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     expect(install.clientSecret).toBe('sealed:cs-plain')
     expect(install.botToken).toBe('sealed:xoxb-pending-plain')
     expect(install.signingSecret).toBeNull()
+    expect((await prisma.slackWorkspaceInstall.findFirstOrThrow()).botToken).toBe('sealed:xoxb-unconnected-plain')
     const cfg = await prisma.slackUserConfig.findFirstOrThrow()
     expect(cfg.accessToken).toBe('sealed:xoxe.xoxp-plain')
     expect(cfg.refreshToken).toBe('sealed:xoxe-plain')

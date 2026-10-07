@@ -728,6 +728,16 @@ valid, and does not enable sharing. A bound agent with no available daemon is no
 shown as disconnected. Uninstalling the app in Slack or revoking its token stops
 ingress; deleting the saved bot or its organization still deletes its credentials.
 
+The distributed app can also be installed before an AgentConnect organization is
+chosen. Its public install entry is `/v1/integrations/slack/install`. The unconnected
+installation serves Home with **Connect AgentConnect**, and DMs or mentions explain
+how to finish setup without starting a model turn. The installing Slack user signs
+in, chooses an organization they can edit and an agent they can configure, and
+connects the workspace using the authorization already granted. This binding applies
+to the workspace, not to individual Slack accounts. It starts with one agent and
+does not enable sharing or change the agent's access and trigger settings. Reinstalling
+an already connected workspace preserves its organization and agent memberships.
+
 Home opens publish a view for the visiting Slack user without starting a model
 turn, posting a message, or requiring admission to a conversation. HTTP installs
 serve this page from the relay even when no daemon can receive a task; Socket
