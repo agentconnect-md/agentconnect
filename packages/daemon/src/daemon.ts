@@ -2255,6 +2255,7 @@ export class Daemon {
       boltDebug: () => this.cfg.logging.level === 'debug' || this.cfg.logging.level === 'trace',
       slackAppFactory: () => this.opts.slackAppFactory,
       webAppUrl: () => this.cfg.webAppUrl ?? this.cpWebAppUrl,
+      orgSlug: () => this.cpOrgSlug,
       googleChatWriteBudgets: () =>
         (this.googleChatBudgets ??= new GoogleChatWriteBudgets(googleChatWriteBudgetSettings(this.cfg.googleChat))),
       agents: () => this.agents,

@@ -120,6 +120,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   /** The test seam that swaps Bolt's App for a fake; undefined in production. */
   slackAppFactory(): SlackAppFactory | undefined
   webAppUrl(): string | undefined
+  orgSlug(): string | undefined
   /** The daemon's per-app Google Chat write budgets (§10.8), shared by every connection of one app. */
   googleChatWriteBudgets(): GoogleChatWriteBudgets
   agents(): Map<string, LoadedAgent>
@@ -307,7 +308,17 @@ export class ConnectionReconciler {
   private slackSocketDeps(conn: () => SlackConnection, group: ConsolidatedGroup): Omit<SlackDeps, 'group'> {
     return {
       newTraceId: () => randomUUID(),
-      webAppUrl: () => this.host.webAppUrl(),
+      appHomeContext: () => {
+        const ids = this.host.srcIntegrationIds(conn())
+        const agents = this.host
+          .transportAgents()
+          .filter((agent) => agent.integrations.some((integration) => ids.includes(integration.id)))
+        return {
+          webAppUrl: this.host.webAppUrl(),
+          orgSlug: this.host.orgSlug(),
+          agentId: agents.length === 1 ? agents[0]!.id : undefined
+        }
+      },
       onMessage: (msg) => {
         this.host.slackNameResolver()?.noteMessage(conn(), msg)
         this.host.onInbound(msg, this.host.srcIntegrationIds(conn()))

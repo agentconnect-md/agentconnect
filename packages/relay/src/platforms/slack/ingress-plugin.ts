@@ -334,7 +334,18 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
         onSessionStopped: (stop) => forwardSessionStop(host, botId, stop),
         onAppHomeOpened: (opened) => forwardAppHomeOpened(host, botId, opened),
         onAssistantThreadStarted: (started) => forwardAssistantThreadStarted(host, botId, started),
-        webAppUrl: () => host.webAppUrl(),
+        appHomeContext: (channelId) => ({
+          webAppUrl: host.webAppUrl(),
+          orgSlug: a.orgSlug,
+          ...(a.installedAgentIds ? { connected: a.installedAgentIds.length > 0, botId } : {}),
+          agentId:
+            (channelId ? host.directory.resolveTarget(botId, { channelId }) : undefined)?.agentId ??
+            (a.installedAgentIds
+              ? a.installedAgentIds.length === 1
+                ? a.installedAgentIds[0]
+                : undefined
+              : host.directory.soleTarget(botId)?.agentId)
+        }),
         onBotRevoked: (reason, proof) => {
           host.log.warn(`relay-ingress(${botId}): workspace revoked the app (${reason})`)
           // Fence with the generation THIS ingest was built from, so a late probe of an older ingest cannot revoke its replacement.

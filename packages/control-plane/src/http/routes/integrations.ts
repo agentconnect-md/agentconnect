@@ -336,13 +336,8 @@ export function integrationRoutes(deps: HttpDeps) {
                 message: 'this bot’s Slack app was uninstalled or its tokens were revoked; reinstall it instead'
               })
             }
-            // A platform-app install starts NON-shareable (preset-agents.md §5.5)
-            // — one workspace ⇒ one agent. Its `teamId` is the marker: only the
-            // distributed app persists one. Widening it must be a deliberate
-            // opt-in (the Settings → Bots sharing toggle), never the silent
-            // `update({ shareable: true })` promotion the http branch below applies to
-            // classic bots; once shared it reuses like any shared bot.
-            if (bot.teamId && !bot.shareable) {
+            // Reconnecting a freed workspace app preserves its one-agent cap; widening a live app requires opt-in.
+            if (bot.teamId && !bot.shareable && bot.agentIds.length > 0) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,
@@ -1412,8 +1407,7 @@ export function integrationRoutes(deps: HttpDeps) {
           // The row-scoped half is the shared skeleton (`http/uninstall.ts`): delete,
           // re-derive the freed stamp, and tell the agent's daemons to drop the spec.
           await removeIntegrationRow(deps, app.log, { orgId: orgIdOf(req), integration: existing, agent })
-          // HTTP bot: recompute the relay's routes + members (or release it if this
-          // was the last install).
+          // Recompute HTTP routes; the provider decides whether an unbound installation keeps ingress.
           if (botBefore?.transport === 'http') await deps.httpBot.syncBot(existing.botId)
           // A platform may give up its freed bot instead of keeping it (a claimed Google Workspace customer).
           if (botBefore) await releaseFreedBot(deps, app.log, orgIdOf(req), botBefore)

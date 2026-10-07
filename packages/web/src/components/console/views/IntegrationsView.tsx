@@ -9,7 +9,7 @@
 // here it carries no agent, so the modal grows an Agent field (ModalProvider's
 // `integration` kind with no target).
 
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
@@ -193,14 +193,25 @@ export default function IntegrationsView() {
   // its installs: the session-access "reauthorize your Slack app" notification
   // is deliberately one of those (see `session-access-notifications.ts`).
   const params = useSearchParams()
-  const targetBotId = params.get('bot')
+  const reconnectBotId = params.get('reconnect')
+  const targetBotId = params.get('bot') ?? reconnectBotId
   const targetPlatform = params.get('platform')
   const { me } = useProfile()
   const { myRole } = useOrgs()
   const { openModal } = useModal()
+  const { bots } = useConsoleData()
+  const reconnectOpened = useRef<string | null>(null)
   const isOwner = myRole === 'owner'
   const canWrite = myRole !== 'viewer' // the CP denies viewer writes; hide the controls too
   const [deletingBot, setDeletingBot] = useState<BotDto | null>(null)
+
+  useEffect(() => {
+    if (!canWrite || !reconnectBotId || reconnectOpened.current === reconnectBotId) return
+    const bot = bots.find((candidate) => candidate.id === reconnectBotId)
+    if (!bot || bot.revokedAt || bot.agentIds.length > 0) return
+    reconnectOpened.current = reconnectBotId
+    openModal('integration', undefined, { platform: bot.platform, botId: bot.id })
+  }, [bots, canWrite, openModal, reconnectBotId])
 
   return (
     <div className="wrap max-desktop:p-4">

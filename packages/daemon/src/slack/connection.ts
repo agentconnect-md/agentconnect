@@ -5,7 +5,8 @@ import {
   buildSlackAppHomeView,
   decodeSlackStatusOverflowValue,
   SLACK_APP_HOME_ACTION_PREFIX,
-  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  type SlackAppHomeContext
 } from '@agentconnect.md/protocol'
 import {
   extractSlackMessageText,
@@ -417,7 +418,7 @@ export interface SlackDeps {
   onAppHomeOpened?: (channel: string) => Promise<void>
   /** Fired when a user starts a new Assistant thread ("new chat") in a DM — a fresh session where the DM appends. */
   onAssistantThreadStarted?: (channel: string, userId?: string, startedAtMs?: number) => Promise<void>
-  webAppUrl?: () => string | undefined
+  appHomeContext?: () => SlackAppHomeContext
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
   onChannelsChanged?: () => void
@@ -1142,7 +1143,7 @@ export class SlackConnection implements PlatformConnection {
           .enqueue(() =>
             this.app.client.views.publish({
               user_id: ev.user,
-              view: buildSlackAppHomeView(this.botUserId, this.deps.webAppUrl?.())
+              view: buildSlackAppHomeView(this.botUserId, this.deps.appHomeContext?.())
             })
           )
           .catch((err) => log?.warn(`slack: Home tab publish failed: ${(err as Error).message}`))

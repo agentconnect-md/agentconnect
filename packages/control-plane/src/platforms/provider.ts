@@ -522,6 +522,9 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   /** Whether an HTTP row may take a relay assignment now; false ⇒ core releases it and replays nothing for it. Absent ⇒ every row may. */
   relayAssignable?(bot: BotRecord): boolean
 
+  // Keep installation UI and lifecycle ingress alive without an agent binding or placement.
+  retainUnboundIngress?: boolean
+
   /** Whether a daemon socket's `integration/revoked` is about this bot's CURRENT credential: the socket identity it reports must match the stored one; absent ⇒ every report refused. */
   socketLifecycleRevocation?(bot: BotRecord, reported: Pick<IntegrationRevoked, 'botUserId' | 'workspaceId'>): boolean
 

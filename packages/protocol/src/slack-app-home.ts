@@ -1,9 +1,22 @@
 export const SLACK_APP_HOME_ACTION_PREFIX = 'ac_home_'
 
-// Public guidance only: shared apps must not expose an agent's configuration or organization membership.
-export function buildSlackAppHomeView(botUserId: string, webAppUrl?: string) {
+export interface SlackAppHomeContext {
+  webAppUrl?: string | undefined
+  orgSlug?: string | undefined
+  agentId?: string | undefined
+  connected?: boolean | undefined
+  botId?: string | undefined
+}
+
+// Links use normal console authorization; the view never includes private configuration or membership.
+export function buildSlackAppHomeView(botUserId: string, context: SlackAppHomeContext = {}) {
   const mention = botUserId ? `<@${botUserId}>` : 'this app'
-  const consoleUrl = webAppUrl && /^https?:\/\//.test(webAppUrl) ? webAppUrl : undefined
+  const consoleUrl =
+    context.webAppUrl && /^https?:\/\//.test(context.webAppUrl) ? context.webAppUrl.replace(/\/+$/, '') : undefined
+  const orgUrl = consoleUrl && context.orgSlug ? `${consoleUrl}/${encodeURIComponent(context.orgSlug)}` : undefined
+  const disconnected = context.connected === false
+  const reconnectUrl =
+    orgUrl && context.botId ? `${orgUrl}/integrations?reconnect=${encodeURIComponent(context.botId)}` : consoleUrl
   return {
     type: 'home' as const,
     blocks: [
@@ -23,7 +36,9 @@ export function buildSlackAppHomeView(botUserId: string, webAppUrl?: string) {
         type: 'section' as const,
         text: {
           type: 'mrkdwn' as const,
-          text: `*Get started*\n• Send this app a direct message to start a task.\n• Invite ${mention} to a channel, then @mention it with your task.\n• Reply in the same thread to continue the conversation.`
+          text: disconnected
+            ? '*No agent connected*\nThis app is installed in your Slack workspace, but it is not connected to an agent. Reconnect it in AgentConnect to start receiving replies.'
+            : `*Get started*\n• Send this app a direct message to start a task.\n• Invite ${mention} to a channel, then @mention it with your task.\n• Reply in the same thread to continue the conversation.`
         }
       },
       { type: 'divider' as const },
@@ -31,7 +46,9 @@ export function buildSlackAppHomeView(botUserId: string, webAppUrl?: string) {
         type: 'section' as const,
         text: {
           type: 'mrkdwn' as const,
-          text: '*Manage your agents*\nUse the AgentConnect console to set up agents, choose models, and connect tools. For access or help completing setup, contact the person who connected this app.'
+          text: disconnected
+            ? '*Reconnect your agent*\nChoose an agent in the AgentConnect console and connect this Slack app. If you do not have access, ask an organization owner or the person who set up this app.'
+            : '*Manage your agents*\nUse the AgentConnect console to set up agents, choose models, and connect tools. For access or help completing setup, contact the person who connected this app.'
         }
       },
       ...(consoleUrl
@@ -42,10 +59,27 @@ export function buildSlackAppHomeView(botUserId: string, webAppUrl?: string) {
                 {
                   type: 'button' as const,
                   action_id: `${SLACK_APP_HOME_ACTION_PREFIX}console`,
-                  text: { type: 'plain_text' as const, text: 'Open AgentConnect' },
-                  url: consoleUrl,
-                  style: 'primary' as const
-                }
+                  text: { type: 'plain_text' as const, text: orgUrl ? 'Open organization' : 'Open AgentConnect' },
+                  url: orgUrl ? `${orgUrl}/home` : consoleUrl
+                },
+                ...(orgUrl
+                  ? [
+                      {
+                        type: 'button' as const,
+                        action_id: `${SLACK_APP_HOME_ACTION_PREFIX}agent`,
+                        text: {
+                          type: 'plain_text' as const,
+                          text: disconnected ? 'Reconnect' : context.agentId ? 'Configure agent' : 'Manage agents'
+                        },
+                        url: disconnected
+                          ? reconnectUrl!
+                          : context.agentId
+                            ? `${orgUrl}/agents/${encodeURIComponent(context.agentId)}?tab=config`
+                            : `${orgUrl}/agents`,
+                        style: 'primary' as const
+                      }
+                    ]
+                  : [])
               ]
             }
           ]

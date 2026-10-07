@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { HttpDeps } from './deps.js'
 import type { BotRecord } from '../persistence/ports.js'
 import { BotId, OrgId } from '../domain/ids.js'
-import { releaseFreedBot } from './uninstall.js'
+import { deleteBotIdentity, releaseFreedBot } from './uninstall.js'
 
 const ORG = OrgId('11111111-1111-4111-8111-111111111111')
 const BOT = BotId('88888888-8888-4888-8888-888888888888')
@@ -33,6 +33,18 @@ function rig(opts: { releases?: boolean; installs?: number; onBotDelete?: () => 
 }
 
 describe('releaseFreedBot', () => {
+  it('stops retained ingress when the saved installation is deleted', async () => {
+    const { deps, bot, deleted } = rig()
+    bot.transport = 'http'
+    deps.platforms.get = () => ({ retainUnboundIngress: true }) as never
+    const unassign = vi.fn(async () => {
+      expect(deleted).toEqual([BOT])
+    })
+    deps.httpBot = { unassign } as unknown as HttpDeps['httpBot']
+    await deleteBotIdentity(deps, log, ORG, bot)
+    expect(unassign).toHaveBeenCalledExactlyOnceWith(bot)
+  })
+
   it('deletes a freed bot its platform releases and runs the declared delete side effect', async () => {
     const onBotDelete = vi.fn(async () => {})
     const { deps, bot, deleted } = rig({ releases: true, onBotDelete })

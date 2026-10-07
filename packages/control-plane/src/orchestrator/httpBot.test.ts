@@ -422,7 +422,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
           getUnscoped: async (id) =>
             daemonCreatedAt[id] === undefined ? null : ({ createdAt: new Date(daemonCreatedAt[id]!) } as never)
         }
-      }
+      },
+      { slugById: async (orgId) => (orgId === ORG ? 'example-org' : null) }
     )
   }
 
@@ -731,6 +732,45 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     })
   })
 
+  it('keeps an unbound installation available for Home, replays it, and restores routing on reconnect', async () => {
+    const orch = makeOrch()
+    integrations = []
+    channels = []
+    botRow = bot({ agentIds: [] })
+    await orch.syncBot(BOT)
+    const disconnected = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
+    expect(disconnected).toMatchObject({ installedAgentIds: [], members: [], agents: [], routes: [] })
+    expect(disconnected.defaultAgentId).toBeUndefined()
+    expect(upserts).toEqual([])
+    const fresh = new FakeChannel(RELAY)
+    await orch.replayTo(fresh)
+    expect(fresh.sends.find((s) => s.type === 'rc/bot-assign')?.payload).toEqual(disconnected)
+    integrations = [integration(INT_A, ALICE)]
+    botRow = bot({ agentIds: [ALICE] })
+    ch.sends = []
+    await orch.syncBot(BOT)
+    expect(ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload).toMatchObject({
+      installedAgentIds: [ALICE],
+      defaultAgentId: ALICE
+    })
+    expect(upserts).toHaveLength(1)
+    botRow = bot({ agentIds: [], revokedAt: new Date() })
+    ch.sends = []
+    await orch.syncBot(BOT)
+    expect(ch.sends.map((s) => s.type)).toEqual(['rc/bot-unassign'])
+  })
+
+  it('keeps bound but unplaced agents distinct from a disconnected installation', async () => {
+    unplacedAgents = new Set([ALICE, BOB])
+    await makeOrch().syncBot(BOT)
+    expect(ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload).toMatchObject({
+      installedAgentIds: [ALICE, BOB],
+      members: [],
+      routes: []
+    })
+    expect(upserts).toEqual([])
+  })
+
   it('assigns the bot to a relay and compiles channel-owner + keyword routes + default', async () => {
     await makeOrch().syncBot(BOT)
 
@@ -739,6 +779,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     // §6.1: a bot assignment is always a chat platform; the kind teaches an older relay
     // to classify an id a newer CP introduces.
     expect(assign.originKind).toBe('chat')
+    expect(assign.orgSlug).toBe('example-org')
+    expect(assign.installedAgentIds).toEqual([ALICE, BOB])
     // §6.7: a manual-paste bot has no demux identity, so the opaque ingress bag ships empty
     // (keys omitted, never null) and the relay verify-scans instead.
     expect(assign.ingress).toEqual({})
