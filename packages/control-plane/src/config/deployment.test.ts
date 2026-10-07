@@ -215,6 +215,10 @@ describe('relayDeploymentSnapshot', () => {
       publicRelayUrl: origin
     })
     expect(relayDeploymentSnapshot(undefined, undefined, undefined)).toBeUndefined()
+    expect(relayDeploymentSnapshot(undefined, undefined, undefined, 'https://console.example.test')).toEqual({
+      revision: 0,
+      webAppUrl: 'https://console.example.test'
+    })
   })
 
   it('keeps the GitHub webhook secret only while the GitHub App is configured', () => {

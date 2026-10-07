@@ -24,11 +24,12 @@ describe('buildInstallManifest', () => {
 
   it('enables Socket Mode and carries the daemon scopes + events', () => {
     const m = buildInstallManifest('acme-bot', REDIRECT) as {
-      features: { shortcuts: { callback_id: string; type: string }[] }
+      features: { app_home: { home_tab_enabled: boolean }; shortcuts: { callback_id: string; type: string }[] }
       oauth_config: { scopes: { bot: string[] } }
       settings: { socket_mode_enabled: boolean; event_subscriptions: { bot_events: string[] } }
     }
     expect(m.settings.socket_mode_enabled).toBe(true)
+    expect(m.features.app_home.home_tab_enabled).toBe(true)
     expect(m.oauth_config.scopes.bot).toEqual([...SLACK_BOT_SCOPES])
     expect(m.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
     expect(m.features.shortcuts).toEqual([
@@ -196,7 +197,7 @@ describe('mergeManagedSlackManifest', () => {
       display_information: { name: 'Custom app', description: 'Keep this description' },
       features: {
         bot_user: { display_name: 'Custom bot', always_online: false },
-        app_home: { home_tab_enabled: true },
+        app_home: { home_tab_enabled: false },
         agent_view: { agent_description: 'Keep this agent description' },
         slash_commands: [{ command: '/custom', description: 'Keep me' }],
         shortcuts: [

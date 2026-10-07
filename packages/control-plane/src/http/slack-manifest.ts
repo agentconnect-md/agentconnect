@@ -187,6 +187,7 @@ export function mergeManagedSlackManifest(
       app_home: {
         ...managedAppHome,
         ...currentAppHome,
+        home_tab_enabled: true,
         messages_tab_enabled: true,
         messages_tab_read_only_enabled: false
       },

@@ -284,6 +284,7 @@ export class RelayIngressManager {
         this.selectThreadAgent(botId, channelId, threadTs, agentId),
       reportBotUserId: (botId, botUserId) => this.router.setBotUserId(botId, botUserId),
       publicRelayUrl: () => this.publicRelayUrl,
+      webAppUrl: () => this.webAppUrl,
       clock: { now: () => this.deps.clock.now() },
       log: this.deps.log
     }
@@ -293,6 +294,7 @@ export class RelayIngressManager {
   private readonly deploymentBots = new Set<string>()
   /** The relay pool's public origin from the latest deployment snapshot. */
   private publicRelayUrl: string | undefined
+  private webAppUrl: string | undefined
   /** The host a deployment-owned ingest gets: every forward is refused and every report to the CP is dropped. */
   private get deploymentHost(): RelayIngressHost {
     return (this.deploymentHostMemo ??= {
@@ -316,6 +318,7 @@ export class RelayIngressManager {
   /** Replace the deployment-owned assignments with those the plugins derive from `snapshot`; run on every registration, as bot assignments are replayed then too. */
   async applyDeploymentSnapshot(snapshot: RcDeploymentConfig | undefined): Promise<void> {
     this.publicRelayUrl = snapshot?.publicRelayUrl
+    this.webAppUrl = snapshot?.webAppUrl
     const next = new Map<string, BotAssignment>()
     for (const { plugin } of this.ingressPlugins.values()) {
       for (const a of plugin.deploymentAssignments?.(snapshot) ?? []) next.set(a.botId, a)
