@@ -442,6 +442,7 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
         mutedChannels: ['oc_3'],
         gated: false,
         sessionModes: [],
+        externalChannels: [],
         decisions: { bindings: [], definitions: [] }
       },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
@@ -526,6 +527,7 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
         mutedChannels: ['oc_2'],
         gated: false,
         sessionModes: [],
+        externalChannels: [],
         decisions: { bindings: [], definitions: [] }
       },
       config: {

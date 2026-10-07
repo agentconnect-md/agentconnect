@@ -541,6 +541,7 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
         mutedChannels: ['C3'],
         gated: false,
         sessionModes: [],
+        externalChannels: [],
         decisions: { bindings: [], definitions: [] }
       },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
@@ -620,6 +621,7 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
         mutedChannels: ['C2'],
         gated: false,
         sessionModes: [],
+        externalChannels: [],
         decisions: { bindings: [], definitions: [] }
       },
       config: {

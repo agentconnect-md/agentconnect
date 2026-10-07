@@ -302,6 +302,7 @@ describe('discord projection equivalence with the live integrationToSpec path', 
         mutedChannels: ['C3'],
         gated: false,
         sessionModes: [],
+        externalChannels: [],
         decisions: { bindings: [], definitions: [] }
       },
       // §6.4 final shape: platform-private material ONLY — the routing knobs
