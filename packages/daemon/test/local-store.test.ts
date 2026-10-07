@@ -826,6 +826,78 @@ describe('LocalStore', () => {
     await s.close()
   })
 
+  it('skips, on request, exactly the dream sources the capture gate excludes, before the limit', async () => {
+    const s = await store()
+    const key = (thread: string) => sessionKey('slack', 'C1', thread, 'bot-a')
+    // Newest first: the excluded sessions are the newest, so a filter after the limit would return nothing.
+    const threads = ['cp-org', 'open', 'local-private', 'cp-private', 'no-gate', 'other-agent-gate']
+    for (const [i, thread] of threads.entries()) {
+      await s.upsertSession({
+        key: key(thread),
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        acpSessionId: `acp-${thread}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: i + 1
+      })
+    }
+    await s.setLocalCaptureGate('bot-a', key('open'), false)
+    await s.setLocalCaptureGate('bot-a', key('local-private'), true)
+    await s.setLocalCaptureGate('bot-a', key('cp-private'), false)
+    expect(await s.applyCpCaptureGate('bot-a', key('cp-private'), true, 1)).toBe('applied')
+    await s.setLocalCaptureGate('bot-a', key('cp-org'), true)
+    expect(await s.applyCpCaptureGate('bot-a', key('cp-org'), false, 1)).toBe('applied')
+    // A gate row keyed to another agent never opens this agent's session.
+    await s.setLocalCaptureGate('bot-b', key('other-agent-gate'), false)
+
+    expect((await s.dreamSessionSources('bot-a', 20)).map((r) => r.thread)).toEqual([...threads].reverse())
+    const open: string[] = []
+    for (const thread of [...threads].reverse())
+      if (!(await s.isCaptureExcluded('bot-a', key(thread)))) open.push(thread)
+    expect(open).toEqual(['open', 'cp-org'])
+    expect((await s.dreamSessionSources('bot-a', 20, { skipPrivate: true })).map((r) => r.thread)).toEqual(open)
+    expect((await s.dreamSessionSources('bot-a', 1, { skipPrivate: true })).map((r) => r.thread)).toEqual(['open'])
+    await s.close()
+  })
+
+  it('skips, on request, dream sources in a group DM or a conversation known private', async () => {
+    const s = await store()
+    const sessions = [
+      { channel: 'C-public', thread: 'shared' },
+      { channel: 'G-group', thread: 'group-dm' },
+      { channel: 'C-private', thread: 'private-channel' }
+    ]
+    for (const [i, { channel, thread }] of sessions.entries()) {
+      const key = sessionKey('slack', channel, thread, 'bot-a')
+      await s.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel,
+        thread,
+        acpSessionId: `acp-${thread}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: i + 1
+      })
+      await s.setLocalCaptureGate('bot-a', key, false)
+    }
+    await s.setSessionClassification(sessionKey('slack', 'G-group', 'group-dm', 'bot-a'), {
+      conversationKind: 'group_dm'
+    })
+    const threads = async (opts?: { skipPrivate?: boolean; privateConversations?: string[] }) =>
+      (await s.dreamSessionSources('bot-a', 20, opts)).map((r) => r.thread)
+    expect(await threads()).toEqual(['private-channel', 'group-dm', 'shared'])
+    expect(await threads({ skipPrivate: true })).toEqual(['private-channel', 'shared'])
+    expect(await threads({ skipPrivate: true, privateConversations: ['C-private', 'C-private'] })).toEqual(['shared'])
+    // The conversation list rides only with skipPrivate.
+    expect(await threads({ privateConversations: ['C-private'] })).toEqual(['private-channel', 'group-dm', 'shared'])
+    await s.close()
+  })
+
   it('returns transcript entries strictly after a marker, ordered by ts', async () => {
     const s = await store()
     await s.appendTranscript({ channel: 'C1', thread: '100.1', ts: '100.2', sender: 'U1', kind: 'text', text: 'first' })

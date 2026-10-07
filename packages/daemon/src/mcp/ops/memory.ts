@@ -37,8 +37,8 @@ export interface MemoryOpsDeps {
   memoryScope?: (ctx: SessionContext) => MemoryScope
 }
 
-/** The gate's verdict for one memory-tool call: proceed, refuse, or ask the human first. */
-export type MemoryAccessDecision = 'allow' | 'deny' | 'ask'
+/** The gate's verdict for one memory-tool call: proceed, refuse (nobody to ask), ask the human first, or closed by the agent's own policy. */
+export type MemoryAccessDecision = 'allow' | 'deny' | 'ask' | 'closed'
 
 /** How an `ask` ended: approved, declined (or abandoned), or nobody could be asked at all. */
 export type MemoryWriteVerdict = 'allowed' | 'denied' | 'no_approver'

@@ -91,6 +91,28 @@ describe('memoryProviderFor (spawn-time provider + env)', () => {
     expect(() => memoryProviderFor(agent('native'), other).runtimeEnv()).toThrow(MemoryProviderUnavailableError)
   })
 
+  // assistant-mode.md §4.1, §5.5: an assistant-mode session launches with the runtime's own memory off, or not at all.
+  it('assistant mode requires the verified off-switch, whatever the provider', () => {
+    const on = (provider: MemoryProviderKind | undefined, runtime = 'claude-acp') => ({
+      ...agent(provider, runtime),
+      assistantMode: { enabled: true }
+    })
+    const off = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' }
+    expect(memoryProviderFor(on('managed'), claude).runtimeEnv()).toEqual(off)
+    expect(memoryProviderFor(on(undefined), claude).runtimeEnv()).toEqual(off)
+    expect(memoryProviderFor(on('none'), claude).runtimeEnv()).toEqual(off)
+    expect(() => memoryProviderFor(on('managed', 'gemini'), other).runtimeEnv()).toThrow(
+      "assistant mode needs the runtime's own memory turned off"
+    )
+    expect(() => memoryProviderFor(on('native'), claude)).toThrow(MemoryProviderUnavailableError)
+    // Outside assistant mode, managed still tolerates a runtime whose off-switch is unverified.
+    const plain = { ...agent('managed', 'gemini'), assistantMode: { enabled: false } }
+    expect(memoryProviderFor(plain, other).runtimeEnv()).toEqual({})
+    expect(memoryProviderFor({ ...agent('native'), assistantMode: { enabled: false } }, claude).runtimeEnv()).toEqual(
+      {}
+    )
+  })
+
   it('external fails closed without a connection id/verified registry admission', () => {
     expect(() => memoryProviderFor(agent('external'), claude).runtimeEnv()).toThrow(MemoryProviderUnavailableError)
     const external = {

@@ -255,6 +255,28 @@ interface DreamRecord {
    session and overall, newest first until the byte budget is spent. The dream
    policy prompt — not a hard pre-filter — keeps a person's private/personal
    conversation from becoming shared organization knowledge.
+
+   **Assistant-mode agents are the exception** ([assistant-mode.md](assistant-mode.md)
+   §5.5), and for them this is a deliberate retreat from the carve-out above: their
+   dreams skip every private session and every session in a private place, which
+   per-turn capture and explicit memory writes skip for them too. A session is
+   private by the gate capture reads — the CP-confirmed `private` bit once it has
+   arrived, the daemon's local verdict (DM, webchat, A2A child, launch-correlated)
+   before that, and excluded when neither is known. A place is private when it is
+   a group DM or a channel its platform reports private; that is not a session
+   visibility (such sessions are `org`), so the daemon reads it from what it
+   already holds: the session's own classification (a `group_dm` conversation
+   kind), the channel snapshot built from the platform-neutral `isPrivate`
+   and group-DM kind of membership listings (`PlatformChannelRef`) and observed
+   conversations (`ObservedChat`), and the `isPrivate` a channel lookup returned
+   (`PlatformChannelInfo`). A platform that cannot tell reports not private. Both
+   filters run in the source query, before the cap, so a skipped session neither
+   takes a slot nor counts as new activity for a scheduled tick. What a person
+   says to an assistant in a DM, a group DM or a private channel therefore never
+   reaches its shared memory, where every other place could recall it; the
+   per-person memory space (P1) is where such conversations will be remembered.
+   Other agents keep the behavior above.
+
 3. **Dream.** Run an isolated ACP session on the agent's runtime host through
    the shared extraction-session helper (§8): cwd `input/`, a verified read-only
    / plan permission mode (a runtime without one fails the dream before any

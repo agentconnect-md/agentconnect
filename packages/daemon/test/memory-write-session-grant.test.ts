@@ -7,9 +7,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { agentHostKey } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
-import { MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../src/memory/tools.js'
+import { MEMORY_WRITE_CLOSED, MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../src/memory/tools.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { pendingTurnKey } from '../src/daemon/turn-types.js'
+import { appendCoordinate } from '../src/session/append-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'bot-a'
@@ -28,11 +29,13 @@ function ctx(channel: string, over: Partial<SessionContext> = {}): SessionContex
   } as SessionContext
 }
 
-/** A daemon with one live webchat turn on `conv-1`, whose store calls every session private. */
-function world(excluded = true) {
+/** A daemon with one live webchat turn on `conv-1` (or the session `key`), whose store calls every session private. */
+function world(excluded = true, key = sessionKey('webchat', 'conv-1', 'conv-1', AGENT)) {
   const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
   daemon.store = {
     isCaptureExcluded: vi.fn(async () => excluded),
+    // An ordinary channel row, so only the capture gate decides here.
+    getSession: async (k: string) => ({ key: k, channel: 'C-public', conversationKind: 'channel' }),
     getSessionByAcpIdForAgent: async () => ({ triggeredBy: 'user-1' }),
     getDisplayNames: async () => new Map<string, string>(),
     upsertElicit: vi.fn(async () => {})
@@ -40,7 +43,7 @@ function world(excluded = true) {
   const sink = { output: vi.fn(), done: vi.fn() }
   const pending = {
     plan: {
-      sessionKey: sessionKey('webchat', 'conv-1', 'conv-1', AGENT),
+      sessionKey: key,
       agentId: AGENT,
       agentName: 'Butler',
       platform: 'webchat',
@@ -132,5 +135,51 @@ describe('what never asks', () => {
     expect(open.cards()).toEqual([])
     expect(w.deps.memory.write).toHaveBeenCalledTimes(1)
     expect(open.deps.memory.write).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('an assistant-mode agent keeps private sessions out of shared memory (assistant-mode.md §5.5)', () => {
+  // A Slack DM in `append` mode: the one long session of that place.
+  const thread = appendCoordinate(1)
+  const key = sessionKey('slack', 'D1', thread, AGENT)
+  const dm = { platform: 'slack', thread, deliveryThread: thread } as Partial<SessionContext>
+  const assistant = (w: ReturnType<typeof world>) =>
+    w.daemon.agents.set(AGENT, { id: AGENT, assistantMode: { enabled: true, responsibleUserId: 'user-1' } })
+
+  it('refuses a private append session’s write without a card, whatever grant it held before the switch', async () => {
+    const w = world(true, key)
+    assistant(w)
+    w.daemon.memoryWriteGrants.add(key)
+    await expect(executeTool(ctx('D1', dm), 'writeMemory', { content: 'x' }, w.deps)).rejects.toThrow(
+      MEMORY_WRITE_CLOSED
+    )
+    await expect(executeTool(ctx('D1', dm), 'createMemoryEntry', { text: 'x' }, w.deps)).rejects.toThrow(
+      MEMORY_WRITE_CLOSED
+    )
+    expect(w.cards()).toEqual([])
+    expect(w.deps.memory.write).not.toHaveBeenCalled()
+  })
+
+  it('still reads there, and still writes from an org-visible session', async () => {
+    const closed = world(true, key)
+    assistant(closed)
+    await executeTool(ctx('D1', dm), 'readMemory', {}, closed.deps)
+    expect(closed.deps.memory.read).toHaveBeenCalled()
+    const open = world(false, key)
+    assistant(open)
+    await executeTool(ctx('D1', dm), 'writeMemory', { path: 'p.md', content: 'x' }, open.deps)
+    expect(open.deps.memory.write).toHaveBeenCalledTimes(1)
+    expect(open.cards()).toEqual([])
+  })
+
+  it('leaves an agent outside assistant mode asking on the same session, "Allow for this session" included', async () => {
+    const w = world(true, key)
+    w.daemon.agents.set(AGENT, { id: AGENT, assistantMode: { enabled: false } })
+    const first = executeTool(ctx('D1', dm), 'writeMemory', { path: 'a.md', content: 'one' }, w.deps)
+    await w.answer('allow_session')
+    await first
+    await executeTool(ctx('D1', dm), 'writeMemory', { path: 'b.md', content: 'two' }, w.deps)
+    expect(w.cards()).toHaveLength(1)
+    expect(w.deps.memory.write).toHaveBeenCalledTimes(2)
   })
 })

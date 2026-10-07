@@ -136,10 +136,11 @@ export interface DreamStorePort {
    *  records a dream leaves behind — they outlive the session they point at. */
   getSessionByAcpIdForAgent(agentId: string, acpSessionId: string): Promise<{ key: string } | undefined>
   ensureOutwardSessionId(key: string, agentId?: string): Promise<string>
-  /** Newest-first addressable sessions for the agent (transcript sources). */
+  /** Newest-first addressable sessions for the agent (transcript sources); `skipPrivate` drops capture-excluded and group-DM sessions and those in `privateConversations`. */
   dreamSessionSources(
     agentId: string,
-    limit: number
+    limit: number,
+    opts?: { skipPrivate?: boolean; privateConversations?: readonly string[] }
   ): Promise<
     {
       sessionId: string
@@ -198,6 +199,8 @@ export interface DreamRunnerDeps {
   /** The agent's dreaming policy, or undefined when dreaming is not enabled
    *  (missing binding, non-managed provider, or enabled:false). */
   dreamingPolicyFor(agentId: string): MemoryDreamingPolicy | undefined
+  /** For an agent whose dreams skip private sessions and places (assistant mode, assistant-mode.md §5.5), the conversations known private; undefined ⇒ it mines every session. */
+  privatePlacesFor?(agentId: string): readonly string[] | undefined
   /** Omission is deliberately `blocked`. Production must never infer authority
    * from runtime configuration; deterministic tests opt in explicitly. */
   operationPolicy?: DreamOperationPolicy
@@ -530,32 +533,7 @@ export class DreamRunner {
     )
   }
 
-  /**
-   * The sessions a dream should mine, chosen AUTOMATICALLY — no operator config.
-   * Default: every session with activity since the last successful dream (its
-   * `updatedAt` is at or after that dream's baseline), capped at
-   * {@link MAX_AUTO_SESSION_WINDOW}. The first dream (no baseline) mines the
-   * current corpus up to the cap. An explicit `sessionWindow` (a per-run manual
-   * override, or a legacy configured policy value) still pins a fixed newest-N
-   * window instead.
-   *
-   * The comparison is inclusive (`>=`) on purpose. Both the baseline and
-   * `updatedAt` have millisecond resolution, so a session written just after the
-   * source query but in the same millisecond as the baseline has
-   * `updatedAt === cutoff`; a strict `>` would drop it from this dream (query
-   * already ran) and every later one — a permanent gap. `>=` instead re-mines the
-   * boundary sessions once (a harmless duplicate the pipeline already tolerates)
-   * and self-heals: the next dream's baseline moves past them. The invariant is
-   * "duplicates possible, gaps never".
-   *
-   * The cap is an intentional bound, not a paging cursor: it takes the newest N
-   * active sessions by `updatedAt`. If more than N sessions changed since the last
-   * dream (a large backlog in one interval), the oldest of that changed set are
-   * not consolidated in this run, and because the baseline advances they are not
-   * revisited later either. N=100 is a deliberately large corpus; consolidating an
-   * unbounded backlog in a single host/prompt is the worse failure. Scheduled
-   * dreams run often enough that this bound is not normally reached.
-   */
+  /** Sessions active since the last successful dream (inclusive `>=`: duplicates possible, gaps never), newest first up to the cap, or a pinned newest-N window; private sessions and places stay out for an assistant-mode agent (memory-dreaming.md §4). */
   private async selectSessionSources(
     agentId: string,
     explicitWindow?: number
@@ -569,8 +547,13 @@ export class DreamRunner {
       updatedAt: number
     }[]
   > {
-    if (explicitWindow !== undefined) return await this.deps.store.dreamSessionSources(agentId, explicitWindow)
-    const recent = await this.deps.store.dreamSessionSources(agentId, MAX_AUTO_SESSION_WINDOW)
+    const privateConversations = this.deps.privatePlacesFor?.(agentId)
+    const sources = (limit: number) =>
+      privateConversations
+        ? this.deps.store.dreamSessionSources(agentId, limit, { skipPrivate: true, privateConversations })
+        : this.deps.store.dreamSessionSources(agentId, limit)
+    if (explicitWindow !== undefined) return await sources(explicitWindow)
+    const recent = await sources(MAX_AUTO_SESSION_WINDOW)
     const lastSuccessful = await this.lastSuccessfulDream(agentId)
     if (!lastSuccessful) return recent
     const cutoff = Date.parse(lastSuccessful.createdAt)
@@ -627,17 +610,7 @@ export class DreamRunner {
     // and single-threaded, so no session write can interleave between here and
     // the query below.
     const createdAt = this.nowIso()
-    // A dream distills EVERY session this agent participated in — channel, DM,
-    // webchat, external (GitHub), A2A, or launched alike. We deliberately do NOT
-    // apply the per-turn capture-visibility gate here: an agent's own transcript
-    // is content it already saw, so consolidating it into that same agent's own
-    // memory adds no new audience. Peer isolation is preserved by the source
-    // itself — dreamSessionSources is scoped to `agentId` and dreamTranscriptText
-    // returns only the rows this agent sent, received, or was delivered — so a
-    // peer's private session never enters. What used to be a hard pre-filter is
-    // now handled by the dream policy prompt: it must not surface a person's
-    // private/personal conversation as shared organization knowledge
-    // (session-visibility.md §5.1, #36 follow-up).
+    // Every session this agent took part in, private ones too unless it is in assistant mode (memory-dreaming.md §4).
     const sources = await this.selectSessionSources(agentId, explicitWindow)
 
     // Snapshot the live store — the digest is the adoption fence. Taken under

@@ -1031,7 +1031,16 @@ platform's own card, otherwise the Agent-editor queue); when nobody can be asked
 headless run, an agent-to-agent child) or the answer is no, the tool refuses with an
 explanation that says the memory is read-only here rather than failing silently. Reads
 stay available — recalling what the agent already knows is not a disclosure of the
-current conversation. Dream sessions skip private transcripts entirely.
+current conversation. Dreams consolidate the agent's own private transcripts too, under a
+policy that keeps a person's private conversation out of organization knowledge.
+
+An agent in assistant mode keeps private conversations out of its shared memory
+altogether, because whatever enters it can be recalled in every other place: direct
+messages, webchat, group DMs and channels the platform reports private. Their turns are
+not distilled, its dreams skip them, and an explicit write from one is refused with that
+explanation instead of asking, so Allow for this session is never offered on any of its
+conversations. A platform that cannot tell whether a channel is private has it treated as
+not private.
 
 **Agents on native runtime memory are the exception, and the product must say so.** With
 that backend the runtime persists memory inside its own process for the whole agent, with
