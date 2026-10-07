@@ -44,6 +44,7 @@ const EXEMPT: Record<string, string> = {
   scheduleOwedStop: 'private owed-stop backoff, behind settleAndStop',
   forgetOwedStop: 'private owed-stop bookkeeping, behind settleAndStop',
   agentSessionStopped: 'native stop button (Bolt event / relay-forwarded), no arena equivalent',
+  welcomeBuiltin: 'app_home_opened callback only; the Arena injects messages, not Slack App Home events',
   shareWithIdentity: 'private identity-carrying upload path, behind uploadFile',
   putUploadBytes: 'private step 2 of the external upload, behind uploadFile',
   completeUpload: 'private step 3 of the external upload, behind uploadFile',
