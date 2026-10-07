@@ -176,6 +176,8 @@ export default function EditAgentModal({
   const initialAllowRuntimeChangesInChat = useRef(agent.allowRuntimeChangesInChat)
   const [introduceOnJoin, setIntroduceOnJoin] = useState(agent.introduceOnJoin)
   const initialIntroduceOnJoin = useRef(agent.introduceOnJoin)
+  const [keepAppendSessions, setKeepAppendSessions] = useState(agent.keepAppendSessions)
+  const initialKeepAppendSessions = useRef(agent.keepAppendSessions)
   const [execution, setExecution] = useState(() => agentStrategyValue(agent))
   const initialExecution = useRef(agentStrategyValue(agent))
   // Agent-call visibility (both directions) — prefilled from the list `Agent`
@@ -261,6 +263,8 @@ export default function EditAgentModal({
         initialAllowRuntimeChangesInChat.current = dto.allowRuntimeChangesInChat ?? false
         setIntroduceOnJoin(dto.introduceOnJoin ?? false)
         initialIntroduceOnJoin.current = dto.introduceOnJoin ?? false
+        setKeepAppendSessions(dto.keepAppendSessions ?? false)
+        initialKeepAppendSessions.current = dto.keepAppendSessions ?? false
         const storedExecution = agentStrategyValue({
           execution: dto.execution ?? null,
           runInSandbox: dto.runInSandbox ?? false
@@ -593,6 +597,7 @@ export default function EditAgentModal({
     ...(permissionMode !== initialPermissionMode.current ? { permissionMode } : {}),
     ...(allowRuntimeChangesInChat !== initialAllowRuntimeChangesInChat.current ? { allowRuntimeChangesInChat } : {}),
     ...(introduceOnJoin !== initialIntroduceOnJoin.current ? { introduceOnJoin } : {}),
+    ...(keepAppendSessions !== initialKeepAppendSessions.current ? { keepAppendSessions } : {}),
     // Saved before any move, so it is asked of the saved placement.
     ...(execution !== initialExecution.current ? executionAsk(savedStrategies, execution) : {}),
     ...(envChanged ? { env: envRecord } : {}),
@@ -902,6 +907,18 @@ export default function EditAgentModal({
                     <Toggle checked={introduceOnJoin} onChange={setIntroduceOnJoin} />
                   </div>
                   <span className="mt-[6px] text-[11px] text-(--text-secondary)">{t('edit.introduceOnJoinHint')}</span>
+                </div>
+                <div className="fld desktop:col-span-2">
+                  <span className="fldlbl">{t('edit.keepAppendSessions')}</span>
+                  <div className="inp min-w-0 justify-between gap-3">
+                    <span className="inline-flex min-w-0 items-center gap-2">
+                      <Icon name="history" size={16} color="var(--text-tertiary)" className="flex-none" />
+                      <span className="truncate font-sans text-[13px] font-medium leading-normal text-(--text-secondary)">
+                        {keepAppendSessions ? t('edit.keepAppendSessionsOn') : t('off')}
+                      </span>
+                    </span>
+                    <Toggle checked={keepAppendSessions} onChange={setKeepAppendSessions} />
+                  </div>
                 </div>
               </div>
             </section>

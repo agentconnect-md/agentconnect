@@ -314,6 +314,22 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     expect(readJson(file).introduceOnJoin).toBe(true)
   })
 
+  it('folds a keepAppendSessions change into raw.keepAppendSessions (#2812)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ keepAppendSessions: true }), deps)
+    expect(readJson(file).keepAppendSessions).toBe(true)
+    writeAgentSpec(dir, 'bot-a', baseSpec({ keepAppendSessions: false }), deps)
+    expect(readJson(file).keepAppendSessions).toBe(false)
+  })
+
   it('leaves an on-disk introduceOnJoin untouched when the spec omits it (#536)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {

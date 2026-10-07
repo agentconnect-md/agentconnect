@@ -21276,14 +21276,24 @@ export class Daemon {
     }
   }
 
+  /** An opted-in agent's current append session skips idle retention (channel-session-mode.md §6.3); removing the agent or integration, leaving `append`, or `!new` ends it. */
+  private async keepsAppendSession(rec: SessionRecord): Promise<boolean> {
+    if (!isAppendCoordinate(rec.thread) || !this.agents.get(rec.agentId)?.keepAppendSessions) return false
+    const integrationId = this.integrationIdForSessionTransport(rec.agentId, rec.platform, rec.transportScope)
+    const int = this.agents.get(rec.agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
+    if (!int || conversationSessionMode(int, rec.channel) !== 'append') return false
+    return (await this.store.currentAppendCoordinate(rec.agentId, rec.channel, rec.transportScope)) === rec.thread
+  }
+
   /** Returns how many session VMs a completed pass discarded. */
   private async sweepExpiredSessions(): Promise<number> {
     const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
     if (windowMs === null) return 0
     // Holder-only on a shared store: the active-turn exclusions are member-local, so only the holder can judge a row.
-    const expired = (await this.store.listExpiredSessions(this.clock.now() - windowMs)).filter((rec) =>
-      this.judgesStoredSessions(rec.agentId)
-    )
+    const expired: SessionRecord[] = []
+    for (const rec of await this.store.listExpiredSessions(this.clock.now() - windowMs)) {
+      if (this.judgesStoredSessions(rec.agentId) && !(await this.keepsAppendSession(rec))) expired.push(rec)
+    }
     if (!expired.length) return 0
     // ONE stamp for the whole pass, not one per session: it is the sweep that
     // deleted them, and a shared value lets the drain report a pass as a single

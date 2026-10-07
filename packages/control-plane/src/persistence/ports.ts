@@ -739,6 +739,7 @@ export interface CreateAgentInput {
   allowRuntimeChangesInChat?: boolean // explicit opt-in; default false
   pause?: boolean // operational message-processing toggle (#288); true ⇒ daemon skips all turns
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join (absent ⇒ DB default false)
+  keepAppendSessions?: boolean // #2812: keep its append sessions through idle retention (absent ⇒ DB default false)
   runInSandbox?: boolean // #642: request an OS sandbox (absent ⇒ DB default false)
   execution?: string | null // the strategy slug, kept in step with runInSandbox; null ⇒ sandboxed, backend not yet reported (absent ⇒ host unless runInSandbox)
   env?: Record<string, string> // extra env injected into the runtime (AgentSpec.env)
@@ -793,6 +794,7 @@ export interface UpdateAgentInput {
   allowRuntimeChangesInChat?: boolean
   pause?: boolean | null // operational message-processing toggle (#288); null clears
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join
+  keepAppendSessions?: boolean // #2812: keep its append sessions through idle retention
   runInSandbox?: boolean // #642: request an OS sandbox for this agent
   execution?: string | null // written together with runInSandbox by the route that resolves them
   /** Widen an existing App-backed GitHub workspace from read to write. */
@@ -885,6 +887,7 @@ export interface AgentRecord {
   outboundPolicy: AgentCallPolicy
   allowedTargetAgentIds: string[] // agent.id set; meaningful only when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join (default false)
+  keepAppendSessions: boolean // #2812: keep its append sessions through idle retention (default false)
   runInSandbox: boolean // #642: persisted per-agent sandbox preference (default false)
   execution: string | null // the strategy slug sessions run in (session-executors.md §5); null ⇒ sandboxed, backend not yet reported
   lastModifiedAt: Date // last human edit (create/PATCH); defaults to createdAt

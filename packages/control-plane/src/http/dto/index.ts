@@ -698,6 +698,7 @@ export const CreateAgentBody = z.object({
   allowRuntimeChangesInChat: z.boolean().optional(), // explicit opt-in; absent ⇒ false
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
+  keepAppendSessions: z.boolean().optional(), // #2812: keep its append sessions through idle retention (absent ⇒ default false)
   runInSandbox: z.boolean().optional(), // #642: request an OS sandbox (absent ⇒ default false)
   // The strategy sessions run in (session-executors.md §5), checked against the placement's tables; runInSandbox follows it, and a request naming both must agree.
   execution: ExecutorStrategyName.optional(),
@@ -756,6 +757,7 @@ export const UpdateAgentBody = z
     allowRuntimeChangesInChat: z.boolean().optional(),
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
+    keepAppendSessions: z.boolean().optional(), // #2812: keep its append sessions through idle retention
     runInSandbox: z.boolean().optional(), // #642: request an OS sandbox for this agent
     execution: ExecutorStrategyName.optional(), // the strategy sessions run in; runInSandbox follows it
     // Same-repository capability widening only. Workspace identity/conversion
@@ -914,6 +916,7 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
+  keepAppendSessions: z.boolean(), // #2812: keep its append sessions through idle retention (default false)
   runInSandbox: z.boolean(), // #642: persisted per-agent sandbox preference (default false)
   // The strategy sessions run in; null ⇒ sandboxed on a daemon that has not yet reported which sandbox it runs.
   execution: ExecutorStrategyName.nullable(),

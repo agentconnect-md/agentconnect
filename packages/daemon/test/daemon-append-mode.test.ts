@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { FakeClock } from '@agentconnect.md/connection'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,7 +18,7 @@ import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
  * against an implementation that resolved it too late to matter.
  */
 
-function scaffold(mode: 'createNew' | 'append', agents: string[] = ['bot-a']): string {
+function scaffold(mode: 'createNew' | 'append', agents: string[] = ['bot-a'], keepAppendSessions = false): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-append-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -37,6 +38,7 @@ function scaffold(mode: 'createNew' | 'append', agents: string[] = ['bot-a']): s
         name: id,
         status: 'active',
         runtime: 'claude',
+        keepAppendSessions,
         workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
         integrations: [
           {
@@ -230,6 +232,89 @@ describe('append mode keys one session per conversation', () => {
 
     expect(calls).toHaveLength(2)
     expect(calls.every((c) => c.msg.sessionThread === undefined)).toBe(true)
+    await daemon.stop()
+  })
+})
+
+describe('keepAppendSessions exempts the current append session from idle retention (#2812)', () => {
+  const DAY = 24 * 3_600_000
+
+  async function bootKept(mode: 'createNew' | 'append', keep: boolean) {
+    const clock = new FakeClock()
+    const daemon = new Daemon({
+      root: scaffold(mode, ['bot-a'], keep),
+      hostFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn() }) as never,
+      slackAppFactory: fakeSlackAppFactory(),
+      clock
+    })
+    await daemon.start()
+    const inner = daemon as never as {
+      store: any
+      sessionRetentionSweepInFlight: boolean
+      sweepSessionRetention: () => Promise<void>
+      transportScopeForIntegrationIds: (ids: string[]) => string | undefined
+    }
+    const scope = inner.transportScopeForIntegrationIds(['int-bot-a'])
+    const seed = async (coordinate: string): Promise<string> => {
+      const key = sessionKey('slack', 'C1', coordinate, 'bot-a', scope)
+      await inner.store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: coordinate,
+        transportScope: scope ?? null,
+        acpSessionId: `acp-${coordinate}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 0
+      })
+      return key
+    }
+    // Wait out the startup pass, which drops a call that lands while it runs.
+    const sweep = async () => {
+      while (inner.sessionRetentionSweepInFlight) await new Promise((resolve) => setTimeout(resolve, 5))
+      await inner.sweepSessionRetention()
+    }
+    return { daemon, clock, store: inner.store, scope, seed, sweep }
+  }
+
+  it('keeps an idle current session past the window, and collects the one `!new` superseded', async () => {
+    const { daemon, clock, store, scope, seed, sweep } = await bootKept('append', true)
+    const first = await store.resolveAppendCoordinate('bot-a', 'C1', scope, 1)
+    const firstKey = await seed(first)
+    clock.advance(30 * DAY)
+    await sweep()
+    expect(await store.getSession(firstKey)).toBeDefined()
+    expect(await store.currentAppendCoordinate('bot-a', 'C1', scope)).toBe(first)
+
+    // `!new` rotates the reservation, so the old session is ordinary again and its idle row goes.
+    const second = await store.advanceAppendCoordinate('bot-a', 'C1', first, scope, 2)
+    const secondKey = await seed(second)
+    await sweep()
+    expect(await store.getSession(firstKey)).toBeUndefined()
+    expect(await store.getSession(secondKey)).toBeDefined()
+    expect(await store.currentAppendCoordinate('bot-a', 'C1', scope)).toBe(second)
+    await daemon.stop()
+  })
+
+  it('collects the idle append session and clears its reservation when the agent has not opted in', async () => {
+    const { daemon, clock, store, scope, seed, sweep } = await bootKept('append', false)
+    const key = await seed(await store.resolveAppendCoordinate('bot-a', 'C1', scope, 1))
+    clock.advance(8 * DAY)
+    await sweep()
+    expect(await store.getSession(key)).toBeUndefined()
+    expect(await store.currentAppendCoordinate('bot-a', 'C1', scope)).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('collects it once the conversation no longer appends, even with the opt-in', async () => {
+    const { daemon, clock, store, scope, seed, sweep } = await bootKept('createNew', true)
+    const key = await seed(await store.resolveAppendCoordinate('bot-a', 'C1', scope, 1))
+    clock.advance(8 * DAY)
+    await sweep()
+    expect(await store.getSession(key)).toBeUndefined()
+    expect(await store.currentAppendCoordinate('bot-a', 'C1', scope)).toBeUndefined()
     await daemon.stop()
   })
 })

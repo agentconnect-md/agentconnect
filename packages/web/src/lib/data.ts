@@ -653,6 +653,8 @@ export interface Agent {
   allowedTargetAgentIds: string[]
   /** #536: when true, the agent introduces itself to peers on a genuine channel join. */
   introduceOnJoin: boolean
+  /** #2812: its current single sessions skip idle retention. */
+  keepAppendSessions: boolean
   /** #642: kept in step with `execution` — false only for `host`. */
   runInSandbox: boolean
   /** The strategy sessions run in (session-executors.md §5); null ⇒ sandboxed where the backend is not yet reported. */
@@ -1538,6 +1540,7 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
+      keepAppendSessions: false,
       runInSandbox: false,
       sandboxSupported: false,
       sandboxRequired: false,
@@ -1591,6 +1594,7 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
+      keepAppendSessions: false,
       runInSandbox: false,
       sandboxSupported: true,
       sandboxRequired: false,
@@ -1689,6 +1693,7 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: true,
+      keepAppendSessions: false,
       runInSandbox: false,
       sandboxSupported: true,
       sandboxRequired: false,
@@ -1770,6 +1775,7 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'selected',
       allowedTargetAgentIds: ['deploy'],
       introduceOnJoin: false,
+      keepAppendSessions: false,
       runInSandbox: false,
       sandboxSupported: true,
       sandboxRequired: false,
@@ -1838,6 +1844,7 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'selected',
       allowedTargetAgentIds: ['review'],
       introduceOnJoin: false,
+      keepAppendSessions: false,
       runInSandbox: false,
       sandboxSupported: true,
       sandboxRequired: false,

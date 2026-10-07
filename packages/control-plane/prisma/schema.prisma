@@ -937,6 +937,7 @@ model Agent {
   outboundPolicy        AgentCallPolicy    @default(all) // 'all' = this agent may discover/call any otherwise-callable org peer
   allowedTargetAgentIds String[]           @default([]) // agent.id set used when outboundPolicy='selected'
   introduceOnJoin       Boolean            @default(false) // #536: self-introduce to peers on a genuine channel join
+  keepAppendSessions    Boolean            @default(false) // #2812: exempt its current append sessions from idle retention
   runInSandbox          Boolean            @default(false) // #642: request an OS sandbox; daemon policy may force it on
   // The strategy slug sessions run in (session-executors.md §5), kept in step with runInSandbox; null ⇒ a sandboxed agent whose daemon has not yet reported its backend.
   execution             String?

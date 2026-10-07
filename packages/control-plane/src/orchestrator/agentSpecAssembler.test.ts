@@ -70,6 +70,7 @@ const AGENT: AgentRecord = {
   outboundPolicy: 'all',
   allowedTargetAgentIds: [],
   introduceOnJoin: false,
+  keepAppendSessions: false,
   runInSandbox: false,
   execution: 'host',
   lastModifiedAt: new Date('2026-01-01T00:00:00Z'),

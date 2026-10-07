@@ -523,6 +523,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
+      keepAppendSessions: false,
       runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
@@ -586,6 +587,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
+      keepAppendSessions: false,
       runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
@@ -637,6 +639,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
+      keepAppendSessions: false,
       runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
@@ -650,6 +653,9 @@ describe('agentRecordToSpec runtime overrides', () => {
     // #536: introduceOnJoin is a definite column value, always shipped so a toggle replicates.
     expect(agentRecordToSpec({ ...base, introduceOnJoin: true }, {})).toMatchObject({ introduceOnJoin: true })
     expect(agentRecordToSpec({ ...base, introduceOnJoin: false }, {})).toMatchObject({ introduceOnJoin: false })
+    // #2812: also always shipped, so turning it off reaches the daemon.
+    expect(agentRecordToSpec({ ...base, keepAppendSessions: true }, {})).toMatchObject({ keepAppendSessions: true })
+    expect(agentRecordToSpec({ ...base, keepAppendSessions: false }, {})).toMatchObject({ keepAppendSessions: false })
   })
 
   it('carries the memory backend to the daemon spec, and omits it when null', () => {
@@ -693,6 +699,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
+      keepAppendSessions: false,
       runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
@@ -746,6 +753,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
+      keepAppendSessions: false,
       runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
@@ -806,6 +814,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
+      keepAppendSessions: false,
       runInSandbox: false,
       execution: 'host',
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),

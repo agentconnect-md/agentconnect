@@ -368,6 +368,7 @@ export interface AgentDto {
   outboundPolicy: AgentCallPolicy // which peer agents this agent may discover/call
   allowedTargetAgentIds: string[] // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join
+  keepAppendSessions: boolean // #2812: its current single sessions skip idle retention
   runInSandbox: boolean // #642: kept in step with `execution` (false only for `host`)
   execution?: string | null // the strategy sessions run in; null ⇒ sandboxed where the backend is not yet reported; absent on an older CP
   strategies?: StrategyTable | null // what the placement offers `execution`; null ⇒ it reports none and the sandbox fields apply
@@ -1035,6 +1036,8 @@ export interface UpdateAgentInput {
   pause?: boolean | null
   /** #536: self-introduce to peers on a genuine channel join (default off). */
   introduceOnJoin?: boolean
+  /** #2812: keep its current single sessions through idle retention (default off). */
+  keepAppendSessions?: boolean
   /** The legacy boolean, sent only where the placement reports no strategy table. */
   runInSandbox?: boolean
   /** The strategy new sessions run in, checked against the placement's table (409 with the reason when it cannot run there). */
@@ -2069,6 +2072,7 @@ export function agentFromDto(d: AgentDto): Agent {
     allowedTargetAgentIds: d.allowedTargetAgentIds ?? [],
     // Unset (older CP) reads as off — the product default.
     introduceOnJoin: d.introduceOnJoin ?? false,
+    keepAppendSessions: d.keepAppendSessions ?? false,
     // Missing policy fields fail closed; the removed legacy field is not read.
     runInSandbox: d.runInSandbox ?? false,
     execution: d.execution ?? null,

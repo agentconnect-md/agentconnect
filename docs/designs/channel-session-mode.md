@@ -154,6 +154,8 @@ The same property answers what happens to a conversation that goes quiet past th
 retention window: its session row, ACP session id, and worktree are gone, so its model
 context is gone regardless. Minting a fresh coordinate reports that honestly instead of
 presenting a continuation that cannot continue.
+An agent that opts into `keepAppendSessions` exempts its current append sessions from that
+window (§6.3).
 
 Two mechanics follow:
 
@@ -355,6 +357,18 @@ per-agent coordinate buys is that `!new` stays a per-agent command like every ot
   would rejoin a coordinate whose session is gone but whose transcript is not. An actively
   used `append` session is never a GC candidate; a conversation quiet past the window loses
   its session and the next message mints a fresh coordinate.
+- **An agent can keep its `append` sessions through idle periods.** With the agent's
+  `keepAppendSessions` setting on (default off), the sweep skips a session whose agent opts
+  in, whose conversation is still `append` on one of the agent's live integrations, and whose
+  coordinate is the one the reservation names. Each condition is how a session retires
+  instead: deleting the agent or the integration, flipping the conversation back to
+  `createNew`, or `!new` rotating the reservation turns the session into an ordinary one,
+  which the next sweep past the window deletes, clearing the reservation as above. The cost
+  is that the run state stays with the row — the ACP session, the worktree on a daemon host,
+  and on the pool the per-session volume when the agent uses session isolation — so disk and
+  volumes grow with the number of such conversations. Keeping the row while reclaiming idle
+  run state, then rebuilding the worktree and resuming the ACP session by id, is a separate
+  change that first needs every runtime verified to resume that way.
 - **Thread affinity and peer fan-out need their own record** — see §6.4. This is the one
   place `append` does not leave activation alone.
 - **Unaffected.** The trigger, gating, and mute fences all key on `channel`, never on a

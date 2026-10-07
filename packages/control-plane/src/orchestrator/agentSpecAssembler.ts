@@ -548,6 +548,8 @@ export function agentRecordToSpec(
     // #536: self-introduce-on-join. A definite column value, always shipped so a
     // toggle replicates to the owning daemon (which applies it to agent.json).
     introduceOnJoin: a.introduceOnJoin,
+    // #2812: always shipped, so turning it off replicates and the agent's append sessions age out again.
+    keepAppendSessions: a.keepAppendSessions,
     // #642: sandbox toggle, always shipped; the daemon decides fail-open/closed from host support.
     runInSandbox: a.runInSandbox,
     // The strategy beside it (session-executors.md §5); null until migrated, which leaves the daemon on the boolean.
