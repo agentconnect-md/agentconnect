@@ -4,6 +4,7 @@ import {
   MEMORY_CONTINUATION_MAX_BYTES
 } from '../memory/entries/state.js'
 import { randomUUID } from 'node:crypto'
+import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js'
 import {
   APPEND_COORDINATE_PREFIX,
   appendCoordinate,
@@ -1854,6 +1855,8 @@ export class LocalStore {
   private readonly cacheOwnerId: string
   /** Set only on a shared store, where transcript rows of several orgs share one table. */
   private readonly orgForAgent: OrgForAgent | undefined
+  /** The assistant item ledger (assistant-mode.md §5.4 ①), over this store's own connection. */
+  readonly assistantItems: AssistantItemLedger
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -1877,6 +1880,10 @@ export class LocalStore {
     this.ownerId = options.ownerId
     this.orgForAgent = options.orgForAgent
     this.cacheOwnerId = this.ownerId ?? ''
+    this.assistantItems = new AssistantItemLedger({
+      query: (sql, params) => this.db.query(sql, params),
+      transaction: (fn) => this.transaction(fn)
+    })
   }
 
   /**
@@ -1931,6 +1938,7 @@ export class LocalStore {
     const schema = `
       ${MEMORY_CONTINUATION_SCHEMA}
       ${SOURCE_CACHE_SCHEMA}
+      ${ASSISTANT_ITEM_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
