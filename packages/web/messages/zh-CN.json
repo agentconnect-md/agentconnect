@@ -2956,6 +2956,43 @@
         "loading": "加载中…",
         "loadMore": "加载更多"
       },
+      "assistantMode": {
+        "title": "助理模式",
+        "on": "开启",
+        "off": "关闭",
+        "locked": "不可用",
+        "responsibleNamed": "负责人：{name}",
+        "fallbackNamed": "备用会话：{name}",
+        "edit": "编辑",
+        "close": "关闭",
+        "cancel": "取消",
+        "details": "详情",
+        "saving": "保存中…",
+        "save": "保存助理模式",
+        "enable": "开启助理模式",
+        "responsibleUser": "负责人",
+        "fallbackConversation": "备用会话",
+        "none": "无",
+        "limits": "限制",
+        "limit": {
+          "maxConcurrentSubsessions": "并发子会话数",
+          "dailyPatrolBudget": "每日巡查次数",
+          "dailySubsessionsPerItem": "每项每日子会话数",
+          "permissionWaitHours": "等待审批的小时数"
+        },
+        "defaultLimit": "默认",
+        "askWarning": "此 Agent 每次操作前都会请求批准，后台工作会经常等待审批。建议自动批准只在工作区内进行的操作。",
+        "refusals": {
+          "runtime-unset": "请先选择 Runtime。",
+          "runtime-not-admitted": "暂不支持此 Runtime：它需要能关闭自身记忆，并能在重启后恢复会话。",
+          "memory-provider": "记忆必须为托管或关闭。",
+          "store-not-shared": "此 Agent 所在组的所有 Daemon 必须共用同一存储。"
+        },
+        "blockers": {
+          "needsTarget": "请选择负责人或备用会话。",
+          "invalidLimit": "每项限制必须是其范围内的整数。"
+        }
+      },
       "dreamSchedule": {
         "runOnSchedule": "按计划运行（否则只有在你触发时才运行梦境）",
         "frequency": "计划频率",

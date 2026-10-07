@@ -140,6 +140,20 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     writeAgentSpec(dir, 'bot-a', baseSpec({ repositorySelector: null }), deps)
     expect(readJson(file)).not.toHaveProperty('repositorySelector')
   })
+  it('stores assistant mode in agent.json, leaves it on omission, and clears it on null', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-assistant-mode-'))
+    const assistantMode = { enabled: true, responsibleUserId: 'usr_1', limits: { permissionWaitHours: 24 } }
+    const file = seedAgent(dir, 'bot-a', { id: 'bot-a', name: 'bot-a', runtime: 'claude' })
+    writeAgentSpec(dir, 'bot-a', baseSpec({ assistantMode }), deps)
+    expect(readJson(file).assistantMode).toEqual(assistantMode)
+    expect(
+      AgentSchema.parse({ ...readJson(file), workspace: { mode: 'from-scratch', path: dir } }).assistantMode
+    ).toEqual(assistantMode)
+    writeAgentSpec(dir, 'bot-a', baseSpec(), deps)
+    expect(readJson(file).assistantMode).toEqual(assistantMode)
+    writeAgentSpec(dir, 'bot-a', baseSpec({ assistantMode: null }), deps)
+    expect(readJson(file)).not.toHaveProperty('assistantMode')
+  })
   it('merges displayName from the CP spec', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {

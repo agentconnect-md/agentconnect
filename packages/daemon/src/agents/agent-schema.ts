@@ -6,6 +6,7 @@ import {
   AgentModelSelection,
   AgentRepositorySelector,
   AgentMemoryBinding,
+  AssistantModePolicy,
   HookRoutingProjection,
   CompatibleAgentSkillEntry,
   IntegrationCoreEnvelope,
@@ -234,6 +235,8 @@ export const AgentSchema = z.object({
   // managed (the default). External keeps only connection id + bounded policy on
   // disk; endpoint/grant/config live in the daemon-private CP registry.
   memory: AgentMemoryBinding.optional(),
+  // Assistant mode (assistant-mode.md §5.1), replicated from the CP and stored only; absent ⇒ off.
+  assistantMode: AssistantModePolicy.optional(),
   // The instance every GitLab consumer here addresses (§24.4); absent ⇒ GitLab.com, the axis default.
   gitlabHost: z.string().optional(),
   // Its Gitea twin (gitea-integration.md §11); absent ⇒ gitea.com, the axis default.

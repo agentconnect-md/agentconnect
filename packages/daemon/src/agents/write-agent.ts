@@ -803,6 +803,9 @@ export function applySpecFields(
   // field), so a flip replicates; absent (older CP) ⇒ leave the on-disk value alone.
   if (spec.builtin !== undefined) raw.builtin = spec.builtin
   if (spec.memory !== undefined) raw.memory = spec.memory
+  // Assistant mode (assistant-mode.md §5.1): null ⇒ clear, a value ⇒ set, absent (an older CP) ⇒ leave alone.
+  if (spec.assistantMode === null) delete raw.assistantMode
+  else if (spec.assistantMode !== undefined) raw.assistantMode = spec.assistantMode
   // §24.4: absent means GitLab.com, so an absent value CLEARS a stale one rather than preserving it.
   if (spec.gitlabHost !== undefined) raw.gitlabHost = spec.gitlabHost
   else delete raw.gitlabHost

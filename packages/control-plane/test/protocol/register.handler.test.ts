@@ -235,6 +235,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       modelSelection: null,
       apiGates: {}, // always shipped so removing the last chat API gate replicates
       repositorySelector: null, // always shipped value-or-null so clearing the evaluator replicates
+      assistantMode: null, // always shipped value-or-null so switching it off replicates
       // Agent→agent call policy (§2.5), always shipped so a policy/allow-list change replicates.
       callPolicy: 'all',
       allowedCallerAgentIds: [],

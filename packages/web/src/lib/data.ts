@@ -17,7 +17,13 @@ import {
   type HookKind
 } from '@agentconnect.md/protocol/code-host'
 import { CODE_HOST_PROJECTION } from './code-hosts'
-import type { DaemonLifecyclePhase, McpAppCsp, McpAppDimensions, McpAppOutcome } from '@agentconnect.md/protocol'
+import type {
+  AssistantModePolicy,
+  DaemonLifecyclePhase,
+  McpAppCsp,
+  McpAppDimensions,
+  McpAppOutcome
+} from '@agentconnect.md/protocol'
 import type {
   ChannelDecisionView,
   DaemonSessionRetention,
@@ -590,6 +596,8 @@ export interface Agent {
     timeoutMs: number
   }
   memoryCaptureMode?: 'turn' | 'manual'
+  /** Assistant mode policy (assistant-mode.md §5.1); absent ⇒ never configured, off. */
+  assistantMode?: AssistantModePolicy
   /** Runtime permission/approval mode; 'default' means the runtime default. */
   permissionMode: string
   /** Explicit opt-in for chat-side runtime changes and approval controls. */

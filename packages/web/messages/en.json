@@ -2956,6 +2956,43 @@
         "loading": "Loading…",
         "loadMore": "Load more"
       },
+      "assistantMode": {
+        "title": "Assistant mode",
+        "on": "On",
+        "off": "Off",
+        "locked": "Unavailable",
+        "responsibleNamed": "Responsible: {name}",
+        "fallbackNamed": "Fallback: {name}",
+        "edit": "Edit",
+        "close": "Close",
+        "cancel": "Cancel",
+        "details": "Details",
+        "saving": "Saving…",
+        "save": "Save assistant mode",
+        "enable": "Turn on assistant mode",
+        "responsibleUser": "Responsible user",
+        "fallbackConversation": "Fallback conversation",
+        "none": "None",
+        "limits": "Limits",
+        "limit": {
+          "maxConcurrentSubsessions": "Concurrent sub-sessions",
+          "dailyPatrolBudget": "Patrols per day",
+          "dailySubsessionsPerItem": "Sub-sessions per item per day",
+          "permissionWaitHours": "Hours to wait for approval"
+        },
+        "defaultLimit": "Default",
+        "askWarning": "This agent asks before every action, so background work will often wait for approval. Consider auto-approving operations that stay inside the workspace.",
+        "refusals": {
+          "runtime-unset": "Choose a runtime first.",
+          "runtime-not-admitted": "This runtime is not supported yet: it must be able to turn off its own memory and resume a session after a restart.",
+          "memory-provider": "Memory must be managed or off.",
+          "store-not-shared": "Every daemon in this agent’s group must share one store."
+        },
+        "blockers": {
+          "needsTarget": "Choose a responsible user or a fallback conversation.",
+          "invalidLimit": "Each limit must be a whole number within its range."
+        }
+      },
       "dreamSchedule": {
         "runOnSchedule": "Run on a schedule (otherwise dreams only run when you trigger them)",
         "frequency": "Schedule frequency",

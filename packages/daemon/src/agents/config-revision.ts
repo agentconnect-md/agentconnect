@@ -68,6 +68,8 @@ export function agentSpecDigest(spec: AgentSpec): string {
   if (content.hookRoutings?.length === 0) delete content.hookRoutings
   // A cleared repository selector is the absent field too, for the same reason.
   if (content.repositorySelector === null) delete content.repositorySelector
+  // So is a cleared assistant mode.
+  if (content.assistantMode === null) delete content.assistantMode
   return 'sha256:' + createHash('sha256').update(canonicalJson(content)).digest('hex')
 }
 
