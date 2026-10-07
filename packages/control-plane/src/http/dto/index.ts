@@ -9,6 +9,8 @@ import { Cron } from 'croner'
 import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
   AgentDecisionIds,
+  AssistantModeAdmission,
+  AssistantModePolicy,
   AgentModelSelection,
   AgentRepositorySelector,
   AgentMemoryBinding,
@@ -778,6 +780,8 @@ export const UpdateAgentBody = z
     // Memory backend; null clears (revert to managed). A managed `home` moves one way, `daemon` → `control-plane`;
     // the reverse is refused unless `force` is set, and never accepted on the managed pool.
     memory: MemoryConfigInputBody.nullable().optional(),
+    // Assistant mode (assistant-mode.md §5.1), replaced wholesale; null clears. Turning it on runs the admission checks.
+    assistantMode: AssistantModePolicy.nullable().optional(),
     // Confirms the one destructive edit: returning a memory home from the Control Plane to the daemon keeps nothing.
     force: z.boolean().optional()
   })
@@ -884,6 +888,7 @@ export const AgentDto = z.object({
   // Memory backend (null ⇒ managed default). A managed binding carries its resolved `home` and, while a
   // `daemon` → `control-plane` copy is under way, the read-only `homeMigration: 'pending'`.
   memory: MemoryConfigBody.nullable(),
+  assistantMode: AssistantModePolicy.nullable(), // null ⇒ never configured, off
   status: z.string(),
   // What the placement NAMES. `set` carries a null `daemonId` on purpose: no member id is
   // durable, so the console must read readiness from `placementReady` rather than from a machine.
@@ -932,6 +937,9 @@ export const AgentDto = z.object({
   hookKinds: z.array(z.enum(HOOK_KINDS))
 })
 export const AgentListDto = z.array(AgentDto)
+
+/** Whether the agent may switch assistant mode on as it stands, and every reason it may not. */
+export const AssistantModeAdmissionDto = AssistantModeAdmission
 
 /** Live, daemon-owned approval queue exposed only to editors of the Agent. */
 export const AgentPermissionRequestDto = AgentPermissionRequestRecord

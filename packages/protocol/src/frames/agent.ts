@@ -3,6 +3,7 @@ import { AgentDecisionIds, AgentModelSelection, AgentRepositorySelector, HookRou
 import { AgentApiGateProjections } from '../agent-api.js'
 import { CodeHostProviderString } from '../code-host.js'
 import { AgentMemoryBinding } from './memory-connection.js'
+import { AssistantModePolicy } from './assistant-mode.js'
 import { IntegrationSpec } from './integration.js'
 import { CronUpsert } from './cron.js'
 import { ExecutorStrategyName } from './executor.js'
@@ -421,6 +422,8 @@ export const AgentSpec = z.object({
   // Optional (absent ⇒ leave the on-disk agent.json value alone — same contract as
   // fastMode/pause). A brand-new agent with no value defaults to managed daemon-side.
   memory: AgentMemoryBinding.optional(),
+  // Assistant mode (assistant-mode.md §5.1); a current CP ships value or null, null clears and absent leaves it unchanged.
+  assistantMode: AssistantModePolicy.nullable().optional(),
   // Names of daemon-configured MCP servers (daemon config `mcpServers`, reported
   // via `facts/daemon-runtimes`) to attach at `session/new`. Empty/absent ⇒ none.
   mcpServers: z.array(z.string()).default([]),

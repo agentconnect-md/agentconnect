@@ -55,6 +55,8 @@ export const slackModule: WebPlatformModule<SlackApi> = {
     roomGlyph: '#',
     // `conversations.leave` needs `channels:manage` (a re-authorize for every workspace); removing the bot in Slack clears the row instead.
     leave: 'none',
+    // A Slack DM opens a session per top-level message, so it can choose one session instead.
+    dmSessionModes: ['createNew', 'append'],
     // The web client opens any conversation kind under the bot's workspace.
     conversationUrl: ({ channelId, workspaceId }) =>
       workspaceId

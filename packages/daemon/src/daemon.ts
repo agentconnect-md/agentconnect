@@ -324,7 +324,7 @@ import {
   type RoutingRule
 } from './router/routing-rule.js'
 import { CpRoutingLayer } from './router/cp-routing-layer.js'
-import { SlackConnection, type SlackAppFactory, type SlackStatusOptions } from './slack/connection.js'
+import { SlackConnection, slackTsToMs, type SlackAppFactory, type SlackStatusOptions } from './slack/connection.js'
 import { QQConnection } from './platforms/qq/connection.js'
 import { createQQTurnOutput } from './platforms/qq/surface.js'
 import { QQCommandChrome } from './platforms/qq/command-chrome.js'
@@ -2326,6 +2326,8 @@ export class Daemon {
         this.commands.slackShortcutSession(shortcut, srcIntegrationIds),
       slackThreadSessions: (shortcut, srcIntegrationIds) =>
         this.commands.slackThreadSessions(shortcut, srcIntegrationIds),
+      startNewAppendSessions: (platform, channel, srcIntegrationIds, actor, notBefore) =>
+        this.commands.startNewAppendSessions(platform, channel, srcIntegrationIds, actor, notBefore),
       settleSlackSlot: (conn, a) => this.settleSlackSlot(conn as SlackConnection, a.channel, a.thread, a.exclude)
     }
   }
@@ -10351,6 +10353,18 @@ export class Daemon {
     const payload = msg.payload
     if (payload.kind === 'app-home-opened') {
       await conn.welcomeBuiltin(payload.channelId, agent, integration)
+      return { msgId: msg.msgId, accepted: true }
+    }
+    // The HTTP arm of Slack's "new chat": the Socket Mode arm reaches the same rotation from the connection.
+    if (payload.kind === 'assistant-thread-started') {
+      const actor = msg.userId ? { userId: msg.userId } : undefined
+      await this.commands.startNewAppendSessions(
+        'slack',
+        payload.channelId,
+        [integration.id],
+        actor,
+        slackTsToMs(payload.threadTs)
+      )
       return { msgId: msg.msgId, accepted: true }
     }
     if (payload.kind === 'open-config-for-thread') {

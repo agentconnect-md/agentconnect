@@ -156,6 +156,17 @@ export class PgMemberSetRepo implements MemberSetRepo {
     return rows.map((r) => r.daemonId).sort()
   }
 
+  async memberContentStoresOf(setId: string): Promise<Array<string | null>> {
+    const rows = await this.prisma.memberSetMember.findMany({
+      where: { setId },
+      select: { daemon: { select: { capabilities: true } } }
+    })
+    return rows.map((r) => {
+      const store = (r.daemon.capabilities as { contentStore?: unknown } | null)?.contentStore
+      return typeof store === 'string' ? store : null
+    })
+  }
+
   async enroll(setId: string, daemonId: DaemonId): Promise<void> {
     await this.prisma.$transaction((tx) => enrollDaemonInSet(tx, setId, daemonId))
   }

@@ -23,6 +23,7 @@ import {
   MOCK_MODE,
   MOCK_PREFIX,
   runtimeCanDream,
+  permissionModeDefault,
   runtimeLabel,
   selectedModelId,
   status,
@@ -87,6 +88,7 @@ import { resolveWorkspaceRepoScope, workspaceRepoParamRewrite } from '@/componen
 import { WorkspaceScopePicker } from '@/components/console/WorkspaceScopePicker'
 import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
+import { AssistantModePanel } from '@/components/console/AssistantModePanel'
 import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
@@ -2861,6 +2863,22 @@ function AgentDetail() {
           sessionBasePath={orgPath('/sessions')}
           sandboxed={isPoolPlacementKind(da.placementKind)}
           memberSetPlaced={isSetPlacementKind(da.placementKind)}
+          besideSettings={
+            <AssistantModePanel
+              agentId={id}
+              canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
+              assistantMode={da.assistantMode}
+              runtime={da.runtime}
+              memoryProvider={da.memoryProvider}
+              placement={`${da.placementKind ?? 'daemon'}:${da.setId ?? da.daemon}`}
+              askEveryTime={
+                (da.permissionMode ||
+                  capabilitySource?.runtimeModels.find((r) => r.runtime === da.runtime)?.modelCatalog
+                    ?.defaultPermissionMode ||
+                  permissionModeDefault(da.runtime)) === 'default'
+              }
+            />
+          }
         />
       )}
 

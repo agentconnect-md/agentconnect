@@ -121,29 +121,33 @@ function RowSettings({
             ? channel.trigger === 'decision'
             : !semantics.triggers || semantics.triggers.includes(o.value)
         )
-  // A direct conversation is one continuous exchange already, so only a channel row chooses its session.
-  const sessions = isDirectConversation(channel.kind)
-    ? []
-    : (
-        [
+  // A DM chooses its session only where its platform's DMs are not one continuous session already; a group DM never does.
+  const offered =
+    channel.kind === 'im'
+      ? (semantics.dmSessionModes ?? [])
+      : isDirectConversation(channel.kind)
+        ? []
+        : semantics.sessionModes
+  const sessions = (
+    [
+      {
+        value: 'createNew',
+        label: translate('sessionMode.createNew'),
+        hint: translate('sessionMode.createNewHint')
+      },
+      {
+        value: 'append',
+        label: translate('sessionMode.append'),
+        hint: t.rich(
+          'sessionMode.appendHint' as never,
           {
-            value: 'createNew',
-            label: translate('sessionMode.createNew'),
-            hint: translate('sessionMode.createNewHint')
-          },
-          {
-            value: 'append',
-            label: translate('sessionMode.append'),
-            hint: t.rich(
-              'sessionMode.appendHint' as never,
-              {
-                room: here,
-                code: (chunks: ReactNode) => <span className="mono">{chunks}</span>
-              } as never
-            )
-          }
-        ] satisfies ChannelSettingsOption<SessionMode>[]
-      ).filter((o) => !semantics.sessionModes || semantics.sessionModes.includes(o.value))
+            room: here,
+            code: (chunks: ReactNode) => <span className="mono">{chunks}</span>
+          } as never
+        )
+      }
+    ] satisfies ChannelSettingsOption<SessionMode>[]
+  ).filter((o) => !offered || offered.includes(o.value))
   // While a decision owns the trigger, the plain choices stay listed but inert, and the footer says how to get them back.
   const groups: ChannelSettingsGroup[] = [
     {

@@ -1,0 +1,175 @@
+// @vitest-environment happy-dom
+
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const AGENT = '22222222-2222-4222-8222-222222222222'
+const INTEGRATION = '33333333-3333-4333-8333-333333333333'
+
+const mocks = vi.hoisted(() => ({
+  updateAgent: vi.fn(),
+  admission: { admitted: true, refusals: [] as string[] }
+}))
+
+vi.mock('@/lib/data-context', () => ({
+  useConsoleData: () => ({
+    updateAgent: mocks.updateAgent,
+    members: [
+      {
+        userId: 'usr_1',
+        email: 'ada@example.test',
+        name: 'Ada',
+        picture: null,
+        role: 'owner',
+        isCurrentUser: true,
+        joinedAt: '2026-01-01T00:00:00.000Z'
+      }
+    ],
+    integrations: [
+      {
+        id: INTEGRATION,
+        agentId: AGENT,
+        name: 'team',
+        platform: 'slack',
+        kind: 'Custom app',
+        workspace: 'example.test',
+        daemon: 'edge',
+        status: 'online',
+        revoked: false,
+        channels: [{ channelId: 'C1', name: 'general', trigger: 'mention' }]
+      }
+    ]
+  })
+}))
+
+vi.mock('@/lib/api', () => ({
+  fetchAgentAssistantModeAdmission: vi.fn(async () => mocks.admission),
+  memberDisplayName: (m: { name: string | null }) => m.name ?? 'Member'
+}))
+
+import { AssistantModePanel, assistantModeDraft, assistantModePolicyForDraft } from './AssistantModePanel'
+
+let root: Root | undefined
+let container: HTMLDivElement | undefined
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+
+beforeEach(() => {
+  mocks.updateAgent.mockReset().mockResolvedValue(undefined)
+  mocks.admission = { admitted: true, refusals: [] }
+})
+
+afterEach(async () => {
+  if (root) await act(async () => root?.unmount())
+  container?.remove()
+  root = undefined
+  container = undefined
+})
+
+async function mount(props: Partial<Parameters<typeof AssistantModePanel>[0]> = {}) {
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => {
+    root?.render(
+      <AssistantModePanel
+        agentId={AGENT}
+        canEdit
+        runtime="claude-acp"
+        memoryProvider="managed"
+        placement="daemon:edge"
+        askEveryTime={false}
+        {...props}
+      />
+    )
+  })
+  return container
+}
+
+const clickButton = async (host: HTMLElement, label: string) => {
+  const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === label)
+  expect(button, `${label} button`).toBeTruthy()
+  await act(async () => button?.click())
+}
+
+const select = async (element: HTMLSelectElement, value: string) => {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(element, value)
+    element.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+}
+
+describe('assistant mode draft', () => {
+  it('round-trips a policy and keeps the fields the panel does not edit', () => {
+    const persisted = {
+      enabled: true,
+      responsibleUserId: 'usr_1',
+      instructions: 'Keep it short.',
+      limits: { permissionWaitHours: 24 }
+    }
+    const draft = assistantModeDraft(persisted)
+    expect(assistantModePolicyForDraft(draft, persisted)).toEqual(persisted)
+    expect(
+      assistantModePolicyForDraft(
+        {
+          ...draft,
+          responsibleUserId: '',
+          fallback: `${INTEGRATION}\u0000C1`,
+          limits: { ...draft.limits, permissionWaitHours: '' }
+        },
+        persisted
+      )
+    ).toEqual({
+      enabled: true,
+      instructions: 'Keep it short.',
+      fallbackConversation: { integrationId: INTEGRATION, channelId: 'C1' }
+    })
+  })
+
+  it('names why a draft cannot be saved', () => {
+    const draft = assistantModeDraft(undefined)
+    expect(assistantModePolicyForDraft({ ...draft, enabled: true }, undefined)).toBe('needsTarget')
+    expect(
+      assistantModePolicyForDraft({ ...draft, limits: { ...draft.limits, dailyPatrolBudget: '501' } }, undefined)
+    ).toBe('invalidLimit')
+    expect(assistantModePolicyForDraft(draft, undefined)).toEqual({ enabled: false })
+  })
+})
+
+describe('AssistantModePanel', () => {
+  it('locks the switch with each reason when admission fails', async () => {
+    mocks.admission = { admitted: false, refusals: ['runtime-not-admitted', 'memory-provider'] }
+    const host = await mount({ runtime: 'codex-acp', memoryProvider: 'native' })
+    expect(host.querySelector('[data-assistant-mode-locked]')).toBeTruthy()
+    expect(
+      [...host.querySelectorAll('[data-assistant-mode-refusal]')].map((n) =>
+        n.getAttribute('data-assistant-mode-refusal')
+      )
+    ).toEqual(['runtime-not-admitted', 'memory-provider'])
+    await clickButton(host, 'Edit')
+    const toggle = host.querySelector<HTMLInputElement>('input[type="checkbox"]')
+    expect(toggle?.disabled).toBe(true)
+  })
+
+  it('turns on with a responsible user and saves the policy', async () => {
+    const host = await mount()
+    await clickButton(host, 'Edit')
+    await act(async () => host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click())
+    const save = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => b.textContent?.trim() === 'Save assistant mode'
+    )
+    expect(save?.disabled).toBe(true)
+    await select(host.querySelectorAll<HTMLSelectElement>('select')[0]!, 'usr_1')
+    await clickButton(host, 'Save assistant mode')
+    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT, {
+      assistantMode: { enabled: true, responsibleUserId: 'usr_1' }
+    })
+  })
+
+  it('warns when the agent asks before every action', async () => {
+    const host = await mount({ askEveryTime: true, assistantMode: { enabled: true, responsibleUserId: 'usr_1' } })
+    expect(host.querySelector('[data-assistant-mode-ask-warning]')?.textContent).toContain('wait for approval')
+    expect(host.textContent).toContain('Responsible: Ada')
+  })
+})

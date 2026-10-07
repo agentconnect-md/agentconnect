@@ -40,6 +40,8 @@ import type {
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
 import type {
   AgentApiProtocol,
+  AssistantModeAdmission,
+  AssistantModePolicy,
   HookKind,
   SessionStayedHomeReason,
   ProviderKeyProvider,
@@ -355,6 +357,7 @@ export interface AgentDto {
   modelSelection?: AgentModelSelection | null
   repositorySelector?: AgentRepositorySelector | null // the evaluator that chooses `decision` repositories; absent on an older CP
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
+  assistantMode?: AssistantModePolicy | null // null ⇒ never configured, off; absent on an older CP
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
   lastModifiedAt: string // ISO-8601
@@ -1061,6 +1064,8 @@ export interface UpdateAgentInput {
   repositorySelector?: AgentRepositorySelector | null
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
+  /** Assistant mode, replaced wholesale; turning it on is refused with a 409 when admission fails. */
+  assistantMode?: AssistantModePolicy | null
   /** Accept a change the CP otherwise refuses with a 409, such as moving the memory home back to `daemon` (keeps no memory). */
   force?: boolean
 }
@@ -2028,6 +2033,7 @@ export function agentFromDto(d: AgentDto): Agent {
           memoryCaptureMode: d.memory.capture?.mode ?? 'manual'
         }
       : {}),
+    ...(d.assistantMode ? { assistantMode: d.assistantMode } : {}),
     permissionMode: d.permissionMode ?? '',
     allowRuntimeChangesInChat: d.allowRuntimeChangesInChat ?? false,
     env: Object.entries(d.env ?? {}).map(([k, v]) => ({ k, v })),
@@ -2947,6 +2953,11 @@ export interface MemoryChannelDto {
 }
 export interface MemoryChannelsDto {
   channels: MemoryChannelDto[]
+}
+
+/** Whether the agent may switch assistant mode on as it stands, and every reason it may not. */
+export async function fetchAgentAssistantModeAdmission(agentId: string): Promise<AssistantModeAdmission> {
+  return apiGet<AssistantModeAdmission>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/assistant-mode/admission`)
 }
 
 /** List the channels that have their own memory folder (empty for agent scope). */

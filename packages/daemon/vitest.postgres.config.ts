@@ -26,6 +26,7 @@ export default defineConfig({
       'test/decision-evaluations.test.ts',
       'test/decision-model-evaluations.test.ts',
       'test/source-cache-store.test.ts',
+      'test/assistant-items.test.ts',
       'test/postgres-async-database.int.test.ts',
       'test/postgres-pool-store.int.test.ts',
       'test/postgres-transcript-org.int.test.ts',

@@ -32,6 +32,7 @@ import type {
   BindRule,
   AgentIcon,
   AgentMemoryBinding,
+  AssistantModePolicy,
   AgentModelSelection,
   AgentRepositorySelector,
   DecimalAmount,
@@ -813,6 +814,7 @@ export interface UpdateAgentInput {
   skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
   managedSkills?: string[] | null // accepted managed_skill ids; replaced wholesale when provided; null clears
   memory?: AgentMemoryBinding | null // memory backend
+  assistantMode?: AssistantModePolicy | null // replaced wholesale; null clears
   // Workspace repository identity is not a generic PATCH field. The dedicated
   // cold editor drains the daemon and reconciles its local materialization;
   // gitAccess above remains the contextual integration-upgrade shortcut.
@@ -860,6 +862,7 @@ export interface AgentRecord {
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
+  assistantMode?: AssistantModePolicy // assistant-mode.md §5.1; absent ⇒ never configured, off
   status: 'active' | 'inactive' | 'paused'
   /** What placement NAMES (domain/placement.ts): `daemon` resolves through `daemonId`, `set`
    *  resolves through `setId`. Never branch on it directly. */
@@ -7496,6 +7499,8 @@ export interface MemberSetRepo {
    *  `contentStoreId` — its machines may keep private stores, which none of them can read for
    *  another (domain/session-content.ts). `[]` for a session with no content set. */
   sharedStoreMemberIdsOf(session: SessionContentStore): Promise<string[]>
+  /** Each member's reported shared store id, null for a member on a private store; [] for a set with no members. */
+  memberContentStoresOf(setId: string): Promise<Array<string | null>>
   /** Record a membership under the set's tenancy invariant; throws MemberSetTenancyMismatch.
    *  The automatic path (a pool Pod on auth) — no operator precondition. */
   enroll(setId: string, daemonId: DaemonId): Promise<void>
