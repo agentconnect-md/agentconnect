@@ -2,7 +2,7 @@
 
 **Status:** Design, fourth revision (2026-10-07). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
-Prerequisites: #2812, #2813. Work breakdown: #2819.
+Prerequisites: #2812, #2813. Work breakdown: #2810.
 
 **In one sentence:** switch an agent into assistant mode and it behaves like one person on the
 team — it keeps a continuous conversation with you in every place, what it hears in one place it
