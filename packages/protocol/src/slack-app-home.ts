@@ -53,7 +53,7 @@ export function buildSlackAppHomeView(botUserId: string, context: SlackAppHomeCo
           text: connectUrl
             ? '*Finish setup*\nThe person who installed this app can sign in to AgentConnect, choose an organization and agent, and connect this workspace.'
             : disconnected
-              ? '*Reconnect your agent*\nChoose an agent in the AgentConnect console and connect this Slack app. If you do not have access, ask an organization owner or the person who set up this app.'
+              ? '*Reconnect your agent*\nReconnect this Slack app in the AgentConnect console. If you do not have access, ask an organization owner or the person who set up this app.'
               : '*Manage your agents*\nUse the AgentConnect console to set up agents, choose models, and connect tools. For access or help completing setup, contact the person who connected this app.'
         }
       },

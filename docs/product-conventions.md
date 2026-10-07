@@ -722,7 +722,9 @@ normal authentication and authorization.
 
 An HTTP Slack installation keeps serving Home after its last agent is disconnected.
 Home then explains that no agent is connected and offers **Reconnect**, which opens
-the console's existing agent picker with that installation selected. Reconnecting
+a focused dialog with the app and organization fixed. When the organization's
+editable built-in agent is available, a built-in app targets it automatically;
+other reconnections ask for an agent without preselecting the first one. Reconnecting
 does not require another Slack authorization while the installation's token remains
 valid, and does not enable sharing. A bound agent with no available daemon is not
 shown as disconnected. Uninstalling the app in Slack or revoking its token stops
