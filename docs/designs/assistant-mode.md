@@ -266,6 +266,16 @@ The daemon has no presence data and member enumeration is not made a prerequisit
   - DM: enabling it is trusting that person as a member. Webchat is internal by construction.
 - **Trust propagates downward**: a sub-session's place is its parent's; an item's trust level is
   the lowest among its followers' places; a patrol's tool scope follows the item's level.
+- **The downgrade transition (internal → external) retires context, not just the flag.** The
+  place's long session was populated under internal permissions: recalled transcripts and memory
+  reads sit in its ACP context whether or not they were ever posted, and a sub-session born there
+  carries the same context. On a downgrade — an editor's change, a `channel_shared` event, a
+  member-joined event, a guest joining — the daemon: interrupts the place's in-flight turn; retires
+  the long session the way `!new` does (a fresh coordinate, so the next message starts from an
+  empty context with the external-filtered standing summary); interrupts the sub-sessions born in
+  that place and drops their pending full-text reports (structured rows stay); leaves pending
+  approval cards in place. The retired session's transcript keeps the visibility it had. An
+  upgrade (external → internal) needs no transition.
 - **An agent with a shared workspace cannot be enabled in an external place** (git with shared
   isolation, scratch): workspace files cross places, and the runtime's native file tools cannot
   be filtered.
@@ -613,3 +623,7 @@ native writes or unauthenticated requests → the patrol guarantee stated by lay
 cwd, degraded runtimes marked (§5.9, §1.5). A throwaway cwd is not filesystem isolation → "does
 not touch the workspace" limited to read-only or sandboxed hosts, workspace writes listed in the
 degraded residual.
+
+**Review bot, public PR**: an internal → external downgrade left context read under internal
+permissions in the long session and in active sub-sessions → the downgrade transition retires
+the session and its sub-sessions' full-text reports (§5.3).
