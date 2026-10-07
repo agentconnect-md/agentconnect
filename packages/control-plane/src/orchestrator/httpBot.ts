@@ -57,6 +57,7 @@ import type {
   BotDecisionRoutingRecord,
   BotDecisionRoutingRepo,
   DaemonRepo,
+  OrgRepo,
   ViewCtx
 } from '../persistence/ports.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
@@ -269,7 +270,8 @@ export class HttpBotOrchestrator {
     private readonly routing?: {
       routings: Pick<BotDecisionRoutingRepo, 'getUnscoped' | 'save'>
       daemons: Pick<DaemonRepo, 'getUnscoped'>
-    }
+    },
+    private readonly orgs?: Pick<OrgRepo, 'slugById'>
   ) {}
 
   /**
@@ -1779,8 +1781,10 @@ export class HttpBotOrchestrator {
     const bags = await this.platforms.get(bot.platform)?.projectBotAssign?.(bot, secret)
     if (!bags) return null
     const { secrets, ingress } = bags
+    const orgSlug = await this.orgs?.slugById(bot.orgId)
     return {
       botId: bot.id,
+      ...(orgSlug ? { orgSlug } : {}),
       platform: compiled.platform,
       // §6.1: a bot assignment is always a CHAT platform; carried so an older
       // relay can classify an id a newer CP introduces.

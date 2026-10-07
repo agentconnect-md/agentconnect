@@ -35,6 +35,7 @@ import { isThreadRootMessage } from '@agentconnect.md/message'
 /** A bot's full relay-side assignment (from `rc/bot-assign`). Secret material. */
 export interface BotAssignment {
   botId: string
+  orgSlug?: string
   // S1a open reader (protocol route.ts Platform policy): the wire field is an
   // open string; the assign handler refuses an unsupported platform gracefully.
   platform: string
@@ -921,6 +922,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
   const routes = usableRoutes(a.routes)
   return {
     botId: a.botId,
+    ...(a.orgSlug ? { orgSlug: a.orgSlug } : {}),
     platform: a.platform,
     secrets,
     ...(apiAppId ? { apiAppId } : {}),

@@ -1,9 +1,17 @@
 export const SLACK_APP_HOME_ACTION_PREFIX = 'ac_home_'
 
-// Public guidance only: shared apps must not expose an agent's configuration or organization membership.
-export function buildSlackAppHomeView(botUserId: string, webAppUrl?: string) {
+export interface SlackAppHomeContext {
+  webAppUrl?: string | undefined
+  orgSlug?: string | undefined
+  agentId?: string | undefined
+}
+
+// Links use normal console authorization; the view never includes private configuration or membership.
+export function buildSlackAppHomeView(botUserId: string, context: SlackAppHomeContext = {}) {
   const mention = botUserId ? `<@${botUserId}>` : 'this app'
-  const consoleUrl = webAppUrl && /^https?:\/\//.test(webAppUrl) ? webAppUrl : undefined
+  const consoleUrl =
+    context.webAppUrl && /^https?:\/\//.test(context.webAppUrl) ? context.webAppUrl.replace(/\/+$/, '') : undefined
+  const orgUrl = consoleUrl && context.orgSlug ? `${consoleUrl}/${encodeURIComponent(context.orgSlug)}` : undefined
   return {
     type: 'home' as const,
     blocks: [
@@ -42,10 +50,25 @@ export function buildSlackAppHomeView(botUserId: string, webAppUrl?: string) {
                 {
                   type: 'button' as const,
                   action_id: `${SLACK_APP_HOME_ACTION_PREFIX}console`,
-                  text: { type: 'plain_text' as const, text: 'Open AgentConnect' },
-                  url: consoleUrl,
-                  style: 'primary' as const
-                }
+                  text: { type: 'plain_text' as const, text: orgUrl ? 'Open organization' : 'Open AgentConnect' },
+                  url: orgUrl ? `${orgUrl}/home` : consoleUrl
+                },
+                ...(orgUrl
+                  ? [
+                      {
+                        type: 'button' as const,
+                        action_id: `${SLACK_APP_HOME_ACTION_PREFIX}agent`,
+                        text: {
+                          type: 'plain_text' as const,
+                          text: context.agentId ? 'Configure agent' : 'Manage agents'
+                        },
+                        url: context.agentId
+                          ? `${orgUrl}/agents/${encodeURIComponent(context.agentId)}?tab=config`
+                          : `${orgUrl}/agents`,
+                        style: 'primary' as const
+                      }
+                    ]
+                  : [])
               ]
             }
           ]

@@ -710,11 +710,15 @@ applies to observed 1:1 and group DMs; classic integrations remain per-agent.
 ## Slack Home tab
 
 Every AgentConnect Slack app offers a Home tab with public getting-started guidance,
-the configured console entry point, and documentation, support, and privacy links.
+organization and agent configuration links, and documentation, support, and privacy links.
 This includes custom agents: the page belongs to the Slack app, so agents sharing
-one bot also share one Home tab. It never lists private agents, configuration,
-organization membership, or conversation history. Console access remains subject
-to the console's normal authentication and authorization.
+one bot also share one Home tab. When the app serves one agent, its configuration
+button opens that agent's Config tab. Shared HTTP apps use the visiting user's DM
+route when available; without an unambiguous target, the button opens the organization's
+agents list. Older assignments without an organization slug retain the generic console
+entry point. The view never lists private agent names, configuration, organization
+membership, or conversation history. Console access remains subject to the console's
+normal authentication and authorization.
 
 Home opens publish a view for the visiting Slack user without starting a model
 turn, posting a message, or requiring admission to a conversation. HTTP installs

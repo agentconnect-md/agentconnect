@@ -520,7 +520,7 @@ describe('SlackHttpIngest events', () => {
     const publish = vi.fn(async (_body: unknown) => ({}))
     const web = { auth: { test: async () => ({ user_id: 'U-BOT' }) }, views: { publish } }
     let webAppUrl: string | undefined = 'https://console.example.test'
-    const d = deps(web, { webAppUrl: () => webAppUrl, onAppHomeOpened: vi.fn() })
+    const d = deps(web, { appHomeContext: () => ({ webAppUrl }), onAppHomeOpened: vi.fn() })
     const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
     await ingest.start()
     await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-VISITOR' })
@@ -534,6 +534,28 @@ describe('SlackHttpIngest events', () => {
     expect(JSON.stringify(publish.mock.calls[1])).not.toContain('https://console.example.test')
     await ingest.handleEvent({ type: 'app_home_opened', tab: 'home' })
     expect(publish).toHaveBeenCalledTimes(2)
+    await ingest.stop()
+  })
+
+  it('publishes the current DM agent configuration link, or the organization agent list without a target', async () => {
+    const publish = vi.fn(async (_body: unknown) => ({}))
+    const web = { auth: { test: async () => ({ user_id: 'U-BOT' }) }, views: { publish } }
+    let agentId: string | undefined = 'agent-1'
+    const context = vi.fn(() => ({ webAppUrl: 'https://console.example.test/', orgSlug: 'example-org', agentId }))
+    const d = deps(web, { appHomeContext: context })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-VISITOR', channel: 'D1' })
+    expect(context).toHaveBeenCalledWith('D1')
+    expect(JSON.stringify(publish.mock.calls[0])).toContain('https://console.example.test/example-org/home')
+    expect(JSON.stringify(publish.mock.calls[0])).toContain(
+      'https://console.example.test/example-org/agents/agent-1?tab=config'
+    )
+    agentId = undefined
+    await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-VISITOR', channel: 'D1' })
+    expect(JSON.stringify(publish.mock.calls[1])).toContain('https://console.example.test/example-org/agents')
+    expect(JSON.stringify(publish.mock.calls[1])).not.toContain('?tab=config')
+    expect(d.onMessage).not.toHaveBeenCalled()
     await ingest.stop()
   })
 

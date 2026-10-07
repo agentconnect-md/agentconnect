@@ -1025,7 +1025,8 @@ export function buildContainer(
     agentDelivery,
     placementResolver,
     gatedDmSeedResolver,
-    { routings: repos.botDecisionRouting, daemons: repos.daemon }
+    { routings: repos.botDecisionRouting, daemons: repos.daemon },
+    repos.org
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,

@@ -36,7 +36,7 @@ function fixture(messages: { text?: string }[] = []) {
       newTraceId: () => 'trace',
       sendIntervalMs: 0,
       onMessage,
-      webAppUrl: () => 'https://console.example.test',
+      appHomeContext: () => ({ webAppUrl: 'https://console.example.test/', orgSlug: 'example-org', agentId: agent.id }),
       onAppHomeOpened: (channel) => conn.welcomeBuiltin(channel, agent, integration)
     },
     () => app
@@ -58,7 +58,8 @@ describe('built-in Slack welcome', () => {
       view: expect.objectContaining({ type: 'home' })
     })
     const view = JSON.stringify(h.publish.mock.calls[0])
-    expect(view).toContain('https://console.example.test')
+    expect(view).toContain('https://console.example.test/example-org/home')
+    expect(view).toContain('https://console.example.test/example-org/agents/agent-1?tab=config')
     expect(view).not.toContain(h.agent.name)
     expect(h.history).not.toHaveBeenCalled()
     expect(h.postMessage).not.toHaveBeenCalled()

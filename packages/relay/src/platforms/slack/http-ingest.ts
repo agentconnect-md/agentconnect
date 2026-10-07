@@ -38,6 +38,7 @@ import {
   decodeSharedSlackStatusTarget,
   elicitFormViewValues,
   type RdSlackAction,
+  type SlackAppHomeContext,
   type SlackViewState,
   type SharedSlackStatusTarget,
   type WireNormalizedMessage
@@ -411,7 +412,7 @@ export interface SlackHttpIngestDeps {
   onAppHomeOpened?: (opened: HttpSlackAppHomeOpened) => void
   /** Forward an Assistant "new chat" to the DM's owning daemon, which starts a fresh session where the DM appends. */
   onAssistantThreadStarted?: (started: HttpSlackAssistantThreadStarted) => void
-  webAppUrl?: () => string | undefined
+  appHomeContext?: (channelId?: string) => SlackAppHomeContext
   /** The bot's credential is definitively dead (an uninstall, a token revocation, or a probe saying so); report it so the CP revokes the bot. */
   onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', proof: SlackRevocationProof) => void
   /** A probe answer that does not revoke: `ok` clears an earlier rejection, `rejected` only marks the bot. */
@@ -535,7 +536,7 @@ export class SlackHttpIngest {
         if (event.tab === 'home' && event.user)
           await this.web?.views.publish({
             user_id: event.user,
-            view: buildSlackAppHomeView(this.botUserId, this.deps.webAppUrl?.())
+            view: buildSlackAppHomeView(this.botUserId, this.deps.appHomeContext?.(event.channel))
           })
         if (event.tab === 'messages' && event.channel?.startsWith('D') && event.user && eventId)
           this.deps.onAppHomeOpened?.({ channelId: event.channel, userId: event.user, interactionId: eventId })

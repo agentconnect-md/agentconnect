@@ -345,9 +345,11 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     // and the assignment handler forwards the full wire frame when S3 lands.
     const a = toBotAssignment({
       ...base,
+      orgSlug: 'example-org',
       secrets: { botToken: 'xoxb-x', signingSecret: 'sig' }
     } as never)
     expect(a?.secrets).toEqual({ botToken: 'xoxb-x', signingSecret: 'sig' })
+    expect(a?.orgSlug).toBe('example-org')
     const f = toBotAssignment({
       ...base,
       platform: 'feishu',

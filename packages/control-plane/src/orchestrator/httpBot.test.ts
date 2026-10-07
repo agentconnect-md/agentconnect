@@ -422,7 +422,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
           getUnscoped: async (id) =>
             daemonCreatedAt[id] === undefined ? null : ({ createdAt: new Date(daemonCreatedAt[id]!) } as never)
         }
-      }
+      },
+      { slugById: async (orgId) => (orgId === ORG ? 'example-org' : null) }
     )
   }
 
@@ -739,6 +740,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     // §6.1: a bot assignment is always a chat platform; the kind teaches an older relay
     // to classify an id a newer CP introduces.
     expect(assign.originKind).toBe('chat')
+    expect(assign.orgSlug).toBe('example-org')
     // §6.7: a manual-paste bot has no demux identity, so the opaque ingress bag ships empty
     // (keys omitted, never null) and the relay verify-scans instead.
     expect(assign.ingress).toEqual({})
