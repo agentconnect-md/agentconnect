@@ -3,21 +3,20 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import pg from 'pg'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import {
   ASSISTANT_ITEM_OBSERVATIONS_KEPT,
   ASSISTANT_ITEM_SCHEMA,
-  type AssistantPlace,
-  type AssistantTrust,
-  type AssistantTrustLookup
+  type AssistantPlace
 } from '../src/store/assistant-items.js'
-import { LocalStore } from '../src/store/local-store.js'
+import { LocalStore, SCHEMA_VERSION } from '../src/store/local-store.js'
 import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
 import { canonicalColumns, POOL_STORE_SCHEMA } from '../src/store/postgres-dialect.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-import { openTestStore, usingPostgresStore } from './store-support.js'
+import { openTestStore, tempStorePath, usingPostgresStore } from './store-support.js'
 
 const AGENT = 'agent-a'
 const OTHER_AGENT = 'agent-b'
@@ -27,14 +26,6 @@ const DM: AssistantPlace = { platform: 'slack', channel: 'D0ALICE', transportSco
 const WEBCHAT: AssistantPlace = { platform: 'webchat', channel: 'conv-1', transportScope: null }
 const ALICE = 'slack:T0EXAMPLE:U0ALICE'
 const BOB = 'slack:T0EXAMPLE:U0BOB'
-
-const levels = new Map<string, AssistantTrust>([
-  [GENERAL.channel, 'internal'],
-  [DM.channel, 'internal'],
-  [WEBCHAT.channel, 'internal'],
-  [SHARED.channel, 'external']
-])
-const trustOf: AssistantTrustLookup = (place) => levels.get(place.channel)
 
 let store: LocalStore | undefined
 afterEach(async () => {
@@ -48,17 +39,14 @@ async function open(): Promise<LocalStore> {
 }
 
 const create = (s: LocalStore, overrides: Partial<Parameters<LocalStore['assistantItems']['create']>[0]> = {}) =>
-  s.assistantItems.create(
-    {
-      agentId: AGENT,
-      title: 'Ship the release notes',
-      origin: GENERAL,
-      followers: [{ identity: ALICE, place: GENERAL }],
-      now: 1_000,
-      ...overrides
-    },
-    trustOf
-  )
+  s.assistantItems.create({
+    agentId: AGENT,
+    title: 'Ship the release notes',
+    origin: GENERAL,
+    followers: [{ identity: ALICE, place: GENERAL }],
+    now: 1_000,
+    ...overrides
+  })
 
 describe('assistant item ledger: create and read', () => {
   it('round-trips a record, with an absent transport scope reading back as null', async () => {
@@ -82,7 +70,6 @@ describe('assistant item ledger: create and read', () => {
       status: 'active',
       followers: [{ identity: 'user:u-1', place: WEBCHAT }],
       origin: WEBCHAT,
-      trust: 'internal',
       summary: 'Alice asked for the notes.',
       observations: [],
       observationVersion: 0,
@@ -101,7 +88,7 @@ describe('assistant item ledger: create and read', () => {
     expect(await s.assistantItems.get(OTHER_AGENT, item.id)).toBeUndefined()
     expect(await s.assistantItems.list(OTHER_AGENT)).toEqual([])
     expect(
-      await s.assistantItems.attachFollower(OTHER_AGENT, item.id, { identity: BOB, place: SHARED }, trustOf)
+      await s.assistantItems.attachFollower(OTHER_AGENT, item.id, { identity: BOB, place: SHARED })
     ).toBeUndefined()
     expect(await s.assistantItems.appendObservation(OTHER_AGENT, item.id, { text: 'nope' })).toBeUndefined()
     expect(await s.assistantItems.transition(OTHER_AGENT, item.id, 1, { status: 'done' })).toEqual({
@@ -111,14 +98,6 @@ describe('assistant item ledger: create and read', () => {
     expect(await s.assistantItems.link(OTHER_AGENT, item.id, 'subsession', 'sess-1')).toBe(false)
     expect(await s.assistantItems.delete(OTHER_AGENT, item.id)).toBe(false)
     expect(await s.assistantItems.get(AGENT, item.id)).toEqual(item)
-  })
-
-  it('takes the lowest trust among the origin and the followers, unknown counting as external', async () => {
-    const s = await open()
-    expect((await create(s, { followers: [{ identity: BOB, place: SHARED }] })).trust).toBe('external')
-    const unknown: AssistantPlace = { platform: 'telegram', channel: '-100123', transportScope: 'bot-1' }
-    expect((await create(s, { origin: unknown, followers: [] })).trust).toBe('external')
-    expect((await create(s, { followers: [] })).trust).toBe('internal')
   })
 
   it('refuses malformed input before writing anything', async () => {
@@ -143,7 +122,7 @@ describe('assistant item ledger: list', () => {
       status: 'waiting',
       followers: [{ identity: BOB, place: SHARED }]
     })
-    await s.assistantItems.create({ agentId: OTHER_AGENT, title: 'other', origin: GENERAL, now: 4_000 }, trustOf)
+    await s.assistantItems.create({ agentId: OTHER_AGENT, title: 'other', origin: GENERAL, now: 4_000 })
     const ids = (items: { id: string }[]) => items.map((item) => item.id)
 
     expect(ids(await s.assistantItems.list(AGENT))).toEqual([c.id, b.id, a.id])
@@ -157,45 +136,29 @@ describe('assistant item ledger: list', () => {
     expect(ids(await s.assistantItems.list(AGENT, { limit: 2 }))).toEqual([c.id, b.id])
     const [listed] = await s.assistantItems.list(AGENT, { place: SHARED })
     expect(listed).not.toHaveProperty('observations')
-    expect(listed).toMatchObject({ followers: [{ identity: BOB, place: SHARED }], trust: 'external' })
+    expect(listed).toMatchObject({ followers: [{ identity: BOB, place: SHARED }] })
   })
 })
 
-describe('assistant item ledger: followers and trust', () => {
-  it('attaches idempotently on (identity, place) and lowers trust without touching the CAS version', async () => {
+describe('assistant item ledger: followers', () => {
+  it('attaches idempotently on (identity, place) without touching the CAS version', async () => {
     const s = await open()
     const item = await create(s)
     const items = s.assistantItems
-    expect(await items.attachFollower(AGENT, item.id, { identity: ALICE, place: GENERAL }, trustOf, 2_000)).toEqual({
-      added: false,
-      trust: 'internal'
+    expect(await items.attachFollower(AGENT, item.id, { identity: ALICE, place: GENERAL }, 2_000)).toEqual({
+      added: false
     })
-    expect(await items.attachFollower(AGENT, item.id, { identity: ALICE, place: DM }, trustOf, 3_000)).toEqual({
-      added: true,
-      trust: 'internal'
-    })
-    expect(await items.attachFollower(AGENT, item.id, { identity: BOB, place: SHARED }, trustOf, 4_000)).toEqual({
-      added: true,
-      trust: 'external'
-    })
+    expect(await items.attachFollower(AGENT, item.id, { identity: ALICE, place: DM }, 3_000)).toEqual({ added: true })
+    expect(await items.attachFollower(AGENT, item.id, { identity: BOB, place: SHARED }, 4_000)).toEqual({ added: true })
     const after = await items.get(AGENT, item.id)
     expect(after?.followers).toEqual([
       { identity: ALICE, place: GENERAL },
       { identity: ALICE, place: DM },
       { identity: BOB, place: SHARED }
     ])
-    expect(after).toMatchObject({ trust: 'external', version: 1, updatedAt: 4_000 })
-    expect(await items.attachFollower(AGENT, 'missing', { identity: BOB, place: DM }, trustOf)).toBeUndefined()
-  })
-
-  it('re-derives trust when a place is downgraded', async () => {
-    const s = await open()
-    const item = await create(s, { followers: [{ identity: ALICE, place: DM }] })
-    expect(await s.assistantItems.recomputeTrust(AGENT, item.id, trustOf)).toBe('internal')
-    const downgraded: AssistantTrustLookup = (place) => (place.channel === DM.channel ? 'external' : trustOf(place))
-    expect(await s.assistantItems.recomputeTrust(AGENT, item.id, downgraded)).toBe('external')
-    expect((await s.assistantItems.get(AGENT, item.id))?.trust).toBe('external')
-    expect(await s.assistantItems.recomputeTrust(AGENT, 'missing', trustOf)).toBeUndefined()
+    expect(after).toMatchObject({ version: 1, updatedAt: 4_000 })
+    expect(after).not.toHaveProperty('trust')
+    expect(await items.attachFollower(AGENT, 'missing', { identity: BOB, place: DM })).toBeUndefined()
   })
 })
 
@@ -308,10 +271,12 @@ describe('assistant item ledger: links and deletion', () => {
     const s = await open()
     const doomed = await create(s)
     const kept = await create(s)
-    const elsewhere = await s.assistantItems.create(
-      { agentId: OTHER_AGENT, title: 'other', origin: GENERAL, followers: [{ identity: ALICE, place: GENERAL }] },
-      trustOf
-    )
+    const elsewhere = await s.assistantItems.create({
+      agentId: OTHER_AGENT,
+      title: 'other',
+      origin: GENERAL,
+      followers: [{ identity: ALICE, place: GENERAL }]
+    })
     await s.assistantItems.appendObservation(AGENT, doomed.id, { text: 'seen' })
     await s.assistantItems.link(AGENT, doomed.id, 'proposal', 'prop-1')
     expect(await s.assistantItems.delete(AGENT, doomed.id)).toBe(true)
@@ -331,6 +296,136 @@ describe('assistant item ledger schema', () => {
     const canonical = new Set<string>(canonicalColumns)
     expect([...names].filter((name) => !canonical.has(name))).toEqual([])
     expect(names.size).toBeGreaterThan(10)
+  })
+})
+
+// v36 drops the trust column a v35 daemon wrote (assistant-mode.md §5.3, fifth revision).
+const V35_ITEM_TABLE = `
+  CREATE TABLE assistant_item (
+    id TEXT PRIMARY KEY,
+    agentId TEXT NOT NULL,
+    title TEXT NOT NULL,
+    doneWhen TEXT,
+    nextCheck INTEGER,
+    status TEXT NOT NULL CHECK (status IN ('active', 'waiting', 'done', 'dropped')),
+    originPlatform TEXT NOT NULL,
+    originChannel TEXT NOT NULL,
+    originTransportScope TEXT NOT NULL DEFAULT '',
+    trust TEXT NOT NULL CHECK (trust IN ('internal', 'external')),
+    summary TEXT NOT NULL DEFAULT '',
+    observationVersion INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 1,
+    createdAt INTEGER NOT NULL,
+    updatedAt INTEGER NOT NULL
+  )`
+const V35_ITEM_ROW = `INSERT INTO assistant_item (id, agentId, title, status, originPlatform, originChannel, trust, createdAt, updatedAt)
+  VALUES ('item-old', 'agent-a', 'Kept across the upgrade', 'waiting', 'slack', 'C0GENERAL', 'external', 1000, 2000)`
+
+describe.skipIf(usingPostgresStore())('the v35 → v36 item trust removal on SQLite', () => {
+  const columns = (path: string): string[] => {
+    const db = new DatabaseSync(path)
+    const rows = db.prepare('PRAGMA table_info(assistant_item)').all() as { name: string }[]
+    db.close()
+    return rows.map((row) => row.name)
+  }
+  const userVersion = (path: string): number => {
+    const db = new DatabaseSync(path)
+    const version = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+    db.close()
+    return version
+  }
+
+  it('drops the trust column and keeps every item', async () => {
+    const path = tempStorePath('ac-assistant-v35-')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec(`DROP TABLE assistant_item; ${V35_ITEM_TABLE}; ${V35_ITEM_ROW}; PRAGMA user_version = 35`)
+    old.close()
+    expect(columns(path)).toContain('trust')
+
+    const upgraded = await LocalStore.open(path)
+    try {
+      expect(await upgraded.assistantItems.get(AGENT, 'item-old')).toMatchObject({
+        title: 'Kept across the upgrade',
+        status: 'waiting',
+        origin: { platform: 'slack', channel: 'C0GENERAL', transportScope: null },
+        updatedAt: 2_000
+      })
+      expect((await upgraded.assistantItems.create({ agentId: AGENT, title: 'new', origin: GENERAL })).title).toBe(
+        'new'
+      )
+    } finally {
+      await upgraded.close()
+    }
+    expect(columns(path)).not.toContain('trust')
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
+  })
+
+  it('creates the ledger on a v35 store that never had it', async () => {
+    const path = tempStorePath('ac-assistant-v35-bare-')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('DROP TABLE assistant_item; PRAGMA user_version = 35')
+    old.close()
+    const upgraded = await LocalStore.open(path)
+    try {
+      expect((await upgraded.assistantItems.create({ agentId: AGENT, title: 'first', origin: DM })).status).toBe(
+        'active'
+      )
+    } finally {
+      await upgraded.close()
+    }
+    expect(columns(path)).not.toContain('trust')
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v35 → v36 item trust removal on PostgreSQL', () => {
+  it('drops the trust column and keeps every item', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pg.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      await (await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })).close()
+
+      // Put the ledger back into the shape a v35 daemon left it in, holding one item.
+      await admin.query(`SET search_path TO ${schema}`)
+      await admin.query(`DROP TABLE assistant_item`)
+      await admin.query(V35_ITEM_TABLE.replace(/\bINTEGER\b/g, 'BIGINT'))
+      await admin.query(V35_ITEM_ROW)
+      await admin.query('UPDATE _local_store_schema_version SET version = 35 WHERE singleton = true')
+
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        expect(await upgraded.assistantItems.get(AGENT, 'item-old')).toMatchObject({
+          title: 'Kept across the upgrade',
+          status: 'waiting',
+          updatedAt: 2_000
+        })
+        expect((await upgraded.assistantItems.create({ agentId: AGENT, title: 'new', origin: GENERAL })).title).toBe(
+          'new'
+        )
+      } finally {
+        await upgraded.close()
+      }
+      const left = await admin.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'assistant_item'`,
+        [schema]
+      )
+      expect(left.rows.map((row: { column_name: string }) => row.column_name)).not.toContain('trust')
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
+    }
   })
 })
 
@@ -380,17 +475,16 @@ describe.skipIf(!usingPostgresStore())('assistant item ledger across PostgreSQL 
     return settled
   }
 
-  it('keeps the lower trust when two members attach followers at once', async () => {
+  it('keeps both followers when two members attach at once', async () => {
     const a = await member()
     const b = await member()
     const item = await create(a)
     const holder = await lockedItem(item.id)
-    const external = a.assistantItems.attachFollower(AGENT, item.id, { identity: BOB, place: SHARED }, trustOf)
-    const internal = b.assistantItems.attachFollower(AGENT, item.id, { identity: ALICE, place: DM }, trustOf)
-    expect(await settledWithin(Promise.race([external, internal]), 300)).toBe(false)
+    const bob = a.assistantItems.attachFollower(AGENT, item.id, { identity: BOB, place: SHARED })
+    const alice = b.assistantItems.attachFollower(AGENT, item.id, { identity: ALICE, place: DM })
+    expect(await settledWithin(Promise.race([bob, alice]), 300)).toBe(false)
     await holder.query('COMMIT')
-    await Promise.all([external, internal])
-    expect(await b.assistantItems.get(AGENT, item.id)).toMatchObject({ trust: 'external' })
+    expect(await Promise.all([bob, alice])).toEqual([{ added: true }, { added: true }])
     expect((await a.assistantItems.get(AGENT, item.id))?.followers).toHaveLength(3)
   })
 
@@ -478,11 +572,8 @@ describe.skipIf(usingPostgresStore())('assistant items on agent removal', () => 
         store: LocalStore
         cpConfigApply(): { applyAgentRemove(id: string): Promise<void> }
       }
-      const mine = await seam.store.assistantItems.create({ agentId, title: 'mine', origin: GENERAL }, trustOf)
-      const theirs = await seam.store.assistantItems.create(
-        { agentId: OTHER_AGENT, title: 'theirs', origin: GENERAL },
-        trustOf
-      )
+      const mine = await seam.store.assistantItems.create({ agentId, title: 'mine', origin: GENERAL })
+      const theirs = await seam.store.assistantItems.create({ agentId: OTHER_AGENT, title: 'theirs', origin: GENERAL })
       await seam.cpConfigApply().applyAgentRemove(agentId)
       expect(await seam.store.assistantItems.get(agentId, mine.id)).toBeUndefined()
       expect(await seam.store.assistantItems.get(OTHER_AGENT, theirs.id)).toBeDefined()

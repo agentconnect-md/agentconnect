@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, fifth revision (2026-10-07). Reviewed by three independent design reviews and
+**Status:** Design, sixth revision (2026-10-08). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -249,9 +249,9 @@ conversation. Each place has exactly one long session:
 - **Channel**: forced `append`. Rows already in `append` are taken as they are; Linear rows are
   skipped; Decision-gated rows are not forced to change mode.
 - **DM**: Slack DMs gain `append` (other platforms are already continuous). Fixed `private`.
-- **Group DM**: treated as a small private channel, internal unless the platform detects it as
-  external. Its
-  console-side default of `org` visibility is a session-visibility matter tracked separately.
+- **Group DM**: treated as a small private channel — a private place for recall and memory
+  (§5.5), internal unless the platform detects it as external. Its console-side default of `org`
+  visibility is a session-visibility matter tracked separately.
 - **Webchat**: one conversation is already one session.
 
 Long sessions are kept per §4.2. Context relies on the runtime's own compaction; the standing
@@ -320,18 +320,22 @@ another place, under §5.5.
 
 ### 5.5 Permission rules
 
-> **Read**: any place may recall any channel or group DM; a DM only from that person's own DM or
-> webchat. Another person's DM, never.
+> **Read**: any place may recall any non-private channel; a private channel or group DM only from
+> itself (P0a; see below); a DM only from that person's own DM or webchat. Another person's DM,
+> never.
 > **Write**: platform write tools (`sendMessage`, `shareFile`, `scheduleMessage`, canvas, lists…)
 > target only **the current place**; anything cross-place goes through §5.7 as structured fields.
 > **External**: an external place reads like an internal one; what it posts is a draft.
 
-| Current place                | Recallable sources                                 | Memory / knowledge | Output                                                |
-| ---------------------------- | -------------------------------------------------- | ------------------ | ----------------------------------------------------- |
-| P's DM                       | P's own DM and webchat, every channel and group DM | all                | posted                                                |
-| Internal channel or group DM | every channel and group DM                         | all                | posted                                                |
-| External channel or group DM | every channel and group DM                         | all                | **drafted**: posted after an internal member approves |
-| Webchat                      | as a DM, by the conversation's owner               | all                | posted                                                |
+| Current place                | Recallable sources                                | Memory / knowledge | Output                                                |
+| ---------------------------- | ------------------------------------------------- | ------------------ | ----------------------------------------------------- |
+| P's DM                       | P's own DM and webchat, every non-private channel | all¹               | posted                                                |
+| Internal channel or group DM | itself, every non-private channel                 | all¹               | posted                                                |
+| External channel or group DM | itself, every non-private channel                 | all¹               | **drafted**: posted after an internal member approves |
+| Webchat                      | as a DM, by the conversation's owner              | all¹               | posted                                                |
+
+¹ Shared memory never holds content from DMs, webchat or private places (the memory bypass
+below), so opening it everywhere does not reopen what the read rule closes.
 
 **Drafts in an external place:**
 
@@ -347,6 +351,22 @@ another place, under §5.5.
 - Any other card that would land in an external place (a runtime permission request, a
   `propose`) goes to the same DM instead: a card is output too.
 
+**Private places — scoped per place now, per asker later:**
+
+- A **private place** is a channel or group DM the platform reports as private through the
+  daemon's platform-neutral `isPrivate` facet (`PlatformChannelInfo` / `ObservedChat`). A platform
+  that cannot tell reports not private — notably Discord, whose permission-restricted channels
+  read as open.
+- The target is **per-asker scoping**: an answer draws only on places the person asking can see,
+  so a private place's content reaches only its members — the practice of the coworker agent in
+  §2. It needs a membership cache per source and the identity links of P1 (webchat users), and
+  platforms without a member list (Discord, Telegram) cannot support it; it ships in P1.
+- **Until then (P0a) a private place is read only from itself**: no other place, not even a
+  member's DM, can recall it; the place itself still recalls every non-private channel.
+  Per-asker scoping only widens this, so nothing that works in P0a stops working later.
+- Other places do not see a private place in recall's listing, and a refused read answers as
+  opaquely as the DM rule: "I can't share that here", never where the content lives.
+
 - Webchat ↔ IM recognition depends on identity links (P1); in P0 webchat recalls only itself and
   channels.
 - **"Ask me in a DM"**: asked in place B for something only the asker may see, B's session
@@ -355,9 +375,9 @@ another place, under §5.5.
   `sendMessage` only sends already-generated text and starts no turn in the DM, so it is not used).
 - No output filter; one zero-cost assertion: a source read during a turn that is outside the
   current place's allowed set raises an error metric.
-- **Memory bypass**: in P0, dreams and explicit memory writes skip `private` sessions for
-  assistant-mode agents, filtered by the CP-confirmed bit; "allow for this session" is removed on
-  `append` sessions. P1 adds the per-person memory space. This is a retreat from today's dream
+- **Memory bypass**: in P0, per-turn capture, dreams and explicit memory writes skip `private`
+  sessions (filtered by the CP-confirmed bit) and the sessions of private places (by `isPrivate`)
+  for assistant-mode agents; "allow for this session" is removed on their `append` sessions. P1 adds the per-person memory space. This is a retreat from today's dream
   behavior and [memory-dreaming.md](memory-dreaming.md) says so. Runtime native memory must be
   disableable (admission) and is disabled on enable.
 
@@ -559,7 +579,7 @@ conversation only raises an unread badge.
 | Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                |
 | **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions** |
 | **P0b — background work**         | Direct self-delegation, own coordinates, the persistent parent–child index; the persistent outbox (merge, ack, dead letter, chain depth, failure reports, hop reset, recovery order); sub-session permission requests and the wait cap; list / steer / stop (text list); pause suspends the outbox                                                                  |
-| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours                                                                                    |
+| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours                                                          |
 | P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                              |
 | P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                            |
 
@@ -661,3 +681,10 @@ practice in §2). Consequences: the downgrade transition no longer retires conte
 shared-workspace restriction on external places, item trust levels and the external-filtered
 summary are dropped; cards from external places go to the approver's DM, which settles the
 external-place card question left open above.
+
+**Sixth revision (2026-10-08)**: private channels were recallable from every place → per-asker
+scoping is the target (P1); P0a reads a private place only from itself. Architecture review of
+that change: group DMs are private on the platform too → they are private places; private
+channels are `org` sessions that reach shared memory → the P0a memory bypass also skips private
+places; the flag is the platform-neutral `isPrivate` facet, not a platform field; a refusal stays
+as opaque as the DM rule.

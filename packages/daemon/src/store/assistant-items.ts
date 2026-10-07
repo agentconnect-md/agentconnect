@@ -6,8 +6,6 @@ import type { StoreQueryResult, StoreTx } from './store-database.js'
 export const ASSISTANT_ITEM_STATUSES = ['active', 'waiting', 'done', 'dropped'] as const
 export type AssistantItemStatus = (typeof ASSISTANT_ITEM_STATUSES)[number]
 
-export type AssistantTrust = 'internal' | 'external'
-
 /** A place (§5.2) in the coordinate a session row wears; an absent transport scope reads back as null. */
 export type AssistantPlace = Pick<SessionRecord, 'platform' | 'channel' | 'transportScope'>
 
@@ -16,9 +14,6 @@ export interface AssistantFollower {
   identity: string
   place: AssistantPlace
 }
-
-/** A place's declared trust level (§5.3); synchronous because it runs inside the store transaction, and undefined counts as external. */
-export type AssistantTrustLookup = (place: AssistantPlace) => AssistantTrust | undefined
 
 export interface AssistantObservation {
   /** The item's observation version this entry was appended at — what the outbox's dedup key names (§5.7). */
@@ -37,7 +32,6 @@ export interface AssistantItem {
   status: AssistantItemStatus
   followers: AssistantFollower[]
   origin: AssistantPlace
-  trust: AssistantTrust
   summary: string
   /** The newest {@link ASSISTANT_ITEM_OBSERVATIONS_KEPT} observations, oldest first. */
   observations: AssistantObservation[]
@@ -119,7 +113,6 @@ export const ASSISTANT_ITEM_SCHEMA = `
         originPlatform TEXT NOT NULL,
         originChannel TEXT NOT NULL,
         originTransportScope TEXT NOT NULL DEFAULT '',
-        trust TEXT NOT NULL CHECK (trust IN ('internal', 'external')),
         summary TEXT NOT NULL DEFAULT '',
         observationVersion INTEGER NOT NULL DEFAULT 0,
         version INTEGER NOT NULL DEFAULT 1,
@@ -177,7 +170,6 @@ interface ItemRow {
   originPlatform: string
   originChannel: string
   originTransportScope: string
-  trust: AssistantTrust
   summary: string
   observationVersion: number
   version: number
@@ -216,7 +208,6 @@ const ITEM_COLUMNS = [
   'originPlatform',
   'originChannel',
   'originTransportScope',
-  'trust',
   'summary',
   'observationVersion',
   'version',
@@ -225,16 +216,10 @@ const ITEM_COLUMNS = [
 ] as const
 const itemColumns = (alias = ''): string => ITEM_COLUMNS.map((column) => `${alias}${column}`).join(', ')
 
-/** Lowest wins: one external or unknown place makes the item external (§5.3). */
-export function lowestTrust(places: AssistantPlace[], trustOf: AssistantTrustLookup): AssistantTrust {
-  return places.every((place) => trustOf(place) === 'internal') ? 'internal' : 'external'
-}
-
 export class AssistantItemLedger {
   constructor(private readonly db: AssistantItemDatabase) {}
 
-  /** Trust is the lowest among the followers' places and the origin, whose content the item was born from. */
-  async create(input: AssistantItemCreate, trustOf: AssistantTrustLookup): Promise<AssistantItem> {
+  async create(input: AssistantItemCreate): Promise<AssistantItem> {
     const now = input.now ?? Date.now()
     const status = input.status ?? 'active'
     checkText('title', input.title, ASSISTANT_ITEM_LIMITS.title, true)
@@ -245,13 +230,12 @@ export class AssistantItemLedger {
     checkPlace(input.origin)
     const followers = dedupeFollowers(input.followers ?? [])
     for (const follower of followers) checkFollower(follower)
-    const trust = lowestTrust([input.origin, ...followers.map((follower) => follower.place)], trustOf)
     const id = randomUUID()
     await this.db.transaction(async (tx) => {
       await tx.query(
         `INSERT INTO assistant_item (id, agentId, title, doneWhen, nextCheck, status, originPlatform, originChannel,
-           originTransportScope, trust, summary, observationVersion, version, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+           originTransportScope, summary, observationVersion, version, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
         [
           id,
           input.agentId,
@@ -262,7 +246,6 @@ export class AssistantItemLedger {
           input.origin.platform,
           input.origin.channel,
           scopeOf(input.origin),
-          trust,
           input.summary ?? '',
           now,
           now
@@ -337,34 +320,19 @@ export class AssistantItemLedger {
     return await this.withChildren(agentId, rows)
   }
 
-  /** Idempotent on (identity, place); recomputes trust under the item's row lock, so concurrent attaches cannot lose a lower level. */
+  /** Idempotent on (identity, place); undefined when the item is gone. Under the item's row lock, so it cannot race a delete. */
   async attachFollower(
     agentId: string,
     itemId: string,
     follower: AssistantFollower,
-    trustOf: AssistantTrustLookup,
     now = Date.now()
-  ): Promise<{ added: boolean; trust: AssistantTrust } | undefined> {
+  ): Promise<{ added: boolean } | undefined> {
     checkFollower(follower)
     return await this.db.transaction(async (tx) => {
       if (!(await lockItem(tx, agentId, itemId))) return undefined
       const added = await insertFollower(tx, agentId, itemId, follower, now)
-      const trust = await recomputeTrust(tx, agentId, itemId, trustOf, now)
       if (added) await touchItem(tx, agentId, itemId, now)
-      return { added, trust }
-    })
-  }
-
-  /** Re-derive trust after a place's level changed (§5.3 downgrade); undefined when the item is gone. */
-  async recomputeTrust(
-    agentId: string,
-    itemId: string,
-    trustOf: AssistantTrustLookup,
-    now = Date.now()
-  ): Promise<AssistantTrust | undefined> {
-    return await this.db.transaction(async (tx) => {
-      if (!(await lockItem(tx, agentId, itemId))) return undefined
-      return await recomputeTrust(tx, agentId, itemId, trustOf, now)
+      return { added }
     })
   }
 
@@ -534,7 +502,6 @@ export class AssistantItemLedger {
         .filter((f) => f.itemId === row.id)
         .map((f) => ({ identity: f.identity, place: placeOf(f.platform, f.channel, f.transportScope) })),
       origin: placeOf(row.originPlatform, row.originChannel, row.originTransportScope),
-      trust: row.trust,
       summary: row.summary,
       observationVersion: Number(row.observationVersion),
       subsessions: links.filter((l) => l.itemId === row.id && l.kind === 'subsession').map((l) => l.refId),
@@ -574,41 +541,6 @@ async function insertFollower(
     [itemId, agentId, follower.identity, follower.place.platform, follower.place.channel, scopeOf(follower.place), now]
   )
   return changes > 0
-}
-
-// A fresh statement after the row lock, so it sees every follower a transaction committed before this one got the lock.
-async function recomputeTrust(
-  tx: StoreTx,
-  agentId: string,
-  itemId: string,
-  trustOf: AssistantTrustLookup,
-  now: number
-): Promise<AssistantTrust> {
-  const origin = (
-    await tx.query(
-      'SELECT originPlatform, originChannel, originTransportScope, trust FROM assistant_item WHERE agentId = ? AND id = ?',
-      [agentId, itemId]
-    )
-  ).rows[0] as Pick<ItemRow, 'originPlatform' | 'originChannel' | 'originTransportScope' | 'trust'>
-  const followers = (
-    await tx.query(
-      'SELECT DISTINCT platform, channel, transportScope FROM assistant_item_follower WHERE agentId = ? AND itemId = ?',
-      [agentId, itemId]
-    )
-  ).rows as Omit<FollowerRow, 'itemId' | 'identity'>[]
-  const places = [
-    placeOf(origin.originPlatform, origin.originChannel, origin.originTransportScope),
-    ...followers.map((f) => placeOf(f.platform, f.channel, f.transportScope))
-  ]
-  const trust = lowestTrust(places, trustOf)
-  if (trust !== origin.trust)
-    await tx.query('UPDATE assistant_item SET trust = ?, updatedAt = ? WHERE agentId = ? AND id = ?', [
-      trust,
-      now,
-      agentId,
-      itemId
-    ])
-  return trust
 }
 
 // Stored as '' like append_reservation and thread_participation, so equality needs no NULL handling.

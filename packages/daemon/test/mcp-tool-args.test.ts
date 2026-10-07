@@ -8,6 +8,7 @@ import {
   toolsForIntegrations
 } from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
+import { ASSISTANT_ITEM_TOOLS } from '../src/mcp/ops/assistant-items.js'
 import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -77,7 +78,8 @@ const advertised: ToolDescriptor[] = [
   ...externalMemoryTools(ALL_CAPABILITIES),
   ...RETIRED_ORCHESTRATION_TOOLS,
   ...GITHUB_REVIEW_TOOLS,
-  ...CODE_HOST_EFFECT_TOOLS
+  ...CODE_HOST_EFFECT_TOOLS,
+  ...ASSISTANT_ITEM_TOOLS
 ]
 
 interface ObjectSchemaView {

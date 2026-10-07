@@ -1311,7 +1311,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 35
+export const SCHEMA_VERSION = 36
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1715,7 +1715,16 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v35 adds the Source Cache tables, which the CREATE block emits; the bump fences out older members.
   async (db) =>
     await db.exec(`DROP INDEX IF EXISTS source_cache_object_pending;
-    DROP INDEX IF EXISTS source_cache_object_pointer;`)
+    DROP INDEX IF EXISTS source_cache_object_pointer;`),
+  // v36 drops the assistant item trust level (assistant-mode.md §5.3); a store that never had the ledger gets it from the CREATE block.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE IF EXISTS assistant_item DROP COLUMN IF EXISTS trust')
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(assistant_item)', [])).rows as { name: string }[]
+    if (columns.some((c) => c.name === 'trust')) await db.exec('ALTER TABLE assistant_item DROP COLUMN trust')
+  }
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
