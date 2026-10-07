@@ -149,6 +149,8 @@ import {
   type PlatformReadDeps
 } from './ops/platform-reads.js'
 import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
+import { assertAssistantPlaceAccess, type PlaceAccessDeps } from './ops/place-gate.js'
+import { recall, RECALL_ARGS } from './ops/recall.js'
 import { ASSISTANT_ITEM_ARG_SCHEMAS, ASSISTANT_ITEM_HANDLERS, type AssistantItemDeps } from './ops/assistant-items.js'
 
 export type { McpContentResult, MessageGateway, SendIdentity, SessionContext } from './ops/context.js'
@@ -194,6 +196,7 @@ export interface OpsDeps
     ShareFileDeps,
     PlatformReadDeps,
     PlatformActionDeps,
+    PlaceAccessDeps,
     AssistantItemDeps {
   /** Rejected tool arguments are logged here at debug, key names only — the sole trace of them (#1921). */
   log?: Pick<Logger, 'debug'>
@@ -296,6 +299,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['createCanvas', createCanvas],
   ['readCanvas', readCanvas],
   ['updateCanvas', updateCanvas],
+  ['recall', recall],
   ...ASSISTANT_ITEM_HANDLERS
 ])
 
@@ -364,6 +368,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['createCanvas', CREATE_CANVAS_ARGS],
   ['readCanvas', READ_CANVAS_ARGS],
   ['updateCanvas', UPDATE_CANVAS_ARGS],
+  ['recall', RECALL_ARGS],
   ...ASSISTANT_ITEM_ARG_SCHEMAS,
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
@@ -456,6 +461,8 @@ async function executeRegisteredTool(
       }
     }
   }
+  // Assistant mode (assistant-mode.md §5.5): platform writes stay in the current place, other reads pass the place rule.
+  await assertAssistantPlaceAccess(ctx, name, args, deps)
   const handler = HANDLERS.get(name)
   if (handler) return await handler(ctx, args, deps)
 

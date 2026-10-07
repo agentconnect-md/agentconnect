@@ -199,9 +199,9 @@ describe('SlackConnection.listBotChannels', () => {
     )
     const channels = await conn.listBotChannels()
     expect(channels).toEqual([
-      { id: 'C1', name: 'deploys', externalReason: null },
+      { id: 'C1', name: 'deploys', isPrivate: false, externalReason: null },
       { id: 'C2', name: 'ops', isPrivate: true, externalReason: null },
-      { id: 'C3', name: 'releases', externalReason: null }
+      { id: 'C3', name: 'releases', isPrivate: false, externalReason: null }
     ])
   })
 

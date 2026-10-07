@@ -2582,7 +2582,8 @@ export class SlackConnection implements PlatformConnection {
           out.push({
             id: c.id,
             ...(c.name ? { name: c.name } : {}),
-            ...(c.is_private ? { isPrivate: true } : {}),
+            // Explicit either way, so the membership snapshot answers privacy without a lookup.
+            isPrivate: c.is_private === true,
             externalReason: slackExternalReason(c)
           })
         }
