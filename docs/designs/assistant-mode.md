@@ -1,6 +1,6 @@
 # Assistant Mode
 
-**Status:** Design, fifth revision (2026-10-07). Reviewed by three independent design reviews and
+**Status:** Design, sixth revision (2026-10-08). Reviewed by three independent design reviews and
 the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
 Prerequisites: #2812, #2813. Work breakdown: #2810.
 
@@ -321,17 +321,17 @@ another place, under §5.5.
 ### 5.5 Permission rules
 
 > **Read**: any place may recall any channel or group DM; a DM only from that person's own DM or
-> webchat. Another person's DM, never.
+> webchat. Another person's DM, never. A private channel only from itself (P0a; see below).
 > **Write**: platform write tools (`sendMessage`, `shareFile`, `scheduleMessage`, canvas, lists…)
 > target only **the current place**; anything cross-place goes through §5.7 as structured fields.
 > **External**: an external place reads like an internal one; what it posts is a draft.
 
-| Current place                | Recallable sources                                 | Memory / knowledge | Output                                                |
-| ---------------------------- | -------------------------------------------------- | ------------------ | ----------------------------------------------------- |
-| P's DM                       | P's own DM and webchat, every channel and group DM | all                | posted                                                |
-| Internal channel or group DM | every channel and group DM                         | all                | posted                                                |
-| External channel or group DM | every channel and group DM                         | all                | **drafted**: posted after an internal member approves |
-| Webchat                      | as a DM, by the conversation's owner               | all                | posted                                                |
+| Current place                | Recallable sources                                             | Memory / knowledge | Output                                                |
+| ---------------------------- | -------------------------------------------------------------- | ------------------ | ----------------------------------------------------- |
+| P's DM                       | P's own DM and webchat, every non-private channel and group DM | all                | posted                                                |
+| Internal channel or group DM | itself, every non-private channel and group DM                 | all                | posted                                                |
+| External channel or group DM | itself, every non-private channel and group DM                 | all                | **drafted**: posted after an internal member approves |
+| Webchat                      | as a DM, by the conversation's owner                           | all                | posted                                                |
 
 **Drafts in an external place:**
 
@@ -346,6 +346,19 @@ another place, under §5.5.
   daemon executes it itself, with no sub-session. It expires after 24 hours.
 - Any other card that would land in an external place (a runtime permission request, a
   `propose`) goes to the same DM instead: a card is output too.
+
+**Private channels — scoped per place now, per asker later:**
+
+- The target is **per-asker scoping**: an answer draws only on places the person asking can see,
+  so a private channel's content reaches only its members — the practice of the coworker agent in
+  §2. It needs a membership cache per source and the identity links of P1 (webchat users), and
+  platforms without a member list (Discord, Telegram) cannot support it; it ships in P1.
+- **Until then (P0a) a private channel is read only from itself**: no other place, not even a
+  member's DM, can recall it; the channel itself still recalls everything else. On Slack the flag
+  is the conversation's `is_private`; a platform that cannot tell treats its channels as not
+  private. Per-asker scoping only widens this, so nothing that works in P0a stops working later.
+- Asked elsewhere for a private channel's content, the agent says it is in a private channel and
+  can be asked there.
 
 - Webchat ↔ IM recognition depends on identity links (P1); in P0 webchat recalls only itself and
   channels.
@@ -559,7 +572,7 @@ conversation only raises an unread badge.
 | Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                |
 | **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No sub-sessions** |
 | **P0b — background work**         | Direct self-delegation, own coordinates, the persistent parent–child index; the persistent outbox (merge, ack, dead letter, chain depth, failure reports, hop reset, recovery order); sub-session permission requests and the wait cap; list / steer / stop (text list); pause suspends the outbox                                                                  |
-| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours                                                                                    |
+| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` (the approval record's general actions); `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; per-asker recall scoping; quiet hours                                                          |
 | P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                              |
 | P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                            |
 
@@ -661,3 +674,6 @@ practice in §2). Consequences: the downgrade transition no longer retires conte
 shared-workspace restriction on external places, item trust levels and the external-filtered
 summary are dropped; cards from external places go to the approver's DM, which settles the
 external-place card question left open above.
+
+**Sixth revision (2026-10-08)**: private channels were recallable from every place → per-asker
+scoping is the target (P1); P0a reads a private channel only from itself.
