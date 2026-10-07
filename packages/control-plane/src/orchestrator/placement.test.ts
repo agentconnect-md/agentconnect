@@ -149,6 +149,24 @@ describe('integrationToSpec sessionModes', () => {
   })
 })
 
+// assistant-mode.md §5.3: the detected external conversations; the daemon reads every other enabled one as internal.
+describe('integrationToSpec externalChannels', () => {
+  const shared = (channelId: string): IntegrationChannelRecord => ({
+    ...channel(channelId, 'mention'),
+    externalReason: 'externallyShared'
+  })
+
+  it('lists only the conversations the platform detected as external', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [shared('C1'), channel('C2', 'mention'), shared('C3')])
+    expect(spec.core.externalChannels).toEqual(['C1', 'C3'])
+  })
+
+  it('ships for a relay-managed bot too', async () => {
+    const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, bot({ transport: 'http' }), SECRET, [shared('C1')])
+    expect(spec?.core.externalChannels).toEqual(['C1'])
+  })
+})
+
 describe('integrationToSpec bindRules', () => {
   it('defaults to mention + dm with no channels', async () => {
     const spec = await specOf(INTEGRATION, SECRET)

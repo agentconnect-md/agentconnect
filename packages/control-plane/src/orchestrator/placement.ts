@@ -288,6 +288,11 @@ function sessionModeEntries(channels: IntegrationChannelRecord[]): IntegrationSe
     .map((c) => ({ channel: c.channelId, mode: c.sessionMode }))
 }
 
+/** Conversations the platform detected as external (assistant-mode.md §5.3); the daemon reads every other one as internal. */
+function externalChannelIds(channels: IntegrationChannelRecord[]): string[] {
+  return channels.filter((c) => c.externalReason).map((c) => c.channelId)
+}
+
 /**
  * Assemble the wire {@link IntegrationSpec} the daemon opens its socket from —
  * metadata from the `integration` row + tokens from the {@link BotSecretStore}
@@ -339,6 +344,7 @@ export async function integrationToSpec(
     mutedChannels,
     gated,
     sessionModes: sessionModeEntries(channels),
+    externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels)
   }
   return projectSpec(platforms, i, bot, core, secret)
@@ -381,6 +387,7 @@ export async function httpIntegrationToSpec(
     mutedChannels: [...mutedChannelIds(channels, gated), ...(gated ? [] : heldDecisionChannels(channels))],
     gated,
     sessionModes: sessionModeEntries(channels),
+    externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels)
   }
   return projectSpec(platforms, i, bot, httpCore, secret)

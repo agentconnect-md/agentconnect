@@ -2823,6 +2823,8 @@ model IntegrationChannel {
   decisionId          String?  @db.Uuid
   // A Decision edit invalidated this gate; a router's review state lives on BotDecisionRouting instead.
   decisionNeedsReview Boolean  @default(false)
+  // Why the platform detected this place as external (`PlaceExternalReason`, assistant-mode.md §5.3); null is internal.
+  externalReason      String?
   firstSeenAt   DateTime         @default(now()) @db.Timestamptz(6)
   updatedAt     DateTime         @updatedAt @db.Timestamptz(6)
 

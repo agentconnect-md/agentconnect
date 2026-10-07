@@ -50,6 +50,7 @@ import type {
   PullRequestFeedbackSignal,
   SessionStayedHomeReason,
   BotRevocationEvidence,
+  PlaceExternalReason,
   RuntimeStrategyEntries
 } from '@agentconnect.md/protocol'
 import type {
@@ -5429,6 +5430,8 @@ export interface IntegrationChannelRecord {
   triggerChosen: boolean
   /** Per-conversation owner for a shared bot (§10.1); null on sibling non-owner rows. */
   agentId: AgentId | null
+  /** Why the platform detected this place as external (assistant-mode.md §5.3); null is internal. Optional for older fixtures. */
+  externalReason?: PlaceExternalReason | null
 }
 
 /** Daemon-reported conversation (no trigger — that is operator-owned CP state). */
@@ -5453,6 +5456,8 @@ export interface ReportedChannel {
   kind?: ConversationKind
   /** The 1:1 DM counterpart's platform member id — reported for `kind:'im'` only. */
   dmUserId?: string
+  /** Detected external: absent leaves the stored value, null is an enumerating "not external". */
+  externalReason?: PlaceExternalReason | null
 }
 
 /**
@@ -5494,7 +5499,7 @@ export interface IntegrationChannelRepo {
       authoritative?: boolean
       removed?: string[]
     }
-  ): Promise<void>
+  ): Promise<{ externalChanged: boolean }>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */

@@ -281,6 +281,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
           row.name = candidate.name ?? null
           row.isPrivate = candidate.isPrivate ?? false
         }
+        return { externalChanged: false }
       },
       setAgent: async (integrationId, channelId, agentId) => {
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)

@@ -617,9 +617,31 @@ describe('SlackHttpIngest events', () => {
     await ingest.handleEvent({ type: 'member_joined_channel', user: 'UBOT', channel: 'C1' })
     expect(conversations).toHaveBeenCalledTimes(2)
     expect(onChannelsChanged).toHaveBeenCalledWith([
-      { id: 'C1', name: 'deploys' },
-      { id: 'C2', name: 'ops', isPrivate: true },
-      { id: 'C3' }
+      { id: 'C1', name: 'deploys', externalReason: null },
+      { id: 'C2', name: 'ops', isPrivate: true, externalReason: null },
+      { id: 'C3', externalReason: null }
+    ])
+  })
+
+  // assistant-mode.md §5.3: the same snapshot marks a Slack Connect channel external.
+  it('reports a Slack Connect channel external from the listing', async () => {
+    const conversations = vi.fn(async () => ({
+      channels: [{ id: 'C1', name: 'partners', is_ext_shared: true }, { id: 'C2' }]
+    }))
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }
+    const onChannelsChanged = vi.fn()
+    const ingest = new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onChannelsChanged })
+    )
+    await ingest.start()
+
+    await ingest.handleEvent({ type: 'member_joined_channel', user: 'UBOT', channel: 'C1' })
+
+    expect(onChannelsChanged).toHaveBeenCalledWith([
+      { id: 'C1', name: 'partners', externalReason: 'externallyShared' },
+      { id: 'C2', externalReason: null }
     ])
   })
 
@@ -636,7 +658,7 @@ describe('SlackHttpIngest events', () => {
 
     await ingest.handleEvent({ type, channel: 'CLEFT' })
 
-    expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining' }])
+    expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining', externalReason: null }])
   })
 
   // The native Stop. Also not a chat event, and the event id is the receipt a Slack

@@ -29,6 +29,7 @@ import {
   MemoryFileHistoryEvent,
   MemoryPluginHistoryEvent,
   MemoryPluginOperation,
+  PlaceExternalReason,
   RESERVED_MCP_SERVER_NAME,
   SESSION_RETENTION_RE,
   GitCloneUrlError,
@@ -1011,7 +1012,9 @@ export const IntegrationChannelDto = z.object({
   sessionMode: z.enum(['createNew', 'append']),
   /** Effective per-conversation owner for a shared bot (§10.1); null before convergence
    *  or when ownership does not apply. */
-  agentId: z.string().nullable()
+  agentId: z.string().nullable(),
+  /** Why the platform detected this place as external (assistant-mode.md §5.3); null when it detected nothing. */
+  externalReason: PlaceExternalReason.nullable()
 })
 
 /** Console view of an integration — metadata only, NEVER the tokens. */

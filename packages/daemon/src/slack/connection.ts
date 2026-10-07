@@ -11,7 +11,8 @@ import {
 import {
   extractSlackMessageText,
   isSlackSystemMessage,
-  normalizeSlackResponseFinalization
+  normalizeSlackResponseFinalization,
+  slackExternalReason
 } from '@agentconnect.md/message'
 import type { Agent, Integration } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
@@ -47,6 +48,7 @@ import type {
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
   PlatformChannelInfo,
+  PlatformChannelRef,
   PlatformConnection,
   PlatformConversationSpec,
   PlatformReactionIntent,
@@ -2564,8 +2566,8 @@ export class SlackConnection implements PlatformConnection {
    * group DMs are excluded (they are not configurable channels). Returns null on
    * any API failure so the caller never mistakes an error for "left all channels".
    */
-  async listBotChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[] | null> {
-    const out: { id: string; name?: string; isPrivate?: boolean }[] = []
+  async listBotChannels(): Promise<PlatformChannelRef[] | null> {
+    const out: PlatformChannelRef[] = []
     let cursor: string | undefined
     try {
       do {
@@ -2577,7 +2579,12 @@ export class SlackConnection implements PlatformConnection {
         })
         for (const c of res.channels ?? []) {
           if (!c.id || c.is_im || c.is_mpim) continue
-          out.push({ id: c.id, ...(c.name ? { name: c.name } : {}), ...(c.is_private ? { isPrivate: true } : {}) })
+          out.push({
+            id: c.id,
+            ...(c.name ? { name: c.name } : {}),
+            ...(c.is_private ? { isPrivate: true } : {}),
+            externalReason: slackExternalReason(c)
+          })
         }
         cursor = res.response_metadata?.next_cursor || undefined
       } while (cursor)
@@ -2609,7 +2616,7 @@ export class SlackConnection implements PlatformConnection {
       for (const c of res.channels ?? []) if (c.id) out.push({ id: c.id, ...(c.name ? { name: c.name } : {}) })
       cursor = res.response_metadata?.next_cursor || undefined
     } while (cursor)
-    return [...out, ...members.filter((c) => c.isPrivate)]
+    return [...out, ...members.filter((c) => c.isPrivate).map(({ id, name, isPrivate }) => ({ id, name, isPrivate }))]
   }
 
   /**

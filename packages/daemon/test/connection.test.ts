@@ -199,9 +199,31 @@ describe('SlackConnection.listBotChannels', () => {
     )
     const channels = await conn.listBotChannels()
     expect(channels).toEqual([
-      { id: 'C1', name: 'deploys' },
-      { id: 'C2', name: 'ops', isPrivate: true },
-      { id: 'C3', name: 'releases' }
+      { id: 'C1', name: 'deploys', externalReason: null },
+      { id: 'C2', name: 'ops', isPrivate: true, externalReason: null },
+      { id: 'C3', name: 'releases', externalReason: null }
+    ])
+  })
+
+  // assistant-mode.md §5.3: a Slack Connect channel is external, read from the listing already made.
+  it('marks a Slack Connect channel external from the listing it already makes', async () => {
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        fakeAppWithConversations([
+          {
+            channels: [
+              { id: 'C1', name: 'partners', is_ext_shared: true },
+              { id: 'C2', name: 'invited', is_pending_ext_shared: true },
+              { id: 'C3', name: 'plain' }
+            ]
+          }
+        ]) as any
+    )
+    expect((await conn.listBotChannels())?.map((c) => c.externalReason)).toEqual([
+      'externallyShared',
+      'externallyShared',
+      null
     ])
   })
 

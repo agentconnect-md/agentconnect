@@ -179,6 +179,17 @@ export const IntegrationSessionMode = z.object({
 })
 export type IntegrationSessionMode = z.infer<typeof IntegrationSessionMode>
 
+/** Who is in a place (assistant-mode.md §5.3): only organization members, or possibly anyone else. */
+export const PlaceTrustLevel = z.enum(['internal', 'external'])
+export type PlaceTrustLevel = z.infer<typeof PlaceTrustLevel>
+
+/** Why a platform module detected a place as external; names the evidence, never the platform. */
+export const PlaceExternalReason = z.enum([
+  // The membership listing says the conversation is shared with another organization.
+  'externallyShared'
+])
+export type PlaceExternalReason = z.infer<typeof PlaceExternalReason>
+
 // §6.3 core routing envelope: the platform-independent routing, gating, and ingress knobs core reads, never duplicated in `config`.
 export const IntegrationCoreEnvelope = z.object({
   mode: z.enum(['direct', 'shared']).default('direct'),
@@ -186,6 +197,8 @@ export const IntegrationCoreEnvelope = z.object({
   mutedChannels: z.array(z.string()).default([]),
   gated: z.boolean().default(false),
   sessionModes: z.array(IntegrationSessionMode).default([]),
+  // Conversations the platform detected as external (assistant-mode.md §5.3); every other enabled one is internal.
+  externalChannels: z.array(z.string()).optional(),
   // Emitted unconditionally and stripped by readers that predate it; an empty bundle clears every binding.
   decisions: DecisionBundle.default(EMPTY_DECISION_BUNDLE)
 })
@@ -326,7 +339,9 @@ export const IntegrationChannel = z.object({
   // The 1:1 DM counterpart's platform member id (§14.8) — control metadata of the same
   // class as `name`, and the only thing that identifies WHO a private agent's DM row is
   // with. Absent on channels and group DMs, whose membership is a room, not a person.
-  dmUserId: z.string().optional()
+  dmUserId: z.string().optional(),
+  // Detected external (assistant-mode.md §5.3): absent is "not checked", null is an enumerating "not external".
+  externalReason: PlaceExternalReason.nullable().optional()
 })
 export type IntegrationChannel = z.infer<typeof IntegrationChannel>
 

@@ -21,6 +21,7 @@ import {
   isSlackSystemMessage,
   normalizeSlackMessage,
   normalizeSlackResponseFinalization,
+  slackExternalReason,
   type SlackMessageLike
 } from '@agentconnect.md/message'
 import {
@@ -37,6 +38,7 @@ import {
   decodeSlackStatusOverflowValue,
   decodeSharedSlackStatusTarget,
   elicitFormViewValues,
+  type PlaceExternalReason,
   type RdSlackAction,
   type SlackAppHomeContext,
   type SlackViewState,
@@ -384,6 +386,14 @@ export interface SlackIngestSidecar {
   searchActionToken?: string
 }
 
+/** One channel of a membership snapshot, with whether Slack reports it shared externally (assistant-mode.md §5.3). */
+export interface SlackReportedChannel {
+  id: string
+  name?: string
+  isPrivate?: boolean
+  externalReason?: PlaceExternalReason | null
+}
+
 export interface SlackHttpIngestDeps {
   /** Hand a normalized message to the router/forwarder; resolves once the delivery
    *  outcome is known (delivered or dropped). NEVER throws — runs after the HTTP 200. */
@@ -392,7 +402,7 @@ export interface SlackHttpIngestDeps {
   onBotUserId: (botUserId: string) => void
   /** Report the bot's complete Slack channel-membership snapshot after an event
    *  says the bot itself joined or left a channel. */
-  onChannelsChanged: (channels: { id: string; name?: string; isPrivate?: boolean }[]) => void
+  onChannelsChanged: (channels: SlackReportedChannel[]) => void
   /** Candidate agents for the config modal's "default agent" selector (bot members). */
   agents: () => { agentId: string; name: string }[]
   /** This channel's current default agent (initial modal selection), if any. */
@@ -642,7 +652,7 @@ export class SlackHttpIngest {
   private async refreshChannelsOnce(): Promise<void> {
     const web = this.web
     if (!web) return
-    const channels: { id: string; name?: string; isPrivate?: boolean }[] = []
+    const channels: SlackReportedChannel[] = []
     let cursor: string | undefined
     do {
       const res = await web.users.conversations({
@@ -656,7 +666,8 @@ export class SlackHttpIngest {
         channels.push({
           id: channel.id,
           ...(channel.name ? { name: channel.name } : {}),
-          ...(channel.is_private ? { isPrivate: true } : {})
+          ...(channel.is_private ? { isPrivate: true } : {}),
+          externalReason: slackExternalReason(channel)
         })
       }
       cursor = res.response_metadata?.next_cursor || undefined

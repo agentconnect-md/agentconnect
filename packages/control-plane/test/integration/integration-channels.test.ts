@@ -333,7 +333,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         trigger: 'mention',
         decisionBinding: null,
         decision: null,
-        agentId: null
+        agentId: null,
+        externalReason: null
       },
       {
         channelId: 'C2',
@@ -350,7 +351,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         trigger: 'mention',
         decisionBinding: null,
         decision: null,
-        agentId: null
+        agentId: null,
+        externalReason: null
       }
     ])
   })
@@ -1765,7 +1767,8 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       trigger: 'any',
       decisionBinding: null,
       decision: null,
-      agentId: null
+      agentId: null,
+      externalReason: null
     })
 
     // The daemon got the recomputed rule set: defaults + ONE auto rule for C2.
@@ -2242,5 +2245,79 @@ describe('conversation paths for a POOL agent', () => {
     expect(spy.leaves).toEqual([
       { daemonId: MEMBER, l: { integrationId: id, target: { kind: 'conversation', channel: 'C1' } } }
     ])
+  })
+})
+
+// assistant-mode.md §5.3: an enabled place is internal unless the platform detects it as external.
+describe('detected external places', () => {
+  const externalOf = async (id: string): Promise<Map<string, string | null>> => {
+    const res = await running!.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const integration = (
+      res.json() as Array<{ id: string; channels: Array<{ channelId: string; externalReason: string | null }> }>
+    ).find((i) => i.id === id)
+    return new Map(integration!.channels.map((c) => [c.channelId, c.externalReason]))
+  }
+
+  it('records a Slack Connect channel, lifts it when the share is gone, and pushes only on a change', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const converged: unknown[] = []
+    const converge = async (agent: unknown) => void converged.push(agent)
+    const reportExternal = (channels: IntegrationChannel[]) =>
+      report(DAEMON, id, channels, undefined, undefined, undefined, undefined, undefined, converge)
+
+    await reportExternal([
+      { id: 'C1', name: 'partners', externalReason: 'externallyShared' },
+      { id: 'C2', name: 'deploys', externalReason: null }
+    ])
+    expect(await externalOf(id)).toEqual(
+      new Map([
+        ['C1', 'externallyShared'],
+        ['C2', null]
+      ])
+    )
+    expect(converged).toHaveLength(1)
+
+    // The same listing again changes nothing; a report that checked nothing keeps the detection.
+    await reportExternal([
+      { id: 'C1', name: 'partners', externalReason: 'externallyShared' },
+      { id: 'C2', name: 'deploys', externalReason: null }
+    ])
+    await reportExternal([
+      { id: 'C1', name: 'partners' },
+      { id: 'C2', name: 'deploys' }
+    ])
+    expect((await externalOf(id)).get('C1')).toBe('externallyShared')
+    expect(converged).toHaveLength(1)
+
+    // A listing that no longer reports the share lifts it.
+    await reportExternal([
+      { id: 'C1', name: 'partners', externalReason: null },
+      { id: 'C2', name: 'deploys', externalReason: null }
+    ])
+    expect((await externalOf(id)).get('C1')).toBeNull()
+    expect(converged).toHaveLength(2)
+  })
+
+  it('carries the detected set to the daemon with the spec', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [
+      { id: 'C1', externalReason: 'externallyShared' },
+      { id: 'C2', externalReason: null }
+    ])
+    spy.upserts.length = 0
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/C2`,
+      payload: { trigger: 'any' }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(spy.upserts.at(-1)!.u.core.externalChannels).toEqual(['C1'])
   })
 })

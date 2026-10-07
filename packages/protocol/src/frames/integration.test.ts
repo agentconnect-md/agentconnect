@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { IntegrationCoreEnvelope, IntegrationRevoked, IntegrationRevokedOk } from './integration.js'
+import { IntegrationChannel, IntegrationCoreEnvelope, IntegrationRevoked, IntegrationRevokedOk } from './integration.js'
 import { buildEnvelope, decodeEnvelope, encode } from '../codec.js'
 import { isInstallWideFrameType } from '../frame-scope.js'
 
@@ -53,6 +53,25 @@ describe('IntegrationCoreEnvelope sessionModes', () => {
 
   it('rejects a mode outside the enum rather than silently defaulting it', () => {
     expect(() => IntegrationCoreEnvelope.parse({ ...base, sessionModes: [{ channel: 'C1', mode: 'auto' }] })).toThrow()
+  })
+})
+
+// assistant-mode.md §5.3: detected external places, on the envelope and on a reported channel.
+describe('detected external places on the wire', () => {
+  const base = { mode: 'direct' as const, bindRules: [], mutedChannels: [], gated: false }
+
+  it('round-trips the sparse external list and leaves it absent when a writer sends none', () => {
+    expect(IntegrationCoreEnvelope.parse({ ...base, externalChannels: ['C1'] }).externalChannels).toEqual(['C1'])
+    expect(IntegrationCoreEnvelope.parse(base).externalChannels).toBeUndefined()
+  })
+
+  it('carries a reported channel on the tri-state: a reason, an enumerating null, or absent', () => {
+    expect(IntegrationChannel.parse({ id: 'C1', externalReason: 'externallyShared' }).externalReason).toBe(
+      'externallyShared'
+    )
+    expect(IntegrationChannel.parse({ id: 'C2', externalReason: null }).externalReason).toBeNull()
+    expect(IntegrationChannel.parse({ id: 'C3' }).externalReason).toBeUndefined()
+    expect(() => IntegrationChannel.parse({ id: 'C4', externalReason: 'rumor' })).toThrow()
   })
 })
 

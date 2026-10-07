@@ -91,7 +91,8 @@ function toChannelDto(c: IntegrationChannelRecord, view?: DecisionView): Integra
     decisionBinding: c.trigger === 'decision' ? c.decisionBinding : null,
     decision: c.trigger === 'decision' ? decisionChannelView(c, view?.names ?? new Map(), view?.readiness?.(c)) : null,
     sessionMode: c.sessionMode,
-    agentId: c.agentId
+    agentId: c.agentId,
+    externalReason: c.externalReason ?? null
   }
 }
 
