@@ -72,9 +72,9 @@ export function conversationSessionMode(int: Integration, channel: string): Chan
   return integrationCore(int).sessionModes.find((entry) => entry.channel === channel)?.mode ?? 'createNew'
 }
 
-/** A conversation's effective trust level (assistant-mode.md §5.3); undeclared counts as external (§5.1). */
+/** A place's trust level (assistant-mode.md §5.3): external when the platform detected it, otherwise internal. */
 export function conversationTrustLevel(int: Integration, channel: string): PlaceTrustLevel {
-  return integrationCore(int).trustLevels.find((entry) => entry.channel === channel)?.level ?? 'external'
+  return integrationCore(int).externalChannels.includes(channel) ? 'external' : 'internal'
 }
 
 /**

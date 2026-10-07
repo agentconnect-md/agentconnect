@@ -334,7 +334,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         decisionBinding: null,
         decision: null,
         agentId: null,
-        trust: { level: null, source: null, declared: null, detected: null, detectedReason: null, changedAt: null }
+        externalReason: null
       },
       {
         channelId: 'C2',
@@ -352,7 +352,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         decisionBinding: null,
         decision: null,
         agentId: null,
-        trust: { level: null, source: null, declared: null, detected: null, detectedReason: null, changedAt: null }
+        externalReason: null
       }
     ])
   })
@@ -1768,7 +1768,7 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       decisionBinding: null,
       decision: null,
       agentId: null,
-      trust: { level: null, source: null, declared: null, detected: null, detectedReason: null, changedAt: null }
+      externalReason: null
     })
 
     // The daemon got the recomputed rule set: defaults + ONE auto rule for C2.
@@ -2248,171 +2248,76 @@ describe('conversation paths for a POOL agent', () => {
   })
 })
 
-// assistant-mode.md §5.3: a place's trust level — what the platform detected, what an editor declared, and its projection.
-describe('place trust levels', () => {
-  type TrustDto = {
-    level: string | null
-    source: string | null
-    detectedReason: string | null
-    changedAt: string | null
-  }
-  const trustOf = async (id: string, channelId: string): Promise<TrustDto> => {
+// assistant-mode.md §5.3: an enabled place is internal unless the platform detects it as external.
+describe('detected external places', () => {
+  const externalOf = async (id: string): Promise<Map<string, string | null>> => {
     const res = await running!.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const integration = (
-      res.json() as Array<{ id: string; channels: Array<{ channelId: string; trust: TrustDto }> }>
+      res.json() as Array<{ id: string; channels: Array<{ channelId: string; externalReason: string | null }> }>
     ).find((i) => i.id === id)
-    return integration!.channels.find((c) => c.channelId === channelId)!.trust
+    return new Map(integration!.channels.map((c) => [c.channelId, c.externalReason]))
   }
-  const internal = { level: 'internal', reason: 'verifiedInternal' } as const
-  const shared = { level: 'external', reason: 'channelShared' } as const
-  const guest = { level: 'external', reason: 'guestJoined' } as const
 
-  it('auto-fills internal from a detection and re-pushes the spec only when the level changes', async () => {
-    await seedDaemon(prisma, DAEMON)
-    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
-    const id = await install(running)
-    const converged: unknown[] = []
-    const converge = async (agent: unknown) => void converged.push(agent)
-    const reportTrust = (channels: IntegrationChannel[]) =>
-      report(DAEMON, id, channels, undefined, undefined, undefined, undefined, undefined, converge)
-
-    await reportTrust([
-      { id: 'C1', name: 'deploys', trust: internal },
-      { id: 'C2', name: 'other' }
-    ])
-    expect(await trustOf(id, 'C1')).toMatchObject({
-      level: 'internal',
-      source: 'detected',
-      detectedReason: 'verifiedInternal'
-    })
-    expect(await trustOf(id, 'C2')).toMatchObject({ level: null, source: null, changedAt: null })
-    expect(converged).toHaveLength(1)
-
-    // The same detection again changes nothing, so nothing is pushed.
-    await reportTrust([
-      { id: 'C1', name: 'deploys', trust: internal },
-      { id: 'C2', name: 'other' }
-    ])
-    expect(converged).toHaveLength(1)
-  })
-
-  it('lifts a shared detection when a listing no longer shows it, but never a guest detection', async () => {
-    await seedDaemon(prisma, DAEMON)
-    running = buildHttpApp(prisma)
-    const id = await install(running)
-
-    await report(DAEMON, id, [
-      { id: 'C1', trust: shared },
-      { id: 'C2', trust: guest }
-    ])
-    expect(await trustOf(id, 'C1')).toMatchObject({ level: 'external', detectedReason: 'channelShared' })
-    // A listing that now shows the share keeps the reason the level changed for.
-    await report(DAEMON, id, [
-      { id: 'C1', trust: { level: 'external', reason: 'externallyShared' } },
-      { id: 'C2', trust: guest }
-    ])
-    expect(await trustOf(id, 'C1')).toMatchObject({ level: 'external', detectedReason: 'channelShared' })
-    // A report without a detection leaves it standing.
-    await report(DAEMON, id, [{ id: 'C1' }, { id: 'C2' }])
-    expect((await trustOf(id, 'C2')).level).toBe('external')
-
-    await report(DAEMON, id, [
-      { id: 'C1', trust: internal },
-      { id: 'C2', trust: internal }
-    ])
-    expect(await trustOf(id, 'C1')).toMatchObject({ level: 'internal', detectedReason: 'verifiedInternal' })
-    expect(await trustOf(id, 'C2')).toMatchObject({ level: 'external', detectedReason: 'guestJoined' })
-  })
-
-  it('lets an editor declare and clear a level, and refuses internal over a detected external', async () => {
+  it('records a Slack Connect channel, lifts it when the share is gone, and pushes only on a change', async () => {
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
     const id = await install(running)
-    await report(DAEMON, id, [{ id: 'C1', trust: internal }, { id: 'C2', trust: shared }, { id: 'C3' }])
-    spy.upserts.length = 0
-    const patch = (channelId: string, payload: object) =>
-      running!.app.inject({ method: 'PATCH', url: `${ORG}/integrations/${id}/channels/${channelId}`, payload })
+    const converged: unknown[] = []
+    const converge = async (agent: unknown) => void converged.push(agent)
+    const reportExternal = (channels: IntegrationChannel[]) =>
+      report(DAEMON, id, channels, undefined, undefined, undefined, undefined, undefined, converge)
 
-    // Stricter than the platform: the declaration wins.
-    const stricter = await patch('C1', { trust: 'external' })
-    expect(stricter.statusCode).toBe(200)
-    expect((stricter.json() as { trust: TrustDto }).trust).toMatchObject({ level: 'external', source: 'declared' })
-
-    // A detected external cannot be declared away, and the rest of the patch is not applied.
-    const refused = await patch('C2', { trust: 'internal', trigger: 'any' })
-    expect(refused.statusCode).toBe(409)
-    expect(refused.json()).toMatchObject({ code: 'TRUST_DETECTED_EXTERNAL' })
-    const c2 = await prisma.integrationChannel.findUniqueOrThrow({
-      where: { integrationId_channelId: { integrationId: id, channelId: 'C2' } }
-    })
-    expect(c2).toMatchObject({ trigger: 'mention', trustDeclared: null })
-    expect((await patch('C2', { trust: 'external' })).statusCode).toBe(200)
-
-    // An undeclared place takes the editor's word, and the daemon receives it.
-    const declared = await patch('C3', { trust: 'internal' })
-    expect(declared.statusCode).toBe(200)
-    expect((declared.json() as { trust: TrustDto }).trust).toMatchObject({ level: 'internal', source: 'declared' })
-    const pushed = spy.upserts.at(-1)!.u
-    expect(pushed.core.trustLevels).toEqual(
-      expect.arrayContaining([
-        { channel: 'C1', level: 'external' },
-        { channel: 'C2', level: 'external' },
-        { channel: 'C3', level: 'internal' }
+    await reportExternal([
+      { id: 'C1', name: 'partners', externalReason: 'externallyShared' },
+      { id: 'C2', name: 'deploys', externalReason: null }
+    ])
+    expect(await externalOf(id)).toEqual(
+      new Map([
+        ['C1', 'externallyShared'],
+        ['C2', null]
       ])
     )
+    expect(converged).toHaveLength(1)
 
-    // Clearing falls back to the detection.
-    const cleared = await patch('C1', { trust: null })
-    expect((cleared.json() as { trust: TrustDto }).trust).toMatchObject({ level: 'internal', source: 'detected' })
-    expect((await patch('C1', {})).statusCode).toBe(400)
+    // The same listing again changes nothing; a report that checked nothing keeps the detection.
+    await reportExternal([
+      { id: 'C1', name: 'partners', externalReason: 'externallyShared' },
+      { id: 'C2', name: 'deploys', externalReason: null }
+    ])
+    await reportExternal([
+      { id: 'C1', name: 'partners' },
+      { id: 'C2', name: 'deploys' }
+    ])
+    expect((await externalOf(id)).get('C1')).toBe('externallyShared')
+    expect(converged).toHaveLength(1)
+
+    // A listing that no longer reports the share lifts it.
+    await reportExternal([
+      { id: 'C1', name: 'partners', externalReason: null },
+      { id: 'C2', name: 'deploys', externalReason: null }
+    ])
+    expect((await externalOf(id)).get('C1')).toBeNull()
+    expect(converged).toHaveLength(2)
   })
 
-  it('declares a shared bot conversation on every agent of the bot', async () => {
+  it('carries the detected set to the daemon with the spec', async () => {
     await seedDaemon(prisma, DAEMON)
-    const alice = randomUUID()
-    const bob = randomUUID()
-    const botId = randomUUID()
-    const aliceIntegration = randomUUID()
-    const bobIntegration = randomUUID()
-    await seedAgent(prisma, alice, { daemonId: DAEMON })
-    await seedAgent(prisma, bob, { daemonId: DAEMON })
-    await prisma.bot.create({
-      data: {
-        id: botId,
-        orgId: DEFAULT_ORG_ID,
-        platform: 'slack',
-        name: 'shared-bot',
-        shareable: true,
-        transport: 'http'
-      }
-    })
-    await prisma.integration.createMany({
-      data: [
-        { id: aliceIntegration, orgId: DEFAULT_ORG_ID, agentId: alice, botId, platform: 'slack', name: 'shared-bot' },
-        { id: bobIntegration, orgId: DEFAULT_ORG_ID, agentId: bob, botId, platform: 'slack', name: 'shared-bot' }
-      ]
-    })
-    await prisma.integrationChannel.createMany({
-      data: [
-        { integrationId: aliceIntegration, channelId: 'C1', name: 'deploys', trigger: 'any', agentId: alice },
-        { integrationId: bobIntegration, channelId: 'C1', name: 'deploys', trigger: 'any', agentId: null }
-      ]
-    })
-    running = buildHttpApp(prisma)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [
+      { id: 'C1', externalReason: 'externallyShared' },
+      { id: 'C2', externalReason: null }
+    ])
+    spy.upserts.length = 0
 
     const res = await running.app.inject({
       method: 'PATCH',
-      url: `${ORG}/integrations/${aliceIntegration}/channels/C1`,
-      payload: { trust: 'internal' }
+      url: `${ORG}/integrations/${id}/channels/C2`,
+      payload: { trigger: 'any' }
     })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({
-      trigger: 'any',
-      agentId: alice,
-      trust: { level: 'internal', source: 'declared' }
-    })
-    const stored = await prisma.integrationChannel.findMany({ where: { channelId: 'C1', integration: { botId } } })
-    expect(stored.map((row) => row.trustDeclared)).toEqual(['internal', 'internal'])
+    expect(spy.upserts.at(-1)!.u.core.externalChannels).toEqual(['C1'])
   })
 })

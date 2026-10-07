@@ -14,12 +14,9 @@ import {
   decisionChainIds,
   DecisionBundleDefinition,
   gateUsageRules,
-  PlaceTrustReason,
-  STICKY_PLACE_TRUST_REASONS,
+  PlaceExternalReason,
   type Platform,
-  type FeishuRegion,
-  type PlaceTrustDetection,
-  type PlaceTrustLevel
+  type FeishuRegion
 } from '@agentconnect.md/protocol'
 import {
   Prisma,
@@ -900,37 +897,8 @@ function toChannelRecord(
     dmUserId: c.dmUserId,
     triggerChosen: c.triggerChosen,
     agentId: c.agentId ? AgentId(c.agentId) : null,
-    trustDeclared: c.trustDeclared,
-    trustDetected: c.trustDetected,
-    trustDetectedReason: PlaceTrustReason.safeParse(c.trustDetectedReason).data ?? null,
-    trustChangedAt: c.trustChangedAt
+    externalReason: PlaceExternalReason.safeParse(c.externalReason).data ?? null
   }
-}
-
-/** A row's effective trust level in SQL, mirroring `effectivePlaceTrust` (assistant-mode.md §5.3). */
-function effectiveTrustSql(declared: Prisma.Sql, detected: Prisma.Sql): Prisma.Sql {
-  return Prisma.sql`(CASE WHEN ${detected} = 'external'::"PlaceTrustLevel" THEN 'external'::"PlaceTrustLevel" ELSE COALESCE(${declared}, ${detected}) END)`
-}
-
-const OLD_DECLARED = Prisma.sql`"integration_channel"."trustDeclared"`
-const OLD_DETECTED = Prisma.sql`"integration_channel"."trustDetected"`
-const OLD_REASON = Prisma.sql`"integration_channel"."trustDetectedReason"`
-
-/** The ON CONFLICT trust columns for one reported detection; a later internal never lifts a sticky external. */
-function detectedTrustUpdate(trust: PlaceTrustDetection | undefined): Prisma.Sql {
-  if (!trust) return Prisma.empty
-  const detected =
-    trust.level === 'internal'
-      ? Prisma.sql`(CASE WHEN ${OLD_DETECTED} = 'external'::"PlaceTrustLevel" AND ${OLD_REASON} IN (${Prisma.join(STICKY_PLACE_TRUST_REASONS)}) THEN ${OLD_DETECTED} ELSE 'internal'::"PlaceTrustLevel" END)`
-      : Prisma.sql`'external'::"PlaceTrustLevel"`
-  return Prisma.sql`
-    "trustDetected" = ${detected},
-    "trustDetectedReason" = CASE WHEN ${detected} IS NOT DISTINCT FROM ${OLD_DETECTED} THEN ${OLD_REASON} ELSE ${trust.reason} END,
-    "trustChangedAt" = CASE
-      WHEN ${effectiveTrustSql(OLD_DECLARED, detected)} IS DISTINCT FROM ${effectiveTrustSql(OLD_DECLARED, OLD_DETECTED)}
-        THEN NOW()
-      ELSE "integration_channel"."trustChangedAt"
-    END,`
 }
 
 async function channelRecords(
@@ -989,8 +957,19 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       authoritative?: boolean
       removed?: string[]
     }
-  ): Promise<{ trustChanged: boolean }> {
-    let trustChanged = false
+  ): Promise<{ externalChanged: boolean }> {
+    // Read first only to decide whether the spec needs a push; the register snapshot backs up a missed one.
+    const before = new Map(
+      (
+        await this.db.integrationChannel.findMany({
+          where: { integrationId, channelId: { in: channels.map((c) => c.id) } },
+          select: { channelId: true, externalReason: true }
+        })
+      ).map((row) => [row.channelId, row.externalReason])
+    )
+    const externalChanged = channels.some(
+      (c) => c.externalReason !== undefined && (c.externalReason ?? null) !== (before.get(c.id) ?? null)
+    )
     if (opts?.authoritative !== false) {
       await this.db.integrationChannel.deleteMany({
         where: { integrationId, kind: 'channel', channelId: { notIn: channels.map((c) => c.id) } }
@@ -1016,21 +995,20 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       // NEW row only, and a late channel→direct conversion re-applies whichever won.
       const createTrigger: SeedTrigger =
         opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? (c.kind === 'im' ? 'any' : 'mention')
-      const written = await this.db.$queryRaw<Array<{ trustChanged: boolean | null }>>`
+      await this.db.$executeRaw`
         INSERT INTO "integration_channel"
           ("integrationId", "channelId", "name", "spaceId", "space", "icon", "color", "key", "url",
-           "isPrivate", "kind", "trigger", "dmUserId", "trustDetected", "trustDetectedReason", "trustChangedAt",
-           "firstSeenAt", "updatedAt")
+           "isPrivate", "kind", "trigger", "dmUserId", "externalReason", "firstSeenAt", "updatedAt")
         VALUES (
           ${integrationId}::uuid, ${c.id}, ${c.name ?? null}, ${c.spaceId ?? null}, ${c.space ?? null},
           ${c.icon ?? null}, ${c.color ?? null}, ${c.key ?? null}, ${c.url ?? null},
           ${c.isPrivate ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
-          ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null},
-          ${c.trust?.level ?? null}::"PlaceTrustLevel", ${c.trust?.reason ?? null},
-          ${c.trust ? Prisma.sql`NOW()` : Prisma.sql`NULL`}, NOW(), NOW()
+          ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null}, ${c.externalReason ?? null}, NOW(), NOW()
         )
         ON CONFLICT ("integrationId", "channelId") DO UPDATE SET
-          ${detectedTrustUpdate(c.trust)}
+          -- Tri-state like the glyph: an omitting reporter keeps the detection, an enumerating null lifts it.
+          "externalReason" = CASE WHEN ${c.externalReason !== undefined}::boolean THEN EXCLUDED."externalReason"
+                                  ELSE "integration_channel"."externalReason" END,
           "name" = CASE WHEN ${setName}::boolean THEN EXCLUDED."name" ELSE "integration_channel"."name" END,
           "spaceId" = CASE WHEN ${c.spaceId !== undefined}::boolean THEN EXCLUDED."spaceId"
                            ELSE "integration_channel"."spaceId" END,
@@ -1090,10 +1068,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
             ELSE "integration_channel"."decisionNeedsReview"
           END,
           "updatedAt" = NOW()
-        -- NOW() is fixed per transaction, so only a level this statement changed matches it.
-        RETURNING "trustChangedAt" = NOW() AS "trustChanged"
       `
-      if (written[0]?.trustChanged) trustChanged = true
     }
     // Retractions last: a conversation the reporter says it left is gone whatever
     // its kind, including a DM row that no authoritative snapshot could ever delete.
@@ -1102,39 +1077,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, channelId: { in: [...removed] } }
       })
     }
-    return { trustChanged }
-  }
-
-  async setDeclaredTrust(
-    integrationIds: readonly IntegrationId[],
-    channelId: string,
-    level: PlaceTrustLevel | null
-  ): Promise<'ok' | 'not_found' | 'detected_external'> {
-    if (integrationIds.length === 0) return 'not_found'
-    const ids = Prisma.join(integrationIds.map((id) => Prisma.sql`${id}::uuid`))
-    return withAmbientTx(this.db, async (tx) => {
-      // Locked so a detection landing between the check and the write cannot be overridden.
-      const rows = await tx.$queryRaw<Array<{ trustDetected: PlaceTrustLevel | null }>>`
-        SELECT "trustDetected" FROM "integration_channel"
-        WHERE "integrationId" IN (${ids}) AND "channelId" = ${channelId}
-        FOR UPDATE
-      `
-      if (rows.length === 0) return 'not_found'
-      if (level === 'internal' && rows.some((row) => row.trustDetected === 'external')) return 'detected_external'
-      const declared = Prisma.sql`${level}::"PlaceTrustLevel"`
-      await tx.$executeRaw`
-        UPDATE "integration_channel" SET
-          "trustChangedAt" = CASE
-            WHEN ${effectiveTrustSql(declared, OLD_DETECTED)} IS DISTINCT FROM ${effectiveTrustSql(OLD_DECLARED, OLD_DETECTED)}
-              THEN NOW()
-            ELSE "trustChangedAt"
-          END,
-          "trustDeclared" = ${declared},
-          "updatedAt" = NOW()
-        WHERE "integrationId" IN (${ids}) AND "channelId" = ${channelId}
-      `
-      return 'ok'
-    })
+    return { externalChanged }
   }
 
   async deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean> {

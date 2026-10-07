@@ -9,13 +9,9 @@ import {
 } from '@agentconnect.md/protocol'
 import {
   extractSlackMessageText,
-  isSlackGuest,
   isSlackSystemMessage,
   normalizeSlackResponseFinalization,
-  SLACK_CHANNEL_SHARED_TRUST,
-  SLACK_GUEST_JOINED_TRUST,
-  slackListedChannelTrust,
-  SlackPendingTrust
+  slackExternalReason
 } from '@agentconnect.md/message'
 import type { Agent, Integration } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
@@ -1025,8 +1021,6 @@ export class SlackConnection implements PlatformConnection {
   /** Settle+stop pairs Slack has not resolved, retried on a backoff after the owning turn is
    *  gone. Without an owner here a transient double failure leaves the row working forever. */
   private owedStops = new Map<string, { timer: NodeJS.Timeout }>()
-  /** Trust detections from events, overlaid on the next membership listing (assistant-mode.md §5.3). */
-  private readonly pendingTrust = new SlackPendingTrust()
   botUserId = ''
   /** The appToken this socket is keyed by (one socket per unique appToken). */
   readonly appToken: string
@@ -1168,19 +1162,8 @@ export class SlackConnection implements PlatformConnection {
     // The daemon re-lists + re-reports the membership snapshot on each fire.
     this.app.event('member_joined_channel', async ({ event }) => {
       const ev = event as { user?: string; channel?: string }
-      if (ev.user !== this.botUserId) {
-        if (ev.user && ev.channel) void this.detectGuestJoin(ev.channel, ev.user)
-        return
-      }
+      if (ev.user !== this.botUserId) return
       log?.debug(`slack: bot joined channel ${ev.channel ?? '?'}`)
-      this.deps.onChannelsChanged?.()
-    })
-    // A channel shared with another organization is external from now on (assistant-mode.md §5.3).
-    this.app.event('channel_shared', async ({ event }) => {
-      const channel = (event as { channel?: string }).channel
-      if (!channel) return
-      log?.debug(`slack: channel ${channel} shared externally`)
-      this.pendingTrust.note(channel, SLACK_CHANNEL_SHARED_TRUST)
       this.deps.onChannelsChanged?.()
     })
     for (const type of ['channel_left', 'group_left']) {
@@ -2583,12 +2566,6 @@ export class SlackConnection implements PlatformConnection {
    * any API failure so the caller never mistakes an error for "left all channels".
    */
   async listBotChannels(): Promise<PlatformChannelRef[] | null> {
-    const channels = await this.listMemberChannels()
-    return channels && this.pendingTrust.apply(channels)
-  }
-
-  /** {@link listBotChannels} without consuming pending event detections, for agent-facing reads. */
-  private async listMemberChannels(): Promise<PlatformChannelRef[] | null> {
     const out: PlatformChannelRef[] = []
     let cursor: string | undefined
     try {
@@ -2605,7 +2582,7 @@ export class SlackConnection implements PlatformConnection {
             id: c.id,
             ...(c.name ? { name: c.name } : {}),
             ...(c.is_private ? { isPrivate: true } : {}),
-            trust: slackListedChannelTrust(c)
+            externalReason: slackExternalReason(c)
           })
         }
         cursor = res.response_metadata?.next_cursor || undefined
@@ -2617,19 +2594,6 @@ export class SlackConnection implements PlatformConnection {
     return out
   }
 
-  /** One `users.info` per human join: a guest joining makes the channel external (assistant-mode.md §5.3). */
-  private async detectGuestJoin(channel: string, user: string): Promise<void> {
-    try {
-      const res = await this.app.client.users.info({ user })
-      if (!isSlackGuest(res.user)) return
-      this.deps.log?.debug(`slack: a guest joined channel ${channel}`)
-      this.pendingTrust.note(channel, SLACK_GUEST_JOINED_TRUST)
-      this.deps.onChannelsChanged?.()
-    } catch (err) {
-      this.deps.log?.debug(`slack: users.info for a joining member failed: ${(err as Error).message}`)
-    }
-  }
-
   /**
    * The conversations an agent may address: every PUBLIC channel of the workspace
    * (`conversations.list`, `channels:read`), member or not — {@link joiningOnRefusal} enters one
@@ -2637,7 +2601,7 @@ export class SlackConnection implements PlatformConnection {
    * snapshot stays {@link listBotChannels}; this is the agent-facing `listChannels` only.
    */
   async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {
-    const members = await this.listMemberChannels()
+    const members = await this.listBotChannels()
     if (!members) throw new Error('failed to list Slack channels for bot membership')
     const out: { id: string; name?: string; isPrivate?: boolean }[] = []
     let cursor: string | undefined

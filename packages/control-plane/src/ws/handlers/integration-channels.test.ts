@@ -18,7 +18,7 @@ const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
 const conn = { daemonId: DAEMON } as unknown as DaemonConnection
 
-function fakeDeps(platform = 'slack', known = true, trustChanged = false) {
+function fakeDeps(platform = 'slack', known = true, externalChanged = false) {
   const dropPublicAudiences = vi.fn()
   const integrationConverge = vi.fn(async () => {})
   const integration = known ? [{ id: INTEGRATION, agentId: AGENT, botId: BOT, orgId: 'org-1', platform }] : []
@@ -33,7 +33,7 @@ function fakeDeps(platform = 'slack', known = true, trustChanged = false) {
       listByIds: vi.fn(async () => [])
     },
     clock: { now: () => Date.now() },
-    integrationChannel: { replaceSnapshot: vi.fn(async () => ({ trustChanged })) },
+    integrationChannel: { replaceSnapshot: vi.fn(async () => ({ externalChanged })) },
     integrationConverge,
     collabRoutes: { broadcast: vi.fn(async () => {}) }
   } as unknown as DaemonWsDeps
@@ -118,18 +118,18 @@ describe('handleIntegrationChannels — isPrivate cross-check', () => {
   })
 })
 
-// assistant-mode.md §5.3: a detected trust level rides the spec, so a report that changed one re-pushes it.
-describe('handleIntegrationChannels — detected trust', () => {
-  const shared = { id: 'C1', trust: { level: 'external' as const, reason: 'channelShared' as const } }
+// assistant-mode.md §5.3: the detected external set rides the spec, so a report that changed it re-pushes it.
+describe('handleIntegrationChannels — detected external places', () => {
+  const shared = { id: 'C1', externalReason: 'externallyShared' as const }
 
-  it('hands the detection to the write and re-pushes the spec when the level changed', async () => {
+  it('hands the detection to the write and re-pushes the spec when the set changed', async () => {
     const { deps, replaceSnapshot, integrationConverge } = fakeDeps('slack', true, true)
     await handleIntegrationChannels(frame([shared]), conn, deps)
     expect(replaceSnapshot.mock.calls[0]![1]).toEqual([shared])
     expect(integrationConverge).toHaveBeenCalledTimes(1)
   })
 
-  it('does not re-push when the report changed no level', async () => {
+  it('does not re-push when the report changed nothing', async () => {
     const { deps, integrationConverge } = fakeDeps('slack', true, false)
     await handleIntegrationChannels(frame([shared]), conn, deps)
     expect(integrationConverge).not.toHaveBeenCalled()

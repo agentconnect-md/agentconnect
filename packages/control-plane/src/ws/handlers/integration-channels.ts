@@ -56,7 +56,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   // Read after the lease releases, to decide whether the report opened anything (§14.8).
   let owner: AgentRecord | null = null
   let seeded: ReadonlyMap<string, SeedTrigger> | undefined
-  let trustChanged = false
+  let externalChanged = false
   try {
     // Ownership may have changed while the first repository read was in flight.
     // Re-check under the shared mutation lease before accepting this daemon's
@@ -90,7 +90,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
           }
         : undefined
     )
-    trustChanged = written?.trustChanged === true
+    externalChanged = written?.externalChanged === true
   } finally {
     release()
   }
@@ -100,8 +100,8 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   // before this write, and it has already cached the conversation, so no later message
   // re-reports and repairs it. Outside the mutation lease and best-effort — the
   // register snapshot remains the durable backstop.
-  // A detected trust change (assistant-mode.md §5.3) rides the spec too, so it pushes for the same reason.
-  if ((seeded?.size || trustChanged) && owner && deps.integrationConverge) {
+  // A detected external place (assistant-mode.md §5.3) rides the spec too, so a change to the set pushes as well.
+  if ((seeded?.size || externalChanged) && owner && deps.integrationConverge) {
     try {
       await deps.integrationConverge(owner)
     } catch {

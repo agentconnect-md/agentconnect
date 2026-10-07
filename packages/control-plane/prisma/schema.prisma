@@ -2758,12 +2758,6 @@ enum ChannelSessionMode {
   append
 }
 
-// Who is in a place (assistant-mode.md §5.3): only organization members, or possibly anyone else.
-enum PlaceTrustLevel {
-  internal
-  external
-}
-
 // Conversation kind (resource-visibility.md §14.3): a member channel vs a direct
 // conversation. Direct rows are observed incrementally for every integration.
 // `mpim` is a Slack multi-person DM — reported on observation like `im` (Slack
@@ -2829,14 +2823,8 @@ model IntegrationChannel {
   decisionId          String?  @db.Uuid
   // A Decision edit invalidated this gate; a router's review state lives on BotDecisionRouting instead.
   decisionNeedsReview Boolean  @default(false)
-  // Trust level an editor declared for this place (assistant-mode.md §5.3); null is undeclared.
-  trustDeclared       PlaceTrustLevel?
-  // Trust level the platform module detected; a detected external outranks any declaration.
-  trustDetected       PlaceTrustLevel?
-  // Why the platform detected `trustDetected` (`PlaceTrustReason`); kept while the level holds.
-  trustDetectedReason String?
-  // When the effective trust level last changed.
-  trustChangedAt      DateTime?        @db.Timestamptz(6)
+  // Why the platform detected this place as external (`PlaceExternalReason`, assistant-mode.md §5.3); null is internal.
+  externalReason      String?
   firstSeenAt   DateTime         @default(now()) @db.Timestamptz(6)
   updatedAt     DateTime         @updatedAt @db.Timestamptz(6)
 

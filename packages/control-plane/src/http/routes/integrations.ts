@@ -30,7 +30,6 @@ import type {
   IntegrationChannelRecord
 } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
-import { effectivePlaceTrust, placeTrustSource } from '../../domain/place-trust.js'
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
@@ -93,14 +92,7 @@ function toChannelDto(c: IntegrationChannelRecord, view?: DecisionView): Integra
     decision: c.trigger === 'decision' ? decisionChannelView(c, view?.names ?? new Map(), view?.readiness?.(c)) : null,
     sessionMode: c.sessionMode,
     agentId: c.agentId,
-    trust: {
-      level: effectivePlaceTrust(c),
-      source: placeTrustSource(c),
-      declared: c.trustDeclared ?? null,
-      detected: c.trustDetected ?? null,
-      detectedReason: c.trustDetectedReason ?? null,
-      changedAt: c.trustChangedAt?.toISOString() ?? null
-    }
+    externalReason: c.externalReason ?? null
   }
 }
 
@@ -875,7 +867,7 @@ export function integrationRoutes(deps: HttpDeps) {
           tags: [Tag.Integrations],
           summary: 'Update a conversation',
           description:
-            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, default agent, or declared trust level, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409). `trust` declares who is in the conversation: `internal` (only organization members) or `external`; null clears the declaration. A conversation the platform detected as external cannot be declared internal while that detection holds (409, `code` TRUST_DETECTED_EXTERNAL); on a shared bot the declaration applies to every agent of the bot in that conversation.",
+            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409).",
           operationId: 'updateIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
           body: UpdateIntegrationChannelBody,
@@ -1013,41 +1005,13 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           agent = refreshed.get(agent.id)!
           if (selectedOwner) selectedOwner = refreshed.get(selectedOwner.id) ?? selectedOwner
-          // Trust first (assistant-mode.md §5.3), so a refused declaration leaves the rest of the patch unapplied.
-          if (req.body.trust !== undefined) {
-            const rowIds = botScopedConversation
-              ? (await deps.repos.integration.listForBot(bot.id)).map((install) => install.id)
-              : [integration.id]
-            const declared = await deps.repos.integrationChannel.setDeclaredTrust(
-              rowIds,
-              req.params.channelId,
-              req.body.trust
-            )
-            if (declared === 'not_found')
-              return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
-            if (declared === 'detected_external')
-              return reply.code(409).send({
-                error: 'Conflict',
-                statusCode: 409,
-                message: 'the platform detected this conversation as external; it cannot be declared internal',
-                code: 'TRUST_DETECTED_EXTERNAL'
-              })
-          }
-          const trustOnly =
-            req.body.trigger === undefined && req.body.sessionMode === undefined && req.body.agentId === undefined
-          const reread = async () =>
-            (await deps.repos.integrationChannel.listForIntegration(integration.id)).find(
-              (channel) => channel.channelId === req.params.channelId
-            ) ?? null
           // HTTP conversation ownership is bot-scoped even though membership rows are
           // stored per integration. Route the whole patch through the orchestrator
           // so every agent detail shows the same owner/trigger and exactly one row
           // remains authoritative.
           let updated: IntegrationChannelRecord | null = null
           let routesSynced = false
-          if (botScopedConversation && trustOnly) {
-            updated = await reread()
-          } else if (botScopedConversation) {
+          if (botScopedConversation) {
             updated = await deps.httpBot.updateConversation(
               bot.id,
               req.params.channelId,
@@ -1082,8 +1046,8 @@ export function integrationRoutes(deps: HttpDeps) {
             // transaction: the console sends one field at a time, and a failure between the
             // two leaves the first persisted with the reconcile roster as the backstop —
             // the same exposure every other single-field write on this route already has.
-            updated = req.body.trust !== undefined ? await reread() : existingChannel
-            if (updated && req.body.trigger !== undefined) {
+            updated = existingChannel
+            if (req.body.trigger !== undefined) {
               // A human picked this, so it outranks every later default (§14.8).
               const activation: ChannelActivation = gate
                 ? { trigger: 'decision', decisionBinding: gate, decisionNeedsReview: false }

@@ -99,7 +99,7 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
         mutedChannels: ['C9'],
         gated: true,
         sessionModes: [],
-        trustLevels: [],
+        externalChannels: [],
         decisions: { bindings: [], definitions: [] }
       })
       expect(configuredBotSelfId(int)).toBe(selfId)
@@ -438,26 +438,24 @@ describe('conversationAdmitted', () => {
   })
 })
 
-// assistant-mode.md §5.3 / §5.1: the CP projects every declared or detected level; anything else is external.
+// assistant-mode.md §5.3: enabling a place trusts it; only a platform-detected external is the exception.
 describe('conversationTrustLevel', () => {
-  const int = (trustLevels?: { channel: string; level: 'internal' | 'external' }[]) =>
+  const int = (externalChannels?: string[]) =>
     ({
       id: 'i-trust',
       platform: 'slack',
-      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: true, ...(trustLevels ? { trustLevels } : {}) }
+      core: {
+        mode: 'direct',
+        bindRules: [],
+        mutedChannels: [],
+        gated: true,
+        ...(externalChannels ? { externalChannels } : {})
+      }
     }) as unknown as Integration
 
-  it('reads the projected level for a listed conversation', () => {
-    const i = int([
-      { channel: 'C1', level: 'internal' },
-      { channel: 'C2', level: 'external' }
-    ])
-    expect(conversationTrustLevel(i, 'C1')).toBe('internal')
-    expect(conversationTrustLevel(i, 'C2')).toBe('external')
-  })
-
-  it('treats an undeclared conversation, and a spec from a CP without the field, as external', () => {
-    expect(conversationTrustLevel(int([{ channel: 'C1', level: 'internal' }]), 'C9')).toBe('external')
-    expect(conversationTrustLevel(int(), 'C1')).toBe('external')
+  it('reads a detected external conversation as external and every other one as internal', () => {
+    expect(conversationTrustLevel(int(['C1']), 'C1')).toBe('external')
+    expect(conversationTrustLevel(int(['C1']), 'C2')).toBe('internal')
+    expect(conversationTrustLevel(int(), 'C1')).toBe('internal')
   })
 })

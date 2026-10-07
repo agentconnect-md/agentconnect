@@ -61,8 +61,6 @@ export const SLACK_BOT_EVENTS = [
   'message.im',
   'message.mpim',
   'member_joined_channel',
-  // A channel shared with another organization becomes an external place (assistant-mode.md §5.3).
-  'channel_shared',
   'channel_left',
   'group_left',
   'tokens_revoked'

@@ -564,17 +564,18 @@ describe('SlackHttpIngest events', () => {
 
     await ingest.handleEvent({ type: 'member_joined_channel', user: 'UBOT', channel: 'C1' })
     expect(conversations).toHaveBeenCalledTimes(2)
-    const internal = { level: 'internal', reason: 'verifiedInternal' }
     expect(onChannelsChanged).toHaveBeenCalledWith([
-      { id: 'C1', name: 'deploys', trust: internal },
-      { id: 'C2', name: 'ops', isPrivate: true, trust: internal },
-      { id: 'C3', trust: internal }
+      { id: 'C1', name: 'deploys', externalReason: null },
+      { id: 'C2', name: 'ops', isPrivate: true, externalReason: null },
+      { id: 'C3', externalReason: null }
     ])
   })
 
-  // Trust detection (assistant-mode.md §5.3) rides the same snapshot; events mark their channel on it.
+  // assistant-mode.md §5.3: the same snapshot marks a Slack Connect channel external.
   it('reports a Slack Connect channel external from the listing', async () => {
-    const conversations = vi.fn(async () => ({ channels: [{ id: 'C1', name: 'partners', is_ext_shared: true }] }))
+    const conversations = vi.fn(async () => ({
+      channels: [{ id: 'C1', name: 'partners', is_ext_shared: true }, { id: 'C2' }]
+    }))
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }
     const onChannelsChanged = vi.fn()
     const ingest = new SlackHttpIngest(
@@ -587,49 +588,9 @@ describe('SlackHttpIngest events', () => {
     await ingest.handleEvent({ type: 'member_joined_channel', user: 'UBOT', channel: 'C1' })
 
     expect(onChannelsChanged).toHaveBeenCalledWith([
-      { id: 'C1', name: 'partners', trust: { level: 'external', reason: 'externallyShared' } }
+      { id: 'C1', name: 'partners', externalReason: 'externallyShared' },
+      { id: 'C2', externalReason: null }
     ])
-  })
-
-  it('re-reports the snapshot with the channel external after channel_shared, even before the listing shows it', async () => {
-    const conversations = vi.fn(async () => ({ channels: [{ id: 'C1' }, { id: 'C2' }] }))
-    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }
-    const onChannelsChanged = vi.fn()
-    const ingest = new SlackHttpIngest(
-      'bot',
-      { botToken: 'xoxb', signingSecret: 's' },
-      deps(web, { onChannelsChanged })
-    )
-    await ingest.start()
-
-    await ingest.handleEvent({ type: 'channel_shared', channel: 'C1' })
-
-    expect(onChannelsChanged).toHaveBeenCalledWith([
-      { id: 'C1', trust: { level: 'external', reason: 'channelShared' } },
-      { id: 'C2', trust: { level: 'internal', reason: 'verifiedInternal' } }
-    ])
-  })
-
-  it('looks up a joining member once and re-reports only when that member is a guest', async () => {
-    const conversations = vi.fn(async () => ({ channels: [{ id: 'C1' }] }))
-    const info = vi.fn(async ({ user }: { user: string }) => ({
-      user: { id: user, is_ultra_restricted: user === 'UGUEST' }
-    }))
-    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations, info } }
-    const onChannelsChanged = vi.fn()
-    const ingest = new SlackHttpIngest(
-      'bot',
-      { botToken: 'xoxb', signingSecret: 's' },
-      deps(web, { onChannelsChanged })
-    )
-    await ingest.start()
-
-    await ingest.handleEvent({ type: 'member_joined_channel', user: 'UMEMBER', channel: 'C1' })
-    expect(info).toHaveBeenCalledTimes(1)
-    expect(conversations).not.toHaveBeenCalled()
-
-    await ingest.handleEvent({ type: 'member_joined_channel', user: 'UGUEST', channel: 'C1' })
-    expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', trust: { level: 'external', reason: 'guestJoined' } }])
   })
 
   it.each(['channel_left', 'group_left'])('refreshes after the self-scoped %s event', async (type) => {
@@ -645,9 +606,7 @@ describe('SlackHttpIngest events', () => {
 
     await ingest.handleEvent({ type, channel: 'CLEFT' })
 
-    expect(onChannelsChanged).toHaveBeenCalledWith([
-      { id: 'C1', name: 'remaining', trust: { level: 'internal', reason: 'verifiedInternal' } }
-    ])
+    expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining', externalReason: null }])
   })
 
   // The native Stop. Also not a chat event, and the event id is the receipt a Slack

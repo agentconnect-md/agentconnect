@@ -118,8 +118,10 @@ one exists, and does not pretend to defend against effects it cannot defend agai
   agent that does not gets a locked switch with the reason. An agent whose permission policy is
   "ask every time" gets a warning: background work will wait for approval often; consider
   auto-approving workspace-local operations.
-- Once on, the agent is off everywhere; an editor enables places one by one and declares each
-  place _internal_ or _external_ (§5.3).
+- Once on, the agent is off everywhere; an editor enables places one by one. Enabling a place
+  trusts it as _internal_ unless the platform detects it as _external_ (§5.3); the enable flow
+  warns "everyone here will be able to get the content of other internal places out of it;
+  enable only if fully trusted".
 - It acts with the agent's own identity and permissions, never someone's personal account.
 
 ---
@@ -176,7 +178,7 @@ one exists, and does not pretend to defend against effects it cannot defend agai
 | Executors         | Assistant-mode sessions never spread to remote executors                                                                                                                                                                                                      | Not possible today either                                                                                                                                |
 | One per place     | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                             |
 
-Not admission criteria: platform (all allowed; trust is declared per place), channel trigger mode
+Not admission criteria: platform (all allowed; enabling a place trusts it, §5.3), channel trigger mode
 (user configuration), workspace mode and isolation (§5.6), sandboxing, permission policy (`ask`
 only warns), a linked identity for the responsible user (a fallback conversation is required when
 no DM can be reached).
@@ -227,10 +229,11 @@ export const AssistantModePolicy = z
 ```
 
 On enable: §4.1 is checked; the agent enters conversation gating (`gated` derived from
-"restricted **or** assistant mode"); already-enabled rows keep their state and count as external
-until an editor declares a trust level; DMs auto-enabled by §14.8 for `sharedWith` members count
-as internal (that person is an organization member). The agent's permission policy and workspace
-isolation are untouched.
+"restricted **or** assistant mode"); already-enabled rows keep their state and, like any enabled
+place, count as internal unless the platform detects them as external (§5.3), so the switch shows
+the enable warning for them; DMs auto-enabled by §14.8 for `sharedWith` members count as internal
+(that person is an organization member). The agent's permission policy and workspace isolation
+are untouched.
 
 ### 5.2 Places and long conversations
 
@@ -250,32 +253,27 @@ the context with the ledger and summary as a handover note) is an open question 
 
 ### 5.3 Trust level
 
-The daemon has no presence data and member enumeration is not made a prerequisite. Trust is
-**declared per place**, on top of conversation gating:
+The daemon has no presence data and member enumeration is not made a prerequisite. There is no
+per-place trust setting: **enabling a place on an assistant-mode agent trusts it as internal**
+(everyone here is an organization member), on top of conversation gating. The enable flow shows
+the warning "everyone here will be able to get the content of other internal places out of it;
+enable only if fully trusted". The only exception is an **external** level the platform detects:
 
-- When an editor enables a place they declare one of two levels: **internal** (everyone here is
-  an organization member) or **external**. On Slack an organization member is a full workspace
-  member; guests (`is_restricted` / `is_ultra_restricted`) are external.
-- What a platform can verify is filled in; what it cannot gets a warning:
-  - Slack: a plain channel is internal; a Slack Connect channel (`is_ext_shared`) or one with
-    guests is forced external; a `channel_shared` event downgrades and notifies the editors.
-    Detection reads only what already flows: the membership listing's channel flags, and one
-    `users.info` per member join. Existing members are never enumerated, so a guest who was in
-    the channel before the bot is not detected. A detected external outranks any declaration; a
-    later listing lifts a shared detection once Slack no longer reports the share, never a guest
-    one.
-  - Telegram groups, Discord channels, Feishu groups: unchecked by default, with the warning
-    "everyone here will be able to get the content of other internal places out of it; enable
-    only if fully trusted"; where a member-joined event exists, it downgrades (verified per
-    platform at implementation time).
-  - DM: enabling it is trusting that person as a member. Webchat is internal by construction.
+- Slack: a Slack Connect channel (`is_ext_shared` / `is_pending_ext_shared` on the existing
+  membership listing) is external; a later listing that no longer reports the share lifts it.
+  Detection reads only that listing — no new API call, no manifest change.
+- Guests (`is_restricted` / `is_ultra_restricted`, one `users.info` per member join) and the
+  `channel_shared` event are detected in the change that adds the downgrade transition below,
+  and only for assistant-mode agents.
+- Telegram groups, Discord channels, Feishu groups: no detection; enabled means trusted.
+- DM: enabling it is trusting that person as a member. Webchat is internal by construction.
 - **Trust propagates downward**: a sub-session's place is its parent's; an item's trust level is
   the lowest among its followers' places; a patrol's tool scope follows the item's level.
 - **The downgrade transition (internal → external) retires context, not just the flag.** The
   place's long session was populated under internal permissions: recalled transcripts and memory
   reads sit in its ACP context whether or not they were ever posted, and a sub-session born there
-  carries the same context. On a downgrade — an editor's change, a `channel_shared` event, a
-  member-joined event, a guest joining — the daemon: interrupts the place's in-flight turn; retires
+  carries the same context. On a downgrade — a detected share, a `channel_shared` event, a guest
+  joining — the daemon: interrupts the place's in-flight turn; retires
   the long session the way `!new` does (a fresh coordinate, so the next message starts from an
   empty context with the external-filtered standing summary); interrupts the sub-sessions born in
   that place and drops their pending full-text reports (structured rows stay); leaves pending
@@ -518,7 +516,7 @@ conversation only raises an unread badge.
 
 | Mechanism                           | Relation                                                                                                        |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Conversation gating (§14)           | `gated` derivation gains "assistant mode"; enabling a place adds a trust declaration                            |
+| Conversation gating (§14)           | `gated` derivation gains "assistant mode"; enabling a place trusts it, with a warning                           |
 | Session visibility                  | The permission rules follow it; DM long sessions are fixed `private`; sub-sessions refuse visibility changes    |
 | `append`                            | Extended to Slack DMs; retention (assistant agents) and the visibility lock are prerequisites                   |
 | Private-session memory exclusion    | Unchanged; the ledger is its own store                                                                          |
@@ -537,14 +535,14 @@ conversation only raises an unread badge.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                            |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                               |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (Slack auto-detected, other platforms warned); Slack DM `append`; the ledger, the standing summary, `recall` and the three permission rules (read, write, memory); memory bypass closed; "ask me in a DM". **No sub-sessions**            |
-| **P0b — background work**         | Direct self-delegation, own coordinates, the persistent parent–child index; the persistent outbox (merge, ack, dead letter, chain depth, failure reports, hop reset, recovery order); sub-session permission requests and the wait cap; list / steer / stop (text list); pause suspends the outbox |
-| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` and the approval record; `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours                                   |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                             |
-| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                           |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the three permission rules (read, write, memory); memory bypass closed; "ask me in a DM". **No sub-sessions** |
+| **P0b — background work**         | Direct self-delegation, own coordinates, the persistent parent–child index; the persistent outbox (merge, ack, dead letter, chain depth, failure reports, hop reset, recovery order); sub-session permission requests and the wait cap; list / steer / stop (text list); pause suspends the outbox                  |
+| P1 — while nobody is around       | Patrol (after per-runtime tests) on the credential-less host; `propose` and the approval record; `remind` / `patrol`; backoff; Activity; the webchat sub-session panel; `handoff`; the per-person memory space; identity links pushed to the daemon; quiet hours                                                    |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                              |
+| P3                                | Per-person quiet hours; the personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                            |
 
 ---
 
@@ -577,7 +575,8 @@ conversation only raises an unread badge.
 3. **Slack DM `append` versus Slack assistant threads** (`assistant_thread_started` is already
    supported): whether a "new conversation" button still means anything.
 4. **Webchat report rounds without a connected client** (unverified).
-5. **Trust-declaration drift**: coverage of member-joined events per platform.
+5. **Trust drift**: a place that changes after it was enabled; member-joined coverage per
+   platform beyond Slack guests.
 6. **Cost**: one long conversation per place and one main-session turn per report round; needs
    P0 measurements.
 7. **Wording of item summaries**: the restatement when an item is taken is the only review point
@@ -589,7 +588,8 @@ conversation only raises an unread badge.
 ## 10. Review record
 
 **Two design reviews of the second revision (2026-10-06)**: the permission table could not be
-computed on the daemon → trust declared per place; reports injected into channels reach shared
+computed on the daemon → trust per place (later: enabling a place trusts it, only a
+platform-detected external is the exception); reports injected into channels reach shared
 memory → structured fields only across places; the `append` visibility lock unenforced and
 seven-day reclaim → prerequisites; a fragile report chain → persistent outbox; DM self-wakes with
 no owner → the inheritance path; sub-sessions as threads impossible on thread-less platforms →
