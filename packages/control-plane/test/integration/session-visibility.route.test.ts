@@ -1297,6 +1297,29 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
     ).toBe(404)
   })
 
+  it('refuses an append session to its recorded owner and hides the control (channel-session-mode.md §9)', async () => {
+    const firstPoster = await makeUser('sv-put-append', 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const session = await seedSessionMeta(prisma, `s-put-append-${randomUUID()}`, agentId, {
+      ownerIdentity: `user:${firstPoster}`,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'append:1700000000000'
+    })
+    const app = appAs(firstPoster)
+
+    const detail = await app.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}` })
+    expect(detail.json()).toMatchObject({ visibility: 'org', canChangeVisibility: false })
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${session}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    expect(res.statusCode).toBe(403)
+    expect((await prisma.sessionMeta.findUnique({ where: { id: session } }))?.visibility).toBe('org')
+  })
+
   it('refuses a former owner’s widen queued behind a concurrent re-owning tighten', async () => {
     const initiator = await makeUser('sv-queued-init', 'collaborator')
     const newOwner = await makeUser('sv-queued-newowner', 'collaborator')

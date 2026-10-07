@@ -208,6 +208,7 @@ export {
 
 // ── repository-relative agent working-directory helpers ──
 export { MAX_REPO_SUBDIR_LENGTH, RepoSubdirError, normalizeRepoSubdir } from './repo-subdir.js'
+export { APPEND_COORDINATE_PREFIX, isAppendCoordinate } from './append-coordinate.js'
 
 // ── §5 platform manifest — pre-dispatch capability table, read by every host ──
 export { DEFAULT_MANIFEST, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'

@@ -14,19 +14,17 @@
  * forward, so a coordinate minted after a purge is one that has never been used.
  */
 
-/** The reserved prefix an append coordinate wears; exported so the store migration can match on it. */
-export const APPEND_COORDINATE_PREFIX = 'append:'
+import { APPEND_COORDINATE_PREFIX, isAppendCoordinate } from '@agentconnect.md/protocol'
+
+// The prefix and its test live in the protocol package so the Control Plane can recognize an
+// append session too; the prefix is re-exported so the store migration can match on it.
+export { APPEND_COORDINATE_PREFIX, isAppendCoordinate }
 
 const PREFIX = APPEND_COORDINATE_PREFIX
 
 /** The coordinate for a given mint time. */
 export function appendCoordinate(ts: number): string {
   return `${PREFIX}${ts}`
-}
-
-/** Whether a session's thread segment is an append coordinate rather than a platform thread. */
-export function isAppendCoordinate(thread: string | undefined): boolean {
-  return thread !== undefined && thread.startsWith(PREFIX)
 }
 
 /** The mint time a coordinate carries; undefined when it is not one, or its payload is not a timestamp. */

@@ -278,9 +278,14 @@ describe('canViewSession (session-visibility.md §5)', () => {
 })
 
 describe('canChangeSessionVisibility', () => {
-  const session = (visibility: SessionViewable['visibility'], ownerIdentity: string | null): SessionViewable => ({
+  const session = (
+    visibility: SessionViewable['visibility'],
+    ownerIdentity: string | null,
+    thread: string | null = null
+  ): SessionViewable => ({
     visibility,
-    ownerIdentity
+    ownerIdentity,
+    thread
   })
 
   it('denies an organization owner reclassifying a session they do not own, org-visible or not', () => {
@@ -305,6 +310,39 @@ describe('canChangeSessionVisibility', () => {
     const owner = ctx(OTHER, 'owner')
     expect(canChangeSessionVisibility(session('org', null), owner, identitySetOf(owner))).toBe(false)
     expect(canChangeSessionVisibility(session('private', null), owner, identitySetOf(owner))).toBe(false)
+  })
+
+  it('refuses an append session even to its recorded owner (channel-session-mode.md §9)', () => {
+    for (const role of ['owner', 'collaborator', 'viewer'] as const) {
+      const principal = ctx(CREATOR, role)
+      expect(
+        canChangeSessionVisibility(
+          session('org', `user:${CREATOR}`, 'append:1700000000000'),
+          principal,
+          identitySetOf(principal)
+        )
+      ).toBe(false)
+    }
+    // A platform thread in the same channel stays the first sender's to reclassify.
+    const principal = ctx(CREATOR, 'collaborator')
+    expect(
+      canChangeSessionVisibility(
+        session('org', `user:${CREATOR}`, '1700000000.000100'),
+        principal,
+        identitySetOf(principal)
+      )
+    ).toBe(true)
+  })
+
+  it('treats an unread thread coordinate as append — fail closed', () => {
+    const principal = ctx(CREATOR, 'owner')
+    expect(
+      canChangeSessionVisibility(
+        { visibility: 'org', ownerIdentity: `user:${CREATOR}` },
+        principal,
+        identitySetOf(principal)
+      )
+    ).toBe(false)
   })
 
   it('never lets a human rewrite an externally bound audience', () => {
