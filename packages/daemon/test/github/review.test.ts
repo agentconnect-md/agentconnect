@@ -261,6 +261,38 @@ describe('GithubReviewClient', () => {
     expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
   })
 
+  it.each([
+    ['a 5xx', () => json(502, { message: 'Bad Gateway' }), 'GitHub POST 502: Bad Gateway'],
+    [
+      'a network failure',
+      () => {
+        throw new TypeError('fetch failed', { cause: Object.assign(new Error('read'), { code: 'ECONNRESET' }) })
+      },
+      'GitHub request failed: fetch failed (ECONNRESET)'
+    ]
+  ])('names the cause of an unrecovered ambiguous POST after %s', async (_, post, cause) => {
+    const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+      if (init?.method === 'POST') return post()
+      if (String(url).includes('/reviews?')) return json(200, [])
+      if (String(url).includes('/files?')) return json(200, pullFiles)
+      return json(200, {
+        state: 'open',
+        merged: false,
+        draft: false,
+        head: { sha: target.expectedHeadSha },
+        base: { sha: target.expectedBaseSha }
+      })
+    })
+    const client = new GithubReviewClient({ fetchImpl })
+
+    await expect(client.submit(target, comment)).resolves.toEqual({
+      state: 'ambiguous',
+      code: 'ambiguous_write',
+      message: `GitHub review outcome is unknown (${cause}); automatic retry is blocked`
+    })
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+  })
+
   it('fails closed when a recovered attempt cannot read its marker', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('GitHub unavailable'))
     const client = new GithubReviewClient({ fetchImpl })

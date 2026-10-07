@@ -1011,6 +1011,9 @@ export class GithubReviewOrchestrator {
         ? await this.githubCommentAttribution(req.agentId, active.sessionId, 'github')
         : undefined
     )
+    if (effect.state === 'ambiguous') {
+      this.log.warn(`github review: ${effect.message} for ${active.hook.hookId}:${active.hook.deliveryKey}`)
+    }
     const result = await this.persistGithubReviewEffect(active, attemptId, effect)
     try {
       const report: Parameters<CpClient['reportGithubReviewResult']>[0] = {
