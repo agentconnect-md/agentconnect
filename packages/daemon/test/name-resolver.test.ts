@@ -145,6 +145,18 @@ describe('ChannelNameResolver', () => {
     expect(scopes.has('C9')).toBe(false)
   })
 
+  it('reports whether the platform called the conversation private, and nothing when it cannot tell', async () => {
+    const scopes = new Map<string, { isPrivate?: boolean }>()
+    const r = new ChannelNameResolver(() => {}, { saveScope: (id, scope) => void scopes.set(id, scope) })
+    r.noteChannel(source({ id: 'G1', name: 'leads', isPrivate: true }), 'G1')
+    r.noteChannel(source({ id: 'C1', name: 'general', isPrivate: false }), 'C1')
+    r.noteChannel(source({ id: 'C2', name: 'ops' }), 'C2')
+    await flush()
+    expect(scopes.get('G1')).toEqual({ isPrivate: true })
+    expect(scopes.get('C1')).toEqual({ isPrivate: false })
+    expect(scopes.has('C2')).toBe(false)
+  })
+
   it('noteMessage caches the human sender and the users they mentioned', async () => {
     const saved = new Map<string, string>()
     const avatars = new Map<string, string>()

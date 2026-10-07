@@ -4948,11 +4948,11 @@ export class LocalStore {
     ).map((row) => this.dreamFromRow(row))
   }
 
-  /** Newest-first addressable sessions to mine as dream transcript sources; `skipPrivate` leaves out those the capture gate excludes. */
+  /** Newest-first addressable sessions to mine as dream transcript sources; `skipPrivate` leaves out capture-excluded and group-DM sessions and those in `privateConversations`. */
   async dreamSessionSources(
     agentId: string,
     limit: number,
-    opts: { skipPrivate?: boolean } = {}
+    opts: { skipPrivate?: boolean; privateConversations?: readonly string[] } = {}
   ): Promise<
     {
       sessionId: string
@@ -4963,16 +4963,18 @@ export class LocalStore {
       updatedAt: number
     }[]
   > {
+    const privateConversations = opts.skipPrivate ? [...new Set(opts.privateConversations ?? [])] : []
     const rows = (await this.db
       .prepare(
         // Outward ids (§1.1) become the dream's durable provenance; a pre-v12 row answers with the ACP id it was reported under.
         `SELECT COALESCE(sessionId, acpSessionId) AS sessionId, key, channel, thread, transportScope, updatedAt
          FROM sessions
          WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
-         ${opts.skipPrivate ? `AND ${CAPTURE_OPEN_SQL}` : ''}
+         ${opts.skipPrivate ? `AND ${CAPTURE_OPEN_SQL} AND (conversationKind IS NULL OR conversationKind <> 'group_dm')` : ''}
+         ${privateConversations.length > 0 ? `AND channel NOT IN (${privateConversations.map(() => '?').join(',')})` : ''}
          ORDER BY updatedAt DESC LIMIT ?`
       )
-      .all(agentId, limit)) as {
+      .all(agentId, ...privateConversations, limit)) as {
       sessionId: string
       key: string
       channel: string

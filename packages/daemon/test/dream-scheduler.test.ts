@@ -230,32 +230,47 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     expect(await fire(daemon, 'bot-a')).toBe(true)
   })
 
-  it('leaves the private sessions of an agent in assistant mode out of its dream sources (assistant-mode.md §5.5)', async () => {
+  it('leaves the private sessions and places of an agent in assistant mode out of its dream sources (assistant-mode.md §5.5)', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => ({}) as any, dreamOperationPolicy: 'test-only' })
     const inner = daemon as unknown as {
       agents: Map<string, object>
       store: LocalStore
+      channelSnapshots: Map<string, { channels: object[]; authoritative: boolean }>
       dreamRunner(): DreamRunner
     }
     inner.store = await openTestStore()
-    const key = sessionKey('slack', 'D1', 'D1', 'bot-a')
-    await inner.store.upsertSession({
-      key,
-      agentId: 'bot-a',
-      platform: 'slack',
-      channel: 'D1',
-      thread: 'D1',
-      acpSessionId: 'acp-dm',
-      state: 'idle',
-      lastDeliveredTs: null,
-      updatedAt: Date.now()
-    })
-    await inner.store.setLocalCaptureGate('bot-a', key, true)
-    const memory = { provider: 'managed', dreaming: { enabled: true } }
-    inner.agents.set('bot-a', { id: 'bot-a', memory })
+    // A DM (private session) and an org-visible session in a channel its membership listing reports private.
+    for (const [channel, localExcluded] of [
+      ['D1', true],
+      ['G1', false]
+    ] as const) {
+      const key = sessionKey('slack', channel, channel, 'bot-a')
+      await inner.store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel,
+        thread: channel,
+        acpSessionId: `acp-${channel}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+      await inner.store.setLocalCaptureGate('bot-a', key, localExcluded)
+    }
+    inner.channelSnapshots.set('int-1', { channels: [{ id: 'G1', isPrivate: true }], authoritative: true })
+    const agent = {
+      id: 'bot-a',
+      memory: { provider: 'managed', dreaming: { enabled: true } },
+      integrations: [{ id: 'int-1' }]
+    }
+    inner.agents.set('bot-a', agent)
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(true)
-    inner.agents.set('bot-a', { id: 'bot-a', memory, assistantMode: { enabled: true, responsibleUserId: 'user-1' } })
+    inner.agents.set('bot-a', { ...agent, assistantMode: { enabled: true, responsibleUserId: 'user-1' } })
     expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(false)
+    // The listing reporting it public again makes the channel a source once more.
+    inner.channelSnapshots.set('int-1', { channels: [{ id: 'G1', isPrivate: false }], authoritative: true })
+    expect(await inner.dreamRunner().hasNewSessionsSinceLastDream('bot-a')).toBe(true)
     await inner.store.close()
   })
 

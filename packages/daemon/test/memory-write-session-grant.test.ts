@@ -34,6 +34,8 @@ function world(excluded = true, key = sessionKey('webchat', 'conv-1', 'conv-1', 
   const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
   daemon.store = {
     isCaptureExcluded: vi.fn(async () => excluded),
+    // An ordinary channel row, so only the capture gate decides here.
+    getSession: async (k: string) => ({ key: k, channel: 'C-public', conversationKind: 'channel' }),
     getSessionByAcpIdForAgent: async () => ({ triggeredBy: 'user-1' }),
     getDisplayNames: async () => new Map<string, string>(),
     upsertElicit: vi.fn(async () => {})

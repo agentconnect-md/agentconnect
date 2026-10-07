@@ -1701,6 +1701,8 @@ export class Daemon {
   // Latest channel report per integrationId plus whether it came from a complete
   // membership listing. Replayed with the same authority on each CP (re)connect.
   private channelSnapshots = new Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>()
+  // A conversation's privacy as its platform reported it on a channel lookup (`PlatformChannelInfo.isPrivate`), by id.
+  private readonly conversationPrivacy = new Map<string, boolean>()
   private cpAgents?: CpAgentRegistry
   private cpIntegrations?: CpIntegrationRegistry
   private botUserIds: Record<string, string> = {}
@@ -3644,9 +3646,9 @@ export class Daemon {
         await this.observedChannelsSync.refreshObservedChannels()
       },
       {
-        // A newly-learnt scope changes which rows the observed set collapses onto (a
-        // Discord thread folds into its channel), so re-emit the snapshot with it.
-        saveScope: async (id, scope) => {
+        // A newly-learnt scope changes which rows the observed set collapses onto, so re-emit the snapshot with it.
+        saveScope: async (id, { isPrivate, ...scope }) => {
+          if (isPrivate !== undefined) this.conversationPrivacy.set(id, isPrivate)
           await this.store.setChannelScope(id, scope, Date.now())
           await this.observedChannelsSync.refreshObservedChannels()
         },
@@ -7535,10 +7537,35 @@ export class Daemon {
     // A daemon-minted binding (distillation) is never model-supplied and has no row for the gate to read.
     if (ctx.memoryBinding) return 'allow'
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-    if (!(await this.store.isCaptureExcluded(ctx.agentId, key))) return 'allow'
-    // Assistant mode keeps private sessions out of shared memory: nobody is asked, no earlier grant applies (assistant-mode.md §5.5).
-    if (assistantModeOn(this.agents.get(ctx.agentId))) return 'closed'
+    const excluded = await this.store.isCaptureExcluded(ctx.agentId, key)
+    // Assistant mode keeps private sessions and places out of shared memory: nobody is asked, no earlier grant applies (assistant-mode.md §5.5).
+    if (assistantModeOn(this.agents.get(ctx.agentId)) && (excluded || (await this.sessionInPrivatePlace(key))))
+      return 'closed'
+    if (!excluded) return 'allow'
     return this.memoryWriteGrants.has(key) ? 'allow' : 'ask'
+  }
+
+  /** Whether a session's place is a group DM or a private channel (assistant-mode.md §5.5); an unknown session counts as one. */
+  private async sessionInPrivatePlace(key: string | undefined): Promise<boolean> {
+    const rec = key ? await this.store.getSession(key) : undefined
+    if (!rec) return true
+    return rec.conversationKind === 'group_dm' || this.conversationIsPrivate(rec.channel)
+  }
+
+  /** Whether the platform reported a conversation as a group DM or a private one; a platform that cannot tell reports neither. */
+  private conversationIsPrivate(channel: string): boolean {
+    for (const { channels } of this.channelSnapshots.values())
+      if (channels.some((c) => c.id === channel && (c.kind === 'mpim' || c.isPrivate === true))) return true
+    return this.conversationPrivacy.get(channel) === true
+  }
+
+  /** The conversations the platforms reported to an agent's integrations as group DMs or private ones, plus private lookups, for a dream's source query. */
+  private privateConversations(agentId: string): string[] {
+    const ids = new Set([...this.conversationPrivacy].filter(([, isPrivate]) => isPrivate).map(([id]) => id))
+    for (const integration of this.agents.get(agentId)?.integrations ?? [])
+      for (const c of this.channelSnapshots.get(integration.id)?.channels ?? [])
+        if (c.kind === 'mpim' || c.isPrivate === true) ids.add(c.id)
+    return [...ids]
   }
 
   /** Ask the human behind the session's live turn about ONE write; "for this session" is remembered here. */
@@ -7588,12 +7615,10 @@ export class Daemon {
   ): Promise<void> {
     if (this.evaluationProfile.memory === 'off') return
     if (!output.trim()) return
-    // Agent memory is agent-scoped and shared across users, so a memory-excluded
-    // session's turn (a `private` session, or a DM / webchat / A2A-child /
-    // launch-correlated one) must never be distilled into it. The gate is checked
-    // HERE — before both the managed distillation and the external capture outbox
-    // — and fails closed on unknown state.
+    // Shared memory never takes a capture-excluded turn, checked before distillation and the external outbox alike; fails closed.
     if (await this.store.isCaptureExcluded(agentId, session?.key)) return
+    // Nor, in assistant mode, a turn in a group DM or a private channel (assistant-mode.md §5.5).
+    if (assistantModeOn(this.agents.get(agentId)) && (await this.sessionInPrivatePlace(session?.key))) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
@@ -8586,7 +8611,7 @@ export class Daemon {
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
       memoryHomePortsFor: (id) => this.memoryHomePortsFor(id),
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
-      skipsPrivateSessions: (id) => assistantModeOn(this.agents.get(id)),
+      privatePlacesFor: (id) => (assistantModeOn(this.agents.get(id)) ? this.privateConversations(id) : undefined),
       operationPolicy: this.dreamOperationsAllowed() ? (this.opts.hostFactory ? 'test-only' : 'enabled') : 'blocked',
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal, context) =>

@@ -136,11 +136,11 @@ export interface DreamStorePort {
    *  records a dream leaves behind — they outlive the session they point at. */
   getSessionByAcpIdForAgent(agentId: string, acpSessionId: string): Promise<{ key: string } | undefined>
   ensureOutwardSessionId(key: string, agentId?: string): Promise<string>
-  /** Newest-first addressable sessions for the agent (transcript sources); `skipPrivate` drops those the capture gate excludes. */
+  /** Newest-first addressable sessions for the agent (transcript sources); `skipPrivate` drops capture-excluded and group-DM sessions and those in `privateConversations`. */
   dreamSessionSources(
     agentId: string,
     limit: number,
-    opts?: { skipPrivate?: boolean }
+    opts?: { skipPrivate?: boolean; privateConversations?: readonly string[] }
   ): Promise<
     {
       sessionId: string
@@ -199,8 +199,8 @@ export interface DreamRunnerDeps {
   /** The agent's dreaming policy, or undefined when dreaming is not enabled
    *  (missing binding, non-managed provider, or enabled:false). */
   dreamingPolicyFor(agentId: string): MemoryDreamingPolicy | undefined
-  /** Whether the agent's dreams leave its private sessions out (assistant mode, assistant-mode.md §5.5); absent ⇒ never. */
-  skipsPrivateSessions?(agentId: string): boolean
+  /** For an agent whose dreams skip private sessions and places (assistant mode, assistant-mode.md §5.5), the conversations known private; undefined ⇒ it mines every session. */
+  privatePlacesFor?(agentId: string): readonly string[] | undefined
   /** Omission is deliberately `blocked`. Production must never infer authority
    * from runtime configuration; deterministic tests opt in explicitly. */
   operationPolicy?: DreamOperationPolicy
@@ -533,7 +533,7 @@ export class DreamRunner {
     )
   }
 
-  /** Sessions active since the last successful dream (inclusive `>=`: duplicates possible, gaps never), newest first up to the cap, or a pinned newest-N window; private ones stay out for an assistant-mode agent (memory-dreaming.md §4). */
+  /** Sessions active since the last successful dream (inclusive `>=`: duplicates possible, gaps never), newest first up to the cap, or a pinned newest-N window; private sessions and places stay out for an assistant-mode agent (memory-dreaming.md §4). */
   private async selectSessionSources(
     agentId: string,
     explicitWindow?: number
@@ -547,10 +547,10 @@ export class DreamRunner {
       updatedAt: number
     }[]
   > {
-    const skipPrivate = this.deps.skipsPrivateSessions?.(agentId) === true
+    const privateConversations = this.deps.privatePlacesFor?.(agentId)
     const sources = (limit: number) =>
-      skipPrivate
-        ? this.deps.store.dreamSessionSources(agentId, limit, { skipPrivate })
+      privateConversations
+        ? this.deps.store.dreamSessionSources(agentId, limit, { skipPrivate: true, privateConversations })
         : this.deps.store.dreamSessionSources(agentId, limit)
     if (explicitWindow !== undefined) return await sources(explicitWindow)
     const recent = await sources(MAX_AUTO_SESSION_WINDOW)
@@ -610,7 +610,7 @@ export class DreamRunner {
     // and single-threaded, so no session write can interleave between here and
     // the query below.
     const createdAt = this.nowIso()
-    // Every session this agent took part in, private ones too unless it is in assistant mode (session-visibility.md §5.1).
+    // Every session this agent took part in, private ones too unless it is in assistant mode (memory-dreaming.md §4).
     const sources = await this.selectSessionSources(agentId, explicitWindow)
 
     // Snapshot the live store — the digest is the adoption fence. Taken under
